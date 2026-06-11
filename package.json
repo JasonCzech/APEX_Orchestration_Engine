@@ -1,0 +1,7 @@
+{
+  "name": "apex-orchestration-engine",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

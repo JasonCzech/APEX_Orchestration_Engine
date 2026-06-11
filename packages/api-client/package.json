@@ -1,0 +1,13 @@
+{
+  "name": "@apex/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generated TypeScript types for the APEX /v1 domain API (from docs/api/apex-v1.openapi.json)",
+  "types": "src/schema.d.ts",
+  "files": [
+    "src/schema.d.ts"
+  ],
+  "scripts": {
+    "generate": "npx --yes openapi-typescript ../../docs/api/apex-v1.openapi.json -o src/schema.d.ts"
+  }
+}

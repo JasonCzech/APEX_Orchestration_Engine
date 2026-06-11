@@ -37,6 +37,7 @@ from apex.graphs.pipeline.gates import (
     resolve_actor,
 )
 from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.services.prompts import resolve_phase_prompt_sync
 
 EVENT_SCHEMA_VERSION = 1
 
@@ -57,17 +58,11 @@ def stub_tool_names(phase: Phase) -> list[str]:
     return [f"{phase.value}.stub_lookup"]
 
 
-def _stub_system_prompt(phase: Phase) -> str:
-    return (
-        f"You are the APEX {phase.value.replace('_', ' ')} agent. "
-        f"Produce the {phase.value} deliverable for this performance-testing run."
-    )
-
-
-def _stub_user_prompt(state: PipelineState) -> str:
-    title = state.get("title") or "untitled run"
-    request = state.get("request") or "(no request provided)"
-    return f"Title: {title}\nRequest: {request}"
+def _prompt_variables(state: PipelineState) -> dict[str, str]:
+    return {
+        "title": state.get("title") or "untitled run",
+        "request": state.get("request") or "(no request provided)",
+    }
 
 
 def _entry(state: PipelineState, phase: Phase) -> JsonDict:
@@ -88,17 +83,9 @@ def _make_prepare(phase: Phase):
     def prepare(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_config(config)
         attempt = _attempt(_entry(state, phase))
-        override = cfg.prompt_overrides.get(f"phase/{phase.value}")
-        if override is not None and override.content is not None:
-            system = override.content
-            source: JsonDict = {
-                "origin": "run_override",
-                "ref": override.version_id or f"phase/{phase.value}@override",
-                "editor": None,
-            }
-        else:
-            system = _stub_system_prompt(phase)
-            source = {"origin": "catalog", "ref": f"phase/{phase.value}@stub", "editor": None}
+        # Resolution order: run override -> catalog active version -> builtin
+        # defaults (catalog falls through silently when Postgres is absent).
+        resolved = resolve_phase_prompt_sync(phase, cfg, variables=_prompt_variables(state))
         emit_event(
             {
                 "schema_version": EVENT_SCHEMA_VERSION,
@@ -113,8 +100,8 @@ def _make_prepare(phase: Phase):
             attempt,
             status=PhaseStatus.RUNNING.value,
             started_at=utcnow_iso(),
-            resolved_prompt={"system": system, "user": _stub_user_prompt(state)},
-            resolved_prompt_source=source,
+            resolved_prompt={"system": resolved["system"], "user": resolved["user"]},
+            resolved_prompt_source=dict(resolved["source"]),
         )
         update["current_phase"] = phase.value
         return update

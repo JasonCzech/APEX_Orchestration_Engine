@@ -2,7 +2,9 @@
   "python_version": "3.12",
   "dependencies": ["."],
   "graphs": {
-    "pipeline": "./src/apex/graphs/pipeline/graph.py:graph"
+    "pipeline": "./src/apex/graphs/pipeline/graph.py:graph",
+    "playground": "./src/apex/graphs/playground/graph.py:graph",
+    "context": "./src/apex/graphs/context/graph.py:graph"
   },
   "http": {
     "app": "./src/apex/app/http.py:app",

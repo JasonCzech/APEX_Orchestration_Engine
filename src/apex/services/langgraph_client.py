@@ -11,5 +11,6 @@ from langgraph_sdk.client import LangGraphClient
 
 
 def loopback_client(api_key: str | None = None) -> LangGraphClient:
-    headers = {"x-api-key": api_key} if api_key else None
-    return get_client(headers=headers)
+    # NB: x-api-key is a RESERVED header in langgraph_sdk — it must flow through the
+    # api_key parameter (the SDK sets the header itself); passing it via headers raises.
+    return get_client(api_key=api_key)

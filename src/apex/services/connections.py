@@ -1,22 +1,34 @@
 """Connection resolution: (port kind, connection id) -> live adapter instance.
 
-M1 static implementation: connections come from the in-code DEV_CONNECTIONS map
-(one stub/sim/env connection per port kind), so the full pipeline runs offline.
-M2 replaces the lookup with DB-backed rows from the `connections` table (admin
-CRUD, project scoping, cache keyed by (connection_id, updated_at)) while keeping
-this resolve() surface unchanged — graph nodes and routers must depend on it,
-never on the AdapterRegistry directly.
+M2: resolution consults the `connections` table first (explicit connection_id >
+project-scoped row > global row) and falls back to the static in-code
+DEV_CONNECTIONS map — so `langgraph dev` keeps working without Postgres and DB
+outages degrade gracefully (logged warning, stub adapters). Adapter instances
+are cached keyed by (connection_id, updated_at), so admin edits invalidate on
+the next resolve. The resolve() surface is unchanged from M1 — graph nodes and
+routers must depend on it, never on the AdapterRegistry directly.
+
+Note: ConnectionConfig has no base_url field, so a row's base_url is merged into
+options["base_url"] for the adapter factory.
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime
 from functools import lru_cache
-from typing import Any
+from typing import Any, Protocol
+
+import structlog
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 # Importing the adapter packages registers their factories with the AdapterRegistry.
 import apex.adapters.sim_engine  # noqa: F401
 import apex.adapters.stubs  # noqa: F401
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.ports.secrets import SecretsPort
+
+logger = structlog.get_logger(__name__)
 
 DEV_CONNECTIONS: dict[PortKind, ConnectionConfig] = {
     PortKind.WORK_TRACKING: ConnectionConfig(
@@ -67,30 +79,171 @@ DEV_CONNECTIONS: dict[PortKind, ConnectionConfig] = {
 }
 
 
-class ConnectionResolver:
-    """Resolves adapters from connection configs, caching instances per connection id."""
+@dataclass(frozen=True)
+class StoredConnection:
+    """A `connections` row projected for resolution (no ORM coupling)."""
 
-    def __init__(self, connections: Iterable[ConnectionConfig] | None = None) -> None:
+    config: ConnectionConfig
+    project_id: str | None
+    enabled: bool
+    updated_at: datetime | None
+
+
+def connection_config_from_row(row: Any) -> ConnectionConfig:
+    """Map a Connection ORM row (or anything row-shaped) to a ConnectionConfig.
+
+    base_url is merged into options["base_url"] — ConnectionConfig has no
+    base_url field by design (adapters read it from options).
+    """
+    options: dict[str, Any] = dict(row.options or {})
+    if row.base_url:
+        options.setdefault("base_url", row.base_url)
+    return ConnectionConfig(
+        id=row.id,
+        kind=PortKind(row.kind),
+        provider=row.provider,
+        name=row.name,
+        options=options,
+        secret_ref=row.secret_ref,
+    )
+
+
+def stored_connection_from_row(row: Any) -> StoredConnection:
+    return StoredConnection(
+        config=connection_config_from_row(row),
+        project_id=row.project_id,
+        enabled=bool(row.enabled),
+        updated_at=row.updated_at,
+    )
+
+
+class ConnectionStore(Protocol):
+    """Lookup surface the resolver needs; DB-backed in prod, fake in tests."""
+
+    async def get(self, connection_id: str) -> StoredConnection | None: ...
+
+    async def find_default(
+        self, kind: PortKind, project_id: str | None
+    ) -> StoredConnection | None: ...
+
+
+class DbConnectionStore:
+    """Loads connection rows with a fresh session per call.
+
+    Sessions are short-lived and self-contained so the resolver is usable from
+    graph nodes (outside any request scope) as well as routers.
+    """
+
+    async def get(self, connection_id: str) -> StoredConnection | None:
+        from apex.persistence.db import get_sessionmaker
+        from apex.persistence.models import Connection
+
+        async with get_sessionmaker()() as session:
+            row = await session.get(Connection, connection_id)
+            return stored_connection_from_row(row) if row is not None else None
+
+    async def find_default(self, kind: PortKind, project_id: str | None) -> StoredConnection | None:
+        from apex.persistence.db import get_sessionmaker
+        from apex.persistence.models import Connection
+
+        async with get_sessionmaker()() as session:
+            stmt = (
+                select(Connection)
+                .where(Connection.kind == kind.value, Connection.enabled.is_(True))
+                .order_by(Connection.updated_at.desc(), Connection.id)
+            )
+            rows = list((await session.scalars(stmt)).all())
+        if project_id is not None:
+            scoped = [r for r in rows if r.project_id == project_id]
+            if scoped:
+                return stored_connection_from_row(scoped[0])
+        global_rows = [r for r in rows if r.project_id is None]
+        return stored_connection_from_row(global_rows[0]) if global_rows else None
+
+
+class ConnectionResolver:
+    """Resolves adapters from connection rows/configs, caching built instances.
+
+    Cache key per connection id is its updated_at (None for static configs):
+    an admin PATCH bumps updated_at, so the next resolve rebuilds the adapter.
+    """
+
+    def __init__(
+        self,
+        connections: Iterable[ConnectionConfig] | None = None,
+        store: ConnectionStore | None = None,
+    ) -> None:
         conns = list(connections) if connections is not None else list(DEV_CONNECTIONS.values())
         self._by_id: dict[str, ConnectionConfig] = {c.id: c for c in conns}
         self._default_by_kind: dict[PortKind, ConnectionConfig] = {}
         for conn in conns:
             self._default_by_kind.setdefault(conn.kind, conn)
-        self._instances: dict[str, Any] = {}
+        self._store = store
+        self._instances: dict[str, tuple[datetime | None, Any]] = {}
 
-    async def resolve(self, kind: PortKind, connection_id: str | None = None) -> Any:
-        conn = self._select(kind, connection_id)
-        cached = self._instances.get(conn.id)
-        if cached is not None:
-            return cached
-        secrets: SecretsPort | None = None
-        if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
-            secrets = await self.resolve(PortKind.SECRETS)
-        adapter = await AdapterRegistry.build(conn, secrets)
-        self._instances[conn.id] = adapter
-        return adapter
+    async def resolve(
+        self,
+        kind: PortKind,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+    ) -> Any:
+        """Precedence: explicit connection_id > project-scoped row > global row >
+        static DEV_CONNECTIONS fallback."""
+        stored = await self._select_stored(kind, connection_id, project_id)
+        if stored is not None:
+            return await self._build_cached(stored.config, stored.updated_at)
+        conn = self._select_static(kind, connection_id)
+        return await self._build_cached(conn, None)
 
-    def _select(self, kind: PortKind, connection_id: str | None) -> ConnectionConfig:
+    # ── selection ───────────────────────────────────────────────────────────
+
+    async def _select_stored(
+        self, kind: PortKind, connection_id: str | None, project_id: str | None
+    ) -> StoredConnection | None:
+        if self._store is None:
+            return None
+        try:
+            if connection_id is not None:
+                stored = await self._store.get(connection_id)
+                if stored is None:
+                    return None  # fall through to the static map (KeyError if unknown)
+                self._check_usable(stored, kind, project_id)
+                return stored
+            stored = await self._store.find_default(kind, project_id)
+            if stored is None:
+                logger.debug(
+                    "apex.connections.static_fallback", kind=kind.value, project_id=project_id
+                )
+            return stored
+        except (SQLAlchemyError, OSError) as exc:
+            logger.warning(
+                "apex.connections.db_unavailable",
+                kind=kind.value,
+                connection_id=connection_id,
+                error=f"{exc.__class__.__name__}: {exc}",
+            )
+            return None
+
+    @staticmethod
+    def _check_usable(stored: StoredConnection, kind: PortKind, project_id: str | None) -> None:
+        conn = stored.config
+        if conn.kind is not kind:
+            raise ValueError(
+                f"connection {conn.id!r} is kind={conn.kind.value!r}, not {kind.value!r}"
+            )
+        if not stored.enabled:
+            raise ValueError(f"connection {conn.id!r} is disabled")
+        if (
+            project_id is not None
+            and stored.project_id is not None
+            and stored.project_id != project_id
+        ):
+            raise ValueError(
+                f"connection {conn.id!r} is scoped to project {stored.project_id!r}, "
+                f"not {project_id!r}"
+            )
+
+    def _select_static(self, kind: PortKind, connection_id: str | None) -> ConnectionConfig:
         if connection_id is not None:
             try:
                 conn = self._by_id[connection_id]
@@ -108,8 +261,21 @@ class ConnectionResolver:
         except KeyError:
             raise KeyError(f"no default connection configured for kind {kind.value!r}") from None
 
+    # ── building ────────────────────────────────────────────────────────────
+
+    async def _build_cached(self, conn: ConnectionConfig, version: datetime | None) -> Any:
+        cached = self._instances.get(conn.id)
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        secrets: SecretsPort | None = None
+        if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
+            secrets = await self.resolve(PortKind.SECRETS)
+        adapter = await AdapterRegistry.build(conn, secrets)
+        self._instances[conn.id] = (version, adapter)
+        return adapter
+
 
 @lru_cache
 def get_connection_resolver() -> ConnectionResolver:
-    """Process-wide default resolver over DEV_CONNECTIONS."""
-    return ConnectionResolver()
+    """Process-wide resolver: DB rows first, DEV_CONNECTIONS static fallback."""
+    return ConnectionResolver(store=DbConnectionStore())
