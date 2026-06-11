@@ -10,5 +10,11 @@
     "disable_mcp": true,
     "disable_a2a": true
   },
+  "auth": {
+    "path": "./src/apex/auth/handlers.py:auth",
+    "openapi": {
+      "apiKeyAuth": { "type": "apiKey", "in": "header", "name": "x-api-key" }
+    }
+  },
   "env": ".env"
 }

@@ -18,6 +18,12 @@ class DatabaseSettings(BaseModel):
     schema_name: str = "apex"
 
 
+class AuthSettings(BaseModel):
+    enabled: bool = True
+    # Local-dev shortcut: a key resolving to a synthetic unscoped admin without DB access.
+    dev_api_key: str | None = None
+
+
 class ApexSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APEX_",
@@ -31,6 +37,7 @@ class ApexSettings(BaseSettings):
     version: str = _package_version()
     environment: str = "dev"
     database: DatabaseSettings = DatabaseSettings()
+    auth: AuthSettings = AuthSettings()
 
 
 @lru_cache
