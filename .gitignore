@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# LangGraph
+.langgraph_api/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node (dashboard workspaces, added in D0)
+node_modules/
+apps/dashboard/dist/
+
+# Tooling
+.DS_Store
+.idea/
+.vscode/
+coverage/
+.coverage

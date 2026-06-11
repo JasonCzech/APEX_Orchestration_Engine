@@ -1,0 +1,14 @@
+{
+  "python_version": "3.12",
+  "dependencies": ["."],
+  "graphs": {
+    "pipeline": "./src/apex/graphs/pipeline/graph.py:graph"
+  },
+  "http": {
+    "app": "./src/apex/app/http.py:app",
+    "disable_ui": true,
+    "disable_mcp": true,
+    "disable_a2a": true
+  },
+  "env": ".env"
+}
