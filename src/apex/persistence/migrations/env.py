@@ -21,6 +21,13 @@ def _database_uri() -> str:
     return config.get_main_option("sqlalchemy.url") or get_settings().database.uri
 
 
+def _include_object(obj, name, type_, reflected, compare_to) -> bool:  # noqa: ANN001
+    """Only autogenerate against apex-schema objects (LangGraph owns the default schema)."""
+    if type_ == "table":
+        return obj.schema == APEX_SCHEMA
+    return True
+
+
 def _configure(connection: Connection | None = None, url: str | None = None) -> None:
     context.configure(
         connection=connection,
@@ -28,6 +35,7 @@ def _configure(connection: Connection | None = None, url: str | None = None) -> 
         target_metadata=target_metadata,
         version_table_schema=APEX_SCHEMA,
         include_schemas=True,
+        include_object=_include_object,
         compare_type=True,
         literal_binds=connection is None,
     )

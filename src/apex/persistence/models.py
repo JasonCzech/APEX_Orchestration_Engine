@@ -6,10 +6,25 @@ land here from M2 onward.
 """
 
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import DateTime, ForeignKey, MetaData, String, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Integer,
+    MetaData,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+JsonColumn = JSON().with_variant(JSONB(), "postgresql")
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -59,3 +74,198 @@ class ConsumerScope(Base):
     app_id: Mapped[str | None] = mapped_column(String(255))
 
     consumer: Mapped[ApiConsumer] = relationship(back_populates="scopes")
+
+
+# ── Prompt catalog (M2) ─────────────────────────────────────────────────────
+# A prompt is (namespace, key) with an active-version pointer. Versions are
+# immutable; save = new version + pointer move; rollback = pointer move only.
+
+
+class Prompt(Base):
+    __tablename__ = "prompts"
+    __table_args__ = (UniqueConstraint("namespace", "key"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    namespace: Mapped[str] = mapped_column(String(255))  # e.g. "phase", "observability"
+    key: Mapped[str] = mapped_column(String(255))  # e.g. "story_analysis/system"
+    description: Mapped[str | None] = mapped_column(Text)
+    active_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("prompt_versions.id", use_alter=True)
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    versions: Mapped[list["PromptVersion"]] = relationship(
+        back_populates="prompt",
+        cascade="all, delete-orphan",
+        foreign_keys="PromptVersion.prompt_id",
+        order_by="PromptVersion.version.desc()",
+    )
+
+
+class PromptVersion(Base):
+    """Immutable prompt content. Never updated or deleted while the prompt exists."""
+
+    __tablename__ = "prompt_versions"
+    __table_args__ = (UniqueConstraint("prompt_id", "version"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    prompt_id: Mapped[str] = mapped_column(
+        ForeignKey("prompts.id", ondelete="CASCADE", use_alter=True)
+    )
+    version: Mapped[int] = mapped_column(Integer)  # monotonic per prompt, 1-based
+    content: Mapped[str] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    parent_version_id: Mapped[str | None] = mapped_column(String(32))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    prompt: Mapped[Prompt] = relationship(back_populates="versions", foreign_keys=[prompt_id])
+
+
+# ── Application / environment catalog (M2) ─────────────────────────────────
+
+
+class Application(Base):
+    __tablename__ = "applications"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_id: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    environments: Mapped[list["Environment"]] = relationship(
+        back_populates="application", cascade="all, delete-orphan"
+    )
+
+
+class Environment(Base):
+    """An environment reference (legacy 'environment configurations')."""
+
+    __tablename__ = "environments"
+    __table_args__ = (UniqueConstraint("application_id", "name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(255))  # e.g. "staging-2"
+    kind: Mapped[str | None] = mapped_column(String(64))  # e.g. "k8s", "vm"
+    base_url: Mapped[str | None] = mapped_column(String(1024))
+    options: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    application: Mapped[Application] = relationship(back_populates="environments")
+    hosts: Mapped[list["EnvironmentHost"]] = relationship(
+        back_populates="environment", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class EnvironmentHost(Base):
+    __tablename__ = "environment_hosts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    environment_id: Mapped[str] = mapped_column(ForeignKey("environments.id", ondelete="CASCADE"))
+    hostname: Mapped[str] = mapped_column(String(1024))
+    role: Mapped[str | None] = mapped_column(String(255))  # e.g. "app", "db", "lb"
+
+    environment: Mapped[Environment] = relationship(back_populates="hosts")
+
+
+class EnvironmentSnapshot(Base):
+    """Cluster-inventory scan results (k8s rescan fills these from M4)."""
+
+    __tablename__ = "environment_snapshots"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    environment_id: Mapped[str] = mapped_column(ForeignKey("environments.id", ondelete="CASCADE"))
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    data: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+
+
+# ── Connections (M2) — admin CRUD that doubles as runtime adapter config ───
+
+
+class Connection(Base):
+    __tablename__ = "connections"
+    __table_args__ = (
+        UniqueConstraint(
+            "name",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    kind: Mapped[str] = mapped_column(String(64))  # PortKind value
+    provider: Mapped[str] = mapped_column(String(64))  # registered adapter provider
+    name: Mapped[str] = mapped_column(String(255))
+    project_id: Mapped[str | None] = mapped_column(String(255))  # null = global
+    base_url: Mapped[str | None] = mapped_column(String(1024))
+    options: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    secret_ref: Mapped[str | None] = mapped_column(String(1024))  # "env:NAME", "vault:..." only
+    enabled: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    host_mappings: Mapped[list["HostMapping"]] = relationship(
+        back_populates="connection", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class HostMapping(Base):
+    __tablename__ = "host_mappings"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"))
+    pattern: Mapped[str] = mapped_column(String(1024))
+    target: Mapped[str] = mapped_column(String(1024))
+    enabled: Mapped[bool] = mapped_column(default=True)
+
+    connection: Mapped[Connection] = relationship(back_populates="host_mappings")
+
+
+# ── Documents + wizard drafts (M2) ──────────────────────────────────────────
+
+
+class Document(Base):
+    """Uploaded context document metadata; bytes live in the artifact store."""
+
+    __tablename__ = "documents"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    name: Mapped[str] = mapped_column(String(1024))
+    media_type: Mapped[str] = mapped_column(String(255))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    artifact_key: Mapped[str] = mapped_column(String(1024))  # key in the artifact store
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
+    summary: Mapped[str | None] = mapped_column(Text)
+    uploaded_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Draft(Base):
+    """Server-side new-test wizard draft (roams across browsers/operators)."""
+
+    __tablename__ = "drafts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    title: Mapped[str] = mapped_column(String(1024))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
