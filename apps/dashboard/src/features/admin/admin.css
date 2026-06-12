@@ -1,0 +1,536 @@
+/*
+ * Admin screens (D7) — layout-only rules; colors/typography come from the
+ * token sheet and primitive classes (data-table, status-badge, dash-empty,
+ * btn, field-*, dash-context-chip), mirroring environments.css.
+ */
+
+.adm-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Toolbar / group headers */
+
+.adm-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+}
+
+.adm-page-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.adm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adm-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.adm-group-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.adm-group-count {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Connection card grid */
+
+.adm-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.adm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.adm-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.adm-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adm-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.adm-chip-muted {
+  color: var(--text-muted);
+}
+
+.adm-card-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-kind-chip {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Enabled toggle pill */
+
+.adm-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.adm-toggle .adm-toggle-knob {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: background 120ms ease;
+}
+
+.adm-toggle.on {
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+
+.adm-toggle.on .adm-toggle-knob {
+  background: var(--success-text);
+}
+
+.adm-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Panels / forms */
+
+.adm-panel,
+.adm-card-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+}
+
+.adm-panel-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.adm-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.adm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.adm-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.adm-field-help {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.adm-json-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+
+.adm-form-error {
+  margin: 0;
+  font-size: 11px;
+  color: var(--danger-text);
+}
+
+.adm-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.adm-muted {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* Inline result panels (probe-style — deliberately NOT toasts) */
+
+.adm-inline-error,
+.adm-inline-ok {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.adm-inline-error {
+  border: 1px solid var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.adm-inline-ok {
+  border: 1px solid var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+/* Tabs (config | host-mappings) */
+
+.adm-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.adm-tab {
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.adm-tab.active {
+  border-color: var(--border);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* Detail header */
+
+.adm-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+}
+
+.adm-detail-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.adm-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.adm-breadcrumb a {
+  color: var(--text-muted);
+}
+
+.adm-breadcrumb a:hover {
+  color: var(--accent);
+}
+
+.adm-breadcrumb-sep {
+  opacity: 0.5;
+}
+
+.adm-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.adm-detail-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.adm-detail-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Host mappings */
+
+.adm-mappings-table .field-input {
+  width: 100%;
+  min-width: 120px;
+}
+
+.adm-mapping-enabled {
+  text-align: center;
+}
+
+.adm-mapping-remove {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.adm-mappings-actions {
+  justify-content: space-between;
+}
+
+/* Consumers table */
+
+.adm-consumers-table .adm-time {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-fingerprint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.adm-actions-cell {
+  width: 36px;
+  text-align: right;
+}
+
+/* Segmented role control */
+
+.adm-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  align-self: flex-start;
+}
+
+.adm-segment {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.adm-segment.active {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* Scopes editor */
+
+.adm-scopes-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.adm-scopes-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.adm-scopes-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.adm-scopes-add {
+  align-self: flex-start;
+}
+
+/* Key reveal */
+
+.adm-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.adm-key {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+}
+
+.adm-confirm-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Modals */
+
+.adm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.adm-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(460px, 100%);
+  padding: 16px;
+  border-radius: var(--radius);
+}
+
+.adm-modal-caption {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* System cards */
+
+.adm-system-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.adm-info-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.adm-info-grid dt {
+  color: var(--text-muted);
+}
+
+.adm-info-grid dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.adm-scope-list,
+.adm-feature-list,
+.adm-link-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adm-feature-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.adm-link-list a {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* Loading skeleton */
+
+.adm-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.adm-skeleton-row {
+  height: 44px;
+  border-radius: 8px;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.adm-skeleton-card {
+  height: 120px;
+  border-radius: var(--radius);
+  animation: pulse 1.8s ease-in-out infinite;
+}

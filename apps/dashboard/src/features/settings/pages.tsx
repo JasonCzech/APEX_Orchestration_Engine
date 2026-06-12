@@ -1,5 +1,2 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function SettingsPage() {
-  return <FeaturePlaceholder title="Settings" route="/settings" />
-}
+// D7: real settings screen (router lazyPage name verified: SettingsPage at /settings).
+export { SettingsPage } from './SettingsPage'

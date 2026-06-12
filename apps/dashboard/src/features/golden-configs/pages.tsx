@@ -1,9 +1,5 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function GoldenConfigsPage() {
-  return <FeaturePlaceholder title="Golden Configs" route="/golden-configs" />
-}
-
-export function GoldenConfigDetailPage() {
-  return <FeaturePlaceholder title="Golden Config" route="/golden-configs/:assistantId" />
-}
+// D7: real golden-configs screens (router lazyPage names verified:
+// GoldenConfigsPage at /golden-configs, GoldenConfigDetailPage at
+// /golden-configs/:assistantId).
+export { GoldenConfigsPage } from './GoldenConfigsPage'
+export { GoldenConfigDetailPage } from './GoldenConfigDetailPage'

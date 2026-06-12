@@ -4,6 +4,9 @@
  * PHASE_PREREQUISITES), and the gates segmented control with the 7x2 custom
  * matrix (checked = gated).
  */
+import { useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router'
+
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useAssistants, type GoldenConfig } from '@/api/hooks/useAssistants'
@@ -103,6 +106,28 @@ export function ConfigStep({ draft, onChange }: StepProps) {
   }
 
   const goldenConfigs = assistants.data ?? []
+
+  // D7 (additive): /golden-configs detail deep-link — ?golden=<assistant_id>
+  // preselects the matching golden config once the picker data arrives, then
+  // strips the param so Clear sticks. One-shot; a no-op without the param.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const goldenParam = searchParams.get('golden')
+  const goldenAppliedRef = useRef(false)
+  useEffect(() => {
+    if (goldenAppliedRef.current || !goldenParam) return
+    const match = goldenConfigs.find((golden) => golden.assistantId === goldenParam)
+    if (!match) return
+    goldenAppliedRef.current = true
+    applyGoldenConfig(match)
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous)
+        next.delete('golden')
+        return next
+      },
+      { replace: true },
+    )
+  })
 
   return (
     <section className="wizard-step" aria-label="Config">

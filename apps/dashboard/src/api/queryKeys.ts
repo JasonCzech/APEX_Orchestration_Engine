@@ -97,6 +97,13 @@ export const queryKeys = {
     all: ['golden-configs'] as const,
     list: () => [...queryKeys.goldenConfigs.all, 'list'] as const,
     detail: (assistantId: string) => [...queryKeys.goldenConfigs.all, assistantId] as const,
+    /**
+     * D7 append: full /golden-configs index INCLUDING the system-created
+     * default assistant (which list() deliberately filters out for the wizard
+     * picker). 'index' at position 1 keeps it disjoint from list() and from
+     * detail() (assistant ids are UUIDs).
+     */
+    index: () => [...queryKeys.goldenConfigs.all, 'index'] as const,
   },
   admin: {
     all: ['admin'] as const,
@@ -104,6 +111,12 @@ export const queryKeys = {
     connection: (id: string) => [...queryKeys.admin.all, 'connections', id] as const,
     consumers: () => [...queryKeys.admin.all, 'consumers'] as const,
     consumer: (id: string) => [...queryKeys.admin.all, 'consumers', id] as const,
+    /**
+     * D7 append: host mappings for one connection. Child of connection(id) so
+     * invalidating a connection prefix fans out to its mappings too.
+     */
+    connectionHostMappings: (id: string) =>
+      [...queryKeys.admin.connection(id), 'host-mappings'] as const,
   },
   documents: {
     all: ['documents'] as const,
