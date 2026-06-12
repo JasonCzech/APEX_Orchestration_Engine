@@ -41,6 +41,8 @@ export default defineConfig({
         manualChunks(id: string) {
           if (!id.includes('node_modules')) return undefined
           if (id.includes('/@langchain/')) return 'vendor-langgraph'
+          if (id.includes('/@codemirror/') || id.includes('/@uiw/') || id.includes('/@lezer/'))
+            return 'vendor-codemirror'
           return 'vendor'
         },
       },

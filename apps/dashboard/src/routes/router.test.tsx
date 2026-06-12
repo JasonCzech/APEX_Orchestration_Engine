@@ -19,13 +19,15 @@ describe('router', () => {
   })
 
   it('renders parameterized deep links', async () => {
+    // /runs/:threadId/phases/:phase became a real screen in D1; assert a route
+    // that is still placeholder-backed to keep this a pure routing test.
     renderApp({
-      initialEntries: ['/runs/thread-1/phases/execution'],
+      initialEntries: ['/prompts/phase/story_analysis'],
       authState: authenticatedState(),
     })
 
     expect(
-      await screen.findByRole('heading', { level: 2, name: 'Phase Detail' }),
+      await screen.findByRole('heading', { level: 2, name: 'Prompt' }),
     ).toBeInTheDocument()
   })
 

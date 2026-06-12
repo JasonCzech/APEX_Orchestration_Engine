@@ -1,0 +1,110 @@
+/*
+ * PhaseStrip — 7-segment phase micro-viz. Colors come exclusively from the
+ * APEX Load token sheet (src/theme/tokens.css) so all 5 themes work unchanged.
+ */
+
+.phase-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.phase-seg {
+  display: inline-block;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  transition: transform var(--transition-fast);
+}
+
+.phase-strip--md .phase-seg {
+  width: 18px;
+  height: 8px;
+}
+
+.phase-strip--sm .phase-seg {
+  width: 12px;
+  height: 6px;
+}
+
+/* Interactive segments (rendered as buttons when onSelect is provided) */
+button.phase-seg {
+  cursor: pointer;
+}
+
+button.phase-seg:hover {
+  transform: scaleY(1.35);
+}
+
+/* Status tokens */
+.phase-seg--succeeded {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.phase-seg--failed {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+
+/* aborted = danger, dimmed */
+.phase-seg--aborted {
+  background: var(--danger);
+  border-color: var(--danger);
+  opacity: 0.45;
+}
+
+/* skipped = hatched/striped muted */
+.phase-seg--skipped {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 2px,
+    var(--text-muted) 2px,
+    var(--text-muted) 4px
+  );
+  border-color: var(--border);
+  opacity: 0.6;
+}
+
+.phase-seg--running {
+  background: var(--accent);
+  border-color: var(--accent);
+  animation: phaseStripPulse 1.6s ease-in-out infinite;
+}
+
+.phase-seg--awaiting {
+  background: var(--warning);
+  border-color: var(--warning);
+  animation: phaseStripPulse 1.6s ease-in-out infinite;
+}
+
+.phase-seg--pending {
+  background: var(--text-muted);
+  border-color: var(--text-muted);
+  opacity: 0.35;
+}
+
+/* not in this run's plan */
+.phase-seg--none {
+  background: transparent;
+  border-color: var(--border);
+}
+
+@keyframes phaseStripPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .phase-seg {
+    animation: none !important;
+    transition: none;
+  }
+}

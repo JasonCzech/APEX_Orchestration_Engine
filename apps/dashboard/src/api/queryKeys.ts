@@ -17,6 +17,8 @@ export const queryKeys = {
   threads: {
     all: ['threads'] as const,
     state: (threadId: string) => [...queryKeys.threads.all, threadId, 'state'] as const,
+    artifact: (threadId: string, artifactId: string) =>
+      [...queryKeys.threads.all, threadId, 'artifact', artifactId] as const,
   },
   approvals: {
     all: ['approvals'] as const,

@@ -173,6 +173,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/analytics/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Usage Analytics
+         * @description Aggregate usage events (any authenticated role; results are scope-filtered).
+         */
+        get: operations["getUsageAnalytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/artifacts/{key}": {
         parameters: {
             query?: never;
@@ -400,6 +420,124 @@ export interface paths {
         post?: never;
         /** Delete Draft */
         delete: operations["deleteDraft"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/engines/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Engine Runs
+         * @description Engine-run history, newest started first (projection; no project column in v1).
+         */
+        get: operations["listEngineRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/engines/runs/{thread_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Engine Runs
+         * @description All engine-run attempts for one thread, newest attempt first ([] when none).
+         */
+        get: operations["getEngineRuns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/engines/runs/{thread_id}/abort": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abort Engine Run
+         * @description Engine-level kill switch: abort the external run, then cancel graph runs.
+         *
+         *     For when graph-level cancel isn't enough — the external load run keeps burning
+         *     even after the poll loop dies. 404 when no engine handle is discoverable from
+         *     thread state or the projection.
+         */
+        post: operations["abortEngineRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/inventory/environments/{environment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Environment Inventory */
+        get: operations["getEnvironmentInventory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/inventory/environments/{environment_id}/rescan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rescan Environment */
+        post: operations["rescanEnvironment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/logs/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Search Logs
+         * @description Search logs through the configured LOG_SEARCH connection (any authenticated role).
+         */
+        post: operations["searchLogs"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -640,10 +778,149 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/work-tracking/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Work Items */
+        get: operations["listWorkItems"];
+        put?: never;
+        /** Create Work Item */
+        post: operations["createWorkItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-tracking/items/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Work Item */
+        get: operations["getWorkItem"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-tracking/items/{key}/enrich": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Enrich Work Item */
+        post: operations["enrichWorkItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-tracking/query/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Execute Work Query */
+        post: operations["executeWorkQuery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-tracking/query/translate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Translate Work Query */
+        post: operations["translateWorkQuery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-tracking/saved-queries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Saved Queries */
+        get: operations["listSavedQueries"];
+        put?: never;
+        /** Create Saved Query */
+        post: operations["createSavedQuery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/work-tracking/saved-queries/{saved_query_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Saved Query */
+        get: operations["getSavedQuery"];
+        put?: never;
+        post?: never;
+        /** Delete Saved Query */
+        delete: operations["deleteSavedQuery"];
+        options?: never;
+        head?: never;
+        /** Update Saved Query */
+        patch: operations["updateSavedQuery"];
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AbortEngineRunRequest */
+        AbortEngineRunRequest: {
+            /** Reason */
+            reason?: string | null;
+        };
+        /** AbortEngineRunResponse */
+        AbortEngineRunResponse: {
+            /** Cancelled Runs */
+            cancelled_runs: string[];
+            /** Engine */
+            engine: string;
+            /** External Run Id */
+            external_run_id: string | null;
+            /** Thread Id */
+            thread_id: string;
+        };
         /** AbortPipelineResponse */
         AbortPipelineResponse: {
             /** Cancelled Run Ids */
@@ -957,6 +1234,58 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** EngineRunListResponse */
+        EngineRunListResponse: {
+            /** Items */
+            items: components["schemas"]["EngineRunRead"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * EngineRunPhase
+         * @enum {string}
+         */
+        EngineRunPhase: "provisioning" | "ready" | "running" | "stopping" | "collecting" | "completed" | "failed" | "aborted";
+        /** EngineRunRead */
+        EngineRunRead: {
+            /** Attempt */
+            attempt: number;
+            /** Ended At */
+            ended_at: string | null;
+            /** Engine */
+            engine: string;
+            /** External Run Id */
+            external_run_id: string | null;
+            /** Handle */
+            handle: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id: string;
+            /** Started At */
+            started_at: string | null;
+            /** Status */
+            status: string;
+            /** Summary */
+            summary: {
+                [key: string]: unknown;
+            } | null;
+            /** Thread Id */
+            thread_id: string;
+        };
+        /** Enrichment */
+        Enrichment: {
+            /** Comment */
+            comment?: string | null;
+            /** Fields */
+            fields?: {
+                [key: string]: unknown;
+            };
+        };
         /** EnvironmentCreate */
         EnvironmentCreate: {
             /** Application Id */
@@ -1034,6 +1363,22 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** ExecuteQueryRequest */
+        ExecuteQueryRequest: {
+            /** Connection Id */
+            connection_id?: string | null;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            query: components["schemas"]["TranslatedQuery"];
+        };
         /** GateInterrupt */
         GateInterrupt: {
             /** Interrupt Id */
@@ -1091,6 +1436,88 @@ export interface components {
             /** Role */
             role: string | null;
         };
+        /** InventoryView */
+        InventoryView: {
+            /** Environment Id */
+            environment_id: string;
+            snapshot?: components["schemas"]["SnapshotView"] | null;
+        };
+        /** LogEntryOut */
+        LogEntryOut: {
+            /** At */
+            at: string;
+            /**
+             * Fields
+             * @description Provider extras not consumed by the mapped columns.
+             */
+            fields?: {
+                [key: string]: unknown;
+            };
+            /** Level */
+            level: string;
+            /** Message */
+            message: string;
+            /** Service */
+            service: string;
+        };
+        /** LogQueryIn */
+        LogQueryIn: {
+            /**
+             * Filters
+             * @description ANDed exact-match filters (e.g. service, level); 'thread_id' deep-links a pipeline run's logs by convention.
+             */
+            filters?: {
+                [key: string]: string;
+            };
+            /**
+             * Text
+             * @description Free-text query (Lucene query_string syntax on ELK).
+             */
+            text?: string | null;
+        };
+        /** LogSearchRequest */
+        LogSearchRequest: {
+            /** Connection Id */
+            connection_id?: string | null;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            query?: components["schemas"]["LogQueryIn"];
+            /** @description Defaults to the last hour, computed server-side. */
+            window?: components["schemas"]["WindowIn"] | null;
+        };
+        /** LogSearchResponse */
+        LogSearchResponse: {
+            /** Entries */
+            entries: components["schemas"]["LogEntryOut"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+            window: components["schemas"]["WindowOut"];
+        };
+        /** Page */
+        Page: {
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+        };
         /** PendingGate */
         PendingGate: {
             /** Interrupt Id */
@@ -1117,6 +1544,7 @@ export interface components {
             created_at?: string | null;
             /** Current Phase */
             current_phase?: string | null;
+            engine?: components["schemas"]["PipelineEngineInfo"] | null;
             /** Interrupts */
             interrupts?: components["schemas"]["GateInterrupt"][];
             pending_gate?: components["schemas"]["PendingGate"] | null;
@@ -1137,6 +1565,13 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** PipelineEngineInfo */
+        PipelineEngineInfo: {
+            /** Engine */
+            engine?: string | null;
+            /** External Run Id */
+            external_run_id?: string | null;
+        };
         /** PipelineListResponse */
         PipelineListResponse: {
             /** Items */
@@ -1154,6 +1589,7 @@ export interface components {
             created_at?: string | null;
             /** Current Phase */
             current_phase?: string | null;
+            engine?: components["schemas"]["PipelineEngineInfo"] | null;
             pending_gate?: components["schemas"]["PendingGate"] | null;
             /** Phase Strip */
             phase_strip: components["schemas"]["PhaseStripEntry"][];
@@ -1288,6 +1724,60 @@ export interface components {
             /** Note */
             note?: string | null;
         };
+        /** SavedQueryCreate */
+        SavedQueryCreate: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id?: string | null;
+            /** Provider */
+            provider: string;
+            /** Query */
+            query: string;
+        };
+        /** SavedQueryListResponse */
+        SavedQueryListResponse: {
+            /** Items */
+            items: components["schemas"]["SavedQueryOut"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** SavedQueryOut */
+        SavedQueryOut: {
+            /** Created At */
+            created_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id?: string | null;
+            /** Provider */
+            provider: string;
+            /** Query */
+            query: string;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /** SavedQueryUpdate */
+        SavedQueryUpdate: {
+            /** Description */
+            description?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Provider */
+            provider?: string | null;
+            /** Query */
+            query?: string | null;
+        };
         /**
          * ScopeRef
          * @description A project (optionally narrowed to one app) the consumer may act on.
@@ -1297,6 +1787,21 @@ export interface components {
             app_id?: string | null;
             /** Project Id */
             project_id: string;
+        };
+        /** ServiceInfo */
+        ServiceInfo: {
+            /**
+             * Image
+             * @default
+             */
+            image: string;
+            /** Name */
+            name: string;
+            /**
+             * Replicas
+             * @default 1
+             */
+            replicas: number;
         };
         /**
          * SnapshotSummary
@@ -1310,6 +1815,18 @@ export interface components {
             scanned_at: string;
             /** Service Count */
             service_count: number;
+        };
+        /** SnapshotView */
+        SnapshotView: {
+            /**
+             * Scanned At
+             * Format: date-time
+             */
+            scanned_at: string;
+            /** Services */
+            services: components["schemas"]["ServiceInfo"][];
+            /** Stale */
+            stale: boolean;
         };
         /** SystemInfo */
         SystemInfo: {
@@ -1343,6 +1860,96 @@ export interface components {
             /** Thread Id */
             thread_id?: string | null;
         };
+        /** TranslateQueryRequest */
+        TranslateQueryRequest: {
+            /** Connection Id */
+            connection_id?: string | null;
+            /** Text */
+            text: string;
+        };
+        /** TranslatedQuery */
+        TranslatedQuery: {
+            /**
+             * Confidence
+             * @default 1
+             */
+            confidence: number;
+            /** Provider */
+            provider: string;
+            /** Query */
+            query: string;
+        };
+        /** UsageAnalyticsResponse */
+        UsageAnalyticsResponse: {
+            /** Buckets */
+            buckets: components["schemas"]["UsageBucket"][];
+            runs: components["schemas"]["UsageRuns"];
+            /**
+             * Top Actions
+             * @description Top 10 actions by event count.
+             */
+            top_actions: components["schemas"]["UsageTopAction"][];
+            totals: components["schemas"]["UsageTotals"];
+            window: components["schemas"]["UsageWindow"];
+        };
+        /** UsageBucket */
+        UsageBucket: {
+            /**
+             * Bucket Start
+             * Format: date-time
+             */
+            bucket_start: string;
+            /** Errors */
+            errors: number;
+            /** Events */
+            events: number;
+        };
+        /** UsageRuns */
+        UsageRuns: {
+            /** Phases Failed */
+            phases_failed: number;
+            /** Phases Succeeded */
+            phases_succeeded: number;
+        };
+        /** UsageTopAction */
+        UsageTopAction: {
+            /** Action */
+            action: string;
+            /** Count */
+            count: number;
+        };
+        /** UsageTotals */
+        UsageTotals: {
+            /**
+             * By Surface
+             * @description Event counts keyed by surface ("v1", "graph").
+             */
+            by_surface?: {
+                [key: string]: number;
+            };
+            /** Errors */
+            errors: number;
+            /** Events */
+            events: number;
+        };
+        /** UsageWindow */
+        UsageWindow: {
+            /**
+             * Bucket
+             * @enum {string}
+             */
+            bucket: "day" | "hour";
+            /**
+             * From
+             * Format: date-time
+             */
+            from: string;
+            /**
+             * To
+             * Format: date-time
+             */
+            to: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -1355,6 +1962,80 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WindowIn */
+        WindowIn: {
+            /**
+             * From
+             * @description ISO-8601 lower bound.
+             */
+            from?: string | null;
+            /**
+             * To
+             * @description ISO-8601 upper bound.
+             */
+            to?: string | null;
+        };
+        /** WindowOut */
+        WindowOut: {
+            /** From */
+            from?: string | null;
+            /** To */
+            to?: string | null;
+        };
+        /** WorkItem */
+        WorkItem: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @default story
+             */
+            kind: string;
+            /**
+             * Status
+             * @default open
+             */
+            status: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url?: string | null;
+        };
+        /** WorkItemDraft */
+        WorkItemDraft: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Fields */
+            fields?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Kind
+             * @default story
+             */
+            kind: string;
+            /** Title */
+            title: string;
+        };
+        /** WorkItemPage */
+        WorkItemPage: {
+            /** Items */
+            items?: components["schemas"]["WorkItem"][];
+            page?: components["schemas"]["Page"];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
         };
     };
     responses: never;
@@ -1854,6 +2535,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConsumerCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getUsageAnalytics: {
+        parameters: {
+            query?: {
+                /** @description Window start (ISO-8601); default = `to` minus 7 days. */
+                from?: string | null;
+                /** @description Window end (ISO-8601, exclusive); default = now. */
+                to?: string | null;
+                /** @description Histogram bucket size. */
+                bucket?: "day" | "hour";
+                /** @description Filter to one project (must be inside the consumer's scopes). */
+                project?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageAnalyticsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2633,6 +3352,210 @@ export interface operations {
             };
         };
     };
+    listEngineRuns: {
+        parameters: {
+            query?: {
+                /** @description Filter by engine provider */
+                engine?: string | null;
+                /** @description Filter by run status */
+                status?: components["schemas"]["EngineRunPhase"] | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineRunListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getEngineRuns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id the engine run belongs to */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngineRunRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    abortEngineRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id the engine run belongs to */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AbortEngineRunRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AbortEngineRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getEnvironmentInventory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                environment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rescanEnvironment: {
+        parameters: {
+            query?: {
+                connection_id?: string | null;
+            };
+            header?: never;
+            path: {
+                environment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InventoryView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    searchLogs: {
+        parameters: {
+            query?: {
+                /** @description Explicit LOG_SEARCH connection to search through (overrides body.connection_id). */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LogSearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogSearchResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listPipelines: {
         parameters: {
             query?: {
@@ -3109,6 +4032,385 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SystemInfo"];
+                };
+            };
+        };
+    };
+    listWorkItems: {
+        parameters: {
+            query?: {
+                status?: string | null;
+                kind?: string | null;
+                q?: string | null;
+                limit?: number;
+                offset?: number;
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItemPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    createWorkItem: {
+        parameters: {
+            query?: {
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkItemDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getWorkItem: {
+        parameters: {
+            query?: {
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enrichWorkItem: {
+        parameters: {
+            query?: {
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Enrichment"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItem"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    executeWorkQuery: {
+        parameters: {
+            query?: {
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecuteQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkItemPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    translateWorkQuery: {
+        parameters: {
+            query?: {
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranslateQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslatedQuery"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listSavedQueries: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                provider?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQueryListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    createSavedQuery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQueryCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQueryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getSavedQuery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                saved_query_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQueryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deleteSavedQuery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                saved_query_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    updateSavedQuery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                saved_query_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SavedQueryUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedQueryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

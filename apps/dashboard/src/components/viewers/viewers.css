@@ -1,0 +1,41 @@
+/* Read-only CodeMirror surfaces, themed via the APEX Load token sheet.
+   CodeMirror's defaults assume a light page; these overrides re-skin the
+   editor chrome with --code-bg/--code-text so all 5 themes hold. */
+
+.code-viewer {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--code-bg);
+}
+
+.code-viewer .cm-editor {
+  background: var(--code-bg);
+  color: var(--code-text);
+  font-size: 12px;
+}
+
+.code-viewer .cm-editor.cm-focused {
+  outline: none;
+}
+
+.code-viewer .cm-scroller {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.55;
+  max-height: 480px;
+}
+
+.code-viewer .cm-gutters {
+  background: transparent;
+  border-right: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.code-viewer .cm-content {
+  caret-color: transparent;
+}
+
+.code-viewer .cm-selectionBackground,
+.code-viewer .cm-editor ::selection {
+  background: var(--accent-soft);
+}

@@ -1,8 +1,11 @@
 import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
 
-export function RunsListPage() {
-  return <FeaturePlaceholder title="Runs" route="/runs" />
-}
+// D1: real read-path screens. RunDetailPage serves both /runs/:threadId
+// (redirects to the current phase) and /runs/:threadId/phases/:phase.
+export { RunsListPage } from './RunsListPage'
+export { RunDetailPage, RunDetailPage as PhaseDetailPage } from './RunDetailPage'
+export { TimelinePage as RunTimelinePage } from './TimelinePage'
+export { ArtifactViewerPage } from '../artifacts/ArtifactViewerPage'
 
 export function NewRunWizardPage() {
   return <FeaturePlaceholder title="New Run" route="/runs/new" />
@@ -10,20 +13,4 @@ export function NewRunWizardPage() {
 
 export function RunsComparePage() {
   return <FeaturePlaceholder title="Compare Runs" route="/runs/compare" />
-}
-
-export function RunDetailPage() {
-  return <FeaturePlaceholder title="Run Detail" route="/runs/:threadId" />
-}
-
-export function PhaseDetailPage() {
-  return <FeaturePlaceholder title="Phase Detail" route="/runs/:threadId/phases/:phase" />
-}
-
-export function RunTimelinePage() {
-  return <FeaturePlaceholder title="Run Timeline" route="/runs/:threadId/timeline" />
-}
-
-export function ArtifactViewerPage() {
-  return <FeaturePlaceholder title="Artifact Viewer" route="/runs/:threadId/artifacts/:name" />
 }

@@ -1,0 +1,202 @@
+import { useMemo, useState } from 'react'
+import { Link } from 'react-router'
+
+import {
+  PHASE_NAMES,
+  type ApprovalRecord,
+  type ArtifactRef,
+  type PhaseName,
+  type PipelineState,
+} from '@apex/pipeline-events'
+
+import type { GateInterrupt, PipelineDetail } from '@/api/hooks/useThreadState'
+
+import { formatTimestamp, PHASE_LABELS, isPhaseName } from './runDisplay'
+
+interface ArtifactGroup {
+  label: string
+  artifacts: ArtifactRef[]
+}
+
+/** Group the run-level artifact index by owning phase via phase_results.artifact_ids. */
+function groupArtifacts(state: PipelineState): ArtifactGroup[] {
+  const artifacts = state.artifacts ?? []
+  const owner = new Map<string, PhaseName>()
+  for (const phase of PHASE_NAMES) {
+    for (const id of state.phase_results?.[phase]?.artifact_ids ?? []) {
+      if (!owner.has(id)) owner.set(id, phase)
+    }
+  }
+  const groups: ArtifactGroup[] = []
+  for (const phase of PHASE_NAMES) {
+    const owned = artifacts.filter((artifact) => owner.get(artifact.id) === phase)
+    if (owned.length > 0) groups.push({ label: PHASE_LABELS[phase], artifacts: owned })
+  }
+  const orphaned = artifacts.filter((artifact) => !owner.has(artifact.id))
+  if (orphaned.length > 0) groups.push({ label: 'Other', artifacts: orphaned })
+  return groups
+}
+
+interface ApprovalRow extends ApprovalRecord {
+  phase: string
+}
+
+/** Flatten approvals across phases, newest first. */
+function approvalHistory(state: PipelineState): ApprovalRow[] {
+  const rows: ApprovalRow[] = []
+  for (const phase of PHASE_NAMES) {
+    for (const approval of state.phase_results?.[phase]?.approvals ?? []) {
+      rows.push({ ...approval, phase })
+    }
+  }
+  return rows.sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''))
+}
+
+/**
+ * Right rail (320px, collapsible): run metadata, all-artifacts index grouped by
+ * phase, compact approvals history, and a pending-gate banner placeholder
+ * (gate actions land in D3 — the action link is disabled with a tooltip).
+ */
+export function RunRail({
+  detail,
+  state,
+  interrupts,
+}: {
+  detail: PipelineDetail
+  state: PipelineState
+  interrupts: GateInterrupt[]
+}) {
+  const [collapsed, setCollapsed] = useState(false)
+  const groups = useMemo(() => groupArtifacts(state), [state])
+  const approvals = useMemo(() => approvalHistory(state), [state])
+  const gate = interrupts[0]
+
+  if (collapsed) {
+    return (
+      <aside className="run-rail glass-panel collapsed" aria-label="Run details rail">
+        <button
+          type="button"
+          className="run-rail-toggle"
+          aria-label="Expand run rail"
+          onClick={() => setCollapsed(false)}
+        >
+          ◀
+        </button>
+      </aside>
+    )
+  }
+
+  return (
+    <aside className="run-rail glass-panel" aria-label="Run details rail">
+      <button
+        type="button"
+        className="run-rail-toggle"
+        aria-label="Collapse run rail"
+        onClick={() => setCollapsed(true)}
+      >
+        ▶
+      </button>
+
+      {gate && (
+        <div className="gate-banner" role="status">
+          <span>
+            Gate open: <strong>{gate.kind ?? 'review'}</strong> on{' '}
+            <strong>{isPhaseName(gate.phase) ? PHASE_LABELS[gate.phase] : (gate.phase ?? '?')}</strong>
+          </span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm gate-banner-action"
+            disabled
+            title="Gate actions arrive in D3 — use the approvals inbox flow once it lands"
+          >
+            Review gate
+          </button>
+        </div>
+      )}
+
+      <section>
+        <h3 className="run-rail-section-title">Run</h3>
+        <dl className="run-meta">
+          <dt>Thread</dt>
+          <dd>
+            <span className="mono" title={detail.thread_id}>
+              {detail.thread_id}
+            </span>
+            <button
+              type="button"
+              className="copy-button"
+              onClick={() => void navigator.clipboard?.writeText(detail.thread_id)}
+            >
+              Copy
+            </button>
+          </dd>
+          <dt>Project</dt>
+          <dd>{detail.project_id ?? '—'}</dd>
+          <dt>App</dt>
+          <dd>{detail.app_id ?? '—'}</dd>
+          <dt>Engine</dt>
+          <dd>
+            {state.engine_handle?.engine ? (
+              <span className="topbar-meta-chip accent">
+                {state.engine_handle.engine}
+                {state.engine_handle.external_run_id
+                  ? ` · ${state.engine_handle.external_run_id}`
+                  : ''}
+              </span>
+            ) : (
+              '—'
+            )}
+          </dd>
+          <dt>Created</dt>
+          <dd>{formatTimestamp(detail.created_at)}</dd>
+          <dt>Updated</dt>
+          <dd>{formatTimestamp(detail.updated_at)}</dd>
+        </dl>
+      </section>
+
+      <section aria-label="Artifacts index">
+        <h3 className="run-rail-section-title">Artifacts</h3>
+        {groups.length === 0 ? (
+          <div className="dash-empty small">No artifacts yet.</div>
+        ) : (
+          groups.map((group) => (
+            <div key={group.label} className="rail-artifact-group">
+              <h4 className="rail-artifact-group-name">{group.label}</h4>
+              <ul className="rail-artifact-list">
+                {group.artifacts.map((artifact) => (
+                  <li key={artifact.id}>
+                    <Link to={`/runs/${detail.thread_id}/artifacts/${artifact.id}`}>
+                      <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
+                      <span className="rail-artifact-name">{artifact.name ?? artifact.id}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
+      </section>
+
+      <section aria-label="Approvals history">
+        <h3 className="run-rail-section-title">Approvals</h3>
+        {approvals.length === 0 ? (
+          <div className="dash-empty small">No approvals yet.</div>
+        ) : (
+          <ul className="rail-approvals">
+            {approvals.map((approval) => (
+              <li key={approval.id}>
+                <span className="approval-phase">
+                  {isPhaseName(approval.phase) ? PHASE_LABELS[approval.phase] : approval.phase}
+                </span>
+                <span>
+                  {approval.gate ?? 'gate'} · <strong>{approval.action ?? '—'}</strong> by{' '}
+                  {approval.actor ?? 'unknown'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </aside>
+  )
+}

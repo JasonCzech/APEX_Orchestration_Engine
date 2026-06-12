@@ -1,0 +1,55 @@
+/* Artifact viewer — header card + typed body (JSON/text/binary download). */
+
+.artifact-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+
+.artifact-viewer-name {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-viewer-header .meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.artifact-viewer-header .spacer {
+  flex: 1;
+}
+
+.artifact-viewer-body {
+  border-radius: var(--radius);
+}
+
+.artifact-download-card {
+  border-radius: var(--radius);
+  padding: 32px 24px;
+}
+
+.artifact-download-facts {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.artifact-viewer-skeleton {
+  border-radius: var(--radius);
+  min-height: 240px;
+  animation: pulse 2s infinite;
+}

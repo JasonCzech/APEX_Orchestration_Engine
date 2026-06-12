@@ -1,0 +1,636 @@
+/* Run detail (D1 read path): three-region grid, phase rail stepper, workspace
+   tabs, run rail, timeline ledger. Only theme tokens/primitives + these
+   feature classes — APEX Load density (11-13px, uppercase muted headers). */
+
+/* ── Page frame ──────────────────────────────────────────────────────────── */
+
+.run-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.run-detail-title {
+  font-size: 17px;
+  font-weight: 800;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-detail-header .spacer {
+  flex: 1;
+}
+
+.run-detail-grid {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.run-detail-grid.rail-collapsed {
+  grid-template-columns: 260px minmax(0, 1fr) 36px;
+}
+
+/* Rails collapse to a stacked column below 1320px (plan: drawers/stacked). */
+@media (max-width: 1320px) {
+  .run-detail-grid,
+  .run-detail-grid.rail-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Loading skeleton (pulse on glass-panel shapes) ──────────────────────── */
+
+.run-detail-skeleton {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 320px;
+  gap: 16px;
+}
+
+@media (max-width: 1320px) {
+  .run-detail-skeleton {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.skeleton-block {
+  border-radius: var(--radius);
+  min-height: 320px;
+  animation: pulse 2s infinite;
+}
+
+.skeleton-block.short {
+  min-height: 120px;
+}
+
+/* ── Phase rail (left, 260px stepper) ────────────────────────────────────── */
+
+.phase-rail {
+  border-radius: var(--radius);
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.phase-rail-heading {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 4px 10px 8px;
+}
+
+.phase-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  text-decoration: none;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  transition: background var(--transition-fast);
+}
+
+.phase-rail-item:hover {
+  background: var(--bg-hover);
+}
+
+.phase-rail-item.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.phase-rail-item.skipped .phase-rail-name {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.phase-rail-item .status-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+}
+
+/* Pulse only while in-flight; settled dots hold steady. */
+.phase-rail-item .status-dot:not(.live) {
+  animation: none;
+}
+
+.phase-rail-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.phase-rail-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.phase-rail-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.attempt-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+.warning-chip {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--warning-text);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+/* ── Phase workspace (center) ────────────────────────────────────────────── */
+
+.phase-workspace {
+  border-radius: var(--radius);
+  padding: 0 16px 16px;
+  min-width: 0;
+}
+
+.workspace-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  margin: 0 -16px 14px;
+  padding: 6px 12px 0;
+}
+
+.workspace-tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.workspace-tab:hover {
+  color: var(--text-primary);
+}
+
+.workspace-tab[aria-selected='true'] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.workspace-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 16px 0 6px;
+}
+
+.workspace-summary p {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+}
+
+.workspace-caption {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+  border-left: 2px solid var(--accent-border);
+  padding-left: 10px;
+  margin: 8px 0;
+}
+
+/* Tonal bordered cards for warnings/errors. */
+.tonal-card {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.tonal-card.warning {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.tonal-card.danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.approvals-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.approval-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.approval-row .approval-action {
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  font-size: 11px;
+}
+
+.approval-row .approval-at {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* KPI pill row (execution test_summary) — APEX Load metric-pill density. */
+.kpi-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 14px;
+}
+
+.kpi-pill {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 6px 12px;
+  min-width: 84px;
+}
+
+.kpi-pill .kpi-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.kpi-pill .kpi-value {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Artifact kind chip (text stand-in for icons). */
+.kind-chip {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.artifact-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.artifact-link:hover {
+  text-decoration: underline;
+}
+
+/* Dialogue bubbles. */
+.dialogue-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dialogue-bubble {
+  max-width: 76%;
+  border-radius: 12px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  border: 1px solid var(--border);
+}
+
+.dialogue-bubble.operator {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--text-primary);
+}
+
+.dialogue-bubble.agent {
+  align-self: flex-start;
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.dialogue-role {
+  display: block;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+/* ── Run rail (right, 320px, collapsible) ────────────────────────────────── */
+
+.run-rail {
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.run-rail.collapsed {
+  padding: 8px 4px;
+  align-items: center;
+}
+
+.run-rail-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0 0 6px;
+}
+
+.run-rail-toggle {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  align-self: flex-end;
+}
+
+.run-rail-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.gate-banner {
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gate-banner .gate-banner-action[disabled] {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.run-meta {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+.run-meta dt {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  align-self: center;
+}
+
+.run-meta dd {
+  margin: 0;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.copy-button {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  padding: 2px 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.copy-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.rail-artifact-group {
+  margin-bottom: 8px;
+}
+
+.rail-artifact-group-name {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 3px;
+}
+
+.rail-artifact-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rail-artifact-list a {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  padding: 3px 6px;
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.rail-artifact-list a:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+
+.rail-artifact-list .rail-artifact-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-approvals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
+.rail-approvals li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.rail-approvals .approval-phase {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+
+/* ── Timeline ledger ─────────────────────────────────────────────────────── */
+
+.timeline-panel {
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-event {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+
+.timeline-event:last-child {
+  border-bottom: none;
+}
+
+.timeline-event .status-dot {
+  animation: none;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.timeline-at {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 11px;
+  flex: 0 0 150px;
+  white-space: nowrap;
+}
+
+.timeline-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.timeline-detail {
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.timeline-caption {
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
