@@ -40,6 +40,13 @@ export const queryKeys = {
     listNamespace: (ns: string) => [...queryKeys.prompts.all, 'list', { ns }] as const,
     /** D4 append: prompt fetched by catalog id (GET /v1/prompts/{prompt_id}). */
     byId: (id: string) => [...queryKeys.prompts.all, 'id', id] as const,
+    /**
+     * D5 append: browser list keyed by the full server filter object
+     * (include_archived/q). The 'filtered' string at index 2 keeps it disjoint
+     * from listNamespace's `{ ns }` object element at the same position.
+     */
+    listWith: (filters: Record<string, unknown>) =>
+      [...queryKeys.prompts.all, 'list', 'filtered', filters] as const,
   },
   catalog: {
     all: ['catalog'] as const,
@@ -52,6 +59,10 @@ export const queryKeys = {
     /** D4 append: environments filtered by application (?application=). */
     environmentsBy: (application?: string | null) =>
       [...queryKeys.catalog.environments(), { application: application ?? null }] as const,
+    /** D5 append: unfiltered applications index for the /environments grouping. */
+    applicationsIndex: () => [...queryKeys.catalog.applications(), 'index'] as const,
+    /** D5 append: unfiltered environments index for the /environments list. */
+    environmentsIndex: () => [...queryKeys.catalog.environments(), 'index'] as const,
   },
   workItems: {
     all: ['work-items'] as const,
@@ -106,6 +117,12 @@ export const queryKeys = {
     all: ['drafts'] as const,
     list: (project?: string) => [...queryKeys.drafts.all, 'list', { project: project ?? null }] as const,
     detail: (id: string) => [...queryKeys.drafts.all, id] as const,
+  },
+  /** D5 append: latest k8s inventory snapshot per environment (/v1/inventory). */
+  inventory: {
+    all: ['inventory'] as const,
+    environment: (environmentId: string) =>
+      [...queryKeys.inventory.all, 'environments', environmentId] as const,
   },
 }
 

@@ -1,9 +1,4 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function EnvironmentsPage() {
-  return <FeaturePlaceholder title="Environments" route="/environments" />
-}
-
-export function EnvironmentDetailPage() {
-  return <FeaturePlaceholder title="Environment" route="/environments/:id" />
-}
+// D5: real environments screens (references CRUD + k8s inventory + rescan).
+// Export names must match the router's lazyPage() bindings in routes/router.tsx.
+export { EnvironmentsPage } from './EnvironmentsPage'
+export { EnvironmentDetailPage } from './EnvironmentDetailPage'

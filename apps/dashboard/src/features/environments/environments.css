@@ -1,0 +1,350 @@
+/*
+ * Environments screens (D5) — layout-only rules; colors/typography come from
+ * the token sheet and primitive classes (data-table, status-badge, dash-empty,
+ * btn, field-*), mirroring RunsListPage.css.
+ */
+
+.env-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Toolbar / headers */
+
+.env-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+}
+
+.env-page-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.env-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.env-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.env-group-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.env-group-project {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Table cells */
+
+.env-table .env-row {
+  cursor: pointer;
+}
+
+.env-base-url,
+.env-image {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.env-muted {
+  color: var(--text-muted);
+}
+
+.env-time {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.env-actions-cell {
+  width: 36px;
+  text-align: right;
+}
+
+.env-kind-chip {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Create panel / edit form */
+
+.env-create-panel,
+.env-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+}
+
+.env-panel-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.env-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.env-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.env-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.env-options-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+
+.env-form-error {
+  margin: 0;
+  font-size: 11px;
+  color: var(--danger-text);
+}
+
+.env-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.env-hosts-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.env-hosts-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.env-hosts-row .field-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.env-hosts-add {
+  align-self: flex-start;
+}
+
+/* Delete modal */
+
+.env-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.env-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 100%);
+  padding: 16px;
+  border-radius: var(--radius);
+}
+
+.env-modal-caption {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Detail layout */
+
+.env-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+}
+
+.env-detail-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.env-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.env-breadcrumb a {
+  color: var(--text-muted);
+}
+
+.env-breadcrumb a:hover {
+  color: var(--accent);
+}
+
+.env-breadcrumb-sep {
+  opacity: 0.5;
+}
+
+.env-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.env-detail-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.env-detail-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.env-detail-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.env-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.env-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.env-card-subtitle {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.env-ref-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.env-ref-grid dt {
+  color: var(--text-muted);
+}
+
+.env-ref-grid dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.env-scan-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.env-stale-chip {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Inline danger card (probe-style rescan/load errors — NOT a toast) */
+
+.env-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 12px;
+}
+
+/* Loading skeleton */
+
+.env-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.env-skeleton-row {
+  height: 44px;
+  border-radius: 8px;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.env-skeleton-card {
+  height: 180px;
+  border-radius: var(--radius);
+  animation: pulse 1.8s ease-in-out infinite;
+}

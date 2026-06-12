@@ -1,17 +1,6 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function PromptsPage() {
-  return <FeaturePlaceholder title="Prompts" route="/prompts" />
-}
-
-export function PromptDetailPage() {
-  return <FeaturePlaceholder title="Prompt" route="/prompts/:ns/:name" />
-}
-
-export function PromptVersionPage() {
-  return <FeaturePlaceholder title="Prompt Version" route="/prompts/:ns/:name/versions/:v" />
-}
-
-export function PromptPlaygroundPage() {
-  return <FeaturePlaceholder title="Prompt Playground" route="/prompts/:ns/:name/playground" />
-}
+// D5: real prompt-catalog screens (plan UX 2.e). router.tsx lazy-loads these
+// four export names from this module — same swap-the-export wiring as runs.
+export { PromptsPage } from './PromptsPage'
+export { PromptDetailPage } from './PromptDetailPage'
+export { PromptVersionPage } from './PromptVersionPage'
+export { PromptPlaygroundPage } from './PromptPlaygroundPage'

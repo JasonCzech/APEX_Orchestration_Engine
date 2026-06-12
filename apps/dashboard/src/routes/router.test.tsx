@@ -7,7 +7,8 @@ describe('router', () => {
   it.each([
     ['/', 'Home'],
     ['/approvals', 'Approvals'],
-    ['/prompts', 'Prompts'],
+    // /prompts became a real screen in D5; /golden-configs is still placeholder-backed.
+    ['/golden-configs', 'Golden Configs'],
     ['/admin/system', 'System'],
   ])('renders the %s placeholder inside the shell', async (path, title) => {
     renderApp({ initialEntries: [path], authState: authenticatedState() })
@@ -19,15 +20,16 @@ describe('router', () => {
   })
 
   it('renders parameterized deep links', async () => {
-    // /runs/:threadId/phases/:phase became a real screen in D1; assert a route
-    // that is still placeholder-backed to keep this a pure routing test.
+    // /runs/:threadId/phases/:phase became a real screen in D1 and
+    // /prompts/:ns/:name in D5; assert a route that is still
+    // placeholder-backed to keep this a pure routing test.
     renderApp({
-      initialEntries: ['/prompts/phase/story_analysis'],
+      initialEntries: ['/golden-configs/asst-1'],
       authState: authenticatedState(),
     })
 
     expect(
-      await screen.findByRole('heading', { level: 2, name: 'Prompt' }),
+      await screen.findByRole('heading', { level: 2, name: 'Golden Config' }),
     ).toBeInTheDocument()
   })
 
