@@ -1,0 +1,328 @@
+/* Phase-subset re-runs (plan Part 2 §4): pre-flight modal, shared overflow
+   menu, phase-rail kebab row, runs-grid actions cell, run-detail split button.
+   Theme tokens + primitives only — APEX Load density (10-13px). */
+
+/* ── Pre-flight modal ────────────────────────────────────────────────────── */
+
+.preflight-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-primary, #000) 55%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 10vh;
+  z-index: 60;
+}
+
+.preflight-modal {
+  width: min(560px, calc(100vw - 32px));
+  max-height: 80vh;
+  overflow: auto;
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.preflight-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.preflight-caption {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.preflight-loading {
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 18px 0;
+  text-align: center;
+}
+
+/* 7-toggle phase strip. */
+.preflight-phase-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preflight-phase-toggle {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.preflight-phase-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.preflight-phase-toggle[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* Readiness rows (tones: ok neutral, reuse accent, stale amber, blocked red). */
+.preflight-readiness {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.preflight-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+}
+
+.preflight-row.empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.preflight-row-phase {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  min-width: 104px;
+}
+
+.preflight-row-message {
+  min-width: 0;
+}
+
+.preflight-row.reuse {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.preflight-row.stale {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.preflight-row.stale .preflight-row-phase {
+  color: var(--warning-text);
+}
+
+.preflight-row.blocked {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.preflight-row.blocked .preflight-row-phase {
+  color: var(--danger-text);
+}
+
+/* Gates-mode segmented control. */
+.preflight-gates {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.preflight-gates-segment {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.preflight-gates-segment + .preflight-gates-segment {
+  border-left: 1px solid var(--border);
+}
+
+.preflight-gates-segment:hover {
+  color: var(--text-primary);
+}
+
+.preflight-gates-segment[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Footer. */
+.preflight-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.preflight-blocker-caption {
+  margin-right: auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--danger-text);
+}
+
+/* ── Overflow menu (kebab/dropdown shared by the entry points) ───────────── */
+
+.overflow-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.overflow-menu-trigger {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.overflow-menu-trigger:hover,
+.overflow-menu-trigger[aria-expanded='true'] {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+.overflow-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 70;
+  min-width: 168px;
+  border-radius: 10px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.overflow-menu-item {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.overflow-menu-item:hover,
+.overflow-menu-item:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Entry point 1: phase-rail kebab row ─────────────────────────────────── */
+
+.phase-rail-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.phase-rail-row > .phase-rail-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.phase-rail-kebab {
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.phase-rail-row:hover .phase-rail-kebab,
+.phase-rail-kebab:focus-within,
+.phase-rail-kebab:has([aria-expanded='true']) {
+  opacity: 1;
+}
+
+/* ── Entry point 2: runs-grid actions cell ───────────────────────────────── */
+
+.runs-actions-cell {
+  width: 36px;
+  text-align: right;
+}
+
+/* Visually hidden (screen-reader-only) text — actions column header. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ── Entry point 3: run-detail header split button ───────────────────────── */
+
+.split-button {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.split-button .split-button-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.split-button .overflow-menu-trigger {
+  border: 1px solid var(--accent-border);
+  border-left: none;
+  border-radius: 0 999px 999px 0;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.split-button .overflow-menu-trigger:hover,
+.split-button .overflow-menu-trigger[aria-expanded='true'] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}

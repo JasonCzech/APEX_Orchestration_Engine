@@ -8,6 +8,7 @@ import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
 import { LaunchRunButton } from './LaunchRunButton'
+import { OverflowMenu, PreflightModal } from './PreflightModal'
 import {
   hasActiveFilters,
   parseRunsFilters,
@@ -44,7 +45,7 @@ function errorMessage(error: unknown): string {
   return 'The runs list could not be loaded.'
 }
 
-function RunRow({ run }: { run: PipelineSummary }) {
+function RunRow({ run, onRerun }: { run: PipelineSummary; onRerun: (threadId: string) => void }) {
   const navigate = useNavigate()
   const runPath = `/runs/${run.thread_id}`
 
@@ -101,6 +102,17 @@ function RunRow({ run }: { run: PipelineSummary }) {
       <td className="runs-time" title={run.updated_at ?? undefined}>
         {formatRelative(run.updated_at)}
       </td>
+      <td className="runs-actions-cell">
+        {/* OverflowMenu stops click propagation internally — the row's
+            navigate-on-click stays intact for everything else. */}
+        <OverflowMenu
+          label={`Run actions: ${run.title || run.thread_id}`}
+          items={[
+            { label: 'Re-run…', onSelect: () => onRerun(run.thread_id) },
+            { label: 'Open', onSelect: () => void navigate(runPath) },
+          ]}
+        />
+      </td>
     </tr>
   )
 }
@@ -123,6 +135,9 @@ function RunsSkeleton() {
 export function RunsListPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = useMemo(() => parseRunsFilters(searchParams), [searchParams])
+  // D4: row overflow "Re-run…" opens the pre-flight modal for that thread
+  // (the modal fetches thread state itself; preselection = last plan).
+  const [rerunThreadId, setRerunThreadId] = useState<string | null>(null)
 
   const applyFilters = useCallback(
     (patch: Partial<RunsFilters>) => {
@@ -245,11 +260,14 @@ export function RunsListPage() {
                   <th>Engine</th>
                   <th>Created</th>
                   <th>Updated</th>
+                  <th className="runs-actions-cell">
+                    <span className="sr-only">Actions</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((run) => (
-                  <RunRow key={run.thread_id} run={run} />
+                  <RunRow key={run.thread_id} run={run} onRerun={setRerunThreadId} />
                 ))}
               </tbody>
             </table>
@@ -278,6 +296,9 @@ export function RunsListPage() {
             </div>
           </footer>
         </>
+      )}
+      {rerunThreadId && (
+        <PreflightModal threadId={rerunThreadId} onClose={() => setRerunThreadId(null)} />
       )}
     </section>
   )

@@ -208,3 +208,52 @@ narrative takes over; a settled-id guard suppresses the stale cache echo
 until the refetch lands); 202 on discuss/revise -> `awaiting_agent` until the
 re-interrupt mints a new id. 409 `gate_superseded` -> `superseded(conflict)`;
 other failures -> `failed` with the draft preserved for [Retry].
+
+---
+
+# Phase-subset re-runs — pre-flight modal + entry points (D4, phase-independence agent)
+
+No `src/routes/router.tsx` changes: every surface mounts inside already wired
+pages (`RunDetailPage`, `RunsListPage`).
+
+## What ships (src/features/runs/)
+
+| Piece | File | Mounted where |
+|---|---|---|
+| `assessPlan`, `runFromHereSelection`, `lastPlanSelection`, `PHASE_ORDER`, `PHASE_PREREQUISITES`, `STALE_AFTER_MS` | `preflight.ts` | pure logic — mirrors `src/apex/domain/pipeline.py` + `graph.py` plan_resolver semantics |
+| `PreflightModal {threadId, initialSelection?, onClose}` | `PreflightModal.tsx` | the single pre-flight checkpoint every entry point funnels through |
+| `OverflowMenu {label, items, trigger?, className?}` | `PreflightModal.tsx` | shared glass dropdown (menu role, Escape/outside-click close, arrow keys, focus-first-item); stops click propagation so it is row-click safe |
+| `useRerun` / `buildRerunConfigurable` / `ALL_GATED_GATES` | `useRerun.ts` | `runs.create(threadId, 'pipeline', {input: {}, config:{configurable:{phases, gates?}}})` on the EXISTING thread |
+| styles | `preflight.css` | modal, overflow menu, kebab row, actions cell, split button, `.sr-only` |
+
+## Entry points (surgical edits)
+
+1. `PhaseRail.tsx` — each phase row is now `.phase-rail-row` (NavLink + kebab
+   as SIBLINGS, so the link markup/behavior is unchanged). Kebab menu:
+   [Re-run this phase] (selection = that phase) | [Run from here] (phase +
+   downstream ∩ `state.phases_plan`) | [Run phases…] (last plan pre-checked).
+2. `RunsListPage.tsx` — new trailing actions column (`⋯`): [Re-run…] opens the
+   modal for that thread WITHOUT initialSelection (the modal hydrates the
+   default from the fetched plan; loading state lives inside the modal) |
+   [Open] navigates. Row-click navigation untouched (the menu stops
+   propagation internally).
+3. `RunDetailPage.tsx` — header split button: [Re-run] (all phases) +
+   [▾] → [All phases] / [Run phases…].
+
+## Semantics (plan Part 2 §4 — verified against the backend)
+
+- Readiness per selected phase: **OK** (prereq earlier in plan — canonical
+  order means membership implies ordering) | **REUSE** (prereq succeeded on
+  thread; shows attempt + age) | **STALE** (succeeded > 3 days ago — amber
+  "environment may have drifted"; NOT a blocker) | **BLOCKED** (neither —
+  danger "include <prereq> or it will fail at plan resolution").
+- **Warn-don't-block**: blockers render danger rows + the caption "server
+  will reject at plan resolution", but Start stays enabled — the backend
+  plan_resolver is the authority. Start is disabled only for an EMPTY
+  selection (backend treats empty `phases` as falsy → would run ALL phases).
+- Gates segmented control: Inherit defaults (gates OMITTED from configurable —
+  backend default is GATED) | All gated | All auto.
+- `input` is `{}` and **NOT null** — null means continue-from-checkpoint to
+  the LangGraph server; `{}` triggers a fresh plan_resolver pass (M2 smoke).
+- On 2xx: invalidates `threads.state(threadId)` + `pipelines.lists()`, then
+  navigates to `/runs/{threadId}?tab=activity`.

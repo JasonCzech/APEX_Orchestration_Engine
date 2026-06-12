@@ -1,4 +1,7 @@
+import { useState } from 'react'
 import { Link, Navigate, useLocation, useParams } from 'react-router'
+
+import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { ProblemCard } from '@/components/ProblemCard'
@@ -10,6 +13,8 @@ import { useRunLiveness } from '@/streaming/usePipelineStream'
 import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseRail } from './PhaseRail'
 import { PhaseWorkspace } from './PhaseWorkspace'
+import { lastPlanSelection } from './preflight'
+import { OverflowMenu, PreflightModal } from './PreflightModal'
 import { RunRail } from './RunRail'
 import { isPhaseName, statusVisual, targetPhaseFor } from './runDisplay'
 import './run-detail.css'
@@ -46,6 +51,9 @@ export function RunDetailPage() {
   // cross-phase banner, and the header abort all drive the same instance. The
   // stream's pendingGateHint accelerates discovery ahead of the 10s poll.
   const hitl = useGate(threadId, { gateHint: live.stream.pendingGateHint })
+  // D4: header Re-run split button — non-null opens the pre-flight modal
+  // with this preselection.
+  const [preflight, setPreflight] = useState<PhaseName[] | null>(null)
 
   if (query.isPending) return <RunDetailSkeleton />
   if (query.isError) {
@@ -127,10 +135,37 @@ export function RunDetailPage() {
           // (same type-to-confirm arm step, action 'abort').
           <AbortConfirm onConfirm={() => hitl.submit('abort')} />
         )}
+        <span className="split-button">
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm split-button-main"
+            onClick={() => setPreflight([...PHASE_NAMES])}
+          >
+            Re-run
+          </button>
+          <OverflowMenu
+            label="Re-run options"
+            trigger="▾"
+            items={[
+              { label: 'All phases', onSelect: () => setPreflight([...PHASE_NAMES]) },
+              {
+                label: 'Run phases…',
+                onSelect: () => setPreflight(lastPlanSelection(state.phases_plan)),
+              },
+            ]}
+          />
+        </span>
         <Link className="btn btn-ghost btn-sm" to={`/runs/${threadId}/timeline`}>
           Timeline
         </Link>
       </header>
+      {preflight && (
+        <PreflightModal
+          threadId={threadId}
+          initialSelection={preflight}
+          onClose={() => setPreflight(null)}
+        />
+      )}
       <div className={`run-detail-grid${interrupts.length > 0 ? ' has-gate' : ''}`}>
         <PhaseRail threadId={threadId} state={state} />
         <PhaseWorkspace

@@ -7,9 +7,8 @@ export { RunDetailPage, RunDetailPage as PhaseDetailPage } from './RunDetailPage
 export { TimelinePage as RunTimelinePage } from './TimelinePage'
 export { ArtifactViewerPage } from '../artifacts/ArtifactViewerPage'
 
-export function NewRunWizardPage() {
-  return <FeaturePlaceholder title="New Run" route="/runs/new" />
-}
+// D4: the 6-step new-run wizard (src/features/new-test).
+export { NewRunWizardPage } from '../new-test/NewRunWizard'
 
 export function RunsComparePage() {
   return <FeaturePlaceholder title="Compare Runs" route="/runs/compare" />

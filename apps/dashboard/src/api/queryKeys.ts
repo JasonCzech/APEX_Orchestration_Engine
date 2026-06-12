@@ -36,18 +36,30 @@ export const queryKeys = {
       [...queryKeys.prompts.all, ns, name, 'versions'] as const,
     version: (ns: string, name: string, v: string | number) =>
       [...queryKeys.prompts.all, ns, name, 'versions', String(v)] as const,
+    /** D4 append: list filtered to one namespace (object element ≠ ns/name keys). */
+    listNamespace: (ns: string) => [...queryKeys.prompts.all, 'list', { ns }] as const,
+    /** D4 append: prompt fetched by catalog id (GET /v1/prompts/{prompt_id}). */
+    byId: (id: string) => [...queryKeys.prompts.all, 'id', id] as const,
   },
   catalog: {
     all: ['catalog'] as const,
     applications: () => [...queryKeys.catalog.all, 'applications'] as const,
     environments: () => [...queryKeys.catalog.all, 'environments'] as const,
     environment: (id: string) => [...queryKeys.catalog.all, 'environments', id] as const,
+    /** D4 append: applications filtered by project (?project=). */
+    applicationsBy: (project?: string) =>
+      [...queryKeys.catalog.applications(), { project: project ?? null }] as const,
+    /** D4 append: environments filtered by application (?application=). */
+    environmentsBy: (application?: string | null) =>
+      [...queryKeys.catalog.environments(), { application: application ?? null }] as const,
   },
   workItems: {
     all: ['work-items'] as const,
     savedQueries: () => [...queryKeys.workItems.all, 'saved-queries'] as const,
     item: (provider: string, itemId: string) =>
       [...queryKeys.workItems.all, provider, itemId] as const,
+    /** D4 append: provider-less lookup by key (GET /v1/work-tracking/items/{key}). */
+    key: (key: string) => [...queryKeys.workItems.all, 'key', key] as const,
   },
   context: {
     all: ['context'] as const,
@@ -86,6 +98,14 @@ export const queryKeys = {
     all: ['documents'] as const,
     list: () => [...queryKeys.documents.all, 'list'] as const,
     detail: (id: string) => [...queryKeys.documents.all, id] as const,
+    /** D4 append: list filtered by project (?project=). */
+    listBy: (project?: string) => [...queryKeys.documents.list(), { project: project ?? null }] as const,
+  },
+  /** D4 append: server-side wizard drafts (/v1/drafts). */
+  drafts: {
+    all: ['drafts'] as const,
+    list: (project?: string) => [...queryKeys.drafts.all, 'list', { project: project ?? null }] as const,
+    detail: (id: string) => [...queryKeys.drafts.all, id] as const,
   },
 }
 
