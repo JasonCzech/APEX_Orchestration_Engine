@@ -64,5 +64,9 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Generous timeouts: CodeMirror-rendering and keyboard-driven tests are
+    // timing-sensitive and flake under parallel workers on a loaded machine.
+    testTimeout: 15_000,
+    hookTimeout: 15_000,
   },
 })
