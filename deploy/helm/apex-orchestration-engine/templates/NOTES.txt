@@ -1,0 +1,22 @@
+{{ .Chart.Name }} {{ .Chart.Version }} deployed as release {{ .Release.Name }}.
+
+Before the pods can go Ready:
+
+1. Migrations must already be applied (run BEFORE every rollout):
+     APEX_DATABASE__URI=<asyncpg-uri> alembic upgrade head
+2. Required secrets in namespace {{ .Release.Namespace }}:
+     {{ .Values.database.existingSecret }}  ({{ .Values.database.uriKey }}{{ if .Values.database.apexUriKey }}, {{ .Values.database.apexUriKey }}{{ end }})
+     {{ .Values.redis.existingSecret }}  ({{ .Values.redis.uriKey }})
+{{- if .Values.license.existingSecret }}
+     {{ .Values.license.existingSecret }}  ({{ .Values.license.secretKey }})  <- Enterprise license, REQUIRED (ADR-0001)
+{{- else }}
+   WARNING: license.existingSecret is unset — the standalone LangGraph server
+   WILL NOT BOOT without LANGGRAPH_CLOUD_LICENSE_KEY (ADR-0001).
+{{- end }}
+
+Smoke check:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "apex.fullname" . }} 8123:{{ .Values.service.port }}
+  curl -s http://127.0.0.1:8123/ok                 # LangGraph server health
+  curl -s http://127.0.0.1:8123/v1/system/info -H 'x-api-key: <key>'
+
+Runbooks: docs/runbooks/ (deployment.md, operations.md, incident.md).

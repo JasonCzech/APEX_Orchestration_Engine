@@ -1,0 +1,149 @@
+# Default values for apex-orchestration-engine.
+#
+# The chart deploys ONLY the stateless LangGraph standalone server. Postgres,
+# Redis, and the S3/MinIO artifact store are EXTERNAL dependencies — no
+# subcharts are bundled. Provision them separately and point the secret refs
+# below at them. Run `alembic upgrade head` against Postgres BEFORE every
+# rollout (docs/runbooks/deployment.md).
+
+# Stateless by design: all durable state is Postgres-checkpointed, so replicas
+# are interchangeable and a mid-run restart resumes the execution poll loop
+# from the last committed checkpoint (tests/integration/test_restart_survival.py).
+replicaCount: 2
+
+image:
+  # Built with: langgraph build -t <repository>:<tag>  (see docs/runbooks/deployment.md)
+  repository: apex-orchestration-engine
+  tag: ""  # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# ──────────────────────────────── licensing ──────────────────────────────────
+# !!! REQUIRED IN PRODUCTION — THE SERVER DOES NOT BOOT WITHOUT IT !!!
+# The standalone LangGraph server requires LANGGRAPH_CLOUD_LICENSE_KEY, and the
+# custom auth handlers this app ships need the Self-Hosted Enterprise tier
+# (ADR-0001, ADR-0003). Create the secret out of band:
+#
+#   kubectl create secret generic apex-langgraph-license \
+#     --from-literal=LANGGRAPH_CLOUD_LICENSE_KEY=<key>
+#
+# Setting existingSecret to "" omits the env var entirely — that is only useful
+# for rendering experiments; the pods will crash-loop at startup without a key.
+license:
+  existingSecret: apex-langgraph-license
+  secretKey: LANGGRAPH_CLOUD_LICENSE_KEY
+
+# ───────────────────────── external data services ────────────────────────────
+# Expected external services (documented contract, not provisioned here):
+#   Postgres 16+  — LangGraph runtime tables (checkpoints/threads/runs, managed
+#                   by the server) AND the `apex` schema (Alembic migrations).
+#                   Both URIs usually point at the same database.
+#   Redis 7       — stream pub-sub between replicas (resumable SSE).
+#   S3/MinIO      — artifact store; reached via catalog `connections` rows
+#                   (secret_ref -> env), not via chart values.
+database:
+  # Secret holding BOTH connection strings:
+  #   kubectl create secret generic apex-database \
+  #     --from-literal=DATABASE_URI='postgresql://user:pass@host:5432/apex' \
+  #     --from-literal=APEX_DATABASE__URI='postgresql+asyncpg://user:pass@host:5432/apex'
+  existingSecret: apex-database
+  uriKey: DATABASE_URI            # LangGraph runtime (psycopg-style URI)
+  apexUriKey: APEX_DATABASE__URI  # apex schema / domain API (asyncpg URI)
+
+redis:
+  # kubectl create secret generic apex-redis \
+  #   --from-literal=REDIS_URI='redis://host:6379'
+  existingSecret: apex-redis
+  uriKey: REDIS_URI
+
+# ─────────────────────────── APEX domain settings ────────────────────────────
+# Non-secret APEX_* environment (pydantic-settings, `__` nesting), rendered into
+# a ConfigMap. Secrets (DB URIs, adapter secret_refs) belong in Secret refs:
+# database/redis above or extraEnv below.
+apexSettings:
+  APEX_ENVIRONMENT: production
+  APEX_AUTH__ENABLED: "true"
+
+# Extra env vars appended verbatim to the container (e.g. adapter secret_refs
+# such as APEX_MINIO_SECRET_KEY via secretKeyRef, or LANGSMITH_API_KEY).
+extraEnv: []
+# - name: APEX_MINIO_SECRET_KEY
+#   valueFrom:
+#     secretKeyRef:
+#       name: apex-minio
+#       key: secret-key
+
+containerPort: 8000  # langgraph standalone server listen port
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  # SSE: disable response buffering at every proxy hop, or live runs and
+  # joined streams stall (mirrors deploy/compose-ha/nginx.conf).
+  annotations: {}
+  # nginx.ingress.kubernetes.io/proxy-buffering: "off"
+  # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  hosts:
+    - host: apex.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Probes hit the LangGraph server's unauthenticated health endpoint.
+livenessProbe:
+  httpGet:
+    path: /ok
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 4
+readinessProbe:
+  httpGet:
+    path: /ok
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+resources: {}
+# requests: { cpu: 500m, memory: 1Gi }
+# limits: { memory: 2Gi }
+
+# Surge-first rollout: never drop below replicaCount during upgrades so SSE
+# consumers always have a replica to (re)join.
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+# Mid-run rolling restarts are safe BECAUSE state is checkpoint-durable: a
+# killed replica's poll loop resumes on another replica without double-starting
+# load (tests/integration/test_restart_survival.py). The PDB exists to keep at
+# least one replica serving API/SSE traffic during voluntary disruptions — it
+# is an availability guard, not a correctness requirement.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+# Availability guard for voluntary disruptions (node drains, upgrades): keep at
+# least one replica serving API/SSE traffic. Correctness does NOT depend on it —
+# mid-run restarts resume from the last committed Postgres checkpoint without
+# double-starting load (tests/integration/test_restart_survival.py).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "apex.fullname" . }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "apex.selectorLabels" . | nindent 6 }}
+{{- end }}

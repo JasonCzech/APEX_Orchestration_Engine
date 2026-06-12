@@ -36,4 +36,13 @@ when needed: `make infra-up`, migrations: `make migrate`.
 - `docs/adr/` — architecture decision records
 
 The full rebuild plan (architecture, milestones M0–M6 + dashboard D0–D8) lives with
-the project owner; ADRs 0001–0004 capture the load-bearing decisions.
+the project owner; ADRs 0001–0005 capture the load-bearing decisions.
+
+## Deployment
+
+Standalone server image (`langgraph build`), Helm chart, and HA soak rig live in
+`deploy/` (`helm/apex-orchestration-engine/`, `compose-ha/`); releases are built by
+`.github/workflows/release.yaml` on `v*` tags. Procedures: `docs/runbooks/`
+(`deployment.md`, `operations.md`, `incident.md`). Topology decision (one image,
+external Postgres/Redis/S3, N stateless replicas, license gate):
+`docs/adr/0005-deployment-topology.md`.

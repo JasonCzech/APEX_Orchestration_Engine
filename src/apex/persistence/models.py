@@ -14,6 +14,7 @@ from sqlalchemy import (
     BigInteger,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -294,6 +295,35 @@ class EngineRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     summary: Mapped[dict[str, Any] | None] = mapped_column(JsonColumn)
+
+
+# ── Usage analytics (M6) ─────────────────────────────────────────────────────
+
+
+class UsageEvent(Base):
+    """One usage-analytics event: a /v1 request or a graph phase terminal status.
+
+    Written best-effort by apex.services.usage (analytics must never fail a request
+    or a run) and aggregated by GET /v1/analytics/usage. Plain table in v1 — the
+    plan's monthly partitioning on `at` (plus a retention job) is a deliberate
+    scale follow-up once event volume warrants it.
+    """
+
+    __tablename__ = "usage_events"
+    __table_args__ = (Index("ix_usage_events_project_id_at", "project_id", "at"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    consumer_name: Mapped[str] = mapped_column(String(255))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    surface: Mapped[str] = mapped_column(String(32))  # "v1" | "graph"
+    action: Mapped[str] = mapped_column(String(255))  # operation_id or graph event name
+    thread_id: Mapped[str | None] = mapped_column(String(64))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))  # "ok" | "error"
+    extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
 
 
 class Draft(Base):

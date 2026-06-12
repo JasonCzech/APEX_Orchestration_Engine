@@ -3136,6 +3136,158 @@
         "title": "TranslatedQuery",
         "type": "object"
       },
+      "UsageAnalyticsResponse": {
+        "properties": {
+          "buckets": {
+            "items": {
+              "$ref": "#/components/schemas/UsageBucket"
+            },
+            "title": "Buckets",
+            "type": "array"
+          },
+          "runs": {
+            "$ref": "#/components/schemas/UsageRuns"
+          },
+          "top_actions": {
+            "description": "Top 10 actions by event count.",
+            "items": {
+              "$ref": "#/components/schemas/UsageTopAction"
+            },
+            "title": "Top Actions",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageTotals"
+          },
+          "window": {
+            "$ref": "#/components/schemas/UsageWindow"
+          }
+        },
+        "required": [
+          "window",
+          "totals",
+          "buckets",
+          "top_actions",
+          "runs"
+        ],
+        "title": "UsageAnalyticsResponse",
+        "type": "object"
+      },
+      "UsageBucket": {
+        "properties": {
+          "bucket_start": {
+            "format": "date-time",
+            "title": "Bucket Start",
+            "type": "string"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket_start",
+          "events",
+          "errors"
+        ],
+        "title": "UsageBucket",
+        "type": "object"
+      },
+      "UsageRuns": {
+        "properties": {
+          "phases_failed": {
+            "title": "Phases Failed",
+            "type": "integer"
+          },
+          "phases_succeeded": {
+            "title": "Phases Succeeded",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "phases_succeeded",
+          "phases_failed"
+        ],
+        "title": "UsageRuns",
+        "type": "object"
+      },
+      "UsageTopAction": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "count"
+        ],
+        "title": "UsageTopAction",
+        "type": "object"
+      },
+      "UsageTotals": {
+        "properties": {
+          "by_surface": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Event counts keyed by surface (\"v1\", \"graph\").",
+            "title": "By Surface",
+            "type": "object"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events",
+          "errors"
+        ],
+        "title": "UsageTotals",
+        "type": "object"
+      },
+      "UsageWindow": {
+        "properties": {
+          "bucket": {
+            "enum": [
+              "day",
+              "hour"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "bucket"
+        ],
+        "title": "UsageWindow",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -4036,6 +4188,112 @@
         "summary": "Rotate Consumer Key",
         "tags": [
           "consumers"
+        ]
+      }
+    },
+    "/v1/analytics/usage": {
+      "get": {
+        "description": "Aggregate usage events (any authenticated role; results are scope-filtered).",
+        "operationId": "getUsageAnalytics",
+        "parameters": [
+          {
+            "description": "Window start (ISO-8601); default = `to` minus 7 days.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Window start (ISO-8601); default = `to` minus 7 days.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Window end (ISO-8601, exclusive); default = now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Window end (ISO-8601, exclusive); default = now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "Histogram bucket size.",
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "default": "day",
+              "description": "Histogram bucket size.",
+              "enum": [
+                "day",
+                "hour"
+              ],
+              "title": "Bucket",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter to one project (must be inside the consumer's scopes).",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one project (must be inside the consumer's scopes).",
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageAnalyticsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Usage Analytics",
+        "tags": [
+          "analytics"
         ]
       }
     },

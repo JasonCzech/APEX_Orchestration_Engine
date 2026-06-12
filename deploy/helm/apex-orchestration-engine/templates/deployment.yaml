@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apex.fullname" . }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  strategy:
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "apex.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Restart pods when non-secret settings change. Safe mid-run: the
+        # checkpointed poll loop resumes (tests/integration/test_restart_survival.py).
+        checksum/settings: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "apex.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: apex-server
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.containerPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "apex.fullname" . }}-settings
+          env:
+            # LangGraph runtime: checkpoints/threads/runs live here — this is
+            # what makes the replicas stateless and restart-safe.
+            - name: DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | quote }}
+                  key: {{ .Values.database.uriKey | quote }}
+            {{- if .Values.database.apexUriKey }}
+            # APEX domain schema (asyncpg URI; usually the same database).
+            - name: APEX_DATABASE__URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | quote }}
+                  key: {{ .Values.database.apexUriKey | quote }}
+            {{- end }}
+            - name: REDIS_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.existingSecret | quote }}
+                  key: {{ .Values.redis.uriKey | quote }}
+            {{- if .Values.license.existingSecret }}
+            # REQUIRED in production: the standalone server does not boot
+            # without an Enterprise license key (ADR-0001 / ADR-0003).
+            - name: LANGGRAPH_CLOUD_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.existingSecret | quote }}
+                  key: {{ .Values.license.secretKey | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

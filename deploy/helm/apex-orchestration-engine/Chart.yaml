@@ -1,0 +1,15 @@
+apiVersion: v2
+name: apex-orchestration-engine
+description: >-
+  Standalone LangGraph server hosting the APEX 7-phase pipeline and the /v1
+  domain API. Stateless replicas; Postgres, Redis, and the S3/MinIO artifact
+  store are external dependencies (see values.yaml).
+type: application
+version: 0.1.0
+appVersion: "0.6.0"
+keywords:
+  - langgraph
+  - orchestration
+  - performance-testing
+sources:
+  - https://github.com/JasonCzech/APEX_Orchestration_Engine

@@ -45,6 +45,7 @@ from apex.graphs.pipeline.gates import (
     resolve_actor,
 )
 from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.services import usage as usage_events
 from apex.services.prompts import resolve_phase_prompt_sync
 
 EVENT_SCHEMA_VERSION = 1
@@ -460,6 +461,8 @@ def _make_finalize(phase: Phase):
                 "attempt": attempt,
             }
         )
+        # Usage analytics (M6): best-effort, never fails the run.
+        usage_events.record_phase_usage_sync(phase.value, str(status), config)
         update = _phase_update(
             phase,
             attempt,

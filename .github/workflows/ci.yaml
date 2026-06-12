@@ -23,3 +23,48 @@ jobs:
         run: |
           uv run python scripts/export_openapi.py
           git diff --exit-code docs/api/
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint and render the deployment chart
+        run: |
+          if ! command -v helm >/dev/null 2>&1; then
+            echo "::notice::helm not present on runner — skipping chart lint"
+            exit 0
+          fi
+          helm lint deploy/helm/apex-orchestration-engine
+          helm template smoke deploy/helm/apex-orchestration-engine >/dev/null
+          helm template smoke deploy/helm/apex-orchestration-engine \
+            --set ingress.enabled=true --set autoscaling.enabled=true >/dev/null
+
+  integration:
+    # Postgres-gated tests (skipped in `checks` where APEX_TEST_DATABASE_URI is
+    # unset), including the restart-survival flagship (~15s).
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: apex
+          POSTGRES_PASSWORD: apex
+          POSTGRES_DB: apex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U apex"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Integration tests
+        env:
+          APEX_TEST_DATABASE_URI: postgresql://apex:apex@localhost:5432/apex
+        run: uv run pytest tests/integration -v

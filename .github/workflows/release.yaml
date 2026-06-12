@@ -1,0 +1,143 @@
+name: release
+
+# Tag-driven release: full quality gates, then three artifact tracks (server
+# image, TypeScript SDK, Helm chart). Every track always uploads a workflow
+# artifact; the push/publish steps are gated on the corresponding secrets being
+# configured and skip loudly when they are not — no registry credentials are
+# assumed to exist.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run pytest
+      - name: OpenAPI contract drift gate
+        run: |
+          uv run python scripts/export_openapi.py
+          git diff --exit-code docs/api/
+
+  server-image:
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Build standalone server image (langgraph build)
+        run: uv run langgraph build -t "apex-orchestration-engine:${GITHUB_REF_NAME}"
+      - name: Save image as artifact
+        run: |
+          mkdir -p dist
+          docker save "apex-orchestration-engine:${GITHUB_REF_NAME}" \
+            | gzip > "dist/apex-orchestration-engine-${GITHUB_REF_NAME}.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-image
+          path: dist/*.tar.gz
+          retention-days: 30
+      - name: Detect registry credentials
+        id: registry
+        env:
+          REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          if [[ -n "$REGISTRY_URL" && -n "$REGISTRY_USERNAME" && -n "$REGISTRY_PASSWORD" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::REGISTRY_URL/REGISTRY_USERNAME/REGISTRY_PASSWORD secrets not configured — skipping image push. The image is still attached as the 'server-image' workflow artifact."
+          fi
+      - name: Push image to registry
+        if: steps.registry.outputs.available == 'true'
+        env:
+          REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_URL" -u "$REGISTRY_USERNAME" --password-stdin
+          docker tag "apex-orchestration-engine:${GITHUB_REF_NAME}" \
+            "$REGISTRY_URL/apex-orchestration-engine:${GITHUB_REF_NAME}"
+          docker push "$REGISTRY_URL/apex-orchestration-engine:${GITHUB_REF_NAME}"
+
+  sdk:
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Regenerate @apex/api-client types from the committed spec
+        run: bash scripts/generate_sdks.sh
+      - name: Generated-types drift gate (types move in lockstep with the spec)
+        run: git diff --exit-code packages/api-client/src/schema.d.ts
+      - name: npm pack
+        run: |
+          mkdir -p dist
+          (cd packages/api-client && npm pack --pack-destination ../../dist)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-client
+          path: dist/*.tgz
+          retention-days: 30
+      - name: Detect npm token
+        id: npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -n "$NPM_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::NPM_TOKEN secret not configured — skipping npm publish. The tarball is still attached as the 'api-client' workflow artifact."
+          fi
+      # Note: packages/api-client/package.json is "private": true until the npm
+      # org/scope decision lands — npm refuses to publish private packages, so
+      # this step is double-gated by design. Flip "private" when publishing for real.
+      - name: Publish to npm
+        if: steps.npm.outputs.available == 'true'
+        working-directory: packages/api-client
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          npm publish
+
+  helm-chart:
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Helm lint
+        run: helm lint deploy/helm/apex-orchestration-engine
+      - name: Helm package
+        run: |
+          mkdir -p dist
+          helm package deploy/helm/apex-orchestration-engine \
+            --app-version "${GITHUB_REF_NAME#v}" \
+            --destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/*.tgz
+          retention-days: 30

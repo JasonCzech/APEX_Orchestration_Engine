@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from apex.app.errors import register_exception_handlers
 from apex.app.lifespan import lifespan
+from apex.routers.analytics import router as analytics_router
 from apex.routers.artifacts import router as artifacts_router
 from apex.routers.catalog import router as catalog_router
 from apex.routers.connections import router as connections_router
@@ -23,6 +24,7 @@ from apex.routers.pipelines import router as pipelines_router
 from apex.routers.prompts import router as prompts_router
 from apex.routers.system import router as system_router
 from apex.routers.work_tracking import router as work_tracking_router
+from apex.services.usage import UsageTrackingMiddleware
 from apex.settings import get_settings
 
 settings = get_settings()
@@ -38,6 +40,9 @@ app = FastAPI(
 
 register_exception_handlers(app)
 
+# Usage analytics (M6): one best-effort event per matched /v1 operation.
+app.add_middleware(UsageTrackingMiddleware)
+
 app.include_router(system_router, prefix="/v1")
 app.include_router(pipelines_router, prefix="/v1")
 app.include_router(prompts_router, prefix="/v1")
@@ -52,3 +57,4 @@ app.include_router(inventory_router, prefix="/v1")
 app.include_router(context_router, prefix="/v1")
 app.include_router(consumers_router, prefix="/v1")
 app.include_router(connections_router, prefix="/v1")
+app.include_router(analytics_router, prefix="/v1")
