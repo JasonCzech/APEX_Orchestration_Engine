@@ -43,6 +43,17 @@ export default defineConfig({
           if (id.includes('/@langchain/')) return 'vendor-langgraph'
           if (id.includes('/@codemirror/') || id.includes('/@uiw/') || id.includes('/@lezer/'))
             return 'vendor-codemirror'
+          // recharts + its d3/victory-vendor dependency tree (D2 engine strip).
+          if (
+            id.includes('/recharts/') ||
+            id.includes('/recharts-scale/') ||
+            id.includes('/victory-vendor/') ||
+            id.includes('/d3-') ||
+            id.includes('/internmap/') ||
+            id.includes('/delaunator/') ||
+            id.includes('/robust-predicates/')
+          )
+            return 'vendor-recharts'
           return 'vendor'
         },
       },

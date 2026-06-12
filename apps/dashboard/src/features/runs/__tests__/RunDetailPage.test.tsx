@@ -22,6 +22,22 @@ vi.mock('@uiw/react-codemirror', async () => {
   }
 })
 
+// D2: RunDetailPage mounts useRunLiveness. These D1 snapshot tests pin the
+// stream to idle via the integration contract (never the module's internals)
+// so no SSE/run-discovery requests fire against the msw server.
+vi.mock('@/streaming/usePipelineStream', () => ({
+  useRunLiveness: () => ({
+    runId: null,
+    stream: {
+      status: 'idle',
+      phaseProgress: {},
+      toolCalls: [],
+      engineStats: { samples: [], latest: null },
+      pendingGateHint: null,
+    },
+  }),
+}))
+
 describe('RunDetailPage', () => {
   it('redirects /runs/:threadId to the current phase', async () => {
     server.use(pipelineDetailHandler())
@@ -92,7 +108,8 @@ describe('RunDetailPage', () => {
 
   it('renders execution KPI pills and the passed badge from test_summary', async () => {
     server.use(pipelineDetailHandler())
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
+    // D2: busy threads default to the Activity tab, so pin ?tab=output here.
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=output`])
 
     const row = await screen.findByTestId('kpi-row')
     expect(within(row).getByText('42.5')).toBeInTheDocument()

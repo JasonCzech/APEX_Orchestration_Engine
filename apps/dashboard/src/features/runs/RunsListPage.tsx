@@ -7,6 +7,7 @@ import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
+import { LaunchRunButton } from './LaunchRunButton'
 import {
   hasActiveFilters,
   parseRunsFilters,
@@ -197,6 +198,8 @@ export function RunsListPage() {
             Clear filters
           </button>
         )}
+        {/* D2 minimal launch (live-UI agent); full wizard lands on /runs/new in D4. */}
+        <LaunchRunButton />
       </header>
 
       {isPending ? (

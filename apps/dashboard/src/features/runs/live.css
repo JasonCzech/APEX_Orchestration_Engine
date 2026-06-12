@@ -1,0 +1,357 @@
+/* D2 live-run surfaces: status chip, activity feed, engine strip, launch modal.
+   Theme tokens + run-detail primitives only (kind-chip, kpi-pill, status-badge
+   come from run-detail.css). */
+
+/* ── Live status chip (run-detail header) ────────────────────────────────── */
+
+.live-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  color: var(--text-muted);
+  background: var(--bg-card);
+}
+
+.live-status-chip .live-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.live-status-chip.connecting {
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+.live-status-chip.live {
+  color: var(--success);
+  border-color: var(--success-border, var(--border));
+  background: var(--success-bg, var(--bg-card));
+}
+
+.live-status-chip.live .live-status-dot,
+.live-status-chip.connecting .live-status-dot {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.live-status-chip.reconnecting {
+  color: var(--warning-text);
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+}
+
+.live-status-chip.error {
+  color: var(--danger-text);
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+/* idle / ended stay muted (default). */
+
+@media (prefers-reduced-motion: reduce) {
+  .live-status-chip .live-status-dot {
+    animation: none;
+  }
+}
+
+/* ── Activity feed ───────────────────────────────────────────────────────── */
+
+.activity-feed-wrap {
+  position: relative;
+}
+
+.activity-feed {
+  max-height: 440px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 2px 6px;
+}
+
+.activity-truncated-notice {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  border-bottom: 1px dashed var(--border);
+  padding: 2px 4px 6px;
+  margin-bottom: 4px;
+}
+
+.activity-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px 2px;
+  font-size: 11px;
+}
+
+.activity-divider .status-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+}
+
+.activity-divider .status-dot:not(.live) {
+  animation: none;
+}
+
+.activity-divider-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.activity-divider-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.activity-at {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  margin-left: auto;
+}
+
+.activity-tool-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.activity-tool-card .activity-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-tool-card .status-badge {
+  flex: 0 0 auto;
+}
+
+.activity-engine-row {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  font-size: 11.5px;
+}
+
+.activity-engine-row > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-secondary);
+}
+
+.activity-engine-row > summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-engine-row[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-engine-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-engine-samples {
+  list-style: none;
+  margin: 0;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.jump-to-live-pill {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  appearance: none;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 14px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.jump-to-live-pill:hover {
+  background: var(--accent);
+  color: var(--bg-primary, #fff);
+}
+
+/* ── Engine strip ────────────────────────────────────────────────────────── */
+
+.engine-strip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-card);
+  padding: 10px 12px;
+  margin: 0 0 14px;
+}
+
+.engine-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.engine-strip-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.engine-pill-row {
+  margin: 0 0 8px;
+}
+
+.engine-metric-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 4px;
+}
+
+.engine-metric-tab {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.engine-metric-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.engine-metric-tab[aria-selected='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+}
+
+.engine-chart {
+  min-width: 0;
+}
+
+/* ── Launch modal ────────────────────────────────────────────────────────── */
+
+.launch-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-primary, #000) 55%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 60;
+}
+
+.launch-modal {
+  width: min(440px, calc(100vw - 32px));
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.launch-modal-title {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-primary);
+  margin: 0 0 2px;
+}
+
+.launch-modal-caption {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.launch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.launch-field-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.launch-request {
+  resize: vertical;
+  min-height: 72px;
+  font: inherit;
+}
+
+.launch-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+/* The launch button sits at the right edge of the runs toolbar. */
+.runs-toolbar > .btn-primary {
+  margin-left: auto;
+}
+
+/* ── Run-rail gate hint ──────────────────────────────────────────────────── */
+
+.gate-hint-chip {
+  align-self: flex-start;
+}

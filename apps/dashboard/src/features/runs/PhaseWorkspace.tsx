@@ -11,38 +11,56 @@ import type {
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 
+import { ActivityFeed } from './ActivityFeed'
+import { EngineStrip } from './EngineStrip'
+import type { LiveStreamViewLike } from './liveTypes'
 import { formatTimestamp, PHASE_LABELS } from './runDisplay'
 
-const TABS = ['output', 'artifacts', 'prompt', 'dialogue'] as const
+const TABS = ['activity', 'output', 'artifacts', 'prompt', 'dialogue'] as const
 type WorkspaceTab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
+  activity: 'Activity',
   output: 'Output',
   artifacts: 'Artifacts',
   prompt: 'Prompt',
   dialogue: 'Dialogue',
 }
 
-function activeTab(value: string | null): WorkspaceTab {
-  return (TABS as readonly string[]).includes(value ?? '') ? (value as WorkspaceTab) : 'output'
+function activeTab(value: string | null, fallback: WorkspaceTab): WorkspaceTab {
+  return (TABS as readonly string[]).includes(value ?? '') ? (value as WorkspaceTab) : fallback
 }
 
 /**
- * Center workspace: [Output, Artifacts, Prompt, Dialogue] tab bar driven by
- * ?tab= (deep-linkable; default output).
+ * Center workspace: [Activity, Output, Artifacts, Prompt, Dialogue] tab bar
+ * driven by ?tab= (deep-linkable). Default tab is Activity while the thread is
+ * busy (live deltas front and center), Output otherwise (D2).
  */
 export function PhaseWorkspace({
   threadId,
   phase,
   state,
+  stream,
+  threadBusy = false,
 }: {
   threadId: string
   phase: PhaseName
   state: PipelineState
+  /** Live stream view from useRunLiveness (RunDetailPage); optional for snapshot-only mounts. */
+  stream?: LiveStreamViewLike
+  threadBusy?: boolean
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = activeTab(searchParams.get('tab'))
+  const tab = activeTab(searchParams.get('tab'), threadBusy ? 'activity' : 'output')
   const entry = state.phase_results?.[phase]
+
+  // Engine strip: execution phase only, when the stream has poll samples or
+  // the phase is currently running (snapshot or live status).
+  const engineSamples = stream?.engineStats?.samples ?? []
+  const liveStatus = stream?.phaseProgress?.[phase]?.status
+  const showEngineStrip =
+    phase === 'execution' &&
+    (engineSamples.length > 0 || entry?.status === 'running' || liveStatus === 'running')
 
   function selectTab(next: WorkspaceTab) {
     setSearchParams(
@@ -70,6 +88,19 @@ export function PhaseWorkspace({
           </button>
         ))}
       </div>
+      {showEngineStrip && (
+        <EngineStrip samples={engineSamples} latest={stream?.engineStats?.latest ?? null} />
+      )}
+      {tab === 'activity' && (
+        <ActivityFeed
+          key={phase}
+          phase={phase}
+          streamStatus={stream?.status}
+          progress={stream?.phaseProgress?.[phase]}
+          toolCalls={stream?.toolCalls}
+          engineSamples={phase === 'execution' ? stream?.engineStats?.samples : undefined}
+        />
+      )}
       {tab === 'output' && <OutputTab entry={entry} />}
       {tab === 'artifacts' && <ArtifactsTab threadId={threadId} entry={entry} state={state} />}
       {tab === 'prompt' && <PromptTab entry={entry} />}

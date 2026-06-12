@@ -12,11 +12,15 @@ export const queryKeys = {
     all: ['pipelines'] as const,
     list: (filters: Record<string, unknown> = {}) =>
       [...queryKeys.pipelines.all, 'list', filters] as const,
+    /** Prefix matching every list(filters) entry — SSE patches fan out here. */
+    lists: () => [...queryKeys.pipelines.all, 'list'] as const,
     detail: (threadId: string) => [...queryKeys.pipelines.all, 'detail', threadId] as const,
   },
   threads: {
     all: ['threads'] as const,
     state: (threadId: string) => [...queryKeys.threads.all, threadId, 'state'] as const,
+    /** Active (running/pending) run id discovery for the live stream (D2). */
+    activeRun: (threadId: string) => [...queryKeys.threads.all, threadId, 'active-run'] as const,
     artifact: (threadId: string, artifactId: string) =>
       [...queryKeys.threads.all, threadId, 'artifact', artifactId] as const,
   },

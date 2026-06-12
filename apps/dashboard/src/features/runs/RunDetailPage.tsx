@@ -1,13 +1,16 @@
-import { Link, Navigate, useParams } from 'react-router'
+import { Link, Navigate, useLocation, useParams } from 'react-router'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { ProblemCard } from '@/components/ProblemCard'
+import { useRunLiveness } from '@/streaming/usePipelineStream'
 
+import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseRail } from './PhaseRail'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { RunRail } from './RunRail'
 import { isPhaseName, statusVisual, targetPhaseFor } from './runDisplay'
 import './run-detail.css'
+import './live.css'
 
 function RunDetailSkeleton() {
   return (
@@ -30,7 +33,12 @@ function RunDetailSkeleton() {
  */
 export function RunDetailPage() {
   const { threadId = '', phase: phaseParam } = useParams()
+  const { search } = useLocation()
   const query = useThreadState(threadId)
+  // D2 liveness: SSE deltas render on top of the snapshot. The useThreadState
+  // poll deliberately stays on while streaming — snapshot is truth, the stream
+  // adds liveness (plan: snapshot + tail reconciliation).
+  const live = useRunLiveness(threadId)
 
   if (query.isPending) return <RunDetailSkeleton />
   if (query.isError) {
@@ -46,7 +54,13 @@ export function RunDetailPage() {
   const { detail, state, interrupts, stateParseFailed } = query.data
 
   if (!phaseParam) {
-    return <Navigate to={`/runs/${threadId}/phases/${targetPhaseFor(detail, state)}`} replace />
+    // Preserve ?tab= etc. so launch deep links (/runs/:id?tab=activity) survive.
+    return (
+      <Navigate
+        to={{ pathname: `/runs/${threadId}/phases/${targetPhaseFor(detail, state)}`, search }}
+        replace
+      />
+    )
   }
 
   if (!isPhaseName(phaseParam)) {
@@ -74,6 +88,7 @@ export function RunDetailPage() {
         <span className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
           {detail.thread_status ?? 'unknown'}
         </span>
+        <LiveStatusChip status={live.stream.status} />
         {stateParseFailed && (
           <span
             className="topbar-meta-chip warning"
@@ -89,8 +104,19 @@ export function RunDetailPage() {
       </header>
       <div className={`run-detail-grid${interrupts.length > 0 ? ' has-gate' : ''}`}>
         <PhaseRail threadId={threadId} state={state} />
-        <PhaseWorkspace threadId={threadId} phase={phaseParam} state={state} />
-        <RunRail detail={detail} state={state} interrupts={interrupts} />
+        <PhaseWorkspace
+          threadId={threadId}
+          phase={phaseParam}
+          state={state}
+          stream={live.stream}
+          threadBusy={detail.thread_status === 'busy'}
+        />
+        <RunRail
+          detail={detail}
+          state={state}
+          interrupts={interrupts}
+          pendingGateHint={live.stream.pendingGateHint}
+        />
       </div>
     </>
   )

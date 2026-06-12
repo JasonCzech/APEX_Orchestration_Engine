@@ -108,3 +108,63 @@ The existing route table already lazy-loads those four export names from
   locally — delete on regeneration.
 - Tests mount a memory router in
   `src/features/runs/__tests__/testUtils.tsx` mirroring this wiring exactly.
+
+---
+
+# Live run experience + minimal launch — route wiring (D2, live-UI agent)
+
+No `src/routes/router.tsx` changes needed: every D2 surface mounts inside
+pages that are already wired (`RunDetailPage`, `RunsListPage` via `pages.tsx`).
+
+## What ships
+
+| Piece | File | Mounted where |
+|---|---|---|
+| `LiveStatusChip` | `src/features/runs/LiveStatusChip.tsx` | RunDetailPage header (idle / connecting / live / reconnecting / ended / error; title explains) |
+| `ActivityFeed` | `src/features/runs/ActivityFeed.tsx` | PhaseWorkspace "Activity" tab (NEW first tab) |
+| `EngineStrip` | `src/features/runs/EngineStrip.tsx` | PhaseWorkspace, execution phase only (samples present or phase running) |
+| `LaunchRunButton` | `src/features/runs/LaunchRunButton.tsx` | RunsListPage toolbar (right edge) |
+| `launchRun` / `ALL_AUTO_GATES` | `src/features/runs/launchRun.ts` | SDK launch path (thread create + runs.create on `pipeline`) |
+| `useLaunchRun` | `src/api/hooks/useLaunchRun.ts` | mutation; invalidates `queryKeys.pipelines.all` |
+| contract mirror types | `src/features/runs/liveTypes.ts` | loose structural mirror of `PipelineStreamView` for component props |
+
+## URL contract changes
+
+- `?tab=` on `/runs/:threadId/phases/:phase` now accepts
+  `activity|output|artifacts|prompt|dialogue`. Default is **activity when the
+  thread is busy**, output otherwise. Old `?tab=output` deep links unchanged.
+- `/runs/:threadId` (no phase) now PRESERVES the query string through its
+  redirect, so the post-launch deep link `/runs/{threadId}?tab=activity` lands
+  on the current phase with the Activity tab open.
+
+## /runs/new (D4 placeholder note)
+
+`/runs/new` stays the D0 `FeaturePlaceholder` — the full 6-step wizard is D4.
+Until then the minimal launch lives on the `/runs` toolbar (`LaunchRunButton`).
+If an interim launch affordance is wanted on `/runs/new`, mount
+`<LaunchRunButton />` inside that placeholder; it is provider-free (needs only
+react-query + router context). D2 launches force `configurable.gates` ALL-AUTO
+for all 7 phases (gate review UX is D3; backend defaults are GATED).
+
+## Integration contract consumed (streaming agent's `src/streaming/`)
+
+`useRunLiveness(threadId)` -> `{ runId, stream: PipelineStreamView }` is
+imported ONLY in `RunDetailPage.tsx`. All other live components take loose
+structural props (`liveTypes.ts`), so they never import streaming internals.
+Tests mock `@/streaming/usePipelineStream` at that boundary
+(`__tests__/liveFixtures.ts` provides scripted views).
+
+Perf rule honored: `engine_poll` data reaches the UI only through the stream
+view's flushed ring buffer (≤20fps); the feed renders 1 expandable row per 10
+engine ticks, caps at 500 entries with a truncation notice, and nothing
+high-frequency enters the react-query cache. Reasoning tokens are deliberately
+omitted from the feed (M-era backend stubs don't stream messages-tuple
+meaningfully; `transcript_ref` artifacts are the durable record).
+
+## Build note
+
+`recharts@^2.15.4` added (workspace-installed from the repo root). Vite
+`manualChunks` routes recharts + its d3/victory-vendor tree to
+`vendor-recharts` (verified: 313 kB chunk, loaded only with run-detail pages).
+In jsdom tests, mock `ResponsiveContainer` (no ResizeObserver/layout) — see
+`__tests__/EngineStrip.test.tsx`.

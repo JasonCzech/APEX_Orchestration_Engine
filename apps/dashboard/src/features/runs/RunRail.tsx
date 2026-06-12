@@ -11,6 +11,7 @@ import {
 
 import type { GateInterrupt, PipelineDetail } from '@/api/hooks/useThreadState'
 
+import { normalizeGateHint, type LiveGateHint } from './liveTypes'
 import { formatTimestamp, PHASE_LABELS, isPhaseName } from './runDisplay'
 
 interface ArtifactGroup {
@@ -61,15 +62,20 @@ export function RunRail({
   detail,
   state,
   interrupts,
+  pendingGateHint,
 }: {
   detail: PipelineDetail
   state: PipelineState
   interrupts: GateInterrupt[]
+  /** gate_opened stream accelerator — shown until the snapshot poll delivers the interrupt (D2). */
+  pendingGateHint?: LiveGateHint | string | null
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const groups = useMemo(() => groupArtifacts(state), [state])
   const approvals = useMemo(() => approvalHistory(state), [state])
   const gate = interrupts[0]
+  // The hydrated interrupt always wins; the hint only bridges the poll gap.
+  const hint = gate ? null : normalizeGateHint(pendingGateHint)
 
   if (collapsed) {
     return (
@@ -111,6 +117,31 @@ export function RunRail({
           >
             Review gate
           </button>
+        </div>
+      )}
+
+      {hint && (
+        <div className="gate-banner" role="status" data-testid="gate-hint">
+          <span>
+            Gate opening: <strong>{hint.gate ?? 'review'}</strong>
+            {isPhaseName(hint.phase) ? (
+              <>
+                {' '}
+                on <strong>{PHASE_LABELS[hint.phase]}</strong>
+              </>
+            ) : hint.phase ? (
+              <>
+                {' '}
+                on <strong>{hint.phase}</strong>
+              </>
+            ) : null}
+          </span>
+          <span
+            className="topbar-meta-chip warning gate-hint-chip"
+            title="Heard on the live stream — the snapshot poll surfaces the full gate shortly; review actions arrive in D3"
+          >
+            review arrives in D3
+          </span>
         </div>
       )}
 
