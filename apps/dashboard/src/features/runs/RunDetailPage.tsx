@@ -17,6 +17,7 @@ import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
 import { RunRail } from './RunRail'
 import { isPhaseName, statusVisual, targetPhaseFor } from './runDisplay'
+import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
 
@@ -54,6 +55,8 @@ export function RunDetailPage() {
   // D4: header Re-run split button — non-null opens the pre-flight modal
   // with this preselection.
   const [preflight, setPreflight] = useState<PhaseName[] | null>(null)
+  // D8 parity: abort a busy run (no gate open) via POST /v1/pipelines/{id}/abort.
+  const abortRun = useAbortRun(threadId)
 
   if (query.isPending) return <RunDetailSkeleton />
   if (query.isError) {
@@ -130,11 +133,14 @@ export function RunDetailPage() {
           </span>
         )}
         <span className="spacer" />
-        {(hitl.state.tag === 'open' || hitl.state.tag === 'failed') && (
+        {hitl.state.tag === 'open' || hitl.state.tag === 'failed' ? (
           // Header abort drives the SAME machine as the gate action bar
           // (same type-to-confirm arm step, action 'abort').
           <AbortConfirm onConfirm={() => hitl.submit('abort')} />
-        )}
+        ) : detail.thread_status === 'busy' ? (
+          // No gate to resume through — cancel the active run(s) server-side.
+          <AbortConfirm disabled={abortRun.isPending} onConfirm={() => abortRun.mutate()} />
+        ) : null}
         <span className="split-button">
           <button
             type="button"
@@ -157,6 +163,10 @@ export function RunDetailPage() {
         </span>
         <Link className="btn btn-ghost btn-sm" to={`/runs/${threadId}/timeline`}>
           Timeline
+        </Link>
+        {/* D8 parity: LogsPage's documented ?thread= deep link (logsFilters.ts). */}
+        <Link className="btn btn-ghost btn-sm" to={`/logs?thread=${encodeURIComponent(threadId)}`}>
+          Logs
         </Link>
       </header>
       {preflight && (

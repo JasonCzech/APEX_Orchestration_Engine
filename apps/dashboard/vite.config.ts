@@ -64,8 +64,13 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
-    // Generous timeouts: CodeMirror-rendering and keyboard-driven tests are
-    // timing-sensitive and flake under parallel workers on a loaded machine.
+    // Layered timeouts (D8 flake-hunt): RTL's waitFor/findBy* poll window is
+    // raised to 10s in src/test/setup.ts (configure({ asyncUtilTimeout })) —
+    // lazy() route chunks (CodeMirror, recharts) can take >1s to dynamic-import
+    // under parallel workers, and RTL's 1s default expiring mid-import was the
+    // actual flake source. The 15s vitest timeout sits ABOVE that window so
+    // genuine failures surface as waitFor errors (with DOM dumps) rather than
+    // opaque hard test timeouts.
     testTimeout: 15_000,
     hookTimeout: 15_000,
   },

@@ -7,6 +7,8 @@ import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
+import { CompareSelectBar } from '../compare/CompareSelectBar'
+import { MAX_COMPARE_RUNS } from '../compare/compareModel'
 import { LaunchRunButton } from './LaunchRunButton'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
 import {
@@ -45,7 +47,22 @@ function errorMessage(error: unknown): string {
   return 'The runs list could not be loaded.'
 }
 
-function RunRow({ run, onRerun }: { run: PipelineSummary; onRerun: (threadId: string) => void }) {
+/** D8 compare affordance: checkbox column state for one row (undefined = off). */
+interface RowSelection {
+  selected: boolean
+  disabled: boolean
+  onToggle: (threadId: string) => void
+}
+
+function RunRow({
+  run,
+  onRerun,
+  selection,
+}: {
+  run: PipelineSummary
+  onRerun: (threadId: string) => void
+  selection?: RowSelection
+}) {
   const navigate = useNavigate()
   const runPath = `/runs/${run.thread_id}`
 
@@ -55,6 +72,21 @@ function RunRow({ run, onRerun }: { run: PipelineSummary; onRerun: (threadId: st
       onClick={() => navigate(runPath)}
       data-testid={`runs-row-${run.thread_id}`}
     >
+      {selection && (
+        // Checkbox cell swallows clicks so the row's navigate-on-click stays intact.
+        <td className="runs-select-cell" onClick={(event) => event.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={selection.selected}
+            disabled={selection.disabled}
+            aria-label={`Select ${run.title || 'Untitled run'} for compare`}
+            title={
+              selection.disabled ? `Comparison is limited to ${MAX_COMPARE_RUNS} runs` : undefined
+            }
+            onChange={() => selection.onToggle(run.thread_id)}
+          />
+        </td>
+      )}
       <td>
         <Link to={runPath} className="runs-run-link" onClick={(event) => event.stopPropagation()}>
           <span className="runs-run-title strong">{run.title || 'Untitled run'}</span>
@@ -138,6 +170,20 @@ export function RunsListPage() {
   // D4: row overflow "Re-run…" opens the pre-flight modal for that thread
   // (the modal fetches thread state itself; preselection = last plan).
   const [rerunThreadId, setRerunThreadId] = useState<string | null>(null)
+  // D8: [Compare] toolbar toggle reveals a checkbox column; 2+ ticks float a
+  // "Compare (N)" action bar linking to /runs/compare?ids=… (selection is
+  // page-local view state, deliberately not in the URL).
+  const [compareMode, setCompareMode] = useState(false)
+  const [compareSelection, setCompareSelection] = useState<string[]>([])
+  const toggleCompareMode = () => {
+    setCompareSelection([])
+    setCompareMode(!compareMode)
+  }
+  const toggleCompareSelection = (threadId: string) => {
+    setCompareSelection((prev) =>
+      prev.includes(threadId) ? prev.filter((id) => id !== threadId) : [...prev, threadId],
+    )
+  }
 
   const applyFilters = useCallback(
     (patch: Partial<RunsFilters>) => {
@@ -213,6 +259,14 @@ export function RunsListPage() {
             Clear filters
           </button>
         )}
+        <button
+          type="button"
+          className={`btn btn-sm ${compareMode ? 'btn-secondary' : 'btn-ghost'}`}
+          aria-pressed={compareMode}
+          onClick={toggleCompareMode}
+        >
+          Compare
+        </button>
         {/* D2 minimal launch (live-UI agent); full wizard lands on /runs/new in D4. */}
         <LaunchRunButton />
       </header>
@@ -254,6 +308,11 @@ export function RunsListPage() {
             <table className="data-table striped runs-table">
               <thead>
                 <tr>
+                  {compareMode && (
+                    <th className="runs-select-col">
+                      <span className="sr-only">Select for compare</span>
+                    </th>
+                  )}
                   <th>Run</th>
                   <th>Status</th>
                   <th>Phases</th>
@@ -267,7 +326,22 @@ export function RunsListPage() {
               </thead>
               <tbody>
                 {items.map((run) => (
-                  <RunRow key={run.thread_id} run={run} onRerun={setRerunThreadId} />
+                  <RunRow
+                    key={run.thread_id}
+                    run={run}
+                    onRerun={setRerunThreadId}
+                    selection={
+                      compareMode
+                        ? {
+                            selected: compareSelection.includes(run.thread_id),
+                            disabled:
+                              !compareSelection.includes(run.thread_id) &&
+                              compareSelection.length >= MAX_COMPARE_RUNS,
+                            onToggle: toggleCompareSelection,
+                          }
+                        : undefined
+                    }
+                  />
                 ))}
               </tbody>
             </table>
@@ -300,6 +374,7 @@ export function RunsListPage() {
       {rerunThreadId && (
         <PreflightModal threadId={rerunThreadId} onClose={() => setRerunThreadId(null)} />
       )}
+      <CompareSelectBar selected={compareSelection} onClear={() => setCompareSelection([])} />
     </section>
   )
 }

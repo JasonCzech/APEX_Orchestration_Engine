@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { NavLink } from 'react-router'
+import { Link, NavLink } from 'react-router'
 
 import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
@@ -211,6 +211,11 @@ export function Sidebar() {
               <div className="sidebar-identity-copy">
                 <span className="sidebar-identity-name">{consumer.name}</span>
                 <span className="sidebar-identity-meta">{consumer.role}</span>
+                {/* D8 parity: /settings is a routed screen (theme, API key,
+                    diagnostics) — this is its only in-app entry point. */}
+                <Link className="sidebar-identity-action" to="/settings">
+                  Settings
+                </Link>
                 <button
                   type="button"
                   className="sidebar-identity-action sidebar-identity-action-button"

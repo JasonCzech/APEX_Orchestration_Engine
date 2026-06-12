@@ -9,6 +9,7 @@ import type {
   PhaseResultEntry,
   PipelineState,
   TestResultSummary,
+  ToolCallRecord,
 } from '@apex/pipeline-events'
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
@@ -163,6 +164,26 @@ function ApprovalsList({ approvals }: { approvals: ApprovalRecord[] }) {
   )
 }
 
+/** D8 parity: durable per-phase tool calls from the snapshot (PhaseResult.tool_calls) —
+ *  the Activity tab shows only the live stream's tool_call events. */
+function ToolCallsList({ calls }: { calls: ToolCallRecord[] }) {
+  return (
+    <ul className="approvals-list" data-testid="output-tool-calls">
+      {calls.map((call) => (
+        <li key={call.id} className="approval-row">
+          <span className="kind-chip">tool</span>
+          <span className="approval-action">{call.tool ?? call.id}</span>
+          <span className={`status-badge ${call.status === 'error' ? 'danger' : 'success'}`}>
+            {call.status ?? 'ok'}
+          </span>
+          <span>{typeof call.duration_ms === 'number' ? `${call.duration_ms} ms` : '—'}</span>
+          <span className="approval-at">{call.at ? formatTimestamp(call.at) : ''}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 function OutputTab({ entry }: { entry: PhaseResultEntry | undefined }) {
   if (!entry) {
     return (
@@ -205,6 +226,12 @@ function OutputTab({ entry }: { entry: PhaseResultEntry | undefined }) {
               {error}
             </div>
           ))}
+        </>
+      )}
+      {(entry.tool_calls?.length ?? 0) > 0 && (
+        <>
+          <h3 className="workspace-section-title">Tool calls</h3>
+          <ToolCallsList calls={entry.tool_calls ?? []} />
         </>
       )}
       {(entry.approvals?.length ?? 0) > 0 && (

@@ -8,12 +8,17 @@ provides the domain API (prompts, catalogs, connections, work tracking, analytic
 Execution engines (LoadRunner, APEX Load, simulated) sit behind an engine-agnostic
 port. Dashboards are fully decoupled clients.
 
-## Quickstart (M0)
+## Quickstart (backend)
 
 ```bash
 uv sync                      # install deps
 cp .env.example .env
-make dev                     # LangGraph dev server (in-memory) on :2024
+make infra-up                # dev Postgres/Redis/MinIO (the /v1 domain API uses Postgres)
+make migrate                 # apex-schema migrations
+uv run python scripts/seed_dev.py      # API consumers — keys printed exactly once
+uv run python scripts/seed_prompts.py  # built-in phase prompts
+uv run python scripts/seed_catalog.py  # demo app/env + stub connections
+make dev                     # LangGraph dev server on :2024
 ```
 
 Smoke checks:
@@ -23,20 +28,44 @@ curl -s http://127.0.0.1:2024/ok                  # LangGraph server health
 curl -s http://127.0.0.1:2024/v1/system/info      # APEX domain API (custom routes)
 ```
 
-Quality gates: `make check` (ruff, pyright, pytest). Dev infra (Postgres/Redis/MinIO)
-when needed: `make infra-up`, migrations: `make migrate`.
+Live end-to-end smokes against the running dev server: `scripts/m1_smoke.py`
+(gated pipeline, interrupts, single-phase re-run, resume-conflict spike — expects
+`APEX_AUTH__DEV_API_KEY=dev-key-m1` in `.env`) and `scripts/m2_smoke.py` (domain
+API surface; usage in its docstring, takes seeded admin/viewer keys).
+
+Quality gates: `make check` (ruff, pyright, pytest).
+
+## Dashboard
+
+The web dashboard lives in `apps/dashboard` (npm workspaces — install at the
+repo root). It is a fully decoupled static SPA: the backend never serves it.
+
+```bash
+npm install
+npm run -w @apex/dashboard dev      # vite on :3000, proxies to langgraph dev on :2024
+npm run -w @apex/dashboard test     # vitest suite
+npm run -w @apex/dashboard build    # typecheck + static bundle to apps/dashboard/dist
+```
+
+Setup details (seeded backend, API keys, runtime config, deploy contract):
+[`apps/dashboard/README.md`](apps/dashboard/README.md). Architecture decisions:
+[`docs/adr/0006-dashboard-architecture.md`](docs/adr/0006-dashboard-architecture.md).
 
 ## Layout
 
-- `langgraph.json` — binds graphs + custom HTTP app (+ auth from M1) to the server
-- `src/apex/graphs/` — pipeline graph (M0: toy 2-node placeholder)
+- `langgraph.json` — binds graphs + custom HTTP app + auth to the server
+- `src/apex/graphs/` — pipeline master graph (7 phase subgraphs, HITL gates)
 - `src/apex/app/`, `src/apex/routers/` — `/v1` domain API composition root + routers
-- `src/apex/ports|adapters|services/` — integration seams (from M1)
+- `src/apex/ports|adapters|services/` — integration seams (stubs, Jira/ADO, ELK, k8s, engines)
 - `src/apex/persistence/` — SQLAlchemy models + Alembic migrations (`apex` schema)
-- `docs/adr/` — architecture decision records
+- `apps/dashboard/` — `@apex/dashboard` web client (React + Vite)
+- `packages/api-client/` — `@apex/api-client`, TS types generated from the committed `/v1` spec
+- `packages/pipeline-events/` — `@apex/pipeline-events`, zod contracts for SSE events + interrupts
+- `scripts/` — OpenAPI export, SDK generation, seeds, m1/m2 live smokes
+- `docs/adr/` — architecture decision records; `docs/api/` — committed OpenAPI spec
 
 The full rebuild plan (architecture, milestones M0–M6 + dashboard D0–D8) lives with
-the project owner; ADRs 0001–0005 capture the load-bearing decisions.
+the project owner; ADRs 0001–0006 capture the load-bearing decisions.
 
 ## Deployment
 

@@ -143,7 +143,15 @@ describe('ApprovalsInboxPage', () => {
     server.use(http.get('*/threads/:threadId/runs', () => HttpResponse.json([])))
     const user = userEvent.setup()
     const { router } = renderInbox()
-    await findRow('run-old-1')
+    // Wait for SELECTION, not mere row presence: auto-select commits in an
+    // effect after the row renders, and 'o' reads the selection — a keystroke
+    // fired in that gap is silently dropped (one-shot, no retry possible).
+    await waitFor(() =>
+      expect(screen.getByTestId('approvals-row-run-old-1')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    )
 
     await user.keyboard('o')
     await waitFor(() =>
