@@ -51,6 +51,11 @@ class PendingGate(BaseModel):
     phase: str | None = None
 
 
+class PipelineEngineInfo(BaseModel):
+    engine: str | None = None
+    external_run_id: str | None = None
+
+
 class PipelineSummary(BaseModel):
     thread_id: str
     title: str | None = None
@@ -59,6 +64,7 @@ class PipelineSummary(BaseModel):
     thread_status: str | None = None
     current_phase: str | None = None
     phase_strip: list[PhaseStripEntry]
+    engine: PipelineEngineInfo | None = None
     created_at: str | None = None
     updated_at: str | None = None
     pending_gate: PendingGate | None = None

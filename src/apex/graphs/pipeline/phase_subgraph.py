@@ -6,6 +6,13 @@ gate_opened event are committed by a separate "open_*" node so they are durable 
 checkpoint before the graph pauses. Agent bodies are deterministic M1 stubs (no LLM, no
 ports); state writes use deterministic ids so node re-execution stays idempotent under
 the append-unique reducers.
+
+M3: the execution phase swaps the stub agent for the checkpointed engine spine
+(engine_reserve -> engine_start -> engine_poll ⟲ -> engine_collect, see
+apex.graphs.pipeline.execution_phase); the gates around it are unchanged. The
+script_scenario stub additionally emits a LoadTestSpec ("load_test_spec" entry
+key) that the execution phase consumes, and the reporting stub mentions the
+execution phase's test_summary KPIs when present.
 """
 
 from datetime import datetime
@@ -17,6 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
+from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import (
     TERMINAL_PHASE_STATUSES,
     ArtifactRef,
@@ -199,6 +207,52 @@ def _make_prompt_gate(phase: Phase):
     return prompt_gate
 
 
+def _script_scenario_load_test_spec(
+    state: PipelineState, config: RunnableConfig, attempt: int
+) -> JsonDict:
+    """LoadTestSpec-shaped dict the execution phase consumes (entry key "load_test_spec").
+
+    Deterministic for (thread, attempt) — including the idempotency key — so node
+    re-execution emits an identical spec. engine_reserve re-derives the key from the
+    execution phase's own attempt before any engine call; that copy is authoritative,
+    this one seeds it for spec review/UX. Per-run sizing knobs ride the (unvalidated)
+    "load_test" configurable dict so demos and tests can shrink vusers/duration.
+    """
+    configurable = dict((config or {}).get("configurable") or {})
+    thread_id = str(configurable.get("thread_id") or "no-thread")
+    overrides = configurable.get("load_test")
+    overrides = dict(overrides) if isinstance(overrides, dict) else {}
+    title = state.get("title") or "untitled run"
+    spec = LoadTestSpec(
+        idempotency_key=f"{thread_id}-execution-a{attempt}",
+        title=f"{title} load test",
+        script_refs=[f"stub://scripts/{thread_id}/script_scenario-a{attempt}.jmx"],
+        vusers=int(overrides.get("vusers") or 10),
+        ramp_s=float(overrides.get("ramp_s") or 1.0),
+        duration_s=float(overrides.get("duration_s") or 2.0),
+        slas={"p95_ms": 500.0, "error_rate": 0.05},
+        target_environment=PipelineConfigurable.from_config(config).environment_id,
+    )
+    return spec.model_dump(mode="json")
+
+
+def _reporting_kpi_suffix(state: PipelineState) -> str:
+    """Deterministic KPI mention when the execution phase produced a test_summary."""
+    test_summary = _entry(state, Phase.EXECUTION).get("test_summary")
+    if not isinstance(test_summary, dict):
+        return ""
+    kpis = test_summary.get("kpis") or {}
+    kpi_text = ", ".join(
+        f"{key}={value:g}" if isinstance(value, int | float) else f"{key}={value}"
+        for key, value in sorted(kpis.items())
+    )
+    verdict = "passed" if test_summary.get("passed") else "failed"
+    return (
+        f" | execution {verdict} on engine {test_summary.get('engine')} — "
+        f"KPIs: {kpi_text or 'none reported'}"
+    )
+
+
 def _make_agent(phase: Phase):
     def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
         entry = _entry(state, phase)
@@ -210,6 +264,8 @@ def _make_agent(phase: Phase):
         instructions = entry.get("revise_instructions")
         if instructions:
             summary += f" (revised per: {instructions})"
+        if phase is Phase.REPORTING:
+            summary += _reporting_kpi_suffix(state)
         digest = (
             f"Deterministic stub reasoning for {phase.value} "
             f"(attempt {attempt}, revision {revise_count})."
@@ -231,6 +287,9 @@ def _make_agent(phase: Phase):
                 "status": tool_call["status"],
             }
         )
+        extra: dict[str, Any] = {}
+        if phase is Phase.SCRIPT_SCENARIO:
+            extra["load_test_spec"] = _script_scenario_load_test_spec(state, config, attempt)
         return _phase_update(
             phase,
             attempt,
@@ -238,6 +297,7 @@ def _make_agent(phase: Phase):
             summary=summary,
             reasoning_digest=digest,
             tool_calls=[tool_call],
+            **extra,
         )
 
     return agent
@@ -419,19 +479,29 @@ def make_phase_subgraph(phase: Phase) -> CompiledStateGraph[PipelineState, Any, 
     """Build the compiled phase spine for one Phase, sharing the parent state schema.
 
     Compiled without a checkpointer so it inherits the parent graph's persistence.
+    For Phase.EXECUTION the stub agent is replaced by the engine spine (the gates
+    still route to "agent", which the engine wiring provides as a no-op alias into
+    engine_reserve; engine_collect routes to open_output_gate / finalize itself).
     """
     builder = StateGraph(PipelineState)
     builder.add_node("prepare", _make_prepare(phase))
     builder.add_node("open_prompt_gate", _make_open_prompt_gate(phase))
     builder.add_node("prompt_gate", _make_prompt_gate(phase), destinations=("agent", "finalize"))
-    builder.add_node("agent", _make_agent(phase))
     builder.add_node("open_output_gate", _make_open_output_gate(phase))
     builder.add_node("output_gate", _make_output_gate(phase), destinations=("agent", "finalize"))
     builder.add_node("finalize", _make_finalize(phase))
     builder.add_edge(START, "prepare")
     builder.add_edge("prepare", "open_prompt_gate")
     builder.add_edge("open_prompt_gate", "prompt_gate")
-    builder.add_edge("agent", "open_output_gate")
+    if phase is Phase.EXECUTION:
+        # Imported lazily: execution_phase imports helpers from this module, so a
+        # top-level import here would be circular.
+        from apex.graphs.pipeline.execution_phase import add_execution_engine_nodes
+
+        add_execution_engine_nodes(builder)
+    else:
+        builder.add_node("agent", _make_agent(phase))
+        builder.add_edge("agent", "open_output_gate")
     builder.add_edge("open_output_gate", "output_gate")
     builder.add_edge("finalize", END)
     return builder.compile(name=f"phase_{phase.value}")

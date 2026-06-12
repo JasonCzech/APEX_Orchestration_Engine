@@ -255,6 +255,28 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class EngineRun(Base):
+    """Queryable engine-run history projection, independent of graph checkpoints.
+
+    Upserted by the execution phase's engine nodes (best-effort — checkpointed graph
+    state stays the source of truth; this exists for dashboard history queries).
+    """
+
+    __tablename__ = "engine_runs"
+    __table_args__ = (UniqueConstraint("thread_id", "attempt"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    thread_id: Mapped[str] = mapped_column(String(64))
+    attempt: Mapped[int] = mapped_column(Integer)
+    engine: Mapped[str] = mapped_column(String(64))
+    external_run_id: Mapped[str | None] = mapped_column(String(255))
+    handle: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    status: Mapped[str] = mapped_column(String(32))  # EngineRunPhase value
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JsonColumn)
+
+
 class Draft(Base):
     """Server-side new-test wizard draft (roams across browsers/operators)."""
 

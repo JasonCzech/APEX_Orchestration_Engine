@@ -1,6 +1,62 @@
 {
   "components": {
     "schemas": {
+      "AbortEngineRunRequest": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 1024,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "AbortEngineRunRequest",
+        "type": "object"
+      },
+      "AbortEngineRunResponse": {
+        "properties": {
+          "cancelled_runs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cancelled Runs",
+            "type": "array"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "external_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Run Id"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "engine",
+          "external_run_id",
+          "cancelled_runs"
+        ],
+        "title": "AbortEngineRunResponse",
+        "type": "object"
+      },
       "AbortPipelineResponse": {
         "properties": {
           "cancelled_run_ids": {
@@ -998,6 +1054,141 @@
         "title": "DraftUpdateRequest",
         "type": "object"
       },
+      "EngineRunListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EngineRunRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "EngineRunListResponse",
+        "type": "object"
+      },
+      "EngineRunPhase": {
+        "enum": [
+          "provisioning",
+          "ready",
+          "running",
+          "stopping",
+          "collecting",
+          "completed",
+          "failed",
+          "aborted"
+        ],
+        "title": "EngineRunPhase",
+        "type": "string"
+      },
+      "EngineRunRead": {
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "external_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Run Id"
+          },
+          "handle": {
+            "additionalProperties": true,
+            "title": "Handle",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "thread_id",
+          "attempt",
+          "engine",
+          "external_run_id",
+          "status",
+          "handle",
+          "summary",
+          "started_at",
+          "ended_at"
+        ],
+        "title": "EngineRunRead",
+        "type": "object"
+      },
       "EnvironmentCreate": {
         "properties": {
           "application_id": {
@@ -1539,6 +1730,16 @@
             ],
             "title": "Current Phase"
           },
+          "engine": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineEngineInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interrupts": {
             "items": {
               "$ref": "#/components/schemas/GateInterrupt"
@@ -1624,6 +1825,34 @@
         "title": "PipelineDetail",
         "type": "object"
       },
+      "PipelineEngineInfo": {
+        "properties": {
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "external_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Run Id"
+          }
+        },
+        "title": "PipelineEngineInfo",
+        "type": "object"
+      },
       "PipelineListResponse": {
         "properties": {
           "items": {
@@ -1684,6 +1913,16 @@
               }
             ],
             "title": "Current Phase"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineEngineInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "pending_gate": {
             "anyOf": [
@@ -4213,6 +4452,210 @@
         "summary": "Update Draft",
         "tags": [
           "drafts"
+        ]
+      }
+    },
+    "/v1/engines/runs": {
+      "get": {
+        "description": "Engine-run history, newest started first (projection; no project column in v1).",
+        "operationId": "listEngineRuns",
+        "parameters": [
+          {
+            "description": "Filter by engine provider",
+            "in": "query",
+            "name": "engine",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by engine provider",
+              "title": "Engine"
+            }
+          },
+          {
+            "description": "Filter by run status",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/EngineRunPhase"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by run status",
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngineRunListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Engine Runs",
+        "tags": [
+          "engines"
+        ]
+      }
+    },
+    "/v1/engines/runs/{thread_id}": {
+      "get": {
+        "description": "All engine-run attempts for one thread, newest attempt first ([] when none).",
+        "operationId": "getEngineRuns",
+        "parameters": [
+          {
+            "description": "Pipeline thread id the engine run belongs to",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id the engine run belongs to",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EngineRunRead"
+                  },
+                  "title": "Response Getengineruns",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Engine Runs",
+        "tags": [
+          "engines"
+        ]
+      }
+    },
+    "/v1/engines/runs/{thread_id}/abort": {
+      "post": {
+        "description": "Engine-level kill switch: abort the external run, then cancel graph runs.\n\nFor when graph-level cancel isn't enough \u2014 the external load run keeps burning\neven after the poll loop dies. 404 when no engine handle is discoverable from\nthread state or the projection.",
+        "operationId": "abortEngineRun",
+        "parameters": [
+          {
+            "description": "Pipeline thread id the engine run belongs to",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id the engine run belongs to",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AbortEngineRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbortEngineRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Abort Engine Run",
+        "tags": [
+          "engines"
         ]
       }
     },

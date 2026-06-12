@@ -6,6 +6,8 @@ Creates:
 - one global connection per port kind: "stub-<kind>" using the same provider as
   DEV_CONNECTIONS (stub everywhere, "env" for secrets), plus "sim-engine" for
   the execution engine (provider "sim")
+- global connection "minio-artifacts" (artifact_store/s3) pointing at the dev
+  MinIO from docker-compose.dev.yaml — requires APEX_MINIO_SECRET_KEY at runtime
 
 Graceful if the database is unreachable. Run: uv run python scripts/seed_catalog.py
 """
@@ -29,6 +31,16 @@ DEMO_HOSTS: tuple[tuple[str, str], ...] = (
     ("checkout-app-01.staging2.local", "app"),
     ("checkout-db-01.staging2.local", "db"),
 )
+
+# Dev MinIO from docker-compose.dev.yaml (root user "apex" / "apex-minio").
+MINIO_CONNECTION_NAME = "minio-artifacts"
+MINIO_OPTIONS: dict[str, object] = {
+    "endpoint": "localhost:9000",
+    "bucket": "apex-artifacts",
+    "secure": False,
+    "access_key": "apex",
+}
+MINIO_SECRET_REF = "env:APEX_MINIO_SECRET_KEY"
 
 
 def _seed_connections() -> list[Connection]:
@@ -102,12 +114,41 @@ async def _seed_connection_rows(session: AsyncSession) -> None:
         print(f"connection {row.name!r}: created ({row.kind}/{row.provider}, global)")
 
 
+async def _seed_minio_connection(session: AsyncSession) -> None:
+    existing = await session.scalar(
+        select(Connection).where(Connection.name == MINIO_CONNECTION_NAME)
+    )
+    if existing is not None:
+        print(f"connection {MINIO_CONNECTION_NAME!r}: already exists (id={existing.id})")
+        return
+    row = Connection(
+        kind=PortKind.ARTIFACT_STORE.value,
+        provider="s3",
+        name=MINIO_CONNECTION_NAME,
+        project_id=None,  # global
+        options=dict(MINIO_OPTIONS),
+        secret_ref=MINIO_SECRET_REF,
+        enabled=True,
+    )
+    session.add(row)
+    await session.flush()
+    print(f"connection {MINIO_CONNECTION_NAME!r}: created (artifact_store/s3, global)")
+    print(
+        "NOTE: the DB-backed connection resolver prefers DB rows over the static "
+        "DEV_CONNECTIONS map, so transcripts/documents/engine artifacts now go to "
+        f"MinIO at {MINIO_OPTIONS['endpoint']} (bucket {MINIO_OPTIONS['bucket']!r}) in dev. "
+        f"Ensure APEX_MINIO_SECRET_KEY is set (see .env.example) and MinIO is up "
+        "(docker-compose.dev.yaml)."
+    )
+
+
 async def main() -> int:
     try:
         async with get_sessionmaker()() as session:
             app = await _seed_application(session)
             await _seed_environment(session, app)
             await _seed_connection_rows(session)
+            await _seed_minio_connection(session)
             await session.commit()
     except (SQLAlchemyError, OSError) as exc:
         print(f"Database unreachable ({exc.__class__.__name__}).")

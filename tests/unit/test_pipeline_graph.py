@@ -71,13 +71,19 @@ def test_all_auto_runs_all_seven_phases() -> None:
         entry = result["phase_results"][phase.value]
         assert entry["status"] == "succeeded"
         assert entry["attempt"] == 1
-        assert "Load test the checkout flow" in entry["summary"]
-        assert [t["tool"] for t in entry["tool_calls"]] == [f"{phase.value}.stub_lookup"]
         assert entry["transcript_ref"]["uri"] == f"memory://transcripts/{phase.value}/attempt-1"
-        assert entry["artifact_ids"] == [entry["transcript_ref"]["id"]]
+        assert entry["transcript_ref"]["id"] in entry["artifact_ids"]
         assert entry["duration_s"] is not None
         assert entry["resolved_prompt_source"]["origin"] == "catalog"
-    assert len(result["artifacts"]) == len(PHASE_ORDER)
+        if phase is Phase.EXECUTION:
+            # M3: execution runs the real engine spine (sim engine), not the stub agent.
+            assert "Engine run" in entry["summary"]
+            assert entry["test_summary"]["passed"] is True
+            assert len(entry["artifact_ids"]) == 2  # transcript + engine results
+        else:
+            assert "Load test the checkout flow" in entry["summary"]
+            assert [t["tool"] for t in entry["tool_calls"]] == [f"{phase.value}.stub_lookup"]
+    assert len(result["artifacts"]) == len(PHASE_ORDER) + 1  # + engine results artifact
 
 
 def test_gated_run_pauses_for_prompt_review_then_approve() -> None:

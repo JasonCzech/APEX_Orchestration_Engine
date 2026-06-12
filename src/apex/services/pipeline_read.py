@@ -79,6 +79,14 @@ def build_phase_strip(values: JsonDict | None) -> list[JsonDict]:
     return strip
 
 
+def engine_info_from_values(values: JsonDict | None) -> JsonDict | None:
+    """Tiny engine summary from state ``engine_handle`` (None when absent/malformed)."""
+    handle = (values or {}).get("engine_handle")
+    if not isinstance(handle, dict) or not handle.get("engine"):
+        return None
+    return {"engine": handle.get("engine"), "external_run_id": handle.get("external_run_id")}
+
+
 def _gate_info(interrupt: JsonDict) -> JsonDict:
     value = interrupt.get("value")
     payload: JsonDict = value if isinstance(value, dict) else {}
@@ -130,6 +138,7 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
         "thread_status": thread.get("status"),
         "current_phase": values.get("current_phase"),
         "phase_strip": build_phase_strip(values),
+        "engine": engine_info_from_values(values),
         "created_at": thread.get("created_at"),
         "updated_at": thread.get("updated_at"),
         "pending_gate": _public_gate(gates[0] if gates else None),

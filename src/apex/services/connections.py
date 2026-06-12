@@ -30,6 +30,17 @@ from apex.ports.secrets import SecretsPort
 
 logger = structlog.get_logger(__name__)
 
+
+def _throwaway_session_factory():  # noqa: ANN202 — (engine, sessionmaker) pair
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from apex.settings import get_settings
+
+    engine = create_async_engine(get_settings().database.uri, poolclass=NullPool)
+    return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
 DEV_CONNECTIONS: dict[PortKind, ConnectionConfig] = {
     PortKind.WORK_TRACKING: ConnectionConfig(
         id="dev-work-tracking-stub",
@@ -128,31 +139,41 @@ class ConnectionStore(Protocol):
 
 
 class DbConnectionStore:
-    """Loads connection rows with a fresh session per call.
+    """Loads connection rows with a throwaway engine + session per call.
 
-    Sessions are short-lived and self-contained so the resolver is usable from
-    graph nodes (outside any request scope) as well as routers.
+    Graph nodes run DB work inside short-lived asyncio.run loops on worker
+    threads, so the module-cached engine in apex.persistence.db must NOT be
+    used here — an asyncpg connection created in one event loop crashes when
+    reused from another ("attached to a different loop"). A NullPool engine
+    per call keeps every connection loop-local; routers pay a small per-call
+    cost on these infrequent lookups.
     """
 
     async def get(self, connection_id: str) -> StoredConnection | None:
-        from apex.persistence.db import get_sessionmaker
         from apex.persistence.models import Connection
 
-        async with get_sessionmaker()() as session:
-            row = await session.get(Connection, connection_id)
-            return stored_connection_from_row(row) if row is not None else None
+        engine, session_factory = _throwaway_session_factory()
+        try:
+            async with session_factory() as session:
+                row = await session.get(Connection, connection_id)
+                return stored_connection_from_row(row) if row is not None else None
+        finally:
+            await engine.dispose()
 
     async def find_default(self, kind: PortKind, project_id: str | None) -> StoredConnection | None:
-        from apex.persistence.db import get_sessionmaker
         from apex.persistence.models import Connection
 
-        async with get_sessionmaker()() as session:
-            stmt = (
-                select(Connection)
-                .where(Connection.kind == kind.value, Connection.enabled.is_(True))
-                .order_by(Connection.updated_at.desc(), Connection.id)
-            )
-            rows = list((await session.scalars(stmt)).all())
+        engine, session_factory = _throwaway_session_factory()
+        try:
+            async with session_factory() as session:
+                stmt = (
+                    select(Connection)
+                    .where(Connection.kind == kind.value, Connection.enabled.is_(True))
+                    .order_by(Connection.updated_at.desc(), Connection.id)
+                )
+                rows = list((await session.scalars(stmt)).all())
+        finally:
+            await engine.dispose()
         if project_id is not None:
             scoped = [r for r in rows if r.project_id == project_id]
             if scoped:
