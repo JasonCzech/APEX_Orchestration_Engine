@@ -26,6 +26,7 @@ dev = [
     "ruff>=0.6",
     "pyright>=1.1.380",
     "langgraph-checkpoint-postgres>=3.1.0",
+    "respx>=0.23.1",
 ]
 
 [tool.uv]

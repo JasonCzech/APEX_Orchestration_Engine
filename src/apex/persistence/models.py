@@ -255,6 +255,25 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SavedQuery(Base):
+    """A saved work-tracking query (project-scoped, provider-tagged)."""
+
+    __tablename__ = "saved_queries"
+    __table_args__ = (UniqueConstraint("project_id", "name"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    name: Mapped[str] = mapped_column(String(255))
+    project_id: Mapped[str | None] = mapped_column(String(255))  # null = global
+    provider: Mapped[str] = mapped_column(String(64))  # jira | ado | stub
+    query: Mapped[str] = mapped_column(Text)  # JQL / WIQL / stub expression
+    description: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class EngineRun(Base):
     """Queryable engine-run history projection, independent of graph checkpoints.
 
