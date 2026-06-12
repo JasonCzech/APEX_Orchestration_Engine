@@ -4,6 +4,7 @@ import { NavLink } from 'react-router'
 import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
+import { useApprovalsInbox } from '@/features/approvals/useApprovalsInbox'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { isThemeName, THEME_LABELS, useTheme } from '@/theme/useTheme'
 
@@ -23,6 +24,26 @@ interface NavSection {
   label: string
   requiresRole?: Role
   items: NavItem[]
+}
+
+/**
+ * Live pending-gate count on the Approvals nav item (D3). Shares the inbox's
+ * react-query cache entry (same hook, same key), so this adds no extra
+ * polling; pulses when any gate has been waiting > 15m. Hidden while loading,
+ * on error, or at zero.
+ */
+function ApprovalsBadge() {
+  const { count, hasStale } = useApprovalsInbox()
+  if (count === 0) return null
+  return (
+    <span
+      className={hasStale ? 'dash-badge nav-badge pulse' : 'dash-badge nav-badge'}
+      data-testid="approvals-nav-badge"
+      aria-label={`${count} pending approval${count === 1 ? '' : 's'}`}
+    >
+      {count}
+    </span>
+  )
 }
 
 function Icon({ d }: { d: string }) {
@@ -165,6 +186,7 @@ export function Sidebar() {
                 >
                   <span className="nav-icon">{item.icon}</span>
                   <span className="nav-label">{item.label}</span>
+                  {item.to === '/approvals' && <ApprovalsBadge />}
                 </NavLink>
               ))}
             </div>

@@ -2,6 +2,9 @@ import { Link, Navigate, useLocation, useParams } from 'react-router'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { ProblemCard } from '@/components/ProblemCard'
+import { AbortConfirm } from '@/hitl/GateActionBar'
+import { GateModuleView, GateSlimBanner } from '@/hitl/GateModule'
+import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
 
 import { LiveStatusChip } from './LiveStatusChip'
@@ -39,6 +42,10 @@ export function RunDetailPage() {
   // poll deliberately stays on while streaming — snapshot is truth, the stream
   // adds liveness (plan: snapshot + tail reconciliation).
   const live = useRunLiveness(threadId)
+  // D3 HITL: one page-level gate machine — the workspace GateModule, the slim
+  // cross-phase banner, and the header abort all drive the same instance. The
+  // stream's pendingGateHint accelerates discovery ahead of the 10s poll.
+  const hitl = useGate(threadId, { gateHint: live.stream.pendingGateHint })
 
   if (query.isPending) return <RunDetailSkeleton />
   if (query.isError) {
@@ -81,6 +88,23 @@ export function RunDetailPage() {
     detail.thread_status === 'interrupted' ? 'awaiting_output_review' : detail.thread_status,
   )
 
+  // Gate placement (plan 2.a): full module above the workspace tabs when the
+  // gate's phase is the selected phase, else a slim banner linking there.
+  const gateSlot =
+    hitl.gate &&
+    (hitl.gate.phase === phaseParam ? (
+      <GateModuleView
+        threadId={threadId}
+        gate={hitl.gate}
+        machineState={hitl.state}
+        onEdit={hitl.edit}
+        onSubmit={hitl.submit}
+        onViewCurrent={hitl.viewCurrent}
+      />
+    ) : (
+      <GateSlimBanner threadId={threadId} gate={hitl.gate} />
+    ))
+
   return (
     <>
       <header className="run-detail-header">
@@ -98,6 +122,11 @@ export function RunDetailPage() {
           </span>
         )}
         <span className="spacer" />
+        {(hitl.state.tag === 'open' || hitl.state.tag === 'failed') && (
+          // Header abort drives the SAME machine as the gate action bar
+          // (same type-to-confirm arm step, action 'abort').
+          <AbortConfirm onConfirm={() => hitl.submit('abort')} />
+        )}
         <Link className="btn btn-ghost btn-sm" to={`/runs/${threadId}/timeline`}>
           Timeline
         </Link>
@@ -110,6 +139,7 @@ export function RunDetailPage() {
           state={state}
           stream={live.stream}
           threadBusy={detail.thread_status === 'busy'}
+          gateSlot={gateSlot}
         />
         <RunRail
           detail={detail}

@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react'
+
 import { Link, useSearchParams } from 'react-router'
 
 import type {
@@ -42,6 +44,7 @@ export function PhaseWorkspace({
   state,
   stream,
   threadBusy = false,
+  gateSlot,
 }: {
   threadId: string
   phase: PhaseName
@@ -49,6 +52,8 @@ export function PhaseWorkspace({
   /** Live stream view from useRunLiveness (RunDetailPage); optional for snapshot-only mounts. */
   stream?: LiveStreamViewLike
   threadBusy?: boolean
+  /** D3 HITL: GateModule (gate on this phase) or slim banner, pinned above the tabs. */
+  gateSlot?: ReactNode
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = activeTab(searchParams.get('tab'), threadBusy ? 'activity' : 'output')
@@ -74,6 +79,7 @@ export function PhaseWorkspace({
 
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
+      {gateSlot}
       <div className="workspace-tabs" role="tablist" aria-label="Phase workspace tabs">
         {TABS.map((candidate) => (
           <button

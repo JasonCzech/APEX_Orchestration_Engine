@@ -119,7 +119,7 @@ describe('RunDetailPage', () => {
     expect(within(row).getByText('Passed')).toBeInTheDocument()
   })
 
-  it('shows the pending-gate banner with a disabled D3 placeholder action', async () => {
+  it('shows the pending-gate banner with a live Review link to the gate phase (D3)', async () => {
     server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
     renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting`])
 
@@ -127,7 +127,10 @@ describe('RunDetailPage', () => {
     expect(banner).toHaveTextContent('Gate open:')
     expect(banner).toHaveTextContent('phase_review')
     expect(banner).toHaveTextContent('Reporting')
-    expect(within(banner).getByRole('button', { name: 'Review gate' })).toBeDisabled()
+    expect(within(banner).getByRole('link', { name: 'Review gate' })).toHaveAttribute(
+      'href',
+      `/runs/${THREAD_ID}/phases/reporting`,
+    )
   })
 
   it('surfaces a problem card with retry when the snapshot fails', async () => {

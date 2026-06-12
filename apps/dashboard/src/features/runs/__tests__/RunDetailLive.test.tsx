@@ -117,7 +117,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
 
     const hint = await screen.findByTestId('gate-hint')
     expect(hint).toHaveTextContent('Gate opening: prompt_review on Reporting')
-    expect(within(hint).getByText('review arrives in D3')).toHaveAttribute('title')
+    expect(within(hint).getByText('loading gate…')).toHaveAttribute('title')
   })
 
   it('suppresses the hint once the snapshot hydrates the real interrupt', async () => {

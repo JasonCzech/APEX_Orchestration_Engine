@@ -201,7 +201,11 @@ export const PIPELINE_DETAIL: PipelineDetail = {
   interrupts: [],
 }
 
-/** Same thread, but interrupted on a phase_review gate (RunRail banner case). */
+/**
+ * Same thread, but interrupted on a phase_review gate (RunRail banner + D3
+ * GateModule case). The payload is contract-valid (interrupts.ts
+ * PhaseReviewPayloadSchema) so the gate machine hydrates it.
+ */
 export const PIPELINE_DETAIL_INTERRUPTED: PipelineDetail = {
   ...PIPELINE_DETAIL,
   thread_status: 'interrupted',
@@ -212,8 +216,14 @@ export const PIPELINE_DETAIL_INTERRUPTED: PipelineDetail = {
       kind: 'phase_review',
       phase: 'reporting',
       payload: {
+        schema_version: 1,
         kind: 'phase_review',
         phase: 'reporting',
+        summary: 'Draft report compiled; KPI deltas within tolerance.',
+        result_preview: { summary: 'Draft report compiled', reasoning_digest: null },
+        artifacts: [],
+        warnings: [],
+        dialogue_tail: [],
         actions: ['approve', 'revise', 'discuss', 'abort'],
       },
     },

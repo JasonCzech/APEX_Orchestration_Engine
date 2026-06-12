@@ -109,14 +109,18 @@ export function RunRail({
             Gate open: <strong>{gate.kind ?? 'review'}</strong> on{' '}
             <strong>{isPhaseName(gate.phase) ? PHASE_LABELS[gate.phase] : (gate.phase ?? '?')}</strong>
           </span>
-          <button
-            type="button"
+          {/* D3: links to the gate's phase, where the GateModule is pinned
+              above the workspace tabs. */}
+          <Link
             className="btn btn-secondary btn-sm gate-banner-action"
-            disabled
-            title="Gate actions arrive in D3 — use the approvals inbox flow once it lands"
+            to={
+              isPhaseName(gate.phase)
+                ? `/runs/${detail.thread_id}/phases/${gate.phase}`
+                : `/runs/${detail.thread_id}`
+            }
           >
             Review gate
-          </button>
+          </Link>
         </div>
       )}
 
@@ -138,9 +142,9 @@ export function RunRail({
           </span>
           <span
             className="topbar-meta-chip warning gate-hint-chip"
-            title="Heard on the live stream — the snapshot poll surfaces the full gate shortly; review actions arrive in D3"
+            title="Heard on the live stream — fetching the full gate payload; the review opens here as soon as it lands"
           >
-            review arrives in D3
+            loading gate…
           </span>
         </div>
       )}

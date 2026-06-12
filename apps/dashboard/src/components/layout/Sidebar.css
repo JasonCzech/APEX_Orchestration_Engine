@@ -147,6 +147,22 @@
   display: none;
 }
 
+/* Approvals live count (D3) — .dash-badge primitive + nav layout glue. */
+.nav-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.sidebar.collapsed .nav-badge {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .sidebar .nav-badge {
+    display: none;
+  }
+}
+
 /* Footer */
 .sidebar-footer {
   flex: 0 0 auto;

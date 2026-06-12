@@ -1,9 +1,5 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function ApprovalsInboxPage() {
-  return <FeaturePlaceholder title="Approvals" route="/approvals" />
-}
-
-export function ApprovalDetailPage() {
-  return <FeaturePlaceholder title="Approval" route="/approvals/:threadId/:interruptId" />
-}
+// D3: real approvals inbox. The same component serves both routes —
+// /approvals/:threadId/:interruptId is a deep link that pre-selects a queue
+// item (see ./ROUTES.md).
+export { ApprovalsInboxPage } from './ApprovalsInboxPage'
+export { ApprovalsInboxPage as ApprovalDetailPage } from './ApprovalsInboxPage'
