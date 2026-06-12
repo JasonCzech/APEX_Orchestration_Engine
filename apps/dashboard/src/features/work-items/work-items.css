@@ -1,0 +1,319 @@
+/*
+ * Work-items screens (D6) — layout-only rules; colors/typography come from
+ * the token sheet and primitive classes (data-table, status-badge, dash-empty,
+ * btn, field-*), mirroring environments.css.
+ */
+
+.wi-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Toolbar */
+
+.wi-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+}
+
+.wi-page-title {
+  margin: 0;
+  margin-right: auto;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Query console */
+
+.wi-console {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+}
+
+.wi-mode-toggle {
+  display: flex;
+  gap: 4px;
+  align-self: flex-start;
+}
+
+.wi-tab {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wi-tab.active {
+  border-color: var(--accent-border, var(--accent));
+  color: var(--accent);
+}
+
+.wi-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wi-grow {
+  flex: 1;
+  min-width: 220px;
+}
+
+.wi-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.wi-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wi-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.wi-caption {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.wi-caption--danger {
+  color: var(--danger-text);
+}
+
+/* Results table cells */
+
+.wi-key-link {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.wi-query-cell {
+  display: inline-block;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.wi-desc-cell {
+  display: inline-block;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  color: var(--text-secondary);
+}
+
+.wi-muted {
+  color: var(--text-muted);
+}
+
+.wi-time {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.wi-actions-cell {
+  width: 36px;
+  text-align: right;
+}
+
+.wi-ext-link {
+  text-decoration: none;
+  font-size: 13px;
+}
+
+/* Pagination footer (runs pattern) */
+
+.wi-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px;
+}
+
+.wi-pagination-caption {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.wi-pagination-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+/* Modals (env-overlay pattern) */
+
+.wi-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.wi-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(460px, 100%);
+  padding: 16px;
+  border-radius: var(--radius);
+}
+
+.wi-modal-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wi-modal-caption {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.wi-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.wi-json-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+
+.wi-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 12px;
+}
+
+/* Detail */
+
+.wi-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+}
+
+.wi-detail-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wi-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.wi-breadcrumb a {
+  color: var(--text-muted);
+}
+
+.wi-breadcrumb a:hover {
+  color: var(--accent);
+}
+
+.wi-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wi-detail-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.wi-detail-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.wi-detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+}
+
+.wi-description p {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.wi-description p:last-child {
+  margin-bottom: 0;
+}
+
+/* Loading skeleton */
+
+.wi-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wi-skeleton-row {
+  height: 44px;
+  border-radius: 8px;
+  animation: pulse 1.8s ease-in-out infinite;
+}

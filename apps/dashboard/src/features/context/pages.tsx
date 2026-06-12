@@ -1,5 +1,3 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function ContextPage() {
-  return <FeaturePlaceholder title="Context" route="/context" />
-}
+// D6: real context screen (summaries / documents / evidence tabs).
+// Export name must match the router's lazyPage() binding in routes/router.tsx.
+export { ContextPage } from './ContextPage'

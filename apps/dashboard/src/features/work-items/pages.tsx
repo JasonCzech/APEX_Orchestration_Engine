@@ -1,13 +1,5 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function WorkItemsPage() {
-  return <FeaturePlaceholder title="Work Items" route="/work-items" />
-}
-
-export function SavedQueriesPage() {
-  return <FeaturePlaceholder title="Saved Queries" route="/work-items/saved" />
-}
-
-export function WorkItemDetailPage() {
-  return <FeaturePlaceholder title="Work Item" route="/work-items/:provider/:itemId" />
-}
+// D6: real work-items screens (query console, saved queries, item detail).
+// Export names must match the router's lazyPage() bindings in routes/router.tsx.
+export { WorkItemsPage } from './WorkItemsPage'
+export { SavedQueriesPage } from './SavedQueriesPage'
+export { WorkItemDetailPage } from './WorkItemDetailPage'

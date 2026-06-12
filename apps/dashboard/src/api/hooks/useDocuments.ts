@@ -8,9 +8,9 @@ import { queryKeys } from '@/api/queryKeys'
 
 export type DocumentOut = components['schemas']['DocumentOut']
 
-async function fetchDocuments(project?: string): Promise<DocumentOut[]> {
+async function fetchDocuments(project?: string, q?: string): Promise<DocumentOut[]> {
   const { data, error, response } = await getApexClient().GET('/v1/documents', {
-    params: { query: project ? { project } : {} },
+    params: { query: { ...(project ? { project } : {}), ...(q ? { q } : {}) } },
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -22,11 +22,18 @@ async function fetchDocuments(project?: string): Promise<DocumentOut[]> {
   return data.items
 }
 
-/** Existing documents for the wizard Context step picker. */
-export function useDocumentsList(project?: string): UseQueryResult<DocumentOut[], Error> {
+/**
+ * Existing documents for the wizard Context step picker and the /context
+ * Documents tab. D6 extension: optional `q` name search — keyed under the
+ * D6 listWith key only when present so the wizard's cache entries are
+ * untouched.
+ */
+export function useDocumentsList(project?: string, q?: string): UseQueryResult<DocumentOut[], Error> {
   return useQuery({
-    queryKey: queryKeys.documents.listBy(project),
-    queryFn: () => fetchDocuments(project),
+    queryKey: q
+      ? queryKeys.documents.listWith({ project: project ?? null, q })
+      : queryKeys.documents.listBy(project),
+    queryFn: () => fetchDocuments(project, q),
     staleTime: 30_000,
   })
 }
@@ -61,6 +68,28 @@ export function useUploadDocument() {
         throw new ApiError(response.status, `Upload of ${file.name} failed (${response.status})`)
       }
       return data
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.documents.all })
+    },
+  })
+}
+
+/** D6 append: delete a document (operator+; DELETE /v1/documents/{document_id}). */
+export function useDeleteDocument() {
+  const queryClient = useQueryClient()
+  return useMutation<void, Error, string>({
+    mutationFn: async (documentId: string) => {
+      const { error, response } = await getApexClient().DELETE('/v1/documents/{document_id}', {
+        params: { path: { document_id: documentId } },
+      })
+      if (!response.ok) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Document delete failed (${response.status})`),
+          error,
+        )
+      }
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.documents.all })

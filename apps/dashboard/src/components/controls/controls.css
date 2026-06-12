@@ -1,0 +1,65 @@
+/* Shared toolbar controls (D6): WindowPresets segmented control + custom
+   datetime disclosure. Tokens only — styling follows the engine-metric-tab
+   conventions from src/features/runs/live.css. */
+
+.window-presets {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.segmented-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.segmented-btn:hover {
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.segmented-btn[aria-pressed='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  border: none;
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+
+.window-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.window-custom-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.window-custom-field .field-input {
+  font-size: 12px;
+  padding: 4px 8px;
+}

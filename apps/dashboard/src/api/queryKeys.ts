@@ -111,6 +111,13 @@ export const queryKeys = {
     detail: (id: string) => [...queryKeys.documents.all, id] as const,
     /** D4 append: list filtered by project (?project=). */
     listBy: (project?: string) => [...queryKeys.documents.list(), { project: project ?? null }] as const,
+    /**
+     * D6 append: list keyed by the full server filter object (project + q).
+     * The 'filtered' marker at index 2 keeps it disjoint from listBy's
+     * `{ project }` object element at the same position.
+     */
+    listWith: (filters: Record<string, unknown>) =>
+      [...queryKeys.documents.list(), 'filtered', filters] as const,
   },
   /** D4 append: server-side wizard drafts (/v1/drafts). */
   drafts: {

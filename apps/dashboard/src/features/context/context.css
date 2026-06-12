@@ -1,0 +1,335 @@
+/*
+ * Context screen (D6) — layout-only rules; colors/typography come from the
+ * token sheet and primitive classes (data-table, status-badge, dash-empty,
+ * btn, field-*, tonal-card), mirroring environments.css.
+ */
+
+.ctx-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ctx-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+}
+
+.ctx-tabs {
+  display: flex;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.ctx-tab {
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ctx-tab.active {
+  border-color: var(--accent-border, var(--accent));
+  color: var(--accent);
+}
+
+/* Shared form bits */
+
+.ctx-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius);
+}
+
+.ctx-card-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ctx-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ctx-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.ctx-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ctx-grow {
+  flex: 1;
+  min-width: 200px;
+}
+
+.ctx-caption {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.ctx-caption--danger {
+  color: var(--danger-text);
+}
+
+.ctx-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* Summaries split: form | accepted card + history */
+
+.ctx-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+/* Key chips (summaries form) */
+
+.ctx-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ctx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.12));
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.ctx-chip-remove {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.ctx-chip-remove:hover {
+  color: var(--danger-text);
+}
+
+/* Accepted card + session history (playground pattern) */
+
+.ctx-run-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ctx-run-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.ctx-history-title {
+  margin: 8px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.ctx-history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ctx-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+/* Documents table cells */
+
+.ctx-time {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ctx-num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ctx-actions-cell {
+  width: 36px;
+  text-align: right;
+}
+
+.ctx-file-input {
+  display: none;
+}
+
+.ctx-muted {
+  color: var(--text-muted);
+}
+
+/* Evidence packets */
+
+.ctx-evidence-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ctx-evidence-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.ctx-evidence-group-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ctx-packet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.ctx-packet {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius);
+}
+
+.ctx-packet-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ctx-packet-summary {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.ctx-packet-ref {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ctx-packet-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Modals (env-overlay pattern) */
+
+.ctx-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.ctx-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 100%);
+  padding: 16px;
+  border-radius: var(--radius);
+}
+
+.ctx-modal-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ctx-modal-caption {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.ctx-inline-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 12px;
+}
+
+/* Loading skeleton */
+
+.ctx-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ctx-skeleton-row {
+  height: 44px;
+  border-radius: 8px;
+  animation: pulse 1.8s ease-in-out infinite;
+}

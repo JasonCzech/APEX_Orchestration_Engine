@@ -1,5 +1,3 @@
-import { FeaturePlaceholder } from '@/components/FeaturePlaceholder'
-
-export function AnalyticsPage() {
-  return <FeaturePlaceholder title="Analytics" route="/analytics" />
-}
+// D6: real usage-analytics screen (GET /v1/analytics/usage).
+// Export names must match the router's lazyPage() bindings in routes/router.tsx.
+export { AnalyticsPage } from './AnalyticsPage'
