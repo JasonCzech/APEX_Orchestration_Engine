@@ -1,0 +1,494 @@
+/*
+ * primitives.css — reusable primitive classes for the APEX Orchestration dashboard.
+ *
+ * Every section is ported from the APEX Load design-language reference
+ * (Project_Stormrunner/dashboard/src). Visual values are identical to the source;
+ * the only adaptations are generic class names where the source selector was
+ * page-scoped (noted per section).
+ *
+ * Note on --subtle-fill: APEX Load references this custom property (App.css
+ * .topbar-meta-chip, TestExecution.css striped rows) but never defines it, so it
+ * computes to `transparent`. We keep the verbatim var() reference with an explicit
+ * `transparent` fallback — identical rendering, no silent dependency.
+ */
+
+/* ============================================================
+ * Animations — source: index.css "Premium Animations" +
+ * Sidebar.css @keyframes pulse + DashboardPage.css @keyframes badgePulse
+ * ============================================================ */
+
+@keyframes slideUpFade {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes fadeIn {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes pulseGlow {
+  0% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  70% { box-shadow: 0 0 0 12px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* source: Sidebar.css */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* source: DashboardPage.css */
+@keyframes badgePulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(99, 102, 241, 0); }
+}
+
+/* Base utility classes — source: index.css */
+.animate-enter {
+  animation: slideUpFade 0.5s var(--transition-spring) forwards;
+}
+
+.animate-fade {
+  animation: fadeIn 0.3s ease forwards;
+}
+
+/* ============================================================
+ * Glass panel — source: index.css .glass-panel
+ * ============================================================ */
+
+.glass-panel {
+  background: var(--bg-card);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ============================================================
+ * Buttons — source: index.css "Shared button styles"
+ * ============================================================ */
+
+.btn {
+  padding: 8px 20px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.15);
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow: 0 4px 12px rgba(var(--accent-rgb), 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: 0 2px 4px rgba(var(--accent-rgb), 0.15);
+}
+
+.btn-secondary {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+}
+
+.btn-secondary:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(var(--accent-rgb), 0.2);
+}
+
+.btn-secondary:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: none;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.btn-ghost:active:not(:disabled) {
+  transform: translateY(0) scale(0.97);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: white;
+  box-shadow: 0 2px 8px rgba(var(--danger-rgb), 0.15);
+}
+
+.btn-danger:hover {
+  background: #dc2626;
+  box-shadow: 0 4px 12px rgba(var(--danger-rgb), 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-danger:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: 0 2px 4px rgba(var(--danger-rgb), 0.15);
+}
+
+.btn-success {
+  background: var(--success);
+  color: white;
+  box-shadow: 0 2px 8px rgba(var(--success-rgb), 0.15);
+}
+
+.btn-success:hover {
+  background: #16a34a;
+  box-shadow: 0 4px 12px rgba(var(--success-rgb), 0.25);
+  transform: translateY(-1px);
+}
+
+.btn-success:active {
+  transform: translateY(0) scale(0.97);
+  box-shadow: 0 2px 4px rgba(var(--success-rgb), 0.15);
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* ============================================================
+ * Badges & chips — source: DashboardPage.css (.dash-badge,
+ * .dash-context-chip) + App.css (.topbar-meta-chip + tonal variants)
+ * + StatusBadge.css (.status-badge family)
+ * ============================================================ */
+
+.dash-badge {
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.dash-badge.pulse {
+  animation: badgePulse 2s ease-in-out infinite;
+}
+
+.dash-context-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  background: var(--bg-card);
+}
+
+.topbar-meta-chip {
+  min-height: 24px;
+  max-width: 170px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 999px;
+  background: var(--subtle-fill, transparent);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-meta-chip.success {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.topbar-meta-chip.warning {
+  border-color: var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.topbar-meta-chip.danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.topbar-meta-chip.info,
+.topbar-meta-chip.accent {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+/* Run/state badge — source: StatusBadge.css. Generic name kept verbatim. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.status-badge.success {
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.status-badge.warning {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.status-badge.danger {
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
+.status-badge.info {
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.status-badge.accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-badge.neutral {
+  background: rgba(107, 112, 128, 0.15);
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+ * Status dot — source: Sidebar.css .status-dot (+ pulse animation).
+ * Uses currentColor: set color on the parent (e.g. var(--success)).
+ * ============================================================ */
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2s infinite;
+}
+
+.status-text {
+  white-space: nowrap;
+}
+
+/* ============================================================
+ * Empty states — source: DashboardPage.css "Empty states"
+ * ============================================================ */
+
+.dash-empty {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.dash-empty.small {
+  padding: 16px;
+}
+
+.dash-empty.compact {
+  min-height: 0;
+  padding: 12px 16px;
+  flex-direction: row;
+  justify-content: center;
+  gap: 10px;
+}
+
+.dash-empty.compact .dash-empty-icon {
+  display: none;
+}
+
+.dash-empty.compact .dash-empty-hint {
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.dash-empty-icon {
+  margin-bottom: 4px;
+}
+
+.dash-empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+ * Focus ring — application of APEX Load's recurring focus-visible
+ * treatment (App.css .topbar-run-chip:focus-visible,
+ * .theme-toggle button:focus-visible: 2px solid var(--focus-ring),
+ * offset 2px). :where() keeps specificity at zero so component
+ * styles can override.
+ * ============================================================ */
+
+:where(button, a, [role='button'], input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+ * Table base — generic .data-table adapted from DashboardPage.css
+ * .trend-table / .trend-table-wrap (values identical; class renamed
+ * from page-scoped "trend-" to generic "data-"). Striped variant from
+ * TestExecution.css .archive-report-card .tx-table tbody tr:nth-child(even).
+ * ============================================================ */
+
+.data-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th,
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.data-table th {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: var(--bg-card);
+}
+
+.data-table tbody tr {
+  transition: background 0.15s;
+}
+
+.data-table tbody tr:hover {
+  background: var(--bg-hover);
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table .strong {
+  font-weight: 700;
+}
+
+.data-table.striped tbody tr:nth-child(even) {
+  background: var(--subtle-fill, transparent);
+}
+
+/* ============================================================
+ * Form field base — generic .field-input / .field-select adapted from
+ * Pages.css .dashboard-workspace-toolbar input/select (34px control)
+ * with the focus-ring treatment from App.css .topbar-title-field
+ * input:focus. Values identical; class names generalized.
+ * ============================================================ */
+
+.field-input,
+.field-select {
+  min-height: 34px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 12px;
+  padding: 7px 10px;
+  outline: none;
+}
+
+.field-input::placeholder {
+  color: var(--text-muted);
+}
+
+.field-input:focus,
+.field-select:focus {
+  border-color: var(--accent-border);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.field-select:disabled,
+.field-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+/* ============================================================
+ * Scrollbars — source: index.css ::-webkit-scrollbar rules
+ * ============================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@apex/pipeline-events",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Zod contract schemas (schema_version 1) for APEX pipeline custom SSE events, HITL interrupt payloads, gate resume bodies, and thread-state slices. Contract-tested against fixtures lifted from the backend's own test suite.",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "eslint": "^9.17.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
+    "vitest": "^3.0.5"
+  }
+}

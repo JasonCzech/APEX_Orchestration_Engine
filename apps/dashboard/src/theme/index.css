@@ -1,0 +1,25 @@
+/*
+ * index.css — theme entry point for the APEX Orchestration dashboard.
+ * Imported once by the app entry (src/main.tsx imports './theme/index.css').
+ *
+ * Design language ported from APEX Load (Project_Stormrunner/dashboard).
+ *   tokens.css     — :root dark OLED token set + base element resets
+ *   themes.css     — light / solarized-dark / solarized-light / monokai-dimmed
+ *   primitives.css — buttons, glass panels, badges, chips, tables, fields, animations
+ */
+
+@import './tokens.css';
+@import './themes.css';
+@import './primitives.css';
+
+/*
+ * Base layout vars — derived from APEX Load's shell dimensions
+ * (Sidebar.css: 240px expanded / 64px collapsed; App.css .main-topbar:
+ * min-height 56px). APEX Load hardcodes these; exposed here as vars so the
+ * shell and screens share one source of truth. Values are unchanged.
+ */
+:root {
+  --sidebar-width: 240px;
+  --sidebar-width-collapsed: 64px;
+  --topbar-min-height: 56px;
+}

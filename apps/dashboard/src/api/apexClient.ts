@@ -1,0 +1,74 @@
+import createClient, { type Middleware } from 'openapi-fetch'
+
+import type { components, paths } from '@apex/api-client'
+
+import { getApiKey } from '@/auth/keyStorage'
+import { resolveApexBaseUrl } from '@/config/runtimeConfig'
+
+import { ApiError, errorMessageOf } from './errors'
+
+export type ApexClient = ReturnType<typeof createClient<paths>>
+export type SystemInfo = components['schemas']['SystemInfo']
+export type ConsumerInfo = components['schemas']['ConsumerInfo']
+export type Role = components['schemas']['Role']
+
+type UnauthorizedHandler = () => void
+
+const unauthorizedHandlers = new Set<UnauthorizedHandler>()
+
+/** Registered by AuthProvider so any 401 anywhere drops the session. */
+export function onUnauthorized(handler: UnauthorizedHandler): () => void {
+  unauthorizedHandlers.add(handler)
+  return () => {
+    unauthorizedHandlers.delete(handler)
+  }
+}
+
+const authMiddleware: Middleware = {
+  onRequest({ request }) {
+    const key = getApiKey()
+    if (key) request.headers.set('x-api-key', key)
+    return request
+  },
+  onResponse({ response }) {
+    if (response.status === 401) {
+      for (const handler of unauthorizedHandlers) handler()
+    }
+    return response
+  },
+}
+
+let client: ApexClient | null = null
+
+/**
+ * Lazy singleton typed from the generated @apex/api-client schema. The schema
+ * paths already include the /v1 prefix, so baseUrl is the APEX origin only
+ * (same origin when runtime config leaves apexOrigin empty).
+ */
+export function getApexClient(): ApexClient {
+  if (!client) {
+    client = createClient<paths>({ baseUrl: resolveApexBaseUrl() })
+    client.use(authMiddleware)
+  }
+  return client
+}
+
+/** Rebuild the client after runtime-config changes (also used by tests). */
+export function resetApexClient(): void {
+  client = null
+}
+
+export async function fetchSystemInfo(): Promise<SystemInfo> {
+  // The spec declares no error responses for this op, so openapi-fetch's
+  // typed `error` branch collapses to never — gate on response.ok instead
+  // (401/5xx still happen at runtime).
+  const { data, error, response } = await getApexClient().GET('/v1/system/info')
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status,
+      errorMessageOf(error, `System info request failed (${response.status})`),
+      error,
+    )
+  }
+  return data
+}

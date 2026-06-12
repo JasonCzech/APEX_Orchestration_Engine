@@ -1,0 +1,88 @@
+.api-key-gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  background:
+    radial-gradient(circle at 18% 20%, var(--accent-soft), transparent 40%),
+    radial-gradient(circle at 82% 78%, rgba(59, 130, 246, 0.08), transparent 40%),
+    var(--bg-primary);
+}
+
+.api-key-gate-card {
+  width: min(480px, 100%);
+  padding: 36px 32px;
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.api-key-gate-kicker {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.api-key-gate-card h1 {
+  font-size: 26px;
+  color: var(--text-primary);
+}
+
+.api-key-gate-copy {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.api-key-gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.api-key-gate-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.api-key-gate-input {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.api-key-gate-input:focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+  border-color: var(--accent-border);
+}
+
+.api-key-gate .btn-primary {
+  align-self: flex-start;
+}
+
+.api-key-gate .btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.api-key-gate-error {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+}

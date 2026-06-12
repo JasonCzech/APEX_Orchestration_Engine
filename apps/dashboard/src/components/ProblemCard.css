@@ -1,0 +1,26 @@
+.problem-card {
+  max-width: 560px;
+  margin: 48px auto;
+  padding: 28px;
+  border-radius: var(--radius);
+  border-left: 3px solid var(--danger);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.problem-card h2 {
+  font-size: 18px;
+  color: var(--text-primary);
+}
+
+.problem-card p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.problem-card .btn {
+  margin-top: 4px;
+}

@@ -24,6 +24,22 @@ jobs:
           uv run python scripts/export_openapi.py
           git diff --exit-code docs/api/
 
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run -w @apex/pipeline-events typecheck
+      - run: npm run -w @apex/pipeline-events test
+      - run: npm run -w @apex/dashboard typecheck
+      - run: npm run -w @apex/dashboard lint
+      - run: npm run -w @apex/dashboard test
+      - run: npm run -w @apex/dashboard build
+
   helm-lint:
     runs-on: ubuntu-latest
     steps:

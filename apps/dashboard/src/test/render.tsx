@@ -1,0 +1,67 @@
+import { render } from '@testing-library/react'
+import { createMemoryRouter, RouterProvider } from 'react-router'
+
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+import type { Role } from '@/api/apexClient'
+import { ApiKeyGate } from '@/auth/ApiKeyGate'
+import { AuthProvider, type AuthState } from '@/auth/AuthProvider'
+import { TopbarContributionProvider } from '@/components/layout/TopbarContributionProvider'
+import { ConnectivityProvider } from '@/health/ConnectivityProvider'
+import { appRoutes } from '@/routes/router'
+import { ThemeProvider } from '@/theme/useTheme'
+
+import { SYSTEM_INFO } from './server'
+
+/** No-retry client so error states surface immediately in tests. */
+export function createTestQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, refetchOnWindowFocus: false },
+      mutations: { retry: false },
+    },
+  })
+}
+
+/** Pre-validated session for tests that start past the ApiKeyGate. */
+export function authenticatedState(role: Role = 'admin', name = 'Dash Ops'): AuthState {
+  const consumer = { name, role, scopes: SYSTEM_INFO.consumer.scopes }
+  return {
+    status: 'authenticated',
+    consumer,
+    systemInfo: { ...SYSTEM_INFO, consumer },
+  }
+}
+
+/**
+ * Mounts the full provider stack (App.tsx shape) on a memory router over the
+ * real appRoutes. `authState` short-circuits key validation when a test wants
+ * to start inside the shell.
+ */
+export function renderApp({
+  initialEntries = ['/'],
+  authState,
+  queryClient = createTestQueryClient(),
+}: {
+  initialEntries?: string[]
+  authState?: AuthState
+  queryClient?: QueryClient
+} = {}) {
+  const router = createMemoryRouter(appRoutes, { initialEntries })
+  const result = render(
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider staticState={authState}>
+        <ConnectivityProvider>
+          <ThemeProvider>
+            <TopbarContributionProvider>
+              <ApiKeyGate>
+                <RouterProvider router={router} />
+              </ApiKeyGate>
+            </TopbarContributionProvider>
+          </ThemeProvider>
+        </ConnectivityProvider>
+      </AuthProvider>
+    </QueryClientProvider>,
+  )
+  return { ...result, router, queryClient }
+}
