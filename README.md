@@ -59,7 +59,7 @@ Quality gates: `npm run check:backend` or `make check` (ruff, pyright, pytest).
 The web dashboard lives in `apps/dashboard` (npm workspaces — install at the
 repo root). It is a fully decoupled static SPA: the backend never serves it.
 
-```bash
+```powershell
 npm install
 npm run dev:dashboard
 npm run test:dashboard
@@ -68,6 +68,13 @@ npm run build
 
 `dev:dashboard` starts Vite on `:3000` with the backend proxy. `npm run build`
 typechecks and writes the static bundle to `apps/dashboard/dist`.
+
+If you need to point the dashboard at a different backend in PowerShell:
+
+```powershell
+$env:APEX_API_PROXY = "http://other-host:2024"
+npm run dev:dashboard
+```
 
 Setup details (seeded backend, API keys, runtime config, deploy contract):
 [`apps/dashboard/README.md`](apps/dashboard/README.md). Architecture decisions:

@@ -13,24 +13,28 @@ Backend overview: [repo root README](../../README.md).
 
 The dashboard needs a running, seeded backend. From the **repo root**:
 
+Windows PowerShell / Command Prompt / cross-platform npm scripts:
+
+```powershell
+npm run setup:backend
+npm run dev:backend
+npm install
+npm run -w @apex/dashboard dev
+```
+
+Equivalent explicit backend tasks (commonly used on macOS/Linux):
+
 ```bash
-# 1. Backend infra + schema (Postgres/Redis/MinIO; /v1 domain data lives in Postgres)
 uv sync
 cp .env.example .env
 make infra-up
 make migrate
-
-# 2. Seed (all idempotent)
-uv run python scripts/seed_dev.py       # API consumers — prints each key EXACTLY ONCE
-uv run python scripts/seed_prompts.py   # built-in phase prompts (7 phases × system/user)
-uv run python scripts/seed_catalog.py   # demo app/env + one stub connection per port kind
-
-# 3. Backend server
-make dev                                # langgraph dev on :2024
-
-# 4. Dashboard (npm workspaces — install at the root, not in this folder)
+uv run python scripts/seed_dev.py
+uv run python scripts/seed_prompts.py
+uv run python scripts/seed_catalog.py
+make dev
 npm install
-npm run -w @apex/dashboard dev          # vite on :3000
+npm run -w @apex/dashboard dev
 ```
 
 Open <http://localhost:3000> and paste an API key at the gate screen.
@@ -64,6 +68,11 @@ Browser navigations (`Accept: text/html`) bypass the proxy so the SPA route
 
 ```bash
 APEX_API_PROXY=http://other-host:2024 npm run -w @apex/dashboard dev
+```
+
+```powershell
+$env:APEX_API_PROXY = "http://other-host:2024"
+npm run -w @apex/dashboard dev
 ```
 
 (`APEX_API_PROXY` is read from the **shell** environment by `vite.config.ts`;
