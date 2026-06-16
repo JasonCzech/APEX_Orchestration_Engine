@@ -324,7 +324,7 @@ export function EnvironmentsPage() {
     <section className="env-page animate-enter">
       <header className="env-toolbar glass-panel">
         {/* The topbar already renders the route-handle h1; this is a section label. */}
-        <h2 className="env-page-title">Environment references</h2>
+        <h2 className="env-page-title">Environment configurations</h2>
         {canMutate && !creating && (
           <button
             type="button"
@@ -365,7 +365,7 @@ export function EnvironmentsPage() {
         />
       ) : groups.length === 0 ? (
         <div className="dash-empty">
-          <h2>No environments yet</h2>
+          <h2>No environment configurations yet</h2>
           <p className="dash-empty-hint">
             Environment references point pipeline phases at the systems under test.
           </p>

@@ -356,7 +356,7 @@ export function WorkItemsPage() {
     <section className="wi-page animate-enter">
       <header className="wi-toolbar glass-panel">
         {/* The topbar already renders the route-handle h1; this is a section label. */}
-        <h2 className="wi-page-title">Query console</h2>
+        <h2 className="wi-page-title">Ticket console</h2>
         <Link className="btn btn-ghost btn-sm" to="/work-items/saved">
           Saved queries
         </Link>

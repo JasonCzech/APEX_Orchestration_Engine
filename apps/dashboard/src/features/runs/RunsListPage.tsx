@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
+import { PHASE_NAMES } from '@apex/pipeline-events'
+
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
+import { useThreadState } from '@/api/hooks/useThreadState'
 import { isApiError } from '@/api/errors'
-import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { ProblemCard } from '@/components/ProblemCard'
+import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { formatRelative } from '@/utils/time'
 
 import { CompareSelectBar } from '../compare/CompareSelectBar'
@@ -19,6 +22,7 @@ import {
   isThreadStatus,
   type RunsFilters,
 } from './runsFilters'
+import { isPipelinePhaseComplete, pipelineStatusLabel, pipelinePhaseVisual, targetPhaseFor } from './runDisplay'
 import './RunsListPage.css'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -47,6 +51,48 @@ function errorMessage(error: unknown): string {
   return 'The runs list could not be loaded.'
 }
 
+function verdictLabel(run: PipelineSummary): 'GO' | 'Conditional' | 'NO-GO' | '—' {
+  switch (run.thread_status) {
+    case 'idle':
+      return 'GO'
+    case 'interrupted':
+      return 'Conditional'
+    case 'error':
+      return 'NO-GO'
+    default:
+      return '—'
+  }
+}
+
+function verdictTone(run: PipelineSummary): string {
+  switch (verdictLabel(run)) {
+    case 'GO':
+      return 'success'
+    case 'Conditional':
+      return 'warning'
+    case 'NO-GO':
+      return 'danger'
+    default:
+      return 'neutral'
+  }
+}
+
+function completedPhases(run: PipelineSummary): number {
+  return run.phase_strip.filter((entry) => isPipelinePhaseComplete(entry.status)).length
+}
+
+function durationLabel(run: PipelineSummary): string {
+  if (!run.created_at || !run.updated_at) return EM_DASH
+  const created = Date.parse(run.created_at)
+  const updated = Date.parse(run.updated_at)
+  if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return EM_DASH
+  const totalMinutes = Math.round((updated - created) / 60_000)
+  if (totalMinutes < 60) return `${totalMinutes}m`
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+}
+
 /** D8 compare affordance: checkbox column state for one row (undefined = off). */
 interface RowSelection {
   selected: boolean
@@ -57,10 +103,14 @@ interface RowSelection {
 function RunRow({
   run,
   onRerun,
+  onInspect,
+  inspected,
   selection,
 }: {
   run: PipelineSummary
   onRerun: (threadId: string) => void
+  onInspect: (threadId: string) => void
+  inspected: boolean
   selection?: RowSelection
 }) {
   const navigate = useNavigate()
@@ -94,6 +144,24 @@ function RunRow({
         </Link>
       </td>
       <td>
+        <span className="runs-story-cell">{run.project_id ?? EM_DASH}</span>
+      </td>
+      <td>
+        <span className="runs-application-cell">{run.app_id ?? EM_DASH}</span>
+      </td>
+      <td>
+        <span className="runs-phase-progress">
+          {completedPhases(run)}/{PHASE_NAMES.length}
+        </span>
+      </td>
+      <td className="runs-time" title={run.created_at ?? undefined}>
+        {formatRelative(run.created_at)}
+      </td>
+      <td className="runs-time">{durationLabel(run)}</td>
+      <td>
+        <span className={`status-badge ${verdictTone(run)}`}>{verdictLabel(run)}</span>
+      </td>
+      <td>
         <div className="runs-status-cell">
           <span className={`status-badge ${statusTone(run.thread_status)}`}>
             {run.thread_status ?? 'unknown'}
@@ -112,38 +180,23 @@ function RunRow({
           )}
         </div>
       </td>
-      <td>
-        <PhaseStrip
-          strip={run.phase_strip}
-          size="md"
-          onSelect={(phase) => navigate(`${runPath}/phases/${phase}`)}
-        />
-      </td>
-      <td>
-        {run.engine?.engine ? (
-          <span className="dash-context-chip" title={run.engine.external_run_id ?? undefined}>
-            {run.engine.engine}
-          </span>
-        ) : (
-          <span className="runs-muted">{EM_DASH}</span>
-        )}
-      </td>
-      <td className="runs-time" title={run.created_at ?? undefined}>
-        {formatRelative(run.created_at)}
-      </td>
-      <td className="runs-time" title={run.updated_at ?? undefined}>
-        {formatRelative(run.updated_at)}
-      </td>
-      <td className="runs-actions-cell">
-        {/* OverflowMenu stops click propagation internally — the row's
-            navigate-on-click stays intact for everything else. */}
-        <OverflowMenu
-          label={`Run actions: ${run.title || run.thread_id}`}
-          items={[
-            { label: 'Re-run…', onSelect: () => onRerun(run.thread_id) },
-            { label: 'Open', onSelect: () => void navigate(runPath) },
-          ]}
-        />
+      <td className="runs-actions-cell" onClick={(event) => event.stopPropagation()}>
+        <div className="runs-actions-stack">
+          <button
+            type="button"
+            className={`btn btn-sm ${inspected ? 'btn-secondary' : 'btn-ghost'}`}
+            onClick={() => onInspect(run.thread_id)}
+          >
+            Inspect
+          </button>
+          <OverflowMenu
+            label={`Run actions: ${run.title || run.thread_id}`}
+            items={[
+              { label: 'Re-run…', onSelect: () => onRerun(run.thread_id) },
+              { label: 'Open', onSelect: () => void navigate(runPath) },
+            ]}
+          />
+        </div>
       </td>
     </tr>
   )
@@ -175,6 +228,9 @@ export function RunsListPage() {
   // page-local view state, deliberately not in the URL).
   const [compareMode, setCompareMode] = useState(false)
   const [compareSelection, setCompareSelection] = useState<string[]>([])
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
+  const inspector = useThreadState(selectedRunId ?? undefined)
+  const [selectedInspectorPhase, setSelectedInspectorPhase] = useState<string | null>(null)
   const toggleCompareMode = () => {
     setCompareSelection([])
     setCompareMode(!compareMode)
@@ -226,6 +282,14 @@ export function RunsListPage() {
     setSearch('')
     setSearchParams(new URLSearchParams())
   }
+
+  useEffect(() => {
+    if (!inspector.data) return
+    const phase = targetPhaseFor(inspector.data.detail, inspector.data.state)
+    setSelectedInspectorPhase((current) =>
+      current && PHASE_NAMES.includes(current as (typeof PHASE_NAMES)[number]) ? current : phase,
+    )
+  }, [inspector.data])
 
   return (
     <section className="runs-page animate-enter">
@@ -314,13 +378,15 @@ export function RunsListPage() {
                     </th>
                   )}
                   <th>Run</th>
-                  <th>Status</th>
-                  <th>Phases</th>
-                  <th>Engine</th>
+                  <th>Stories</th>
+                  <th>Applications</th>
+                  <th>Phase</th>
                   <th>Created</th>
-                  <th>Updated</th>
+                  <th>Duration</th>
+                  <th>Verdict</th>
+                  <th>Status</th>
                   <th className="runs-actions-cell">
-                    <span className="sr-only">Actions</span>
+                    Inspect
                   </th>
                 </tr>
               </thead>
@@ -330,6 +396,11 @@ export function RunsListPage() {
                     key={run.thread_id}
                     run={run}
                     onRerun={setRerunThreadId}
+                    onInspect={(threadId) => {
+                      setSelectedRunId(threadId)
+                      setSelectedInspectorPhase(null)
+                    }}
+                    inspected={selectedRunId === run.thread_id}
                     selection={
                       compareMode
                         ? {
@@ -346,6 +417,58 @@ export function RunsListPage() {
               </tbody>
             </table>
           </div>
+          {selectedRunId && (
+            <section className="glass-panel runs-inspector" aria-label="Run inspector">
+              <div className="runs-inspector-head">
+                <div>
+                  <span className="home-section-title">Inline Inspector</span>
+                  <h3 className="runs-inspector-title">
+                    {inspector.data?.detail.title ?? selectedRunId}
+                  </h3>
+                </div>
+                <Link className="btn btn-secondary btn-sm" to={`/runs/${selectedRunId}`}>
+                  Open
+                </Link>
+              </div>
+              {inspector.isPending ? (
+                <p className="runs-muted">Loading run details…</p>
+              ) : inspector.isError ? (
+                <p className="runs-refresh-error" role="alert">
+                  Inspect failed: {errorMessage(inspector.error)}
+                </p>
+              ) : inspector.data ? (
+                <>
+                  <div className="runs-inspector-phases">
+                    {PHASE_NAMES.map((phase) => {
+                      const status = inspector.data.state.phase_results?.[phase]?.status
+                      const visual = pipelinePhaseVisual(status)
+                      return (
+                        <button
+                          key={phase}
+                          type="button"
+                          className={`runs-phase-button${selectedInspectorPhase === phase ? ' active' : ''}`}
+                          onClick={() => setSelectedInspectorPhase(phase)}
+                        >
+                          <span>{phase.replaceAll('_', ' ')}</span>
+                          <span className={`pipeline-status-pill pipeline-status-pill--${visual}`}>
+                            {pipelineStatusLabel(status)}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {selectedInspectorPhase ? (
+                    <div className="runs-inspector-json">
+                      <JsonViewer
+                        value={inspector.data.state.phase_results?.[selectedInspectorPhase] ?? {}}
+                        ariaLabel="Phase output JSON"
+                      />
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+            </section>
+          )}
           <footer className="runs-pagination">
             <span className="runs-pagination-caption">{rangeCaption}</span>
             <div className="runs-pagination-buttons">

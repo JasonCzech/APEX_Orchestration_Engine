@@ -20,11 +20,9 @@
 @keyframes slideUpFade {
   0% {
     opacity: 0;
-    transform: translateY(12px) scale(0.98);
   }
   100% {
     opacity: 1;
-    transform: translateY(0) scale(1);
   }
 }
 
@@ -53,7 +51,7 @@
 
 /* Base utility classes — source: index.css */
 .animate-enter {
-  animation: slideUpFade 0.5s var(--transition-spring) forwards;
+  animation: slideUpFade 0.22s ease-out forwards;
 }
 
 .animate-fade {

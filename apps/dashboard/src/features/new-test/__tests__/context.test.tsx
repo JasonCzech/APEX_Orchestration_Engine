@@ -85,7 +85,9 @@ describe('ContextStep', () => {
     expect(uploads).toEqual([{ fileName: 'spec.txt', projectId: 'demo' }])
 
     // Existing-documents picker adds (and the chip carries its size too).
-    await user.click(screen.getByRole('button', { name: 'Add' }))
+    const existingDocuments = screen.getByText('Existing documents').closest('.wizard-field')
+    expect(existingDocuments).not.toBeNull()
+    await user.click(within(existingDocuments as HTMLElement).getByRole('button', { name: 'Add' }))
     expect(within(chips).getByText('runbook.pdf · 2.0 MB')).toBeInTheDocument()
 
     // Chips are removable.

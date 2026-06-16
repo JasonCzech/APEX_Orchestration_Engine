@@ -7,11 +7,11 @@ import { authenticatedState, renderApp } from '@/test/render'
 import { THEME_STORAGE_KEY } from './useTheme'
 
 describe('theme switcher', () => {
-  it('applies the dark default on mount', async () => {
+  it('applies the apex-light default on mount', async () => {
     renderApp({ authState: authenticatedState() })
 
     await screen.findByTestId('sidebar')
-    expect(document.documentElement.getAttribute('data-theme')).toBe('dark')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('apex-light')
   })
 
   it('sets data-theme and persists the selection', async () => {

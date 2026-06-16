@@ -1,13 +1,4 @@
-/**
- * NewRunWizard — the 6-step /runs/new wizard (plan Part 2 UX 2.c + section 4).
- *
- * Layout: full-page left step rail + content + sticky summary footer.
- * URL contract: /runs/new?step=scope|work-items|context|config|prompts|review
- * &draft=<id> — step changes replace history; the draft id lands in the URL
- * after the first autosave creates it. A "Resume draft" picker shows on first
- * visit when server drafts exist.
- */
-import { useCallback, useState } from 'react'
+import { useCallback, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { useDraftsList } from '@/api/hooks/useDrafts'
@@ -18,25 +9,11 @@ import { PromptsStep } from './steps/PromptsStep'
 import { ReviewStep } from './steps/ReviewStep'
 import { ScopeStep } from './steps/ScopeStep'
 import { WorkItemsStep } from './steps/WorkItemsStep'
-import { useDraft, type DraftUpdater } from './useDraft'
+import { useDraft } from './useDraft'
 import { useWizardLaunch } from './useWizardLaunch'
-import {
-  allIssues,
-  isStepValid,
-  isWizardStep,
-  STEP_LABELS,
-  WIZARD_STEPS,
-  type WizardDraft,
-  type WizardStepId,
-} from './wizardState'
+import { allIssues, STEP_LABELS, type WizardStepId } from './wizardState'
 
 import './wizard.css'
-
-/** Props every step receives: the draft plus the autosaving updater. */
-export interface StepProps {
-  draft: WizardDraft
-  onChange: (updater: DraftUpdater) => void
-}
 
 const SAVE_LABELS: Record<string, string> = {
   idle: '',
@@ -46,12 +23,40 @@ const SAVE_LABELS: Record<string, string> = {
   error: 'Draft save failed',
 }
 
+/** Props every step receives: the draft plus the autosaving updater. */
+export interface StepProps {
+  draft: import('./wizardState').WizardDraft
+  onChange: (updater: import('./useDraft').DraftUpdater) => void
+}
+
+function WizardSection({
+  id,
+  title,
+  description,
+  children,
+}: {
+  id: WizardStepId
+  title: string
+  description: string
+  children: ReactNode
+}) {
+  return (
+    <section id={`wizard-section-${id}`} className="glass-panel wizard-section" aria-label={title}>
+      <div className="wizard-section-head">
+        <div>
+          <span className="wizard-section-kicker">{STEP_LABELS[id]}</span>
+          <h3 className="wizard-section-title">{title}</h3>
+        </div>
+        <p className="wizard-section-description">{description}</p>
+      </div>
+      {children}
+    </section>
+  )
+}
+
 export function NewRunWizardPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-
-  const stepParam = searchParams.get('step')
-  const step: WizardStepId = isWizardStep(stepParam) ? stepParam : 'scope'
   const urlDraftId = searchParams.get('draft')
 
   const onDraftCreated = useCallback(
@@ -81,40 +86,18 @@ export function NewRunWizardPage() {
   } = useDraft({ initialDraftId: urlDraftId, onDraftCreated })
 
   const launch = useWizardLaunch()
-
-  // Resume entry point: only on a fresh visit (no draft yet, nothing typed).
   const draftsList = useDraftsList(undefined, { enabled: urlDraftId === null && draftId === null })
   const showResume =
     draftId === null && saveState === 'idle' && (draftsList.data?.length ?? 0) > 0
-
-  const [visited, setVisited] = useState<Set<WizardStepId>>(() => new Set([step]))
-
-  const goToStep = useCallback(
-    (next: WizardStepId) => {
-      setVisited((previous) => new Set(previous).add(next))
-      setSearchParams(
-        (previous) => {
-          const params = new URLSearchParams(previous)
-          params.set('step', next)
-          return params
-        },
-        { replace: true },
-      )
-    },
-    [setSearchParams],
-  )
-
-  const stepIndex = WIZARD_STEPS.indexOf(step)
-  const currentValid = isStepValid(draft, step)
   const issues = allIssues(draft)
 
   async function handleLaunch() {
     try {
       const result = await launch.mutateAsync(draft)
       await deleteCurrentDraft()
-      navigate(`/runs/${result.threadId}?tab=activity`)
+      navigate(`/runs/${result.threadId}?tab=log`)
     } catch {
-      // launch.error renders below; stay on the review step.
+      // launch.error renders inline below.
     }
   }
 
@@ -130,10 +113,22 @@ export function NewRunWizardPage() {
     )
   }
 
+  function jumpToSection(step: WizardStepId) {
+    document.getElementById(`wizard-section-${step}`)?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    })
+  }
+
   return (
     <div className="wizard-page animate-enter">
       <header className="wizard-header">
-        <h2 className="wizard-title">New run</h2>
+        <div>
+          <h2 className="wizard-title">New Test</h2>
+          <p className="wizard-header-copy">
+            Build the run in one pass, keep the draft autosaved, and launch the pipeline when the configuration looks right.
+          </p>
+        </div>
         {SAVE_LABELS[saveState] && (
           <span
             className={`topbar-meta-chip${saveState === 'error' ? ' danger' : saveState === 'saved' ? ' success' : ''}`}
@@ -173,86 +168,101 @@ export function NewRunWizardPage() {
         </p>
       )}
 
-      <div className="wizard-body">
-        <nav className="glass-panel wizard-rail" aria-label="Wizard steps">
-          <ol>
-            {WIZARD_STEPS.map((id, index) => {
-              const isCurrent = id === step
-              const isVisited = visited.has(id)
-              const isComplete = isVisited && !isCurrent && isStepValid(draft, id)
-              return (
-                <li key={id}>
-                  <button
-                    type="button"
-                    className={`wizard-rail-step${isCurrent ? ' wizard-rail-step--current' : ''}${
-                      isComplete ? ' wizard-rail-step--complete' : ''
-                    }`}
-                    aria-current={isCurrent ? 'step' : undefined}
-                    disabled={!isVisited && !isCurrent}
-                    onClick={() => goToStep(id)}
-                  >
-                    <span className="wizard-rail-index">{isComplete ? '✓' : index + 1}</span>
-                    <span>{STEP_LABELS[id]}</span>
-                  </button>
-                </li>
-              )
-            })}
-          </ol>
-        </nav>
+      {loading ? (
+        <p className="wizard-caption">Loading draft…</p>
+      ) : (
+        <div className="wizard-stack">
+          <WizardSection
+            id="scope"
+            title="Run Scope"
+            description="Name the pipeline, describe the request, and choose the project, application, and target environment."
+          >
+            <ScopeStep draft={draft} onChange={setDraft} />
+          </WizardSection>
 
-        <div className="wizard-content">
-          {loading ? (
-            <p className="wizard-caption">Loading draft…</p>
-          ) : (
-            <>
-              {step === 'scope' && <ScopeStep draft={draft} onChange={setDraft} />}
-              {step === 'work-items' && <WorkItemsStep draft={draft} onChange={setDraft} />}
-              {step === 'context' && <ContextStep draft={draft} onChange={setDraft} />}
-              {step === 'config' && <ConfigStep draft={draft} onChange={setDraft} />}
-              {step === 'prompts' && <PromptsStep draft={draft} onChange={setDraft} />}
-              {step === 'review' && <ReviewStep draft={draft} onEditStep={goToStep} />}
-            </>
-          )}
+          <WizardSection
+            id="work-items"
+            title="Work Items"
+            description="Attach tickets or stories that should anchor the pipeline context and downstream reporting."
+          >
+            <WorkItemsStep draft={draft} onChange={setDraft} />
+          </WizardSection>
+
+          <WizardSection
+            id="context"
+            title="Context"
+            description="Add documents and context summaries so the phases have the evidence they need before execution starts."
+          >
+            <ContextStep draft={draft} onChange={setDraft} />
+          </WizardSection>
+
+          <WizardSection
+            id="config"
+            title="Execution Configuration"
+            description="Choose the engine, phase coverage, and review policy. Enable full manual step-through by keeping every phase gated."
+          >
+            <ConfigStep draft={draft} onChange={setDraft} />
+          </WizardSection>
+
+          <WizardSection
+            id="prompts"
+            title="Prompt Selection"
+            description="Select the prompt set for each phase and override only the places that need run-specific instructions."
+          >
+            <PromptsStep draft={draft} onChange={setDraft} />
+          </WizardSection>
+
+          <WizardSection
+            id="review"
+            title="Launch Preview"
+            description="Review the exact launch payload that will be sent when you start the pipeline."
+          >
+            <ReviewStep draft={draft} onEditStep={jumpToSection} />
+          </WizardSection>
         </div>
-      </div>
+      )}
 
       <footer className="glass-panel wizard-footer">
-        <button
-          type="button"
-          className="btn btn-ghost"
-          disabled={stepIndex === 0}
-          onClick={() => goToStep(WIZARD_STEPS[stepIndex - 1] as WizardStepId)}
-        >
-          Back
-        </button>
-        <button type="button" className="btn btn-ghost" onClick={() => void saveNow()}>
-          Save draft
-        </button>
-        <span className="wizard-footer-spacer" />
+        <div className="wizard-footer-copy">
+          <strong>Launch Pipeline</strong>
+          <span className="wizard-caption">
+            {issues.length === 0
+              ? 'All required sections look ready.'
+              : `${issues.length} item${issues.length === 1 ? '' : 's'} still need attention.`}
+          </span>
+        </div>
+        {issues.length > 0 && (
+          <div className="wizard-inline-issues" role="alert">
+            {issues.slice(0, 3).map((issue) => (
+              <button
+                key={`${issue.step}:${issue.message}`}
+                type="button"
+                className="wizard-issue-link"
+                onClick={() => jumpToSection(issue.step)}
+              >
+                {STEP_LABELS[issue.step]}: {issue.message}
+              </button>
+            ))}
+          </div>
+        )}
         {launch.isError && (
           <span className="wizard-caption wizard-caption--danger" role="alert">
             Launch failed: {launch.error.message}
           </span>
         )}
-        {step !== 'review' ? (
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!currentValid || loading}
-            onClick={() => goToStep(WIZARD_STEPS[stepIndex + 1] as WizardStepId)}
-          >
-            Next
+        <div className="wizard-footer-actions">
+          <button type="button" className="btn btn-ghost" onClick={() => void saveNow()}>
+            Save Draft
           </button>
-        ) : (
           <button
             type="button"
             className="btn btn-primary"
             disabled={issues.length > 0 || launch.isPending || loading}
             onClick={() => void handleLaunch()}
           >
-            {launch.isPending ? 'Launching…' : 'Launch'}
+            {launch.isPending ? 'Launching…' : 'Launch Pipeline'}
           </button>
-        )}
+        </div>
       </footer>
     </div>
   )

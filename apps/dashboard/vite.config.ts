@@ -39,19 +39,24 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
-          if (!id.includes('node_modules')) return undefined
-          if (id.includes('/@langchain/')) return 'vendor-langgraph'
-          if (id.includes('/@codemirror/') || id.includes('/@uiw/') || id.includes('/@lezer/'))
+          const normalizedId = id.replaceAll('\\', '/')
+          if (!normalizedId.includes('node_modules')) return undefined
+          if (normalizedId.includes('/@langchain/')) return 'vendor-langgraph'
+          if (
+            normalizedId.includes('/@codemirror/') ||
+            normalizedId.includes('/@uiw/') ||
+            normalizedId.includes('/@lezer/')
+          )
             return 'vendor-codemirror'
           // recharts + its d3/victory-vendor dependency tree (D2 engine strip).
           if (
-            id.includes('/recharts/') ||
-            id.includes('/recharts-scale/') ||
-            id.includes('/victory-vendor/') ||
-            id.includes('/d3-') ||
-            id.includes('/internmap/') ||
-            id.includes('/delaunator/') ||
-            id.includes('/robust-predicates/')
+            normalizedId.includes('/recharts/') ||
+            normalizedId.includes('/recharts-scale/') ||
+            normalizedId.includes('/victory-vendor/') ||
+            normalizedId.includes('/d3-') ||
+            normalizedId.includes('/internmap/') ||
+            normalizedId.includes('/delaunator/') ||
+            normalizedId.includes('/robust-predicates/')
           )
             return 'vendor-recharts'
           return 'vendor'

@@ -81,13 +81,14 @@ describe('PromptsStep', () => {
     installWizardHandlers()
     server.use(...promptHandlers())
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=prompts')
+    renderWizard()
 
     // 7 phase accordions (all phases included by default).
-    const accordions = await screen.findAllByRole('group')
+    const promptSection = screen.getByRole('region', { name: 'Prompt Selection' })
+    const accordions = within(promptSection).getAllByRole('group')
     expect(accordions.length).toBeGreaterThanOrEqual(7)
 
-    const execution = screen.getByText('execution').closest('details') as HTMLElement
+    const execution = within(promptSection).getByText('execution').closest('details') as HTMLElement
     await user.click(within(execution).getByText('execution'))
 
     // Catalog provenance chips + read-only content.
@@ -109,7 +110,6 @@ describe('PromptsStep', () => {
     await user.type(editor, 'Custom system prompt for this run')
 
     // The override lands in the EXACT launch payload under phase/execution.
-    await user.click(screen.getByRole('button', { name: 'Next' })) // prompts -> review
     const json = await screen.findByTestId('launch-payload-json')
     const payload = JSON.parse(json.textContent ?? '{}') as {
       configurable: { prompt_overrides?: Record<string, { content: string }> }
@@ -118,9 +118,8 @@ describe('PromptsStep', () => {
       'phase/execution': { content: 'Custom system prompt for this run' },
     })
 
-    // Revert removes the override key entirely (back via the review card's edit link).
-    await user.click(screen.getByRole('button', { name: 'Edit Prompts' }))
-    const executionAgain = screen.getByText('execution').closest('details') as HTMLElement
+    // Revert removes the override key entirely.
+    const executionAgain = within(promptSection).getByText('execution').closest('details') as HTMLElement
     await user.click(within(executionAgain).getByText('execution'))
     await user.click(
       within(executionAgain).getByRole('button', { name: 'Revert to catalog' }),
@@ -128,7 +127,6 @@ describe('PromptsStep', () => {
     expect(
       within(executionAgain).queryByTestId('override-chip-execution'),
     ).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Next' }))
     const jsonAfter = await screen.findByTestId('launch-payload-json')
     expect(jsonAfter.textContent).not.toContain('prompt_overrides')
   })

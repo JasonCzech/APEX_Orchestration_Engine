@@ -70,27 +70,28 @@ describe('RunDetailPage', () => {
   it('switches workspace tabs via ?tab=', async () => {
     server.use(pipelineDetailHandler())
     const user = userEvent.setup()
-    const { router } = renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning?tab=dialogue`])
+    const { router } = renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning?tab=reasoning`])
 
-    // Deep link lands on the dialogue tab.
+    // Deep link lands on the reasoning tab.
     expect(await screen.findByText('Tighten the ramp to 5 minutes.')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: 'Output' }))
+    await user.click(screen.getByRole('tab', { name: 'Phase Details' }))
     expect(await screen.findByText('Planned 4 scenarios against the staging cluster.')).toBeInTheDocument()
-    expect(router.state.location.search).toContain('tab=output')
+    expect(router.state.location.search).toContain('tab=details')
   })
 
   it('links phase artifacts to the viewer route by artifact id', async () => {
     server.use(pipelineDetailHandler())
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=artifacts`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
-    const link = await screen.findByRole('link', { name: 'load-report.json' })
+    const link = (await screen.findByText('load-report.json')).closest('a')
+    expect(link).not.toBeNull()
     expect(link).toHaveAttribute('href', `/runs/${THREAD_ID}/artifacts/exec-report`)
   })
 
   it('shows the resolved prompt with its provenance chip', async () => {
     server.use(pipelineDetailHandler())
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=prompt`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=reasoning`])
 
     const chip = await screen.findByTestId('prompt-provenance')
     expect(chip).toHaveTextContent('catalog · story_analysis@v3')
@@ -99,17 +100,17 @@ describe('RunDetailPage', () => {
     )
   })
 
-  it('renders the dialogue empty state for phases without dialogue', async () => {
+  it('renders the reasoning empty state for phases without reasoning details', async () => {
     server.use(pipelineDetailHandler())
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=dialogue`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=reasoning`])
 
-    expect(await screen.findByText('No dialogue for this phase')).toBeInTheDocument()
+    expect(await screen.findByText('No reasoning details recorded for this phase yet.')).toBeInTheDocument()
   })
 
   it('renders execution KPI pills and the passed badge from test_summary', async () => {
     server.use(pipelineDetailHandler())
-    // D2: busy threads default to the Activity tab, so pin ?tab=output here.
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=output`])
+    // Busy threads default to Pipeline Log, so pin ?tab=details here.
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const row = await screen.findByTestId('kpi-row')
     expect(within(row).getByText('42.5')).toBeInTheDocument()
@@ -119,15 +120,14 @@ describe('RunDetailPage', () => {
     expect(within(row).getByText('Passed')).toBeInTheDocument()
   })
 
-  it('shows the pending-gate banner with a live Review link to the gate phase (D3)', async () => {
+  it('shows the pending-gate slim banner with a live Review link from non-gate phases (D3)', async () => {
     server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
-    const banner = await screen.findByRole('status')
-    expect(banner).toHaveTextContent('Gate open:')
-    expect(banner).toHaveTextContent('phase_review')
+    const banner = await screen.findByTestId('gate-slim-banner')
+    expect(banner).toHaveTextContent('Phase review gate open on Reporting')
     expect(banner).toHaveTextContent('Reporting')
-    expect(within(banner).getByRole('link', { name: 'Review gate' })).toHaveAttribute(
+    expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
       `/runs/${THREAD_ID}/phases/reporting`,
     )

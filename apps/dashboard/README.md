@@ -43,6 +43,20 @@ set the no-database shortcut in the root `.env`:
 APEX_AUTH__DEV_API_KEY=dev-key-local    # resolves to a synthetic unscoped admin
 ```
 
+For local UI-only work, the dashboard can skip the browser API-key gate while
+still sending the backend dev key on requests:
+
+```bash
+# apps/dashboard/.env.development.local
+VITE_APEX_DEV_AUTH=true
+VITE_APEX_DEV_API_KEY=dev-key-local
+```
+
+The bypass is explicit and Vite-dev-only (`import.meta.env.DEV`); production
+builds still require normal authentication. Use `.env.development.local` instead
+of `.env.local` so the local Vitest suite does not accidentally start in
+bypass mode.
+
 **Dev proxy:** the Vite dev server proxies `/v1`, `/threads`, `/runs`,
 `/assistants`, and `/ok` to the backend (default `http://127.0.0.1:2024`).
 Browser navigations (`Accept: text/html`) bypass the proxy so the SPA route

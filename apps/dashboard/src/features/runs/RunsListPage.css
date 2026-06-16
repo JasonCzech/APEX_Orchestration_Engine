@@ -52,7 +52,7 @@
 .runs-run-id {
   font-size: 10px;
   color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .runs-status-cell {
@@ -72,10 +72,86 @@
   color: var(--text-muted);
 }
 
+.runs-story-cell,
+.runs-application-cell,
+.runs-phase-progress {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.runs-phase-progress {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+
 .runs-time {
   white-space: nowrap;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+.runs-actions-stack {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.runs-inspector {
+  margin-top: 16px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.runs-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.runs-inspector-title {
+  margin: 6px 0 0;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.runs-inspector-phases {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.runs-phase-button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.runs-phase-button:hover {
+  background: var(--bg-hover);
+}
+
+.runs-phase-button.active {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.runs-inspector-json {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 /* Pagination */

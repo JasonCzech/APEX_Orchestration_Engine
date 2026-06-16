@@ -72,76 +72,100 @@ export function PromptReviewPanel({
   const source = payload.prompt.source
 
   return (
-    <div className="gate-panel" data-testid="prompt-review-panel">
-      <div className="gate-chip-row">
-        {source.origin && (
-          <span
-            className="topbar-meta-chip accent"
-            data-testid="gate-provenance"
-            title="Where the prompt text under review came from"
-          >
-            {source.origin}
-            {source.ref ? ` · ${source.ref}` : ''}
-          </span>
-        )}
-        {!payload.editable && (
-          <span className="topbar-meta-chip" title="The backend marked this prompt read-only">
-            read-only
-          </span>
-        )}
-        {dirty && (
-          <span
-            className="topbar-meta-chip warning"
-            data-testid="gate-dirty-chip"
-            title="Your draft differs from the prompt the agent resolved"
-          >
-            edited
-          </span>
-        )}
+    <div className="gate-panel prompt-review-layout" data-testid="prompt-review-panel">
+      <div className="prompt-review-main">
+        <div className="gate-chip-row">
+          {source.origin && (
+            <span
+              className="topbar-meta-chip accent"
+              data-testid="gate-provenance"
+              title="Where the prompt text under review came from"
+            >
+              {source.origin}
+              {source.ref ? ` · ${source.ref}` : ''}
+            </span>
+          )}
+          {!payload.editable && (
+            <span className="topbar-meta-chip" title="The backend marked this prompt read-only">
+              read-only
+            </span>
+          )}
+          {dirty && (
+            <span
+              className="topbar-meta-chip warning"
+              data-testid="gate-dirty-chip"
+              title="Your draft differs from the prompt the agent resolved"
+            >
+              edited
+            </span>
+          )}
+        </div>
+
+        <PromptEditor
+          field="system"
+          label="System prompt"
+          value={draft.system}
+          editable={editable}
+          onChange={(patch) => onEdit({ prompt: patch })}
+        />
+        <PromptEditor
+          field="user"
+          label="User prompt"
+          value={draft.user}
+          editable={editable}
+          onChange={(patch) => onEdit({ prompt: patch })}
+        />
       </div>
 
-      <PromptEditor
-        field="system"
-        label="System prompt"
-        value={draft.system}
-        editable={editable}
-        onChange={(patch) => onEdit({ prompt: patch })}
-      />
-      <PromptEditor
-        field="user"
-        label="User prompt"
-        value={draft.user}
-        editable={editable}
-        onChange={(patch) => onEdit({ prompt: patch })}
-      />
+      <div className="prompt-review-sidebar">
+        <section className="gate-info-card">
+          <h4 className="gate-field-label">Phase Summary</h4>
+          <p className="gate-info-copy">
+            Review the resolved prompt, confirm the supporting context, then execute this phase.
+          </p>
+          <p className="gate-info-copy">
+            Prompt source: <strong>{source.origin ?? 'runtime'}</strong>
+            {source.ref ? ` · ${source.ref}` : ''}
+          </p>
+        </section>
 
-      {payload.tools.length > 0 && (
-        <div className="gate-tools" data-testid="gate-tools">
-          <h4 className="gate-field-label">Tools</h4>
-          <div className="gate-chip-row">
-            {payload.tools.map((tool) => (
-              <span key={tool} className="kind-chip">
-                {tool}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
+        {payload.context_packets.length > 0 && (
+          <section className="gate-info-card" data-testid="gate-context-packets">
+            <h4 className="gate-field-label">Additional Context</h4>
+            <ul className="gate-packet-list">
+              {payload.context_packets.map((packet, index) => (
+                <li key={packet.id ?? index} className="gate-packet">
+                  <span className="gate-packet-title">{packet.title ?? packet.id ?? 'packet'}</span>
+                  {packet.source && <span className="kind-chip">{packet.source}</span>}
+                  {packet.summary && <span className="gate-packet-summary">{packet.summary}</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
-      {payload.context_packets.length > 0 && (
-        <details className="gate-collapsible" data-testid="gate-context-packets" open={!compact}>
-          <summary>Context packets ({payload.context_packets.length})</summary>
-          <ul className="gate-packet-list">
-            {payload.context_packets.map((packet, index) => (
-              <li key={packet.id ?? index} className="gate-packet">
-                <span className="gate-packet-title">{packet.title ?? packet.id ?? 'packet'}</span>
-                {packet.source && <span className="kind-chip">{packet.source}</span>}
-                {packet.summary && <span className="gate-packet-summary">{packet.summary}</span>}
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
+        {payload.tools.length > 0 && (
+          <section className="gate-info-card gate-tools" data-testid="gate-tools">
+            <h4 className="gate-field-label">Tools in Play</h4>
+            <div className="gate-chip-row">
+              {payload.tools.map((tool) => (
+                <span key={tool} className="kind-chip">
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {!compact && (
+          <section className="gate-info-card">
+            <h4 className="gate-field-label">Post-Result Notes</h4>
+            <p className="gate-info-copy">
+              Result notes will appear after execution completes and the next review gate opens.
+            </p>
+          </section>
+        )}
+      </div>
     </div>
   )
 }

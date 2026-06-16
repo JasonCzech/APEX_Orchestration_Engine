@@ -9,6 +9,14 @@
   gap: 3px;
 }
 
+.phase-strip--lg {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+  width: 100%;
+}
+
 .phase-seg {
   display: inline-block;
   padding: 0;
@@ -26,6 +34,156 @@
 .phase-strip--sm .phase-seg {
   width: 12px;
   height: 6px;
+}
+
+.phase-step-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.phase-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.phase-step.is-actionable {
+  cursor: pointer;
+}
+
+.phase-step-circle {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 800;
+  flex: 0 0 auto;
+  transition: transform var(--transition-fast), border-color var(--transition-fast),
+    background var(--transition-fast), color var(--transition-fast);
+}
+
+.phase-step-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.phase-step-name {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.phase-step-status {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.phase-step-connector {
+  position: absolute;
+  left: calc(100% - 6px);
+  top: 17px;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.phase-step.is-actionable:hover .phase-step-circle {
+  transform: translateY(-1px);
+}
+
+.phase-step.is-current .phase-step-circle {
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.phase-step--pending .phase-step-circle,
+.phase-step--pending .phase-step-connector {
+  border-color: var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+}
+
+.phase-step--prompt_review .phase-step-circle,
+.phase-step--prompt_review .phase-step-connector {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.phase-step--running .phase-step-circle,
+.phase-step--running .phase-step-connector {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.phase-step--running .phase-step-circle {
+  animation: phaseStripPulse 1.6s ease-in-out infinite;
+}
+
+.phase-step--results_ready .phase-step-circle,
+.phase-step--results_ready .phase-step-connector {
+  border-color: color-mix(in srgb, var(--accent-results) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent-results) 12%, var(--bg-card));
+  color: var(--accent-results);
+}
+
+.phase-step--completed .phase-step-circle,
+.phase-step--completed .phase-step-connector {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.phase-step--failed .phase-step-circle,
+.phase-step--failed .phase-step-connector {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.phase-step--skipped .phase-step-circle,
+.phase-step--skipped .phase-step-connector {
+  border-color: var(--border);
+  background: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 4px,
+    color-mix(in srgb, var(--text-muted) 30%, transparent) 4px,
+    color-mix(in srgb, var(--text-muted) 30%, transparent) 8px
+  );
+  color: var(--text-muted);
+}
+
+@media (max-width: 1120px) {
+  .phase-strip--lg {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .phase-step-connector {
+    display: none;
+  }
 }
 
 /* Interactive segments (rendered as buttons when onSelect is provided) */

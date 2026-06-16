@@ -8,17 +8,36 @@ provides the domain API (prompts, catalogs, connections, work tracking, analytic
 Execution engines (LoadRunner, APEX Load, simulated) sit behind an engine-agnostic
 port. Dashboards are fully decoupled clients.
 
+## Prerequisites
+
+- Python 3.12 and `uv`
+- Node.js 20.19+ and npm
+- Docker Desktop or Docker Engine with Compose v2
+
 ## Quickstart (backend)
 
+Cross-platform setup for Windows PowerShell, Command Prompt, macOS, and Linux:
+
+```powershell
+npm run setup:backend
+npm run dev:backend
+```
+
+`setup:backend` runs `uv sync`, creates `.env` from `.env.example` when needed,
+starts the Docker dev infra, applies migrations, and seeds local data.
+`dev:backend` starts the LangGraph dev server on `:2024`.
+
+The Makefile still mirrors the backend tasks for macOS/Linux users:
+
 ```bash
-uv sync                      # install deps
+uv sync
 cp .env.example .env
-make infra-up                # dev Postgres/Redis/MinIO (the /v1 domain API uses Postgres)
-make migrate                 # apex-schema migrations
-uv run python scripts/seed_dev.py      # API consumers — keys printed exactly once
-uv run python scripts/seed_prompts.py  # built-in phase prompts
-uv run python scripts/seed_catalog.py  # demo app/env + stub connections
-make dev                     # LangGraph dev server on :2024
+make infra-up
+make migrate
+uv run python scripts/seed_dev.py
+uv run python scripts/seed_prompts.py
+uv run python scripts/seed_catalog.py
+make dev
 ```
 
 Smoke checks:
@@ -33,7 +52,7 @@ Live end-to-end smokes against the running dev server: `scripts/m1_smoke.py`
 `APEX_AUTH__DEV_API_KEY=dev-key-m1` in `.env`) and `scripts/m2_smoke.py` (domain
 API surface; usage in its docstring, takes seeded admin/viewer keys).
 
-Quality gates: `make check` (ruff, pyright, pytest).
+Quality gates: `npm run check:backend` or `make check` (ruff, pyright, pytest).
 
 ## Dashboard
 
@@ -42,10 +61,13 @@ repo root). It is a fully decoupled static SPA: the backend never serves it.
 
 ```bash
 npm install
-npm run -w @apex/dashboard dev      # vite on :3000, proxies to langgraph dev on :2024
-npm run -w @apex/dashboard test     # vitest suite
-npm run -w @apex/dashboard build    # typecheck + static bundle to apps/dashboard/dist
+npm run dev:dashboard
+npm run test:dashboard
+npm run build
 ```
+
+`dev:dashboard` starts Vite on `:3000` with the backend proxy. `npm run build`
+typechecks and writes the static bundle to `apps/dashboard/dist`.
 
 Setup details (seeded backend, API keys, runtime config, deploy contract):
 [`apps/dashboard/README.md`](apps/dashboard/README.md). Architecture decisions:

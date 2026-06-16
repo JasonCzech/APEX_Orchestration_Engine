@@ -19,15 +19,13 @@ import { EngineStrip } from './EngineStrip'
 import type { LiveStreamViewLike } from './liveTypes'
 import { formatTimestamp, PHASE_LABELS } from './runDisplay'
 
-const TABS = ['activity', 'output', 'artifacts', 'prompt', 'dialogue'] as const
+const TABS = ['details', 'log', 'reasoning'] as const
 type WorkspaceTab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
-  activity: 'Activity',
-  output: 'Output',
-  artifacts: 'Artifacts',
-  prompt: 'Prompt',
-  dialogue: 'Dialogue',
+  details: 'Phase Details',
+  log: 'Pipeline Log',
+  reasoning: 'Agent Reasoning',
 }
 
 function activeTab(value: string | null, fallback: WorkspaceTab): WorkspaceTab {
@@ -35,9 +33,9 @@ function activeTab(value: string | null, fallback: WorkspaceTab): WorkspaceTab {
 }
 
 /**
- * Center workspace: [Activity, Output, Artifacts, Prompt, Dialogue] tab bar
- * driven by ?tab= (deep-linkable). Default tab is Activity while the thread is
- * busy (live deltas front and center), Output otherwise (D2).
+ * Center workspace: [Phase Details, Pipeline Log, Agent Reasoning] tab bar
+ * driven by ?tab= (deep-linkable). Default tab is Pipeline Log while the
+ * thread is busy, Phase Details otherwise.
  */
 export function PhaseWorkspace({
   threadId,
@@ -57,11 +55,9 @@ export function PhaseWorkspace({
   gateSlot?: ReactNode
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = activeTab(searchParams.get('tab'), threadBusy ? 'activity' : 'output')
+  const tab = activeTab(searchParams.get('tab'), threadBusy ? 'log' : 'details')
   const entry = state.phase_results?.[phase]
 
-  // Engine strip: execution phase only, when the stream has poll samples or
-  // the phase is currently running (snapshot or live status).
   const engineSamples = stream?.engineStats?.samples ?? []
   const liveStatus = stream?.phaseProgress?.[phase]?.status
   const showEngineStrip =
@@ -98,25 +94,23 @@ export function PhaseWorkspace({
       {showEngineStrip && (
         <EngineStrip samples={engineSamples} latest={stream?.engineStats?.latest ?? null} />
       )}
-      {tab === 'activity' && (
-        <ActivityFeed
-          key={phase}
-          phase={phase}
-          streamStatus={stream?.status}
-          progress={stream?.phaseProgress?.[phase]}
-          toolCalls={stream?.toolCalls}
-          engineSamples={phase === 'execution' ? stream?.engineStats?.samples : undefined}
-        />
+      {tab === 'details' && <PhaseDetailsTab threadId={threadId} entry={entry} state={state} />}
+      {tab === 'log' && (
+        <div className="pipeline-log-panel" role="tabpanel" aria-label="Pipeline log">
+          <ActivityFeed
+            key={phase}
+            phase={phase}
+            streamStatus={stream?.status}
+            progress={stream?.phaseProgress?.[phase]}
+            toolCalls={stream?.toolCalls}
+            engineSamples={phase === 'execution' ? stream?.engineStats?.samples : undefined}
+          />
+        </div>
       )}
-      {tab === 'output' && <OutputTab entry={entry} />}
-      {tab === 'artifacts' && <ArtifactsTab threadId={threadId} entry={entry} state={state} />}
-      {tab === 'prompt' && <PromptTab entry={entry} />}
-      {tab === 'dialogue' && <DialogueTab phase={phase} state={state} />}
+      {tab === 'reasoning' && <ReasoningTab phase={phase} entry={entry} state={state} />}
     </section>
   )
 }
-
-/* ── Output ──────────────────────────────────────────────────────────────── */
 
 function KpiPills({ summary }: { summary: TestResultSummary }) {
   const kpis = summary.kpis ?? {}
@@ -164,8 +158,7 @@ function ApprovalsList({ approvals }: { approvals: ApprovalRecord[] }) {
   )
 }
 
-/** D8 parity: durable per-phase tool calls from the snapshot (PhaseResult.tool_calls) —
- *  the Activity tab shows only the live stream's tool_call events. */
+/** D8 parity: durable per-phase tool calls from the snapshot (PhaseResult.tool_calls). */
 function ToolCallsList({ calls }: { calls: ToolCallRecord[] }) {
   return (
     <ul className="approvals-list" data-testid="output-tool-calls">
@@ -184,7 +177,56 @@ function ToolCallsList({ calls }: { calls: ToolCallRecord[] }) {
   )
 }
 
-function OutputTab({ entry }: { entry: PhaseResultEntry | undefined }) {
+function resolveArtifacts(
+  entry: PhaseResultEntry | undefined,
+  state: PipelineState,
+): ArtifactRef[] {
+  const ids = entry?.artifact_ids ?? []
+  return ids.map(
+    (id) =>
+      state.artifacts?.find((artifact) => artifact.id === id) ??
+      (entry?.transcript_ref?.id === id ? entry.transcript_ref : undefined) ?? { id },
+  )
+}
+
+function ArtifactCards({
+  threadId,
+  entry,
+  state,
+}: {
+  threadId: string
+  entry: PhaseResultEntry | undefined
+  state: PipelineState
+}) {
+  const rows = resolveArtifacts(entry, state)
+  if (rows.length === 0) return null
+
+  return (
+    <>
+      <h3 className="workspace-section-title">Artifacts</h3>
+      <div className="artifact-card-grid">
+        {rows.map((artifact) => (
+          <Link key={artifact.id} className="artifact-card" to={`/runs/${threadId}/artifacts/${artifact.id}`}>
+            <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
+            <strong>{artifact.name ?? artifact.id}</strong>
+            <span className="artifact-card-meta">{artifact.media_type ?? '—'}</span>
+            <span className="artifact-card-summary">{artifact.summary ?? 'Open artifact'}</span>
+          </Link>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function PhaseDetailsTab({
+  threadId,
+  entry,
+  state,
+}: {
+  threadId: string
+  entry: PhaseResultEntry | undefined
+  state: PipelineState
+}) {
   if (!entry) {
     return (
       <div className="dash-empty small" role="tabpanel">
@@ -193,11 +235,12 @@ function OutputTab({ entry }: { entry: PhaseResultEntry | undefined }) {
       </div>
     )
   }
+
   const paragraphs = entry.summary?.split(/\n{2,}/).filter((p) => p.trim().length > 0) ?? []
+
   return (
-    <div role="tabpanel" aria-label="Output">
+    <div role="tabpanel" aria-label="Phase details">
       {entry.test_summary && <KpiPills summary={entry.test_summary} />}
-      {/* Plain-text paragraphs for now — no markdown renderer dependency in D1. */}
       {paragraphs.length > 0 ? (
         <div className="workspace-summary">
           {paragraphs.map((paragraph, index) => (
@@ -228,145 +271,96 @@ function OutputTab({ entry }: { entry: PhaseResultEntry | undefined }) {
           ))}
         </>
       )}
-      {(entry.tool_calls?.length ?? 0) > 0 && (
-        <>
-          <h3 className="workspace-section-title">Tool calls</h3>
-          <ToolCallsList calls={entry.tool_calls ?? []} />
-        </>
-      )}
       {(entry.approvals?.length ?? 0) > 0 && (
         <>
           <h3 className="workspace-section-title">Approvals</h3>
           <ApprovalsList approvals={entry.approvals ?? []} />
         </>
       )}
+      <ArtifactCards threadId={threadId} entry={entry} state={state} />
     </div>
   )
 }
 
-/* ── Artifacts ───────────────────────────────────────────────────────────── */
-
-function ArtifactsTab({
-  threadId,
+function ReasoningTab({
+  phase,
   entry,
   state,
 }: {
-  threadId: string
+  phase: PhaseName
   entry: PhaseResultEntry | undefined
   state: PipelineState
 }) {
-  const ids = entry?.artifact_ids ?? []
-  if (ids.length === 0) {
-    return (
-      <div className="dash-empty small" role="tabpanel">
-        No artifacts for this phase.
-      </div>
-    )
-  }
-  // Resolve ids against the run-level artifacts index; fall back to the
-  // phase's transcript_ref, then to an id-only row so nothing disappears.
-  const rows: ArtifactRef[] = ids.map(
-    (id) =>
-      state.artifacts?.find((artifact) => artifact.id === id) ??
-      (entry?.transcript_ref?.id === id ? entry?.transcript_ref : undefined) ?? { id },
-  )
-  return (
-    <div className="data-table-wrap" role="tabpanel" aria-label="Artifacts">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Kind</th>
-            <th>Name</th>
-            <th>Media type</th>
-            <th>Summary</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((artifact) => (
-            <tr key={artifact.id}>
-              <td>
-                <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
-              </td>
-              <td>
-                {/* Route param :name carries the ARTIFACT ID, not the filename. */}
-                <Link className="artifact-link" to={`/runs/${threadId}/artifacts/${artifact.id}`}>
-                  {artifact.name ?? artifact.id}
-                </Link>
-              </td>
-              <td className="mono">{artifact.media_type ?? '—'}</td>
-              <td>{artifact.summary ?? '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-/* ── Prompt ──────────────────────────────────────────────────────────────── */
-
-function PromptTab({ entry }: { entry: PhaseResultEntry | undefined }) {
-  const prompt = entry?.resolved_prompt
-  if (!prompt || (!prompt.system && !prompt.user)) {
-    return (
-      <div className="dash-empty small" role="tabpanel">
-        No resolved prompt recorded for this phase.
-      </div>
-    )
-  }
-  const source = entry?.resolved_prompt_source
-  return (
-    <div role="tabpanel" aria-label="Prompt">
-      {source?.origin && (
-        <div className="kpi-row">
-          <span
-            className="topbar-meta-chip accent"
-            data-testid="prompt-provenance"
-            title="Where the winning prompt text came from"
-          >
-            {source.origin}
-            {source.ref ? ` · ${source.ref}` : ''}
-          </span>
-        </div>
-      )}
-      {prompt.system && (
-        <>
-          <h3 className="workspace-section-title">System</h3>
-          <CodeViewer value={prompt.system} ariaLabel="System prompt" />
-        </>
-      )}
-      {prompt.user && (
-        <>
-          <h3 className="workspace-section-title">User</h3>
-          <CodeViewer value={prompt.user} ariaLabel="User prompt" />
-        </>
-      )}
-    </div>
-  )
-}
-
-/* ── Dialogue ────────────────────────────────────────────────────────────── */
-
-function DialogueTab({ phase, state }: { phase: PhaseName; state: PipelineState }) {
   const entries = (state.dialogue ?? []).filter((item) => item.phase === phase)
-  if (entries.length === 0) {
+  const prompt = entry?.resolved_prompt
+  const source = entry?.resolved_prompt_source
+  const hasReasoning =
+    Boolean(entry?.reasoning_digest) ||
+    (entry?.tool_calls?.length ?? 0) > 0 ||
+    entries.length > 0 ||
+    Boolean(prompt?.system) ||
+    Boolean(prompt?.user)
+
+  if (!hasReasoning) {
     return (
       <div className="dash-empty small" role="tabpanel">
-        No dialogue for this phase
+        No reasoning details recorded for this phase yet.
       </div>
     )
   }
+
   return (
-    <div className="dialogue-thread" role="tabpanel" aria-label="Dialogue">
-      {entries.map((item) => (
-        <div key={item.id} className={`dialogue-bubble ${item.role}`}>
-          <span className="dialogue-role">
-            {item.role}
-            {item.at ? ` · ${formatTimestamp(item.at)}` : ''}
-          </span>
-          {item.content}
-        </div>
-      ))}
+    <div role="tabpanel" aria-label="Agent reasoning">
+      {entry?.reasoning_digest ? (
+        <>
+          <h3 className="workspace-section-title">Reasoning Digest</h3>
+          <p className="workspace-caption reasoning-digest">{entry.reasoning_digest}</p>
+        </>
+      ) : null}
+
+      {(entry?.tool_calls?.length ?? 0) > 0 && (
+        <>
+          <h3 className="workspace-section-title">Tool Calls</h3>
+          <ToolCallsList calls={entry?.tool_calls ?? []} />
+        </>
+      )}
+
+      {(prompt?.system || prompt?.user) && (
+        <>
+          <h3 className="workspace-section-title">Resolved Prompt</h3>
+          {source?.origin && (
+            <div className="kpi-row">
+              <span
+                className="topbar-meta-chip accent"
+                data-testid="prompt-provenance"
+                title="Where the winning prompt text came from"
+              >
+                {source.origin}
+                {source.ref ? ` · ${source.ref}` : ''}
+              </span>
+            </div>
+          )}
+          {prompt?.system && <CodeViewer value={prompt.system} ariaLabel="System prompt" />}
+          {prompt?.user && <CodeViewer value={prompt.user} ariaLabel="User prompt" />}
+        </>
+      )}
+
+      {entries.length > 0 && (
+        <>
+          <h3 className="workspace-section-title">Operator Dialogue</h3>
+          <div className="dialogue-thread">
+            {entries.map((item) => (
+              <div key={item.id} className={`dialogue-bubble ${item.role}`}>
+                <span className="dialogue-role">
+                  {item.role}
+                  {item.at ? ` · ${formatTimestamp(item.at)}` : ''}
+                </span>
+                {item.content}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }

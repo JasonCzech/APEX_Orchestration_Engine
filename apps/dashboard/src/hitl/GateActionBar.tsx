@@ -118,25 +118,24 @@ export function GateActionBar({
         </label>
       )}
       <div className="gate-actions-row">
-        {has('approve') && (
+        {kind === 'prompt_review' && has('approve') && (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={disabled}
+            onClick={() => onSubmit(dirty && has('modify') ? 'modify' : 'approve')}
+          >
+            {submitting ? 'Executing…' : dirty && has('modify') ? '▶ Execute Edited Prompt' : '▶ Execute Phase'}
+          </button>
+        )}
+        {kind === 'phase_review' && has('approve') && (
           <button
             type="button"
             className="btn btn-primary btn-sm"
             disabled={disabled}
             onClick={() => onSubmit('approve')}
           >
-            Approve
-          </button>
-        )}
-        {kind === 'prompt_review' && has('modify') && (
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={disabled || !dirty}
-            title={dirty ? 'Resume with your edited prompt' : 'Edit the prompt to enable'}
-            onClick={() => onSubmit('modify')}
-          >
-            Modify &amp; approve
+            ✓ Approve &amp; Continue
           </button>
         )}
         {kind === 'prompt_review' && has('skip_phase') && (
@@ -146,7 +145,7 @@ export function GateActionBar({
             disabled={disabled}
             onClick={() => onSubmit('skip_phase')}
           >
-            Skip phase
+            Skip Phase
           </button>
         )}
         {kind === 'phase_review' &&
@@ -158,7 +157,7 @@ export function GateActionBar({
               disabled={disabled || instructions.trim().length === 0}
               onClick={() => onSubmit('revise')}
             >
-              Send revision
+              ↻ Re-run with Changes
             </button>
           ) : (
             <button
@@ -168,7 +167,7 @@ export function GateActionBar({
               disabled={disabled}
               onClick={() => setRevising(true)}
             >
-              Revise…
+              ↻ Modify &amp; Re-run
             </button>
           ))}
         {kind === 'phase_review' && has('discuss') && (
@@ -183,7 +182,7 @@ export function GateActionBar({
             }
             onClick={() => onSubmit('discuss')}
           >
-            Discuss
+            Message Agent
           </button>
         )}
         <span className="gate-actions-spacer" />

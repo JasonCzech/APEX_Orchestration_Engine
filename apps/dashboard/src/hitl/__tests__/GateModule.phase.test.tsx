@@ -1,8 +1,9 @@
 /**
  * phase_review flow through the real machine: summary/warnings/artifacts/
- * dialogue render; discuss sends {action:'discuss', message}; revise reveals
- * the inline instructions textarea and sends {action:'revise', instructions};
- * an accepted discuss parks the module in the awaiting-agent banner.
+ * dialogue render; Message Agent sends {action:'discuss', message}; Modify &
+ * Re-run reveals the inline instructions textarea and sends
+ * {action:'revise', instructions}; an accepted discuss parks the module in the
+ * awaiting-agent banner.
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -72,8 +73,8 @@ describe('GateModule phase_review', () => {
     expect(screen.getByTestId('gate-dialogue')).toHaveTextContent('Tighten the ramp.')
     expect(screen.getByTestId('gate-dialogue')).toHaveTextContent('Ramp tightened to 5m.')
 
-    // Discuss is disabled until the composer carries a message.
-    const discuss = screen.getByRole('button', { name: 'Discuss' })
+    // Message Agent is disabled until the composer carries a message.
+    const discuss = screen.getByRole('button', { name: 'Message Agent' })
     expect(discuss).toBeDisabled()
     fireEvent.change(screen.getByPlaceholderText(/Ask a question or give feedback/), {
       target: { value: 'Why no auth flows in the plan?' },
@@ -102,8 +103,8 @@ describe('GateModule phase_review', () => {
     const user = userEvent.setup()
     renderHarness(threadId)
 
-    await user.click(await screen.findByRole('button', { name: 'Revise…' }))
-    const send = screen.getByRole('button', { name: 'Send revision' })
+    await user.click(await screen.findByRole('button', { name: /Modify & Re-run/i }))
+    const send = screen.getByRole('button', { name: /Re-run with Changes/i })
     expect(send).toBeDisabled()
     fireEvent.change(screen.getByPlaceholderText(/What should the agent change/), {
       target: { value: 'Add the auth flows and rebalance the mix.' },

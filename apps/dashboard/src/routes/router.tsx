@@ -49,7 +49,7 @@ export const appRoutes: RouteObject[] = [
         children: [
           {
             index: true,
-            handle: handle('Home'),
+            handle: handle('Pipeline Operation Dashboard'),
             lazy: lazyPage(() => import('@/features/home/pages'), 'HomePage'),
           },
           {
@@ -62,10 +62,10 @@ export const appRoutes: RouteObject[] = [
             handle: handle('Approval'),
             lazy: lazyPage(approvals, 'ApprovalDetailPage'),
           },
-          { path: 'runs', handle: handle('Runs'), lazy: lazyPage(runs, 'RunsListPage') },
+          { path: 'runs', handle: handle('Test History'), lazy: lazyPage(runs, 'RunsListPage') },
           {
             path: 'runs/new',
-            handle: handle('New Run'),
+            handle: handle('New Test'),
             lazy: lazyPage(runs, 'NewRunWizardPage'),
           },
           {
@@ -121,7 +121,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'work-items',
-            handle: handle('Work Items'),
+            handle: handle('Tickets/Defects'),
             lazy: lazyPage(workItems, 'WorkItemsPage'),
           },
           {
@@ -136,7 +136,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'environments',
-            handle: handle('Environments'),
+            handle: handle('Environment Configurations'),
             lazy: lazyPage(environments, 'EnvironmentsPage'),
           },
           {

@@ -3,14 +3,17 @@ import { NavLink, useLocation } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName, type PipelineState } from '@apex/pipeline-events'
 
+import type { PipelineDetail } from '@/api/hooks/useThreadState'
+
 import { lastPlanSelection, runFromHereSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
 import {
   formatDuration,
+  formatTimestamp,
+  isPipelinePhaseComplete,
   PHASE_LABELS,
-  statusLabel,
-  statusVisual,
-  TONE_COLOR_VAR,
+  pipelinePhaseVisual,
+  pipelineStatusLabel,
 } from './runDisplay'
 
 /**
@@ -19,42 +22,85 @@ import {
  * D4: per-row kebab opens the phase-subset pre-flight modal (re-run this
  * phase / run from here / run phases…).
  */
-export function PhaseRail({ threadId, state }: { threadId: string; state: PipelineState }) {
+export function PhaseRail({
+  threadId,
+  detail,
+  state,
+}: {
+  threadId: string
+  detail?: PipelineDetail
+  state: PipelineState
+}) {
   const { search } = useLocation()
   // Non-null = the pre-flight modal is open with this preselection.
   const [preflight, setPreflight] = useState<PhaseName[] | null>(null)
   const plan = state.phases_plan
+  const contextCount = state.context_packets?.length ?? 0
+  const artifactCount = state.artifacts?.length ?? 0
+  const approvalCount = PHASE_NAMES.reduce(
+    (count, phase) => count + (state.phase_results?.[phase]?.approvals?.length ?? 0),
+    0,
+  )
+
   return (
     <nav className="phase-rail glass-panel" aria-label="Pipeline phases">
+      <div className="phase-rail-summary">
+        <div className="phase-rail-summary-heading">Pipeline context</div>
+        <div className="phase-rail-summary-chips">
+          {detail?.project_id && <span className="topbar-meta-chip">{detail.project_id}</span>}
+          {detail?.app_id && <span className="topbar-meta-chip accent">{detail.app_id}</span>}
+          <span className="topbar-meta-chip">{contextCount} context</span>
+          <span className="topbar-meta-chip">{artifactCount} artifacts</span>
+        </div>
+        <dl className="phase-rail-summary-stats">
+          <div>
+            <dt>Approvals</dt>
+            <dd>{approvalCount}</dd>
+          </div>
+          <div>
+            <dt>Updated</dt>
+            <dd>{formatTimestamp(detail?.updated_at)}</dd>
+          </div>
+        </dl>
+      </div>
+
       <div className="phase-rail-heading">Phases</div>
-      {PHASE_NAMES.map((phase) => {
+      {PHASE_NAMES.map((phase, index) => {
         const entry = state.phase_results?.[phase]
         const status = entry?.status ?? 'pending'
-        const { tone, active } = statusVisual(entry?.status)
+        const visual = pipelinePhaseVisual(status)
         const attempt = entry?.attempt ?? 0
         const warningCount = entry?.warnings?.length ?? 0
         const skipped = status === 'skipped'
+        const complete = isPipelinePhaseComplete(status)
         return (
           <div className="phase-rail-row" key={phase}>
             <NavLink
               to={{ pathname: `/runs/${threadId}/phases/${phase}`, search }}
               className={({ isActive }) =>
-                ['phase-rail-item', isActive ? 'active' : '', skipped ? 'skipped' : '']
+                [
+                  'phase-rail-item',
+                  `phase-rail-item--${visual}`,
+                  isActive ? 'active' : '',
+                  skipped ? 'skipped' : '',
+                ]
                   .filter(Boolean)
                   .join(' ')
               }
               data-phase={phase}
               data-status={status}
             >
-              <span
-                className={`status-dot${active ? ' live' : ''}`}
-                style={{ color: TONE_COLOR_VAR[tone] }}
-                aria-hidden="true"
-              />
+              <span className={`phase-rail-icon phase-rail-icon--${visual}`} aria-hidden="true">
+                {complete ? '✓' : index + 1}
+              </span>
               <span className="phase-rail-body">
-                <span className="phase-rail-name">{PHASE_LABELS[phase]}</span>
+                <span className="phase-rail-name-row">
+                  <span className="phase-rail-name">{PHASE_LABELS[phase]}</span>
+                  <span className={`pipeline-status-pill pipeline-status-pill--${visual}`}>
+                    {pipelineStatusLabel(status)}
+                  </span>
+                </span>
                 <span className="phase-rail-meta">
-                  <span className="status-text">{statusLabel(entry?.status)}</span>
                   {entry?.duration_s !== null && entry?.duration_s !== undefined && (
                     <span>{formatDuration(entry.duration_s)}</span>
                   )}

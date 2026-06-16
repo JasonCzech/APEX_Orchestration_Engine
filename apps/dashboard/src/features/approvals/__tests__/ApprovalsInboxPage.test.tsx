@@ -57,7 +57,15 @@ const DETAILS = {
 
 function useInboxHandlers(items = [OLD, RUN_BUSY, NEW]) {
   const { handler, source } = mutableListHandler(items)
-  server.use(handler, detailsHandler(DETAILS))
+  // The exact thread-detail paths are fetched eagerly as the queue auto-selects
+  // the oldest gate; register both the param matcher and exact paths so the
+  // full-suite run doesn't depend on matcher timing.
+  server.use(
+    handler,
+    detailsHandler(DETAILS),
+    http.get('*/v1/pipelines/run-old-1', () => HttpResponse.json(DETAILS['run-old-1'])),
+    http.get('*/v1/pipelines/run-new-2', () => HttpResponse.json(DETAILS['run-new-2'])),
+  )
   return source
 }
 

@@ -16,7 +16,7 @@
 .main-content {
   flex: 1;
   min-width: 0;
-  padding: 20px 36px 28px;
+  padding: 24px 28px 32px;
   overflow-y: auto;
   height: 100%;
   min-height: 0;
@@ -38,8 +38,8 @@
   justify-content: space-between;
   gap: 14px;
   min-height: var(--topbar-min-height, 56px);
-  margin: -20px -36px 24px;
-  padding: 10px 36px;
+  margin: -24px -28px 24px;
+  padding: 14px 28px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, var(--accent-border));
   background:
     linear-gradient(
@@ -58,7 +58,7 @@
 .main-topbar-page {
   flex: 0 0 auto;
   min-width: 132px;
-  max-width: 260px;
+  max-width: min(52vw, 440px);
   display: flex;
   align-items: center;
 }
@@ -67,8 +67,8 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 19px;
-  font-weight: 850;
+  font-size: 24px;
+  font-weight: 800;
   line-height: 1.12;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -84,6 +84,7 @@
 
 .topbar-contribution-controls {
   flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .main-topbar-actions {

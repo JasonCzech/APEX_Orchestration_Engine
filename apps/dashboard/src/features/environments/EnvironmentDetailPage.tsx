@@ -357,7 +357,7 @@ export function EnvironmentDetailPage() {
       <header className="env-detail-header glass-panel">
         <div className="env-detail-heading">
           <nav className="env-breadcrumb" aria-label="Breadcrumb">
-            <Link to="/environments">Environments</Link>
+            <Link to="/environments">Environment Configurations</Link>
             {app && (
               <>
                 <span className="env-breadcrumb-sep">/</span>

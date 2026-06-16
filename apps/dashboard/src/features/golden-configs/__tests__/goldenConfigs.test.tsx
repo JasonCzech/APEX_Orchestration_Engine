@@ -69,6 +69,23 @@ const SYSTEM_DEFAULT = {
 /** Quiet handlers for the wizard mount after the start-run navigation. */
 function wizardDraftHandlers() {
   return [
+    http.get('*/v1/catalog/applications', () =>
+      HttpResponse.json([
+        {
+          id: 'app-checkout',
+          project_id: 'demo',
+          name: 'Checkout',
+          description: 'Payments and cart funnel',
+          archived_at: null,
+          created_at: '2026-06-01T00:00:00Z',
+          updated_at: '2026-06-01T00:00:00Z',
+        },
+      ]),
+    ),
+    http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
+    http.get('*/v1/documents', () =>
+      HttpResponse.json({ items: [], limit: 50, offset: 0 }),
+    ),
     http.get('*/v1/drafts', () => HttpResponse.json([])),
     http.post('*/v1/drafts', () =>
       HttpResponse.json(
@@ -94,6 +111,10 @@ function wizardDraftHandlers() {
         created_at: '2026-06-12T00:00:00Z',
         updated_at: '2026-06-12T00:00:00Z',
       }),
+    ),
+    http.get('*/v1/prompts', () => HttpResponse.json([])),
+    http.get('*/v1/work-tracking/saved-queries', () =>
+      HttpResponse.json({ items: [], limit: 50, offset: 0 }),
     ),
   ]
 }

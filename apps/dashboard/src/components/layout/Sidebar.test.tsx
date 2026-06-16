@@ -5,25 +5,33 @@ import { describe, expect, it } from 'vitest'
 import { authenticatedState, renderApp } from '@/test/render'
 
 describe('Sidebar', () => {
-  it('hides the ADMIN section for viewers', async () => {
+  it('keeps admin tools hidden for viewers', async () => {
+    const user = userEvent.setup()
     renderApp({ authState: authenticatedState('viewer') })
 
-    expect(await screen.findByText('Operate')).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Home' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Advanced' }))
     expect(screen.queryByText('Admin')).not.toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Connections' })).not.toBeInTheDocument()
   })
 
-  it('hides the ADMIN section for operators', async () => {
+  it('keeps admin tools hidden for operators', async () => {
+    const user = userEvent.setup()
     renderApp({ authState: authenticatedState('operator') })
 
-    expect(await screen.findByText('Operate')).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Home' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Advanced' }))
     expect(screen.queryByText('Admin')).not.toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Connections' })).not.toBeInTheDocument()
   })
 
-  it('shows the ADMIN section for admins', async () => {
+  it('shows admin tools inside Advanced for admins', async () => {
+    const user = userEvent.setup()
     renderApp({ authState: authenticatedState('admin') })
 
-    expect(await screen.findByText('Admin')).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Home' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Advanced' }))
+    expect(screen.getByText('Admin')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Connections' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Consumers' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'System' })).toBeInTheDocument()

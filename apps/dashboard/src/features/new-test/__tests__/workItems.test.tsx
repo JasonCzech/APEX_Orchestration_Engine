@@ -81,7 +81,7 @@ describe('WorkItemsStep', () => {
 
     await user.type(keyInput, 'PHX-999')
     await user.click(screen.getByRole('button', { name: 'Add' }))
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('unknown work item'))
+    await waitFor(() => expect(screen.getByText('unknown work item')).toBeInTheDocument())
     expect(within(chips).queryByText('PHX-999')).not.toBeInTheDocument()
   })
 })

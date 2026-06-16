@@ -44,6 +44,15 @@ export function targetPhaseFor(detail: PipelineDetail, state: PipelineState): Ph
 
 export type StatusTone = 'success' | 'danger' | 'warning' | 'accent' | 'neutral'
 
+export type PipelinePhaseVisual =
+  | 'pending'
+  | 'prompt_review'
+  | 'running'
+  | 'results_ready'
+  | 'completed'
+  | 'failed'
+  | 'skipped'
+
 export interface StatusVisual {
   tone: StatusTone
   /** True while the phase is in-flight — drives the pulsing status dot. */
@@ -66,6 +75,51 @@ export function statusVisual(status: string | null | undefined): StatusVisual {
     default:
       return { tone: 'neutral', active: false }
   }
+}
+
+export function pipelinePhaseVisual(status: string | null | undefined): PipelinePhaseVisual {
+  switch (status) {
+    case 'succeeded':
+      return 'completed'
+    case 'failed':
+    case 'aborted':
+      return 'failed'
+    case 'running':
+      return 'running'
+    case 'awaiting_prompt_review':
+      return 'prompt_review'
+    case 'awaiting_output_review':
+      return 'results_ready'
+    case 'skipped':
+      return 'skipped'
+    case 'pending':
+    default:
+      return 'pending'
+  }
+}
+
+export function pipelineStatusLabel(status: string | null | undefined): string {
+  switch (pipelinePhaseVisual(status)) {
+    case 'prompt_review':
+      return 'Prompt Review'
+    case 'running':
+      return 'Executing'
+    case 'results_ready':
+      return 'Results Ready'
+    case 'completed':
+      return 'Complete'
+    case 'failed':
+      return 'Failed'
+    case 'skipped':
+      return 'Skipped'
+    case 'pending':
+    default:
+      return 'Pending'
+  }
+}
+
+export function isPipelinePhaseComplete(status: string | null | undefined): boolean {
+  return ['succeeded', 'failed', 'aborted', 'skipped'].includes(status ?? '')
 }
 
 /** CSS color custom property per tone (status dots use currentColor). */

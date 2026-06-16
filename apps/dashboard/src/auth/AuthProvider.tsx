@@ -17,6 +17,7 @@ import {
 } from '@/api/apexClient'
 import { isApiError } from '@/api/errors'
 
+import { getDevSystemInfo, isDevAuthEnabled } from './devAuth'
 import { clearApiKey, getApiKey, setApiKey, subscribeApiKey } from './keyStorage'
 
 export type AuthState =
@@ -33,6 +34,11 @@ export interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+function createDevAuthState(): AuthState {
+  const systemInfo = getDevSystemInfo()
+  return { status: 'authenticated', consumer: systemInfo.consumer, systemInfo }
+}
+
 /**
  * Tracks the stored API key and validates every key change against
  * GET /v1/system/info; the returned consumer identity feeds the sidebar
@@ -48,7 +54,12 @@ export function AuthProvider({
   staticState?: AuthState
 }) {
   const [state, setState] = useState<AuthState>(() =>
-    staticState ?? (getApiKey() ? { status: 'validating' } : { status: 'no-key' }),
+    staticState ??
+    (isDevAuthEnabled()
+      ? createDevAuthState()
+      : getApiKey()
+        ? { status: 'validating' }
+        : { status: 'no-key' }),
   )
   const attemptRef = useRef(0)
 
@@ -74,6 +85,10 @@ export function AuthProvider({
 
   useEffect(() => {
     if (staticState) return
+    if (isDevAuthEnabled()) {
+      setState(createDevAuthState())
+      return
+    }
 
     const unsubscribeKey = subscribeApiKey((key) => {
       if (key) {
@@ -102,7 +117,7 @@ export function AuthProvider({
   const signOut = useCallback(() => {
     attemptRef.current += 1
     clearApiKey()
-    setState({ status: 'no-key' })
+    setState(isDevAuthEnabled() ? createDevAuthState() : { status: 'no-key' })
   }, [])
 
   const value = useMemo<AuthContextValue>(

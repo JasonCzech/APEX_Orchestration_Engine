@@ -1,10 +1,12 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
+import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -18,12 +20,66 @@ import {
   RUN_GATED,
 } from './runsTestHandlers'
 
+vi.mock('@uiw/react-codemirror', async () => {
+  const { createElement } = await import('react')
+  return {
+    default: ({
+      value,
+      'aria-label': ariaLabel,
+    }: {
+      value: string
+      'aria-label'?: string
+    }) =>
+      createElement('textarea', {
+        'data-testid': 'codemirror',
+        'aria-label': ariaLabel,
+        readOnly: true,
+        value,
+      }),
+  }
+})
+
 function LocationProbe({ label }: { label: string }) {
   const location = useLocation()
   return <div data-testid={label}>{location.pathname + location.search}</div>
 }
 
-/** Mounts the page on a memory router with probe routes for its navigation targets. */
+function detailHandler(detail: PipelineDetail) {
+  return http.get('*/v1/pipelines/:threadId', () => HttpResponse.json(detail))
+}
+
+const RUN_BUSY_DETAIL: PipelineDetail = {
+  ...RUN_BUSY,
+  values: {
+    title: RUN_BUSY.title,
+    current_phase: 'execution',
+    phases_plan: [
+      'story_analysis',
+      'test_planning',
+      'env_triage',
+      'script_scenario',
+      'execution',
+      'reporting',
+      'postmortem',
+    ],
+    phase_results: {
+      story_analysis: { phase: 'story_analysis', status: 'succeeded', attempt: 1 },
+      test_planning: { phase: 'test_planning', status: 'succeeded', attempt: 1 },
+      env_triage: { phase: 'env_triage', status: 'skipped', attempt: 1 },
+      script_scenario: { phase: 'script_scenario', status: 'succeeded', attempt: 2 },
+      execution: {
+        phase: 'execution',
+        status: 'running',
+        attempt: 1,
+        summary: 'Execution is still streaming results.',
+      },
+    },
+    artifacts: [],
+    dialogue: [],
+  },
+  interrupts: [],
+}
+
 function renderRunsPage(initialEntry = '/runs') {
   const router = createMemoryRouter(
     [
@@ -43,19 +99,24 @@ function renderRunsPage(initialEntry = '/runs') {
 }
 
 describe('RunsListPage', () => {
-  it('renders runs with title, id, status badge, engine chip and em dash for missing engine', async () => {
+  it('renders runs with title, id, project, application, phase count, verdict, and status', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
 
     const busyRow = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
     expect(busyRow.getByText('Checkout latency regression')).toBeInTheDocument()
     expect(busyRow.getByText(RUN_BUSY.thread_id)).toBeInTheDocument()
+    expect(busyRow.getByText('proj-alpha')).toBeInTheDocument()
+    expect(busyRow.getByText('app-storefront')).toBeInTheDocument()
+    expect(busyRow.getByText('4/7')).toBeInTheDocument()
+    expect(busyRow.getByText('30m')).toBeInTheDocument()
+    expect(busyRow.getByText('—')).toHaveClass('status-badge', 'neutral')
     expect(busyRow.getByText('busy')).toHaveClass('status-badge', 'accent')
-    expect(busyRow.getByText('apexload')).toHaveClass('dash-context-chip')
 
     const gatedRow = within(screen.getByTestId(`runs-row-${RUN_GATED.thread_id}`))
+    expect(gatedRow.getByText('Conditional')).toHaveClass('status-badge', 'warning')
     expect(gatedRow.getByText('interrupted')).toHaveClass('status-badge', 'warning')
-    expect(gatedRow.getByText('—')).toBeInTheDocument() // engine null
+    expect(gatedRow.getByText('—')).toBeInTheDocument()
   })
 
   it('renders a warning gate chip linking to the run for pending gates', async () => {
@@ -65,28 +126,30 @@ describe('RunsListPage', () => {
     const chip = await screen.findByRole('link', { name: 'gate: prompt_review' })
     expect(chip).toHaveClass('topbar-meta-chip', 'warning')
     expect(chip).toHaveAttribute('href', `/runs/${RUN_GATED.thread_id}`)
-    // no gate chip on the ungated row
+
     const busyRow = within(screen.getByTestId(`runs-row-${RUN_BUSY.thread_id}`))
     expect(busyRow.queryByRole('link', { name: /gate:/ })).not.toBeInTheDocument()
   })
 
-  it('renders a 7-segment phase strip per row and navigates to the phase on segment click', async () => {
-    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
+  it('opens the inline inspector with seven phase buttons and phase output JSON', async () => {
+    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler, detailHandler(RUN_BUSY_DETAIL))
     const user = userEvent.setup()
     renderRunsPage()
 
     const busyRow = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    const strip = busyRow.getByRole('group', { name: 'Phase progress' })
-    const segments = within(strip).getAllByRole('button')
-    expect(segments).toHaveLength(7)
-    expect(busyRow.getByLabelText('execution — running (attempt 1)')).toHaveClass(
-      'phase-seg--running',
-    )
+    await user.click(busyRow.getByRole('button', { name: 'Inspect' }))
 
-    await user.click(busyRow.getByLabelText('execution — running (attempt 1)'))
-    expect(await screen.findByTestId('phase-detail')).toHaveTextContent(
-      `/runs/${RUN_BUSY.thread_id}/phases/execution`,
+    expect(await screen.findByRole('heading', { name: 'Checkout latency regression' })).toBeInTheDocument()
+    const inspector = screen.getByRole('region', { name: 'Run inspector' })
+    const phaseButtons = within(inspector).getAllByRole('button')
+    expect(phaseButtons).toHaveLength(7)
+    expect(within(inspector).getByRole('button', { name: /execution/i })).toHaveClass(
+      'runs-phase-button',
+      'active',
     )
+    expect(
+      (within(inspector).getByTestId('codemirror') as HTMLTextAreaElement).value,
+    ).toContain('"status": "running"')
   })
 
   it('shows the empty state with a new-run CTA when there are no runs and no filters', async () => {
@@ -104,7 +167,6 @@ describe('RunsListPage', () => {
     const router = renderRunsPage('/runs?q=zzz&status=error')
 
     expect(await screen.findByText('No runs found')).toBeInTheDocument()
-    // Both the toolbar and the empty state offer clear-filters; use the empty-state CTA.
     const buttons = screen.getAllByRole('button', { name: 'Clear filters' })
     expect(buttons).toHaveLength(2)
     await user.click(buttons[1] as HTMLElement)
@@ -136,7 +198,7 @@ describe('RunsListPage', () => {
   })
 
   it('disables pagination at the bounds (no total: next disabled when items < limit)', async () => {
-    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler) // 2 items < limit 25
+    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
 
     expect(await screen.findByText('1–2')).toBeInTheDocument()
@@ -152,7 +214,7 @@ describe('RunsListPage', () => {
     expect(await screen.findByText('26–50')).toBeInTheDocument()
     const next = screen.getByRole('button', { name: 'Next' })
     const prev = screen.getByRole('button', { name: 'Previous' })
-    expect(next).toBeEnabled() // full page -> assume more
+    expect(next).toBeEnabled()
     expect(prev).toBeEnabled()
 
     await user.click(next)
@@ -173,7 +235,7 @@ describe('RunsListPage', () => {
 
     await waitFor(() => expect(router.state.location.search).toBe('?q=soak'), { timeout: 2000 })
     await waitFor(() => expect(captured.last()?.get('q')).toBe('soak'))
-    expect(captured.last()?.get('offset')).toBeNull() // offset reset to default
+    expect(captured.last()?.get('offset')).toBeNull()
   })
 
   it('applies the status select to the URL and the request', async () => {
@@ -198,8 +260,6 @@ describe('RunsListPage', () => {
     renderRunsPage()
 
     await user.click(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    expect(await screen.findByTestId('run-detail')).toHaveTextContent(
-      `/runs/${RUN_BUSY.thread_id}`,
-    )
+    expect(await screen.findByTestId('run-detail')).toHaveTextContent(`/runs/${RUN_BUSY.thread_id}`)
   })
 })

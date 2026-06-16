@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { Link, Navigate, useLocation, useParams } from 'react-router'
+import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { ProblemCard } from '@/components/ProblemCard'
+import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { AbortConfirm } from '@/hitl/GateActionBar'
 import { GateModuleView, GateSlimBanner } from '@/hitl/GateModule'
 import { useGate } from '@/hitl/useGate'
@@ -15,8 +16,7 @@ import { PhaseRail } from './PhaseRail'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
-import { RunRail } from './RunRail'
-import { isPhaseName, statusVisual, targetPhaseFor } from './runDisplay'
+import { isPhaseName, isPipelinePhaseComplete, statusVisual, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -43,6 +43,7 @@ function RunDetailSkeleton() {
 export function RunDetailPage() {
   const { threadId = '', phase: phaseParam } = useParams()
   const { search } = useLocation()
+  const navigate = useNavigate()
   const query = useThreadState(threadId)
   // D2 liveness: SSE deltas render on top of the snapshot. The useThreadState
   // poll deliberately stays on while streaming — snapshot is truth, the stream
@@ -70,6 +71,9 @@ export function RunDetailPage() {
   }
 
   const { detail, state, interrupts, stateParseFailed } = query.data
+  const completedCount = PHASE_NAMES.filter((phase) =>
+    isPipelinePhaseComplete(state.phase_results?.[phase]?.status),
+  ).length
 
   if (!phaseParam) {
     // Preserve ?tab= etc. so launch deep links (/runs/:id?tab=activity) survive.
@@ -123,7 +127,6 @@ export function RunDetailPage() {
         <span className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
           {detail.thread_status ?? 'unknown'}
         </span>
-        <LiveStatusChip status={live.stream.status} />
         {stateParseFailed && (
           <span
             className="topbar-meta-chip warning"
@@ -176,8 +179,30 @@ export function RunDetailPage() {
           onClose={() => setPreflight(null)}
         />
       )}
+      <section className="run-pipeline-hero glass-panel" aria-label="Pipeline progress">
+        <div className="run-pipeline-hero-head">
+          <div>
+            <div className="run-pipeline-hero-kicker">Pipeline Progress</div>
+            <h3 className="run-pipeline-hero-title">7-Phase Orchestration Flow</h3>
+          </div>
+          <div className="run-pipeline-counter-group">
+            <span className={`run-pipeline-counter${detail.thread_status === 'busy' ? ' live' : ''}`}>
+              {completedCount}/{PHASE_NAMES.length}
+            </span>
+            <LiveStatusChip status={live.stream.status} />
+          </div>
+        </div>
+        <PhaseStrip
+          strip={detail.phase_strip}
+          size="lg"
+          currentPhase={phaseParam}
+          onSelect={(phase) => {
+            void navigate({ pathname: `/runs/${threadId}/phases/${phase}`, search })
+          }}
+        />
+      </section>
       <div className={`run-detail-grid${interrupts.length > 0 ? ' has-gate' : ''}`}>
-        <PhaseRail threadId={threadId} state={state} />
+        <PhaseRail threadId={threadId} detail={detail} state={state} />
         <PhaseWorkspace
           threadId={threadId}
           phase={phaseParam}
@@ -185,12 +210,6 @@ export function RunDetailPage() {
           stream={live.stream}
           threadBusy={detail.thread_status === 'busy'}
           gateSlot={gateSlot}
-        />
-        <RunRail
-          detail={detail}
-          state={state}
-          interrupts={interrupts}
-          pendingGateHint={live.stream.pendingGateHint}
         />
       </div>
     </>

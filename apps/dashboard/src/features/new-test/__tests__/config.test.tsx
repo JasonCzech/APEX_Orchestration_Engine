@@ -1,5 +1,5 @@
 /**
- * Config step: phase-subset toggles with warn-only dependency hints, the
+ * Config section: phase-subset toggles with warn-only dependency hints, the
  * gates segmented control + custom matrix, and the golden-config picker
  * pre-filling engine/gates from the assistant's configurable.
  */
@@ -7,7 +7,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
-import { installWizardHandlers, renderWizard } from './wizardTestUtils'
+import { fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 const { assistantsSearch } = vi.hoisted(() => ({ assistantsSearch: vi.fn() }))
 
@@ -39,16 +39,18 @@ const GOLDEN = {
 const SYSTEM_DEFAULT = { ...GOLDEN, assistant_id: 'asst-sys', name: 'pipeline', metadata: { created_by: 'system' } }
 
 describe('ConfigStep', () => {
-  it('toggling a phase off shows the warn-only dependency hint and keeps Next enabled', async () => {
+  it('toggling a phase off shows the warn-only dependency hint and keeps Launch enabled', async () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=config')
+    renderWizard()
 
     const strip = await screen.findByRole('group', { name: 'Phase subset' })
     const toggles = within(strip).getAllByRole('button')
     expect(toggles).toHaveLength(7)
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
+
+    await fillScope(user, screen)
 
     // Drop execution: reporting's prereq is no longer earlier in the plan.
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
@@ -56,8 +58,8 @@ describe('ConfigStep', () => {
     expect(hints).toHaveTextContent(
       'reporting needs execution earlier in plan or succeeded on thread',
     )
-    // Warn, never block: the step stays valid.
-    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
+    // Warn, never block: the footer CTA stays valid once scope is valid.
+    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
@@ -70,7 +72,7 @@ describe('ConfigStep', () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=config')
+    renderWizard()
 
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: 'Custom' }))
@@ -89,7 +91,7 @@ describe('ConfigStep', () => {
     assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=config')
+    renderWizard()
 
     // The dev server's system-created default assistant is filtered out.
     expect(await screen.findByRole('button', { name: /Nightly checkout soak/ })).toBeInTheDocument()

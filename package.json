@@ -1,6 +1,30 @@
 {
   "name": "apex-orchestration-engine",
   "private": true,
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "setup:backend": "uv sync && uv run python scripts/dev.py setup",
+    "dev:backend": "uv run python scripts/dev.py dev",
+    "infra:up": "uv run python scripts/dev.py infra-up",
+    "infra:down": "uv run python scripts/dev.py infra-down",
+    "migrate": "uv run python scripts/dev.py migrate",
+    "seed": "uv run python scripts/dev.py seed",
+    "openapi": "uv run python scripts/dev.py openapi",
+    "generate:sdks": "npm run -w @apex/api-client generate",
+    "test:backend": "uv run python scripts/dev.py test",
+    "lint:backend": "uv run python scripts/dev.py lint",
+    "typecheck:backend": "uv run python scripts/dev.py typecheck",
+    "check:backend": "uv run python scripts/dev.py check",
+    "dev:dashboard": "npm run -w @apex/dashboard dev",
+    "build:dashboard": "npm run -w @apex/dashboard build",
+    "test:dashboard": "npm run -w @apex/dashboard test",
+    "lint:dashboard": "npm run -w @apex/dashboard lint",
+    "typecheck:dashboard": "npm run -w @apex/dashboard typecheck",
+    "build": "npm run build:dashboard",
+    "check": "npm run check:backend && npm run typecheck:dashboard && npm run lint:dashboard && npm run test:dashboard && npm run build:dashboard"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"

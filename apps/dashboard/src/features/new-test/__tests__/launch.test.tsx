@@ -1,7 +1,7 @@
 /**
- * Launch path: walking the wizard end-to-end builds the EXACT configurable
+ * Launch path: the single-scroll wizard builds the EXACT configurable
  * (snapshotted), creates thread + run via the SDK with D2's stream options,
- * deletes the draft best-effort, and navigates to /runs/{threadId}?tab=activity.
+ * deletes the draft best-effort, and navigates to /runs/{threadId}?tab=log.
  */
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -35,21 +35,15 @@ describe('wizard launch', () => {
 
     // Scope -> save the draft explicitly (footer ghost button, no debounce wait).
     await fillScope(user, screen)
-    await user.click(screen.getByRole('button', { name: 'Save draft' }))
+    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await waitFor(() => expect(router.state.location.search).toContain('draft=draft-1'))
-
-    // Walk Next through every step to review (all later steps are optional).
-    for (let i = 0; i < 5; i += 1) {
-      await user.click(screen.getByRole('button', { name: 'Next' }))
-    }
-    expect(router.state.location.search).toContain('step=review')
 
     // The review JSON is the exact payload the launch sends.
     const json = JSON.parse(
       screen.getByTestId('launch-payload-json').textContent ?? '{}',
     ) as Record<string, unknown>
 
-    await user.click(screen.getByRole('button', { name: 'Launch' }))
+    await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
 
     await waitFor(() => expect(runsCreate).toHaveBeenCalledTimes(1))
     expect(threadsCreate).toHaveBeenCalledWith({ metadata: json['metadata'] })
@@ -111,10 +105,10 @@ describe('wizard launch', () => {
       }
     `)
 
-    // Best-effort draft delete + navigation to the live activity tab.
+    // Best-effort draft delete + navigation to the log tab.
     await waitFor(() => expect(captured.deletes).toEqual(['draft-1']))
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/thread-new'))
-    expect(router.state.location.search).toBe('?tab=activity')
+    expect(router.state.location.search).toBe('?tab=log')
     expect(screen.getByTestId('run-page')).toBeInTheDocument()
   })
 
@@ -127,13 +121,10 @@ describe('wizard launch', () => {
     const { router } = renderWizard()
 
     await fillScope(user, screen)
-    for (let i = 0; i < 5; i += 1) {
-      await user.click(screen.getByRole('button', { name: 'Next' }))
-    }
-    await user.click(screen.getByRole('button', { name: 'Launch' }))
+    await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
 
     expect(await screen.findByText('Launch failed: multitask reject')).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs/new')
-    expect(screen.getByRole('button', { name: 'Launch' })).toBeEnabled() // retryable
+    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled() // retryable
   })
 })

@@ -57,7 +57,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     expect(chip).toHaveClass('live')
   })
 
-  it('defaults to the Activity tab while the thread is busy and renders the scripted feed', async () => {
+  it('defaults to the Pipeline Log tab while the thread is busy and renders the scripted feed', async () => {
     liveness.current = {
       runId: 'run-1',
       stream: streamView({
@@ -69,7 +69,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     server.use(pipelineDetailHandler()) // thread_status: busy
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`]) // no ?tab=
 
-    const activityTab = await screen.findByRole('tab', { name: 'Activity' })
+    const activityTab = await screen.findByRole('tab', { name: 'Pipeline Log' })
     expect(activityTab).toHaveAttribute('aria-selected', 'true')
 
     expect(await screen.findByTestId('activity-divider')).toHaveTextContent('running')
@@ -77,12 +77,12 @@ describe('RunDetailPage live surfaces (D2)', () => {
     expect(card).toHaveTextContent('engine.start')
   })
 
-  it('keeps Output as the default tab when the thread is not busy', async () => {
+  it('keeps Phase Details as the default tab when the thread is not busy', async () => {
     liveness.current = { runId: null, stream: idleStreamView() }
     server.use(pipelineDetailHandler({ ...PIPELINE_DETAIL, thread_status: 'idle' }))
     renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning`])
 
-    const outputTab = await screen.findByRole('tab', { name: 'Output' })
+    const outputTab = await screen.findByRole('tab', { name: 'Phase Details' })
     expect(outputTab).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -104,7 +104,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     expect(within(strip).getByTestId('engine-status')).toHaveTextContent('running')
   })
 
-  it('surfaces pendingGateHint in the run rail until the snapshot delivers the interrupt', async () => {
+  it('does not render phantom gate UI from pendingGateHint before the snapshot hydrates', async () => {
     liveness.current = {
       runId: 'run-1',
       stream: streamView({
@@ -113,14 +113,14 @@ describe('RunDetailPage live surfaces (D2)', () => {
       }),
     }
     server.use(pipelineDetailHandler()) // no interrupts in the snapshot yet
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting?tab=output`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting?tab=details`])
 
-    const hint = await screen.findByTestId('gate-hint')
-    expect(hint).toHaveTextContent('Gate opening: prompt_review on Reporting')
-    expect(within(hint).getByText('loading gate…')).toHaveAttribute('title')
+    expect(await screen.findByTestId('live-status-chip')).toHaveTextContent('live')
+    expect(screen.queryByTestId('gate-hint')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('gate-slim-banner')).not.toBeInTheDocument()
   })
 
-  it('suppresses the hint once the snapshot hydrates the real interrupt', async () => {
+  it('shows the slim gate banner once the snapshot hydrates the real interrupt', async () => {
     liveness.current = {
       runId: 'run-1',
       stream: streamView({
@@ -129,11 +129,10 @@ describe('RunDetailPage live surfaces (D2)', () => {
       }),
     }
     server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting?tab=output`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
-    // The hydrated gate banner wins; the hint chip is not duplicated.
-    const banner = await screen.findByRole('status')
-    expect(banner).toHaveTextContent('Gate open:')
+    const banner = await screen.findByTestId('gate-slim-banner')
+    expect(banner).toHaveTextContent('Phase review gate open on Reporting')
     expect(screen.queryByTestId('gate-hint')).not.toBeInTheDocument()
   })
 })

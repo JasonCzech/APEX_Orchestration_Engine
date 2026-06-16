@@ -22,6 +22,7 @@ export const ATTENTION_FAILURES_LIMIT = 5
 export const RECENT_RUNS_LIMIT = 8
 /** Resumable drafts shown in the side panel. */
 export const PANEL_DRAFTS_LIMIT = 5
+const EM_DASH = '—'
 
 const ACTIVE_STATUSES = new Set(['busy', 'interrupted'])
 
@@ -88,4 +89,39 @@ export function errorRateOf(
 /** Deep link into the approvals inbox; falls back to the queue without an id. */
 export function gateHref(threadId: string, interruptId: string | null | undefined): string {
   return interruptId ? `/approvals/${threadId}/${interruptId}` : '/approvals'
+}
+
+export function totalRuns(items: PipelineSummary[]): number {
+  return items.length
+}
+
+/**
+ * Best-effort "GO" proxy until the fleet API exposes verdicts directly.
+ * Idle runs are the only clearly settled-success state currently available.
+ */
+export function goVerdicts(items: PipelineSummary[]): number {
+  return items.filter((run) => run.thread_status === 'idle').length
+}
+
+export function interruptedRuns(items: PipelineSummary[]): number {
+  return items.filter((run) => run.thread_status === 'interrupted').length
+}
+
+function durationMs(run: PipelineSummary): number | null {
+  if (!run.created_at || !run.updated_at) return null
+  const created = Date.parse(run.created_at)
+  const updated = Date.parse(run.updated_at)
+  if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return null
+  return updated - created
+}
+
+export function avgDurationLabel(items: PipelineSummary[]): string {
+  const durations = items.map(durationMs).filter((value): value is number => value !== null)
+  if (durations.length === 0) return EM_DASH
+  const average = durations.reduce((sum, value) => sum + value, 0) / durations.length
+  const totalMinutes = Math.round(average / 60_000)
+  if (totalMinutes < 60) return `${totalMinutes}m`
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
 }

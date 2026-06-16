@@ -113,6 +113,7 @@ export function draftHandlers(existing: DraftRead[] = []) {
 /** Every wizard-touched read surface, quiet by default. */
 export function defaultWizardHandlers() {
   return [
+    http.post('*/assistants/search', () => HttpResponse.json([])),
     http.get('*/v1/catalog/applications', () => HttpResponse.json(APPLICATIONS)),
     http.get('*/v1/catalog/environments', () => HttpResponse.json(ENVIRONMENTS)),
     http.get('*/v1/documents', () =>

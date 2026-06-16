@@ -15,14 +15,22 @@ import {
  * `:root` is the dark default; the others are `[data-theme='…']` overrides.
  * Note: the reference defines `monokai-dimmed` (not `monokai`).
  */
-export const THEMES = ['dark', 'light', 'solarized-dark', 'solarized-light', 'monokai-dimmed'] as const
+export const THEMES = [
+  'apex-light',
+  'dark',
+  'light',
+  'solarized-dark',
+  'solarized-light',
+  'monokai-dimmed',
+] as const
 
 export type ThemeName = (typeof THEMES)[number]
 
-export const DEFAULT_THEME: ThemeName = 'dark'
+export const DEFAULT_THEME: ThemeName = 'apex-light'
 export const THEME_STORAGE_KEY = 'apex.theme'
 
 export const THEME_LABELS: Record<ThemeName, string> = {
+  'apex-light': 'Light (CTx)',
   dark: 'Dark',
   light: 'Light',
   'solarized-dark': 'Solarized Dark',

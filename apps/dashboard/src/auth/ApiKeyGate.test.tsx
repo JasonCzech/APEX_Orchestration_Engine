@@ -1,7 +1,7 @@
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -9,6 +9,10 @@ import { server } from '@/test/server'
 import { API_KEY_STORAGE_KEY } from './keyStorage'
 
 describe('ApiKeyGate', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   it('renders the key-entry gate when no key is stored', () => {
     renderApp()
 
@@ -48,6 +52,21 @@ describe('ApiKeyGate', () => {
       screen.getByRole('heading', { name: 'Connect to the control plane' }),
     ).toBeInTheDocument()
     expect(screen.queryByTestId('sidebar')).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(API_KEY_STORAGE_KEY)).toBeNull()
+  })
+
+  it('bypasses the key-entry gate when explicit Vite dev auth is enabled', async () => {
+    vi.stubEnv('VITE_APEX_DEV_AUTH', 'true')
+    vi.stubEnv('VITE_APEX_DEV_API_KEY', 'dev-key-local')
+
+    renderApp()
+
+    const identity = within(await screen.findByTestId('sidebar-identity'))
+    expect(identity.getByText('Dev Admin')).toBeInTheDocument()
+    expect(identity.getByText('admin')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: 'Connect to the control plane' }),
+    ).not.toBeInTheDocument()
     expect(window.localStorage.getItem(API_KEY_STORAGE_KEY)).toBeNull()
   })
 })

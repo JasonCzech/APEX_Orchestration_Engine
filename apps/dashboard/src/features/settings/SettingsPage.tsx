@@ -25,6 +25,7 @@ import './settings.css'
  * theme/themes.css (bg-primary, bg-secondary, accent, text-primary).
  */
 const THEME_PREVIEWS: Record<ThemeName, { bg: string; surface: string; accent: string; text: string }> = {
+  'apex-light': { bg: '#f5f7fa', surface: '#ffffff', accent: '#00a8e0', text: '#1a1a2e' },
   dark: { bg: '#050508', surface: '#0b0c10', accent: '#8b5cf6', text: '#f8fafc' },
   light: { bg: '#f8fafc', surface: '#f1f5f9', accent: '#4f46e5', text: '#0f172a' },
   'solarized-dark': { bg: '#002b36', surface: '#073642', accent: '#268bd2', text: '#fdf6e3' },

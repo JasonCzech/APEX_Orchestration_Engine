@@ -30,6 +30,23 @@ const nodeAbortController = transferableAbortController()
 globalThis.AbortController = nodeAbortController.constructor as typeof AbortController
 globalThis.AbortSignal = nodeAbortController.signal.constructor as typeof AbortSignal
 
+function emptyClientRects(): DOMRectList {
+  return {
+    length: 0,
+    item: () => null,
+    [Symbol.iterator]: function* () {},
+  } as unknown as DOMRectList
+}
+
+if (typeof Range !== 'undefined') {
+  if (!Range.prototype.getClientRects) {
+    Range.prototype.getClientRects = emptyClientRects
+  }
+  if (!Range.prototype.getBoundingClientRect) {
+    Range.prototype.getBoundingClientRect = () => new DOMRect()
+  }
+}
+
 beforeAll(() => {
   server.listen({ onUnhandledRequest: 'error' })
 })

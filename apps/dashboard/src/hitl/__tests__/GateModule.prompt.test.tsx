@@ -1,7 +1,8 @@
 /**
  * prompt_review flow through the REAL machine (useGate + GateModuleView wired
- * the way RunDetailPage mounts them): edit -> dirty chip -> Modify & approve
- * sends {action:'modify', prompt:{...}}; abort is gated by type-to-confirm.
+ * the way RunDetailPage mounts them): edit -> dirty chip -> Execute Edited
+ * Prompt sends {action:'modify', prompt:{...}}; abort is gated by
+ * type-to-confirm.
  */
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -69,7 +70,7 @@ function renderHarness(threadId: string) {
 }
 
 describe('GateModule prompt_review', () => {
-  it('edit -> dirty chip -> Modify & approve posts {action:"modify", prompt:{...}}', async () => {
+  it('edit -> dirty chip -> Execute Edited Prompt posts {action:"modify", prompt:{...}}', async () => {
     const threadId = 'th-prompt'
     const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-p')]))
     const resume = resumeHandler(202)
@@ -84,14 +85,14 @@ describe('GateModule prompt_review', () => {
     const systemEditor = within(screen.getByTestId('gate-editor-system')).getByTestId('codemirror')
     expect(systemEditor).toHaveValue('You are the planning agent.')
 
-    // Pristine: no dirty chip, Modify & approve disabled.
+    // Pristine: no dirty chip, base execute action is available.
     expect(screen.queryByTestId('gate-dirty-chip')).not.toBeInTheDocument()
-    const modify = screen.getByRole('button', { name: 'Modify & approve' })
-    expect(modify).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Execute Phase/i })).toBeEnabled()
 
-    // Edit the system prompt -> dirty diff indicator + enabled modify.
+    // Edit the system prompt -> dirty diff indicator + edited execute label.
     fireEvent.change(systemEditor, { target: { value: 'You are the EDITED planning agent.' } })
     expect(await screen.findByTestId('gate-dirty-chip')).toHaveTextContent('edited')
+    const modify = screen.getByRole('button', { name: /Execute Edited Prompt/i })
     expect(modify).toBeEnabled()
 
     await user.click(modify)
@@ -121,7 +122,7 @@ describe('GateModule prompt_review', () => {
     renderHarness(threadId)
 
     const packets = await screen.findByTestId('gate-context-packets')
-    expect(packets).toHaveTextContent('Context packets (1)')
+    expect(packets).toHaveTextContent('Additional Context')
     expect(packets).toHaveTextContent('APEX-101')
     expect(screen.getByTestId('gate-tools')).toHaveTextContent('jira.search')
 

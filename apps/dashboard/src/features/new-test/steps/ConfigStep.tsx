@@ -228,6 +228,22 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       </div>
 
       <div className="wizard-field">
+        <label className="wizard-toggle-row">
+          <span>
+            <span className="wizard-label">Manual step-through</span>
+            <span className="wizard-caption">
+              Pause on every phase for prompt review and result approval.
+            </span>
+          </span>
+          <input
+            type="checkbox"
+            checked={config.gates_mode === 'all_gated'}
+            onChange={(event) => setGatesMode(event.target.checked ? 'all_gated' : 'all_auto')}
+          />
+        </label>
+      </div>
+
+      <div className="wizard-field">
         <span className="wizard-label">Gates</span>
         <div className="wizard-segmented" role="group" aria-label="Gates mode">
           {GATES_MODES.map((mode) => (

@@ -1,3 +1,5 @@
+import { getDevApiKey, isDevAuthEnabled } from './devAuth'
+
 export const API_KEY_STORAGE_KEY = 'apex.apiKey'
 
 type KeyListener = (key: string | null) => void
@@ -13,6 +15,8 @@ function safeStorage(): Storage | null {
 }
 
 export function getApiKey(): string | null {
+  if (isDevAuthEnabled()) return getDevApiKey()
+
   const stored = safeStorage()?.getItem(API_KEY_STORAGE_KEY) ?? null
   return stored && stored.length > 0 ? stored : null
 }

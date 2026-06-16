@@ -23,7 +23,7 @@ describe('SettingsPage', () => {
     renderSettings()
 
     const picker = await screen.findByRole('group', { name: 'Theme picker' })
-    expect(within(picker).getByRole('button', { name: /^Dark/ })).toHaveAttribute(
+    expect(within(picker).getByRole('button', { name: /Light \(CTx\)/ })).toHaveAttribute(
       'aria-pressed',
       'true',
     )

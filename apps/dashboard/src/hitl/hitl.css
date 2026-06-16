@@ -57,6 +57,37 @@
   min-width: 0;
 }
 
+.prompt-review-layout,
+.phase-review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.9fr);
+  gap: 16px;
+}
+
+.prompt-review-main,
+.phase-review-main,
+.prompt-review-sidebar,
+.phase-review-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.gate-info-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--subtle-fill, var(--bg-card));
+  padding: 12px;
+}
+
+.gate-info-copy {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .gate-field-label {
   font-size: 10px;
   font-weight: 700;
@@ -257,6 +288,13 @@ a.gate-artifact-chip:hover {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+@media (max-width: 1180px) {
+  .prompt-review-layout,
+  .phase-review-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .abort-confirm {

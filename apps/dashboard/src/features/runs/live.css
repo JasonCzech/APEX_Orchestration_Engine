@@ -139,7 +139,7 @@
 }
 
 .activity-tool-card .activity-tool-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   font-weight: 600;
   color: var(--text-primary);
@@ -182,6 +182,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
 }
 
 .activity-engine-samples {
