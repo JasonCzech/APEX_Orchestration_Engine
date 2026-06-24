@@ -253,15 +253,15 @@ class PipelineReadService:
 
 
 def _limits_from_state(state: JsonDict) -> Limits:
+    """Recover the run's Limits to size the resume recursion budget.
+
+    The pipeline's plan_resolver checkpoints the resolved limits into state
+    `values["limits"]` (graph.plan_resolver); that is the authoritative location,
+    since LangGraph's get_state does not surface the run configurable. Falls back
+    to defaults only when no run has seeded the snapshot yet.
+    """
     values = state.get("values") if isinstance(state.get("values"), dict) else {}
-    config = state.get("config") if isinstance(state.get("config"), dict) else {}
-    candidates = [
-        ((config or {}).get("configurable") or {}).get("limits"),
-        ((values or {}).get("configurable") or {}).get("limits"),
-        (((values or {}).get("config") or {}).get("configurable") or {}).get("limits"),
-        (values or {}).get("limits"),
-    ]
-    for candidate in candidates:
-        if isinstance(candidate, dict):
-            return Limits.model_validate(candidate)
+    snapshot = (values or {}).get("limits")
+    if isinstance(snapshot, dict):
+        return Limits.model_validate(snapshot)
     return Limits()

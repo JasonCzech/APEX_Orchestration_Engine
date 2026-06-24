@@ -62,7 +62,12 @@ from typing import Any
 import httpx
 import structlog
 
-from apex.adapters.http_resilience import CircuitBreaker, CircuitOpenError, resilient_request
+from apex.adapters.http_resilience import (
+    CircuitBreaker,
+    CircuitOpenError,
+    resilient_request,
+    retry_policy,
+)
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     LoadTestSpec,
@@ -354,6 +359,11 @@ class ApexLoadExecutionEngine:
         breaker = (
             self._breaker if method.upper() == "GET" and path.startswith("/api/v1/tests/") else None
         )
+        # An explicit per-request timeout (e.g. the 60s artifact/report download) must own
+        # the budget: the default RetryPolicy.total_timeout_s (10s) would otherwise wrap the
+        # call in a deadline and silently truncate the download. Drop the retry-level cap and
+        # let httpx's per-attempt timeout govern; attempts stay bounded.
+        retry = retry_policy(total_timeout_s=None) if timeout_s is not None else None
         try:
             response = await resilient_request(
                 self._client(),
@@ -362,6 +372,7 @@ class ApexLoadExecutionEngine:
                 json=json,
                 params=params,
                 timeout=request_timeout,
+                retry=retry,
                 breaker=breaker,
             )
         except CircuitOpenError as exc:

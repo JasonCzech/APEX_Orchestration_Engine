@@ -720,6 +720,34 @@ async def test_collect_artifacts_streams_archive_report() -> None:
 
 
 @respx.mock
+async def test_download_request_lifts_total_retry_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression guard: the 60s archive download must not be capped by the default
+    # RetryPolicy.total_timeout_s (10s). The download path passes an explicit timeout_s,
+    # so _request must hand resilient_request a policy with no total deadline.
+    import apex.adapters.apex_load.engine as engine_mod
+
+    captured: list[Any] = []
+    real = engine_mod.resilient_request
+
+    async def spy(*args: Any, **kwargs: Any) -> Any:
+        captured.append(kwargs.get("retry"))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(engine_mod, "resilient_request", spy)
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=archive_report_json())
+    )
+    await make_adapter().collect_artifacts(make_handle(), RecordingStore())
+
+    assert captured, "expected the download to route through resilient_request"
+    download_policy = captured[-1]
+    assert download_policy is not None
+    assert download_policy.total_timeout_s is None
+
+
+@respx.mock
 async def test_collect_artifacts_tolerates_missing_archive() -> None:
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         return_value=httpx.Response(404, json={"error": "archive not found"})

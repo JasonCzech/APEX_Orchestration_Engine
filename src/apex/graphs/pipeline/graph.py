@@ -68,6 +68,9 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         "current_phase": None,
         "run_aborted": False,
         "phase_results": seeded,
+        # Checkpoint the resolved limits so a later gate-resume can recover them (the run
+        # configurable is not retrievable via get_state). See pipeline_read._limits_from_state.
+        "limits": cfg.limits.model_dump(mode="json"),
     }
 
 

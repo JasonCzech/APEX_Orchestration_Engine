@@ -13,6 +13,7 @@ from langgraph_sdk.auth import is_studio_user
 
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import AuthStoreUnavailableError, extract_api_key, get_default_resolver
+from apex.settings import get_settings
 
 auth = Auth()
 
@@ -44,6 +45,12 @@ def identity_from_user(user: Any) -> ConsumerIdentity:
     attribute access; support either so helpers also work with plain dicts/objects.
     """
     if is_studio_user(user):
+        # `langgraph dev` Studio bypasses key auth; only honor it (as local admin) in
+        # dev/test. In a locked-down environment a Studio request must never be admin.
+        if get_settings().is_locked_down:
+            raise Auth.exceptions.HTTPException(
+                status_code=401, detail="Studio access is not permitted in this environment"
+            )
         return _STUDIO_IDENTITY
 
     def field(key: str) -> Any:

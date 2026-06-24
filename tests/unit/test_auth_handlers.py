@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -140,6 +141,26 @@ def test_identity_from_user_rejects_unknown_role_or_type(field: str, value: str)
     with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
         identity_from_user(payload)
 
+    assert excinfo.value.status_code == 401
+
+
+def test_studio_user_is_admin_in_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("apex.auth.handlers.is_studio_user", lambda _user: True)
+    monkeypatch.setattr(
+        "apex.auth.handlers.get_settings", lambda: SimpleNamespace(is_locked_down=False)
+    )
+    identity = identity_from_user(object())
+    assert identity.consumer_id == "studio"
+    assert identity.role is Role.ADMIN
+
+
+def test_studio_user_rejected_in_locked_down_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("apex.auth.handlers.is_studio_user", lambda _user: True)
+    monkeypatch.setattr(
+        "apex.auth.handlers.get_settings", lambda: SimpleNamespace(is_locked_down=True)
+    )
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        identity_from_user(object())
     assert excinfo.value.status_code == 401
 
 

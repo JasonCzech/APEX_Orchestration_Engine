@@ -123,6 +123,20 @@ async def test_auth_disabled_yields_anonymous_admin(monkeypatch: pytest.MonkeyPa
     assert identity.is_unscoped
 
 
+async def test_auth_disabled_in_locked_down_env_denies(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Defense-in-depth: even if a settings object with auth disabled slips past the
+    # production lockdown validator, resolve() must never grant anonymous admin there.
+    import apex.auth.service as svc
+    from apex.settings import ApexSettings, AuthSettings
+
+    unsafe = ApexSettings.model_construct(
+        environment="production", auth=AuthSettings(enabled=False)
+    )
+    monkeypatch.setattr(svc, "get_settings", lambda: unsafe)
+    resolver = IdentityResolver(session_factory=ExplodingFactory())
+    assert await resolver.resolve(None) is None
+
+
 async def test_db_lookup_builds_identity_with_scopes() -> None:
     consumer = ApiConsumer(
         id="abc123",
