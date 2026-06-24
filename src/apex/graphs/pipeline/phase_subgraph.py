@@ -520,6 +520,16 @@ def _make_finalize(phase: Phase):
         )
         # Usage analytics (M6): best-effort, never fails the run.
         usage_events.record_phase_usage_sync(phase.value, str(status), config)
+        usage_metadata = entry.get("usage_metadata")
+        usage_events.record_agent_event_sync(
+            phase=phase.value,
+            status=str(status),
+            attempt=attempt,
+            config=config,
+            latency_ms=round(duration_s * 1000) if duration_s is not None else None,
+            usage=usage_metadata if isinstance(usage_metadata, dict) else None,
+            agent_name=f"{phase.value}.worker",
+        )
         update = _phase_update(
             phase,
             attempt,

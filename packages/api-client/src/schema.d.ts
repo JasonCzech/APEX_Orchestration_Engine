@@ -173,6 +173,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/analytics/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Analytics
+         * @description Aggregate LangGraph agent behavior events.
+         */
+        get: operations["getAgentAnalytics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/analytics/usage": {
         parameters: {
             query?: never;
@@ -932,6 +952,152 @@ export interface components {
             id: string;
             /** Version */
             version: number;
+        };
+        /** AgentAnalyticsBreakdownRow */
+        AgentAnalyticsBreakdownRow: {
+            /** Avg Latency Ms */
+            avg_latency_ms?: number | null;
+            /** Cache Creation Tokens */
+            cache_creation_tokens: number;
+            /** Cache Read Tokens */
+            cache_read_tokens: number;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Errors */
+            errors: number;
+            /** Events */
+            events: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Key */
+            key: string;
+            /** Output Tokens */
+            output_tokens: number;
+            /** P95 Latency Ms */
+            p95_latency_ms?: number | null;
+            /** Reasoning Tokens */
+            reasoning_tokens: number;
+            /** Runs */
+            runs: number;
+            /** Thread Id */
+            thread_id?: string | null;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /** AgentAnalyticsPage */
+        AgentAnalyticsPage: {
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Total */
+            total: number;
+        };
+        /** AgentAnalyticsResponse */
+        AgentAnalyticsResponse: {
+            /** Breakdown */
+            breakdown: components["schemas"]["AgentAnalyticsBreakdownRow"][];
+            /** Cost Visible */
+            cost_visible: boolean;
+            page: components["schemas"]["AgentAnalyticsPage"];
+            /** Series */
+            series: components["schemas"]["AgentAnalyticsSeriesPoint"][];
+            totals: components["schemas"]["AgentAnalyticsTotals"];
+            window: components["schemas"]["AgentAnalyticsWindow"];
+        };
+        /** AgentAnalyticsSeriesPoint */
+        AgentAnalyticsSeriesPoint: {
+            /** Avg Latency Ms */
+            avg_latency_ms?: number | null;
+            /**
+             * Bucket Start
+             * Format: date-time
+             */
+            bucket_start: string;
+            /** Cache Creation Tokens */
+            cache_creation_tokens: number;
+            /** Cache Read Tokens */
+            cache_read_tokens: number;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Errors */
+            errors: number;
+            /** Events */
+            events: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /** Key */
+            key: string;
+            /** Output Tokens */
+            output_tokens: number;
+            /** P95 Latency Ms */
+            p95_latency_ms?: number | null;
+            /** Reasoning Tokens */
+            reasoning_tokens: number;
+            /** Runs */
+            runs: number;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /** AgentAnalyticsTotals */
+        AgentAnalyticsTotals: {
+            /**
+             * Agents
+             * @default 0
+             */
+            agents: number;
+            /** Avg Latency Ms */
+            avg_latency_ms?: number | null;
+            /** Cache Creation Tokens */
+            cache_creation_tokens: number;
+            /** Cache Read Tokens */
+            cache_read_tokens: number;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /** Errors */
+            errors: number;
+            /** Events */
+            events: number;
+            /** Input Tokens */
+            input_tokens: number;
+            /**
+             * Models
+             * @default 0
+             */
+            models: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** P95 Latency Ms */
+            p95_latency_ms?: number | null;
+            /** Reasoning Tokens */
+            reasoning_tokens: number;
+            /** Runs */
+            runs: number;
+            /** Total Tokens */
+            total_tokens: number;
+        };
+        /** AgentAnalyticsWindow */
+        AgentAnalyticsWindow: {
+            /**
+             * Bucket
+             * @enum {string}
+             */
+            bucket: "day" | "hour";
+            /**
+             * From
+             * Format: date-time
+             */
+            from: string;
+            /**
+             * Group By
+             * @enum {string}
+             */
+            group_by: "model" | "stage" | "agent" | "date" | "test";
+            /**
+             * To
+             * Format: date-time
+             */
+            to: string;
         };
         /** ApplicationCreate */
         ApplicationCreate: {
@@ -2537,6 +2703,62 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConsumerCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAgentAnalytics: {
+        parameters: {
+            query?: {
+                /** @description Window start (ISO-8601); default = `to` minus 7 days. */
+                from?: string | null;
+                /** @description Window end (ISO-8601, exclusive); default = now. */
+                to?: string | null;
+                /** @description Histogram bucket size. */
+                bucket?: "day" | "hour";
+                /** @description Breakdown dimension. */
+                group_by?: "model" | "stage" | "agent" | "date" | "test";
+                /** @description Filter to one project (must be inside the consumer's scopes). */
+                project?: string | null;
+                /** @description Filter. Accepts repeated values or comma-separated values. */
+                model?: string[] | null;
+                /** @description Filter. Accepts repeated values or comma-separated values. */
+                stage?: string[] | null;
+                /** @description Filter. Accepts repeated values or comma-separated values. */
+                agent?: string[] | null;
+                /** @description Filter to one pipeline thread/test id. */
+                test?: string | null;
+                /** @description Agent event status. */
+                status?: ("ok" | "error") | null;
+                /** @description Breakdown sort metric. */
+                sort?: "key" | "events" | "errors" | "input_tokens" | "output_tokens" | "total_tokens" | "cache_read_tokens" | "cache_creation_tokens" | "reasoning_tokens" | "cost_usd" | "avg_latency_ms" | "p95_latency_ms" | "runs";
+                /** @description Sort direction. */
+                order?: "asc" | "desc";
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentAnalyticsResponse"];
                 };
             };
             /** @description Validation Error */

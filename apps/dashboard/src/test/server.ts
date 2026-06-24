@@ -29,6 +29,35 @@ const EMPTY_USAGE = {
   runs: { phases_succeeded: 0, phases_failed: 0 },
 }
 
+const EMPTY_AGENT_ANALYTICS = {
+  window: {
+    from: '2026-06-05T00:00:00Z',
+    to: '2026-06-12T00:00:00Z',
+    bucket: 'day',
+    group_by: 'model',
+  },
+  totals: {
+    events: 0,
+    errors: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    reasoning_tokens: 0,
+    cost_usd: null,
+    avg_latency_ms: null,
+    p95_latency_ms: null,
+    runs: 0,
+    agents: 0,
+    models: 0,
+  },
+  breakdown: [],
+  series: [],
+  page: { limit: 20, offset: 0, total: 0 },
+  cost_visible: false,
+}
+
 export const handlers = [
   http.get('*/v1/system/info', () => HttpResponse.json(SYSTEM_INFO)),
   // The shell's Approvals badge (Sidebar -> useApprovalsInbox, D3) polls the
@@ -40,6 +69,7 @@ export const handlers = [
   // mount; default to empty so tests that merely pass through '/' stay quiet.
   http.get('*/v1/drafts', () => HttpResponse.json([])),
   http.get('*/v1/analytics/usage', () => HttpResponse.json(EMPTY_USAGE)),
+  http.get('*/v1/analytics/agents', () => HttpResponse.json(EMPTY_AGENT_ANALYTICS)),
 ]
 
 export const server = setupServer(...handlers)

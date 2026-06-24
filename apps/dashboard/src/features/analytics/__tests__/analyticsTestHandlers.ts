@@ -1,37 +1,181 @@
 import { http, HttpResponse } from 'msw'
 
-import type { UsageAnalytics } from '@/api/hooks/useAnalytics'
+import type { AgentAnalytics } from '@/api/hooks/useAgentAnalytics'
 
-/** Daily 7d window fixture (numbers < 1000 so toLocaleString stays separator-free). */
-export const USAGE_FIXTURE: UsageAnalytics = {
-  window: { from: '2026-06-05T00:00:00Z', to: '2026-06-12T00:00:00Z', bucket: 'day' },
-  totals: { events: 940, errors: 47, by_surface: { v1: 900, graph: 40 } },
-  buckets: [
-    { bucket_start: '2026-06-05T00:00:00Z', events: 120, errors: 4 },
-    { bucket_start: '2026-06-06T00:00:00Z', events: 180, errors: 9 },
-    { bucket_start: '2026-06-07T00:00:00Z', events: 240, errors: 12 },
-    { bucket_start: '2026-06-08T00:00:00Z', events: 400, errors: 22 },
+export const AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
+  window: {
+    from: '2026-06-05T00:00:00Z',
+    to: '2026-06-12T00:00:00Z',
+    bucket: 'day',
+    group_by: 'model',
+  },
+  totals: {
+    events: 8,
+    errors: 1,
+    input_tokens: 12_000,
+    output_tokens: 4_200,
+    total_tokens: 16_200,
+    cache_read_tokens: 2_400,
+    cache_creation_tokens: 400,
+    reasoning_tokens: 900,
+    cost_usd: 0.1845,
+    avg_latency_ms: 1240,
+    p95_latency_ms: 2400,
+    runs: 3,
+    agents: 7,
+    models: 2,
+  },
+  breakdown: [
+    {
+      key: 'claude-3-5-sonnet-latest',
+      thread_id: null,
+      events: 5,
+      errors: 1,
+      input_tokens: 8_000,
+      output_tokens: 3_200,
+      total_tokens: 11_200,
+      cache_read_tokens: 1_800,
+      cache_creation_tokens: 300,
+      reasoning_tokens: 700,
+      cost_usd: 0.15,
+      avg_latency_ms: 1400,
+      p95_latency_ms: 2600,
+      runs: 3,
+    },
+    {
+      key: 'gpt-4o-mini',
+      thread_id: null,
+      events: 3,
+      errors: 0,
+      input_tokens: 4_000,
+      output_tokens: 1_000,
+      total_tokens: 5_000,
+      cache_read_tokens: 600,
+      cache_creation_tokens: 100,
+      reasoning_tokens: 200,
+      cost_usd: 0.0345,
+      avg_latency_ms: 980,
+      p95_latency_ms: 1500,
+      runs: 2,
+    },
   ],
-  top_actions: [
-    { action: 'pipelines.list', count: 420 },
-    { action: 'logs.search', count: 220 },
-    { action: 'work_tracking.query.execute.translate', count: 80 },
+  series: [
+    {
+      bucket_start: '2026-06-05T00:00:00Z',
+      key: 'claude-3-5-sonnet-latest',
+      events: 2,
+      errors: 0,
+      input_tokens: 3_000,
+      output_tokens: 1_000,
+      total_tokens: 4_000,
+      cache_read_tokens: 500,
+      cache_creation_tokens: 100,
+      reasoning_tokens: 200,
+      cost_usd: 0.06,
+      avg_latency_ms: 1000,
+      p95_latency_ms: 1800,
+      runs: 1,
+    },
+    {
+      bucket_start: '2026-06-05T00:00:00Z',
+      key: 'gpt-4o-mini',
+      events: 1,
+      errors: 0,
+      input_tokens: 1_500,
+      output_tokens: 400,
+      total_tokens: 1_900,
+      cache_read_tokens: 200,
+      cache_creation_tokens: 0,
+      reasoning_tokens: 80,
+      cost_usd: 0.012,
+      avg_latency_ms: 900,
+      p95_latency_ms: 1200,
+      runs: 1,
+    },
+    {
+      bucket_start: '2026-06-06T00:00:00Z',
+      key: 'claude-3-5-sonnet-latest',
+      events: 3,
+      errors: 1,
+      input_tokens: 5_000,
+      output_tokens: 2_200,
+      total_tokens: 7_200,
+      cache_read_tokens: 1_300,
+      cache_creation_tokens: 200,
+      reasoning_tokens: 500,
+      cost_usd: 0.09,
+      avg_latency_ms: 1600,
+      p95_latency_ms: 2600,
+      runs: 2,
+    },
   ],
-  runs: { phases_succeeded: 42, phases_failed: 3 },
+  page: { limit: 20, offset: 0, total: 2 },
+  cost_visible: true,
 }
 
-export const EMPTY_USAGE_FIXTURE: UsageAnalytics = {
-  window: { from: '2026-06-05T00:00:00Z', to: '2026-06-12T00:00:00Z', bucket: 'day' },
-  totals: { events: 0, errors: 0, by_surface: {} },
-  buckets: [],
-  top_actions: [],
-  runs: { phases_succeeded: 0, phases_failed: 0 },
+export const EMPTY_AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
+  ...AGENT_ANALYTICS_FIXTURE,
+  totals: {
+    events: 0,
+    errors: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    reasoning_tokens: 0,
+    cost_usd: 0,
+    avg_latency_ms: null,
+    p95_latency_ms: null,
+    runs: 0,
+    agents: 0,
+    models: 0,
+  },
+  breakdown: [],
+  series: [],
+  page: { limit: 20, offset: 0, total: 0 },
 }
 
-/** GET /v1/analytics/usage stub that captures each request's query params. */
-export function usageHandler(fixture: UsageAnalytics = USAGE_FIXTURE) {
+export const ZERO_TOKEN_AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
+  ...AGENT_ANALYTICS_FIXTURE,
+  totals: {
+    ...AGENT_ANALYTICS_FIXTURE.totals,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    reasoning_tokens: 0,
+    cost_usd: null,
+    avg_latency_ms: 900,
+    p95_latency_ms: 1400,
+  },
+  breakdown: AGENT_ANALYTICS_FIXTURE.breakdown.map((row) => ({
+    ...row,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    reasoning_tokens: 0,
+    cost_usd: null,
+  })),
+  series: AGENT_ANALYTICS_FIXTURE.series.map((row) => ({
+    ...row,
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+    cache_read_tokens: 0,
+    cache_creation_tokens: 0,
+    reasoning_tokens: 0,
+    cost_usd: null,
+  })),
+  cost_visible: false,
+}
+
+export function agentAnalyticsHandler(fixture: AgentAnalytics = AGENT_ANALYTICS_FIXTURE) {
   const captured: URLSearchParams[] = []
-  const handler = http.get('*/v1/analytics/usage', ({ request }) => {
+  const handler = http.get('*/v1/analytics/agents', ({ request }) => {
     captured.push(new URL(request.url).searchParams)
     return HttpResponse.json(fixture)
   })

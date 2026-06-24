@@ -28,20 +28,41 @@ def phase_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     return captured
 
 
-def test_finalize_emits_terminal_usage_event(phase_events: list[tuple[str, str]]) -> None:
+@pytest.fixture
+def agent_events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Capture agent analytics rows from the finalize hook (no DB)."""
+    captured: list[dict[str, Any]] = []
+
+    def fake(**kwargs: Any) -> None:
+        captured.append(kwargs)
+
+    monkeypatch.setattr(usage, "record_agent_event_sync", fake)
+    return captured
+
+
+def test_finalize_emits_terminal_usage_event(
+    phase_events: list[tuple[str, str]], agent_events: list[dict[str, Any]]
+) -> None:
     g = builder.compile(checkpointer=InMemorySaver())
     cfg = config(
         "t-usage-1",
         phases=["story_analysis"],
         gates={"story_analysis": dict(AUTO)},
+        model_by_phase={"story_analysis": "claude-3-5-sonnet-latest"},
     )
     result = g.invoke({"title": "Demo", "request": "load test the checkout flow"}, cfg)
     assert "__interrupt__" not in result
     assert phase_events == [("story_analysis", "succeeded")]
+    assert agent_events[0]["phase"] == "story_analysis"
+    assert agent_events[0]["status"] == "succeeded"
+    assert agent_events[0]["attempt"] == 1
+    assert agent_events[0]["agent_name"] == "story_analysis.worker"
+    assert isinstance(agent_events[0]["latency_ms"], int)
+    assert agent_events[0]["usage"] is None
 
 
 def test_finalize_emits_one_event_per_selected_phase(
-    phase_events: list[tuple[str, str]],
+    phase_events: list[tuple[str, str]], agent_events: list[dict[str, Any]]
 ) -> None:
     g = builder.compile(checkpointer=InMemorySaver())
     cfg = config(
@@ -51,3 +72,4 @@ def test_finalize_emits_one_event_per_selected_phase(
     )
     g.invoke({"title": "Demo", "request": "two phases"}, cfg)
     assert phase_events == [("story_analysis", "succeeded"), ("test_planning", "succeeded")]
+    assert [event["phase"] for event in agent_events] == ["story_analysis", "test_planning"]

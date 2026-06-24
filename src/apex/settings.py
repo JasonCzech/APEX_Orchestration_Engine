@@ -60,6 +60,7 @@ class ApexSettings(BaseSettings):
     environment: str = "dev"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     allow_private_adapter_hosts: bool = False
+    analytics_cost_visible: bool = False
     env_secret_prefixes: list[str] = ["APEX_"]
     database: DatabaseSettings = DatabaseSettings()
     auth: AuthSettings = AuthSettings()

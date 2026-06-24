@@ -82,6 +82,8 @@ export const queryKeys = {
     all: ['analytics'] as const,
     usage: (params: Record<string, unknown> = {}) =>
       [...queryKeys.analytics.all, 'usage', params] as const,
+    agents: (params: Record<string, unknown> = {}) =>
+      [...queryKeys.analytics.all, 'agents', params] as const,
   },
   logs: {
     all: ['logs'] as const,

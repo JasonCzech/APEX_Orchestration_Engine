@@ -28,6 +28,7 @@ import asyncio
 import time
 from collections.abc import Mapping
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -37,7 +38,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from apex.auth.service import extract_api_key, get_default_resolver, hash_api_key
-from apex.persistence.models import UsageEvent
+from apex.graphs.pipeline.configurable import PipelineConfigurable
+from apex.persistence.models import AgentEvent, UsageEvent
+from apex.services.pricing import compute_cost
 from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -151,6 +154,202 @@ def record_phase_usage_sync(phase: str, status: str, config: Any) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("usage.phase_record_failed", phase=phase, error=str(exc))
+
+
+def _usage_int(value: Any) -> int:
+    if value is None:
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_detail_int(details: Mapping[str, Any], *keys: str) -> int:
+    for key in keys:
+        if key in details:
+            return _usage_int(details.get(key))
+    return 0
+
+
+def normalize_usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, int]:
+    """Flatten LangChain AIMessage.usage_metadata into durable token columns."""
+    usage = usage or {}
+    input_details = usage.get("input_token_details")
+    output_details = usage.get("output_token_details")
+    input_details = input_details if isinstance(input_details, Mapping) else {}
+    output_details = output_details if isinstance(output_details, Mapping) else {}
+    input_tokens = _usage_int(usage.get("input_tokens"))
+    output_tokens = _usage_int(usage.get("output_tokens"))
+    total_tokens = _usage_int(usage.get("total_tokens")) or input_tokens + output_tokens
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cache_read_tokens": _usage_detail_int(
+            input_details, "cache_read", "cache_read_tokens", "cache_read_input_tokens"
+        ),
+        "cache_creation_tokens": _usage_detail_int(
+            input_details,
+            "cache_creation",
+            "cache_creation_tokens",
+            "cache_creation_input_tokens",
+            "cache_write",
+        ),
+        "reasoning_tokens": _usage_detail_int(
+            output_details, "reasoning", "reasoning_tokens", "reasoning_output_tokens"
+        ),
+    }
+
+
+def _provider_from(model: str | None, usage: Mapping[str, Any] | None) -> str | None:
+    raw = (usage or {}).get("provider") or (usage or {}).get("ls_provider")
+    if raw:
+        return str(raw)
+    if model and ":" in model:
+        return model.split(":", 1)[0]
+    if model and "/" in model:
+        return model.split("/", 1)[0]
+    if model and model.startswith("claude-"):
+        return "anthropic"
+    if model and model.startswith("gpt-"):
+        return "openai"
+    return None
+
+
+async def _insert_agent_event(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    thread_id: str | None,
+    project_id: str | None,
+    phase: str,
+    agent_name: str,
+    model: str | None,
+    provider: str | None,
+    attempt: int | None,
+    status: str,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    cache_read_tokens: int,
+    cache_creation_tokens: int,
+    reasoning_tokens: int,
+    cost_usd: Decimal | None,
+    latency_ms: int | None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    async with session_factory() as session:
+        session.add(
+            AgentEvent(
+                thread_id=thread_id,
+                project_id=project_id,
+                phase=phase,
+                agent_name=agent_name,
+                model=model,
+                provider=provider,
+                attempt=attempt,
+                status=status,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                reasoning_tokens=reasoning_tokens,
+                cost_usd=cost_usd,
+                latency_ms=latency_ms,
+                extra=extra or {},
+            )
+        )
+        await session.commit()
+
+
+async def record_agent_event(
+    *,
+    thread_id: str | None,
+    project_id: str | None,
+    phase: str,
+    agent_name: str,
+    model: str | None,
+    provider: str | None,
+    attempt: int | None,
+    status: str,
+    latency_ms: int | None,
+    usage: Mapping[str, Any] | None = None,
+) -> None:
+    """Insert one agent-behavior event; never raises."""
+    token_usage = normalize_usage_metadata(usage)
+    cost_usd, pricing = compute_cost(model, token_usage)
+    extra: dict[str, Any] = {}
+    if pricing is not None:
+        extra["pricing"] = pricing
+    if usage:
+        finish_reason = usage.get("finish_reason") or usage.get("stop_reason")
+        if finish_reason:
+            extra["finish_reason"] = finish_reason
+    try:
+        engine_db = create_async_engine(get_settings().database.uri, poolclass=NullPool)
+        try:
+            session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
+            await _insert_agent_event(
+                session_factory,
+                thread_id=thread_id,
+                project_id=project_id,
+                phase=phase,
+                agent_name=agent_name,
+                model=model,
+                provider=provider,
+                attempt=attempt,
+                status=status,
+                latency_ms=latency_ms,
+                cost_usd=cost_usd,
+                extra=extra,
+                **token_usage,
+            )
+        finally:
+            await engine_db.dispose()
+    except Exception as exc:  # noqa: BLE001 — analytics never fails a request or run
+        logger.warning("agent_events.record_failed", phase=phase, error=str(exc))
+
+
+def record_agent_event_sync(
+    *,
+    phase: str,
+    status: str,
+    attempt: int | None,
+    config: Any,
+    latency_ms: int | None,
+    usage: Mapping[str, Any] | None = None,
+    agent_name: str | None = None,
+) -> None:
+    """Sync bridge for graph nodes: one row per phase/agent invocation."""
+    try:
+        configurable: dict[str, Any] = dict((config or {}).get("configurable") or {})
+        cfg = PipelineConfigurable.from_config(config)
+        model: str | None = None
+        for key, value in cfg.model_by_phase.items():
+            if str(key) == phase:
+                model = value
+                break
+        asyncio.run(
+            record_agent_event(
+                thread_id=str(configurable.get("thread_id"))
+                if configurable.get("thread_id")
+                else None,
+                project_id=str(configurable.get("project_id"))
+                if configurable.get("project_id")
+                else None,
+                phase=phase,
+                agent_name=agent_name or f"{phase}.worker",
+                model=model,
+                provider=_provider_from(model, usage),
+                attempt=attempt,
+                status="ok" if status in _OK_PHASE_STATUSES else "error",
+                latency_ms=latency_ms,
+                usage=usage,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("agent_events.record_failed", phase=phase, error=str(exc))
 
 
 # ── /v1 request middleware ───────────────────────────────────────────────────

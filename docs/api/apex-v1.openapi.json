@@ -91,6 +91,406 @@
         "title": "ActiveVersionRef",
         "type": "object"
       },
+      "AgentAnalyticsBreakdownRow": {
+        "properties": {
+          "avg_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Latency Ms"
+          },
+          "cache_creation_tokens": {
+            "title": "Cache Creation Tokens",
+            "type": "integer"
+          },
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "p95_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Latency Ms"
+          },
+          "reasoning_tokens": {
+            "title": "Reasoning Tokens",
+            "type": "integer"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "events",
+          "errors",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "cache_read_tokens",
+          "cache_creation_tokens",
+          "reasoning_tokens",
+          "runs"
+        ],
+        "title": "AgentAnalyticsBreakdownRow",
+        "type": "object"
+      },
+      "AgentAnalyticsPage": {
+        "properties": {
+          "limit": {
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "title": "Offset",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "limit",
+          "offset",
+          "total"
+        ],
+        "title": "AgentAnalyticsPage",
+        "type": "object"
+      },
+      "AgentAnalyticsResponse": {
+        "properties": {
+          "breakdown": {
+            "items": {
+              "$ref": "#/components/schemas/AgentAnalyticsBreakdownRow"
+            },
+            "title": "Breakdown",
+            "type": "array"
+          },
+          "cost_visible": {
+            "title": "Cost Visible",
+            "type": "boolean"
+          },
+          "page": {
+            "$ref": "#/components/schemas/AgentAnalyticsPage"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/AgentAnalyticsSeriesPoint"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/AgentAnalyticsTotals"
+          },
+          "window": {
+            "$ref": "#/components/schemas/AgentAnalyticsWindow"
+          }
+        },
+        "required": [
+          "window",
+          "totals",
+          "breakdown",
+          "series",
+          "page",
+          "cost_visible"
+        ],
+        "title": "AgentAnalyticsResponse",
+        "type": "object"
+      },
+      "AgentAnalyticsSeriesPoint": {
+        "properties": {
+          "avg_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Latency Ms"
+          },
+          "bucket_start": {
+            "format": "date-time",
+            "title": "Bucket Start",
+            "type": "string"
+          },
+          "cache_creation_tokens": {
+            "title": "Cache Creation Tokens",
+            "type": "integer"
+          },
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "p95_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Latency Ms"
+          },
+          "reasoning_tokens": {
+            "title": "Reasoning Tokens",
+            "type": "integer"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket_start",
+          "key",
+          "events",
+          "errors",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "cache_read_tokens",
+          "cache_creation_tokens",
+          "reasoning_tokens",
+          "runs"
+        ],
+        "title": "AgentAnalyticsSeriesPoint",
+        "type": "object"
+      },
+      "AgentAnalyticsTotals": {
+        "properties": {
+          "agents": {
+            "default": 0,
+            "title": "Agents",
+            "type": "integer"
+          },
+          "avg_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Latency Ms"
+          },
+          "cache_creation_tokens": {
+            "title": "Cache Creation Tokens",
+            "type": "integer"
+          },
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "errors": {
+            "title": "Errors",
+            "type": "integer"
+          },
+          "events": {
+            "title": "Events",
+            "type": "integer"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "models": {
+            "default": 0,
+            "title": "Models",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "p95_latency_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P95 Latency Ms"
+          },
+          "reasoning_tokens": {
+            "title": "Reasoning Tokens",
+            "type": "integer"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "events",
+          "errors",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "cache_read_tokens",
+          "cache_creation_tokens",
+          "reasoning_tokens",
+          "runs"
+        ],
+        "title": "AgentAnalyticsTotals",
+        "type": "object"
+      },
+      "AgentAnalyticsWindow": {
+        "properties": {
+          "bucket": {
+            "enum": [
+              "day",
+              "hour"
+            ],
+            "title": "Bucket",
+            "type": "string"
+          },
+          "from": {
+            "format": "date-time",
+            "title": "From",
+            "type": "string"
+          },
+          "group_by": {
+            "enum": [
+              "model",
+              "stage",
+              "agent",
+              "date",
+              "test"
+            ],
+            "title": "Group By",
+            "type": "string"
+          },
+          "to": {
+            "format": "date-time",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "bucket",
+          "group_by"
+        ],
+        "title": "AgentAnalyticsWindow",
+        "type": "object"
+      },
       "ApplicationCreate": {
         "properties": {
           "description": {
@@ -4199,6 +4599,300 @@
         "summary": "Rotate Consumer Key",
         "tags": [
           "consumers"
+        ]
+      }
+    },
+    "/v1/analytics/agents": {
+      "get": {
+        "description": "Aggregate LangGraph agent behavior events.",
+        "operationId": "getAgentAnalytics",
+        "parameters": [
+          {
+            "description": "Window start (ISO-8601); default = `to` minus 7 days.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Window start (ISO-8601); default = `to` minus 7 days.",
+              "title": "From"
+            }
+          },
+          {
+            "description": "Window end (ISO-8601, exclusive); default = now.",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Window end (ISO-8601, exclusive); default = now.",
+              "title": "To"
+            }
+          },
+          {
+            "description": "Histogram bucket size.",
+            "in": "query",
+            "name": "bucket",
+            "required": false,
+            "schema": {
+              "default": "day",
+              "description": "Histogram bucket size.",
+              "enum": [
+                "day",
+                "hour"
+              ],
+              "title": "Bucket",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Breakdown dimension.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "default": "model",
+              "description": "Breakdown dimension.",
+              "enum": [
+                "model",
+                "stage",
+                "agent",
+                "date",
+                "test"
+              ],
+              "title": "Group By",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter to one project (must be inside the consumer's scopes).",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one project (must be inside the consumer's scopes).",
+              "title": "Project"
+            }
+          },
+          {
+            "description": "Filter. Accepts repeated values or comma-separated values.",
+            "in": "query",
+            "name": "model",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter. Accepts repeated values or comma-separated values.",
+              "title": "Model"
+            }
+          },
+          {
+            "description": "Filter. Accepts repeated values or comma-separated values.",
+            "in": "query",
+            "name": "stage",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter. Accepts repeated values or comma-separated values.",
+              "title": "Stage"
+            }
+          },
+          {
+            "description": "Filter. Accepts repeated values or comma-separated values.",
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter. Accepts repeated values or comma-separated values.",
+              "title": "Agent"
+            }
+          },
+          {
+            "description": "Filter to one pipeline thread/test id.",
+            "in": "query",
+            "name": "test",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter to one pipeline thread/test id.",
+              "title": "Test"
+            }
+          },
+          {
+            "description": "Agent event status.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "ok",
+                    "error"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Agent event status.",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "Breakdown sort metric.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "total_tokens",
+              "description": "Breakdown sort metric.",
+              "enum": [
+                "key",
+                "events",
+                "errors",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "cache_read_tokens",
+                "cache_creation_tokens",
+                "reasoning_tokens",
+                "cost_usd",
+                "avg_latency_ms",
+                "p95_latency_ms",
+                "runs"
+              ],
+              "title": "Sort",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "default": "desc",
+              "description": "Sort direction.",
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "title": "Order",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentAnalyticsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Analytics",
+        "tags": [
+          "analytics"
         ]
       }
     },

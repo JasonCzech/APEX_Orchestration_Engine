@@ -33,10 +33,49 @@ type SavedQueryCreate = components['schemas']['SavedQueryCreate']
 type SavedQueryUpdate = components['schemas']['SavedQueryUpdate']
 type SystemInfo = components['schemas']['SystemInfo']
 type TranslatedQuery = components['schemas']['TranslatedQuery']
+type AgentAnalytics = components['schemas']['AgentAnalyticsResponse']
+type AgentAnalyticsBreakdownRow = components['schemas']['AgentAnalyticsBreakdownRow']
+type AgentAnalyticsSeriesPoint = components['schemas']['AgentAnalyticsSeriesPoint']
+type AgentAnalyticsTotals = components['schemas']['AgentAnalyticsTotals']
+type AgentGroupBy = AgentAnalytics['window']['group_by']
 type UsageAnalytics = components['schemas']['UsageAnalyticsResponse']
 type WorkItem = components['schemas']['WorkItem']
 type WorkItemDraft = components['schemas']['WorkItemDraft']
 type WorkItemPage = components['schemas']['WorkItemPage']
+
+type AgentSort =
+  | 'key'
+  | 'events'
+  | 'errors'
+  | 'input_tokens'
+  | 'output_tokens'
+  | 'total_tokens'
+  | 'cache_read_tokens'
+  | 'cache_creation_tokens'
+  | 'reasoning_tokens'
+  | 'cost_usd'
+  | 'avg_latency_ms'
+  | 'p95_latency_ms'
+  | 'runs'
+
+interface AgentMetricEvent {
+  at: string
+  thread_id: string
+  thread_title: string
+  project_id: string | null
+  phase: PhaseName
+  agent_name: string
+  model: string
+  provider: string
+  status: 'ok' | 'error'
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  reasoning_tokens: number
+  cost_usd: number
+  latency_ms: number
+}
 
 export interface DevArtifactBytes {
   blob: Blob
@@ -54,6 +93,22 @@ interface PromptRecord extends PromptDetail {
 }
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
+const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test']
+const AGENT_SORTS: AgentSort[] = [
+  'key',
+  'events',
+  'errors',
+  'input_tokens',
+  'output_tokens',
+  'total_tokens',
+  'cache_read_tokens',
+  'cache_creation_tokens',
+  'reasoning_tokens',
+  'cost_usd',
+  'avg_latency_ms',
+  'p95_latency_ms',
+  'runs',
+]
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS })
@@ -93,6 +148,103 @@ function nowIso(): string {
 
 function isoMinutesAgo(minutes: number): string {
   return new Date(Date.now() - minutes * 60_000).toISOString()
+}
+
+function parseMulti(params: URLSearchParams, name: string): string[] {
+  return params
+    .getAll(name)
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean)
+}
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : fallback
+}
+
+function percentile95(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  const index = Math.max(0, Math.ceil(sorted.length * 0.95) - 1)
+  return sorted[index] ?? null
+}
+
+function agentGroupKey(event: AgentMetricEvent, groupBy: AgentGroupBy): string {
+  if (groupBy === 'stage') return event.phase
+  if (groupBy === 'agent') return event.agent_name
+  if (groupBy === 'date') return event.at.slice(0, 10)
+  if (groupBy === 'test') return event.thread_id
+  return event.model
+}
+
+function agentBucketStart(at: string, bucket: 'day' | 'hour'): string {
+  const date = new Date(at)
+  if (bucket === 'hour') date.setUTCMinutes(0, 0, 0)
+  else date.setUTCHours(0, 0, 0, 0)
+  return date.toISOString()
+}
+
+function agentTotals(events: AgentMetricEvent[]): AgentAnalyticsTotals {
+  const latencies = events.map((event) => event.latency_ms)
+  return {
+    events: events.length,
+    errors: events.filter((event) => event.status === 'error').length,
+    input_tokens: events.reduce((sum, event) => sum + event.input_tokens, 0),
+    output_tokens: events.reduce((sum, event) => sum + event.output_tokens, 0),
+    total_tokens: events.reduce((sum, event) => sum + event.input_tokens + event.output_tokens, 0),
+    cache_read_tokens: events.reduce((sum, event) => sum + event.cache_read_tokens, 0),
+    cache_creation_tokens: events.reduce((sum, event) => sum + event.cache_creation_tokens, 0),
+    reasoning_tokens: events.reduce((sum, event) => sum + event.reasoning_tokens, 0),
+    cost_usd: Number(events.reduce((sum, event) => sum + event.cost_usd, 0).toFixed(6)),
+    avg_latency_ms: events.length
+      ? Math.round(events.reduce((sum, event) => sum + event.latency_ms, 0) / events.length)
+      : null,
+    p95_latency_ms: percentile95(latencies),
+    runs: new Set(events.map((event) => event.thread_id)).size,
+    agents: new Set(events.map((event) => event.agent_name)).size,
+    models: new Set(events.map((event) => event.model)).size,
+  }
+}
+
+function agentBreakdownRow(key: string, events: AgentMetricEvent[]): AgentAnalyticsBreakdownRow {
+  const totals = agentTotals(events)
+  return {
+    key,
+    events: totals.events,
+    errors: totals.errors,
+    input_tokens: totals.input_tokens,
+    output_tokens: totals.output_tokens,
+    total_tokens: totals.total_tokens,
+    cache_read_tokens: totals.cache_read_tokens,
+    cache_creation_tokens: totals.cache_creation_tokens,
+    reasoning_tokens: totals.reasoning_tokens,
+    cost_usd: totals.cost_usd,
+    avg_latency_ms: totals.avg_latency_ms,
+    p95_latency_ms: totals.p95_latency_ms,
+    runs: totals.runs,
+    thread_id: events.every((event) => event.thread_id === key) ? key : null,
+  }
+}
+
+function agentSeriesPoint(bucketStart: string, key: string, events: AgentMetricEvent[]): AgentAnalyticsSeriesPoint {
+  const totals = agentTotals(events)
+  return {
+    bucket_start: bucketStart,
+    key,
+    events: totals.events,
+    errors: totals.errors,
+    input_tokens: totals.input_tokens,
+    output_tokens: totals.output_tokens,
+    total_tokens: totals.total_tokens,
+    cache_read_tokens: totals.cache_read_tokens,
+    cache_creation_tokens: totals.cache_creation_tokens,
+    reasoning_tokens: totals.reasoning_tokens,
+    cost_usd: totals.cost_usd,
+    avg_latency_ms: totals.avg_latency_ms,
+    p95_latency_ms: totals.p95_latency_ms,
+    runs: totals.runs,
+  }
 }
 
 function makeStrip(
@@ -382,6 +534,7 @@ export class DevDataStore {
     if (!path.startsWith('/v1/')) return null
 
     if (method === 'GET' && path === '/v1/system/info') return jsonResponse(this.systemInfo)
+    if (method === 'GET' && path === '/v1/analytics/agents') return jsonResponse(this.agentAnalytics(url.searchParams))
     if (method === 'GET' && path === '/v1/analytics/usage') return jsonResponse(this.usage(url.searchParams))
     if (method === 'POST' && path === '/v1/logs/search') return jsonResponse(await this.searchLogs(request))
     if (path.startsWith('/v1/pipelines')) return this.handlePipelines(method, path, request, url.searchParams)
@@ -1259,6 +1412,216 @@ export class DevDataStore {
   private toSummary(detail: PipelineDetail): PipelineSummary {
     const { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate } = detail
     return { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate }
+  }
+
+  private agentAnalytics(params: URLSearchParams): AgentAnalytics {
+    const rawGroupBy = params.get('group_by')
+    const groupBy = AGENT_GROUP_BYS.includes(rawGroupBy as AgentGroupBy) ? (rawGroupBy as AgentGroupBy) : 'model'
+    const bucket = params.get('bucket') === 'hour' ? 'hour' : 'day'
+    const rawSort = params.get('sort')
+    const sort = AGENT_SORTS.includes(rawSort as AgentSort) ? (rawSort as AgentSort) : 'total_tokens'
+    const order = params.get('order') === 'asc' ? 'asc' : 'desc'
+    const limit = Math.min(Math.max(parsePositiveInt(params.get('limit'), 20), 1), 100)
+    const offset = parsePositiveInt(params.get('offset'), 0)
+    const from = params.get('from') ?? isoMinutesAgo(bucket === 'hour' ? 8 * 60 : 7 * 1_440)
+    const to = params.get('to') ?? nowIso()
+    const fromTime = new Date(from).getTime()
+    const toTime = new Date(to).getTime()
+    const models = new Set(parseMulti(params, 'model'))
+    const stages = new Set(parseMulti(params, 'stage'))
+    const agents = new Set(parseMulti(params, 'agent'))
+    const project = params.get('project')
+    const status = params.get('status') === 'ok' || params.get('status') === 'error' ? params.get('status') : null
+    const test = params.get('test')?.toLowerCase() ?? null
+
+    let events = this.agentMetricEvents(bucket).filter((event) => {
+      const at = new Date(event.at).getTime()
+      return (
+        (Number.isNaN(fromTime) || at >= fromTime) &&
+        (Number.isNaN(toTime) || at <= toTime) &&
+        (!project || event.project_id === project) &&
+        (models.size === 0 || models.has(event.model)) &&
+        (stages.size === 0 || stages.has(event.phase)) &&
+        (agents.size === 0 || agents.has(event.agent_name)) &&
+        (!status || event.status === status) &&
+        (!test || event.thread_id.toLowerCase().includes(test) || event.thread_title.toLowerCase().includes(test))
+      )
+    })
+
+    const breakdownGroups = new Map<string, AgentMetricEvent[]>()
+    for (const event of events) {
+      const key = agentGroupKey(event, groupBy)
+      breakdownGroups.set(key, [...(breakdownGroups.get(key) ?? []), event])
+    }
+    const breakdown = Array.from(breakdownGroups, ([key, grouped]) => agentBreakdownRow(key, grouped))
+    breakdown.sort((left, right) => {
+      const leftValue = left[sort as keyof AgentAnalyticsBreakdownRow]
+      const rightValue = right[sort as keyof AgentAnalyticsBreakdownRow]
+      let comparison = 0
+      if (typeof leftValue === 'string' || typeof rightValue === 'string') {
+        comparison = String(leftValue ?? '').localeCompare(String(rightValue ?? ''))
+      } else {
+        comparison = Number(leftValue ?? 0) - Number(rightValue ?? 0)
+      }
+      if (comparison === 0) comparison = left.key.localeCompare(right.key)
+      return order === 'asc' ? comparison : -comparison
+    })
+
+    const seriesGroups = new Map<string, { bucketStart: string; key: string; events: AgentMetricEvent[] }>()
+    for (const event of events) {
+      const bucketStart = agentBucketStart(event.at, bucket)
+      const key = agentGroupKey(event, groupBy)
+      const groupId = `${bucketStart}\u0000${key}`
+      const current = seriesGroups.get(groupId) ?? { bucketStart, key, events: [] }
+      current.events.push(event)
+      seriesGroups.set(groupId, current)
+    }
+    const series = Array.from(seriesGroups.values())
+      .map((group) => agentSeriesPoint(group.bucketStart, group.key, group.events))
+      .sort((left, right) => left.bucket_start.localeCompare(right.bucket_start) || left.key.localeCompare(right.key))
+
+    const page = { limit, offset, total: breakdown.length }
+    events = events.sort((left, right) => left.at.localeCompare(right.at))
+
+    return {
+      window: { from, to, bucket, group_by: groupBy },
+      totals: agentTotals(events),
+      breakdown: breakdown.slice(offset, offset + limit),
+      series,
+      page,
+      cost_visible: true,
+    }
+  }
+
+  private agentMetricEvents(bucket: 'day' | 'hour'): AgentMetricEvent[] {
+    const phaseMetrics: Record<
+      PhaseName,
+      {
+        model: string
+        input: number
+        output: number
+        cacheRead: number
+        cacheCreate: number
+        reasoning: number
+        latency: number
+      }
+    > = {
+      story_analysis: {
+        model: 'claude-sonnet-4-20250514',
+        input: 11_500,
+        output: 2_200,
+        cacheRead: 2_600,
+        cacheCreate: 700,
+        reasoning: 150,
+        latency: 4_200,
+      },
+      test_planning: {
+        model: 'claude-sonnet-4-20250514',
+        input: 7_600,
+        output: 1_850,
+        cacheRead: 1_200,
+        cacheCreate: 420,
+        reasoning: 120,
+        latency: 5_200,
+      },
+      env_triage: {
+        model: 'claude-3-5-haiku-20241022',
+        input: 2_800,
+        output: 650,
+        cacheRead: 500,
+        cacheCreate: 150,
+        reasoning: 40,
+        latency: 2_100,
+      },
+      script_scenario: {
+        model: 'claude-sonnet-4-20250514',
+        input: 13_200,
+        output: 3_100,
+        cacheRead: 1_800,
+        cacheCreate: 650,
+        reasoning: 100,
+        latency: 6_100,
+      },
+      execution: {
+        model: 'claude-3-5-haiku-20241022',
+        input: 900,
+        output: 280,
+        cacheRead: 250,
+        cacheCreate: 60,
+        reasoning: 20,
+        latency: 1_100,
+      },
+      reporting: {
+        model: 'claude-opus-4-20250514',
+        input: 15_800,
+        output: 4_200,
+        cacheRead: 2_300,
+        cacheCreate: 900,
+        reasoning: 250,
+        latency: 7_600,
+      },
+      postmortem: {
+        model: 'claude-sonnet-4-20250514',
+        input: 6_400,
+        output: 1_700,
+        cacheRead: 800,
+        cacheCreate: 250,
+        reasoning: 130,
+        latency: 4_800,
+      },
+    }
+    const pricing: Record<string, { input: number; output: number; cacheRead: number; cacheCreate: number }> = {
+      'claude-3-5-haiku-20241022': { input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
+      'claude-sonnet-4-20250514': { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+      'claude-opus-4-20250514': { input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+    }
+    const details = Array.from(this.pipelineDetails.values()).sort((left, right) =>
+      left.thread_id.localeCompare(right.thread_id),
+    )
+    const events: AgentMetricEvent[] = []
+    details.forEach((detail, runIndex) => {
+      PHASE_NAMES.forEach((phase, phaseIndex) => {
+        const metric = phaseMetrics[phase]
+        const runScale = detail.project_id === 'proj-beta' ? 0.58 : 0.92 + runIndex * 0.07
+        const phaseScale = 1 + phaseIndex * 0.018
+        const scale = runScale * phaseScale
+        const input = Math.round(metric.input * scale)
+        const output = Math.round(metric.output * scale)
+        const cacheRead = Math.round(metric.cacheRead * scale)
+        const cacheCreate = Math.round(metric.cacheCreate * scale)
+        const reasoning = Math.round(metric.reasoning * scale)
+        const rates = pricing[metric.model]!
+        const cost = Number(
+          (
+            (input * rates.input + output * rates.output + cacheRead * rates.cacheRead + cacheCreate * rates.cacheCreate) /
+            1_000_000
+          ).toFixed(6),
+        )
+        const minutesAgo =
+          bucket === 'hour'
+            ? (details.length - 1 - runIndex) * 55 + (PHASE_NAMES.length - phaseIndex) * 4
+            : (details.length - 1 - runIndex) * 1_440 + (PHASE_NAMES.length - phaseIndex) * 75
+        events.push({
+          at: isoMinutesAgo(minutesAgo),
+          thread_id: detail.thread_id,
+          thread_title: detail.title ?? detail.thread_id,
+          project_id: detail.project_id ?? null,
+          phase,
+          agent_name: `${phase}.worker`,
+          model: metric.model,
+          provider: 'anthropic',
+          status: detail.thread_id === 'run-failed' && (phase === 'execution' || phase === 'reporting') ? 'error' : 'ok',
+          input_tokens: input,
+          output_tokens: output,
+          cache_read_tokens: cacheRead,
+          cache_creation_tokens: cacheCreate,
+          reasoning_tokens: reasoning,
+          cost_usd: cost,
+          latency_ms: Math.round(metric.latency * scale + runIndex * 85),
+        })
+      })
+    })
+    return events
   }
 
   private usage(params: URLSearchParams): UsageAnalytics {

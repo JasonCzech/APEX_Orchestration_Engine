@@ -6,6 +6,7 @@ land here from M2 onward.
 """
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -369,6 +371,46 @@ class UsageEvent(Base):
     thread_id: Mapped[str | None] = mapped_column(String(64))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16))  # "ok" | "error"
+    extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+
+
+class AgentEvent(Base):
+    """One agent-behavior analytics event emitted per phase/agent invocation.
+
+    Stubs write zero-token rows today; real LLM agents can populate the token
+    columns from AIMessage.usage_metadata without changing the analytics API.
+    """
+
+    __tablename__ = "agent_events"
+    __table_args__ = (
+        Index("ix_agent_events_project_id_at", "project_id", "at"),
+        Index("ix_agent_events_phase_at", "phase", "at"),
+        Index("ix_agent_events_model_at", "model", "at"),
+        Index("ix_agent_events_thread_id", "thread_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(String(64))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    phase: Mapped[str] = mapped_column(String(64))
+    agent_name: Mapped[str] = mapped_column(String(255))
+    model: Mapped[str | None] = mapped_column(String(255))
+    provider: Mapped[str | None] = mapped_column(String(64))
+    attempt: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16))  # "ok" | "error"
+    input_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
+    total_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
+    cache_creation_tokens: Mapped[int] = mapped_column(
+        BigInteger, server_default="0", default=0
+    )
+    reasoning_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
     extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
 
 

@@ -187,6 +187,7 @@ export const PhaseResultEntrySchema = z
     approvals: z.array(ApprovalRecordSchema).optional(),
     tool_calls: z.array(ToolCallRecordSchema).optional(),
     resolved_prompt_source: ResolvedPromptSourceSchema.nullish(),
+    usage_metadata: z.record(z.unknown()).optional(),
     // Extra keys: prompt resolution + revise loop (phase_subgraph.py)
     resolved_prompt: ResolvedPromptSchema.optional(),
     revise_instructions: z.string().nullish(),

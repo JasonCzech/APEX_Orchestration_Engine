@@ -15,7 +15,78 @@
 }
 
 .analytics-project {
-  width: 200px;
+  width: 150px;
+}
+
+.analytics-test {
+  width: 180px;
+}
+
+.analytics-control-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.analytics-control-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.analytics-filter-pickers {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+}
+
+.analytics-chip-row {
+  max-width: 420px;
+  flex-wrap: wrap;
+}
+
+.level-chips {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.level-chip {
+  appearance: none;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 10px;
+  transition: background var(--transition-fast), color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.level-chip:hover:not(:disabled) {
+  background: var(--control-hover);
+  color: var(--text-primary);
+}
+
+.level-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-hover);
+}
+
+.analytics-chip {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.analytics-status .level-chip {
+  text-transform: uppercase;
 }
 
 /* ── Stat cards row ─────────────────────────────────────────────────────── */
@@ -44,7 +115,7 @@
 .stat-value {
   font-size: 24px;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
@@ -80,6 +151,11 @@
   margin-top: 4px;
 }
 
+.analytics-charts-secondary {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  margin-top: 0;
+}
+
 @media (max-width: 1100px) {
   .analytics-charts {
     grid-template-columns: minmax(0, 1fr);
@@ -98,6 +174,77 @@
   letter-spacing: 0.06em;
   color: var(--text-secondary);
   margin-bottom: 10px;
+}
+
+/* ── Agent breakdown table ──────────────────────────────────────────────── */
+
+.analytics-table {
+  min-width: 900px;
+}
+
+.analytics-key-cell {
+  max-width: 260px;
+  overflow-wrap: anywhere;
+}
+
+.analytics-sort {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: inherit;
+  font-weight: 700;
+  text-transform: inherit;
+  letter-spacing: inherit;
+}
+
+th[aria-sort='ascending'] .analytics-sort,
+th[aria-sort='descending'] .analytics-sort {
+  color: var(--accent-hover);
+}
+
+.analytics-link-button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--accent-hover);
+  font: inherit;
+  font-weight: 700;
+  padding: 0;
+  text-align: left;
+}
+
+.analytics-link-button:hover {
+  color: var(--accent);
+}
+
+.analytics-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.analytics-pagination-caption {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.analytics-pagination-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.analytics-zero-hint {
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
 }
 
 /* ── Loading skeletons (card/chart shaped) ──────────────────────────────── */
