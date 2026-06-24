@@ -45,12 +45,13 @@ describe('ConfigStep', () => {
     const user = userEvent.setup()
     renderWizard()
 
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+
     const strip = await screen.findByRole('group', { name: 'Phase subset' })
     const toggles = within(strip).getAllByRole('button')
     expect(toggles).toHaveLength(7)
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
-
-    await fillScope(user, screen)
 
     // Drop execution: reporting's prereq is no longer earlier in the plan.
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
@@ -72,7 +73,7 @@ describe('ConfigStep', () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard()
+    renderWizard('/runs/new?step=config')
 
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: 'Custom' }))
@@ -91,7 +92,7 @@ describe('ConfigStep', () => {
     assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard()
+    renderWizard('/runs/new?step=config')
 
     // The dev server's system-created default assistant is filtered out.
     expect(await screen.findByRole('button', { name: /Nightly checkout soak/ })).toBeInTheDocument()

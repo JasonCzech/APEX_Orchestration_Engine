@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from 'react'
+import { useCallback, type KeyboardEvent, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { useDraftsList } from '@/api/hooks/useDrafts'
@@ -11,7 +11,7 @@ import { ScopeStep } from './steps/ScopeStep'
 import { WorkItemsStep } from './steps/WorkItemsStep'
 import { useDraft } from './useDraft'
 import { useWizardLaunch } from './useWizardLaunch'
-import { allIssues, STEP_LABELS, type WizardStepId } from './wizardState'
+import { allIssues, isWizardStep, STEP_LABELS, WIZARD_STEPS, type WizardStepId } from './wizardState'
 
 import './wizard.css'
 
@@ -33,15 +33,23 @@ function WizardSection({
   id,
   title,
   description,
+  active,
   children,
 }: {
   id: WizardStepId
   title: string
   description: string
+  active: boolean
   children: ReactNode
 }) {
   return (
-    <section id={`wizard-section-${id}`} className="glass-panel wizard-section" aria-label={title}>
+    <section
+      id={`wizard-panel-${id}`}
+      role="tabpanel"
+      className="glass-panel wizard-section"
+      aria-labelledby={`wizard-tab-${id}`}
+      hidden={!active}
+    >
       <div className="wizard-section-head">
         <div>
           <span className="wizard-section-kicker">{STEP_LABELS[id]}</span>
@@ -54,10 +62,74 @@ function WizardSection({
   )
 }
 
+const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: string }> = {
+  scope: {
+    title: 'Run Scope',
+    description:
+      'Name the pipeline, describe the request, and choose the project, application, and target environment.',
+  },
+  'work-items': {
+    title: 'Work Items',
+    description:
+      'Attach tickets or stories that should anchor the pipeline context and downstream reporting.',
+  },
+  context: {
+    title: 'Context',
+    description:
+      'Add documents and context summaries so the phases have the evidence they need before execution starts.',
+  },
+  config: {
+    title: 'Execution Configuration',
+    description:
+      'Choose the engine, phase coverage, and review policy. Enable full manual step-through by keeping every phase gated.',
+  },
+  prompts: {
+    title: 'Prompt Selection',
+    description:
+      'Select the prompt set for each phase and override only the places that need run-specific instructions.',
+  },
+  review: {
+    title: 'Launch Preview',
+    description: 'Review the exact launch payload that will be sent when you start the pipeline.',
+  },
+}
+
+function afterNextPaint(callback: () => void) {
+  if (typeof window.requestAnimationFrame === 'function') {
+    window.requestAnimationFrame(callback)
+  } else {
+    window.setTimeout(callback, 0)
+  }
+}
+
+function WizardStepContent({
+  step,
+  draft,
+  onChange,
+  onEditStep,
+}: StepProps & { step: WizardStepId; onEditStep: (step: WizardStepId) => void }) {
+  switch (step) {
+    case 'scope':
+      return <ScopeStep draft={draft} onChange={onChange} />
+    case 'work-items':
+      return <WorkItemsStep draft={draft} onChange={onChange} />
+    case 'context':
+      return <ContextStep draft={draft} onChange={onChange} />
+    case 'config':
+      return <ConfigStep draft={draft} onChange={onChange} />
+    case 'prompts':
+      return <PromptsStep draft={draft} onChange={onChange} />
+    case 'review':
+      return <ReviewStep draft={draft} onEditStep={onEditStep} />
+  }
+}
+
 export function NewRunWizardPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const urlDraftId = searchParams.get('draft')
+  const rawStep = searchParams.get('step')
+  const activeStep: WizardStepId = isWizardStep(rawStep) ? rawStep : 'scope'
 
   const onDraftCreated = useCallback(
     (id: string) => {
@@ -113,11 +185,97 @@ export function NewRunWizardPage() {
     )
   }
 
-  function jumpToSection(step: WizardStepId) {
-    document.getElementById(`wizard-section-${step}`)?.scrollIntoView({
-      behavior: 'smooth',
-      block: 'start',
+  function selectStep(step: WizardStepId) {
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous)
+        next.set('step', step)
+        return next
+      },
+      { replace: true },
+    )
+  }
+
+  function jumpToTab(step: WizardStepId) {
+    selectStep(step)
+    afterNextPaint(() => {
+      document.getElementById('wizard-tabs')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      })
     })
+  }
+
+  function moveTab(event: KeyboardEvent<HTMLButtonElement>, step: WizardStepId) {
+    const index = WIZARD_STEPS.indexOf(step)
+    const lastIndex = WIZARD_STEPS.length - 1
+    const nextStep =
+      event.key === 'ArrowRight'
+        ? WIZARD_STEPS[index === lastIndex ? 0 : index + 1]!
+        : event.key === 'ArrowLeft'
+          ? WIZARD_STEPS[index === 0 ? lastIndex : index - 1]!
+          : event.key === 'Home'
+            ? WIZARD_STEPS[0]!
+            : event.key === 'End'
+              ? WIZARD_STEPS[lastIndex]!
+              : null
+
+    if (nextStep === null) return
+    event.preventDefault()
+    selectStep(nextStep)
+    afterNextPaint(() => {
+      document.getElementById(`wizard-tab-${nextStep}`)?.focus()
+    })
+  }
+
+  function renderStepSection(step: WizardStepId) {
+    const copy = WIZARD_SECTION_COPY[step]
+    return (
+      <WizardSection
+        key={step}
+        id={step}
+        title={copy.title}
+        description={copy.description}
+        active={activeStep === step}
+      >
+        <WizardStepContent
+          step={step}
+          draft={draft}
+          onChange={setDraft}
+          onEditStep={jumpToTab}
+        />
+      </WizardSection>
+    )
+  }
+
+  function renderTabs() {
+    return (
+      <div id="wizard-tabs" className="glass-panel wizard-tabs-shell">
+        <div
+          className="wizard-tabs"
+          role="tablist"
+          aria-label="New test groups"
+          aria-orientation="horizontal"
+        >
+          {WIZARD_STEPS.map((step) => (
+            <button
+              key={step}
+              id={`wizard-tab-${step}`}
+              type="button"
+              role="tab"
+              className="wizard-tab"
+              aria-selected={activeStep === step}
+              aria-controls={`wizard-panel-${step}`}
+              tabIndex={activeStep === step ? 0 : -1}
+              onClick={() => selectStep(step)}
+              onKeyDown={(event) => moveTab(event, step)}
+            >
+              {STEP_LABELS[step]}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -166,53 +324,8 @@ export function NewRunWizardPage() {
         <p className="wizard-caption">Loading draft…</p>
       ) : (
         <div className="wizard-stack">
-          <WizardSection
-            id="scope"
-            title="Run Scope"
-            description="Name the pipeline, describe the request, and choose the project, application, and target environment."
-          >
-            <ScopeStep draft={draft} onChange={setDraft} />
-          </WizardSection>
-
-          <WizardSection
-            id="work-items"
-            title="Work Items"
-            description="Attach tickets or stories that should anchor the pipeline context and downstream reporting."
-          >
-            <WorkItemsStep draft={draft} onChange={setDraft} />
-          </WizardSection>
-
-          <WizardSection
-            id="context"
-            title="Context"
-            description="Add documents and context summaries so the phases have the evidence they need before execution starts."
-          >
-            <ContextStep draft={draft} onChange={setDraft} />
-          </WizardSection>
-
-          <WizardSection
-            id="config"
-            title="Execution Configuration"
-            description="Choose the engine, phase coverage, and review policy. Enable full manual step-through by keeping every phase gated."
-          >
-            <ConfigStep draft={draft} onChange={setDraft} />
-          </WizardSection>
-
-          <WizardSection
-            id="prompts"
-            title="Prompt Selection"
-            description="Select the prompt set for each phase and override only the places that need run-specific instructions."
-          >
-            <PromptsStep draft={draft} onChange={setDraft} />
-          </WizardSection>
-
-          <WizardSection
-            id="review"
-            title="Launch Preview"
-            description="Review the exact launch payload that will be sent when you start the pipeline."
-          >
-            <ReviewStep draft={draft} onEditStep={jumpToSection} />
-          </WizardSection>
+          {renderTabs()}
+          {WIZARD_STEPS.map(renderStepSection)}
         </div>
       )}
 
@@ -232,7 +345,7 @@ export function NewRunWizardPage() {
                 key={`${issue.step}:${issue.message}`}
                 type="button"
                 className="wizard-issue-link"
-                onClick={() => jumpToSection(issue.step)}
+                onClick={() => jumpToTab(issue.step)}
               >
                 {STEP_LABELS[issue.step]}: {issue.message}
               </button>

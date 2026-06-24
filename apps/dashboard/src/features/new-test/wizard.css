@@ -1,5 +1,5 @@
 /*
- * wizard.css — new-run wizard layout (plan 2.c: full-page left step rail +
+ * wizard.css — new-run wizard layout (plan 2.c: horizontal step tabs +
  * content + sticky summary footer). Layout-only rules: every color, radius
  * and shadow comes from the theme token sheet / primitive classes.
  */
@@ -39,11 +39,54 @@
   gap: 18px;
 }
 
+.wizard-tabs-shell {
+  padding: 8px;
+  border-radius: var(--radius);
+}
+
+.wizard-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.wizard-tab {
+  flex: 0 0 auto;
+  min-height: 34px;
+  padding: 7px 13px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wizard-tab:hover,
+.wizard-tab:focus-visible {
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+.wizard-tab[aria-selected='true'] {
+  border-color: var(--accent-border, var(--accent));
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .wizard-section {
   display: flex;
   flex-direction: column;
   gap: 18px;
   padding: 20px;
+}
+
+.wizard-section[hidden] {
+  display: none;
 }
 
 .wizard-section-head {

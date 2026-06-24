@@ -1,7 +1,7 @@
 /**
- * Launch path: the single-scroll wizard builds the EXACT configurable
- * (snapshotted), creates thread + run via the SDK with D2's stream options,
- * deletes the draft best-effort, and navigates to /runs/{threadId}?tab=log.
+ * Launch path: the tabbed wizard builds the EXACT configurable (snapshotted),
+ * creates thread + run via the SDK with D2's stream options, deletes the draft
+ * best-effort, and navigates to /runs/{threadId}?tab=log.
  */
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -39,6 +39,7 @@ describe('wizard launch', () => {
     await waitFor(() => expect(router.state.location.search).toContain('draft=draft-1'))
 
     // The review JSON is the exact payload the launch sends.
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
     const json = JSON.parse(
       screen.getByTestId('launch-payload-json').textContent ?? '{}',
     ) as Record<string, unknown>
@@ -121,10 +122,12 @@ describe('wizard launch', () => {
     const { router } = renderWizard()
 
     await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
     await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
 
     expect(await screen.findByText('Launch failed: multitask reject')).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs/new')
+    expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled() // retryable
   })
 })

@@ -23,7 +23,7 @@ export { NewRunWizardPage } from '../new-test/NewRunWizard'
 
 | Piece | File |
 |---|---|
-| `NewRunWizardPage` (shell: rail + content + sticky footer + resume picker) | `NewRunWizard.tsx` |
+| `NewRunWizardPage` (shell: horizontal tabs + content + sticky footer + resume picker) | `NewRunWizard.tsx` |
 | Steps 1–6 | `steps/{ScopeStep,WorkItemsStep,ContextStep,ConfigStep,PromptsStep,ReviewStep}.tsx` |
 | `WizardDraft` + validation + prereq hints + gates mapping + `buildLaunchPreview` | `wizardState.ts` |
 | Debounced autosave (1.5s, create-then-update serialized) | `useDraft.ts` |

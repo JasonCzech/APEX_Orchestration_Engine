@@ -1,25 +1,41 @@
 /**
- * Wizard shell: single-scroll layout with stacked sections, footer launch
- * gating, and draft resume entry points.
+ * Wizard shell: horizontal tab layout, footer launch gating, and draft resume
+ * entry points.
  */
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import { draftRead, fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 describe('NewRunWizard shell', () => {
-  it('renders the stacked sections and keeps Launch disabled until scope is valid', async () => {
+  it('renders each group as a horizontal tab and keeps Launch disabled until scope is valid', async () => {
     installWizardHandlers()
     const user = userEvent.setup()
     renderWizard()
 
-    expect(screen.getByRole('region', { name: 'Run Scope' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Work Items' })).toBeInTheDocument()
-    expect(screen.getByTestId('document-dropzone')).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Execution Configuration' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Prompt Selection' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Launch Preview' })).toBeInTheDocument()
+    const tablist = screen.getByRole('tablist', { name: 'New test groups' })
+    expect(within(tablist).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Scope',
+      'Work Items',
+      'Context',
+      'Config',
+      'Prompts',
+      'Review',
+    ])
+    expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel', { name: 'Scope' })).toHaveTextContent('Run Scope')
+    expect(screen.queryByRole('tabpanel', { name: 'Work Items' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Work Items' }))
+    expect(screen.getByRole('tab', { name: 'Work Items' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(screen.getByRole('tabpanel', { name: 'Work Items' })).toHaveTextContent('Work Items')
+    expect(screen.queryByRole('tabpanel', { name: 'Scope' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Scope' }))
 
     const launch = screen.getByRole('button', { name: 'Launch Pipeline' })
     expect(launch).toBeDisabled()

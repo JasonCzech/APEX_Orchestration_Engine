@@ -81,10 +81,10 @@ describe('PromptsStep', () => {
     installWizardHandlers()
     server.use(...promptHandlers())
     const user = userEvent.setup()
-    renderWizard()
+    renderWizard('/runs/new?step=prompts')
 
     // 7 phase accordions (all phases included by default).
-    const promptSection = screen.getByRole('region', { name: 'Prompt Selection' })
+    const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
     const accordions = within(promptSection).getAllByRole('group')
     expect(accordions.length).toBeGreaterThanOrEqual(7)
 
@@ -110,6 +110,7 @@ describe('PromptsStep', () => {
     await user.type(editor, 'Custom system prompt for this run')
 
     // The override lands in the EXACT launch payload under phase/execution.
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
     const json = await screen.findByTestId('launch-payload-json')
     const payload = JSON.parse(json.textContent ?? '{}') as {
       configurable: { prompt_overrides?: Record<string, { content: string }> }
@@ -119,14 +120,19 @@ describe('PromptsStep', () => {
     })
 
     // Revert removes the override key entirely.
-    const executionAgain = within(promptSection).getByText('execution').closest('details') as HTMLElement
-    await user.click(within(executionAgain).getByText('execution'))
+    await user.click(screen.getByRole('tab', { name: 'Prompts' }))
+    const promptSectionAgain = screen.getByRole('tabpanel', { name: 'Prompts' })
+    const executionAgain = within(promptSectionAgain)
+      .getByText('execution')
+      .closest('details') as HTMLDetailsElement
+    if (!executionAgain.open) await user.click(within(executionAgain).getByText('execution'))
     await user.click(
       within(executionAgain).getByRole('button', { name: 'Revert to catalog' }),
     )
     expect(
       within(executionAgain).queryByTestId('override-chip-execution'),
     ).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
     const jsonAfter = await screen.findByTestId('launch-payload-json')
     expect(jsonAfter.textContent).not.toContain('prompt_overrides')
   })
