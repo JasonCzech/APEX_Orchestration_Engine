@@ -19,6 +19,7 @@ from apex.auth.identity import ConsumerIdentity, Role
 from apex.persistence.db import get_session
 from apex.services.agent_analytics import (
     AgentAnalyticsRepository,
+    AgentBucket,
     AgentGroupBy,
     AgentOrder,
     AgentSort,
@@ -51,7 +52,7 @@ class AgentAnalyticsReader(Protocol):
         *,
         window_from: datetime,
         window_to: datetime,
-        bucket: str,
+        bucket: AgentBucket,
         group_by: AgentGroupBy,
         project_id: str | None = None,
         visible_project_ids: tuple[str, ...] | None = None,
@@ -286,9 +287,7 @@ async def get_usage_analytics(
     )
 
 
-@router.get(
-    "/agents", operation_id="getAgentAnalytics", response_model=AgentAnalyticsResponse
-)
+@router.get("/agents", operation_id="getAgentAnalytics", response_model=AgentAnalyticsResponse)
 async def get_agent_analytics(
     identity: CurrentIdentity,
     repo: AgentRepo,

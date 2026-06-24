@@ -107,3 +107,36 @@ jobs:
           APEX_TEST_MINIO: "1"
           APEX_MINIO_SECRET_KEY: apex-minio
         run: uv run pytest tests/unit tests/integration -v
+
+  migrations:
+    # ORM <-> migration drift gate: against a fresh DB, upgrade to head then
+    # `alembic check` (compare_type + compare_server_default) must find no pending
+    # changes — catches a model edit that forgot its migration.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: apex
+          POSTGRES_PASSWORD: apex
+          POSTGRES_DB: apex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U apex"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Migration drift gate (ORM vs migrations)
+        env:
+          APEX_DATABASE__URI: postgresql+asyncpg://apex:apex@localhost:5432/apex
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check

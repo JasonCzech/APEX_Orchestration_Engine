@@ -170,4 +170,53 @@ describe('AnalyticsPage', () => {
       'Latency over time by model',
     )
   })
+
+  it('switches group-by and measure through the segmented controls', async () => {
+    const analytics = agentAnalyticsHandler()
+    server.use(analytics.handler)
+    const user = userEvent.setup()
+    renderAnalytics()
+
+    await screen.findByTestId('analytics-cards')
+    await user.click(
+      within(screen.getByRole('group', { name: 'Group by' })).getByRole('button', { name: 'Stage' }),
+    )
+    await waitFor(() =>
+      expect(analytics.captured[analytics.captured.length - 1]!.get('group_by')).toBe('stage'),
+    )
+
+    await user.click(
+      within(screen.getByRole('group', { name: 'Measure' })).getByRole('button', {
+        name: 'Latency',
+      }),
+    )
+    await waitFor(() =>
+      expect(analytics.captured[analytics.captured.length - 1]!.get('sort')).toBe('p95_latency_ms'),
+    )
+    expect(screen.getByTestId('analytics-agent-series-chart')).toHaveTextContent(
+      /Latency over time by stage/i,
+    )
+  })
+
+  it('drops a deep-linked cost measure/sort when the server hides cost', async () => {
+    const analytics = agentAnalyticsHandler({
+      ...AGENT_ANALYTICS_FIXTURE,
+      cost_visible: false,
+      totals: { ...AGENT_ANALYTICS_FIXTURE.totals, cost_usd: null },
+      breakdown: AGENT_ANALYTICS_FIXTURE.breakdown.map((row) => ({ ...row, cost_usd: null })),
+      series: AGENT_ANALYTICS_FIXTURE.series.map((row) => ({ ...row, cost_usd: null })),
+    })
+    server.use(analytics.handler)
+    const { router } = renderAnalytics('?measure=cost&sort=cost_usd')
+
+    await screen.findByTestId('analytics-cards')
+    // The page self-corrects so the table/query never sort by the hidden cost column.
+    await waitFor(() =>
+      expect(analytics.captured[analytics.captured.length - 1]!.get('sort')).toBe('total_tokens'),
+    )
+    const params = new URLSearchParams(router.state.location.search)
+    expect(params.get('measure')).toBeNull()
+    expect(params.get('sort')).toBeNull()
+    expect(screen.queryByTestId('stat-cost')).not.toBeInTheDocument()
+  })
 })

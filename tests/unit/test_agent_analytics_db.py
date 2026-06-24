@@ -18,7 +18,12 @@ from sqlalchemy.pool import NullPool
 
 from apex.persistence.models import AgentEvent
 from apex.services import usage
-from apex.services.agent_analytics import AgentAnalyticsRepository, AgentGroupBy
+from apex.services.agent_analytics import (
+    AgentAnalyticsRepository,
+    AgentGroupBy,
+    AgentOrder,
+    AgentSort,
+)
 from apex.settings import get_settings
 
 pytestmark = pytest.mark.skipif(
@@ -47,7 +52,13 @@ def test_agent_event_capture_and_aggregation_round_trip(
                 )
             )
 
-    async def aggregate(*, group_by: str = "stage", test: str | None = None) -> dict[str, Any]:
+    async def aggregate(
+        *,
+        group_by: str = "stage",
+        test: str | None = None,
+        sort: str = "total_tokens",
+        order: str = "desc",
+    ) -> dict[str, Any]:
         async with maker() as session:
             repo = AgentAnalyticsRepository(session)
             return await repo.aggregate(
@@ -57,6 +68,8 @@ def test_agent_event_capture_and_aggregation_round_trip(
                 group_by=cast(AgentGroupBy, group_by),
                 project_id=marker,
                 test=test,
+                sort=cast(AgentSort, sort),
+                order=cast(AgentOrder, order),
             )
 
     async def read_reporting_event() -> AgentEvent:
@@ -121,7 +134,9 @@ def test_agent_event_capture_and_aggregation_round_trip(
         assert reporting.model == "claude-sonnet-4-20250514"
         assert reporting.provider == "anthropic"
         assert reporting.total_tokens == 1100
-        assert reporting.cost_usd == Decimal("0.004590")
+        # Cached tokens are a subset of input_tokens, billed once at the cache rate
+        # (not also at the full input rate): (1000-50-20)*3 + 100*15 + 50*0.30 + 20*3.75.
+        assert reporting.cost_usd == Decimal("0.004380")
         assert reporting.extra["pricing"]["input"] == "3.00"
         assert reporting.extra["finish_reason"] == "stop"
 
@@ -130,11 +145,34 @@ def test_agent_event_capture_and_aggregation_round_trip(
         assert data["totals"]["errors"] == 1
         assert data["totals"]["total_tokens"] == 1150
         assert data["totals"]["runs"] == 1
-        assert data["totals"]["cost_usd"] == 0.00459
+        assert data["totals"]["cost_usd"] == 0.00438
         rows = {row["key"]: row for row in data["breakdown"]}
         assert rows["reporting"]["total_tokens"] == 1100
         assert rows["execution"]["errors"] == 1
         assert rows["execution"]["cost_usd"] is None
+
+        # group_by model: the cost-bearing model vs the unknown-model split (review R2).
+        model_data = asyncio.run(aggregate(group_by="model"))
+        by_model = {row["key"]: row for row in model_data["breakdown"]}
+        assert by_model["claude-sonnet-4-20250514"]["total_tokens"] == 1100
+        assert by_model["unknown-model"]["cost_usd"] is None
+
+        # group_by agent: one row per "{phase}.worker".
+        by_agent = {row["key"] for row in asyncio.run(aggregate(group_by="agent"))["breakdown"]}
+        assert by_agent == {"reporting.worker", "execution.worker"}
+
+        # group_by date: bounded to window buckets; distinct runs counted once.
+        by_date = asyncio.run(aggregate(group_by="date"))
+        assert by_date["totals"]["runs"] == 1
+        assert len(by_date["breakdown"]) >= 1
+
+        # sort + order + p95 across the non-default branches (single-event phases, so
+        # p95 == that event's latency: reporting 1234ms > execution 456ms).
+        desc = asyncio.run(aggregate(group_by="stage", sort="p95_latency_ms", order="desc"))
+        assert [row["key"] for row in desc["breakdown"]][0] == "reporting"
+        assert desc["breakdown"][0]["p95_latency_ms"] is not None
+        asc = asyncio.run(aggregate(group_by="stage", sort="p95_latency_ms", order="asc"))
+        assert [row["key"] for row in asc["breakdown"]][0] == "execution"
 
         filtered = asyncio.run(aggregate(group_by="test", test=thread_id[-6:]))
         assert filtered["totals"]["events"] == 2

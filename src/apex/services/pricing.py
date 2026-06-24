@@ -64,11 +64,21 @@ def compute_cost(
     if pricing is None:
         return None, None
     million = Decimal("1000000")
+    # In LangChain's normalized usage_metadata, `input_tokens` is the TOTAL input and
+    # cache_read/cache_creation are a *subset* of it (the breakdown). Bill only the
+    # uncached remainder at the full input rate, then the cached tokens at their own
+    # rates — otherwise cached tokens are double-counted. Clamp so malformed/negative
+    # counts can never produce a negative cost.
+    input_tokens = max(0, int(usage.get("input_tokens") or 0))
+    output_tokens = max(0, int(usage.get("output_tokens") or 0))
+    cache_read = max(0, int(usage.get("cache_read_tokens") or 0))
+    cache_creation = max(0, int(usage.get("cache_creation_tokens") or 0))
+    uncached_input = max(0, input_tokens - cache_read - cache_creation)
     cost = (
-        Decimal(int(usage.get("input_tokens") or 0)) * pricing["input"]
-        + Decimal(int(usage.get("output_tokens") or 0)) * pricing["output"]
-        + Decimal(int(usage.get("cache_read_tokens") or 0)) * pricing["cache_read"]
-        + Decimal(int(usage.get("cache_creation_tokens") or 0)) * pricing["cache_creation"]
+        Decimal(uncached_input) * pricing["input"]
+        + Decimal(output_tokens) * pricing["output"]
+        + Decimal(cache_read) * pricing["cache_read"]
+        + Decimal(cache_creation) * pricing["cache_creation"]
     ) / million
     snapshot = {key: str(value) for key, value in pricing.items()}
     return cost.quantize(Decimal("0.000001")), snapshot

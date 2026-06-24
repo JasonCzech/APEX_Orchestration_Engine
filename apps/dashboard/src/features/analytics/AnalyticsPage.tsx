@@ -61,6 +61,8 @@ const MODEL_OPTIONS = [
   'gpt-4o',
   'gpt-4o-mini',
 ]
+/** Bar chart shows the top N breakdown rows; the table page size can exceed this. */
+const TOP_N_BARS = 10
 const AGENT_OPTIONS = PHASE_NAMES.map((phase) => `${phase}.worker`)
 
 const TOOLTIP_CONTENT_STYLE: React.CSSProperties = {
@@ -336,7 +338,7 @@ function AgentUsageCharts({
   const stacked = useMemo(() => seriesRows(data, measure), [data, measure])
   const bars = useMemo(
     () =>
-      data.breakdown.slice(0, 10).map((row) => ({
+      data.breakdown.slice(0, TOP_N_BARS).map((row) => ({
         key: row.key,
         label: truncate(row.key),
         value: metricValue(row, measure),
@@ -398,7 +400,7 @@ function AgentUsageCharts({
 
       <section className="glass-panel chart-panel" data-testid="analytics-agent-top-chart">
         <h2 className="chart-title">
-          Top {labelForGroup(group).toLowerCase()} by {labelForMeasure(measure).toLowerCase()}
+          Top {bars.length} {labelForGroup(group).toLowerCase()} by {labelForMeasure(measure).toLowerCase()}
         </h2>
         <ResponsiveContainer width="100%" height={Math.max(180, bars.length * 30 + 48)}>
           <BarChart data={bars} layout="vertical" margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
@@ -676,6 +678,27 @@ export function AnalyticsPage() {
       : selectedMeasure
   const isEmptyWindow = data !== undefined && data.totals.events === 0
 
+  // Self-correct a deep-linked cost measure/sort the server won't expose to this
+  // caller, so the table and query never sort by a hidden column (review R3).
+  useEffect(() => {
+    if (!data || data.cost_visible) return
+    const dropMeasure = selectedMeasure === 'cost'
+    const dropSort = filters.sort === 'cost_usd'
+    if (!dropMeasure && !dropSort) return
+    setSearchParams(
+      (prev) => {
+        const next = parseAnalyticsFilters(prev)
+        if (dropMeasure) delete next.measure
+        if (dropSort) {
+          delete next.sort
+          delete next.dir
+        }
+        return serializeAnalyticsFilters(next)
+      },
+      { replace: true },
+    )
+  }, [data, filters.sort, selectedMeasure, setSearchParams])
+
   function setGroup(next: GroupBy) {
     applyFilters({ group: next, offset: undefined })
   }
@@ -803,6 +826,14 @@ export function AnalyticsPage() {
         />
       ) : data ? (
         <>
+          {isError && (
+            <div className="analytics-stale-banner" role="alert" data-testid="analytics-stale-banner">
+              Showing cached data — the latest refresh failed.{' '}
+              <button type="button" className="analytics-link-button" onClick={() => refetch()}>
+                Retry
+              </button>
+            </div>
+          )}
           <AgentKpiCards data={data} allZeroTokens={allZeroTokens} />
 
           {allZeroTokens && (
@@ -824,7 +855,7 @@ export function AnalyticsPage() {
                 measure={effectiveMeasure}
                 bucket={data.window.bucket}
               />
-              <TokenSplitCharts data={data} />
+              {!allZeroTokens && <TokenSplitCharts data={data} />}
               <AgentBreakdownTable
                 data={data}
                 group={group}

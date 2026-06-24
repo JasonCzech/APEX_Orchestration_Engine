@@ -526,7 +526,7 @@ def _make_finalize(phase: Phase):
             status=str(status),
             attempt=attempt,
             config=config,
-            latency_ms=round(duration_s * 1000) if duration_s is not None else None,
+            latency_ms=max(0, round(duration_s * 1000)) if duration_s is not None else None,
             usage=usage_metadata if isinstance(usage_metadata, dict) else None,
             agent_name=f"{phase.value}.worker",
         )

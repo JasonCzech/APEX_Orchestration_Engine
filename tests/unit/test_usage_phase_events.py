@@ -73,3 +73,39 @@ def test_finalize_emits_one_event_per_selected_phase(
     g.invoke({"title": "Demo", "request": "two phases"}, cfg)
     assert phase_events == [("story_analysis", "succeeded"), ("test_planning", "succeeded")]
     assert [event["phase"] for event in agent_events] == ["story_analysis", "test_planning"]
+
+
+def test_record_agent_event_sync_resolves_model_and_maps_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_agent_event_sync resolves model from model_by_phase, maps the phase
+    status, and forwards thread/project — without a DB (review R7)."""
+    captured: dict[str, Any] = {}
+
+    async def fake_record_agent_event(**kwargs: Any) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(usage, "record_agent_event", fake_record_agent_event)
+
+    cfg = {
+        "configurable": {
+            "thread_id": "t-77",
+            "project_id": "proj-x",
+            "model_by_phase": {"reporting": "claude-3-5-haiku-latest"},
+        }
+    }
+    usage.record_agent_event_sync(
+        phase="reporting", status="failed", attempt=2, config=cfg, latency_ms=12
+    )
+    assert captured["model"] == "claude-3-5-haiku-latest"
+    assert captured["provider"] == "anthropic"
+    assert captured["status"] == "error"  # failed -> error
+    assert captured["thread_id"] == "t-77"
+    assert captured["project_id"] == "proj-x"
+    assert captured["agent_name"] == "reporting.worker"
+
+    captured.clear()
+    usage.record_agent_event_sync(
+        phase="reporting", status="succeeded", attempt=1, config=cfg, latency_ms=5
+    )
+    assert captured["status"] == "ok"  # succeeded -> ok
