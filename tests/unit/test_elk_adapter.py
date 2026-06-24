@@ -302,6 +302,17 @@ async def test_non_json_success_body_is_runtime_error() -> None:
 # ── construction / registration ───────────────────────────────────────────────
 
 
+@pytest.mark.parametrize(
+    "option,expected",
+    [("false", False), (False, False), ("true", True), (True, True), (None, True)],
+)
+def test_verify_tls_option_is_parsed_not_bool_coerced(option: object, expected: bool) -> None:
+    # A string "false" must disable TLS verification, not become bool("false") == True.
+    kwargs = {} if option is None else {"verify_tls": option}
+    adapter = make_adapter(**kwargs)
+    assert adapter._verify_tls is expected
+
+
 def test_missing_base_url_is_actionable_value_error() -> None:
     conn = ConnectionConfig(
         id="conn-bad", kind=PortKind.LOG_SEARCH, provider="elasticsearch", name="bad", options={}

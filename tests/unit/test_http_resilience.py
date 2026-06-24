@@ -107,6 +107,35 @@ async def test_resilient_request_honors_retry_after_seconds() -> None:
     assert sleeps == [2.0]
 
 
+async def test_resilient_request_retry_after_not_clamped_to_max_delay() -> None:
+    # Regression: Retry-After must be honored up to retry_after_cap_s, not silently
+    # clamped to the tiny local backoff cap (max_delay_s), which made it inert.
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if not sleeps:
+            return httpx.Response(429, headers={"retry-after": "20"}, request=request)
+        return httpx.Response(200, request=request)
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        response = await resilient_request(
+            client,
+            "GET",
+            "/poll",
+            # default max_delay_s=0.5; retry_after_cap_s=30 -> 20s Retry-After honored.
+            retry=RetryPolicy(attempts=2, total_timeout_s=None),
+            sleep_fn=record_sleep,
+        )
+
+    assert response.status_code == 200
+    assert sleeps == [20.0]
+
+
 async def test_resilient_request_enforces_total_timeout() -> None:
     calls = 0
 

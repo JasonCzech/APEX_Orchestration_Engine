@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from apex.adapters.http_resilience import resilient_request
+from apex.adapters.options import coerce_bool
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import EnvironmentSnapshot, EnvRef, SecretValue, ServiceInfo
 
@@ -60,7 +61,7 @@ class KubernetesClusterInventoryAdapter:
             )
         self._base_url = base_url.rstrip("/")
         self._token = secret.value
-        self._verify_tls = bool(options.get("verify_tls", True))
+        self._verify_tls = coerce_bool(options.get("verify_tls"), default=True)
         self._options = options
         self._client: httpx.AsyncClient | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from typing import Any
 
 import structlog
 from structlog.typing import EventDict, WrappedLogger
+
+from apex.settings import get_settings
 
 _SECRET_KEY_FRAGMENTS = ("secret", "token", "password", "authorization", "api_key", "key_hash")
 _REDACTED = "[redacted]"
@@ -17,15 +20,22 @@ _URL_USERINFO_RE = re.compile(r"://[^/@\s]+@")
 
 
 def configure_logging() -> None:
+    # Locked-down (production/staging) envs get structured JSON at an INFO floor;
+    # local/dev keeps the human-readable console renderer at DEBUG.
+    locked_down = get_settings().is_locked_down
+    renderer: Any = (
+        structlog.processors.JSONRenderer() if locked_down else structlog.dev.ConsoleRenderer()
+    )
+    min_level = logging.INFO if locked_down else logging.DEBUG
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             _redact_event_dict,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
-            structlog.dev.ConsoleRenderer(),
+            renderer,
         ],
-        wrapper_class=structlog.make_filtering_bound_logger(0),
+        wrapper_class=structlog.make_filtering_bound_logger(min_level),
         cache_logger_on_first_use=True,
     )
 

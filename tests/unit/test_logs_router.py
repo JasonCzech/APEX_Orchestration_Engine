@@ -162,6 +162,12 @@ def test_search_rejects_blank_and_oversized_filter_values() -> None:
     assert oversized.status_code == 422
 
 
+def test_search_rejects_oversized_free_text_query() -> None:
+    app = make_app(FakeResolver(FakeLogSearchAdapter()), identity())
+    response = post_search(app, {"query": {"text": "x" * 2049}})
+    assert response.status_code == 422
+
+
 # ── window validation ─────────────────────────────────────────────────────────
 
 

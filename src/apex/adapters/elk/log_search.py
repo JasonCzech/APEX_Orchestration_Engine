@@ -42,6 +42,7 @@ import httpx
 from pydantic import Field
 
 from apex.adapters.http_resilience import resilient_request, retry_policy
+from apex.adapters.options import coerce_bool
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     LogEntry,
@@ -231,7 +232,7 @@ class ElasticsearchLogSearchAdapter:
             )
         self._base_url = base_url
         self._index = str(options.get("index") or DEFAULT_INDEX)
-        self._verify_tls = bool(options.get("verify_tls", True))
+        self._verify_tls = coerce_bool(options.get("verify_tls"), default=True)
         self._secret = secret
         self._client = client
         self._client_loop: asyncio.AbstractEventLoop | None = None
