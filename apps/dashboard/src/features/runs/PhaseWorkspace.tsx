@@ -299,7 +299,8 @@ function ReasoningTab({
     (entry?.tool_calls?.length ?? 0) > 0 ||
     entries.length > 0 ||
     Boolean(prompt?.system) ||
-    Boolean(prompt?.user)
+    Boolean(prompt?.user) ||
+    Boolean(prompt?.application)
 
   if (!hasReasoning) {
     return (
@@ -325,7 +326,7 @@ function ReasoningTab({
         </>
       )}
 
-      {(prompt?.system || prompt?.user) && (
+      {(prompt?.system || prompt?.user || prompt?.application) && (
         <>
           <h3 className="workspace-section-title">Resolved Prompt</h3>
           {source?.origin && (

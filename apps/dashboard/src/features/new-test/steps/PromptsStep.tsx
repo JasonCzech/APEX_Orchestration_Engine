@@ -163,7 +163,7 @@ function PromptBlock({
         <p className="wizard-caption">{emptyText}</p>
       )}
 
-      {!override && (
+      {!override && !loading && (
         <button
           type="button"
           className="btn btn-ghost btn-sm wizard-prompt-override"

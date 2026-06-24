@@ -300,30 +300,8 @@ def _app_override(cfg: PipelineConfigurable) -> PromptOverride | None:
     return cfg.prompt_overrides.get(f"{APPLICATION_NAMESPACE}/{cfg.app_id}")
 
 
-def _application_ref(cfg: PipelineConfigurable, suffix: str) -> str | None:
-    return f"{APPLICATION_NAMESPACE}/{cfg.app_id}{suffix}" if cfg.app_id else None
-
-
 def _source(origin: str, refs: list[str]) -> dict[str, Any]:
     return {"origin": origin, "ref": ",".join(refs), "editor": None}
-
-
-def _builtin_resolved(
-    phase: Phase,
-    variables: Mapping[str, Any],
-    *,
-    cfg: PipelineConfigurable | None = None,
-    application: str | None = None,
-    origin: str = "catalog",
-    refs: list[str] | None = None,
-) -> ResolvedPhasePrompt:
-    source_refs = refs or [f"phase/{phase.value}@builtin"]
-    return ResolvedPhasePrompt(
-        system=render_template(DEFAULT_PHASE_PROMPTS[f"{phase.value}/system"], variables),
-        user=render_template(DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"], variables),
-        application=application if cfg is not None and cfg.app_id else None,
-        source=_source(origin, source_refs),
-    )
 
 
 def _compose_resolved(
@@ -362,9 +340,7 @@ def _compose_resolved(
         if app_override is not None and app_override.content is not None:
             application = app_override.content
             refs.append(
-                app_override.version_id
-                or _application_ref(cfg, "@override")
-                or f"{APPLICATION_NAMESPACE}/{cfg.app_id}@override"
+                app_override.version_id or f"{APPLICATION_NAMESPACE}/{cfg.app_id}@override"
             )
             origin = "run_override"
         elif application_v is not None:
