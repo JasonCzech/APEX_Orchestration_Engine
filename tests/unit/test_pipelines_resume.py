@@ -88,8 +88,10 @@ def make_app(client: FakeClient, role: Role = Role.OPERATOR) -> FastAPI:
 
 
 def state_with_interrupt(interrupt_id: str, *, limits: dict[str, Any] | None = None) -> JsonDict:
+    # Mirrors the real get_state shape: plan_resolver checkpoints the resolved limits into
+    # values["limits"] (graph.plan_resolver), which is what _limits_from_state reads.
     return {
-        "values": {"configurable": {"limits": limits}} if limits is not None else {},
+        "values": {"limits": limits} if limits is not None else {},
         "tasks": [{"interrupts": [{"id": interrupt_id, "value": GATE_PAYLOAD}]}],
         "interrupts": [],
     }

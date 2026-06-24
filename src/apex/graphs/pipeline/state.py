@@ -74,6 +74,9 @@ class PipelineState(TypedDict, total=False):
     phases_plan: list[str]
     current_phase: str | None
     run_aborted: bool
+    # Resolved Limits snapshot, checkpointed so gate-resume can size recursion_limit from
+    # the run's real limits (LangGraph does not surface run configurable via get_state).
+    limits: JsonDict
 
     # Accumulated thread state
     phase_results: Annotated[dict[str, JsonDict], merge_phase_results]

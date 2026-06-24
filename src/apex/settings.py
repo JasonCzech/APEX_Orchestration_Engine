@@ -67,6 +67,11 @@ class ApexSettings(BaseSettings):
     rate_limit: RateLimitSettings = RateLimitSettings()
     security_headers: SecurityHeadersSettings = SecurityHeadersSettings()
 
+    @property
+    def is_locked_down(self) -> bool:
+        """True for production/staging-class environments (no dev affordances)."""
+        return self.environment.strip().lower() in LOCKED_DOWN_ENVIRONMENTS
+
     @model_validator(mode="after")
     def validate_production_lockdown(self) -> "ApexSettings":
         env = self.environment.strip().lower()

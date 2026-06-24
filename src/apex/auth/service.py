@@ -104,6 +104,15 @@ class IdentityResolver:
     async def resolve(self, api_key: str | None) -> ConsumerIdentity | None:
         settings = get_settings()
         if not settings.auth.enabled:
+            # Defense-in-depth: validate_production_lockdown already refuses to boot with
+            # auth disabled in a locked-down env, but never hand out anonymous admin there
+            # even if that guard is somehow bypassed (e.g. settings constructed directly).
+            if settings.is_locked_down:
+                logger.error(
+                    "apex.auth.disabled_in_locked_down_env",
+                    environment=settings.environment,
+                )
+                return None
             return _anonymous_identity()
         if not api_key:
             return None
