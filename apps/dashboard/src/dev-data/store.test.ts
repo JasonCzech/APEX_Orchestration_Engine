@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
+import type { AgentAnalytics } from '@/api/hooks/useAgentAnalytics'
+
 import { createDevDataStore } from './store'
+
+const WIDE_WINDOW = 'from=2000-01-01T00:00:00.000Z&to=2100-01-01T00:00:00.000Z'
 
 async function jsonOf<T>(response: Response | null): Promise<T> {
   expect(response).not.toBeNull()
@@ -71,6 +75,38 @@ describe('dev-data store', () => {
 
     expect(response?.status).toBe(501)
     expect(body.title).toBe('dummy_handler_missing')
+  })
+
+  it('serves internally-consistent agent analytics that honor group_by and filters', async () => {
+    const store = createDevDataStore()
+    const byStage = await jsonOf<AgentAnalytics>(
+      await store.handleApexRequest(
+        new Request(`http://localhost/v1/analytics/agents?group_by=stage&limit=50&${WIDE_WINDOW}`),
+      ),
+    )
+
+    expect(byStage.cost_visible).toBe(true)
+    expect(byStage.breakdown.length).toBeGreaterThan(0)
+    // A full-page breakdown partitions every event, so its token sums reconcile
+    // exactly with the totals.
+    const tokenSum = byStage.breakdown.reduce((sum, row) => sum + row.total_tokens, 0)
+    expect(tokenSum).toBe(byStage.totals.total_tokens)
+
+    const byAgent = await jsonOf<AgentAnalytics>(
+      await store.handleApexRequest(
+        new Request(`http://localhost/v1/analytics/agents?group_by=agent&limit=50&${WIDE_WINDOW}`),
+      ),
+    )
+    expect(byAgent.breakdown.every((row) => row.key.endsWith('.worker'))).toBe(true)
+
+    // A status filter narrows the result set.
+    const errorsOnly = await jsonOf<AgentAnalytics>(
+      await store.handleApexRequest(
+        new Request(`http://localhost/v1/analytics/agents?group_by=stage&status=error&${WIDE_WINDOW}`),
+      ),
+    )
+    expect(errorsOnly.totals.events).toBeLessThanOrEqual(byStage.totals.events)
+    expect(errorsOnly.totals.errors).toBe(errorsOnly.totals.events)
   })
 })
 

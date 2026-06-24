@@ -1,4 +1,4 @@
-/* /analytics — usage analytics screen (D6). Tokens only. */
+/* /analytics — agent-behavior analytics screen: token/cost/latency by model, stage, agent, test, date. */
 
 .analytics-page {
   display: flex;
@@ -134,14 +134,6 @@
   color: var(--danger-text);
 }
 
-/* ── Surface breakdown chips ────────────────────────────────────────────── */
-
-.surface-chips {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 /* ── Charts ─────────────────────────────────────────────────────────────── */
 
 .analytics-charts {
@@ -244,6 +236,15 @@ th[aria-sort='descending'] .analytics-sort {
   color: var(--warning-text);
   border-radius: 8px;
   padding: 10px 12px;
+  font-size: 12px;
+}
+
+.analytics-stale-banner {
+  border: 1px solid var(--warning-border);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border-radius: 8px;
+  padding: 8px 12px;
   font-size: 12px;
 }
 

@@ -2166,6 +2166,7 @@
           "text": {
             "anyOf": [
               {
+                "maxLength": 2048,
                 "type": "string"
               },
               {

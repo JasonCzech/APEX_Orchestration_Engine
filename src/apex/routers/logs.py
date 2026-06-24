@@ -35,6 +35,7 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 MAX_LOG_FILTERS = 12
 MAX_LOG_FILTER_VALUE_LENGTH = 512
+MAX_LOG_TEXT_LENGTH = 2048
 ALLOWED_LOG_FILTERS = frozenset(
     {
         "app_id",
@@ -80,7 +81,9 @@ ConnectionIdParam = Annotated[
 
 class LogQueryIn(BaseModel):
     text: str | None = Field(
-        default=None, description="Free-text query (Lucene query_string syntax on ELK)."
+        default=None,
+        max_length=MAX_LOG_TEXT_LENGTH,
+        description="Free-text query (Lucene query_string syntax on ELK).",
     )
     filters: dict[str, str] = Field(
         default_factory=dict,

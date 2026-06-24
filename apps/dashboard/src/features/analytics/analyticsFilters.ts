@@ -98,7 +98,9 @@ export function parseCsv(raw: string | null): string[] | undefined {
 }
 
 function writeCsv(params: URLSearchParams, key: string, values: string[] | undefined): void {
-  if (values?.length) params.set(key, values.join(','))
+  // Mirror parseCsv: drop blanks so a `['']` array never serializes an empty `key=`.
+  const clean = values?.map((value) => value.trim()).filter(Boolean)
+  if (clean?.length) params.set(key, clean.join(','))
 }
 
 export function parseAnalyticsFilters(params: URLSearchParams): AnalyticsFilters {

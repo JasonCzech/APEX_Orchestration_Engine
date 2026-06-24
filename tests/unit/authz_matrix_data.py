@@ -78,6 +78,7 @@ MIN_ROLE: dict[str, str] = {
     "deleteSavedQuery": "operator",
     # ── analytics ───────────────────────────────────────────────────────────
     "getUsageAnalytics": "viewer",
+    "getAgentAnalytics": "viewer",  # any authenticated role; cost figures gated by admin+flag
     # ── logs ────────────────────────────────────────────────────────────────
     # EXCEPTION: POST with read semantics (search request body) — viewer.
     "searchLogs": "viewer",

@@ -69,6 +69,7 @@ class RateLimitMiddleware:
         self._app = app
         self._settings = settings
         self._buckets: defaultdict[str, deque[float]] = defaultdict(deque)
+        self._last_sweep: float = 0.0
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if (
@@ -105,6 +106,12 @@ class RateLimitMiddleware:
         return None
 
     def _sweep(self, *, now: float, window: float) -> None:
+        # Evicting idle buckets is O(N); the per-key bucket touched by each request is
+        # pruned inline in _check, so this full pass only needs to run periodically to
+        # bound memory — at most once per window rather than on every request.
+        if now - self._last_sweep < window:
+            return
+        self._last_sweep = now
         for key, bucket in list(self._buckets.items()):
             while bucket and now - bucket[0] >= window:
                 bucket.popleft()

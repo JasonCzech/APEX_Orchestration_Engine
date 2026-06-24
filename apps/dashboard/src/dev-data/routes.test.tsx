@@ -53,7 +53,7 @@ describe('dev-data route smoke', () => {
     ['/context?tab=documents', 'checkout-spec.pdf'],
     ['/prompts', 'story_analysis/system'],
     ['/golden-configs', 'Release Gate Soak'],
-    ['/analytics', '1,617'],
+    ['/analytics', 'Agents / runs'],
     ['/logs?q=gateway', 'gateway 502 spike during checkout ramp'],
     ['/admin/connections', 'jira-prod'],
     ['/admin/consumers', 'Read Only Reviewer'],

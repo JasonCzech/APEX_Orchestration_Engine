@@ -27,6 +27,10 @@ class RetryPolicy:
     attempts: int = 3
     base_delay_s: float = 0.05
     max_delay_s: float = 0.5
+    # A server-sent Retry-After is honored up to this cap (the local backoff cap
+    # max_delay_s is far too small to respect a real throttle signal). Still bounded
+    # by total_timeout_s / the per-request deadline.
+    retry_after_cap_s: float = 30.0
     total_timeout_s: float | None = 10.0
     transient_statuses: frozenset[int] = TRANSIENT_STATUSES
     retry_methods: frozenset[str] = IDEMPOTENT_METHODS
@@ -187,8 +191,9 @@ def _retry_delay(
     retry_after = response.headers.get("retry-after")
     if retry_after is None:
         return _delay(policy, attempt, random_fn)
+    cap = max(policy.retry_after_cap_s, policy.max_delay_s)
     try:
-        return min(max(float(retry_after), 0.0), policy.max_delay_s)
+        return min(max(float(retry_after), 0.0), cap)
     except ValueError:
         pass
     try:
@@ -197,4 +202,4 @@ def _retry_delay(
         return _delay(policy, attempt, random_fn)
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=UTC)
-    return min(max((retry_at - datetime.now(UTC)).total_seconds(), 0.0), policy.max_delay_s)
+    return min(max((retry_at - datetime.now(UTC)).total_seconds(), 0.0), cap)

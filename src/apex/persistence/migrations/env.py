@@ -37,6 +37,7 @@ def _configure(connection: Connection | None = None, url: str | None = None) -> 
         include_schemas=True,
         include_object=_include_object,
         compare_type=True,
+        compare_server_default=True,
         literal_binds=connection is None,
     )
 
