@@ -7,6 +7,7 @@ developers can use the same backend workflow from PowerShell or Command Prompt.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -31,8 +32,13 @@ def task(name: str, help_text: str) -> Callable[[Task], Task]:
 
 def run(command: list[str]) -> None:
     print("+ " + " ".join(command), flush=True)
+    env = os.environ.copy()
+    src_path = str(REPO_ROOT / "src")
+    env["PYTHONPATH"] = (
+        src_path if not env.get("PYTHONPATH") else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+    )
     try:
-        subprocess.run(command, cwd=REPO_ROOT, check=True)
+        subprocess.run(command, cwd=REPO_ROOT, check=True, env=env)
     except FileNotFoundError:
         raise SystemExit(
             f"Required executable not found: {command[0]}. "

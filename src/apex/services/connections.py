@@ -24,9 +24,6 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-# Importing the adapter packages registers their factories with the AdapterRegistry.
-import apex.adapters.sim_engine  # noqa: F401
-import apex.adapters.stubs  # noqa: F401
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.ports.secrets import SecretsPort
 
@@ -320,3 +317,12 @@ async def _close_adapter(adapter: Any) -> None:
 def get_connection_resolver() -> ConnectionResolver:
     """Process-wide resolver: DB rows first, DEV_CONNECTIONS static fallback."""
     return ConnectionResolver(store=DbConnectionStore())
+
+
+# Importing adapter packages registers their factories with the AdapterRegistry.
+# Keep registration after ConnectionResolver/get_connection_resolver are defined:
+# real work-tracking adapters import apex.services.work_tracking, whose router
+# dependency providers import this module.
+from apex.adapters import register_builtin_adapters  # noqa: E402
+
+register_builtin_adapters()
