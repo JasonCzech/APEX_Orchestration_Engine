@@ -7,6 +7,7 @@ import { createQueryClient } from '@/api/queryClient'
 import { ApiKeyGate } from '@/auth/ApiKeyGate'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TopbarContributionProvider } from '@/components/layout/TopbarContributionProvider'
+import { DevDataProvider } from '@/dev-data'
 import { ConnectivityProvider } from '@/health/ConnectivityProvider'
 import { createAppRouter } from '@/routes/router'
 import { ThemeProvider } from '@/theme/useTheme'
@@ -21,17 +22,19 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <ConnectivityProvider>
-          <ThemeProvider>
-            <TopbarContributionProvider>
-              <ApiKeyGate>
-                <RouterProvider router={router} />
-              </ApiKeyGate>
-            </TopbarContributionProvider>
-          </ThemeProvider>
-        </ConnectivityProvider>
-      </AuthProvider>
+      <DevDataProvider>
+        <AuthProvider>
+          <ConnectivityProvider>
+            <ThemeProvider>
+              <TopbarContributionProvider>
+                <ApiKeyGate>
+                  <RouterProvider router={router} />
+                </ApiKeyGate>
+              </TopbarContributionProvider>
+            </ThemeProvider>
+          </ConnectivityProvider>
+        </AuthProvider>
+      </DevDataProvider>
     </QueryClientProvider>
   )
 }

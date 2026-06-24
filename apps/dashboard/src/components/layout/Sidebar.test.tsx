@@ -1,10 +1,15 @@
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { DEV_DATA_STORAGE_KEY } from '@/dev-data'
 import { authenticatedState, renderApp } from '@/test/render'
 
 describe('Sidebar', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   it('keeps admin tools hidden for viewers', async () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState('viewer') })
@@ -49,5 +54,30 @@ describe('Sidebar', () => {
 
     await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
     expect(sidebar).not.toHaveClass('collapsed')
+  })
+
+  it('hides the dummy-data switch outside explicit dev auth', async () => {
+    renderApp({ authState: authenticatedState() })
+
+    expect(await screen.findByTestId('sidebar-identity')).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Dummy data' })).not.toBeInTheDocument()
+  })
+
+  it('toggles and persists dummy-data mode from the dev account card', async () => {
+    vi.stubEnv('VITE_APEX_DEV_AUTH', 'true')
+    vi.stubEnv('VITE_APEX_DEV_API_KEY', 'dev-key-local')
+    const user = userEvent.setup()
+    renderApp()
+
+    const toggle = await screen.findByRole('switch', { name: 'Dummy data' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(window.localStorage.getItem(DEV_DATA_STORAGE_KEY)).toBe('true')
+
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    expect(window.localStorage.getItem(DEV_DATA_STORAGE_KEY)).toBeNull()
   })
 })

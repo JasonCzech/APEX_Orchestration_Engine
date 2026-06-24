@@ -7,6 +7,7 @@ import type { Role } from '@/api/apexClient'
 import { ApiKeyGate } from '@/auth/ApiKeyGate'
 import { AuthProvider, type AuthState } from '@/auth/AuthProvider'
 import { TopbarContributionProvider } from '@/components/layout/TopbarContributionProvider'
+import { DevDataProvider } from '@/dev-data'
 import { ConnectivityProvider } from '@/health/ConnectivityProvider'
 import { appRoutes } from '@/routes/router'
 import { ThemeProvider } from '@/theme/useTheme'
@@ -50,17 +51,19 @@ export function renderApp({
   const router = createMemoryRouter(appRoutes, { initialEntries })
   const result = render(
     <QueryClientProvider client={queryClient}>
-      <AuthProvider staticState={authState}>
-        <ConnectivityProvider>
-          <ThemeProvider>
-            <TopbarContributionProvider>
-              <ApiKeyGate>
-                <RouterProvider router={router} />
-              </ApiKeyGate>
-            </TopbarContributionProvider>
-          </ThemeProvider>
-        </ConnectivityProvider>
-      </AuthProvider>
+      <DevDataProvider>
+        <AuthProvider staticState={authState}>
+          <ConnectivityProvider>
+            <ThemeProvider>
+              <TopbarContributionProvider>
+                <ApiKeyGate>
+                  <RouterProvider router={router} />
+                </ApiKeyGate>
+              </TopbarContributionProvider>
+            </ThemeProvider>
+          </ConnectivityProvider>
+        </AuthProvider>
+      </DevDataProvider>
     </QueryClientProvider>,
   )
   return { ...result, router, queryClient }

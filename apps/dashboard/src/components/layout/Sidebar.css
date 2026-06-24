@@ -335,6 +335,62 @@
   text-decoration: underline;
 }
 
+.sidebar-devdata-switch {
+  width: 100%;
+  min-height: 24px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  padding: 3px 6px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.sidebar-devdata-switch:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.sidebar-devdata-switch.on {
+  border-color: var(--success-border);
+  color: var(--success-text);
+  background: var(--success-bg);
+}
+
+.sidebar-devdata-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+
+.sidebar-devdata-label,
+.sidebar-devdata-state {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-devdata-label {
+  min-width: 0;
+  text-align: left;
+}
+
+.sidebar-devdata-state {
+  font-size: 9px;
+}
+
 .sidebar-footer-row {
   display: flex;
   align-items: center;

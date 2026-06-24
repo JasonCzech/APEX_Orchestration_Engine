@@ -4,6 +4,7 @@ import type { components, paths } from '@apex/api-client'
 
 import { getApiKey } from '@/auth/keyStorage'
 import { resolveApexBaseUrl } from '@/config/runtimeConfig'
+import { getDevApexFetch, subscribeDevDataMode } from '@/dev-data'
 
 import { ApiError, errorMessageOf } from './errors'
 
@@ -47,7 +48,10 @@ let client: ApexClient | null = null
  */
 export function getApexClient(): ApexClient {
   if (!client) {
-    client = createClient<paths>({ baseUrl: resolveApexBaseUrl() })
+    client = createClient<paths>({
+      baseUrl: resolveApexBaseUrl(),
+      fetch: getDevApexFetch(),
+    })
     client.use(authMiddleware)
   }
   return client
@@ -72,3 +76,7 @@ export async function fetchSystemInfo(): Promise<SystemInfo> {
   }
   return data
 }
+
+subscribeDevDataMode(() => {
+  resetApexClient()
+})

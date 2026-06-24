@@ -13,6 +13,7 @@
  */
 import { getApiKey } from '@/auth/keyStorage'
 import { resolveApexBaseUrl } from '@/config/runtimeConfig'
+import { getDevArtifactBytes } from '@/dev-data'
 
 import { ApiError, errorMessageOf } from '@/api/errors'
 
@@ -57,6 +58,9 @@ export interface ArtifactBytes {
  * encodes path params wholesale, which would mangle the `{key:path}` slashes.
  */
 export async function fetchArtifactBytes(url: string): Promise<ArtifactBytes> {
+  const devBytes = getDevArtifactBytes(url)
+  if (devBytes) return devBytes
+
   const headers = new Headers()
   const key = getApiKey()
   if (key) headers.set('x-api-key', key)

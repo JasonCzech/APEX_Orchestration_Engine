@@ -4,6 +4,7 @@ import { NavLink, useLocation } from 'react-router'
 import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
+import { useDevDataMode } from '@/dev-data'
 import { useApprovalsInbox } from '@/features/approvals/useApprovalsInbox'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { isThemeName, THEME_LABELS, useTheme } from '@/theme/useTheme'
@@ -143,6 +144,26 @@ function initials(name: string): string {
   )
 }
 
+function DevDataSwitch() {
+  const { available, enabled, setEnabled } = useDevDataMode()
+  if (!available) return null
+
+  return (
+    <button
+      type="button"
+      className={enabled ? 'sidebar-devdata-switch on' : 'sidebar-devdata-switch'}
+      role="switch"
+      aria-checked={enabled}
+      aria-label="Dummy data"
+      onClick={() => setEnabled(!enabled)}
+    >
+      <span className="sidebar-devdata-knob" aria-hidden="true" />
+      <span className="sidebar-devdata-label">Dummy data</span>
+      <span className="sidebar-devdata-state">{enabled ? 'On' : 'Off'}</span>
+    </button>
+  )
+}
+
 function readStoredCollapsed(): boolean {
   try {
     return window.localStorage.getItem(COLLAPSED_STORAGE_KEY) === 'true'
@@ -270,6 +291,7 @@ export function Sidebar() {
               <div className="sidebar-identity-copy">
                 <span className="sidebar-identity-name">{consumer.name}</span>
                 <span className="sidebar-identity-meta">{consumer.role}</span>
+                <DevDataSwitch />
                 <button
                   type="button"
                   className="sidebar-identity-action sidebar-identity-action-button"

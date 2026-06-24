@@ -2,6 +2,7 @@ import type { Client } from '@langchain/langgraph-sdk'
 
 import { getApiKey, subscribeApiKey } from '@/auth/keyStorage'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
+import { createDevLangGraphClient, subscribeDevDataMode } from '@/dev-data'
 
 let clientPromise: Promise<Client> | null = null
 
@@ -12,6 +13,8 @@ let clientPromise: Promise<Client> | null = null
  * as the `x-api-key` header — the same credential the /v1 surface uses.
  */
 export function getLangGraphClient(): Promise<Client> {
+  const devClient = createDevLangGraphClient()
+  if (devClient) return Promise.resolve(devClient as Client)
   clientPromise ??= buildClient()
   return clientPromise
 }
@@ -29,5 +32,9 @@ export function resetLangGraphClient(): void {
 }
 
 subscribeApiKey(() => {
+  resetLangGraphClient()
+})
+
+subscribeDevDataMode(() => {
   resetLangGraphClient()
 })
