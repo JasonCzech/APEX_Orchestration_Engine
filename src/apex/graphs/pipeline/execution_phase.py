@@ -65,6 +65,11 @@ SPINE_SUPERSTEPS = 16
 # LoadTestSpec fields a per-run "load_test" configurable dict may override; any
 # other key (e.g. the sim engine's fail_at_pct) is treated as an engine option.
 _SPEC_OVERRIDE_FIELDS = frozenset(LoadTestSpec.model_fields) - {"idempotency_key"}
+_ENGINE_OPTION_FIELDS = {
+    "apex_load": frozenset[str](),
+    "loadrunner": frozenset({"abortive_stop", "test_id", "test_instance_id"}),
+    "sim": frozenset({"fail_at_pct"}),
+}
 
 
 def recommended_recursion_limit(limits: Limits) -> int:
@@ -208,7 +213,7 @@ def _poll_sample(status: EngineRunStatus) -> JsonDict:
 
 
 def _build_spec(
-    state: PipelineState, config: RunnableConfig, attempt: int
+    state: PipelineState, config: RunnableConfig, attempt: int, engine: str
 ) -> tuple[LoadTestSpec, JsonDict]:
     """Spec for this run: script_scenario output (or a default for standalone
     execution runs) + per-run "load_test" overrides + the authoritative key."""
@@ -227,12 +232,24 @@ def _build_spec(
     overrides = dict(overrides) if isinstance(overrides, dict) else {}
     spec_overrides = {k: v for k, v in overrides.items() if k in _SPEC_OVERRIDE_FIELDS}
     engine_options = {k: v for k, v in overrides.items() if k not in _SPEC_OVERRIDE_FIELDS}
+    _validate_engine_options(engine, engine_options)
     base.update(spec_overrides)
     base["idempotency_key"] = execution_idempotency_key(_thread_id(config), attempt)
     return LoadTestSpec.model_validate(base), engine_options
 
 
-def engine_reserve(state: PipelineState, config: RunnableConfig) -> JsonDict:
+def _validate_engine_options(engine: str, engine_options: JsonDict) -> None:
+    if not engine_options:
+        return
+    allowed = _ENGINE_OPTION_FIELDS.get(engine, frozenset())
+    unsupported = sorted(set(engine_options) - allowed)
+    if unsupported:
+        raise ValueError(
+            f"unsupported load_test engine option(s) for {engine!r}: {', '.join(unsupported)}"
+        )
+
+
+def engine_reserve(state: PipelineState, config: RunnableConfig) -> Command[str]:
     """Write-ahead idempotency: persist spec + engine choice, then RETURN.
 
     The superstep checkpoint commits this update before engine_start runs, so
@@ -240,7 +257,18 @@ def engine_reserve(state: PipelineState, config: RunnableConfig) -> JsonDict:
     """
     cfg = PipelineConfigurable.from_config(config)
     attempt = _attempt(_entry(state))
-    spec, engine_options = _build_spec(state, config, attempt)
+    try:
+        spec, engine_options = _build_spec(state, config, attempt, cfg.engine)
+    except ValueError as exc:
+        return Command(
+            goto="finalize",
+            update=_update(
+                attempt,
+                status=PhaseStatus.FAILED.value,
+                engine=cfg.engine,
+                errors=[f"load_test validation failed: {exc}"],
+            ),
+        )
     engine_runs.record_engine_run_sync(
         _thread_id(config),
         attempt,
@@ -249,12 +277,15 @@ def engine_reserve(state: PipelineState, config: RunnableConfig) -> JsonDict:
         EngineRunPhase.PROVISIONING.value,
         project_id=cfg.project_id,
     )
-    return _update(
-        attempt,
-        load_test_spec=spec.model_dump(mode="json"),
-        engine=cfg.engine,
-        engine_connection_id=cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
-        engine_options=engine_options,
+    return Command(
+        goto="engine_start",
+        update=_update(
+            attempt,
+            load_test_spec=spec.model_dump(mode="json"),
+            engine=cfg.engine,
+            engine_connection_id=cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
+            engine_options=engine_options,
+        ),
     )
 
 
@@ -486,7 +517,7 @@ def add_execution_engine_nodes(builder: StateGraph[PipelineState, Any, Any, Any]
     finalize -> END etc.); this only contributes the agent-alias + engine nodes.
     """
     builder.add_node("agent", _enter_engine_spine)
-    builder.add_node("engine_reserve", engine_reserve)
+    builder.add_node("engine_reserve", engine_reserve, destinations=("engine_start", "finalize"))
     builder.add_node("engine_start", engine_start, destinations=("engine_poll", "finalize"))
     builder.add_node(
         "engine_poll", engine_poll, destinations=("engine_poll", "engine_collect", "finalize")
@@ -495,7 +526,6 @@ def add_execution_engine_nodes(builder: StateGraph[PipelineState, Any, Any, Any]
         "engine_collect", engine_collect, destinations=("open_output_gate", "finalize")
     )
     builder.add_edge("agent", "engine_reserve")
-    builder.add_edge("engine_reserve", "engine_start")
 
 
 __all__ = [

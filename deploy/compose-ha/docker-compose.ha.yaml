@@ -6,10 +6,11 @@
 # boot without it, and the custom auth this app ships requires the Self-Hosted
 # Enterprise tier (ADR-0001, ADR-0003). Compose fails fast below if it is unset.
 #
-# Build the image first:  langgraph build -t apex-orchestration-engine
+# Build the image first:
+#   uv run langgraph build -t "${APEX_IMAGE:-apex-orchestration-engine:local}"
 
 x-apex-server: &apex-server
-  image: apex-orchestration-engine:latest
+  image: ${APEX_IMAGE:-apex-orchestration-engine:local}
   environment:
     DATABASE_URI: postgresql://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
     REDIS_URI: redis://redis:6379

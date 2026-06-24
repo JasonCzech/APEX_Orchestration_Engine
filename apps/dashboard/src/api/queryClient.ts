@@ -1,6 +1,7 @@
 import { QueryClient } from '@tanstack/react-query'
 
 import { isApiError } from './errors'
+import { STALE_TIMES } from './queryKeys'
 
 /**
  * Query defaults per plan Part 2: retry transient failures twice, never retry
@@ -16,7 +17,7 @@ export function createQueryClient(): QueryClient {
           if (isApiError(error) && error.status >= 400 && error.status < 500) return false
           return failureCount < 2
         },
-        staleTime: 0,
+        staleTime: STALE_TIMES.default,
         refetchOnWindowFocus: false,
       },
       mutations: {

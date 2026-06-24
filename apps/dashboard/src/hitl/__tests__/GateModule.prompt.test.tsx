@@ -126,15 +126,15 @@ describe('GateModule prompt_review', () => {
     expect(packets).toHaveTextContent('APEX-101')
     expect(screen.getByTestId('gate-tools')).toHaveTextContent('jira.search')
 
-    // Arm the abort: confirm stays disabled until the literal ABORT is typed.
+    // Arm the abort: confirm stays disabled until ABORT is typed, case/space-insensitive.
     await user.click(screen.getByRole('button', { name: 'Abort' }))
     const confirm = screen.getByRole('button', { name: 'Confirm abort' })
     expect(confirm).toBeDisabled()
     const input = screen.getByLabelText('Type ABORT to confirm')
-    await user.type(input, 'abort')
+    await user.type(input, 'not abort')
     expect(confirm).toBeDisabled()
     await user.clear(input)
-    await user.type(input, 'ABORT')
+    await user.type(input, ' abort ')
     expect(confirm).toBeEnabled()
     expect(resume.captured.calls).toHaveLength(0) // nothing submitted yet
 

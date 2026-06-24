@@ -21,7 +21,7 @@ from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from apex.app.dependencies import CurrentIdentity
 from apex.domain.integrations import LogQuery, Page
@@ -32,6 +32,32 @@ from apex.services.log_search import (
 )
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+
+MAX_LOG_FILTERS = 12
+MAX_LOG_FILTER_VALUE_LENGTH = 512
+ALLOWED_LOG_FILTERS = frozenset(
+    {
+        "app_id",
+        "container",
+        "environment",
+        "environment_id",
+        "host",
+        "kubernetes.labels.app",
+        "kubernetes.namespace_name",
+        "kubernetes.pod_name",
+        "level",
+        "namespace",
+        "pod",
+        "project_id",
+        "service",
+        "service.name",
+        "span.id",
+        "span_id",
+        "thread_id",
+        "trace.id",
+        "trace_id",
+    }
+)
 
 
 def get_log_search_resolver() -> LogSearchResolver:
@@ -61,6 +87,26 @@ class LogQueryIn(BaseModel):
         description="ANDed exact-match filters (e.g. service, level); "
         "'thread_id' deep-links a pipeline run's logs by convention.",
     )
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filters(cls, filters: dict[str, str]) -> dict[str, str]:
+        if len(filters) > MAX_LOG_FILTERS:
+            raise ValueError(f"filters may contain at most {MAX_LOG_FILTERS} entries")
+        validated: dict[str, str] = {}
+        for raw_key, raw_value in filters.items():
+            key = raw_key.strip()
+            if key not in ALLOWED_LOG_FILTERS:
+                raise ValueError(f"unsupported log filter field {raw_key!r}")
+            value = raw_value.strip()
+            if not value:
+                raise ValueError(f"log filter {key!r} must not be blank")
+            if len(value) > MAX_LOG_FILTER_VALUE_LENGTH:
+                raise ValueError(
+                    f"log filter {key!r} must be at most {MAX_LOG_FILTER_VALUE_LENGTH} characters"
+                )
+            validated[key] = value
+        return validated
 
 
 class WindowIn(BaseModel):

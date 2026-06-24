@@ -148,6 +148,7 @@ export const queryKeys = {
 
 /** Stale times per plan: catalog/prompts/admin 60s, pipelines list 15s, thread state 0. */
 export const STALE_TIMES = {
+  default: 30_000,
   catalog: 60_000,
   prompts: 60_000,
   admin: 60_000,

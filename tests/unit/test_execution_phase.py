@@ -23,6 +23,7 @@ from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import PHASE_ORDER, Phase, PhaseResult, PhaseStatus
 from apex.graphs.pipeline import execution_phase
 from apex.graphs.pipeline.graph import builder
+from apex.graphs.pipeline.state import PipelineState
 from apex.services import engine_runs
 from apex.services.connections import ConnectionResolver
 
@@ -329,6 +330,37 @@ def test_failure_injection_fails_phase_and_still_tears_down(
     assert "teardown" in calls  # try/finally in engine_collect
     assert "abort" not in calls
     assert result["run_aborted"] is False
+
+
+def test_engine_options_reject_connection_overrides_before_checkpoint(
+    projection_calls: list[dict[str, Any]],
+) -> None:
+    g = compiled()
+    cfg = exec_config("exec-bad-options", load_test={"base_url": "https://evil.invalid"})
+    result = g.invoke(seeded_inputs(0.1), cfg)
+
+    entry = result["phase_results"]["execution"]
+    assert entry["status"] == "failed"
+    assert "unsupported load_test engine option(s)" in entry["errors"][0]
+    assert "base_url" in entry["errors"][0]
+    assert "engine_options" not in entry
+    assert "load_test_spec" not in entry
+    assert projection_calls == []
+
+
+def test_loadrunner_safe_engine_options_are_allowed() -> None:
+    cfg = exec_config(
+        "exec-loadrunner-options",
+        load_test={"test_id": 42, "test_instance_id": 7, "abortive_stop": True},
+    )
+    configurable = dict(cfg.get("configurable") or {})
+    cfg = cast(RunnableConfig, {**cfg, "configurable": {**configurable, "engine": "loadrunner"}})
+    spec, options = execution_phase._build_spec(
+        cast(PipelineState, seeded_inputs(0.1)), cfg, 1, "loadrunner"
+    )
+
+    assert spec.idempotency_key == "exec-loadrunner-options-execution-a1"
+    assert options == {"test_id": 42, "test_instance_id": 7, "abortive_stop": True}
 
 
 def test_poll_timeout_aborts_engine_and_fails_phase(

@@ -140,6 +140,28 @@ def test_search_forwards_filters_including_thread_id_convention() -> None:
     assert query.query == ""  # no text -> blank query_string is omitted by adapters
 
 
+def test_search_rejects_unsupported_filter_fields_before_adapter_resolution() -> None:
+    adapter = FakeLogSearchAdapter()
+    resolver = FakeResolver(adapter)
+    response = post_search(
+        make_app(resolver, identity()),
+        {"query": {"filters": {"user.password": "secret", "thread_id": "thread-99"}}},
+    )
+    assert response.status_code == 422
+    assert "unsupported log filter field" in str(response.json()["errors"])
+    assert resolver.calls == []
+    assert adapter.calls == []
+
+
+def test_search_rejects_blank_and_oversized_filter_values() -> None:
+    app = make_app(FakeResolver(FakeLogSearchAdapter()), identity())
+    blank = post_search(app, {"query": {"filters": {"service": "  "}}})
+    assert blank.status_code == 422
+
+    oversized = post_search(app, {"query": {"filters": {"thread_id": "x" * 513}}})
+    assert oversized.status_code == 422
+
+
 # ── window validation ─────────────────────────────────────────────────────────
 
 

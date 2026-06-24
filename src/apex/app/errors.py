@@ -4,6 +4,7 @@ from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -36,7 +37,16 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def handle_validation_error(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
-        return problem(422, "Request validation failed", extra={"errors": exc.errors()})
+        return problem(
+            422,
+            "Request validation failed",
+            extra={
+                "errors": jsonable_encoder(
+                    exc.errors(),
+                    custom_encoder={Exception: str},
+                )
+            },
+        )
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:

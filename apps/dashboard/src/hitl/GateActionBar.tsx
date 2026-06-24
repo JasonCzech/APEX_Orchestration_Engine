@@ -44,6 +44,7 @@ export function AbortConfirm({
     setArming(false)
     setText('')
   }
+  const confirmed = text.trim().toUpperCase() === 'ABORT'
 
   return (
     <span className="abort-confirm" data-testid="abort-confirm">
@@ -59,7 +60,7 @@ export function AbortConfirm({
       <button
         type="button"
         className="btn btn-danger btn-sm"
-        disabled={disabled || text !== 'ABORT'}
+        disabled={disabled || !confirmed}
         onClick={() => {
           disarm()
           onConfirm()

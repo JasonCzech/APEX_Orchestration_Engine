@@ -24,7 +24,8 @@ All commands from the repo root.
 
 ```bash
 export LANGGRAPH_CLOUD_LICENSE_KEY=...        # Enterprise key
-uv run langgraph build -t apex-orchestration-engine
+export APEX_IMAGE=apex-orchestration-engine:local
+uv run langgraph build -t "$APEX_IMAGE"
 docker compose -f deploy/compose-ha/docker-compose.ha.yaml up -d --wait
 ```
 
