@@ -12,10 +12,12 @@ Note: ConnectionConfig has no base_url field, so a row's base_url is merged into
 options["base_url"] for the adapter factory.
 """
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from inspect import isawaitable
 from typing import Any, Protocol
 
 import structlog
@@ -201,6 +203,7 @@ class ConnectionResolver:
             self._default_by_kind.setdefault(conn.kind, conn)
         self._store = store
         self._instances: dict[str, tuple[datetime | None, Any]] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def resolve(
         self,
@@ -281,15 +284,36 @@ class ConnectionResolver:
     # ── building ────────────────────────────────────────────────────────────
 
     async def _build_cached(self, conn: ConnectionConfig, version: datetime | None) -> Any:
-        cached = self._instances.get(conn.id)
-        if cached is not None and cached[0] == version:
-            return cached[1]
-        secrets: SecretsPort | None = None
-        if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
-            secrets = await self.resolve(PortKind.SECRETS)
-        adapter = await AdapterRegistry.build(conn, secrets)
-        self._instances[conn.id] = (version, adapter)
-        return adapter
+        lock = self._locks.setdefault(conn.id, asyncio.Lock())
+        async with lock:
+            cached = self._instances.get(conn.id)
+            if cached is not None and cached[0] == version:
+                return cached[1]
+            secrets: SecretsPort | None = None
+            if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
+                secrets = await self.resolve(PortKind.SECRETS)
+            adapter = await AdapterRegistry.build(conn, secrets)
+            self._instances[conn.id] = (version, adapter)
+            if cached is not None:
+                await _close_adapter(cached[1])
+            return adapter
+
+    async def close(self) -> None:
+        """Close cached adapter clients before process shutdown or test teardown."""
+        instances = list(self._instances.values())
+        self._instances.clear()
+        self._locks.clear()
+        for _, adapter in instances:
+            await _close_adapter(adapter)
+
+
+async def _close_adapter(adapter: Any) -> None:
+    close = getattr(adapter, "aclose", None) or getattr(adapter, "close", None)
+    if close is None:
+        return
+    result = close()
+    if isawaitable(result):
+        await result
 
 
 @lru_cache

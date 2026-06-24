@@ -15,6 +15,7 @@ import {
 } from '@/api/hooks/useWorkTracking'
 import { useConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
 import { formatRelative } from '@/utils/time'
@@ -53,23 +54,17 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
   }
 
   return (
-    <div
-      className="wi-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !update.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !update.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="wi-overlay"
+      className="wi-modal glass-panel"
+      ariaLabel={`Edit saved query ${saved.name}`}
+      onClose={onClose}
+      closeOnBackdrop={!update.isPending}
+      closeOnEscape={!update.isPending}
+      panelAs="form"
+      onSubmit={submit}
     >
-      <form
-        className="wi-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Edit saved query ${saved.name}`}
-        onSubmit={submit}
-      >
-        <h2 className="wi-modal-title">Edit saved query</h2>
+      <h2 className="wi-modal-title">Edit saved query</h2>
         <label className="wi-field">
           <span className="wi-field-label">Name</span>
           <input
@@ -129,8 +124,7 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
             {update.isPending ? 'Saving…' : 'Save changes'}
           </button>
         </div>
-      </form>
-    </div>
+    </Dialog>
   )
 }
 
@@ -139,50 +133,42 @@ function DeleteQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () =
   const remove = useDeleteSavedQuery()
 
   return (
-    <div
-      className="wi-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !remove.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !remove.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="wi-overlay"
+      className="wi-modal glass-panel"
+      ariaLabel={`Delete saved query ${saved.name}`}
+      onClose={onClose}
+      closeOnBackdrop={!remove.isPending}
+      closeOnEscape={!remove.isPending}
     >
-      <div
-        className="wi-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Delete saved query ${saved.name}`}
-      >
-        <h2 className="wi-modal-title">Delete saved query</h2>
-        <p className="wi-modal-caption">
-          This permanently removes <strong>{saved.name}</strong>. Runs that used it are unaffected.
-        </p>
-        {remove.isError && (
-          <div className="wi-inline-error" role="alert">
-            <span>Delete failed: {remove.error.message}</span>
-          </div>
-        )}
-        <div className="wi-modal-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onClose}
-            disabled={remove.isPending}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
-            disabled={remove.isPending}
-            onClick={() => remove.mutate(saved.id, { onSuccess: onClose })}
-          >
-            {remove.isPending ? 'Deleting…' : 'Delete query'}
-          </button>
+      <h2 className="wi-modal-title">Delete saved query</h2>
+      <p className="wi-modal-caption">
+        This permanently removes <strong>{saved.name}</strong>. Runs that used it are unaffected.
+      </p>
+      {remove.isError && (
+        <div className="wi-inline-error" role="alert">
+          <span>Delete failed: {remove.error.message}</span>
         </div>
+      )}
+      <div className="wi-modal-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onClose}
+          disabled={remove.isPending}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger btn-sm"
+          disabled={remove.isPending}
+          onClick={() => remove.mutate(saved.id, { onSuccess: onClose })}
+        >
+          {remove.isPending ? 'Deleting…' : 'Delete query'}
+        </button>
       </div>
-    </div>
+    </Dialog>
   )
 }
 

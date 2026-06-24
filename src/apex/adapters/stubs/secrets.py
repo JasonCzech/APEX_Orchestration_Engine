@@ -8,6 +8,7 @@ import os
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import SecretValue
+from apex.settings import get_settings
 
 
 @AdapterRegistry.register(PortKind.SECRETS, "env")
@@ -21,6 +22,9 @@ class EnvSecretsAdapter:
         scheme, _, name = secret_ref.partition(":")
         if scheme != "env" or not name:
             raise ValueError(f"unsupported secret_ref {secret_ref!r}; expected 'env:NAME'")
+        prefixes = tuple(get_settings().env_secret_prefixes)
+        if prefixes and not name.startswith(prefixes):
+            raise ValueError(f"environment variable {name!r} is not allowed by env_secret_prefixes")
         try:
             return SecretValue(value=os.environ[name])
         except KeyError:

@@ -5,7 +5,6 @@ before handing the digest to this repository.
 """
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,7 +86,6 @@ class ConsumersRepository:
         if consumer is None:
             return None
         consumer.key_hash = key_hash
-        consumer.last_used_at = datetime.now(UTC)
         await self._session.commit()
         await self._session.refresh(consumer)
         return consumer

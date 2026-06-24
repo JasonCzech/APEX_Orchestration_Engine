@@ -190,6 +190,12 @@ async def test_env_secrets_missing_var_raises(monkeypatch: pytest.MonkeyPatch) -
         await EnvSecretsAdapter().resolve("env:APEX_TEST_MISSING")
 
 
+async def test_env_secrets_rejects_disallowed_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", "/bin")
+    with pytest.raises(ValueError, match="env_secret_prefixes"):
+        await EnvSecretsAdapter().resolve("env:PATH")
+
+
 async def test_env_secrets_rejects_unknown_scheme() -> None:
     with pytest.raises(ValueError, match="vault:path#key"):
         await EnvSecretsAdapter().resolve("vault:path#key")

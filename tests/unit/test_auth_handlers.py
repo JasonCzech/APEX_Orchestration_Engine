@@ -132,6 +132,17 @@ def test_identity_from_attribute_style_user() -> None:
     assert rebuilt.consumer_type is ConsumerType.DASHBOARD
 
 
+@pytest.mark.parametrize("field,value", [("role", "owner"), ("consumer_type", "service")])
+def test_identity_from_user_rejects_unknown_role_or_type(field: str, value: str) -> None:
+    payload = user_payload(make_identity(Role.VIEWER))
+    payload[field] = value
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        identity_from_user(payload)
+
+    assert excinfo.value.status_code == 401
+
+
 # ── scope helpers ────────────────────────────────────────────────────────────
 
 

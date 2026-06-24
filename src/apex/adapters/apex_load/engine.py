@@ -282,6 +282,16 @@ def _error_text(response: httpx.Response) -> str:
     return response.text[:300]
 
 
+def _json_object(response: httpx.Response, context: str) -> dict[str, Any]:
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"apex load {context} returned invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"apex load {context} returned non-object JSON")
+    return data
+
+
 # ── adapter ───────────────────────────────────────────────────────────────────
 
 
@@ -321,6 +331,12 @@ class ApexLoadExecutionEngine:
             )
             self._http_loop = loop
         return self._http
+
+    async def aclose(self) -> None:
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
+        self._http_loop = None
 
     async def _request(
         self,
@@ -412,7 +428,7 @@ class ApexLoadExecutionEngine:
             if self._project_id:
                 payload["project_id"] = self._project_id
             response = await self._request("POST", "/api/v1/scripts/validate", json=payload)
-            data = response.json()
+            data = _json_object(response, "script validation")
             if not data.get("valid", False):
                 issues.extend(str(issue) for issue in data.get("issues") or [])
         for ref in named_refs:
@@ -425,7 +441,7 @@ class ApexLoadExecutionEngine:
             except KeyError as exc:
                 issues.append(str(exc.args[0]))
                 continue
-            data = response.json()
+            data = _json_object(response, "script validation")
             if not data.get("valid", False):
                 issues.extend(str(issue) for issue in data.get("issues") or [])
         return ValidationReport(ok=not issues, issues=issues)
@@ -474,7 +490,7 @@ class ApexLoadExecutionEngine:
             f"/api/v1/tests/{run_id}",
             not_found=f"apex load test {run_id!r} not found",
         )
-        test = response.json()
+        test = _json_object(response, f"GET /api/v1/tests/{run_id}")
         raw_status = str(test.get("status") or "").upper()
         phase = _PHASE_BY_STATUS.get(raw_status)
         message = f"APEX Load test {run_id} is {raw_status or 'UNKNOWN'}"
@@ -544,7 +560,7 @@ class ApexLoadExecutionEngine:
             f"/api/v1/tests/{run_id}/sla-status",
             not_found=f"apex load test {run_id!r} not found",
         )
-        sla = sla_response.json()
+        sla = _json_object(sla_response, f"GET /api/v1/tests/{run_id}/sla-status")
         status = str(sla.get("status") or "").upper()
         breached = bool(sla.get("sla_breached"))
         breaches = [str(detail) for detail in sla.get("details") or []]
@@ -562,9 +578,8 @@ class ApexLoadExecutionEngine:
             kpis = await self._live_kpis(run_id)
             notes += "; archive report unavailable, KPIs from live metrics"
         else:
-            report = report_response.json()
-            if isinstance(report, dict):
-                kpis = _kpis_from_report(report)
+            report = _json_object(report_response, f"GET /api/v1/tests/{run_id}/archive/report")
+            kpis = _kpis_from_report(report)
             notes += "; KPIs from archive report"
 
         passed = status == "COMPLETE" and not breached
@@ -591,14 +606,14 @@ class ApexLoadExecutionEngine:
             )
         except KeyError:
             return {}
-        return _kpis_from_live(response.json())
+        return _kpis_from_live(_json_object(response, f"GET /api/v1/tests/{run_id}"))
 
     # ── provisioning internals ────────────────────────────────────────────────
 
     async def _find_test_by_name(self, name: str) -> dict[str, Any] | None:
         params = {"project_id": self._project_id} if self._project_id else None
         response = await self._request("GET", "/api/v1/tests", params=params)
-        data = response.json()
+        data = _json_object(response, "GET /api/v1/tests")
         for test in data.get("tests") or []:
             if isinstance(test, dict) and test.get("name") == name:
                 return test
@@ -609,7 +624,7 @@ class ApexLoadExecutionEngine:
         if self._project_id:
             payload["project_id"] = self._project_id
         response = await self._request("POST", "/api/v1/scripts", json=payload)
-        stored = response.json()
+        stored = _json_object(response, "POST /api/v1/scripts")
         script_id = str(stored.get("id") or "")
         if not script_id:
             raise RuntimeError(
@@ -662,4 +677,4 @@ class ApexLoadExecutionEngine:
         if goal:
             body["goal_config"] = goal
         response = await self._request("POST", "/api/v1/tests", json=body)
-        return response.json()
+        return _json_object(response, "POST /api/v1/tests")

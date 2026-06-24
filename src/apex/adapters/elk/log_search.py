@@ -33,6 +33,7 @@ verbatim at the top level are dropped; nested containers (e.g. the whole "log"
 object when log.level supplied the level) are kept so no data is lost.
 """
 
+import asyncio
 import threading
 from collections.abc import Mapping
 from typing import Any
@@ -232,6 +233,7 @@ class ElasticsearchLogSearchAdapter:
         self._verify_tls = bool(options.get("verify_tls", True))
         self._secret = secret
         self._client = client
+        self._client_loop: asyncio.AbstractEventLoop | None = None
         # threading.Lock (not asyncio.Lock): mirrors the S3 adapter — instances
         # are cached process-wide and the guard must not be loop-bound.
         self._client_lock = threading.Lock()
@@ -279,11 +281,19 @@ class ElasticsearchLogSearchAdapter:
     # ── client bootstrap ──────────────────────────────────────────────────────
 
     def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client.is_closed or self._client_loop is not loop:
             with self._client_lock:
-                if self._client is None:
+                if self._client is None or self._client.is_closed or self._client_loop is not loop:
                     self._client = self._build_client()
+                    self._client_loop = loop
         return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+        self._client_loop = None
 
     def _build_client(self) -> httpx.AsyncClient:
         headers: dict[str, str] = {}

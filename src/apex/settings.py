@@ -32,6 +32,19 @@ class AuthSettings(BaseModel):
     dev_api_key: str | None = None
 
 
+class RateLimitSettings(BaseModel):
+    enabled: bool = True
+    requests: int = 600
+    window_s: int = 60
+
+
+class SecurityHeadersSettings(BaseModel):
+    enabled: bool = True
+    content_security_policy: str = (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+    )
+
+
 class ApexSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APEX_",
@@ -46,8 +59,11 @@ class ApexSettings(BaseSettings):
     environment: str = "dev"
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     allow_private_adapter_hosts: bool = False
+    env_secret_prefixes: list[str] = ["APEX_"]
     database: DatabaseSettings = DatabaseSettings()
     auth: AuthSettings = AuthSettings()
+    rate_limit: RateLimitSettings = RateLimitSettings()
+    security_headers: SecurityHeadersSettings = SecurityHeadersSettings()
 
     @model_validator(mode="after")
     def validate_production_lockdown(self) -> "ApexSettings":

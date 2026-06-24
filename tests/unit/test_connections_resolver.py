@@ -1,11 +1,12 @@
 """DB-backed ConnectionResolver: precedence, scope checks, caching, fallbacks."""
 
+from collections.abc import Iterator
 from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
-from apex.adapters.registry import ConnectionConfig, PortKind
+from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.services.connections import ConnectionResolver, StoredConnection
 
 
@@ -163,3 +164,54 @@ async def test_static_resolver_unchanged_without_store() -> None:
     first = await resolver.resolve(PortKind.WORK_TRACKING)
     second = await resolver.resolve(PortKind.WORK_TRACKING, "dev-work-tracking-stub")
     assert first is second
+
+
+@pytest.fixture
+def closeable_provider() -> Iterator[tuple[str, list[str]]]:
+    provider = "test-closeable"
+    closed: list[str] = []
+
+    class CloseableAdapter:
+        def __init__(self, conn: ConnectionConfig, secret: object | None = None) -> None:
+            self.conn = conn
+
+        async def aclose(self) -> None:
+            closed.append(self.conn.id)
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(CloseableAdapter)
+    try:
+        yield provider, closed
+    finally:
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+
+async def test_cache_invalidation_closes_replaced_adapter(
+    closeable_provider: tuple[str, list[str]],
+) -> None:
+    provider, closed = closeable_provider
+    store = FakeStore(
+        [stored("global-wt", provider=provider, updated_at=datetime(2026, 1, 1, tzinfo=UTC))]
+    )
+    resolver = ConnectionResolver(store=store)
+
+    first = await resolver.resolve(PortKind.WORK_TRACKING)
+    store.rows["global-wt"] = stored(
+        "global-wt", provider=provider, updated_at=datetime(2026, 1, 2, tzinfo=UTC)
+    )
+    second = await resolver.resolve(PortKind.WORK_TRACKING)
+
+    assert second is not first
+    assert closed == ["global-wt"]
+
+
+async def test_resolver_close_closes_cached_adapters(
+    closeable_provider: tuple[str, list[str]],
+) -> None:
+    provider, closed = closeable_provider
+    store = FakeStore([stored("global-wt", provider=provider)])
+    resolver = ConnectionResolver(store=store)
+
+    await resolver.resolve(PortKind.WORK_TRACKING)
+    await resolver.close()
+
+    assert closed == ["global-wt"]

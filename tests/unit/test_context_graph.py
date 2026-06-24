@@ -52,3 +52,17 @@ async def test_empty_input_yields_empty_evidence() -> None:
     result = await graph.ainvoke(ContextState(subject="anything"))
     assert result["evidence"] == []
     assert "no evidence gathered" in result["summary"]
+
+
+async def test_resolver_scope_errors_are_not_masked(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ScopeFailingResolver:
+        async def resolve(self, *args: object, **kwargs: object) -> object:
+            raise ValueError("connection is scoped to project 'p1', not 'p2'")
+
+    monkeypatch.setattr(
+        "apex.graphs.context.graph.get_connection_resolver", lambda: ScopeFailingResolver()
+    )
+    with pytest.raises(ValueError, match="scoped to project"):
+        await graph.ainvoke(
+            ContextState(subject="anything", work_item_keys=["PHX-241"], project_id="p2")
+        )

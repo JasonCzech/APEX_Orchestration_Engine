@@ -132,7 +132,7 @@ def test_modify_reinterrupts_with_edited_prompt_then_approve() -> None:
     assert entry["resolved_prompt_source"]["origin"] == "gate_edit"
 
 
-def test_skip_phase_marks_skipped_and_continues() -> None:
+def test_skip_phase_blocks_downstream_prerequisite() -> None:
     g = compiled()
     gates = all_auto()
     gates["story_analysis"] = {"prompt_review": "gated", "output_review": "auto"}
@@ -146,7 +146,10 @@ def test_skip_phase_marks_skipped_and_continues() -> None:
     assert [(a["gate"], a["action"]) for a in story["approvals"]] == [
         ("prompt_review", "skip_phase")
     ]
-    assert result["phase_results"]["test_planning"]["status"] == "succeeded"
+    test_planning = result["phase_results"]["test_planning"]
+    assert test_planning["status"] == "failed"
+    assert test_planning["tool_calls"] == []
+    assert "prerequisite 'story_analysis'" in test_planning["errors"][0]
 
 
 def test_revise_loops_back_to_agent_and_caps() -> None:
@@ -231,6 +234,20 @@ def test_prereq_violation_raises_value_error() -> None:
     g = compiled()
     cfg = config("t9", phases=["reporting"])
     with pytest.raises(ValueError, match="execution"):
+        g.invoke({"title": "Demo"}, cfg)
+
+
+def test_empty_phase_plan_raises_value_error() -> None:
+    g = compiled()
+    cfg = config("t-empty", phases=[])
+    with pytest.raises(ValueError, match="phase plan is empty"):
+        g.invoke({"title": "Demo"}, cfg)
+
+
+def test_inverted_phase_range_raises_value_error() -> None:
+    g = compiled()
+    cfg = config("t-inverted", start_phase="execution", stop_after="story_analysis")
+    with pytest.raises(ValueError, match="phase plan is empty"):
         g.invoke({"title": "Demo"}, cfg)
 
 

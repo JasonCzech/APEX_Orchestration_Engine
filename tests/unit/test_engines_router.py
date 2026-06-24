@@ -7,6 +7,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langgraph_sdk.errors import NotFoundError
+from structlog.testing import capture_logs
 
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import get_current_identity
@@ -407,6 +408,27 @@ def test_abort_survives_teardown_and_projection_failures() -> None:
     assert response.status_code == 202  # teardown + projection are best-effort
     assert adapter.aborts[0][1] == "kill it"
     assert adapter.teardowns == []
+
+
+def test_abort_logs_empty_projection_update() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(
+        thread_id="t-1",
+        status="completed",
+        external_run_id="external-1",
+        handle=STATE_HANDLE,
+    )
+    repo, _, adapter, _, client = abort_fixture(
+        repo=repo,
+        states={"t-1": {"values": {"engine_handle": STATE_HANDLE}}},
+    )
+
+    with capture_logs() as logs, client:
+        response = client.post("/v1/engines/runs/t-1/abort", json={})
+
+    assert response.status_code == 202
+    assert adapter.aborts
+    assert any(event["event"] == "engine_abort.projection_update_empty" for event in logs)
 
 
 def test_abort_requires_operator_role() -> None:

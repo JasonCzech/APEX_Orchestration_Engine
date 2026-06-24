@@ -222,6 +222,12 @@ class AdoWorkTrackingAdapter:
             self._http_loop = loop
         return self._http
 
+    async def aclose(self) -> None:
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
+        self._http_loop = None
+
     async def _request(
         self,
         method: str,

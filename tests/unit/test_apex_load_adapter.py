@@ -639,6 +639,16 @@ async def test_error_mapping_auth_and_server_errors() -> None:
         await make_adapter().get_status(make_handle())
 
 
+@respx.mock
+async def test_successful_non_json_status_response_is_contextual_error() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, text="<html>proxy login</html>")
+    )
+
+    with pytest.raises(RuntimeError, match=r"GET /api/v1/tests/test-789 returned invalid JSON"):
+        await make_adapter().get_status(make_handle())
+
+
 def test_unprovisioned_handle_is_rejected() -> None:
     handle = EngineHandle(engine="apex_load", idempotency_key=KEY)
     with pytest.raises(ValueError, match="provision"):

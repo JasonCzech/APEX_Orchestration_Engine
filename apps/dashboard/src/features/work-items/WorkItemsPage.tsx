@@ -23,6 +23,7 @@ import {
 } from '@/api/hooks/useWorkTracking'
 import { useConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 
 import { ExternalLink, KindChip, StatusBadge } from './workItemsBits'
 import { workItemPath } from './workItemsLogic'
@@ -63,26 +64,20 @@ function SaveQueryModal({
   }
 
   return (
-    <div
-      className="wi-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !create.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !create.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="wi-overlay"
+      className="wi-modal glass-panel"
+      ariaLabel="Save query"
+      onClose={onClose}
+      closeOnBackdrop={!create.isPending}
+      closeOnEscape={!create.isPending}
+      panelAs="form"
+      onSubmit={submit}
     >
-      <form
-        className="wi-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label="Save query"
-        onSubmit={submit}
-      >
-        <h2 className="wi-modal-title">Save query</h2>
-        <p className="wi-modal-caption">
-          Saves the current <strong>{provider}</strong> query for quick reuse.
-        </p>
+      <h2 className="wi-modal-title">Save query</h2>
+      <p className="wi-modal-caption">
+        Saves the current <strong>{provider}</strong> query for quick reuse.
+      </p>
         <label className="wi-field">
           <span className="wi-field-label">Name</span>
           <input
@@ -122,8 +117,7 @@ function SaveQueryModal({
             {create.isPending ? 'Saving…' : 'Save query'}
           </button>
         </div>
-      </form>
-    </div>
+    </Dialog>
   )
 }
 
@@ -146,23 +140,17 @@ function NewItemModal({ provider, onClose }: { provider: string; onClose: () => 
   }
 
   return (
-    <div
-      className="wi-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !create.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !create.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="wi-overlay"
+      className="wi-modal glass-panel"
+      ariaLabel="New work item"
+      onClose={onClose}
+      closeOnBackdrop={!create.isPending}
+      closeOnEscape={!create.isPending}
+      panelAs="form"
+      onSubmit={submit}
     >
-      <form
-        className="wi-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label="New work item"
-        onSubmit={submit}
-      >
-        <h2 className="wi-modal-title">New work item</h2>
+      <h2 className="wi-modal-title">New work item</h2>
         <label className="wi-field">
           <span className="wi-field-label">Title</span>
           <input
@@ -216,8 +204,7 @@ function NewItemModal({ provider, onClose }: { provider: string; onClose: () => 
             {create.isPending ? 'Creating…' : 'Create item'}
           </button>
         </div>
-      </form>
-    </div>
+    </Dialog>
   )
 }
 

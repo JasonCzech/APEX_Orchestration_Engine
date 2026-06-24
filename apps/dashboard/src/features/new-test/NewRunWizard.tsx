@@ -122,22 +122,16 @@ export function NewRunWizardPage() {
 
   return (
     <div className="wizard-page animate-enter">
-      <header className="wizard-header">
-        <div>
-          <h2 className="wizard-title">New Test</h2>
-          <p className="wizard-header-copy">
-            Build the run in one pass, keep the draft autosaved, and launch the pipeline when the configuration looks right.
-          </p>
-        </div>
-        {SAVE_LABELS[saveState] && (
+      {SAVE_LABELS[saveState] && (
+        <div className="wizard-status-row">
           <span
             className={`topbar-meta-chip${saveState === 'error' ? ' danger' : saveState === 'saved' ? ' success' : ''}`}
             data-testid="draft-save-state"
           >
             {SAVE_LABELS[saveState]}
           </span>
-        )}
-      </header>
+        </div>
+      )}
 
       {showResume && (
         <div className="glass-panel wizard-resume" data-testid="resume-draft-panel">

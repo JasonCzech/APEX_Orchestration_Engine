@@ -26,6 +26,7 @@ from langgraph.types import Command, interrupt
 
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import (
+    PHASE_PREREQUISITES,
     TERMINAL_PHASE_STATUSES,
     ArtifactRef,
     DialogueEntry,
@@ -93,10 +94,31 @@ def _thread_id(config: RunnableConfig | None) -> str:
     return str(configurable.get("thread_id") or "no-thread")
 
 
+def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
+    results = state.get("phase_results") or {}
+    for prereq in PHASE_PREREQUISITES[phase]:
+        status = (results.get(prereq.value) or {}).get("status")
+        if status != PhaseStatus.SUCCEEDED.value:
+            return (
+                f"Cannot run phase '{phase.value}': prerequisite '{prereq.value}' "
+                f"ended with status '{status or 'missing'}'."
+            )
+    return None
+
+
 def _make_prepare(phase: Phase):
     def prepare(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_config(config)
         attempt = _attempt(_entry(state, phase))
+        prereq_error = _prerequisite_error(state, phase)
+        if prereq_error is not None:
+            return _phase_update(
+                phase,
+                attempt,
+                status=PhaseStatus.FAILED.value,
+                started_at=utcnow_iso(),
+                errors=[prereq_error],
+            )
         # Resolution order: run override -> catalog active version -> builtin
         # defaults (catalog falls through silently when Postgres is absent).
         resolved = resolve_phase_prompt_sync(phase, cfg, variables=_prompt_variables(state))
@@ -121,6 +143,16 @@ def _make_prepare(phase: Phase):
         return update
 
     return prepare
+
+
+def _make_route_after_prepare(phase: Phase):
+    def route_after_prepare(state: PipelineState) -> str:
+        entry = _entry(state, phase)
+        if entry.get("status") == PhaseStatus.FAILED.value and entry.get("errors"):
+            return "finalize"
+        return "open_prompt_gate"
+
+    return route_after_prepare
 
 
 def _make_open_prompt_gate(phase: Phase):
@@ -519,7 +551,9 @@ def make_phase_subgraph(phase: Phase) -> CompiledStateGraph[PipelineState, Any, 
     builder.add_node("output_gate", _make_output_gate(phase), destinations=("agent", "finalize"))
     builder.add_node("finalize", _make_finalize(phase))
     builder.add_edge(START, "prepare")
-    builder.add_edge("prepare", "open_prompt_gate")
+    builder.add_conditional_edges(
+        "prepare", _make_route_after_prepare(phase), ["open_prompt_gate", "finalize"]
+    )
     builder.add_edge("open_prompt_gate", "prompt_gate")
     if phase is Phase.EXECUTION:
         # Imported lazily: execution_phase imports helpers from this module, so a

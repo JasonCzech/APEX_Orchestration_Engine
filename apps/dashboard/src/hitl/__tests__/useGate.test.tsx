@@ -6,13 +6,14 @@
 import type { ReactNode } from 'react'
 
 import { renderHook, waitFor, act } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import { server } from '@/test/server'
 import { createTestQueryClient } from '@/test/render'
 import { useGate, type GateHintLike } from '@/hitl/useGate'
+import { queryKeys } from '@/api/queryKeys'
 
 import {
   gatedDetail,
@@ -92,6 +93,42 @@ describe('useGate discovery', () => {
     rerender({ gateHint: hint })
     await new Promise((resolve) => setTimeout(resolve, 30))
     expect(ref.requests).toBe(2)
+  })
+
+  it('resets handled stream hints when the thread changes', async () => {
+    const { handler: handlerA, ref: refA } = mutableDetailHandler(
+      'th-hint-a',
+      gatedDetail('th-hint-a', []),
+    )
+    const { handler: handlerB, ref: refB } = mutableDetailHandler(
+      'th-hint-b',
+      gatedDetail('th-hint-b', []),
+    )
+    server.use(handlerA, handlerB)
+    const { queryClient, wrapper } = harness()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const hint = { gate: 'prompt_review', phase: 'test_planning' }
+    const { rerender } = renderHook(
+      ({ threadId, gateHint }: { threadId: string; gateHint: GateHintLike }) =>
+        useGate(threadId, { gateHint }),
+      { wrapper, initialProps: { threadId: 'th-hint-a', gateHint: null as GateHintLike } },
+    )
+
+    await waitFor(() => expect(refA.requests).toBe(1))
+    rerender({ threadId: 'th-hint-a', gateHint: hint })
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKeys.threads.state('th-hint-a'),
+      }),
+    )
+
+    rerender({ threadId: 'th-hint-b', gateHint: hint })
+    await waitFor(() => expect(refB.requests).toBeGreaterThanOrEqual(1))
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKeys.threads.state('th-hint-b'),
+      }),
+    )
   })
 })
 

@@ -252,6 +252,13 @@ class LoadRunnerExecutionEngine:
             self._session_ok = False
         return self._http
 
+    async def aclose(self) -> None:
+        if self._http is not None and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
+        self._http_loop = None
+        self._session_ok = False
+
     async def _authenticate(self, client: httpx.AsyncClient) -> None:
         """POST the authentication point with basic credentials; the LWSSO
         session cookie from Set-Cookie lands in the client's cookie jar."""

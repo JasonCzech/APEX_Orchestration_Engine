@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router'
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
+import { Dialog } from '@/components/Dialog'
 
 import { assessPlan, lastPlanSelection, type ReadinessRow } from './preflight'
 import { PHASE_LABELS } from './runDisplay'
@@ -82,109 +83,97 @@ export function PreflightModal({ threadId, initialSelection, onClose }: Prefligh
   }
 
   return (
-    <div
-      className="preflight-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close()
-      }}
+    <Dialog
+      overlayClassName="preflight-overlay"
+      className="preflight-modal glass-panel"
+      onClose={close}
+      labelledBy={titleId}
     >
-      <div
-        className="preflight-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-      >
-        <h2 className="preflight-title" id={titleId}>
-          Re-run phases
-        </h2>
-        <p className="preflight-caption">
-          Prerequisites resolve against phases earlier in this plan or already succeeded on this
-          thread.
-        </p>
+      <h2 className="preflight-title" id={titleId}>
+        Re-run phases
+      </h2>
+      <p className="preflight-caption">
+        Prerequisites resolve against phases earlier in this plan or already succeeded on this
+        thread.
+      </p>
 
-        {query.isPending ? (
-          <div className="preflight-loading" role="status" aria-label="Loading thread state">
-            Loading thread state…
-          </div>
-        ) : query.isError ? (
-          <div className="tonal-card danger" role="alert">
-            Thread state failed to load:{' '}
-            {query.error instanceof Error ? query.error.message : 'unknown error'}
-          </div>
-        ) : (
-          <>
-            <div className="preflight-phase-strip" role="group" aria-label="Phases to run">
-              {PHASE_NAMES.map((phase) => (
-                <button
-                  key={phase}
-                  type="button"
-                  className="preflight-phase-toggle"
-                  aria-pressed={selection.includes(phase)}
-                  onClick={() => toggle(phase)}
-                >
-                  {PHASE_LABELS[phase]}
-                </button>
-              ))}
-            </div>
-
-            <ul className="preflight-readiness" aria-label="Plan readiness">
-              {assessment.rows.length === 0 ? (
-                <li className="preflight-row empty">No phases selected.</li>
-              ) : (
-                assessment.rows.map((row) => <ReadinessItem key={row.phase} row={row} />)
-              )}
-            </ul>
-
-            <div className="preflight-gates" role="group" aria-label="Gates mode">
-              {GATES_MODES.map(({ value, label }) => (
-                <button
-                  key={value}
-                  type="button"
-                  className="preflight-gates-segment"
-                  aria-pressed={gatesMode === value}
-                  onClick={() => setGatesMode(value)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-
-        {rerun.isError && (
-          <div className="tonal-card danger" role="alert">
-            Re-run failed: {rerun.error.message}
-          </div>
-        )}
-
-        <div className="preflight-actions">
-          {assessment.hasBlockers && (
-            <span className="preflight-blocker-caption">
-              server will reject at plan resolution
-            </span>
-          )}
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={close}
-            disabled={rerun.isPending}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={start}
-            disabled={!canStart}
-          >
-            {rerun.isPending ? 'Starting…' : 'Start phases'}
-          </button>
+      {query.isPending ? (
+        <div className="preflight-loading" role="status" aria-label="Loading thread state">
+          Loading thread state…
         </div>
+      ) : query.isError ? (
+        <div className="tonal-card danger" role="alert">
+          Thread state failed to load:{' '}
+          {query.error instanceof Error ? query.error.message : 'unknown error'}
+        </div>
+      ) : (
+        <>
+          <div className="preflight-phase-strip" role="group" aria-label="Phases to run">
+            {PHASE_NAMES.map((phase) => (
+              <button
+                key={phase}
+                type="button"
+                className="preflight-phase-toggle"
+                aria-pressed={selection.includes(phase)}
+                onClick={() => toggle(phase)}
+              >
+                {PHASE_LABELS[phase]}
+              </button>
+            ))}
+          </div>
+
+          <ul className="preflight-readiness" aria-label="Plan readiness">
+            {assessment.rows.length === 0 ? (
+              <li className="preflight-row empty">No phases selected.</li>
+            ) : (
+              assessment.rows.map((row) => <ReadinessItem key={row.phase} row={row} />)
+            )}
+          </ul>
+
+          <div className="preflight-gates" role="group" aria-label="Gates mode">
+            {GATES_MODES.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                className="preflight-gates-segment"
+                aria-pressed={gatesMode === value}
+                onClick={() => setGatesMode(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {rerun.isError && (
+        <div className="tonal-card danger" role="alert">
+          Re-run failed: {rerun.error.message}
+        </div>
+      )}
+
+      <div className="preflight-actions">
+        {assessment.hasBlockers && (
+          <span className="preflight-blocker-caption">server will reject at plan resolution</span>
+        )}
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={close}
+          disabled={rerun.isPending}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          onClick={start}
+          disabled={!canStart}
+        >
+          {rerun.isPending ? 'Starting…' : 'Start phases'}
+        </button>
       </div>
-    </div>
+    </Dialog>
   )
 }
 

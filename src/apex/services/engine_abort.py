@@ -96,11 +96,16 @@ class EngineAbortService:
             logger.warning("engine_abort.teardown_failed", thread_id=thread_id, error=str(exc))
 
         try:
-            await self._repo.mark_aborted(thread_id, allowed_project_ids=self._allowed_project_ids)
+            projected = await self._repo.mark_aborted(
+                thread_id, allowed_project_ids=self._allowed_project_ids
+            )
         except Exception as exc:  # noqa: BLE001 — projection writes never gate an abort
             logger.warning(
                 "engine_abort.projection_update_failed", thread_id=thread_id, error=str(exc)
             )
+        else:
+            if projected == 0:
+                logger.warning("engine_abort.projection_update_empty", thread_id=thread_id)
 
         if abort_error is not None:
             raise abort_error

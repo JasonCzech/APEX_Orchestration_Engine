@@ -15,6 +15,11 @@ def test_explicit_phases_resolve_in_canonical_order() -> None:
     assert cfg.selected_phases() == [Phase.ENV_TRIAGE, Phase.REPORTING]
 
 
+def test_explicit_empty_phases_resolves_empty() -> None:
+    cfg = PipelineConfigurable.from_config({"configurable": {"phases": []}})
+    assert cfg.selected_phases() == []
+
+
 def test_start_stop_range() -> None:
     cfg = PipelineConfigurable.from_config(
         {"configurable": {"start_phase": "env_triage", "stop_after": "execution"}}

@@ -32,6 +32,8 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     """Resolve the run plan from config, validate prerequisites, seed phase entries."""
     cfg = PipelineConfigurable.from_config(config)
     selected = cfg.selected_phases()
+    if not selected:
+        raise ValueError("Pipeline phase plan is empty")
     existing = state.get("phase_results") or {}
 
     selected_set = set(selected)  # canonical order => membership implies "runs earlier"

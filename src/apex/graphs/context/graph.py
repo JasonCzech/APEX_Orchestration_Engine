@@ -17,6 +17,7 @@ import hashlib
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from sqlalchemy.exc import SQLAlchemyError
 
 from apex.adapters.registry import PortKind
 from apex.domain.integrations import DocRef
@@ -49,7 +50,7 @@ async def _work_tracking_evidence(keys: list[str], project_id: str | None) -> li
         tracker = await get_connection_resolver().resolve(
             PortKind.WORK_TRACKING, project_id=project_id
         )
-    except Exception:
+    except (SQLAlchemyError, OSError):
         return []
     evidence: list[JsonDict] = []
     for key in keys:
@@ -71,7 +72,7 @@ def _doc_title(text: str, doc_id: str) -> str:
 async def _document_evidence(document_ids: list[str], project_id: str | None) -> list[JsonDict]:
     try:
         docs = await get_connection_resolver().resolve(PortKind.DOCUMENTS, project_id=project_id)
-    except Exception:
+    except (SQLAlchemyError, OSError):
         return []
     evidence: list[JsonDict] = []
     for doc_id in document_ids:

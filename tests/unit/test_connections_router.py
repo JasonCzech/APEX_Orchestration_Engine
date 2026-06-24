@@ -297,5 +297,24 @@ def test_probe_failure_reports_ok_false_not_5xx(admin: TestClient, broken_provid
     assert "backend exploded" not in body["detail"]
 
 
+def test_probe_rejects_private_base_url(admin: TestClient) -> None:
+    conn_id = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "probe-private",
+            "base_url": "http://127.0.0.1:9200",
+        },
+    ).json()["id"]
+
+    response = admin.post(f"/admin/connections/{conn_id}/test")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["detail"] == "private adapter hosts are disabled"
+
+
 def test_probe_unknown_connection_is_404(admin: TestClient) -> None:
     assert admin.post("/admin/connections/nope/test").status_code == 404

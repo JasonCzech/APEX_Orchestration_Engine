@@ -24,6 +24,7 @@ import {
 } from '@/api/hooks/useConsumers'
 import type { Role } from '@/api/apexClient'
 import { isApiError } from '@/api/errors'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
 import { formatRelative } from '@/utils/time'
@@ -137,42 +138,46 @@ function KeyRevealModal({
   }
 
   return (
-    <div className="adm-overlay">
-      <div className="adm-modal glass-panel" role="dialog" aria-modal="true" aria-label={title}>
-        <h2 className="adm-panel-title">{title}</h2>
-        <p className="adm-modal-caption">
-          API key for <strong>{created.name}</strong>. Store it now — it will never be shown
-          again.
-        </p>
-        <div className="adm-key-row">
-          <code className="adm-key" data-testid="revealed-api-key">
-            {created.api_key}
-          </code>
-          <button type="button" className="btn btn-secondary btn-sm" onClick={copy}>
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <label className="adm-confirm-check">
-          <input
-            type="checkbox"
-            checked={stored}
-            onChange={(event) => setStored(event.target.checked)}
-            aria-label="I have stored this key somewhere safe"
-          />
-          <span>I have stored this key somewhere safe</span>
-        </label>
-        <div className="adm-panel-actions">
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            disabled={!stored}
-            onClick={onClose}
-          >
-            I&rsquo;ve stored it
-          </button>
-        </div>
+    <Dialog
+      overlayClassName="adm-overlay"
+      className="adm-modal glass-panel"
+      ariaLabel={title}
+      onClose={onClose}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
+    >
+      <h2 className="adm-panel-title">{title}</h2>
+      <p className="adm-modal-caption">
+        API key for <strong>{created.name}</strong>. Store it now — it will never be shown again.
+      </p>
+      <div className="adm-key-row">
+        <code className="adm-key" data-testid="revealed-api-key">
+          {created.api_key}
+        </code>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={copy}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
       </div>
-    </div>
+      <label className="adm-confirm-check">
+        <input
+          type="checkbox"
+          checked={stored}
+          onChange={(event) => setStored(event.target.checked)}
+          aria-label="I have stored this key somewhere safe"
+        />
+        <span>I have stored this key somewhere safe</span>
+      </label>
+      <div className="adm-panel-actions">
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={!stored}
+          onClick={onClose}
+        >
+          I&rsquo;ve stored it
+        </button>
+      </div>
+    </Dialog>
   )
 }
 
@@ -299,84 +304,74 @@ function EditConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose:
   }
 
   return (
-    <div
-      className="adm-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close()
-      }}
+    <Dialog
+      overlayClassName="adm-overlay"
+      className="adm-modal glass-panel"
+      ariaLabel={`Edit consumer ${consumer.name}`}
+      onClose={close}
     >
-      <div
-        className="adm-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Edit consumer ${consumer.name}`}
-      >
-        <h2 className="adm-panel-title">Edit {consumer.name}</h2>
-        <div className="adm-field">
-          <span className="adm-field-label">Role</span>
-          <div className="adm-segmented" role="group" aria-label="Role">
-            {ROLES.map((option) => (
-              <button
-                key={option}
-                type="button"
-                className={`adm-segment${role === option ? ' active' : ''}`}
-                aria-pressed={role === option}
-                onClick={() => setRole(option)}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="adm-field">
-          <span className="adm-field-label">Scopes</span>
-          <ScopesEditor scopes={scopes} onChange={setScopes} />
-        </div>
-        <label className="adm-confirm-check">
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(event) => setEnabled(event.target.checked)}
-            aria-label="Enabled"
-          />
-          <span>Enabled</span>
-        </label>
-        {update.isError && (
-          <div className="adm-inline-error" role="alert">
-            <span>{update.error.message}</span>
-          </div>
-        )}
-        <div className="adm-panel-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={close}
-            disabled={update.isPending}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            disabled={update.isPending}
-            onClick={() =>
-              update.mutate(
-                {
-                  consumerId: consumer.id,
-                  body: { role, enabled, scopes: scopesToPayload(scopes) },
-                },
-                { onSuccess: onClose },
-              )
-            }
-          >
-            {update.isPending ? 'Saving…' : 'Save changes'}
-          </button>
+      <h2 className="adm-panel-title">Edit {consumer.name}</h2>
+      <div className="adm-field">
+        <span className="adm-field-label">Role</span>
+        <div className="adm-segmented" role="group" aria-label="Role">
+          {ROLES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={`adm-segment${role === option ? ' active' : ''}`}
+              aria-pressed={role === option}
+              onClick={() => setRole(option)}
+            >
+              {option}
+            </button>
+          ))}
         </div>
       </div>
-    </div>
+      <div className="adm-field">
+        <span className="adm-field-label">Scopes</span>
+        <ScopesEditor scopes={scopes} onChange={setScopes} />
+      </div>
+      <label className="adm-confirm-check">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(event) => setEnabled(event.target.checked)}
+          aria-label="Enabled"
+        />
+        <span>Enabled</span>
+      </label>
+      {update.isError && (
+        <div className="adm-inline-error" role="alert">
+          <span>{update.error.message}</span>
+        </div>
+      )}
+      <div className="adm-panel-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={close}
+          disabled={update.isPending}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={update.isPending}
+          onClick={() =>
+            update.mutate(
+              {
+                consumerId: consumer.id,
+                body: { role, enabled, scopes: scopesToPayload(scopes) },
+              },
+              { onSuccess: onClose },
+            )
+          }
+        >
+          {update.isPending ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </Dialog>
   )
 }
 
@@ -398,58 +393,48 @@ function RotateConsumerModal({
   }
 
   return (
-    <div
-      className="adm-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close()
-      }}
+    <Dialog
+      overlayClassName="adm-overlay"
+      className="adm-modal glass-panel"
+      ariaLabel={`Rotate key for ${consumer.name}`}
+      onClose={close}
     >
-      <div
-        className="adm-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Rotate key for ${consumer.name}`}
-      >
-        <h2 className="adm-panel-title">Rotate API key</h2>
-        <p className="adm-modal-caption">
-          Rotating issues a new key for <strong>{consumer.name}</strong> and revokes the current
-          one immediately. Anything still using the old key will start failing.
-        </p>
-        {rotate.isError && (
-          <div className="adm-inline-error" role="alert">
-            <span>{rotate.error.message}</span>
-          </div>
-        )}
-        <div className="adm-panel-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={close}
-            disabled={rotate.isPending}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            disabled={rotate.isPending}
-            onClick={() =>
-              rotate.mutate(consumer.id, {
-                onSuccess: (rotated) => {
-                  onClose()
-                  onRotated(rotated)
-                },
-              })
-            }
-          >
-            {rotate.isPending ? 'Rotating…' : 'Rotate key'}
-          </button>
+      <h2 className="adm-panel-title">Rotate API key</h2>
+      <p className="adm-modal-caption">
+        Rotating issues a new key for <strong>{consumer.name}</strong> and revokes the current one
+        immediately. Anything still using the old key will start failing.
+      </p>
+      {rotate.isError && (
+        <div className="adm-inline-error" role="alert">
+          <span>{rotate.error.message}</span>
         </div>
+      )}
+      <div className="adm-panel-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={close}
+          disabled={rotate.isPending}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={rotate.isPending}
+          onClick={() =>
+            rotate.mutate(consumer.id, {
+              onSuccess: (rotated) => {
+                onClose()
+                onRotated(rotated)
+              },
+            })
+          }
+        >
+          {rotate.isPending ? 'Rotating…' : 'Rotate key'}
+        </button>
       </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -464,52 +449,40 @@ function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClos
   }
 
   return (
-    <div
-      className="adm-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close()
-      }}
+    <Dialog
+      overlayClassName="adm-overlay"
+      className="adm-modal glass-panel"
+      ariaLabel={`Delete consumer ${consumer.name}`}
+      onClose={close}
     >
-      <div
-        className="adm-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Delete consumer ${consumer.name}`}
-      >
-        <h2 className="adm-panel-title">Delete consumer</h2>
-        <p className="adm-modal-caption">
-          This permanently removes <strong>{consumer.name}</strong> and revokes its key.
-        </p>
-        {remove.isError && (
-          <div className="adm-inline-error" role="alert">
-            <span>
-              {selfDelete ? 'You cannot delete your own consumer' : remove.error.message}
-            </span>
-          </div>
-        )}
-        <div className="adm-panel-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={close}
-            disabled={remove.isPending}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-danger btn-sm"
-            disabled={remove.isPending || selfDelete}
-            onClick={() => remove.mutate(consumer.id, { onSuccess: onClose })}
-          >
-            {remove.isPending ? 'Deleting…' : 'Delete consumer'}
-          </button>
+      <h2 className="adm-panel-title">Delete consumer</h2>
+      <p className="adm-modal-caption">
+        This permanently removes <strong>{consumer.name}</strong> and revokes its key.
+      </p>
+      {remove.isError && (
+        <div className="adm-inline-error" role="alert">
+          <span>{selfDelete ? 'You cannot delete your own consumer' : remove.error.message}</span>
         </div>
+      )}
+      <div className="adm-panel-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={close}
+          disabled={remove.isPending}
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="btn btn-danger btn-sm"
+          disabled={remove.isPending || selfDelete}
+          onClick={() => remove.mutate(consumer.id, { onSuccess: onClose })}
+        >
+          {remove.isPending ? 'Deleting…' : 'Delete consumer'}
+        </button>
       </div>
-    </div>
+    </Dialog>
   )
 }
 

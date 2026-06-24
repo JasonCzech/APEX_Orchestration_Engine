@@ -107,7 +107,6 @@ class FakeConsumersRepository:
         if consumer is None:
             return None
         consumer.key_hash = key_hash
-        consumer.last_used_at = datetime.now(UTC)
         return consumer
 
     async def delete(self, consumer_id: str) -> bool:
@@ -164,6 +163,8 @@ def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
     with make_client(repo) as client:
         created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
         old_hash = repo.rows[created["id"]].key_hash
+        old_last_used = datetime(2025, 1, 2, tzinfo=UTC)
+        repo.rows[created["id"]].last_used_at = old_last_used
         response = client.post(f"/v1/admin/consumers/{created['id']}/rotate")
         assert response.status_code == 200
         body = response.json()
@@ -171,6 +172,7 @@ def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
         new_hash = repo.rows[created["id"]].key_hash
         assert new_hash == hash_api_key(body["api_key"])
         assert new_hash != old_hash
+        assert repo.rows[created["id"]].last_used_at == old_last_used
         assert body["key_fingerprint"] == new_hash[:8]
 
 

@@ -12,6 +12,7 @@ import { useEnrichWorkItem, useWorkItem, type WorkItem } from '@/api/hooks/useWo
 import { isApiError } from '@/api/errors'
 import { useConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
 import { ExternalLink, KindChip, StatusBadge } from './workItemsBits'
@@ -40,26 +41,20 @@ function EnrichModal({ item, onClose }: { item: WorkItem; onClose: () => void })
   }
 
   return (
-    <div
-      className="wi-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !enrich.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !enrich.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="wi-overlay"
+      className="wi-modal glass-panel"
+      ariaLabel={`Enrich ${item.key}`}
+      onClose={onClose}
+      closeOnBackdrop={!enrich.isPending}
+      closeOnEscape={!enrich.isPending}
+      panelAs="form"
+      onSubmit={submit}
     >
-      <form
-        className="wi-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Enrich ${item.key}`}
-        onSubmit={submit}
-      >
-        <h2 className="wi-modal-title">Enrich {item.key}</h2>
-        <p className="wi-modal-caption">
-          Pushes field values and an optional comment to the tracker item.
-        </p>
+      <h2 className="wi-modal-title">Enrich {item.key}</h2>
+      <p className="wi-modal-caption">
+        Pushes field values and an optional comment to the tracker item.
+      </p>
         <label className="wi-field">
           <span className="wi-field-label">Fields (JSON)</span>
           <textarea
@@ -104,8 +99,7 @@ function EnrichModal({ item, onClose }: { item: WorkItem; onClose: () => void })
             {enrich.isPending ? 'Enriching…' : 'Enrich item'}
           </button>
         </div>
-      </form>
-    </div>
+    </Dialog>
   )
 }
 

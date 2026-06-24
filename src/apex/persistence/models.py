@@ -21,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -71,6 +72,13 @@ class ConsumerScope(Base):
         UniqueConstraint("consumer_id", "project_id", "app_id"),
         Index("ix_consumer_scopes_consumer_id", "consumer_id"),
         Index("ix_consumer_scopes_project_app", "project_id", "app_id"),
+        Index(
+            "uq_consumer_scopes_consumer_project_no_app",
+            "consumer_id",
+            "project_id",
+            unique=True,
+            postgresql_where=text("app_id IS NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)

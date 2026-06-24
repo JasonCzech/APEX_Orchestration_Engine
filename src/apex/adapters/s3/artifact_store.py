@@ -113,6 +113,12 @@ class S3ArtifactStore:
             expires=timedelta(seconds=ttl_s),
         )
 
+    async def aclose(self) -> None:
+        http_pool = getattr(self._client, "_http", None)
+        clear = getattr(http_pool, "clear", None)
+        if callable(clear):
+            await asyncio.to_thread(clear)
+
     # ── bucket bootstrap ──────────────────────────────────────────────────────
 
     async def _ensure_bucket(self) -> None:

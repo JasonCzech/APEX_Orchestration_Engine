@@ -66,7 +66,7 @@ class PipelineConfigurable(BaseModel):
     def selected_phases(self) -> list[Phase]:
         """Resolve the requested phases in canonical order."""
         order = list(PHASE_ORDER)
-        if self.phases:
+        if self.phases is not None:
             requested = set(self.phases)
             return [p for p in order if p in requested]
         start = order.index(self.start_phase) if self.start_phase else 0
