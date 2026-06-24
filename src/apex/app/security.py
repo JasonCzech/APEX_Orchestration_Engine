@@ -88,7 +88,15 @@ class RateLimitMiddleware:
     def _check(self, scope: Mapping[str, Any], *, now: float) -> int | None:
         limit = max(int(self._settings.requests), 1)
         window = max(float(self._settings.window_s), 1.0)
-        bucket = self._buckets[_rate_key(scope)]
+        self._sweep(now=now, window=window)
+
+        key = _rate_key(scope)
+        bucket = self._buckets.get(key)
+        if bucket is None:
+            max_buckets = max(int(self._settings.max_buckets), 1)
+            if len(self._buckets) >= max_buckets:
+                return int(window)
+            bucket = self._buckets[key]
         while bucket and now - bucket[0] >= window:
             bucket.popleft()
         if len(bucket) >= limit:
@@ -96,9 +104,16 @@ class RateLimitMiddleware:
         bucket.append(now)
         return None
 
+    def _sweep(self, *, now: float, window: float) -> None:
+        for key, bucket in list(self._buckets.items()):
+            while bucket and now - bucket[0] >= window:
+                bucket.popleft()
+            if not bucket:
+                del self._buckets[key]
+
 
 def _rate_key(scope: Mapping[str, Any]) -> str:
-    api_key = extract_api_key(dict(scope.get("headers") or []))
+    api_key = extract_api_key(scope.get("headers") or [])
     if api_key:
         return f"key:{hash_api_key(api_key)}"
     client = scope.get("client")

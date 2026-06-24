@@ -368,7 +368,8 @@ def test_upstream_runtime_error_is_502_problem_detail() -> None:
         response = client.get("/v1/work-tracking/items/PHX-1")
     assert response.status_code == 502
     assert response.headers["content-type"].startswith("application/problem+json")
-    assert "HTTP 503" in response.json()["title"]
+    assert response.json()["title"] == "work tracker upstream failure"
+    assert "HTTP 503" not in response.text
 
 
 def test_adapter_value_error_is_422() -> None:
@@ -380,6 +381,8 @@ def test_adapter_value_error_is_422() -> None:
             json={"query": {"provider": "jira", "query": "project zz"}},
         )
     assert response.status_code == 422
+    assert response.json()["title"] == "work tracker rejected the request"
+    assert "bad JQL" not in response.text
 
 
 # ── Saved queries CRUD + scoping ─────────────────────────────────────────────

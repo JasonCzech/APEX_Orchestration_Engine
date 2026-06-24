@@ -649,7 +649,12 @@ class ApexLoadExecutionEngine:
         script_ids: list[str] = []
         for index, ref in enumerate(spec.script_refs):
             if _is_inline_ref(ref):
-                parsed = json.loads(ref)
+                try:
+                    parsed = json.loads(ref)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"script_refs[{index}] must be valid JSON (APEX Load DSL script)"
+                    ) from exc
                 if not isinstance(parsed, dict):
                     raise ValueError(
                         f"script_refs[{index}] must be a JSON object (APEX Load DSL script)"

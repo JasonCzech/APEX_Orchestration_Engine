@@ -56,6 +56,8 @@ def test_secret_value_repr_and_str_are_redacted() -> None:
     assert "hunter2" not in str(secret)
     assert "hunter2" not in f"{secret}"
     assert secret.value == "hunter2"  # raw value still accessible by design
+    assert secret.model_dump() == {"value": "***"}
+    assert "hunter2" not in secret.model_dump_json()
 
 
 def test_load_test_spec_defaults() -> None:

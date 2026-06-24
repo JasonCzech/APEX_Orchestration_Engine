@@ -56,6 +56,48 @@ async def test_rate_limit_uses_api_key_not_shared_ip() -> None:
     assert second_key[0]["status"] == 200
 
 
+def test_rate_limit_sweeps_expired_distinct_key_buckets() -> None:
+    app = RateLimitMiddleware(ok_app, RateLimitSettings(requests=10, window_s=1))
+
+    for index in range(100):
+        scope = {
+            "type": "http",
+            "path": "/v1/system/info",
+            "headers": [(b"x-api-key", f"key-{index}".encode())],
+            "client": ("203.0.113.10", 12345),
+        }
+        assert app._check(scope, now=0.0) is None
+
+    assert len(app._buckets) == 100
+    scope = {
+        "type": "http",
+        "path": "/v1/system/info",
+        "headers": [(b"x-api-key", b"fresh-key")],
+        "client": ("203.0.113.10", 12345),
+    }
+    assert app._check(scope, now=2.0) is None
+    assert len(app._buckets) == 1
+
+
+def test_rate_limit_rejects_new_bucket_after_cap() -> None:
+    app = RateLimitMiddleware(ok_app, RateLimitSettings(requests=10, window_s=60, max_buckets=1))
+    first = {
+        "type": "http",
+        "path": "/v1/system/info",
+        "headers": [(b"x-api-key", b"first")],
+        "client": ("203.0.113.10", 12345),
+    }
+    second = {
+        "type": "http",
+        "path": "/v1/system/info",
+        "headers": [(b"x-api-key", b"second")],
+        "client": ("203.0.113.11", 12345),
+    }
+
+    assert app._check(first, now=0.0) is None
+    assert app._check(second, now=0.1) == 60
+
+
 @pytest.mark.asyncio
 async def test_security_headers_are_added() -> None:
     app = SecurityHeadersMiddleware(

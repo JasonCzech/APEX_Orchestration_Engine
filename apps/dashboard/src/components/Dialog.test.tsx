@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -40,5 +40,42 @@ describe('Dialog', () => {
     unmount()
     expect(before).toHaveFocus()
     before.remove()
+  })
+
+  it('recaptures focus when backdrop interaction leaves focus outside a non-dismissable dialog', () => {
+    const onClose = vi.fn()
+    const { container, unmount } = render(
+      <>
+        <button type="button">Behind page</button>
+        <Dialog
+          overlayClassName="test-overlay"
+          className="test-panel"
+          ariaLabel="Pinned dialog"
+          onClose={onClose}
+          closeOnBackdrop={false}
+        >
+          <button type="button">First</button>
+          <button type="button">Second</button>
+        </Dialog>
+      </>,
+    )
+
+    const behind = screen.getByText('Behind page')
+    expect(behind).toHaveAttribute('aria-hidden', 'true')
+    expect(behind.inert).toBe(true)
+
+    const overlay = container.querySelector<HTMLElement>('.test-overlay')
+    expect(overlay).not.toBeNull()
+    fireEvent.mouseDown(overlay!)
+    expect(screen.getByRole('button', { name: 'First' })).toHaveFocus()
+    expect(onClose).not.toHaveBeenCalled()
+
+    behind.inert = false
+    behind.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(screen.getByRole('button', { name: 'First' })).toHaveFocus()
+
+    unmount()
+    expect(behind.inert).not.toBe(true)
   })
 })

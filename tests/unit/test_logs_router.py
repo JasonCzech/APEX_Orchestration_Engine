@@ -225,7 +225,7 @@ def test_disabled_connection_valueerror_is_422_problem() -> None:
     assert post_search(make_app(resolver, identity()), {}).status_code == 422
 
 
-def test_provider_rejected_query_is_422_with_reason() -> None:
+def test_provider_rejected_query_is_422_without_upstream_reason() -> None:
     adapter = FakeLogSearchAdapter(
         error=ValueError("elasticsearch rejected the query: Failed to parse query [service:(]")
     )
@@ -233,7 +233,8 @@ def test_provider_rejected_query_is_422_with_reason() -> None:
         make_app(FakeResolver(adapter), identity()), {"query": {"text": "service:("}}
     )
     assert response.status_code == 422
-    assert "Failed to parse query" in response.json()["title"]
+    assert response.json()["title"] == "log provider rejected the query"
+    assert "Failed to parse query" not in response.text
     assert response.headers["content-type"].startswith("application/problem+json")
 
 
@@ -241,7 +242,8 @@ def test_upstream_runtime_error_is_502_problem() -> None:
     adapter = FakeLogSearchAdapter(error=RuntimeError("elasticsearch search failed (status 503)"))
     response = post_search(make_app(FakeResolver(adapter), identity()), {})
     assert response.status_code == 502
-    assert "upstream failure" in response.json()["title"]
+    assert response.json()["title"] == "log search upstream failure"
+    assert "elasticsearch" not in response.text
 
 
 def test_raw_httpx_error_is_502_problem() -> None:

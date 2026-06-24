@@ -13,12 +13,15 @@ options["base_url"] for the adapter factory.
 """
 
 import asyncio
+import socket
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from inspect import isawaitable
+from ipaddress import ip_address
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 import structlog
 from sqlalchemy import select
@@ -26,8 +29,17 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.ports.secrets import SecretsPort
+from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
+
+DENIED_ADAPTER_HOSTS = {
+    "localhost",
+    "localhost.localdomain",
+    "metadata",
+    "metadata.google.internal",
+}
+DENIED_ADAPTER_HOST_SUFFIXES = (".metadata.google.internal",)
 
 
 def _throwaway_session_factory():  # noqa: ANN202 — (engine, sessionmaker) pair
@@ -116,6 +128,48 @@ def connection_config_from_row(row: Any) -> ConnectionConfig:
         options=options,
         secret_ref=row.secret_ref,
     )
+
+
+def validate_adapter_base_url(raw_url: Any, *, allow_private_hosts: bool | None = None) -> None:
+    """Reject adapter targets that resolve to local, private, or metadata hosts."""
+
+    if raw_url is None:
+        return
+    if allow_private_hosts is None:
+        allow_private_hosts = get_settings().allow_private_adapter_hosts
+    if allow_private_hosts:
+        return
+
+    parsed = urlsplit(str(raw_url))
+    host = parsed.hostname
+    if host is None:
+        return
+    normalized = host.rstrip(".").lower()
+    if normalized in DENIED_ADAPTER_HOSTS or normalized.endswith(DENIED_ADAPTER_HOST_SUFFIXES):
+        raise ValueError("private adapter hosts are disabled")
+
+    addresses = _resolve_adapter_host(normalized, parsed.port)
+    for address in addresses:
+        if not address.is_global:
+            raise ValueError("private adapter hosts are disabled")
+
+
+def validate_connection_config(config: ConnectionConfig) -> None:
+    validate_adapter_base_url(config.options.get("base_url"))
+
+
+def _resolve_adapter_host(host: str, port: int | None) -> list[Any]:
+    try:
+        return [ip_address(host)]
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("adapter host could not be resolved") from exc
+    addresses = {info[4][0] for info in infos if info and info[4]}
+    return [ip_address(address) for address in addresses]
 
 
 def stored_connection_from_row(row: Any) -> StoredConnection:
@@ -289,6 +343,7 @@ class ConnectionResolver:
             secrets: SecretsPort | None = None
             if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
                 secrets = await self.resolve(PortKind.SECRETS)
+            validate_connection_config(conn)
             adapter = await AdapterRegistry.build(conn, secrets)
             self._instances[conn.id] = (version, adapter)
             if cached is not None:

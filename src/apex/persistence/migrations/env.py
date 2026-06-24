@@ -22,16 +22,9 @@ def _database_uri() -> str:
 
 
 def _include_object(obj, name, type_, reflected, compare_to) -> bool:  # noqa: ANN001
-    """Only autogenerate against apex-schema objects (LangGraph owns the default schema).
-
-    FK constraints are excluded entirely: Postgres reflects intra-schema FK targets
-    without a schema qualifier, so comparison against our schema-qualified metadata
-    produces endless drop/recreate noise. FKs are managed by hand in migrations.
-    """
+    """Only autogenerate against apex-schema objects (LangGraph owns the default schema)."""
     if type_ == "table":
         return obj.schema == APEX_SCHEMA
-    if type_ == "foreign_key_constraint":
-        return False
     return True
 
 

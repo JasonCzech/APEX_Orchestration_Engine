@@ -78,6 +78,57 @@ async def test_resilient_request_allows_explicit_post_retry() -> None:
     assert calls == 2
 
 
+async def test_resilient_request_honors_retry_after_seconds() -> None:
+    calls = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, headers={"retry-after": "2"}, request=request)
+        return httpx.Response(200, request=request)
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        response = await resilient_request(
+            client,
+            "GET",
+            "/poll",
+            retry=RetryPolicy(attempts=2, max_delay_s=5.0, total_timeout_s=None),
+            sleep_fn=record_sleep,
+        )
+
+    assert response.status_code == 200
+    assert sleeps == [2.0]
+
+
+async def test_resilient_request_enforces_total_timeout() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        with pytest.raises(httpx.TimeoutException):
+            await resilient_request(
+                client,
+                "GET",
+                "/poll",
+                retry=RetryPolicy(total_timeout_s=0.0),
+            )
+
+    assert calls == 0
+
+
 async def test_circuit_breaker_opens_after_failures_and_resets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

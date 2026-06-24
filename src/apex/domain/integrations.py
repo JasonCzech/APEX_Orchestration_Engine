@@ -7,7 +7,7 @@ engine-neutral; provider quirks belong inside adapters.
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 
 from apex.domain.pipeline import new_id, utcnow_iso
 
@@ -185,9 +185,13 @@ class FileContent(BaseModel):
 
 class SecretValue(BaseModel):
     """Carries a resolved secret. repr/str are redacted; never log or persist
-    the model (model_dump still exposes the raw value by necessity)."""
+    the model."""
 
     value: str
+
+    @field_serializer("value")
+    def _serialize_value(self, value: str) -> str:
+        return "***"
 
     def __repr__(self) -> str:
         return "SecretValue(value='***')"

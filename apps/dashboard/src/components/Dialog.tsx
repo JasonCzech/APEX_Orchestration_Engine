@@ -40,6 +40,7 @@ export function Dialog({
   panelAs = 'div',
   onSubmit,
 }: DialogProps) {
+  const overlayRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLElement>(null)
   const onCloseRef = useRef(onClose)
   const closeOnEscapeRef = useRef(closeOnEscape)
@@ -52,7 +53,11 @@ export function Dialog({
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const panel = panelRef.current
+    const overlay = overlayRef.current
     if (!panel) return undefined
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const inertSiblings = setSiblingsInert(overlay)
 
     const active = document.activeElement
     if (!(active instanceof HTMLElement) || !panel.contains(active)) {
@@ -73,15 +78,23 @@ export function Dialog({
     document.addEventListener('keydown', onKeyDown)
     return () => {
       document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+      restoreSiblings(inertSiblings)
       previous?.focus()
     }
   }, [])
 
   return (
     <div
+      ref={overlayRef}
       className={overlayClassName}
       onMouseDown={(event) => {
-        if (closeOnBackdrop && event.target === event.currentTarget) onClose()
+        if (event.target !== event.currentTarget) return
+        if (closeOnBackdrop) {
+          onClose()
+          return
+        }
+        focusFirst(panelRef.current)
       }}
     >
       {panelAs === 'form' ? (
@@ -122,11 +135,15 @@ function trapTab(event: KeyboardEvent, panel: HTMLElement) {
     return
   }
 
-  const first = focusable[0]
-  const last = focusable[focusable.length - 1]
+  const first = focusable[0]!
+  const last = focusable[focusable.length - 1]!
   const active = document.activeElement
 
-  if (event.shiftKey && active === first) {
+  if (!(active instanceof HTMLElement) || !panel.contains(active)) {
+    event.preventDefault()
+    const target = event.shiftKey ? last : first
+    target.focus()
+  } else if (event.shiftKey && active === first) {
     event.preventDefault()
     last?.focus()
   } else if (!event.shiftKey && active === last) {
@@ -142,4 +159,41 @@ function getFocusable(root: HTMLElement): HTMLElement[] {
       !element.hasAttribute('disabled') &&
       element.getAttribute('aria-hidden') !== 'true',
   )
+}
+
+function focusFirst(panel: HTMLElement | null) {
+  if (!panel) return
+  const first = getFocusable(panel)[0] ?? panel
+  first.focus()
+}
+
+function setSiblingsInert(overlay: HTMLElement | null) {
+  const parent = overlay?.parentElement
+  if (!parent || !overlay) return []
+  return Array.from(parent.children)
+    .filter((child): child is HTMLElement => child instanceof HTMLElement && child !== overlay)
+    .map((element) => {
+      const previousInert = element.inert
+      const previousAriaHidden = element.getAttribute('aria-hidden')
+      element.inert = true
+      element.setAttribute('aria-hidden', 'true')
+      return { element, previousInert, previousAriaHidden }
+    })
+}
+
+function restoreSiblings(
+  entries: Array<{
+    element: HTMLElement
+    previousInert: boolean
+    previousAriaHidden: string | null
+  }>,
+) {
+  for (const { element, previousInert, previousAriaHidden } of entries) {
+    element.inert = previousInert
+    if (previousAriaHidden === null) {
+      element.removeAttribute('aria-hidden')
+    } else {
+      element.setAttribute('aria-hidden', previousAriaHidden)
+    }
+  }
 }

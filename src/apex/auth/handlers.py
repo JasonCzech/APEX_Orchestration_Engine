@@ -133,8 +133,10 @@ def ensure_run_scope(identity: ConsumerIdentity, value: Auth.types.RunsCreate) -
     """Validate project-bearing run input/config before the graph can execute.
 
     Thread-scoped run creates still rely on LangGraph's metadata filter for the
-    target thread. Stateless project graphs, however, have no thread metadata to
-    protect, so project-scoped assistants must carry an allowed project_id.
+    target thread. Stateless runs have no thread metadata to protect and may
+    target built-in graph ids, UUID-backed assistants, or future project-bearing
+    graphs, so scoped consumers must always carry or receive an allowed
+    project_id before execution starts.
     """
     if identity.is_unscoped:
         return
@@ -159,23 +161,31 @@ def ensure_run_scope(identity: ConsumerIdentity, value: Auth.types.RunsCreate) -
             )
 
     thread_id = payload.get("thread_id")
-    assistant_id = str(payload.get("assistant_id") or "")
-    requires_project = thread_id is None and assistant_id in {"pipeline", "context"}
-    if not explicit_projects and requires_project:
+    stateless = thread_id is None
+    unique_projects = sorted(set(explicit_projects))
+    if len(unique_projects) > 1:
+        raise Auth.exceptions.HTTPException(
+            status_code=403,
+            detail="Conflicting project_id values are not allowed for scoped runs",
+        )
+
+    effective_project = unique_projects[0] if unique_projects else None
+    if effective_project is None and stateless:
         projects = identity.scoped_project_ids()
         if len(projects) != 1:
             raise Auth.exceptions.HTTPException(
                 status_code=403,
                 detail="project_id is required for scoped stateless runs",
             )
-        project_id = projects[0]
-        if assistant_id == "context":
-            input_payload["project_id"] = project_id
-            payload["input"] = input_payload
-        configurable["project_id"] = project_id
+        effective_project = projects[0]
+
+    if effective_project is not None and stateless:
+        input_payload["project_id"] = effective_project
+        payload["input"] = input_payload
+        configurable["project_id"] = effective_project
         config_payload["configurable"] = configurable
         payload["config"] = config_payload
-        metadata["project_id"] = project_id
+        metadata["project_id"] = effective_project
         payload["metadata"] = metadata
 
 

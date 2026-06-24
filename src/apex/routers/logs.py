@@ -139,11 +139,9 @@ async def search_logs(
     try:
         result = await adapter.search(query, window=window, page=page)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=422, detail=f"log provider rejected the query: {exc}"
-        ) from exc
+        raise HTTPException(status_code=422, detail="log provider rejected the query") from exc
     except (RuntimeError, httpx.HTTPError) as exc:
-        raise HTTPException(status_code=502, detail=f"log search upstream failure: {exc}") from exc
+        raise HTTPException(status_code=502, detail="log search upstream failure") from exc
 
     entries = [
         LogEntryOut(

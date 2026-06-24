@@ -295,7 +295,8 @@ def test_rescan_adapter_failure_is_502_with_adapter_message(
     response = client.post(f"/inventory/environments/{env.id}/rescan")
 
     assert response.status_code == 502
-    assert "ServiceAccount token" in response.json()["detail"]
+    assert response.json()["detail"] == "environment rescan failed"
+    assert "ServiceAccount token" not in response.text
     assert repo.rows.get(env.id, []) == []  # failed scans persist nothing
 
 
@@ -311,4 +312,5 @@ def test_rescan_resolver_failure_is_502(repo: FakeSnapshotsRepository) -> None:
     )
 
     assert response.status_code == 502
-    assert "conn-ghost" in response.json()["detail"]
+    assert response.json()["detail"] == "environment rescan failed"
+    assert "conn-ghost" not in response.text

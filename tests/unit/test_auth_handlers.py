@@ -284,11 +284,44 @@ async def test_threads_create_run_requires_project_for_ambiguous_stateless_pipel
     assert excinfo.value.status_code == 403
 
 
-async def test_threads_create_run_allows_projectless_playground() -> None:
+async def test_threads_create_run_stamps_single_scope_stateless_playground() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {"assistant_id": "playground", "thread_id": None}
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
     assert result == {"project_id": {"$eq": "p1"}}
+    assert value["input"]["project_id"] == "p1"
+    assert value["config"]["configurable"]["project_id"] == "p1"
+    assert value["metadata"]["project_id"] == "p1"
+
+
+async def test_threads_create_run_requires_project_for_ambiguous_stateless_playground() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    value: Any = {"assistant_id": "playground", "thread_id": None}
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 403
+
+
+async def test_threads_create_run_stamps_single_scope_stateless_uuid_assistant() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {"assistant_id": "018faea9-8b68-7df5-94b7-1d5a0d771620", "thread_id": None}
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert result == {"project_id": {"$eq": "p1"}}
+    assert value["config"]["configurable"]["project_id"] == "p1"
+    assert value["metadata"]["project_id"] == "p1"
+
+
+async def test_threads_create_run_rejects_conflicting_project_ids() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    value: Any = {
+        "assistant_id": "018faea9-8b68-7df5-94b7-1d5a0d771620",
+        "thread_id": None,
+        "input": {"project_id": "p1"},
+        "config": {"configurable": {"project_id": "p2"}},
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 403
 
 
 async def test_threads_read_and_search_return_scope_filter() -> None:

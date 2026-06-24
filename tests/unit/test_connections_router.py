@@ -201,6 +201,72 @@ def test_duplicate_connection_name_is_409(admin: TestClient) -> None:
     assert admin.post("/admin/connections", json=payload).status_code == 409
 
 
+def test_create_rejects_private_base_url(admin: TestClient) -> None:
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "private-create",
+            "base_url": "http://127.0.0.1:9200",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
+def test_create_rejects_metadata_hostname(admin: TestClient) -> None:
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "metadata-create",
+            "base_url": "http://metadata.google.internal/computeMetadata/v1",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
+def test_create_rejects_hostname_resolving_private(
+    admin: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_getaddrinfo(*args: Any, **kwargs: Any) -> list[Any]:
+        return [(None, None, None, "", ("127.0.0.1", 9200))]
+
+    monkeypatch.setattr("apex.services.connections.socket.getaddrinfo", fake_getaddrinfo)
+
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "dns-private-create",
+            "base_url": "https://internal.example.test",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
+def test_patch_rejects_private_base_url(admin: TestClient) -> None:
+    conn_id = admin.post(
+        "/admin/connections",
+        json={"kind": "work_tracking", "provider": "stub", "name": "patch-private"},
+    ).json()["id"]
+
+    response = admin.patch(
+        f"/admin/connections/{conn_id}", json={"base_url": "http://169.254.169.254"}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
 def test_enable_disable_and_delete(admin: TestClient) -> None:
     conn_id = admin.post(
         "/admin/connections",
@@ -297,16 +363,16 @@ def test_probe_failure_reports_ok_false_not_5xx(admin: TestClient, broken_provid
     assert "backend exploded" not in body["detail"]
 
 
-def test_probe_rejects_private_base_url(admin: TestClient) -> None:
+def test_probe_rejects_private_base_url(admin: TestClient, repo: FakeConnectionsRepository) -> None:
     conn_id = admin.post(
         "/admin/connections",
         json={
             "kind": "work_tracking",
             "provider": "stub",
             "name": "probe-private",
-            "base_url": "http://127.0.0.1:9200",
         },
     ).json()["id"]
+    repo.connections[conn_id].base_url = "http://127.0.0.1:9200"
 
     response = admin.post(f"/admin/connections/{conn_id}/test")
 

@@ -2,7 +2,7 @@
 
 import hashlib
 import secrets
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -25,15 +25,21 @@ def hash_api_key(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
 
 
-def extract_api_key(headers: Mapping[Any, Any]) -> str | None:
+HeaderInput = Mapping[Any, Any] | Iterable[tuple[Any, Any]]
+
+
+def extract_api_key(headers: HeaderInput) -> str | None:
     """Pull the key from `x-api-key` or a bearer `Authorization` header.
 
     Accepts str- or bytes-keyed mappings (starlette Headers, raw ASGI header dicts).
     """
-    api_key = _get_header(headers, "x-api-key")
+    try:
+        api_key = _get_unique_header(headers, "x-api-key")
+        authorization = _get_unique_header(headers, "authorization")
+    except ValueError:
+        return None
     if api_key:
         return api_key
-    authorization = _get_header(headers, "authorization")
     if authorization:
         scheme, _, token = authorization.partition(" ")
         if scheme.lower() == "bearer" and token.strip():
@@ -41,12 +47,27 @@ def extract_api_key(headers: Mapping[Any, Any]) -> str | None:
     return None
 
 
-def _get_header(headers: Mapping[Any, Any], name: str) -> str | None:
-    for key, value in headers.items():
-        key_str = key.decode("latin-1") if isinstance(key, bytes) else str(key)
+def _get_unique_header(headers: HeaderInput, name: str) -> str | None:
+    matches: list[str] = []
+    for key, value in _iter_headers(headers):
+        key_str = _decode_header_part(key)
         if key_str.lower() == name:
-            return value.decode("latin-1") if isinstance(value, bytes) else str(value)
-    return None
+            matches.append(_decode_header_part(value))
+    if len(matches) > 1:
+        raise ValueError(f"duplicate {name} headers are not allowed")
+    return matches[0] if matches else None
+
+
+def _iter_headers(headers: HeaderInput) -> Iterable[tuple[Any, Any]]:
+    if isinstance(headers, Mapping):
+        return headers.items()
+    return headers
+
+
+def _decode_header_part(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="strict")
+    return str(value)
 
 
 def _dev_identity() -> ConsumerIdentity:

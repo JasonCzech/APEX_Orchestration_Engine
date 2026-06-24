@@ -73,7 +73,4 @@ async def rescan_environment(
         adapter = await resolve_adapter(connection_id, project_id)
         return await InventoryService(repository).rescan(env, adapter)
     except (KeyError, ValueError, RuntimeError) as exc:
-        message = str(exc.args[0]) if exc.args else str(exc)
-        raise HTTPException(
-            status_code=502, detail=f"environment rescan failed: {message}"
-        ) from exc
+        raise HTTPException(status_code=502, detail="environment rescan failed") from exc

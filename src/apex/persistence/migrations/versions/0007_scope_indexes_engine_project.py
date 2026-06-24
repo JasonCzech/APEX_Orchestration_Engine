@@ -47,9 +47,8 @@ def _drop_index(name: str, table_name: str, *, postgresql_where: bool = False) -
         return
     kwargs: dict[str, Any] = {"schema": "apex"}
     if _is_postgres():
-        kwargs["postgresql_concurrently"] = True
         with op.get_context().autocommit_block():
-            op.drop_index(name, table_name=table_name, **kwargs)
+            op.get_bind().exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS apex.{name}")
         return
     op.drop_index(name, table_name=table_name, **kwargs)
 

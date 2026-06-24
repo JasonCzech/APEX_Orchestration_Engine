@@ -28,7 +28,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
-      - run: uv run pytest --cov=src/apex --cov-report=term-missing --cov-fail-under=45
+      - run: uv run pytest --cov=src/apex --cov-report=term-missing --cov-fail-under=88
       - run: uv run pip-audit
       - name: OpenAPI contract drift gate
         run: |
@@ -79,6 +79,7 @@ jobs:
             echo "::notice::REGISTRY_URL/REGISTRY_USERNAME/REGISTRY_PASSWORD secrets not configured — skipping image push. The image is still attached as the 'server-image' workflow artifact."
           fi
       - name: Push image to registry
+        id: push-image
         if: steps.registry.outputs.available == 'true'
         env:
           REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
@@ -88,8 +89,22 @@ jobs:
           echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_URL" -u "$REGISTRY_USERNAME" --password-stdin
           docker tag "apex-orchestration-engine:${GITHUB_REF_NAME}" \
             "$REGISTRY_URL/apex-orchestration-engine:${GITHUB_REF_NAME}"
-          docker push "$REGISTRY_URL/apex-orchestration-engine:${GITHUB_REF_NAME}"
-          cosign sign --yes "$REGISTRY_URL/apex-orchestration-engine:${GITHUB_REF_NAME}"
+          image_ref="$REGISTRY_URL/apex-orchestration-engine:${GITHUB_REF_NAME}"
+          docker push "$image_ref"
+          image_digest="$(docker inspect --format='{{index .RepoDigests 0}}' "$image_ref")"
+          echo "image_subject=$REGISTRY_URL/apex-orchestration-engine" >> "$GITHUB_OUTPUT"
+          echo "image_digest=${image_digest#*@}" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "$image_digest"
+          cosign attest --yes \
+            --type spdxjson \
+            --predicate "dist/apex-orchestration-engine-${GITHUB_REF_NAME}.spdx.json" \
+            "$image_digest"
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
+        if: steps.registry.outputs.available == 'true'
+        with:
+          subject-name: ${{ steps.push-image.outputs.image_subject }}
+          subject-digest: ${{ steps.push-image.outputs.image_digest }}
+          push-to-registry: true
 
   sdk:
     needs: gates
@@ -106,6 +121,7 @@ jobs:
         run: bash scripts/generate_sdks.sh
       - name: Generated-types drift gate (types move in lockstep with the spec)
         run: git diff --exit-code packages/api-client/src/schema.d.ts
+      - run: npm run -w @apex/api-client typecheck
       - name: npm pack
         run: |
           mkdir -p dist

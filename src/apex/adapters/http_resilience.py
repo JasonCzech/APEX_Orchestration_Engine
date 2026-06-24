@@ -6,7 +6,10 @@ import asyncio
 import random
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from threading import Lock
 from typing import Any
 
 import httpx
@@ -24,6 +27,7 @@ class RetryPolicy:
     attempts: int = 3
     base_delay_s: float = 0.05
     max_delay_s: float = 0.5
+    total_timeout_s: float | None = 10.0
     transient_statuses: frozenset[int] = TRANSIENT_STATUSES
     retry_methods: frozenset[str] = IDEMPOTENT_METHODS
 
@@ -37,24 +41,27 @@ class CircuitBreaker:
     reset_after_s: float = 30.0
     _failures: int = 0
     _opened_at: float | None = None
+    _lock: Lock = field(default_factory=Lock, repr=False)
 
     def before_request(self) -> None:
-        if self._opened_at is None:
-            return
-        if time.monotonic() - self._opened_at >= self.reset_after_s:
+        with self._lock:
+            if self._opened_at is None:
+                return
+            if time.monotonic() - self._opened_at < self.reset_after_s:
+                raise CircuitOpenError(f"HTTP circuit {self.name!r} is open")
             self._opened_at = None
             self._failures = 0
-            return
-        raise CircuitOpenError(f"HTTP circuit {self.name!r} is open")
 
     def record_success(self) -> None:
-        self._failures = 0
-        self._opened_at = None
+        with self._lock:
+            self._failures = 0
+            self._opened_at = None
 
     def record_failure(self) -> None:
-        self._failures += 1
-        if self._failures >= self.failure_threshold:
-            self._opened_at = time.monotonic()
+        with self._lock:
+            self._failures += 1
+            if self._failures >= self.failure_threshold:
+                self._opened_at = time.monotonic()
 
 
 async def resilient_request(
@@ -80,19 +87,32 @@ async def resilient_request(
     max_attempts = max(policy.attempts, 1)
     can_retry = normalized_method in policy.retry_methods
     last_error: httpx.HTTPError | None = None
+    deadline = (
+        time.monotonic() + max(policy.total_timeout_s, 0.0)
+        if policy.total_timeout_s is not None
+        else None
+    )
 
     for attempt in range(1, max_attempts + 1):
         if breaker is not None:
             breaker.before_request()
         try:
-            response = await client.request(normalized_method, url, **kwargs)
+            response = await _request_with_deadline(
+                client, normalized_method, url, deadline=deadline, **kwargs
+            )
+        except TimeoutError as exc:
+            timeout = httpx.TimeoutException("total retry timeout exceeded")
+            last_error = timeout
+            if breaker is not None:
+                breaker.record_failure()
+            raise timeout from exc
         except httpx.HTTPError as exc:
             last_error = exc
             if not can_retry or attempt >= max_attempts:
                 if breaker is not None:
                     breaker.record_failure()
                 raise
-            await sleep_fn(_delay(policy, attempt, random_fn))
+            await _sleep_with_deadline(_delay(policy, attempt, random_fn), deadline, sleep_fn)
             continue
 
         if response.status_code in policy.transient_statuses:
@@ -100,8 +120,9 @@ async def resilient_request(
                 if breaker is not None:
                     breaker.record_failure()
                 return response
+            delay = _retry_delay(response, policy, attempt, random_fn)
             await response.aclose()
-            await sleep_fn(_delay(policy, attempt, random_fn))
+            await _sleep_with_deadline(delay, deadline, sleep_fn)
             continue
 
         if breaker is not None:
@@ -117,10 +138,63 @@ def retry_policy(
     *,
     attempts: int = 3,
     retry_methods: Iterable[str] = IDEMPOTENT_METHODS,
+    total_timeout_s: float | None = 10.0,
 ) -> RetryPolicy:
-    return RetryPolicy(attempts=attempts, retry_methods=frozenset(m.upper() for m in retry_methods))
+    return RetryPolicy(
+        attempts=attempts,
+        retry_methods=frozenset(m.upper() for m in retry_methods),
+        total_timeout_s=total_timeout_s,
+    )
 
 
 def _delay(policy: RetryPolicy, attempt: int, random_fn: Any) -> float:
     base = min(policy.base_delay_s * 2 ** max(attempt - 1, 0), policy.max_delay_s)
     return min(base * (1 + float(random_fn()) * 0.25), policy.max_delay_s)
+
+
+async def _request_with_deadline(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    deadline: float | None,
+    **kwargs: Any,
+) -> httpx.Response:
+    if deadline is None:
+        return await client.request(method, url, **kwargs)
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    return await asyncio.wait_for(client.request(method, url, **kwargs), timeout=remaining)
+
+
+async def _sleep_with_deadline(delay: float, deadline: float | None, sleep_fn: Any) -> None:
+    if deadline is None:
+        await sleep_fn(delay)
+        return
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise httpx.TimeoutException("total retry timeout exceeded")
+    await sleep_fn(min(delay, remaining))
+
+
+def _retry_delay(
+    response: httpx.Response,
+    policy: RetryPolicy,
+    attempt: int,
+    random_fn: Any,
+) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after is None:
+        return _delay(policy, attempt, random_fn)
+    try:
+        return min(max(float(retry_after), 0.0), policy.max_delay_s)
+    except ValueError:
+        pass
+    try:
+        retry_at = parsedate_to_datetime(retry_after)
+    except (TypeError, ValueError):
+        return _delay(policy, attempt, random_fn)
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return min(max((retry_at - datetime.now(UTC)).total_seconds(), 0.0), policy.max_delay_s)

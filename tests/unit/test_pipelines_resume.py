@@ -10,6 +10,8 @@ from langgraph_sdk.errors import ConflictError
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
+from apex.graphs.pipeline.configurable import Limits
+from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 from apex.routers.pipelines import get_pipeline_read_service, router
 from apex.services.pipeline_read import PipelineReadService
 
@@ -85,9 +87,9 @@ def make_app(client: FakeClient, role: Role = Role.OPERATOR) -> FastAPI:
     return app
 
 
-def state_with_interrupt(interrupt_id: str) -> JsonDict:
+def state_with_interrupt(interrupt_id: str, *, limits: dict[str, Any] | None = None) -> JsonDict:
     return {
-        "values": {},
+        "values": {"configurable": {"limits": limits}} if limits is not None else {},
         "tasks": [{"interrupts": [{"id": interrupt_id, "value": GATE_PAYLOAD}]}],
         "interrupts": [],
     }
@@ -108,6 +110,24 @@ def test_resume_gate_accepts_and_creates_reject_run() -> None:
     assert call["multitask_strategy"] == "reject"
     assert call["config"]["recursion_limit"] > 25
     assert call["command"] == {"resume": {"action": "approve", "note": "lgtm"}}
+
+
+def test_resume_gate_uses_thread_limits_for_recursion_budget() -> None:
+    limits = {"poll_interval_s": 0.5, "poll_timeout_s": 3600.0}
+    runs = FakeRuns()
+    client_app = make_app(
+        FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1", limits=limits)}), runs)
+    )
+    with TestClient(client_app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/int-1/resume",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 202
+    assert runs.create_calls[0]["config"]["recursion_limit"] == recommended_recursion_limit(
+        Limits.model_validate(limits)
+    )
 
 
 def test_resume_gate_superseded_when_interrupt_id_differs() -> None:

@@ -18,7 +18,7 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
-      - run: uv run pytest --cov=src/apex --cov-report=term-missing --cov-fail-under=45
+      - run: uv run pytest --cov=src/apex --cov-report=term-missing --cov-fail-under=88
       - name: OpenAPI contract drift gate
         run: |
           uv run python scripts/export_openapi.py
@@ -42,9 +42,11 @@ jobs:
         run: |
           npm run generate:sdks
           git diff --exit-code packages/api-client/src/schema.d.ts
+      - run: npm run -w @apex/api-client typecheck
       - run: npm run -w @apex/dashboard typecheck
       - run: npm run -w @apex/dashboard lint
       - run: npm run -w @apex/dashboard test
+      - run: npm run -w @apex/dashboard test:coverage
       - run: npm run -w @apex/dashboard build
 
   helm-lint:

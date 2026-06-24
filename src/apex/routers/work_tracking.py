@@ -152,11 +152,11 @@ def adapter_errors() -> Iterator[None]:
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=_exc_detail(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="work tracker rejected the request") from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail="work tracker upstream failure") from exc
     except httpx.HTTPError as exc:  # defensive: adapters normally wrap transport errors
-        raise HTTPException(status_code=502, detail=f"upstream tracker call failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail="work tracker upstream failure") from exc
 
 
 def _visible(identity: ConsumerIdentity, row: SavedQuery) -> bool:

@@ -232,7 +232,7 @@ class PipelineReadService:
             run = await self._client.runs.create(
                 thread_id,
                 PIPELINE_GRAPH_ID,
-                config={"recursion_limit": recommended_recursion_limit(Limits())},
+                config={"recursion_limit": recommended_recursion_limit(_limits_from_state(state))},
                 command={"resume": resume},
                 multitask_strategy="reject",
             )
@@ -250,3 +250,18 @@ class PipelineReadService:
         if not cancelled:
             raise NoActiveRunError(thread_id)
         return cancelled
+
+
+def _limits_from_state(state: JsonDict) -> Limits:
+    values = state.get("values") if isinstance(state.get("values"), dict) else {}
+    config = state.get("config") if isinstance(state.get("config"), dict) else {}
+    candidates = [
+        ((config or {}).get("configurable") or {}).get("limits"),
+        ((values or {}).get("configurable") or {}).get("limits"),
+        (((values or {}).get("config") or {}).get("configurable") or {}).get("limits"),
+        (values or {}).get("limits"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return Limits.model_validate(candidate)
+    return Limits()

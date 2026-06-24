@@ -7,6 +7,7 @@ Create Date: 2026-06-11
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -16,6 +17,28 @@ revision: str = "0006"
 down_revision: str | None = "0005"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+
+def _is_postgres() -> bool:
+    return op.get_bind().dialect.name == "postgresql"
+
+
+def _create_index(name: str, columns: list[str]) -> None:
+    kwargs: dict[str, Any] = {"schema": "apex"}
+    if _is_postgres():
+        kwargs["postgresql_concurrently"] = True
+        with op.get_context().autocommit_block():
+            op.create_index(name, "usage_events", columns, **kwargs)
+        return
+    op.create_index(name, "usage_events", columns, **kwargs)
+
+
+def _drop_index(name: str) -> None:
+    if _is_postgres():
+        with op.get_context().autocommit_block():
+            op.get_bind().exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS apex.{name}")
+        return
+    op.drop_index(name, table_name="usage_events", schema="apex")
 
 
 def upgrade() -> None:
@@ -43,13 +66,11 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_usage_events")),
         schema="apex",
     )
-    op.create_index(op.f("ix_usage_events_at"), "usage_events", ["at"], schema="apex")
-    op.create_index(
-        "ix_usage_events_project_id_at", "usage_events", ["project_id", "at"], schema="apex"
-    )
+    _create_index(op.f("ix_usage_events_at"), ["at"])
+    _create_index("ix_usage_events_project_id_at", ["project_id", "at"])
 
 
 def downgrade() -> None:
-    op.drop_index("ix_usage_events_project_id_at", table_name="usage_events", schema="apex")
-    op.drop_index(op.f("ix_usage_events_at"), table_name="usage_events", schema="apex")
+    _drop_index("ix_usage_events_project_id_at")
+    _drop_index(op.f("ix_usage_events_at"))
     op.drop_table("usage_events", schema="apex")

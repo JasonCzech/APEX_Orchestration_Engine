@@ -70,6 +70,18 @@ def test_extract_api_key_none_for_missing_or_non_bearer() -> None:
     assert extract_api_key({"authorization": "Basic dXNlcg=="}) is None
 
 
+def test_extract_api_key_rejects_duplicate_auth_headers() -> None:
+    assert extract_api_key([(b"x-api-key", b"first"), (b"x-api-key", b"second")]) is None
+    assert (
+        extract_api_key([(b"authorization", b"Bearer first"), (b"authorization", b"Bearer second")])
+        is None
+    )
+
+
+def test_extract_api_key_rejects_non_utf8_header_bytes() -> None:
+    assert extract_api_key({b"x-api-key": b"\xff"}) is None
+
+
 # ── IdentityResolver ─────────────────────────────────────────────────────────
 
 

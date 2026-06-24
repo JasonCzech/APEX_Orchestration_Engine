@@ -78,5 +78,15 @@ export default defineConfig({
     // opaque hard test timeouts.
     testTimeout: 15_000,
     hookTimeout: 15_000,
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'lcov'],
+      thresholds: {
+        branches: 70,
+        functions: 70,
+        lines: 70,
+        statements: 70,
+      },
+    },
   },
 })

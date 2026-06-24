@@ -26,6 +26,7 @@ def test_defaults() -> None:
 def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "staging")
     monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     settings = CleanEnvSettings()
     assert settings.environment == "staging"
     assert settings.database.uri == "postgresql+asyncpg://u:p@db:5432/x"
@@ -37,6 +38,7 @@ def test_locked_down_env_rejects_auth_disabled(
 ) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", environment)
     monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     monkeypatch.setenv("APEX_AUTH__ENABLED", "false")
     with pytest.raises(ValidationError, match="auth.enabled=false"):
         CleanEnvSettings()
@@ -45,6 +47,7 @@ def test_locked_down_env_rejects_auth_disabled(
 def test_locked_down_env_rejects_dev_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "production")
     monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     monkeypatch.setenv("APEX_AUTH__DEV_API_KEY", "dev")
     with pytest.raises(ValidationError, match="auth.dev_api_key"):
         CleanEnvSettings()
@@ -62,5 +65,20 @@ def test_locked_down_env_rejects_local_database_uri(
 ) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "production")
     monkeypatch.setenv("APEX_DATABASE__URI", uri)
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     with pytest.raises(ValidationError, match="database.uri"):
+        CleanEnvSettings()
+
+
+def test_rejects_wildcard_cors_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["*"]')
+    with pytest.raises(ValidationError, match="cors_origins"):
+        CleanEnvSettings()
+
+
+def test_locked_down_env_rejects_insecure_cors_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["http://dashboard.example.com"]')
+    with pytest.raises(ValidationError, match="cors_origins"):
         CleanEnvSettings()
