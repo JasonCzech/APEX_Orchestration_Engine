@@ -179,6 +179,7 @@ const promptReview = {
   prompt: {
     system: "You are the story_analysis agent for an APEX load-testing pipeline.",
     user: "Title: Demo\nRequest: r",
+    application: "Checkout app requirements.",
     source: { origin: "catalog", ref: "phase/story_analysis@builtin" },
   },
   context_packets: [],
@@ -193,6 +194,7 @@ const promptReviewAfterEdit = {
   prompt: {
     system: "You are edited.",
     user: "Title: Demo\nRequest: (no request provided)",
+    application: "Edited checkout requirements.",
     source: { origin: "gate_edit", ref: "phase/story_analysis@builtin" },
   },
 };
@@ -316,7 +318,7 @@ describe("gate interrupt payload schemas", () => {
 describe("gate decision (resume body) schemas", () => {
   it.each([
     [{ action: "approve" }],
-    [{ action: "modify", prompt: { system: "You are edited." } }],
+    [{ action: "modify", prompt: { system: "You are edited.", application: "App edit." } }],
     [{ action: "skip_phase" }],
     [{ action: "abort" }],
   ] as const)("prompt_review accepts backend-tested resume %j", (decision) => {

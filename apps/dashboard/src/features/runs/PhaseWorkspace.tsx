@@ -341,6 +341,9 @@ function ReasoningTab({
             </div>
           )}
           {prompt?.system && <CodeViewer value={prompt.system} ariaLabel="System prompt" />}
+          {prompt?.application && (
+            <CodeViewer value={prompt.application} ariaLabel="Application prompt" />
+          )}
           {prompt?.user && <CodeViewer value={prompt.user} ariaLabel="User prompt" />}
         </>
       )}

@@ -53,6 +53,12 @@ describe('ConfigStep', () => {
     expect(toggles).toHaveLength(7)
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
 
+    // First click focuses execution for the Prompts tab; second click drops it.
+    await user.click(within(strip).getByRole('button', { name: 'execution' }))
+    expect(within(strip).getByRole('button', { name: 'execution' })).toHaveAttribute(
+      'aria-current',
+      'step',
+    )
     // Drop execution: reporting's prereq is no longer earlier in the plan.
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
     const hints = await screen.findByTestId('phase-dependency-hints')

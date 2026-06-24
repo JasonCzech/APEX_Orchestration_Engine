@@ -1250,6 +1250,8 @@ export class DevDataStore {
       this.prompt('prompt-story', 'phase', 'story_analysis/system', 'Story analysis system prompt', 'You are the story analysis phase operator.', created, updated, false),
       this.prompt('prompt-exec', 'phase', 'execution/system', 'Execution system prompt', 'Run the plan and report engine telemetry.', created, updated, false),
       this.prompt('prompt-report', 'phase', 'reporting/system', 'Reporting system prompt', 'Summarize KPI deltas and release risk.', created, updated, false),
+      this.prompt('prompt-app-checkout', 'application', 'app-checkout', 'Checkout application prompt', 'Checkout-specific requirements: preserve carts through payment retries, watch gateway 5xx rates, and report p95 latency for cart and payment APIs.', created, updated, false),
+      this.prompt('prompt-app-billing', 'application', 'app-billing', 'Billing application prompt', 'Billing-specific requirements: validate export completion, ledger consistency, and invoice API p95 latency.', created, updated, false),
       this.prompt('prompt-old', 'experimental', 'legacy/reporting', 'Archived draft prompt', 'Old archived prompt body.', created, updated, true),
     ]
   }

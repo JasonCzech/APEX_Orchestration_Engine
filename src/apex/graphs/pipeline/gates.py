@@ -62,6 +62,7 @@ def build_prompt_review_payload(
         "prompt": {
             "system": prompt.get("system"),
             "user": prompt.get("user"),
+            "application": prompt.get("application"),
             "source": {"origin": source.get("origin"), "ref": source.get("ref")},
         },
         "context_packets": [

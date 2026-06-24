@@ -17,6 +17,7 @@ export const PROMPT_PAYLOAD = {
   prompt: {
     system: 'You are the planning agent.',
     user: 'Plan load coverage for APEX-101.',
+    application: 'Checkout must preserve carts during payment retries.',
     source: { origin: 'catalog', ref: 'test_planning@v2' },
   },
   context_packets: [

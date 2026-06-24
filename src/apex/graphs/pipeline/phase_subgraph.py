@@ -136,7 +136,11 @@ def _make_prepare(phase: Phase):
             attempt,
             status=PhaseStatus.RUNNING.value,
             started_at=utcnow_iso(),
-            resolved_prompt={"system": resolved["system"], "user": resolved["user"]},
+            resolved_prompt={
+                "system": resolved["system"],
+                "user": resolved["user"],
+                "application": resolved["application"],
+            },
             resolved_prompt_source=dict(resolved["source"]),
         )
         update["current_phase"] = phase.value
@@ -207,6 +211,7 @@ def _make_prompt_gate(phase: Phase):
                     prompt = {
                         "system": edit.get("system", prompt.get("system")),
                         "user": edit.get("user", prompt.get("user")),
+                        "application": edit.get("application", prompt.get("application")),
                     }
                 source = {
                     "origin": "gate_edit",

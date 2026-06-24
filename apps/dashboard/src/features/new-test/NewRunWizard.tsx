@@ -86,7 +86,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   prompts: {
     title: 'Prompt Selection',
     description:
-      'Select the prompt set for each phase and override only the places that need run-specific instructions.',
+      'Review the focused phase system prompt and the selected application requirements prompt.',
   },
   review: {
     title: 'Launch Preview',

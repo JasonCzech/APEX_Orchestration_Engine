@@ -14,7 +14,13 @@ const STORED: Partial<WizardDraft> = {
   request: 'Pick up where we left off',
   scope: { project_id: 'demo', app_id: 'app-checkout', environment_id: 'env-staging' },
   work_item_keys: ['PHX-241'],
-  config: { engine: 'apex_load', phases: null, gates_mode: 'all_auto', golden_config_id: null },
+  config: {
+    engine: 'apex_load',
+    phases: null,
+    prompt_focus_phase: 'story_analysis',
+    gates_mode: 'all_auto',
+    golden_config_id: null,
+  },
 }
 
 describe('wizard draft resume', () => {

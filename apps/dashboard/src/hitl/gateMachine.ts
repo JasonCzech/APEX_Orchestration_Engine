@@ -37,6 +37,7 @@ export interface GateInstance {
 export interface PromptDraft {
   system: string
   user: string
+  application?: string
 }
 
 /** Operator working copy — only the keys the resume body can carry. */
@@ -101,10 +102,14 @@ export function draftOf(state: GateMachineState): GateDraft | null {
 /** Original prompt text from the gate payload, normalized to strings. */
 export function originalPromptOf(gate: GateInstance): PromptDraft {
   if (gate.payload?.kind === 'prompt_review') {
-    return {
+    const prompt: PromptDraft = {
       system: gate.payload.prompt.system ?? '',
       user: gate.payload.prompt.user ?? '',
     }
+    if (gate.payload.prompt.application !== null && gate.payload.prompt.application !== undefined) {
+      prompt.application = gate.payload.prompt.application
+    }
+    return prompt
   }
   return { system: '', user: '' }
 }
@@ -119,7 +124,11 @@ export function initialDraftFor(gate: GateInstance): GateDraft {
 export function isPromptDirty(gate: GateInstance, draft: GateDraft): boolean {
   if (!draft.prompt) return false
   const original = originalPromptOf(gate)
-  return draft.prompt.system !== original.system || draft.prompt.user !== original.user
+  return (
+    draft.prompt.system !== original.system ||
+    draft.prompt.user !== original.user ||
+    (draft.prompt.application ?? '') !== (original.application ?? '')
+  )
 }
 
 function mergeDraft(gate: GateInstance, draft: GateDraft, patch: GateDraftPatch): GateDraft {

@@ -187,6 +187,7 @@ describe('gateReducer semantics beyond tags', () => {
     expect(state.draft.prompt).toEqual({
       system: 'EDITED SYSTEM',
       user: 'Plan load coverage for APEX-101.',
+      application: 'Checkout must preserve carts during payment retries.',
     })
     // Reverting the edit un-dirties the draft.
     state = gateReducer(state, {

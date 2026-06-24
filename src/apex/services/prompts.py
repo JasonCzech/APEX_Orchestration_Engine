@@ -11,6 +11,11 @@ Phase prompt resolution order (resolve_phase_prompt):
 1. run override from the configurable (cfg.prompt_overrides["phase/<phase>"]),
 2. catalog active versions for phase/<phase>/system + phase/<phase>/user,
 3. built-in DEFAULT_PHASE_PROMPTS.
+
+When cfg.app_id is set, an application prompt is also resolved from
+cfg.prompt_overrides["application/<app_id>"] or catalog key
+application/<app_id>. It stays separate from the phase system/user pair so
+operators can review and edit app-specific requirements independently.
 Catalog errors and missing rows fall through to the builtins silently (debug
 log) so `langgraph dev` keeps working without Postgres.
 """
@@ -30,6 +35,7 @@ from apex.persistence.models import Prompt, PromptVersion
 logger = structlog.get_logger(__name__)
 
 PHASE_NAMESPACE = "phase"
+APPLICATION_NAMESPACE = "application"
 
 # Upper bound on one catalog lookup so a wedged database can never stall a
 # pipeline prepare node; on timeout we fall through to the builtin templates.
@@ -284,36 +290,104 @@ def render_template(template: str, variables: Mapping[str, Any]) -> str:
 class ResolvedPhasePrompt(TypedDict):
     system: str
     user: str
+    application: str | None
     source: dict[str, Any]  # ResolvedPromptSource-shaped: origin / ref / editor
 
 
-def _builtin_resolved(phase: Phase, variables: Mapping[str, Any]) -> ResolvedPhasePrompt:
+def _app_override(cfg: PipelineConfigurable) -> PromptOverride | None:
+    if not cfg.app_id:
+        return None
+    return cfg.prompt_overrides.get(f"{APPLICATION_NAMESPACE}/{cfg.app_id}")
+
+
+def _application_ref(cfg: PipelineConfigurable, suffix: str) -> str | None:
+    return f"{APPLICATION_NAMESPACE}/{cfg.app_id}{suffix}" if cfg.app_id else None
+
+
+def _source(origin: str, refs: list[str]) -> dict[str, Any]:
+    return {"origin": origin, "ref": ",".join(refs), "editor": None}
+
+
+def _builtin_resolved(
+    phase: Phase,
+    variables: Mapping[str, Any],
+    *,
+    cfg: PipelineConfigurable | None = None,
+    application: str | None = None,
+    origin: str = "catalog",
+    refs: list[str] | None = None,
+) -> ResolvedPhasePrompt:
+    source_refs = refs or [f"phase/{phase.value}@builtin"]
     return ResolvedPhasePrompt(
         system=render_template(DEFAULT_PHASE_PROMPTS[f"{phase.value}/system"], variables),
         user=render_template(DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"], variables),
-        source={"origin": "catalog", "ref": f"phase/{phase.value}@builtin", "editor": None},
+        application=application if cfg is not None and cfg.app_id else None,
+        source=_source(origin, source_refs),
     )
 
 
-def _override_resolved(
-    override: PromptOverride, phase: Phase, variables: Mapping[str, Any]
+def _compose_resolved(
+    phase: Phase,
+    cfg: PipelineConfigurable,
+    variables: Mapping[str, Any],
+    *,
+    system_v: PromptVersion | None,
+    user_v: PromptVersion | None,
+    application_v: PromptVersion | None,
 ) -> ResolvedPhasePrompt:
-    # A run override replaces the system prompt; the user prompt stays builtin
-    # (matches the M1 contract asserted by the pipeline graph tests).
-    assert override.content is not None
+    refs: list[str] = []
+    origin = "catalog"
+
+    system_override = cfg.prompt_overrides.get(f"{PHASE_NAMESPACE}/{phase.value}")
+    if system_override is not None and system_override.content is not None:
+        system = system_override.content
+        refs.append(system_override.version_id or f"phase/{phase.value}@override")
+        origin = "run_override"
+    else:
+        system = (
+            system_v.content
+            if system_v is not None
+            else DEFAULT_PHASE_PROMPTS[f"{phase.value}/system"]
+        )
+        if system_v is not None:
+            refs.append(f"phase/{phase.value}/system@v{system_v.version}")
+
+    user = user_v.content if user_v is not None else DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"]
+    if user_v is not None:
+        refs.append(f"phase/{phase.value}/user@v{user_v.version}")
+
+    application: str | None = None
+    if cfg.app_id:
+        app_override = _app_override(cfg)
+        if app_override is not None and app_override.content is not None:
+            application = app_override.content
+            refs.append(
+                app_override.version_id
+                or _application_ref(cfg, "@override")
+                or f"{APPLICATION_NAMESPACE}/{cfg.app_id}@override"
+            )
+            origin = "run_override"
+        elif application_v is not None:
+            application = render_template(application_v.content, variables)
+            refs.append(f"{APPLICATION_NAMESPACE}/{cfg.app_id}@v{application_v.version}")
+        else:
+            # App selected, but no catalog row yet. Keep the prompt part
+            # editable in prompt-review gates without inventing builtin text.
+            application = ""
+
+    if not refs:
+        refs.append(f"phase/{phase.value}@builtin")
+
     return ResolvedPhasePrompt(
-        system=override.content,
-        user=render_template(DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"], variables),
-        source={
-            "origin": "run_override",
-            "ref": override.version_id or f"phase/{phase.value}@override",
-            "editor": None,
-        },
+        system=render_template(system, variables),
+        user=render_template(user, variables),
+        application=application,
+        source=_source(origin, refs),
     )
 
 
 class PromptResolver:
-    """Resolves the (system, user) prompt pair for a pipeline phase.
+    """Resolves the (system, user, application) prompt parts for a phase.
 
     With no injected store it opens a throwaway engine per lookup: the sync
     graph node bridges in via asyncio.run on worker threads, so pooled
@@ -331,34 +405,19 @@ class PromptResolver:
         variables: Mapping[str, Any] | None = None,
     ) -> ResolvedPhasePrompt:
         variables = dict(variables or {})
-        override = cfg.prompt_overrides.get(f"{PHASE_NAMESPACE}/{phase.value}")
-        if override is not None and override.content is not None:
-            return _override_resolved(override, phase, variables)
-        system_v, user_v = await self._load_catalog_pair(phase)
-        if system_v is None and user_v is None:
-            return _builtin_resolved(phase, variables)
-        refs: list[str] = []
-        if system_v is not None:
-            refs.append(f"phase/{phase.value}/system@v{system_v.version}")
-        if user_v is not None:
-            refs.append(f"phase/{phase.value}/user@v{user_v.version}")
-        system = (
-            system_v.content
-            if system_v is not None
-            else DEFAULT_PHASE_PROMPTS[f"{phase.value}/system"]
-        )
-        user = (
-            user_v.content if user_v is not None else DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"]
-        )
-        return ResolvedPhasePrompt(
-            system=render_template(system, variables),
-            user=render_template(user, variables),
-            source={"origin": "catalog", "ref": ",".join(refs), "editor": None},
+        system_v, user_v, application_v = await self._load_catalog_prompts(phase, cfg.app_id)
+        return _compose_resolved(
+            phase,
+            cfg,
+            variables,
+            system_v=system_v,
+            user_v=user_v,
+            application_v=application_v,
         )
 
-    async def _load_catalog_pair(
-        self, phase: Phase
-    ) -> tuple[PromptVersion | None, PromptVersion | None]:
+    async def _load_catalog_prompts(
+        self, phase: Phase, app_id: str | None
+    ) -> tuple[PromptVersion | None, PromptVersion | None, PromptVersion | None]:
         try:
             async with asyncio.timeout(CATALOG_TIMEOUT_S):
                 if self._store is not None:
@@ -369,17 +428,20 @@ class PromptResolver:
                         await self._store.get_active_version(
                             PHASE_NAMESPACE, f"{phase.value}/user"
                         ),
+                        await self._store.get_active_version(APPLICATION_NAMESPACE, app_id)
+                        if app_id
+                        else None,
                     )
-                return await _load_pair_with_fresh_engine(phase)
+                return await _load_prompts_with_fresh_engine(phase, app_id)
         except Exception:
             # Expected when running without Postgres (langgraph dev, unit tests).
             logger.debug("apex.prompts.catalog_unavailable", phase=phase.value, exc_info=True)
-            return None, None
+            return None, None, None
 
 
-async def _load_pair_with_fresh_engine(
-    phase: Phase,
-) -> tuple[PromptVersion | None, PromptVersion | None]:
+async def _load_prompts_with_fresh_engine(
+    phase: Phase, app_id: str | None
+) -> tuple[PromptVersion | None, PromptVersion | None, PromptVersion | None]:
     # Imported lazily so importing the graph module never drags engine machinery in.
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -393,6 +455,7 @@ async def _load_pair_with_fresh_engine(
             return (
                 await repo.get_active_version(PHASE_NAMESPACE, f"{phase.value}/system"),
                 await repo.get_active_version(PHASE_NAMESPACE, f"{phase.value}/user"),
+                await repo.get_active_version(APPLICATION_NAMESPACE, app_id) if app_id else None,
             )
     finally:
         await engine.dispose()
@@ -426,16 +489,21 @@ def resolve_phase_prompt_sync(
     except RuntimeError:
         return asyncio.run(resolve_phase_prompt(phase, cfg, variables=variables))
     variables = dict(variables or {})
-    override = cfg.prompt_overrides.get(f"{PHASE_NAMESPACE}/{phase.value}")
-    if override is not None and override.content is not None:
-        return _override_resolved(override, phase, variables)
-    return _builtin_resolved(phase, variables)
+    return _compose_resolved(
+        phase,
+        cfg,
+        variables,
+        system_v=None,
+        user_v=None,
+        application_v=None,
+    )
 
 
 __all__ = [
     "CATALOG_TIMEOUT_S",
     "DEFAULT_PHASE_PROMPTS",
     "DEFAULT_USER_TEMPLATE",
+    "APPLICATION_NAMESPACE",
     "PHASE_NAMESPACE",
     "ActiveVersionReader",
     "DuplicatePromptError",

@@ -1,11 +1,8 @@
 /**
- * Step 5 — Prompts: an accordion per included phase previewing the catalog's
- * active phase/<p>/system + phase/<p>/user content (provenance chip
- * "catalog@vN"); [Override for this run] swaps the system prompt to an
- * editable editor writing prompt_overrides["phase/<p>"] = {content} ("run
- * override" chip + revert). Per the backend prompt resolver, a run override
- * replaces the SYSTEM prompt only — the user prompt always comes from
- * catalog/builtin (src/apex/services/prompts.py).
+ * Step 5 — Prompts: the focused phase's system prompt plus the selected
+ * application's app-wide prompt. System overrides keep the historical
+ * prompt_overrides["phase/<p>"] key; application overrides use
+ * prompt_overrides["application/<app_id>"].
  */
 import { useQuery } from '@tanstack/react-query'
 import CodeMirror from '@uiw/react-codemirror'
@@ -18,16 +15,17 @@ import { ApiError, errorMessageOf } from '@/api/errors'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 
 import type { StepProps } from '../NewRunWizard'
-import { selectedPhases } from '../wizardState'
+import { focusedPromptPhase } from '../wizardState'
 
 type PromptSummary = components['schemas']['PromptSummary']
 type PromptDetail = components['schemas']['PromptDetail']
 
 const PHASE_NAMESPACE = 'phase'
+const APPLICATION_NAMESPACE = 'application'
 
-async function fetchPhasePromptList(): Promise<PromptSummary[]> {
+async function fetchPromptList(namespace: string): Promise<PromptSummary[]> {
   const { data, error, response } = await getApexClient().GET('/v1/prompts', {
-    params: { query: { namespace: PHASE_NAMESPACE } },
+    params: { query: { namespace } },
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -61,15 +59,17 @@ interface CatalogPrompt {
 /** Catalog (content, active version) for one phase prompt key, or null when absent. */
 function useCatalogPrompt(
   summaries: PromptSummary[] | undefined,
-  key: string,
+  key: string | null,
+  enabled = true,
 ): { prompt: CatalogPrompt | null; loading: boolean } {
-  const summary = summaries?.find((entry) => entry.key === key)
+  const summary = enabled && key ? summaries?.find((entry) => entry.key === key) : undefined
   const detail = useQuery({
     queryKey: queryKeys.prompts.byId(summary?.id ?? 'missing'),
     queryFn: () => fetchPromptDetail(summary?.id ?? ''),
-    enabled: Boolean(summary),
+    enabled: enabled && Boolean(summary),
     staleTime: STALE_TIMES.prompts,
   })
+  if (!enabled || !key) return { prompt: null, loading: false }
   if (!summary) return { prompt: null, loading: summaries === undefined }
   if (!detail.data) return { prompt: null, loading: detail.isLoading }
   return {
@@ -81,18 +81,69 @@ function useCatalogPrompt(
   }
 }
 
-function ReadOnlyPrompt({ label, prompt, loading }: { label: string; prompt: CatalogPrompt | null; loading: boolean }) {
+function PromptBlock({
+  label,
+  prompt,
+  loading,
+  override,
+  overrideLabel,
+  editorLabel,
+  emptyText,
+  emptyChipLabel = 'built-in default',
+  testId,
+  onOverride,
+  onRevert,
+  onEdit,
+}: {
+  label: string
+  prompt: CatalogPrompt | null
+  loading: boolean
+  override: { content: string } | undefined
+  overrideLabel: string
+  editorLabel: string
+  emptyText: string
+  emptyChipLabel?: string
+  testId?: string
+  onOverride: (seed: string) => void
+  onRevert: () => void
+  onEdit: (content: string) => void
+}) {
   return (
-    <div className="wizard-prompt-block">
+    <div className="glass-panel wizard-prompt-block" data-testid={testId}>
       <div className="wizard-row">
         <span className="wizard-label">{label}</span>
-        {prompt && prompt.version !== null ? (
+        {override ? (
+          <span className="topbar-meta-chip warning" data-testid={`override-chip-${overrideLabel}`}>
+            run override
+          </span>
+        ) : prompt && prompt.version !== null ? (
           <span className="topbar-meta-chip accent">catalog@v{prompt.version}</span>
         ) : (
-          !loading && <span className="topbar-meta-chip">built-in default</span>
+          !loading && <span className="topbar-meta-chip">{emptyChipLabel}</span>
+        )}
+        {override && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onRevert}>
+            Revert to catalog
+          </button>
         )}
       </div>
-      {loading ? (
+
+      {override ? (
+        <div className="code-viewer editable">
+          <CodeMirror
+            value={override.content}
+            editable
+            aria-label={editorLabel}
+            basicSetup={{
+              lineNumbers: true,
+              foldGutter: false,
+              highlightActiveLine: true,
+              highlightActiveLineGutter: false,
+            }}
+            onChange={(next: string) => onEdit(next)}
+          />
+        </div>
+      ) : loading ? (
         <p className="wizard-caption">Loading…</p>
       ) : prompt ? (
         <div className="code-viewer">
@@ -109,131 +160,144 @@ function ReadOnlyPrompt({ label, prompt, loading }: { label: string; prompt: Cat
           />
         </div>
       ) : (
-        <p className="wizard-caption">Not in the catalog — the built-in template runs.</p>
+        <p className="wizard-caption">{emptyText}</p>
       )}
-    </div>
-  )
-}
 
-function PhasePromptPanel({
-  phase,
-  summaries,
-  override,
-  onOverride,
-  onRevert,
-  onEdit,
-}: {
-  phase: PhaseName
-  summaries: PromptSummary[] | undefined
-  override: { content: string } | undefined
-  onOverride: (seed: string) => void
-  onRevert: () => void
-  onEdit: (content: string) => void
-}) {
-  const system = useCatalogPrompt(summaries, `${phase}/system`)
-  const user = useCatalogPrompt(summaries, `${phase}/user`)
-
-  return (
-    <div className="wizard-prompt-panel">
-      {override ? (
-        <div className="wizard-prompt-block">
-          <div className="wizard-row">
-            <span className="wizard-label">System prompt</span>
-            <span className="topbar-meta-chip warning" data-testid={`override-chip-${phase}`}>
-              run override
-            </span>
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onRevert}>
-              Revert to catalog
-            </button>
-          </div>
-          <div className="code-viewer editable">
-            <CodeMirror
-              value={override.content}
-              editable
-              aria-label={`${phase} system prompt override`}
-              basicSetup={{
-                lineNumbers: true,
-                foldGutter: false,
-                highlightActiveLine: true,
-                highlightActiveLineGutter: false,
-              }}
-              onChange={(next: string) => onEdit(next)}
-            />
-          </div>
-        </div>
-      ) : (
-        <>
-          <ReadOnlyPrompt label="System prompt" prompt={system.prompt} loading={system.loading} />
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => onOverride(system.prompt?.content ?? '')}
-          >
-            Override for this run
-          </button>
-        </>
+      {!override && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm wizard-prompt-override"
+          onClick={() => onOverride(prompt?.content ?? '')}
+        >
+          Override for this run
+        </button>
       )}
-      <ReadOnlyPrompt label="User prompt" prompt={user.prompt} loading={user.loading} />
-      <p className="wizard-caption">
-        Overrides replace the system prompt for this run only; the user prompt stays on its
-        catalog/builtin template.
-      </p>
     </div>
   )
 }
 
 export function PromptsStep({ draft, onChange }: StepProps) {
-  const phases = selectedPhases(draft.config)
-  const list = useQuery({
+  const phase = focusedPromptPhase(draft.config)
+  const appId = draft.scope.app_id
+  const phaseList = useQuery({
     queryKey: queryKeys.prompts.listNamespace(PHASE_NAMESPACE),
-    queryFn: fetchPhasePromptList,
+    queryFn: () => fetchPromptList(PHASE_NAMESPACE),
+    staleTime: STALE_TIMES.prompts,
+  })
+  const applicationList = useQuery({
+    queryKey: queryKeys.prompts.listNamespace(APPLICATION_NAMESPACE),
+    queryFn: () => fetchPromptList(APPLICATION_NAMESPACE),
+    enabled: Boolean(appId),
     staleTime: STALE_TIMES.prompts,
   })
 
-  function overrideKey(phase: PhaseName): string {
-    return `${PHASE_NAMESPACE}/${phase}`
+  const system = useCatalogPrompt(phaseList.data, phase ? `${phase}/system` : null)
+  const application = useCatalogPrompt(applicationList.data, appId, Boolean(appId))
+
+  function systemOverrideKey(phaseName: PhaseName): string {
+    return `${PHASE_NAMESPACE}/${phaseName}`
   }
+
+  function applicationOverrideKey(applicationId: string): string {
+    return `${APPLICATION_NAMESPACE}/${applicationId}`
+  }
+
+  const systemOverride = phase ? draft.prompt_overrides[systemOverrideKey(phase)] : undefined
+  const applicationOverride = appId
+    ? draft.prompt_overrides[applicationOverrideKey(appId)]
+    : undefined
 
   return (
     <section className="wizard-step" aria-label="Prompts">
       <p className="wizard-step-hint">
-        Preview the catalog prompts each included phase will run with, and override per run where
-        needed.
+        Preview the focused phase system prompt and the selected application's requirements prompt.
       </p>
-      {list.isError && (
+      {phaseList.isError && (
         <p className="wizard-caption wizard-caption--danger" role="alert">
-          Prompt catalog failed to load — built-in defaults still apply at run time.
+          Phase prompt catalog failed to load — built-in defaults still apply at run time.
         </p>
       )}
-      {phases.map((phase) => {
-        const override = draft.prompt_overrides[overrideKey(phase)]
-        return (
-          <details key={phase} className="glass-panel wizard-accordion">
-            <summary className="wizard-accordion-summary">
-              <span>{phase.replaceAll('_', ' ')}</span>
-              {override && (
-                <span className="topbar-meta-chip warning" data-testid={`summary-override-${phase}`}>
-                  run override
-                </span>
-              )}
-            </summary>
-            <PhasePromptPanel
-              phase={phase}
-              summaries={list.data}
-              override={override}
+      {applicationList.isError && (
+        <p className="wizard-caption wizard-caption--danger" role="alert">
+          Application prompt catalog failed to load.
+        </p>
+      )}
+
+      {phase === null ? (
+        <p className="wizard-caption wizard-caption--danger">Select at least one phase first.</p>
+      ) : (
+        <div className="wizard-prompt-panel">
+          <div className="wizard-row">
+            <span className="topbar-meta-chip accent" data-testid="prompt-focused-phase">
+              {phase.replaceAll('_', ' ')}
+            </span>
+            {appId && (
+              <span className="topbar-meta-chip" data-testid="prompt-selected-application">
+                {appId}
+              </span>
+            )}
+          </div>
+
+          <PromptBlock
+            label="System prompt"
+            prompt={system.prompt}
+            loading={system.loading}
+            override={systemOverride}
+            overrideLabel={phase}
+            editorLabel={`${phase} system prompt override`}
+            emptyText="Not in the catalog — the built-in phase template runs."
+            testId="system-prompt-block"
+            onOverride={(seed) =>
+              onChange((prev) => ({
+                ...prev,
+                prompt_overrides: {
+                  ...prev.prompt_overrides,
+                  [systemOverrideKey(phase)]: { content: seed },
+                },
+              }))
+            }
+            onRevert={() =>
+              onChange((prev) => {
+                const next = { ...prev.prompt_overrides }
+                delete next[systemOverrideKey(phase)]
+                return { ...prev, prompt_overrides: next }
+              })
+            }
+            onEdit={(content) =>
+              onChange((prev) => ({
+                ...prev,
+                prompt_overrides: {
+                  ...prev.prompt_overrides,
+                  [systemOverrideKey(phase)]: { content },
+                },
+              }))
+            }
+          />
+
+          {appId ? (
+            <PromptBlock
+              label="Application prompt"
+              prompt={application.prompt}
+              loading={application.loading}
+              override={applicationOverride}
+              overrideLabel={appId}
+              editorLabel={`${appId} application prompt override`}
+              emptyText="No application prompt exists for this app yet."
+              emptyChipLabel="empty"
+              testId="application-prompt-block"
               onOverride={(seed) =>
                 onChange((prev) => ({
                   ...prev,
                   prompt_overrides: {
                     ...prev.prompt_overrides,
-                    [overrideKey(phase)]: { content: seed },
+                    [applicationOverrideKey(appId)]: { content: seed },
                   },
                 }))
               }
               onRevert={() =>
                 onChange((prev) => {
                   const next = { ...prev.prompt_overrides }
-                  delete next[overrideKey(phase)]
+                  delete next[applicationOverrideKey(appId)]
                   return { ...prev, prompt_overrides: next }
                 })
               }
@@ -242,14 +306,21 @@ export function PromptsStep({ draft, onChange }: StepProps) {
                   ...prev,
                   prompt_overrides: {
                     ...prev.prompt_overrides,
-                    [overrideKey(phase)]: { content },
+                    [applicationOverrideKey(appId)]: { content },
                   },
                 }))
               }
             />
-          </details>
-        )
-      })}
+          ) : (
+            <div className="glass-panel wizard-prompt-block">
+              <div className="wizard-row">
+                <span className="wizard-label">Application prompt</span>
+              </div>
+              <p className="wizard-caption">Select an application in Scope to load its requirements prompt.</p>
+            </div>
+          )}
+        </div>
+      )}
     </section>
   )
 }

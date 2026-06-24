@@ -7,7 +7,7 @@
  * - configurable shape: src/apex/graphs/pipeline/configurable.py
  *   PipelineConfigurable {project_id, app_id, environment_id, engine, phases?,
  *   gates{phase:{prompt_review,output_review}}, prompt_overrides{"phase/<p>":
- *   {content}}, pre_execution_context[]}.
+ *   {content}, "application/<app_id>": {content}}, pre_execution_context[]}.
  * - PHASE_PREREQUISITES semantics: src/apex/domain/pipeline.py — a prereq is
  *   satisfied if it runs EARLIER IN THE PLAN or already SUCCEEDED ON THE
  *   THREAD. New threads have no prior results, so a missing prereq is a
@@ -66,6 +66,8 @@ export interface WizardConfig {
   engine: EngineId
   /** null = all 7 phases (canonical order). */
   phases: PhaseName[] | null
+  /** UI focus for the Prompts tab; not sent to the backend. */
+  prompt_focus_phase: PhaseName | null
   gates_mode: GatesMode
   gates_custom?: GateMatrix
   golden_config_id?: string | null
@@ -90,7 +92,13 @@ export function emptyDraft(): WizardDraft {
     work_item_keys: [],
     document_ids: [],
     context_summary_ids: [],
-    config: { engine: 'sim', phases: null, gates_mode: 'all_gated', golden_config_id: null },
+    config: {
+      engine: 'sim',
+      phases: null,
+      prompt_focus_phase: PHASE_NAMES[0]!,
+      gates_mode: 'all_gated',
+      golden_config_id: null,
+    },
     prompt_overrides: {},
   }
 }
@@ -177,6 +185,9 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
         ? (engine as EngineId)
         : base.config.engine,
       phases: normalizePhases(config['phases']),
+      prompt_focus_phase: isPhaseName(config['prompt_focus_phase'])
+        ? config['prompt_focus_phase']
+        : base.config.prompt_focus_phase,
       gates_mode:
         gatesMode === 'all_gated' || gatesMode === 'all_auto' || gatesMode === 'custom'
           ? gatesMode
@@ -206,6 +217,15 @@ export const PHASE_PREREQUISITES: Record<PhaseName, readonly PhaseName[]> = {
 /** The run's phase plan in canonical order (null subset = all 7). */
 export function selectedPhases(config: WizardConfig): PhaseName[] {
   return config.phases ?? [...PHASE_NAMES]
+}
+
+/** Focused Prompts phase, coerced onto the currently selected phase plan. */
+export function focusedPromptPhase(config: WizardConfig): PhaseName | null {
+  const selected = selectedPhases(config)
+  if (config.prompt_focus_phase && selected.includes(config.prompt_focus_phase)) {
+    return config.prompt_focus_phase
+  }
+  return selected[0] ?? null
 }
 
 /**

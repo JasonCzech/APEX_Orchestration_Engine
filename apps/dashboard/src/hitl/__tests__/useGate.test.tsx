@@ -147,13 +147,17 @@ describe('useGate resume wiring', () => {
     expect(result.current.state.tag).toBe('submitting')
 
     await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
-    // Exact CAS body shape: {action:'modify', prompt:{system, user}}.
+    // Exact CAS body shape: {action:'modify', prompt:{system, user, application}}.
     expect(resume.captured.last()).toEqual({
       threadId,
       interruptId: 'int-a',
       body: {
         action: 'modify',
-        prompt: { system: 'EDITED SYSTEM', user: 'Plan load coverage for APEX-101.' },
+        prompt: {
+          system: 'EDITED SYSTEM',
+          user: 'Plan load coverage for APEX-101.',
+          application: 'Checkout must preserve carts during payment retries.',
+        },
       },
     })
     // The invalidated refetch still echoes int-a; the settled-gate suppression
@@ -199,7 +203,11 @@ describe('useGate resume wiring', () => {
     await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
     expect(ok.captured.last()?.body).toEqual({
       action: 'modify',
-      prompt: { system: 'You are the planning agent.', user: 'EDITED USER' },
+      prompt: {
+        system: 'You are the planning agent.',
+        user: 'EDITED USER',
+        application: 'Checkout must preserve carts during payment retries.',
+      },
     })
   })
 })

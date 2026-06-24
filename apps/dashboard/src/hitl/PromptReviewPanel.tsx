@@ -1,5 +1,5 @@
 /**
- * prompt_review gate panel (plan 2.a): editable system/user prompt editors
+ * prompt_review gate panel (plan 2.a): editable system/user/application prompt editors
  * (CodeMirror — same surface family as components/viewers/CodeViewer, but
  * writable when payload.editable allows), provenance chip from
  * payload.prompt.source, collapsible context-packet list, and tool chips.
@@ -115,6 +115,15 @@ export function PromptReviewPanel({
           editable={editable}
           onChange={(patch) => onEdit({ prompt: patch })}
         />
+        {payload.prompt.application !== null && payload.prompt.application !== undefined && (
+          <PromptEditor
+            field="application"
+            label="Application prompt"
+            value={draft.application ?? ''}
+            editable={editable}
+            onChange={(patch) => onEdit({ prompt: patch })}
+          />
+        )}
       </div>
 
       <div className="prompt-review-sidebar">

@@ -15,6 +15,7 @@ import type { StepProps } from '../NewRunWizard'
 import {
   allGatedMatrix,
   ENGINES,
+  focusedPromptPhase,
   normalizeGateMatrix,
   normalizePhases,
   phaseDependencyHints,
@@ -53,6 +54,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
   const assistants = useAssistants()
   const config = draft.config
   const phases = selectedPhases(config)
+  const promptFocus = focusedPromptPhase(config)
   const hints = phaseDependencyHints(phases)
 
   function patchConfig(patch: Partial<WizardConfig>) {
@@ -74,16 +76,36 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       if (Array.isArray(bundle['phases'])) {
         next.phases = normalizePhases(bundle['phases'])
       }
+      const nextPhases = selectedPhases(next)
+      if (!next.prompt_focus_phase || !nextPhases.includes(next.prompt_focus_phase)) {
+        next.prompt_focus_phase = nextPhases[0] ?? null
+      }
       return { ...prev, config: next }
     })
   }
 
   function togglePhase(phase: PhaseName) {
     const current = new Set(phases)
-    if (current.has(phase)) current.delete(phase)
-    else current.add(phase)
+    let nextFocus: PhaseName | null = promptFocus
+
+    if (!current.has(phase)) {
+      current.add(phase)
+      nextFocus = phase
+    } else if (promptFocus !== phase) {
+      patchConfig({ prompt_focus_phase: phase })
+      return
+    } else {
+      current.delete(phase)
+    }
+
     const next = PHASE_NAMES.filter((name) => current.has(name))
-    patchConfig({ phases: next.length === PHASE_NAMES.length ? null : next })
+    if (nextFocus !== null && !next.includes(nextFocus)) {
+      nextFocus = next[0] ?? null
+    }
+    patchConfig({
+      phases: next.length === PHASE_NAMES.length ? null : next,
+      prompt_focus_phase: nextFocus,
+    })
   }
 
   function setGatesMode(mode: GatesMode) {
@@ -205,8 +227,9 @@ export function ConfigStep({ draft, onChange }: StepProps) {
               type="button"
               className={`wizard-phase-toggle${
                 phases.includes(phase) ? ' wizard-phase-toggle--on' : ''
-              }`}
+              }${promptFocus === phase ? ' wizard-phase-toggle--focused' : ''}`}
               aria-pressed={phases.includes(phase)}
+              aria-current={promptFocus === phase ? 'step' : undefined}
               onClick={() => togglePhase(phase)}
             >
               {phaseLabel(phase)}

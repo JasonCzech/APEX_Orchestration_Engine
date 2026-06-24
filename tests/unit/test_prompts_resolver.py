@@ -41,6 +41,7 @@ async def test_builtin_when_catalog_empty() -> None:
     )
     assert resolved["system"] == DEFAULT_PHASE_PROMPTS["story_analysis/system"]
     assert resolved["user"] == "Title: Demo\nRequest: Load test checkout"
+    assert resolved["application"] is None
     assert resolved["source"] == {
         "origin": "catalog",
         "ref": "phase/story_analysis@builtin",
@@ -62,6 +63,44 @@ async def test_catalog_beats_builtin_with_version_refs() -> None:
     assert resolved["source"]["ref"] == (
         "phase/story_analysis/system@v3,phase/story_analysis/user@v2"
     )
+
+
+async def test_application_prompt_loaded_for_selected_app() -> None:
+    store = FakeStore(
+        {
+            ("phase", "story_analysis/system"): version("Catalog system.", 3),
+            ("application", "app-checkout"): version("Checkout requires p95 under 300ms.", 4),
+        }
+    )
+    resolved = await resolve_phase_prompt(
+        Phase.STORY_ANALYSIS,
+        cfg(app_id="app-checkout"),
+        variables=VARS,
+        store=store,
+    )
+    assert resolved["application"] == "Checkout requires p95 under 300ms."
+    assert resolved["source"]["origin"] == "catalog"
+    assert resolved["source"]["ref"] == (
+        "phase/story_analysis/system@v3,application/app-checkout@v4"
+    )
+
+
+async def test_application_override_beats_catalog() -> None:
+    store = FakeStore(
+        {("application", "app-checkout"): version("Catalog app requirements.", 4)}
+    )
+    resolved = await resolve_phase_prompt(
+        Phase.STORY_ANALYSIS,
+        cfg(
+            app_id="app-checkout",
+            prompt_overrides={"application/app-checkout": {"content": "Run-specific app needs."}},
+        ),
+        variables=VARS,
+        store=store,
+    )
+    assert resolved["application"] == "Run-specific app needs."
+    assert resolved["source"]["origin"] == "run_override"
+    assert resolved["source"]["ref"] == "application/app-checkout@override"
 
 
 async def test_partial_catalog_falls_back_per_part() -> None:

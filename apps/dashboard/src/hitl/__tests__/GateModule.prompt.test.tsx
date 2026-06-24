@@ -84,6 +84,10 @@ describe('GateModule prompt_review', () => {
     )
     const systemEditor = within(screen.getByTestId('gate-editor-system')).getByTestId('codemirror')
     expect(systemEditor).toHaveValue('You are the planning agent.')
+    const applicationEditor = within(screen.getByTestId('gate-editor-application')).getByTestId(
+      'codemirror',
+    )
+    expect(applicationEditor).toHaveValue('Checkout must preserve carts during payment retries.')
 
     // Pristine: no dirty chip, base execute action is available.
     expect(screen.queryByTestId('gate-dirty-chip')).not.toBeInTheDocument()
@@ -91,6 +95,9 @@ describe('GateModule prompt_review', () => {
 
     // Edit the system prompt -> dirty diff indicator + edited execute label.
     fireEvent.change(systemEditor, { target: { value: 'You are the EDITED planning agent.' } })
+    fireEvent.change(applicationEditor, {
+      target: { value: 'Checkout must preserve carts and payment retry telemetry.' },
+    })
     expect(await screen.findByTestId('gate-dirty-chip')).toHaveTextContent('edited')
     const modify = screen.getByRole('button', { name: /Execute Edited Prompt/i })
     expect(modify).toBeEnabled()
@@ -105,6 +112,7 @@ describe('GateModule prompt_review', () => {
           prompt: {
             system: 'You are the EDITED planning agent.',
             user: 'Plan load coverage for APEX-101.',
+            application: 'Checkout must preserve carts and payment retry telemetry.',
           },
         },
       }),

@@ -50,6 +50,7 @@ export const ReviewPromptSchema = z
   .object({
     system: z.string().nullable(),
     user: z.string().nullable(),
+    application: z.string().nullable().optional(),
     source: ReviewPromptSourceSchema,
   })
   .passthrough();
@@ -150,6 +151,7 @@ export const PromptEditSchema = z
   .object({
     system: z.string().optional(),
     user: z.string().optional(),
+    application: z.string().optional(),
   })
   .passthrough();
 export type PromptEdit = z.infer<typeof PromptEditSchema>;

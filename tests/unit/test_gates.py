@@ -26,6 +26,7 @@ def test_prompt_review_payload_shape() -> None:
     assert payload["prompt"] == {
         "system": "s",
         "user": "u",
+        "application": None,
         "source": {"origin": "catalog", "ref": "phase/story_analysis@stub"},
     }
     assert payload["context_packets"] == [

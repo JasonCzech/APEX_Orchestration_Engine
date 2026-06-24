@@ -117,11 +117,12 @@ export const ResolvedPromptSourceSchema = z
   .passthrough();
 export type ResolvedPromptSource = z.infer<typeof ResolvedPromptSourceSchema>;
 
-/** Extra phase-entry key written by prepare/prompt_gate: {system, user}. */
+/** Extra phase-entry key written by prepare/prompt_gate: {system, user, application}. */
 export const ResolvedPromptSchema = z
   .object({
     system: z.string().nullish(),
     user: z.string().nullish(),
+    application: z.string().nullish(),
   })
   .passthrough();
 export type ResolvedPrompt = z.infer<typeof ResolvedPromptSchema>;
