@@ -4,6 +4,7 @@
  * exactly what becomes active.
  */
 import { isApiError } from '@/api/errors'
+import { Dialog } from '@/components/Dialog'
 
 export function RollbackConfirm({
   version,
@@ -21,22 +22,15 @@ export function RollbackConfirm({
   onCancel: () => void
 }) {
   return (
-    <div
-      className="prompt-modal-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !pending) onCancel()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !pending) onCancel()
-      }}
+    <Dialog
+      overlayClassName="prompt-modal-overlay"
+      className="prompt-modal prompt-modal-narrow glass-panel"
+      ariaLabel={`Set v${version} active`}
+      onClose={onCancel}
+      closeOnBackdrop={!pending}
+      closeOnEscape={!pending}
     >
-      <div
-        className="prompt-modal prompt-modal-narrow glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Set v${version} active`}
-      >
-        <h2 className="prompt-modal-title">Set v{version} active?</h2>
+      <h2 className="prompt-modal-title">Set v{version} active?</h2>
         <p className="prompt-modal-caption">
           The active pointer moves to <strong>v{version}</strong>
           {note ? (
@@ -64,7 +58,6 @@ export function RollbackConfirm({
             {pending ? 'Setting active…' : `Set v${version} active`}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }

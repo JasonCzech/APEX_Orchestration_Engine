@@ -91,6 +91,7 @@ from typing import Any
 import httpx
 import structlog
 
+from apex.adapters.http_resilience import CircuitBreaker, CircuitOpenError, resilient_request
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     LoadTestSpec,
@@ -234,6 +235,7 @@ class LoadRunnerExecutionEngine:
         self._http: httpx.AsyncClient | None = None
         self._http_loop: asyncio.AbstractEventLoop | None = None
         self._session_ok = False  # LWSSO cookie present in the current client's jar
+        self._breaker = CircuitBreaker(f"loadrunner:{conn.id}")
 
     # ── http plumbing ─────────────────────────────────────────────────────────
 
@@ -290,14 +292,23 @@ class LoadRunnerExecutionEngine:
         params: dict[str, Any] | None = None,
         timeout_s: float | None = None,
     ) -> httpx.Response:
+        breaker = (
+            self._breaker
+            if method.upper() == "GET" and path.startswith(f"{self._project_base}/Runs/")
+            else None
+        )
         try:
-            return await client.request(
+            return await resilient_request(
+                client,
                 method,
                 path,
                 json=json_body,
                 params=params,
                 timeout=timeout_s if timeout_s is not None else _TIMEOUT_S,
+                breaker=breaker,
             )
+        except CircuitOpenError as exc:
+            raise RuntimeError(f"loadrunner request circuit is open for {method} {path}") from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(
                 f"loadrunner request {method} {path} failed before a response arrived: {exc}"

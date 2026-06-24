@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 
 import { useThreadState, type GateInterrupt } from '@/api/hooks/useThreadState'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { GateModule } from '@/hitl/GateModule'
 
@@ -298,27 +299,24 @@ export function ApprovalsInboxPage() {
       )}
 
       {overlayOpen && (
-        <div className="approvals-overlay-backdrop" onClick={() => setOverlayOpen(false)}>
-          <div
-            className="glass-panel approvals-shortcuts"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Keyboard shortcuts"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h3>Keyboard shortcuts</h3>
-            <dl>
-              {SHORTCUTS.map(([keys, what]) => (
-                <div className="approvals-shortcut-row" key={keys}>
-                  <dt>
-                    <kbd>{keys}</kbd>
-                  </dt>
-                  <dd>{what}</dd>
-                </div>
-              ))}
-            </dl>
-          </div>
-        </div>
+        <Dialog
+          overlayClassName="approvals-overlay-backdrop"
+          className="glass-panel approvals-shortcuts"
+          ariaLabel="Keyboard shortcuts"
+          onClose={() => setOverlayOpen(false)}
+        >
+          <h3>Keyboard shortcuts</h3>
+          <dl>
+            {SHORTCUTS.map(([keys, what]) => (
+              <div className="approvals-shortcut-row" key={keys}>
+                <dt>
+                  <kbd>{keys}</kbd>
+                </dt>
+                <dd>{what}</dd>
+              </div>
+            ))}
+          </dl>
+        </Dialog>
       )}
     </div>
   )

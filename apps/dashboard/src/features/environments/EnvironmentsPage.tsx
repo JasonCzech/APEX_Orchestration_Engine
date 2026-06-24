@@ -20,6 +20,7 @@ import {
 } from '@/api/hooks/useEnvironments'
 import { useConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
 import { formatRelative } from '@/utils/time'
@@ -247,22 +248,13 @@ function DeleteEnvironmentModal({
   }
 
   return (
-    <div
-      className="env-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close()
-      }}
+    <Dialog
+      overlayClassName="env-overlay"
+      className="env-modal glass-panel"
+      ariaLabel={`Delete environment ${environment.name}`}
+      onClose={close}
     >
-      <div
-        className="env-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Delete environment ${environment.name}`}
-      >
-        <h2 className="env-panel-title">Delete environment</h2>
+      <h2 className="env-panel-title">Delete environment</h2>
         <p className="env-modal-caption">
           This permanently removes <strong>{environment.name}</strong> and its scan history. Type
           the environment name to confirm.
@@ -298,8 +290,7 @@ function DeleteEnvironmentModal({
             {remove.isPending ? 'Deleting…' : 'Delete environment'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 

@@ -62,6 +62,7 @@ from typing import Any
 import httpx
 import structlog
 
+from apex.adapters.http_resilience import CircuitBreaker, CircuitOpenError, resilient_request
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     LoadTestSpec,
@@ -319,6 +320,7 @@ class ApexLoadExecutionEngine:
         self._headers = {"X-APEXLoad-API-Key": secret.value, "Accept": "application/json"}
         self._http: httpx.AsyncClient | None = None
         self._http_loop: asyncio.AbstractEventLoop | None = None
+        self._breaker = CircuitBreaker(f"apex_load:{conn.id}")
 
     # ── http plumbing ─────────────────────────────────────────────────────────
 
@@ -349,10 +351,21 @@ class ApexLoadExecutionEngine:
         not_found: str | None = None,
     ) -> httpx.Response:
         request_timeout = timeout_s if timeout_s is not None else httpx.USE_CLIENT_DEFAULT
+        breaker = (
+            self._breaker if method.upper() == "GET" and path.startswith("/api/v1/tests/") else None
+        )
         try:
-            response = await self._client().request(
-                method, path, json=json, params=params, timeout=request_timeout
+            response = await resilient_request(
+                self._client(),
+                method,
+                path,
+                json=json,
+                params=params,
+                timeout=request_timeout,
+                breaker=breaker,
             )
+        except CircuitOpenError as exc:
+            raise RuntimeError(f"apex load request circuit is open for {method} {path}") from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(
                 f"apex load request {method} {path} failed before a response arrived: {exc}"

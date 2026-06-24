@@ -13,6 +13,7 @@ import {
 } from '@/api/hooks/useDocuments'
 import { useConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
@@ -26,22 +27,15 @@ function DeleteDocumentModal({ doc, onClose }: { doc: DocumentOut; onClose: () =
   const remove = useDeleteDocument()
 
   return (
-    <div
-      className="ctx-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !remove.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !remove.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="ctx-overlay"
+      className="ctx-modal glass-panel"
+      ariaLabel={`Delete document ${doc.name}`}
+      onClose={onClose}
+      closeOnBackdrop={!remove.isPending}
+      closeOnEscape={!remove.isPending}
     >
-      <div
-        className="ctx-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Delete document ${doc.name}`}
-      >
-        <h2 className="ctx-modal-title">Delete document</h2>
+      <h2 className="ctx-modal-title">Delete document</h2>
         <p className="ctx-modal-caption">
           This permanently removes <strong>{doc.name}</strong> ({formatBytes(doc.size_bytes)}).
           Runs that already consumed it keep their copies.
@@ -69,8 +63,7 @@ function DeleteDocumentModal({ doc, onClose }: { doc: DocumentOut; onClose: () =
             {remove.isPending ? 'Deleting…' : 'Delete document'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 

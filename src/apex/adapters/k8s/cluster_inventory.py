@@ -24,6 +24,7 @@ from typing import Any
 
 import httpx
 
+from apex.adapters.http_resilience import resilient_request
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import EnvironmentSnapshot, EnvRef, SecretValue, ServiceInfo
 
@@ -130,7 +131,7 @@ class KubernetesClusterInventoryAdapter:
     ) -> dict[str, Any] | None:
         client = self._client_for_loop()
         try:
-            response = await client.get(path)
+            response = await resilient_request(client, "GET", path)
         except httpx.HTTPError as exc:
             raise RuntimeError(
                 f"kubernetes API request failed for GET {path} on {self._base_url}: "

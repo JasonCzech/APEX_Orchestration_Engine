@@ -15,6 +15,7 @@ import {
 } from '@/api/hooks/usePrompts'
 import { isApiError } from '@/api/errors'
 import { RequireRole } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
@@ -122,22 +123,15 @@ function CreatePromptPanel({
   }
 
   return (
-    <div
-      className="prompt-modal-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !create.isPending) onClose()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape' && !create.isPending) onClose()
-      }}
+    <Dialog
+      overlayClassName="prompt-modal-overlay"
+      className="prompt-modal glass-panel"
+      ariaLabel="New prompt"
+      onClose={onClose}
+      closeOnBackdrop={!create.isPending}
+      closeOnEscape={!create.isPending}
     >
-      <div
-        className="prompt-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label="New prompt"
-      >
-        <h2 className="prompt-modal-title">New prompt</h2>
+      <h2 className="prompt-modal-title">New prompt</h2>
         <div className="prompt-form-grid">
           <label className="prompt-field">
             <span className="prompt-field-label">Namespace</span>
@@ -216,8 +210,7 @@ function CreatePromptPanel({
             {create.isPending ? 'Creating…' : 'Create prompt'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 

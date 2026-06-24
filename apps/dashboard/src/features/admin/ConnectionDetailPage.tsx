@@ -22,6 +22,7 @@ import {
   type Connection,
   type HostMappingOut,
 } from '@/api/hooks/useConnections'
+import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
 import { kindLabel, parseJsonObject } from './adminLogic'
@@ -364,22 +365,13 @@ function DeleteConnectionModal({
   }
 
   return (
-    <div
-      className="adm-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) close()
-      }}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') close()
-      }}
+    <Dialog
+      overlayClassName="adm-overlay"
+      className="adm-modal glass-panel"
+      ariaLabel={`Delete connection ${connection.name}`}
+      onClose={close}
     >
-      <div
-        className="adm-modal glass-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Delete connection ${connection.name}`}
-      >
-        <h2 className="adm-panel-title">Delete connection</h2>
+      <h2 className="adm-panel-title">Delete connection</h2>
         <p className="adm-modal-caption">
           This permanently removes <strong>{connection.name}</strong> and its host mappings. Type
           the connection name to confirm.
@@ -419,8 +411,7 @@ function DeleteConnectionModal({
             {remove.isPending ? 'Deleting…' : 'Delete connection'}
           </button>
         </div>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 

@@ -19,8 +19,8 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
       - run: uv python install 3.12
@@ -39,8 +39,8 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
       - run: uv python install 3.12
@@ -52,19 +52,19 @@ jobs:
           mkdir -p dist
           docker save "apex-orchestration-engine:${GITHUB_REF_NAME}" \
             | gzip > "dist/apex-orchestration-engine-${GITHUB_REF_NAME}.tar.gz"
-      - uses: anchore/sbom-action@v0
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           image: "apex-orchestration-engine:${GITHUB_REF_NAME}"
           output-file: "dist/apex-orchestration-engine-${GITHUB_REF_NAME}.spdx.json"
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: "dist/apex-orchestration-engine-${GITHUB_REF_NAME}.tar.gz"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: server-image
           path: dist/*
           retention-days: 30
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
       - name: Detect registry credentials
         id: registry
         env:
@@ -95,8 +95,8 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -110,16 +110,16 @@ jobs:
         run: |
           mkdir -p dist
           (cd packages/api-client && npm pack --pack-destination ../../dist)
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: "dist/*.tgz"
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
       - name: Sign npm tarball
         run: |
           for artifact in dist/*.tgz; do
             cosign sign-blob --yes --bundle "${artifact}.bundle" "$artifact"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: api-client
           path: dist/*
@@ -151,8 +151,8 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/setup-helm@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
       - name: Helm lint
         run: helm lint deploy/helm/apex-orchestration-engine
       - name: Helm package
@@ -161,20 +161,20 @@ jobs:
           helm package deploy/helm/apex-orchestration-engine \
             --app-version "${GITHUB_REF_NAME#v}" \
             --destination dist
-      - uses: anchore/sbom-action@v0
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
           path: deploy/helm/apex-orchestration-engine
           output-file: "dist/apex-orchestration-engine-chart-${GITHUB_REF_NAME}.spdx.json"
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: "dist/*.tgz"
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9 # v3
       - name: Sign Helm chart
         run: |
           for artifact in dist/*.tgz; do
             cosign sign-blob --yes --bundle "${artifact}.bundle" "$artifact"
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: helm-chart
           path: dist/*

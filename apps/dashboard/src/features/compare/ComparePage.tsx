@@ -107,7 +107,7 @@ function AddRunPanel({ exclude, onAdd }: { exclude: string[]; onAdd: (id: string
   const { data, isPending, isError } = usePipelines({ limit: 10 })
   const items = (data?.items ?? []).filter((run) => !exclude.includes(run.thread_id))
   return (
-    <div className="compare-picker-panel glass-panel" role="dialog" aria-label="Add a run to compare">
+    <div className="compare-picker-panel glass-panel" aria-label="Add a run to compare">
       <span className="compare-picker-title">Recent runs</span>
       {isPending ? (
         <span className="compare-picker-hint">Loading…</span>

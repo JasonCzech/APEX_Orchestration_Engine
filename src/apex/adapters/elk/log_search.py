@@ -41,6 +41,7 @@ from typing import Any
 import httpx
 from pydantic import Field
 
+from apex.adapters.http_resilience import resilient_request, retry_policy
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     LogEntry,
@@ -244,7 +245,13 @@ class ElasticsearchLogSearchAdapter:
         body = build_search_body(query, window, page)
         client = self._get_client()
         try:
-            response = await client.post(f"/{self._index}/_search", json=body)
+            response = await resilient_request(
+                client,
+                "POST",
+                f"/{self._index}/_search",
+                json=body,
+                retry=retry_policy(retry_methods={"POST"}),
+            )
         except httpx.HTTPError as exc:
             raise RuntimeError(
                 f"elasticsearch search request failed ({exc.__class__.__name__}): {exc}; "

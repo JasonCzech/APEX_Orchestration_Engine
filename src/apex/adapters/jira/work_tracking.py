@@ -38,6 +38,7 @@ from typing import Any
 
 import httpx
 
+from apex.adapters.http_resilience import resilient_request
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     Enrichment,
@@ -237,7 +238,9 @@ class JiraWorkTrackingAdapter:
         not_found: str | None = None,
     ) -> httpx.Response:
         try:
-            response = await self._client().request(method, path, json=json, params=params)
+            response = await resilient_request(
+                self._client(), method, path, json=json, params=params
+            )
         except httpx.HTTPError as exc:
             raise RuntimeError(
                 f"jira request {method} {path} failed before a response arrived: {exc}"

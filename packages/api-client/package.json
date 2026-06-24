@@ -11,6 +11,6 @@
     "generate": "openapi-typescript ../../docs/api/apex-v1.openapi.json -o src/schema.d.ts"
   },
   "devDependencies": {
-    "openapi-typescript": "^7.13.0"
+    "openapi-typescript": "7.13.0"
   }
 }

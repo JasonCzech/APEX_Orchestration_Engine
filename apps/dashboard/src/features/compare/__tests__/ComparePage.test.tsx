@@ -165,7 +165,7 @@ describe('ComparePage', () => {
     await screen.findByTestId(`compare-col-${RUN_A_ID}`)
     await user.click(screen.getByRole('button', { name: 'Add run' }))
 
-    const panel = within(await screen.findByRole('dialog', { name: 'Add a run to compare' }))
+    const panel = within(await screen.findByLabelText('Add a run to compare'))
     expect(await panel.findByText('Throughput probe')).toBeInTheDocument()
     // Selected runs are excluded from the picker.
     expect(panel.queryByText('Checkout latency regression')).not.toBeInTheDocument()
