@@ -172,6 +172,9 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   const hint = options.gateHint ?? null
   const handledHintRef = useRef<GateHintLike>(null)
   useEffect(() => {
+    handledHintRef.current = null
+  }, [threadId])
+  useEffect(() => {
     if (!hint) {
       handledHintRef.current = null
       return

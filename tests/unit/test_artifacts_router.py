@@ -12,8 +12,9 @@ from apex.adapters.stubs.artifact_store import MemoryArtifactStore
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
-from apex.persistence.models import Document
-from apex.routers.artifacts import router
+from apex.persistence.models import Document, EngineRun
+from apex.routers import artifacts as artifacts_router
+from apex.routers.artifacts import get_engine_runs_repository, router
 from apex.services.documents import get_artifact_store, get_documents_repository
 
 
@@ -26,6 +27,34 @@ class FakeDocumentsRepository:
             if row.artifact_key == artifact_key:
                 return row
         return None
+
+
+class FakeEngineRunsRepository:
+    def __init__(self) -> None:
+        self.rows: list[EngineRun] = []
+
+    async def get_by_external_run_id(
+        self,
+        external_run_id: str,
+        *,
+        allowed_project_ids: tuple[str, ...] | None = None,
+    ) -> EngineRun | None:
+        for row in self.rows:
+            if row.external_run_id != external_run_id:
+                continue
+            if allowed_project_ids is not None and row.project_id not in allowed_project_ids:
+                continue
+            return row
+        return None
+
+
+class FakeThreads:
+    async def get(self, thread_id: str) -> dict[str, str]:
+        return {"thread_id": thread_id}
+
+
+class FakeLoopbackClient:
+    threads = FakeThreads()
 
 
 @pytest.fixture(autouse=True)
@@ -45,11 +74,18 @@ def identity(scopes: list[ScopeRef] | None = None, role: Role = Role.VIEWER) -> 
     )
 
 
-def make_app(repo: FakeDocumentsRepository, who: ConsumerIdentity | None) -> FastAPI:
+def make_app(
+    repo: FakeDocumentsRepository,
+    who: ConsumerIdentity | None,
+    engine_repo: FakeEngineRunsRepository | None = None,
+) -> FastAPI:
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(router, prefix="/v1")
     app.dependency_overrides[get_documents_repository] = lambda: repo
+    app.dependency_overrides[get_engine_runs_repository] = lambda: (
+        engine_repo or FakeEngineRunsRepository()
+    )
     app.dependency_overrides[get_artifact_store] = lambda: MemoryArtifactStore()
     if who is not None:
         app.dependency_overrides[get_current_identity] = lambda: who
@@ -72,6 +108,22 @@ def document_row(doc_id: str, key: str, media_type: str, project_id: str | None)
     )
 
 
+def engine_run_row(thread_id: str, external_run_id: str, project_id: str | None) -> EngineRun:
+    return EngineRun(
+        id=f"{thread_id}-1",
+        thread_id=thread_id,
+        project_id=project_id,
+        attempt=1,
+        engine="sim",
+        external_run_id=external_run_id,
+        handle={},
+        status="completed",
+        started_at=datetime.now(UTC),
+        ended_at=None,
+        summary=None,
+    )
+
+
 def test_get_artifact_streams_document_bytes_with_row_media_type() -> None:
     key = "documents/d1/report.html"
     put(key, b"<html>report</html>", content_type="text/html")
@@ -85,7 +137,8 @@ def test_get_artifact_streams_document_bytes_with_row_media_type() -> None:
     assert response.headers["content-type"].startswith("text/html")
 
 
-def test_get_artifact_transcript_key_is_text_plain() -> None:
+def test_get_artifact_transcript_key_is_text_plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(artifacts_router, "loopback_client", lambda _api_key: FakeLoopbackClient())
     put("transcripts/t-1/execution.txt", b"phase log")
     app = make_app(FakeDocumentsRepository(), identity())
     with TestClient(app) as client:
@@ -95,13 +148,43 @@ def test_get_artifact_transcript_key_is_text_plain() -> None:
     assert response.headers["content-type"].startswith("text/plain")
 
 
-def test_get_artifact_unknown_key_falls_back_to_octet_stream() -> None:
+def test_get_artifact_unknown_key_is_404() -> None:
     put("blobs/raw.bin", b"\x00\x01\x02")
     app = make_app(FakeDocumentsRepository(), identity())
     with TestClient(app) as client:
         response = client.get("/v1/artifacts/blobs/raw.bin")
-    assert response.content == b"\x00\x01\x02"
-    assert response.headers["content-type"].startswith("application/octet-stream")
+    assert response.status_code == 404
+
+
+def test_get_artifact_engine_key_requires_project_scope() -> None:
+    key = "engine-runs/run-p1/results.json"
+    put(key, b"{}", content_type="application/json")
+    engine_repo = FakeEngineRunsRepository()
+    engine_repo.rows.append(engine_run_row("t-1", "run-p1", "p1"))
+    app = make_app(
+        FakeDocumentsRepository(),
+        identity(scopes=[ScopeRef(project_id="p1")]),
+        engine_repo,
+    )
+    with TestClient(app) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+    assert response.status_code == 200
+    assert response.content == b"{}"
+
+
+def test_get_artifact_engine_key_out_of_scope_is_404() -> None:
+    key = "engine-runs/run-p2/results.json"
+    put(key, b"{}", content_type="application/json")
+    engine_repo = FakeEngineRunsRepository()
+    engine_repo.rows.append(engine_run_row("t-2", "run-p2", "p2"))
+    app = make_app(
+        FakeDocumentsRepository(),
+        identity(scopes=[ScopeRef(project_id="p1")]),
+        engine_repo,
+    )
+    with TestClient(app) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+    assert response.status_code == 404
 
 
 def test_get_artifact_missing_is_404_problem() -> None:

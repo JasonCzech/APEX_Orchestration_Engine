@@ -16,7 +16,7 @@ import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 import { getLangGraphClient } from '@/api/langgraphClient'
 import { queryKeys } from '@/api/queryKeys'
 
-import { ALL_AUTO_GATES } from './launchRun'
+import { ALL_AUTO_GATES, recommendedRecursionLimit } from './launchRun'
 
 /** Gates mode for the pre-flight modal's segmented control. */
 export type GatesMode = 'inherit' | 'gated' | 'auto'
@@ -63,9 +63,10 @@ export interface RerunResult {
 
 async function rerunPhases({ threadId, phases, gatesMode }: RerunInput): Promise<RerunResult> {
   const client = await getLangGraphClient()
+  const configurable = { ...buildRerunConfigurable(phases, gatesMode) }
   const run = await client.runs.create(threadId, 'pipeline', {
     input: {},
-    config: { configurable: { ...buildRerunConfigurable(phases, gatesMode) } },
+    config: { recursion_limit: recommendedRecursionLimit(), configurable },
     streamMode: ['updates', 'messages-tuple', 'custom'],
     streamSubgraphs: true,
     streamResumable: true,

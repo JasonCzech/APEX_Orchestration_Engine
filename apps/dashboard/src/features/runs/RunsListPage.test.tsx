@@ -254,12 +254,13 @@ describe('RunsListPage', () => {
     await waitFor(() => expect(captured.last()?.get('status')).toBe('interrupted'))
   })
 
-  it('navigates to the run detail when a row is clicked', async () => {
+  it('navigates to the run detail from the run link', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     const user = userEvent.setup()
     renderRunsPage()
 
-    await user.click(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
+    const row = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
+    await user.click(row.getByRole('link', { name: /Checkout latency regression/ }))
     expect(await screen.findByTestId('run-detail')).toHaveTextContent(`/runs/${RUN_BUSY.thread_id}`)
   })
 })

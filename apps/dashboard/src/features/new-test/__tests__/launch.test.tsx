@@ -49,7 +49,7 @@ describe('wizard launch', () => {
     expect(threadsCreate).toHaveBeenCalledWith({ metadata: json['metadata'] })
     expect(runsCreate).toHaveBeenCalledWith('thread-new', 'pipeline', {
       input: json['input'],
-      config: { configurable: json['configurable'] },
+      config: { recursion_limit: expect.any(Number), configurable: json['configurable'] },
       streamMode: ['updates', 'messages-tuple', 'custom'],
       streamSubgraphs: true,
       streamResumable: true,

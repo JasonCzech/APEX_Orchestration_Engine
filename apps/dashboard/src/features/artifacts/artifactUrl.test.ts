@@ -4,8 +4,8 @@ import { artifactKeyFromUri, artifactProxyUrl } from './artifactUrl'
 
 describe('artifactKeyFromUri', () => {
   it('treats everything after memory:// as the store key (no host segment)', () => {
-    expect(artifactKeyFromUri('memory://transcripts/execution/attempt-1')).toBe(
-      'transcripts/execution/attempt-1',
+    expect(artifactKeyFromUri('memory://transcripts/thread-1/execution/attempt-1')).toBe(
+      'transcripts/thread-1/execution/attempt-1',
     )
     expect(artifactKeyFromUri('memory://single-key')).toBe('single-key')
   })
@@ -30,8 +30,8 @@ describe('artifactKeyFromUri', () => {
 
 describe('artifactProxyUrl', () => {
   it('builds the same-origin /v1/artifacts proxy URL with literal slashes', () => {
-    expect(artifactProxyUrl('memory://transcripts/execution/attempt-1')).toBe(
-      `${window.location.origin}/v1/artifacts/transcripts/execution/attempt-1`,
+    expect(artifactProxyUrl('memory://transcripts/thread-1/execution/attempt-1')).toBe(
+      `${window.location.origin}/v1/artifacts/transcripts/thread-1/execution/attempt-1`,
     )
     expect(artifactProxyUrl('s3://apex-artifacts/reports/r-1.json')).toBe(
       `${window.location.origin}/v1/artifacts/reports/r-1.json`,

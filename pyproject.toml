@@ -27,6 +27,8 @@ dev = [
     "pyright>=1.1.380",
     "langgraph-checkpoint-postgres>=3.1.0",
     "respx>=0.23.1",
+    "pytest-cov>=7.1.0",
+    "pip-audit>=2.10.1",
 ]
 
 [tool.uv]

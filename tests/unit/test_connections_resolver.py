@@ -100,6 +100,13 @@ async def test_explicit_id_scoped_to_other_project_raises() -> None:
         await resolver.resolve(PortKind.WORK_TRACKING, connection_id="other-wt", project_id="demo")
 
 
+async def test_explicit_id_scoped_project_requires_project_context() -> None:
+    store = FakeStore([stored("demo-wt", project_id="demo")])
+    resolver = ConnectionResolver(store=store)
+    with pytest.raises(ValueError, match="not None"):
+        await resolver.resolve(PortKind.WORK_TRACKING, connection_id="demo-wt")
+
+
 async def test_explicit_id_disabled_raises() -> None:
     store = FakeStore([stored("off-wt", enabled=False)])
     resolver = ConnectionResolver(store=store)

@@ -67,7 +67,11 @@ class ConsumerScope(Base):
     """A project (optionally narrowed to one app) an API consumer may act on."""
 
     __tablename__ = "consumer_scopes"
-    __table_args__ = (UniqueConstraint("consumer_id", "project_id", "app_id"),)
+    __table_args__ = (
+        UniqueConstraint("consumer_id", "project_id", "app_id"),
+        Index("ix_consumer_scopes_consumer_id", "consumer_id"),
+        Index("ix_consumer_scopes_project_app", "project_id", "app_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     consumer_id: Mapped[str] = mapped_column(ForeignKey("api_consumers.id", ondelete="CASCADE"))
@@ -84,7 +88,10 @@ class ConsumerScope(Base):
 
 class Prompt(Base):
     __tablename__ = "prompts"
-    __table_args__ = (UniqueConstraint("namespace", "key"),)
+    __table_args__ = (
+        UniqueConstraint("namespace", "key"),
+        Index("ix_prompts_active_version_id", "active_version_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     namespace: Mapped[str] = mapped_column(String(255))  # e.g. "phase", "observability"
@@ -111,7 +118,10 @@ class PromptVersion(Base):
     """Immutable prompt content. Never updated or deleted while the prompt exists."""
 
     __tablename__ = "prompt_versions"
-    __table_args__ = (UniqueConstraint("prompt_id", "version"),)
+    __table_args__ = (
+        UniqueConstraint("prompt_id", "version"),
+        Index("ix_prompt_versions_prompt_id", "prompt_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     prompt_id: Mapped[str] = mapped_column(
@@ -132,7 +142,10 @@ class PromptVersion(Base):
 
 class Application(Base):
     __tablename__ = "applications"
-    __table_args__ = (UniqueConstraint("project_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "name"),
+        Index("ix_applications_project_id", "project_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     project_id: Mapped[str] = mapped_column(String(255))
@@ -153,7 +166,10 @@ class Environment(Base):
     """An environment reference (legacy 'environment configurations')."""
 
     __tablename__ = "environments"
-    __table_args__ = (UniqueConstraint("application_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("application_id", "name"),
+        Index("ix_environments_application_id", "application_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     application_id: Mapped[str] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"))
@@ -174,6 +190,7 @@ class Environment(Base):
 
 class EnvironmentHost(Base):
     __tablename__ = "environment_hosts"
+    __table_args__ = (Index("ix_environment_hosts_environment_id", "environment_id"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     environment_id: Mapped[str] = mapped_column(ForeignKey("environments.id", ondelete="CASCADE"))
@@ -187,6 +204,9 @@ class EnvironmentSnapshot(Base):
     """Cluster-inventory scan results (k8s rescan fills these from M4)."""
 
     __tablename__ = "environment_snapshots"
+    __table_args__ = (
+        Index("ix_environment_snapshots_environment_scanned", "environment_id", "scanned_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     environment_id: Mapped[str] = mapped_column(ForeignKey("environments.id", ondelete="CASCADE"))
@@ -203,6 +223,8 @@ class Connection(Base):
         UniqueConstraint(
             "name",
         ),
+        Index("ix_connections_project_id", "project_id"),
+        Index("ix_connections_kind_project_enabled", "kind", "project_id", "enabled"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
@@ -226,6 +248,7 @@ class Connection(Base):
 
 class HostMapping(Base):
     __tablename__ = "host_mappings"
+    __table_args__ = (Index("ix_host_mappings_connection_id", "connection_id"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="CASCADE"))
@@ -243,6 +266,11 @@ class Document(Base):
     """Uploaded context document metadata; bytes live in the artifact store."""
 
     __tablename__ = "documents"
+    __table_args__ = (
+        Index("ix_documents_artifact_key", "artifact_key"),
+        Index("ix_documents_project_created", "project_id", "created_at"),
+        Index("ix_documents_created_at", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     name: Mapped[str] = mapped_column(String(1024))
@@ -260,7 +288,10 @@ class SavedQuery(Base):
     """A saved work-tracking query (project-scoped, provider-tagged)."""
 
     __tablename__ = "saved_queries"
-    __table_args__ = (UniqueConstraint("project_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "name"),
+        Index("ix_saved_queries_project_id", "project_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     name: Mapped[str] = mapped_column(String(255))
@@ -283,10 +314,17 @@ class EngineRun(Base):
     """
 
     __tablename__ = "engine_runs"
-    __table_args__ = (UniqueConstraint("thread_id", "attempt"),)
+    __table_args__ = (
+        UniqueConstraint("thread_id", "attempt"),
+        Index("ix_engine_runs_project_started", "project_id", "started_at"),
+        Index("ix_engine_runs_status_started", "status", "started_at"),
+        Index("ix_engine_runs_engine_started", "engine", "started_at"),
+        Index("ix_engine_runs_external_run_id", "external_run_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     thread_id: Mapped[str] = mapped_column(String(64))
+    project_id: Mapped[str | None] = mapped_column(String(255))
     attempt: Mapped[int] = mapped_column(Integer)
     engine: Mapped[str] = mapped_column(String(64))
     external_run_id: Mapped[str | None] = mapped_column(String(255))
@@ -330,6 +368,7 @@ class Draft(Base):
     """Server-side new-test wizard draft (roams across browsers/operators)."""
 
     __tablename__ = "drafts"
+    __table_args__ = (Index("ix_drafts_project_id", "project_id"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     title: Mapped[str] = mapped_column(String(1024))

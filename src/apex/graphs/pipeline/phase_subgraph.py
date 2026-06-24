@@ -88,6 +88,11 @@ def _phase_update(phase: Phase, attempt: int, **fields: Any) -> JsonDict:
     return {"phase_results": {phase.value: {"attempt": attempt, **fields}}}
 
 
+def _thread_id(config: RunnableConfig | None) -> str:
+    configurable = dict((config or {}).get("configurable") or {})
+    return str(configurable.get("thread_id") or "no-thread")
+
+
 def _make_prepare(phase: Phase):
     def prepare(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_config(config)
@@ -161,7 +166,7 @@ def _make_prompt_gate(phase: Phase):
                     attempt,
                     resolved_prompt=prompt,
                     resolved_prompt_source=source,
-                    approvals=[make_approval("prompt_review", "approve", config)],
+                    approvals=[make_approval(phase, attempt, "prompt_review", "approve", config)],
                 )
                 return Command(goto="agent", update=update)
             if action == "modify":
@@ -182,7 +187,9 @@ def _make_prompt_gate(phase: Phase):
                     phase,
                     attempt,
                     status=PhaseStatus.SKIPPED.value,
-                    approvals=[make_approval("prompt_review", "skip_phase", config)],
+                    approvals=[
+                        make_approval(phase, attempt, "prompt_review", "skip_phase", config)
+                    ],
                 )
                 return Command(goto="finalize", update=update)
             if action == "abort":
@@ -190,7 +197,7 @@ def _make_prompt_gate(phase: Phase):
                     phase,
                     attempt,
                     status=PhaseStatus.ABORTED.value,
-                    approvals=[make_approval("prompt_review", "abort", config)],
+                    approvals=[make_approval(phase, attempt, "prompt_review", "abort", config)],
                 )
                 update["run_aborted"] = True
                 return Command(goto="finalize", update=update)
@@ -358,7 +365,7 @@ def _make_output_gate(phase: Phase):
                 update = _phase_update(
                     phase,
                     attempt,
-                    approvals=[make_approval("phase_review", "approve", config)],
+                    approvals=[make_approval(phase, attempt, "phase_review", "approve", config)],
                 )
                 return Command(goto="finalize", update={**update, **extra})
             if action == "revise":
@@ -372,7 +379,16 @@ def _make_output_gate(phase: Phase):
                         phase,
                         attempt,
                         warnings=[warning],
-                        approvals=[make_approval("phase_review", "approve", config, warning)],
+                        approvals=[
+                            make_approval(
+                                phase,
+                                attempt,
+                                "phase_review",
+                                "approve",
+                                config,
+                                warning,
+                            )
+                        ],
                     )
                     return Command(goto="finalize", update={**update, **extra})
                 update = _phase_update(
@@ -381,7 +397,16 @@ def _make_output_gate(phase: Phase):
                     status=PhaseStatus.RUNNING.value,
                     revise_instructions=instructions,
                     revise_count=revise_count + 1,
-                    approvals=[make_approval("phase_review", "revise", config, instructions)],
+                    approvals=[
+                        make_approval(
+                            phase,
+                            attempt,
+                            "phase_review",
+                            "revise",
+                            config,
+                            instructions,
+                        )
+                    ],
                 )
                 return Command(goto="agent", update={**update, **extra})
             if action == "discuss":
@@ -413,7 +438,7 @@ def _make_output_gate(phase: Phase):
                     phase,
                     attempt,
                     status=PhaseStatus.ABORTED.value,
-                    approvals=[make_approval("phase_review", "abort", config)],
+                    approvals=[make_approval(phase, attempt, "phase_review", "abort", config)],
                 )
                 update["run_aborted"] = True
                 return Command(goto="finalize", update={**update, **extra})
@@ -423,7 +448,7 @@ def _make_output_gate(phase: Phase):
             phase,
             attempt,
             warnings=[warning],
-            approvals=[make_approval("phase_review", "approve", config, warning)],
+            approvals=[make_approval(phase, attempt, "phase_review", "approve", config, warning)],
         )
         extra = {"dialogue": new_dialogue} if new_dialogue else {}
         return Command(goto="finalize", update={**update, **extra})
@@ -448,7 +473,7 @@ def _make_finalize(phase: Phase):
             id=f"{phase.value}-a{attempt}-transcript",
             kind="transcript",
             name=f"{phase.value} transcript (attempt {attempt})",
-            uri=f"memory://transcripts/{phase.value}/attempt-{attempt}",
+            uri=f"memory://transcripts/{_thread_id(config)}/{phase.value}/attempt-{attempt}",
             media_type="text/plain",
             summary=entry.get("reasoning_digest"),
         ).model_dump(mode="json")

@@ -17,6 +17,8 @@ from typing import Any, Protocol
 from langgraph_sdk.errors import ConflictError
 
 from apex.domain.pipeline import PHASE_ORDER
+from apex.graphs.pipeline.configurable import Limits
+from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 
 JsonDict = dict[str, Any]
 
@@ -230,6 +232,7 @@ class PipelineReadService:
             run = await self._client.runs.create(
                 thread_id,
                 PIPELINE_GRAPH_ID,
+                config={"recursion_limit": recommended_recursion_limit(Limits())},
                 command={"resume": resume},
                 multitask_strategy="reject",
             )

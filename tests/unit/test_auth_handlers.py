@@ -9,11 +9,14 @@ from apex.auth.handlers import (
     authenticate,
     ensure_thread_scope,
     identity_from_user,
+    on_anything_else,
     on_assistants_write,
     on_threads_create,
     on_threads_create_run,
+    on_threads_delete,
     on_threads_read,
     on_threads_search,
+    on_threads_update,
     scope_filter,
     user_payload,
 )
@@ -228,6 +231,55 @@ async def test_threads_create_run_requires_operator() -> None:
     assert excinfo.value.status_code == 403
 
 
+async def test_threads_create_run_rejects_out_of_scope_input_project() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "context",
+        "thread_id": None,
+        "input": {"project_id": "p9"},
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 403
+
+
+async def test_threads_create_run_rejects_out_of_scope_configurable_project() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": None,
+        "config": {"configurable": {"project_id": "p9"}},
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 403
+
+
+async def test_threads_create_run_stamps_single_scope_stateless_context() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {"assistant_id": "context", "thread_id": None, "input": {}}
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert result == {"project_id": {"$eq": "p1"}}
+    assert value["input"]["project_id"] == "p1"
+    assert value["config"]["configurable"]["project_id"] == "p1"
+    assert value["metadata"]["project_id"] == "p1"
+
+
+async def test_threads_create_run_requires_project_for_ambiguous_stateless_pipeline() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    value: Any = {"assistant_id": "pipeline", "thread_id": None}
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 403
+
+
+async def test_threads_create_run_allows_projectless_playground() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {"assistant_id": "playground", "thread_id": None}
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert result == {"project_id": {"$eq": "p1"}}
+
+
 async def test_threads_read_and_search_return_scope_filter() -> None:
     identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
     expected = {"project_id": {"$eq": "p1"}}
@@ -236,6 +288,29 @@ async def test_threads_read_and_search_return_scope_filter() -> None:
     admin = make_identity(Role.ADMIN)
     assert await on_threads_read(ctx=make_ctx(admin, action="read"), value={}) is None
     assert await on_threads_search(ctx=make_ctx(admin, action="search"), value={}) is None
+
+
+@pytest.mark.parametrize("handler", [on_threads_update, on_threads_delete])
+async def test_thread_mutations_require_operator(handler: Any) -> None:
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await handler(ctx=make_ctx(make_identity(Role.VIEWER), action="update"), value={})
+    assert excinfo.value.status_code == 403
+
+
+@pytest.mark.parametrize("handler", [on_threads_update, on_threads_delete])
+async def test_thread_mutations_return_scope_filter(handler: Any) -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    assert await handler(ctx=make_ctx(identity, action="update"), value={}) == {
+        "project_id": {"$eq": "p1"}
+    }
+
+
+async def test_anything_else_fallback_is_scoped() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
+    result = await on_anything_else(
+        ctx=make_ctx(identity, resource="store", action="get"), value={}
+    )
+    assert result == {"project_id": {"$eq": "p1"}}
 
 
 @pytest.mark.parametrize("role", [Role.VIEWER, Role.OPERATOR])

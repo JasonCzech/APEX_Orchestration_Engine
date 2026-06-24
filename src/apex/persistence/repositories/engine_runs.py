@@ -2,8 +2,8 @@
 
 Read side of the projection that the execution phase upserts best-effort (see
 apex.services.engine_runs) — dashboard history queries plus the abort path's
-direct status update. No project column exists in v1: rows key on (thread_id,
-attempt) only, so caller-side scoping is role-based in the router.
+direct status update. Rows carry project_id so /v1 reads can enforce the same
+scope boundary as LangGraph thread metadata.
 """
 
 from datetime import UTC, datetime
@@ -25,6 +25,7 @@ class EngineRunsRepository:
         *,
         engine: str | None = None,
         status: str | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[EngineRun], int]:
@@ -38,6 +39,10 @@ class EngineRunsRepository:
             filters.append(EngineRun.engine == engine)
         if status is not None:
             filters.append(EngineRun.status == status)
+        if allowed_project_ids is not None:
+            if not allowed_project_ids:
+                return [], 0
+            filters.append(EngineRun.project_id.in_(allowed_project_ids))
         stmt = (
             select(EngineRun)
             .where(*filters)
@@ -51,32 +56,56 @@ class EngineRunsRepository:
         )
         return rows, int(total or 0)
 
-    async def list_for_thread(self, thread_id: str) -> list[EngineRun]:
+    async def list_for_thread(
+        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+    ) -> list[EngineRun]:
         """All attempts for one thread, newest attempt first."""
-        stmt = (
-            select(EngineRun)
-            .where(EngineRun.thread_id == thread_id)
-            .order_by(EngineRun.attempt.desc())
-        )
+        filters: list[ColumnElement[bool]] = [EngineRun.thread_id == thread_id]
+        if allowed_project_ids is not None:
+            if not allowed_project_ids:
+                return []
+            filters.append(EngineRun.project_id.in_(allowed_project_ids))
+        stmt = select(EngineRun).where(*filters).order_by(EngineRun.attempt.desc())
         return list(await self._session.scalars(stmt))
 
-    async def get_latest_for_thread(self, thread_id: str) -> EngineRun | None:
-        rows = await self.list_for_thread(thread_id)
+    async def get_latest_for_thread(
+        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+    ) -> EngineRun | None:
+        rows = await self.list_for_thread(thread_id, allowed_project_ids=allowed_project_ids)
         return rows[0] if rows else None
 
-    async def mark_aborted(self, thread_id: str) -> int:
+    async def get_by_external_run_id(
+        self,
+        external_run_id: str,
+        *,
+        allowed_project_ids: tuple[str, ...] | None = None,
+    ) -> EngineRun | None:
+        filters: list[ColumnElement[bool]] = [EngineRun.external_run_id == external_run_id]
+        if allowed_project_ids is not None:
+            if not allowed_project_ids:
+                return None
+            filters.append(EngineRun.project_id.in_(allowed_project_ids))
+        stmt = select(EngineRun).where(*filters).order_by(EngineRun.started_at.desc(), EngineRun.id)
+        return await self._session.scalar(stmt)
+
+    async def mark_aborted(
+        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+    ) -> int:
         """Flip every non-terminal row for the thread to "aborted" (+ ended_at).
 
         Returns the number of rows updated (0 when the projection already shows a
         terminal status — the abort endpoint treats that as fine, not an error).
         """
+        filters = [
+            EngineRun.thread_id == thread_id,
+            EngineRun.status.not_in(TERMINAL_STATUSES),
+        ]
+        if allowed_project_ids is not None:
+            if not allowed_project_ids:
+                return 0
+            filters.append(EngineRun.project_id.in_(allowed_project_ids))
         stmt = (
-            update(EngineRun)
-            .where(
-                EngineRun.thread_id == thread_id,
-                EngineRun.status.not_in(TERMINAL_STATUSES),
-            )
-            .values(status="aborted", ended_at=datetime.now(UTC))
+            update(EngineRun).where(*filters).values(status="aborted", ended_at=datetime.now(UTC))
         )
         result = await self._session.execute(stmt)
         await self._session.commit()

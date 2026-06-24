@@ -6,6 +6,7 @@ the OpenAPI document live under /v1 to avoid shadowing built-in endpoints.
 """
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from apex.app.errors import register_exception_handlers
 from apex.app.lifespan import lifespan
@@ -28,17 +29,32 @@ from apex.services.usage import UsageTrackingMiddleware
 from apex.settings import get_settings
 
 settings = get_settings()
+docs_enabled = settings.environment.strip().lower() not in {
+    "production",
+    "prod",
+    "staging",
+    "stage",
+}
 
 app = FastAPI(
     title="APEX Orchestration Engine — Domain API",
     version=settings.version,
     lifespan=lifespan,
-    docs_url="/v1/docs",
+    docs_url="/v1/docs" if docs_enabled else None,
     redoc_url=None,
-    openapi_url="/v1/openapi.json",
+    openapi_url="/v1/openapi.json" if docs_enabled else None,
 )
 
 register_exception_handlers(app)
+
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["authorization", "content-type", "x-api-key"],
+    )
 
 # Usage analytics (M6): one best-effort event per matched /v1 operation.
 app.add_middleware(UsageTrackingMiddleware)

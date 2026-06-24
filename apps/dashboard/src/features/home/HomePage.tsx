@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link } from 'react-router'
 
 import { useUsageAnalytics } from '@/api/hooks/useAnalytics'
 import { useDraftsList } from '@/api/hooks/useDrafts'
@@ -77,13 +77,12 @@ function ApprovalQueue({ gates }: { gates: ApprovalItem[] }) {
 }
 
 function RecentRunRow({ run }: { run: PipelineSummary }) {
-  const navigate = useNavigate()
   const runPath = `/runs/${run.thread_id}`
 
   return (
-    <tr className="home-recent-row" onClick={() => navigate(runPath)} data-testid={`home-recent-${run.thread_id}`}>
+    <tr className="home-recent-row" data-testid={`home-recent-${run.thread_id}`}>
       <td>
-        <Link to={runPath} className="home-recent-link" onClick={(event) => event.stopPropagation()}>
+        <Link to={runPath} className="home-recent-link">
           <span className="strong">{run.title || 'Untitled run'}</span>
         </Link>
       </td>

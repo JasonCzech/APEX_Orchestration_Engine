@@ -105,7 +105,8 @@ describe('PromptsPage', () => {
       authState: authenticatedState(),
     })
 
-    await userEvent.click(await screen.findByTestId('prompt-row-p-story'))
+    const row = within(await screen.findByTestId('prompt-row-p-story'))
+    await userEvent.click(row.getByRole('link', { name: 'story_analysis/system' }))
     expect(router.state.location.pathname).toBe('/prompts/phase/story_analysis%2Fsystem')
 
     // The detail page decodes the param back to the full key and resolves it.

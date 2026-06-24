@@ -32,7 +32,7 @@ export function RouteErrorBoundary() {
       title={title}
       message={message}
       onRetry={() => {
-        void navigate(`${window.location.pathname}${window.location.search}`, { replace: true })
+        void navigate(0)
       }}
     />
   )

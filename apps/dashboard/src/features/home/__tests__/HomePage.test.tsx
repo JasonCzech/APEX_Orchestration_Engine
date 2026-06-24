@@ -98,7 +98,7 @@ describe('HomePage', () => {
     expect(within(newGate).getByText('Newest gated run')).toBeInTheDocument()
   })
 
-  it('renders recent runs and navigates to the run detail when a row is clicked', async () => {
+  it('renders recent runs and navigates to the run detail from the run link', async () => {
     useHomeHandlers()
     const detail: PipelineDetail = {
       ...IDLE_RUN,
@@ -116,7 +116,7 @@ describe('HomePage', () => {
     expect(within(row).getByText('Completed smoke run')).toBeInTheDocument()
     expect(within(row).getByText('idle')).toHaveClass('status-badge', 'success')
 
-    await user.click(row)
+    await user.click(within(row).getByRole('link', { name: 'Completed smoke run' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-idle'))
     await waitFor(() => expect(queryClient.isFetching()).toBe(0))
   })

@@ -28,6 +28,8 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -36,6 +38,8 @@ spec:
         - name: apex-server
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.containerPort }}
@@ -51,14 +55,12 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret | quote }}
                   key: {{ .Values.database.uriKey | quote }}
-            {{- if .Values.database.apexUriKey }}
             # APEX domain schema (asyncpg URI; usually the same database).
             - name: APEX_DATABASE__URI
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret | quote }}
-                  key: {{ .Values.database.apexUriKey | quote }}
-            {{- end }}
+                  key: {{ required "database.apexUriKey is required" .Values.database.apexUriKey | quote }}
             - name: REDIS_URI
               valueFrom:
                 secretKeyRef:
@@ -82,6 +84,12 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

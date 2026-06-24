@@ -1,9 +1,15 @@
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from apex.auth.identity import Role
-from apex.auth.service import IdentityResolver, extract_api_key, hash_api_key
+from apex.auth.service import (
+    AuthStoreUnavailableError,
+    IdentityResolver,
+    extract_api_key,
+    hash_api_key,
+)
 from apex.persistence.models import ApiConsumer, ConsumerScope
 
 DEV_KEY = "dev-key-123"
@@ -86,11 +92,12 @@ async def test_missing_key_resolves_none(monkeypatch: pytest.MonkeyPatch) -> Non
     assert await resolver.resolve("") is None
 
 
-async def test_db_errors_swallowed_returning_none(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_db_errors_surface_as_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_AUTH__DEV_API_KEY", DEV_KEY)
     factory = ExplodingFactory()
     resolver = IdentityResolver(session_factory=factory)
-    assert await resolver.resolve("not-the-dev-key") is None
+    with pytest.raises(AuthStoreUnavailableError):
+        await resolver.resolve("not-the-dev-key")
     assert factory.calls == 1
 
 
@@ -128,6 +135,24 @@ async def test_db_lookup_builds_identity_with_scopes() -> None:
     # best-effort last_used_at update committed
     assert session.committed
     assert consumer.last_used_at is not None
+
+
+async def test_db_lookup_throttles_last_used_at_write() -> None:
+    consumer = ApiConsumer(
+        id="abc123",
+        name="ops-bot",
+        key_hash=hash_api_key("some-key"),
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+        last_used_at=datetime.now(UTC),
+    )
+    consumer.scopes = []
+    session = FakeSession(consumer)
+    resolver = IdentityResolver(session_factory=lambda: session)
+    identity = await resolver.resolve("some-key")
+    assert identity is not None
+    assert not session.committed
 
 
 async def test_db_lookup_unknown_key_returns_none() -> None:

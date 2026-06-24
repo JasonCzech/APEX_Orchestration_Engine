@@ -71,7 +71,7 @@ def test_all_auto_runs_all_seven_phases() -> None:
         entry = result["phase_results"][phase.value]
         assert entry["status"] == "succeeded"
         assert entry["attempt"] == 1
-        assert entry["transcript_ref"]["uri"] == f"memory://transcripts/{phase.value}/attempt-1"
+        assert entry["transcript_ref"]["uri"] == f"memory://transcripts/t1/{phase.value}/attempt-1"
         assert entry["transcript_ref"]["id"] in entry["artifact_ids"]
         assert entry["duration_s"] is not None
         assert entry["resolved_prompt_source"]["origin"] == "catalog"
@@ -224,7 +224,7 @@ def test_subset_run_uses_thread_state_and_increments_attempt() -> None:
     assert entry["attempt"] == 2
     assert entry["status"] == "succeeded"
     assert [t["id"] for t in entry["tool_calls"]] == ["test_planning-a2-r0-stub-lookup"]
-    assert entry["transcript_ref"]["uri"] == "memory://transcripts/test_planning/attempt-2"
+    assert entry["transcript_ref"]["uri"] == "memory://transcripts/t8/test_planning/attempt-2"
 
 
 def test_prereq_violation_raises_value_error() -> None:

@@ -293,7 +293,8 @@ def test_probe_failure_reports_ok_false_not_5xx(admin: TestClient, broken_provid
     assert response.status_code == 200  # failures are inline, never 5xx
     body = response.json()
     assert body["ok"] is False
-    assert "backend exploded" in body["detail"]
+    assert body["detail"] == "connection probe failed; check server logs for details"
+    assert "backend exploded" not in body["detail"]
 
 
 def test_probe_unknown_connection_is_404(admin: TestClient) -> None:

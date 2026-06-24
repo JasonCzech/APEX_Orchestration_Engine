@@ -73,24 +73,49 @@ async def record_usage_event(
         engine_db = create_async_engine(get_settings().database.uri, poolclass=NullPool)
         try:
             session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
-            async with session_factory() as session:
-                session.add(
-                    UsageEvent(
-                        consumer_name=consumer_name,
-                        project_id=project_id,
-                        surface=surface,
-                        action=action,
-                        thread_id=thread_id,
-                        duration_ms=duration_ms,
-                        status=status,
-                        extra=extra or {},
-                    )
-                )
-                await session.commit()
+            await _insert_usage_event(
+                session_factory,
+                consumer_name=consumer_name,
+                surface=surface,
+                action=action,
+                status=status,
+                project_id=project_id,
+                thread_id=thread_id,
+                duration_ms=duration_ms,
+                extra=extra,
+            )
         finally:
             await engine_db.dispose()
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request or run
         logger.warning("usage.record_failed", action=action, error=str(exc))
+
+
+async def _insert_usage_event(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    consumer_name: str,
+    surface: str,
+    action: str,
+    status: str = "ok",
+    project_id: str | None = None,
+    thread_id: str | None = None,
+    duration_ms: int | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    async with session_factory() as session:
+        session.add(
+            UsageEvent(
+                consumer_name=consumer_name,
+                project_id=project_id,
+                surface=surface,
+                action=action,
+                thread_id=thread_id,
+                duration_ms=duration_ms,
+                status=status,
+                extra=extra or {},
+            )
+        )
+        await session.commit()
 
 
 def record_usage_event_sync(**kwargs: Any) -> None:
@@ -154,15 +179,21 @@ async def _record_request_event(
     extra: dict[str, Any],
 ) -> None:
     consumer_name = await _resolve_consumer_name(api_key)
-    await record_usage_event(
-        consumer_name=consumer_name,
-        surface=SURFACE_V1,
-        action=action,
-        status=status,
-        duration_ms=duration_ms,
-        project_id=project_id,
-        extra=extra,
-    )
+    try:
+        from apex.persistence.db import get_sessionmaker
+
+        await _insert_usage_event(
+            get_sessionmaker(),
+            consumer_name=consumer_name,
+            surface=SURFACE_V1,
+            action=action,
+            status=status,
+            duration_ms=duration_ms,
+            project_id=project_id,
+            extra=extra,
+        )
+    except Exception as exc:  # noqa: BLE001 — analytics never fails a request
+        logger.warning("usage.record_failed", action=action, error=str(exc))
 
 
 def _request_project_id(scope: Mapping[str, Any]) -> str | None:

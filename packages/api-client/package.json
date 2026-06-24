@@ -8,6 +8,9 @@
     "src/schema.d.ts"
   ],
   "scripts": {
-    "generate": "npx --yes openapi-typescript ../../docs/api/apex-v1.openapi.json -o src/schema.d.ts"
+    "generate": "openapi-typescript ../../docs/api/apex-v1.openapi.json -o src/schema.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0"
   }
 }

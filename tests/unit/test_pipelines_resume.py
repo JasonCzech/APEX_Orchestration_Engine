@@ -106,6 +106,7 @@ def test_resume_gate_accepts_and_creates_reject_run() -> None:
     call = runs.create_calls[0]
     assert call["assistant_id"] == "pipeline"
     assert call["multitask_strategy"] == "reject"
+    assert call["config"]["recursion_limit"] > 25
     assert call["command"] == {"resume": {"action": "approve", "note": "lgtm"}}
 
 

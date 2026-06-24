@@ -31,13 +31,19 @@ def resolve_actor(config: RunnableConfig | None) -> str:
 
 
 def make_approval(
+    phase: Phase,
+    attempt: int,
     gate: Literal["prompt_review", "phase_review"],
     action: str,
     config: RunnableConfig | None,
     note: str | None = None,
 ) -> JsonDict:
     return ApprovalRecord(
-        gate=gate, action=action, actor=resolve_actor(config), note=note
+        id=f"{phase.value}-a{attempt}-{gate}-{action}",
+        gate=gate,
+        action=action,
+        actor=resolve_actor(config),
+        note=note,
     ).model_dump(mode="json")
 
 

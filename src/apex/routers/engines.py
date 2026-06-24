@@ -1,10 +1,10 @@
 """/engines: engine-run history (projection reads) + the engine-level kill switch.
 
 History reads serve the `engine_runs` projection rows written best-effort by the
-execution phase. The table has no project column in v1, so reads are gated by
-authentication only (any role); abort requires operator+. Abort forwards the
-caller's API key to the loopback LangGraph API so state reads and run cancels are
-scoped exactly like direct calls (same pattern as /pipelines).
+execution phase. Rows carry project ownership so reads and projection fallback
+aborts can enforce the caller's project scopes. Abort also forwards the caller's
+API key to the loopback LangGraph API so state reads and run cancels are scoped
+like direct calls.
 """
 
 from datetime import datetime
@@ -36,9 +36,13 @@ def get_engine_runs_repository(
 def get_engine_abort_service(
     request: Request,
     repo: Annotated[EngineRunsRepository, Depends(get_engine_runs_repository)],
+    identity: CurrentIdentity,
 ) -> EngineAbortService:
     """Per-request service over the loopback client, forwarding the caller's key."""
-    return EngineAbortService(loopback_client(extract_api_key(request.headers)), repo)
+    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
+    return EngineAbortService(
+        loopback_client(extract_api_key(request.headers)), repo, allowed_project_ids=allowed
+    )
 
 
 EngineRunsRepo = Annotated[EngineRunsRepository, Depends(get_engine_runs_repository)]
@@ -52,6 +56,7 @@ ThreadId = Annotated[str, Path(description="Pipeline thread id the engine run be
 class EngineRunRead(BaseModel):
     id: str
     thread_id: str
+    project_id: str | None = None
     attempt: int
     engine: str
     external_run_id: str | None
@@ -84,6 +89,7 @@ def _read_model(run: EngineRun) -> EngineRunRead:
     return EngineRunRead(
         id=run.id,
         thread_id=run.thread_id,
+        project_id=run.project_id,
         attempt=run.attempt,
         engine=run.engine,
         external_run_id=run.external_run_id,
@@ -107,10 +113,12 @@ async def list_engine_runs(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> EngineRunListResponse:
-    """Engine-run history, newest started first (projection; no project column in v1)."""
+    """Engine-run history, newest started first, scoped by project ownership."""
+    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
     rows, total = await repo.list_runs(
         engine=engine,
         status=status.value if status is not None else None,
+        allowed_project_ids=allowed,
         limit=limit,
         offset=offset,
     )
@@ -124,7 +132,11 @@ async def get_engine_runs(
     thread_id: ThreadId, identity: CurrentIdentity, repo: EngineRunsRepo
 ) -> list[EngineRunRead]:
     """All engine-run attempts for one thread, newest attempt first ([] when none)."""
-    return [_read_model(run) for run in await repo.list_for_thread(thread_id)]
+    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
+    return [
+        _read_model(run)
+        for run in await repo.list_for_thread(thread_id, allowed_project_ids=allowed)
+    ]
 
 
 @router.post(

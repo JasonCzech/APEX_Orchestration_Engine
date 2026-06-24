@@ -24,6 +24,25 @@ export const ALL_AUTO_GATES: Record<PhaseName, GatePolicy> = Object.fromEntries(
   PHASE_NAMES.map((phase) => [phase, { prompt_review: 'auto', output_review: 'auto' }]),
 ) as Record<PhaseName, GatePolicy>
 
+const SPINE_SUPERSTEPS = 16
+const RECURSION_HEADROOM = 25
+const DEFAULT_POLL_INTERVAL_S = 5
+const DEFAULT_POLL_TIMEOUT_S = 4 * 3600
+
+interface RecursionLimitConfigurable {
+  limits?: {
+    poll_interval_s?: number
+    poll_timeout_s?: number
+  }
+}
+
+export function recommendedRecursionLimit(configurable: RecursionLimitConfigurable = {}): number {
+  const limits = configurable.limits ?? {}
+  const interval = Math.max(limits.poll_interval_s ?? DEFAULT_POLL_INTERVAL_S, 1e-9)
+  const timeout = limits.poll_timeout_s ?? DEFAULT_POLL_TIMEOUT_S
+  return Math.ceil(timeout / interval) + SPINE_SUPERSTEPS + RECURSION_HEADROOM
+}
+
 export interface LaunchRunInput {
   title: string
   request: string
@@ -43,6 +62,7 @@ export async function launchRun(input: LaunchRunInput): Promise<LaunchedRun> {
   const run = await client.runs.create(thread.thread_id, 'pipeline', {
     input: { title: input.title, request: input.request },
     config: {
+      recursion_limit: recommendedRecursionLimit(),
       configurable: {
         project_id: input.projectId,
         gates: ALL_AUTO_GATES,

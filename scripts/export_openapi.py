@@ -22,7 +22,10 @@ from typing import Any
 from fastapi.routing import APIRoute
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_PATH = REPO_ROOT / "src"
 SPEC_PATH = REPO_ROOT / "docs" / "api" / "apex-v1.openapi.json"
+if str(SRC_PATH) not in sys.path:
+    sys.path.insert(0, str(SRC_PATH))
 
 
 def validate_operation_ids(app: Any) -> list[str]:

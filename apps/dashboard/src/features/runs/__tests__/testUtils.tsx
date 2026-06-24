@@ -21,7 +21,7 @@ const TRANSCRIPT = (phase: string, attempt: number) => ({
   id: `${phase}-a${attempt}-transcript`,
   kind: 'transcript',
   name: `${phase} transcript (attempt ${attempt})`,
-  uri: `memory://transcripts/${phase}/attempt-${attempt}`,
+  uri: `memory://transcripts/${THREAD_ID}/${phase}/attempt-${attempt}`,
   media_type: 'text/plain',
   summary: null,
 })

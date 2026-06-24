@@ -161,6 +161,7 @@ describe('PreflightModal', () => {
     expect(payload.input).not.toBeNull()
     // Inherit defaults: gates OMITTED so assistant/backend policy applies.
     expect(payload.config).toEqual({
+      recursion_limit: expect.any(Number),
       configurable: { phases: ['script_scenario', 'execution'] },
     })
     expect(payload).toMatchObject({
@@ -188,6 +189,7 @@ describe('PreflightModal', () => {
     await waitFor(() => expect(runsCreate).toHaveBeenCalledTimes(1))
     const payload = runsCreate.mock.calls[0]?.[2] as Record<string, unknown>
     expect(payload.config).toEqual({
+      recursion_limit: expect.any(Number),
       configurable: { phases: ['story_analysis'], gates },
     })
   })

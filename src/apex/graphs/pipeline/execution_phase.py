@@ -242,7 +242,12 @@ def engine_reserve(state: PipelineState, config: RunnableConfig) -> JsonDict:
     attempt = _attempt(_entry(state))
     spec, engine_options = _build_spec(state, config, attempt)
     engine_runs.record_engine_run_sync(
-        _thread_id(config), attempt, cfg.engine, {}, EngineRunPhase.PROVISIONING.value
+        _thread_id(config),
+        attempt,
+        cfg.engine,
+        {},
+        EngineRunPhase.PROVISIONING.value,
+        project_id=cfg.project_id,
     )
     return _update(
         attempt,
@@ -275,7 +280,12 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
     if handle is None or status is None:
         errors = [f"engine spec validation failed: {issue}" for issue in issues]
         engine_runs.record_engine_run_sync(
-            thread_id, attempt, cfg.engine, {}, EngineRunPhase.FAILED.value
+            thread_id,
+            attempt,
+            cfg.engine,
+            {},
+            EngineRunPhase.FAILED.value,
+            project_id=cfg.project_id,
         )
         update = _update(attempt, status=PhaseStatus.FAILED.value, errors=errors)
         return Command(goto="finalize", update=update)
@@ -287,6 +297,7 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
         handle.engine,
         handle_json,
         EngineRunPhase.RUNNING.value,
+        project_id=cfg.project_id,
         external_run_id=handle.external_run_id,
     )
     emit_event(
@@ -358,6 +369,7 @@ def engine_poll(state: PipelineState, config: RunnableConfig) -> Command[str]:
             handle.engine,
             handle.model_dump(mode="json"),
             EngineRunPhase.ABORTED.value,
+            project_id=cfg.project_id,
             external_run_id=handle.external_run_id,
         )
         error = (
@@ -449,6 +461,7 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         handle.engine,
         handle.model_dump(mode="json"),
         engine_phase.value,
+        project_id=cfg.project_id,
         external_run_id=handle.external_run_id,
         summary=summary_json,
     )

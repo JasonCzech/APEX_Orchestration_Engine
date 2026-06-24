@@ -29,6 +29,7 @@ async def record_engine_run(
     handle: dict[str, Any],
     status: str,
     *,
+    project_id: str | None = None,
     external_run_id: str | None = None,
     summary: dict[str, Any] | None = None,
 ) -> None:
@@ -42,6 +43,7 @@ async def record_engine_run(
             async with session_factory() as session:
                 values: dict[str, Any] = {
                     "thread_id": thread_id,
+                    "project_id": project_id,
                     "attempt": attempt,
                     "engine": engine,
                     "handle": handle,

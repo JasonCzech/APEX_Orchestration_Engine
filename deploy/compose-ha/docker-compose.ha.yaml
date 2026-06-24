@@ -11,16 +11,16 @@
 x-apex-server: &apex-server
   image: apex-orchestration-engine:latest
   environment:
-    DATABASE_URI: postgresql://apex:apex@postgres:5432/apex
+    DATABASE_URI: postgresql://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
     REDIS_URI: redis://redis:6379
     LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY:?Enterprise license required (ADR-0001) - see deploy/compose-ha/README.md}
     APEX_ENVIRONMENT: compose-ha
-    APEX_DATABASE__URI: postgresql+asyncpg://apex:apex@postgres:5432/apex
-    # Rig-only synthetic admin key (no DB consumer row needed) so the soak can
-    # be driven immediately; create real consumers via /v1/admin/consumers.
-    APEX_AUTH__DEV_API_KEY: soak-dev-key
+    APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+    # Rig-only synthetic admin key. Supply it via environment or .env.local; do
+    # not commit a working admin key.
+    APEX_AUTH__DEV_API_KEY: ${APEX_AUTH__DEV_API_KEY:?Set a rig-only admin key outside git}
     # Secret for the seeded "minio-artifacts" connection (matches MinIO below).
-    APEX_MINIO_SECRET_KEY: apex-minio
+    APEX_MINIO_SECRET_KEY: ${APEX_MINIO_SECRET_KEY:-apex-minio}
   depends_on:
     postgres:
       condition: service_healthy
@@ -32,7 +32,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: apex
-      POSTGRES_PASSWORD: apex
+      POSTGRES_PASSWORD: ${APEX_POSTGRES_PASSWORD:-apex}
       POSTGRES_DB: apex
     ports:
       - "5433:5432" # host port for migrations/seeding (5433 avoids the dev compose)
@@ -53,11 +53,11 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2024-07-16T23-46-41Z
     command: server /data
     environment:
       MINIO_ROOT_USER: apex
-      MINIO_ROOT_PASSWORD: apex-minio
+      MINIO_ROOT_PASSWORD: ${APEX_MINIO_SECRET_KEY:-apex-minio}
     volumes:
       - miniodata-ha:/data
 

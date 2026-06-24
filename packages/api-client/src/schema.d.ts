@@ -434,7 +434,7 @@ export interface paths {
         };
         /**
          * List Engine Runs
-         * @description Engine-run history, newest started first (projection; no project column in v1).
+         * @description Engine-run history, newest started first, scoped by project ownership.
          */
         get: operations["listEngineRuns"];
         put?: never;
@@ -1266,6 +1266,8 @@ export interface components {
             };
             /** Id */
             id: string;
+            /** Project Id */
+            project_id?: string | null;
             /** Started At */
             started_at: string | null;
             /** Status */

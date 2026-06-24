@@ -101,13 +101,16 @@ def test_resolve_actor_variants() -> None:
 
 def test_make_approval_records_actor_and_note() -> None:
     approval = make_approval(
+        Phase.EXECUTION,
+        2,
         "phase_review",
         "revise",
         {"configurable": {"langgraph_auth_user": {"identity": "op"}}},
         note="tighten SLAs",
     )
+    assert approval["id"] == "execution-a2-phase_review-revise"
     assert approval["gate"] == "phase_review"
     assert approval["action"] == "revise"
     assert approval["actor"] == "op"
     assert approval["note"] == "tighten SLAs"
-    assert approval["id"] and approval["at"]
+    assert approval["at"]

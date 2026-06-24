@@ -1141,6 +1141,17 @@
             "title": "Id",
             "type": "string"
           },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -5416,7 +5427,7 @@
     },
     "/v1/engines/runs": {
       "get": {
-        "description": "Engine-run history, newest started first (projection; no project column in v1).",
+        "description": "Engine-run history, newest started first, scoped by project ownership.",
         "operationId": "listEngineRuns",
         "parameters": [
           {

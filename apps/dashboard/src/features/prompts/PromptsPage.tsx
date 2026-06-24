@@ -6,7 +6,7 @@
  * [New prompt] (operator+) opens a create panel -> POST -> navigate detail.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import {
   useCreatePrompt,
@@ -46,17 +46,17 @@ function namespaceIndex(rows: PromptSummary[]): Array<{ ns: string; count: numbe
 }
 
 function PromptRow({ prompt }: { prompt: PromptSummary }) {
-  const navigate = useNavigate()
   const archived = Boolean(prompt.archived_at)
   const target = promptPath(prompt.namespace, prompt.key)
   return (
     <tr
       className={`prompts-row${archived ? ' prompts-row-archived' : ''}`}
       data-testid={`prompt-row-${prompt.id}`}
-      onClick={() => void navigate(target)}
     >
       <td>
-        <span className="strong prompts-key">{prompt.key}</span>
+        <Link to={target} className="strong prompts-key">
+          {prompt.key}
+        </Link>
       </td>
       <td className="prompts-description">{prompt.description || EM_DASH}</td>
       <td>

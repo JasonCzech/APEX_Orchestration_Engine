@@ -69,7 +69,10 @@ describe('LaunchRunButton', () => {
       'pipeline',
       expect.objectContaining({
         input: { title: 'Checkout soak', request: 'Soak the checkout flow for 1h' },
-        config: { configurable: { project_id: 'demo', gates: ALL_AUTO_GATES } },
+        config: {
+          recursion_limit: expect.any(Number),
+          configurable: { project_id: 'demo', gates: ALL_AUTO_GATES },
+        },
         streamResumable: true,
         durability: 'sync',
         multitaskStrategy: 'reject',

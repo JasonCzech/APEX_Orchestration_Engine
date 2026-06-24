@@ -21,10 +21,34 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     """Replace the best-effort DB writer with an in-memory capture."""
     captured: list[dict[str, Any]] = []
 
-    async def fake_record(**kwargs: Any) -> None:
-        captured.append(kwargs)
+    async def fake_record(
+        *,
+        api_key: str | None,
+        action: str,
+        status: str,
+        duration_ms: int,
+        project_id: str | None,
+        extra: dict[str, Any],
+    ) -> None:
+        if api_key == DEV_KEY:
+            consumer_name = "dev"
+        elif api_key:
+            consumer_name = f"key:{usage.hash_api_key(api_key)[:12]}"
+        else:
+            consumer_name = "anonymous"
+        captured.append(
+            {
+                "consumer_name": consumer_name,
+                "surface": usage.SURFACE_V1,
+                "action": action,
+                "status": status,
+                "duration_ms": duration_ms,
+                "project_id": project_id,
+                "extra": extra,
+            }
+        )
 
-    monkeypatch.setattr(usage, "record_usage_event", fake_record)
+    monkeypatch.setattr(usage, "_record_request_event", fake_record)
     monkeypatch.setenv("APEX_AUTH__DEV_API_KEY", DEV_KEY)
     return captured
 
@@ -78,11 +102,11 @@ def test_401_is_recorded_as_error_with_anonymous_consumer(
 
 
 def test_unresolvable_key_records_fingerprint(events: list[dict[str, Any]]) -> None:
-    # Unknown key + hermetic (unreachable) DB: resolution fails, so the event
-    # carries a sha256 fingerprint instead of a consumer name.
+    # Unknown key + hermetic (unreachable) DB now returns 503, and the analytics
+    # event still carries a sha256 fingerprint instead of a consumer name.
     with TestClient(app) as client:
         assert (
-            client.get("/v1/system/info", headers={"x-api-key": "who-is-this"}).status_code == 401
+            client.get("/v1/system/info", headers={"x-api-key": "who-is-this"}).status_code == 503
         )
         wait_for_events(events, 1)
     assert events[0]["consumer_name"].startswith("key:")

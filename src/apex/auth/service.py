@@ -3,7 +3,7 @@
 import hashlib
 import secrets
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
@@ -14,6 +14,11 @@ from apex.persistence.models import ApiConsumer
 from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
+LAST_USED_WRITE_INTERVAL = timedelta(seconds=60)
+
+
+class AuthStoreUnavailableError(RuntimeError):
+    """The API-key backing store could not be queried."""
 
 
 def hash_api_key(api_key: str) -> str:
@@ -66,8 +71,8 @@ class IdentityResolver:
     """Resolves API keys to consumer identities.
 
     Order: auth disabled -> anonymous admin; dev key match -> synthetic admin (no DB);
-    otherwise `apex.api_consumers` lookup by sha256 hash. DB errors are swallowed
-    (logged) so the dev key keeps working while Postgres is down.
+    otherwise `apex.api_consumers` lookup by sha256 hash. DB errors surface as
+    AuthStoreUnavailableError so callers return 503 instead of credential-shaped 401.
     """
 
     def __init__(self, session_factory: Callable[[], Any] | None = None) -> None:
@@ -86,9 +91,9 @@ class IdentityResolver:
             return _dev_identity()
         try:
             return await self._resolve_from_db(api_key)
-        except Exception:
+        except Exception as exc:
             logger.warning("apex.auth.db_lookup_failed", exc_info=True)
-            return None
+            raise AuthStoreUnavailableError("API key store is unavailable") from exc
 
     async def _resolve_from_db(self, api_key: str) -> ConsumerIdentity | None:
         session_factory = self._session_factory
@@ -115,13 +120,19 @@ class IdentityResolver:
                     for scope in consumer.scopes
                 ],
             )
-            try:
-                consumer.last_used_at = datetime.now(UTC)
-                await session.commit()
-            except Exception:
-                logger.warning(
-                    "apex.auth.last_used_update_failed", consumer=consumer.name, exc_info=True
-                )
+            now = datetime.now(UTC)
+            should_touch_last_used = (
+                consumer.last_used_at is None
+                or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
+            )
+            if should_touch_last_used:
+                try:
+                    consumer.last_used_at = now
+                    await session.commit()
+                except Exception:
+                    logger.warning(
+                        "apex.auth.last_used_update_failed", consumer=consumer.name, exc_info=True
+                    )
             return identity
 
 

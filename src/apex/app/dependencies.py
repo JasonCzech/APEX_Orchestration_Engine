@@ -4,7 +4,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request
 
 from apex.auth.identity import ConsumerIdentity, Role
-from apex.auth.service import extract_api_key, get_default_resolver
+from apex.auth.service import AuthStoreUnavailableError, extract_api_key, get_default_resolver
 from apex.settings import ApexSettings, get_settings
 
 SettingsDep = Annotated[ApexSettings, Depends(get_settings)]
@@ -12,7 +12,10 @@ SettingsDep = Annotated[ApexSettings, Depends(get_settings)]
 
 async def get_current_identity(request: Request) -> ConsumerIdentity:
     """Resolve the calling API consumer from x-api-key / bearer headers (401 if none)."""
-    identity = await get_default_resolver().resolve(extract_api_key(request.headers))
+    try:
+        identity = await get_default_resolver().resolve(extract_api_key(request.headers))
+    except AuthStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="API key store is unavailable") from exc
     if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return identity

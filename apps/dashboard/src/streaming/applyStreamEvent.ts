@@ -62,6 +62,12 @@ function applyPhaseStatus(
   threadId: string,
   event: PhaseStatusEvent,
 ): void {
+  const currentPhasePatch =
+    event.status === 'running'
+      ? { current_phase: event.phase }
+      : ['succeeded', 'failed', 'skipped', 'aborted'].includes(event.status)
+        ? { current_phase: null }
+        : {}
   queryClient.setQueryData<ThreadStateSnapshot>(queryKeys.threads.state(threadId), (prev) => {
     if (!prev) return prev
     const results = prev.state.phase_results ?? {}
@@ -77,7 +83,7 @@ function applyPhaseStatus(
       detail: {
         ...prev.detail,
         phase_strip: patchStrip(prev.detail.phase_strip, event),
-        ...(event.status === 'running' ? { current_phase: event.phase } : {}),
+        ...currentPhasePatch,
       },
       state: {
         ...prev.state,
@@ -88,7 +94,7 @@ function applyPhaseStatus(
   patchListRows(queryClient, threadId, (row) => ({
     ...row,
     phase_strip: patchStrip(row.phase_strip, event),
-    ...(event.status === 'running' ? { current_phase: event.phase } : {}),
+    ...currentPhasePatch,
   }))
 }
 

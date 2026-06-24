@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -16,7 +17,15 @@ _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().database.uri, pool_pre_ping=True)
+        database = get_settings().database
+        kwargs: dict[str, object] = {"pool_pre_ping": True}
+        if not make_url(database.uri).drivername.startswith("sqlite"):
+            kwargs.update(
+                pool_size=database.pool_size,
+                max_overflow=database.max_overflow,
+                pool_recycle=database.pool_recycle_s,
+            )
+        _engine = create_async_engine(database.uri, **kwargs)
     return _engine
 
 

@@ -60,6 +60,7 @@ def projection_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         *,
         external_run_id: str | None = None,
         summary: dict[str, Any] | None = None,
+        project_id: str | None = None,
     ) -> None:
         calls.append(
             {
@@ -69,6 +70,7 @@ def projection_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
                 "status": status,
                 "external_run_id": external_run_id,
                 "summary": summary,
+                "project_id": project_id,
             }
         )
 

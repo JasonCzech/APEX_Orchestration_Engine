@@ -96,8 +96,9 @@ describe('RunsListPage compare selection', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Compare selection' })).not.toBeInTheDocument()
 
-    // Row click still navigates to the run detail (checkbox cell swallowed its clicks).
-    await user.click(screen.getByTestId(`runs-row-${RUN_BUSY.thread_id}`))
+    // The run link still navigates while checkbox clicks only toggle compare selection.
+    const busyRow = within(screen.getByTestId(`runs-row-${RUN_BUSY.thread_id}`))
+    await user.click(busyRow.getByRole('link', { name: /Checkout latency regression/ }))
     expect(await screen.findByTestId('run-detail')).toHaveTextContent(
       `/runs/${RUN_BUSY.thread_id}`,
     )

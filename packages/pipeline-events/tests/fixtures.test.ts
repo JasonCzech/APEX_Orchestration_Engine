@@ -357,7 +357,7 @@ const executionEntry = {
     id: "execution-a1-transcript",
     kind: "transcript",
     name: "execution transcript (attempt 1)",
-    uri: "memory://transcripts/execution/attempt-1",
+    uri: "memory://transcripts/thread-1/execution/attempt-1",
     media_type: "text/plain",
     summary: null,
     created_at: "2026-06-11T12:00:01.250000+00:00",

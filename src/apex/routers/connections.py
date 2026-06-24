@@ -13,13 +13,15 @@ reported inline as {ok: false, detail} with HTTP 200 — never a 5xx.
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from ipaddress import ip_address
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.adapters.registry import AdapterRegistry, PortKind
+from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.app.dependencies import require_role
 from apex.auth.identity import Role
 from apex.domain.integrations import (
@@ -39,6 +41,7 @@ from apex.persistence.repositories.connections import (
 )
 from apex.ports.secrets import SecretsPort
 from apex.services.connections import connection_config_from_row, get_connection_resolver
+from apex.settings import get_settings
 
 router = APIRouter(
     prefix="/admin/connections",
@@ -204,6 +207,35 @@ async def _get_or_404(repo: ConnectionsRepository, connection_id: str) -> Connec
     return conn
 
 
+def _validate_probe_target(config: ConnectionConfig) -> None:
+    """Block admin probes from reaching private hosts unless local dev opts in."""
+
+    if get_settings().allow_private_adapter_hosts:
+        return
+    raw_url = config.options.get("base_url")
+    if raw_url is None:
+        return
+    parsed = urlsplit(str(raw_url))
+    host = parsed.hostname
+    if host is None:
+        return
+    normalized = host.lower()
+    if normalized in {"localhost", "localhost.localdomain"}:
+        raise ValueError("private adapter hosts are disabled")
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return
+    if address.is_private or address.is_loopback or address.is_link_local:
+        raise ValueError("private adapter hosts are disabled")
+
+
+def _probe_failure_detail(exc: Exception) -> str:
+    if isinstance(exc, (KeyError, ValueError)):
+        return str(exc.args[0]) if exc.args else exc.__class__.__name__
+    return "connection probe failed; check server logs for details"
+
+
 # ── routes ───────────────────────────────────────────────────────────────────
 
 
@@ -304,6 +336,7 @@ async def test_connection(connection_id: str, repo: ConnectionsRepo) -> ProbeRes
     started = time.perf_counter()
     try:
         config = connection_config_from_row(row)
+        _validate_probe_target(config)
         secrets: SecretsPort | None = None
         if config.secret_ref is not None and config.kind is not PortKind.SECRETS:
             secrets = await get_connection_resolver().resolve(PortKind.SECRETS)
@@ -311,7 +344,7 @@ async def test_connection(connection_id: str, repo: ConnectionsRepo) -> ProbeRes
         detail = await PROBE_CALLS[config.kind](adapter)
         ok = True
     except Exception as exc:  # probe must report failures inline, never raise
-        detail = f"{exc.__class__.__name__}: {exc}"
+        detail = _probe_failure_detail(exc)
         ok = False
     latency_ms = round((time.perf_counter() - started) * 1000, 2)
     return ProbeResult(ok=ok, latency_ms=latency_ms, detail=detail)

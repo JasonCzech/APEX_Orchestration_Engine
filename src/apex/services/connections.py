@@ -254,11 +254,7 @@ class ConnectionResolver:
             )
         if not stored.enabled:
             raise ValueError(f"connection {conn.id!r} is disabled")
-        if (
-            project_id is not None
-            and stored.project_id is not None
-            and stored.project_id != project_id
-        ):
+        if stored.project_id is not None and stored.project_id != project_id:
             raise ValueError(
                 f"connection {conn.id!r} is scoped to project {stored.project_id!r}, "
                 f"not {project_id!r}"

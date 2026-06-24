@@ -117,14 +117,9 @@ function RunRow({
   const runPath = `/runs/${run.thread_id}`
 
   return (
-    <tr
-      className="runs-row"
-      onClick={() => navigate(runPath)}
-      data-testid={`runs-row-${run.thread_id}`}
-    >
+    <tr className="runs-row" data-testid={`runs-row-${run.thread_id}`}>
       {selection && (
-        // Checkbox cell swallows clicks so the row's navigate-on-click stays intact.
-        <td className="runs-select-cell" onClick={(event) => event.stopPropagation()}>
+        <td className="runs-select-cell">
           <input
             type="checkbox"
             checked={selection.selected}
@@ -138,7 +133,7 @@ function RunRow({
         </td>
       )}
       <td>
-        <Link to={runPath} className="runs-run-link" onClick={(event) => event.stopPropagation()}>
+        <Link to={runPath} className="runs-run-link">
           <span className="runs-run-title strong">{run.title || 'Untitled run'}</span>
           <span className="runs-run-id">{run.thread_id}</span>
         </Link>
@@ -173,14 +168,13 @@ function RunRow({
               title={
                 run.pending_gate.phase ? `Pending gate on ${run.pending_gate.phase}` : undefined
               }
-              onClick={(event) => event.stopPropagation()}
             >
               gate: {run.pending_gate.kind ?? 'review'}
             </Link>
           )}
         </div>
       </td>
-      <td className="runs-actions-cell" onClick={(event) => event.stopPropagation()}>
+      <td className="runs-actions-cell">
         <div className="runs-actions-stack">
           <button
             type="button"

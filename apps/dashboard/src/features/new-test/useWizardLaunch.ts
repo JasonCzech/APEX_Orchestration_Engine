@@ -9,7 +9,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { getLangGraphClient } from '@/api/langgraphClient'
 import { queryKeys } from '@/api/queryKeys'
-import type { LaunchedRun } from '@/features/runs/launchRun'
+import { recommendedRecursionLimit, type LaunchedRun } from '@/features/runs/launchRun'
 
 import { buildLaunchPreview, type WizardDraft } from './wizardState'
 
@@ -20,7 +20,10 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
   // Stream options mirror D2's launchRun (plan Part 1 "Streaming" launch defaults).
   const run = await client.runs.create(thread.thread_id, 'pipeline', {
     input: preview.input,
-    config: { configurable: preview.configurable },
+    config: {
+      recursion_limit: recommendedRecursionLimit(preview.configurable),
+      configurable: preview.configurable,
+    },
     streamMode: ['updates', 'messages-tuple', 'custom'],
     streamSubgraphs: true,
     streamResumable: true,

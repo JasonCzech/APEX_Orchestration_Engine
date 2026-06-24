@@ -191,7 +191,8 @@ export function usePipelineStream(
             attempt = 0
             dispatch({ type: 'live' }) // no-op (same state ref) while already live
             if (part.id) resumeStore.set(tid, rid, part.id)
-            runError ??= handlePart(part)
+            runError = handlePart(part)
+            if (runError) break
           }
           if (signal.aborted || disposed) return
           // Natural end of the run's stream.

@@ -5,13 +5,14 @@ Decorated handlers are thin wiring; authorization logic lives in pure helpers
 the server runtime.
 """
 
+from collections.abc import Mapping
 from typing import Any, cast
 
 from langgraph_sdk import Auth
 from langgraph_sdk.auth import is_studio_user
 
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
-from apex.auth.service import extract_api_key, get_default_resolver
+from apex.auth.service import AuthStoreUnavailableError, extract_api_key, get_default_resolver
 
 auth = Auth()
 
@@ -53,14 +54,25 @@ def identity_from_user(user: Any) -> ConsumerIdentity:
                 return value
         return getattr(user, key, None)
 
+    identity = field("identity")
+    role = field("role")
+    consumer_type = field("consumer_type")
+    if not identity or not role or not consumer_type:
+        raise Auth.exceptions.HTTPException(status_code=401, detail="Malformed auth identity")
+
     scopes = field("scopes") or []
-    return ConsumerIdentity(
-        consumer_id=str(field("identity")),
-        name=str(field("name") or field("display_name") or field("identity")),
-        consumer_type=ConsumerType(field("consumer_type") or ConsumerType.HEADLESS),
-        role=Role(field("role") or Role.VIEWER),
-        scopes=[ScopeRef.model_validate(dict(scope)) for scope in scopes],
-    )
+    try:
+        return ConsumerIdentity(
+            consumer_id=str(identity),
+            name=str(field("name") or field("display_name") or identity),
+            consumer_type=ConsumerType(consumer_type),
+            role=Role(role),
+            scopes=[ScopeRef.model_validate(dict(scope)) for scope in scopes],
+        )
+    except Exception as exc:
+        raise Auth.exceptions.HTTPException(
+            status_code=401, detail="Malformed auth identity"
+        ) from exc
 
 
 def ensure_role(identity: ConsumerIdentity, minimum: Role) -> None:
@@ -95,6 +107,78 @@ def ensure_thread_scope(identity: ConsumerIdentity, metadata: dict[str, Any]) ->
         )
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, Mapping):
+        return dict(value)
+    return {}
+
+
+def _nested_mapping(root: dict[str, Any], *keys: str) -> dict[str, Any]:
+    current: Any = root
+    for key in keys:
+        current = _mapping(current).get(key)
+    return _mapping(current)
+
+
+def _project_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def ensure_run_scope(identity: ConsumerIdentity, value: Auth.types.RunsCreate) -> None:
+    """Validate project-bearing run input/config before the graph can execute.
+
+    Thread-scoped run creates still rely on LangGraph's metadata filter for the
+    target thread. Stateless project graphs, however, have no thread metadata to
+    protect, so project-scoped assistants must carry an allowed project_id.
+    """
+    if identity.is_unscoped:
+        return
+
+    payload = _mapping(value)
+    input_payload = _mapping(payload.get("input"))
+    config_payload = _mapping(payload.get("config"))
+    configurable = _nested_mapping(payload, "config", "configurable")
+    metadata = _mapping(payload.get("metadata"))
+
+    explicit = [
+        _project_id(input_payload.get("project_id")),
+        _project_id(configurable.get("project_id")),
+        _project_id(metadata.get("project_id")),
+    ]
+    explicit_projects = [project for project in explicit if project is not None]
+    for project_id in explicit_projects:
+        if not identity.allows_project(project_id):
+            raise Auth.exceptions.HTTPException(
+                status_code=403,
+                detail=f"Project '{project_id}' is outside this consumer's scopes",
+            )
+
+    thread_id = payload.get("thread_id")
+    assistant_id = str(payload.get("assistant_id") or "")
+    requires_project = thread_id is None and assistant_id in {"pipeline", "context"}
+    if not explicit_projects and requires_project:
+        projects = identity.scoped_project_ids()
+        if len(projects) != 1:
+            raise Auth.exceptions.HTTPException(
+                status_code=403,
+                detail="project_id is required for scoped stateless runs",
+            )
+        project_id = projects[0]
+        if assistant_id == "context":
+            input_payload["project_id"] = project_id
+            payload["input"] = input_payload
+        configurable["project_id"] = project_id
+        config_payload["configurable"] = configurable
+        payload["config"] = config_payload
+        metadata["project_id"] = project_id
+        payload["metadata"] = metadata
+
+
 def scope_filter(identity: ConsumerIdentity) -> Auth.types.FilterType | bool | None:
     """Metadata filter limiting reads/searches to scoped projects.
 
@@ -117,7 +201,12 @@ def scope_filter(identity: ConsumerIdentity) -> Auth.types.FilterType | bool | N
 
 @auth.authenticate
 async def authenticate(headers: dict[bytes, bytes]) -> dict[str, Any]:
-    identity = await get_default_resolver().resolve(extract_api_key(headers))
+    try:
+        identity = await get_default_resolver().resolve(extract_api_key(headers))
+    except AuthStoreUnavailableError as exc:
+        raise Auth.exceptions.HTTPException(
+            status_code=503, detail="API key store is unavailable"
+        ) from exc
     if identity is None:
         raise Auth.exceptions.HTTPException(status_code=401, detail="Invalid or missing API key")
     return user_payload(identity)
@@ -138,6 +227,7 @@ async def on_threads_create_run(
 ) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     ensure_role(identity, Role.OPERATOR)
+    ensure_run_scope(identity, value)
     return scope_filter(identity)
 
 
@@ -155,12 +245,30 @@ async def on_threads_search(
     return scope_filter(identity_from_user(ctx.user))
 
 
+@auth.on.threads.update
+async def on_threads_update(
+    ctx: Auth.types.AuthContext, value: Auth.types.ThreadsUpdate
+) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.OPERATOR)
+    return scope_filter(identity)
+
+
+@auth.on.threads.delete
+async def on_threads_delete(
+    ctx: Auth.types.AuthContext, value: Auth.types.ThreadsDelete
+) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.OPERATOR)
+    return scope_filter(identity)
+
+
 @auth.on(resources="assistants", actions=["create", "update", "delete"])
 async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> None:
     ensure_role(identity_from_user(ctx.user), Role.ADMIN)
 
 
 @auth.on
-async def on_anything_else(ctx: Auth.types.AuthContext, value: Any) -> bool:
-    """Fallback: any authenticated consumer may use resources without a stricter rule."""
-    return True
+async def on_anything_else(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
+    """Fallback: authenticated but still project-filtered; scoped consumers fail closed."""
+    return scope_filter(identity_from_user(ctx.user))

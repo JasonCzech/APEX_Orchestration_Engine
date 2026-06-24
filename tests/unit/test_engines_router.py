@@ -11,7 +11,7 @@ from langgraph_sdk.errors import NotFoundError
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
+from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.domain.pipeline import EngineHandle
 from apex.persistence.models import EngineRun
 from apex.routers.engines import (
@@ -25,10 +25,18 @@ from apex.services.pipeline_read import engine_info_from_values, map_thread_summ
 JsonDict = dict[str, Any]
 
 OPERATOR = ConsumerIdentity(
-    consumer_id="op-1", name="op", consumer_type=ConsumerType.DASHBOARD, role=Role.OPERATOR
+    consumer_id="op-1",
+    name="op",
+    consumer_type=ConsumerType.DASHBOARD,
+    role=Role.OPERATOR,
+    scopes=[ScopeRef(project_id="p1")],
 )
 VIEWER = ConsumerIdentity(
-    consumer_id="view-1", name="viewer", consumer_type=ConsumerType.DASHBOARD, role=Role.VIEWER
+    consumer_id="view-1",
+    name="viewer",
+    consumer_type=ConsumerType.DASHBOARD,
+    role=Role.VIEWER,
+    scopes=[ScopeRef(project_id="p1")],
 )
 
 T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
@@ -59,11 +67,13 @@ class FakeEngineRunsRepository:
         status: str = "running",
         external_run_id: str | None = None,
         handle: JsonDict | None = None,
+        project_id: str | None = "p1",
         started_at: datetime | None = None,
     ) -> EngineRun:
         run = EngineRun(
             id=f"{thread_id}-{attempt}",
             thread_id=thread_id,
+            project_id=project_id,
             attempt=attempt,
             engine=engine,
             external_run_id=external_run_id,
@@ -81,6 +91,7 @@ class FakeEngineRunsRepository:
         *,
         engine: str | None = None,
         status: str | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[EngineRun], int]:
@@ -89,25 +100,51 @@ class FakeEngineRunsRepository:
             for r in self.rows
             if (engine is None or r.engine == engine) and (status is None or r.status == status)
         ]
+        if allowed_project_ids is not None:
+            rows = [r for r in rows if r.project_id in allowed_project_ids]
         rows.sort(key=lambda r: (r.started_at, r.id), reverse=True)
         return rows[offset : offset + limit], len(rows)
 
-    async def list_for_thread(self, thread_id: str) -> list[EngineRun]:
+    async def list_for_thread(
+        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+    ) -> list[EngineRun]:
         rows = [r for r in self.rows if r.thread_id == thread_id]
+        if allowed_project_ids is not None:
+            rows = [r for r in rows if r.project_id in allowed_project_ids]
         rows.sort(key=lambda r: r.attempt, reverse=True)
         return rows
 
-    async def get_latest_for_thread(self, thread_id: str) -> EngineRun | None:
-        rows = await self.list_for_thread(thread_id)
+    async def get_latest_for_thread(
+        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+    ) -> EngineRun | None:
+        rows = await self.list_for_thread(thread_id, allowed_project_ids=allowed_project_ids)
         return rows[0] if rows else None
 
-    async def mark_aborted(self, thread_id: str) -> int:
+    async def get_by_external_run_id(
+        self,
+        external_run_id: str,
+        *,
+        allowed_project_ids: tuple[str, ...] | None = None,
+    ) -> EngineRun | None:
+        rows = [r for r in self.rows if r.external_run_id == external_run_id]
+        if allowed_project_ids is not None:
+            rows = [r for r in rows if r.project_id in allowed_project_ids]
+        rows.sort(key=lambda r: (r.started_at, r.id), reverse=True)
+        return rows[0] if rows else None
+
+    async def mark_aborted(
+        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+    ) -> int:
         if self.mark_aborted_error is not None:
             raise self.mark_aborted_error
         self.aborted_threads.append(thread_id)
         count = 0
         for run in self.rows:
-            if run.thread_id == thread_id and run.status not in ("completed", "failed", "aborted"):
+            if (
+                run.thread_id == thread_id
+                and (allowed_project_ids is None or run.project_id in allowed_project_ids)
+                and run.status not in ("completed", "failed", "aborted")
+            ):
                 run.status = "aborted"
                 run.ended_at = datetime.now(UTC)
                 count += 1
@@ -253,6 +290,17 @@ def test_get_engine_runs_per_thread_newest_attempt_first() -> None:
         empty = client.get("/v1/engines/runs/missing").json()
     assert [(r["attempt"], r["status"]) for r in rows] == [(2, "running"), (1, "failed")]
     assert empty == []
+
+
+def test_engine_runs_are_scoped_by_project() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(thread_id="t-p1", project_id="p1", external_run_id="run-p1")
+    repo.seed(thread_id="t-p2", project_id="p2", external_run_id="run-p2")
+    with make_client(repo, VIEWER) as client:
+        listed = client.get("/v1/engines/runs").json()
+        hidden = client.get("/v1/engines/runs/t-p2").json()
+    assert [item["thread_id"] for item in listed["items"]] == ["t-p1"]
+    assert hidden == []
 
 
 # ── Abort flow ───────────────────────────────────────────────────────────────

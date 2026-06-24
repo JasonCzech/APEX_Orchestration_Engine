@@ -1,9 +1,14 @@
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_DATABASE_URI = "postgresql+asyncpg://apex:apex@localhost:5432/apex"
+LOCKED_DOWN_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
+LOCAL_DATABASE_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
 
 
 def _package_version() -> str:
@@ -14,8 +19,11 @@ def _package_version() -> str:
 
 
 class DatabaseSettings(BaseModel):
-    uri: str = "postgresql+asyncpg://apex:apex@localhost:5432/apex"
+    uri: str = DEFAULT_DATABASE_URI
     schema_name: str = "apex"
+    pool_size: int = 5
+    max_overflow: int = 10
+    pool_recycle_s: int = 1800
 
 
 class AuthSettings(BaseModel):
@@ -36,8 +44,37 @@ class ApexSettings(BaseSettings):
     app_name: str = "APEX Orchestration Engine"
     version: str = _package_version()
     environment: str = "dev"
+    cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    allow_private_adapter_hosts: bool = False
     database: DatabaseSettings = DatabaseSettings()
     auth: AuthSettings = AuthSettings()
+
+    @model_validator(mode="after")
+    def validate_production_lockdown(self) -> "ApexSettings":
+        env = self.environment.strip().lower()
+        if env not in LOCKED_DOWN_ENVIRONMENTS:
+            return self
+
+        errors: list[str] = []
+        if not self.auth.enabled:
+            errors.append("auth.enabled=false is allowed only in local/test environments")
+        if self.auth.dev_api_key:
+            errors.append("auth.dev_api_key is allowed only in local/test environments")
+        if _is_local_database_uri(self.database.uri):
+            errors.append("database.uri must not point at localhost/default credentials")
+        if errors:
+            raise ValueError(f"Unsafe {self.environment!r} configuration: {'; '.join(errors)}")
+        return self
+
+
+def _is_local_database_uri(uri: str) -> bool:
+    if uri == DEFAULT_DATABASE_URI:
+        return True
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return False
+    return (parsed.hostname or "").lower() in LOCAL_DATABASE_HOSTS
 
 
 @lru_cache

@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import App from './App'
+import { AppErrorBoundary } from './AppErrorBoundary'
 import { loadRuntimeConfig } from './config/runtimeConfig'
 import './theme/index.css'
 
@@ -19,9 +20,29 @@ async function bootstrap() {
 
   createRoot(container).render(
     <StrictMode>
-      <App />
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
     </StrictMode>,
   )
 }
 
-void bootstrap()
+void bootstrap().catch((error: unknown) => {
+  const container = document.getElementById('root')
+  if (!container) throw error
+  const message = error instanceof Error ? error.message : 'The dashboard could not start.'
+  createRoot(container).render(
+    <StrictMode>
+      <AppErrorBoundary>
+        <div className="app-shell">
+          <main className="app-main">
+            <section className="problem-card glass-panel" role="alert">
+              <h2>Something went wrong</h2>
+              <p>{message}</p>
+            </section>
+          </main>
+        </div>
+      </AppErrorBoundary>
+    </StrictMode>,
+  )
+})
