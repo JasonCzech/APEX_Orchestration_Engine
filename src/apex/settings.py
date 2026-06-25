@@ -46,6 +46,33 @@ class SecurityHeadersSettings(BaseModel):
     )
 
 
+class LLMSettings(BaseModel):
+    """Anthropic LLM agent config (env: APEX_LLM__*).
+
+    `anthropic_api_key` doubles as the opt-in gate: a run that requests the
+    `anthropic` agent backend falls back to the deterministic stub when no key
+    is present, so the offline test suite (which sets neither) stays stub-only.
+    """
+
+    anthropic_api_key: str | None = None
+    default_model: str = "claude-opus-4-8"
+    max_tokens: int = 8000
+    timeout_s: float = 120.0
+    # Adaptive thinking is the recommended mode for Opus 4.8 (budget_tokens is
+    # rejected); disable only if a pinned model/library combo can't accept it.
+    adaptive_thinking: bool = True
+
+    # `fetch_results` tool (the "pass a link" pull path). Deny-by-default: inert
+    # unless enabled AND given an explicit host allow-list. SSRF-guarded in
+    # apex.services.results_fetch.
+    fetch_tool_enabled: bool = False
+    fetch_allowed_hosts: list[str] = []
+    fetch_allow_private_hosts: bool = False
+    fetch_max_bytes: int = 1_000_000
+    fetch_timeout_s: float = 20.0
+    fetch_max_tool_iters: int = 4
+
+
 class ApexSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APEX_",
@@ -66,6 +93,7 @@ class ApexSettings(BaseSettings):
     auth: AuthSettings = AuthSettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
     security_headers: SecurityHeadersSettings = SecurityHeadersSettings()
+    llm: LLMSettings = LLMSettings()
 
     @property
     def is_locked_down(self) -> bool:

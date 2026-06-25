@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field
 
 from apex.app.dependencies import CurrentIdentity, require_role
 from apex.app.errors import problem
-from apex.auth.identity import Role
+from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
+from apex.persistence.repositories.documents import DocumentsRepository
+from apex.services.documents import get_documents_repository
 from apex.services.langgraph_client import loopback_client
 from apex.services.pipeline_read import (
     GateSupersededError,
@@ -34,6 +36,35 @@ def get_pipeline_read_service(request: Request) -> PipelineReadService:
 
 
 PipelineService = Annotated[PipelineReadService, Depends(get_pipeline_read_service)]
+DocumentsRepo = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+
+
+async def _documents_to_packets(
+    repository: DocumentsRepository, identity: ConsumerIdentity, document_ids: list[str]
+) -> list[dict[str, Any]]:
+    """Resolve uploaded documents into context packets the agent can read.
+
+    Scoped like GET /v1/documents/{id}: a document outside the caller's scope is 404,
+    not leaked. The artifact key is exposed as a /v1/artifacts URL the agent (or a
+    human) can dereference.
+    """
+    packets: list[dict[str, Any]] = []
+    for document_id in document_ids:
+        document = await repository.get(document_id)
+        if document is None or not (
+            document.project_id is None or identity.allows_project(document.project_id)
+        ):
+            raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
+        packets.append(
+            {
+                "id": f"document-{document.id}",
+                "source": "document",
+                "title": document.name,
+                "summary": document.summary,
+                "ref": f"/v1/artifacts/{document.artifact_key}",
+            }
+        )
+    return packets
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -74,6 +105,32 @@ class PipelineListResponse(BaseModel):
     items: list[PipelineSummary]
     limit: int
     offset: int
+
+
+class StartPipelineRequest(BaseModel):
+    """Start a pipeline run. For results analysis, select the analysis phases (e.g.
+    ["reporting", "postmortem"]) and supply `external_results`; gates default to auto."""
+
+    title: str = Field(min_length=1, max_length=500)
+    request: str = Field(default="", max_length=20000)
+    project_id: str | None = None
+    app_id: str | None = None
+    phases: list[str] | None = None
+    gates: dict[str, Any] | None = None
+    agent_backend: str | None = None
+    model_by_phase: dict[str, str] | None = None
+    external_results: dict[str, Any] | None = None
+    context_packets: list[dict[str, Any]] | None = None
+    document_ids: list[str] | None = None
+
+
+class StartPipelineResponse(BaseModel):
+    thread_id: str
+    run_id: str
+    stream_url: str = Field(
+        description="Join the run's SSE stream: GET this path on the LangGraph "
+        "surface (same host) with your API key."
+    )
 
 
 class GateInterrupt(BaseModel):
@@ -122,6 +179,52 @@ class PhasePromptReviewUpdate(BaseModel):
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "",
+    operation_id="createPipelineRun",
+    status_code=202,
+    response_model=StartPipelineResponse,
+    dependencies=[Depends(require_role(Role.OPERATOR))],
+)
+async def create_pipeline_run(
+    body: StartPipelineRequest,
+    identity: CurrentIdentity,
+    service: PipelineService,
+    documents: DocumentsRepo,
+) -> Any:
+    """Create a thread and launch a pipeline run; returns the run id + SSE stream URL.
+
+    Convenience entrypoint for external dashboard clients: drive the existing pipeline
+    (e.g. an analysis-only run over externally-supplied results) without touching the
+    raw LangGraph /threads + /runs API. `document_ids` are resolved into context packets
+    (scoped per consumer) and merged with any inline `context_packets`.
+    """
+    if body.project_id is not None and not identity.allows_project(body.project_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Project '{body.project_id}' is outside this consumer's scopes",
+        )
+    context_packets = list(body.context_packets or [])
+    if body.document_ids:
+        context_packets += await _documents_to_packets(documents, identity, body.document_ids)
+    try:
+        result = await service.start_run(
+            title=body.title,
+            request=body.request,
+            project_id=body.project_id,
+            app_id=body.app_id,
+            phases=body.phases,
+            gates=body.gates,
+            agent_backend=body.agent_backend,
+            model_by_phase=body.model_by_phase,
+            external_results=body.external_results,
+            context_packets=context_packets or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return StartPipelineResponse(**result)
 
 
 @router.get("", operation_id="listPipelines", response_model=PipelineListResponse)

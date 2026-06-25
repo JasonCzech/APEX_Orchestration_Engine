@@ -75,6 +75,10 @@ class PipelineState(TypedDict, total=False):
     # Run intent (input)
     title: str
     request: str
+    # Optional externally-produced results (ExternalResults shape) supplied as run
+    # input. When present, plan_resolver seeds a succeeded execution result from it so
+    # analysis-only runs (reporting/postmortem) satisfy the execution prerequisite.
+    external_results: JsonDict
 
     # Per-run cursor (overwritten by each run's plan resolver)
     phases_plan: list[str]

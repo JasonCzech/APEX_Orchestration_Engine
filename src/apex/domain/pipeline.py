@@ -117,6 +117,24 @@ class ContextPacket(BaseModel):
     ref: str | None = None
 
 
+class ExternalResults(BaseModel):
+    """Results produced outside APEX (e.g. by a standalone analysis dashboard).
+
+    Supplied as run input so an analysis-only run (reporting/postmortem) can report
+    on them honestly — plan_resolver seeds a succeeded execution result from this
+    instead of the caller forging internal phase state. Maps onto TestResultSummary
+    so the reporting phase reads it the same way it reads a real engine run.
+    """
+
+    source: str
+    uri: str | None = None
+    engine: str | None = None
+    passed: bool | None = None
+    kpis: dict[str, float] = Field(default_factory=dict)
+    summary: str | None = None
+    notes: str | None = None
+
+
 class EngineHandle(BaseModel):
     engine: str
     connection_id: str | None = None

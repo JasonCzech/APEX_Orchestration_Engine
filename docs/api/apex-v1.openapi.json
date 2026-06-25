@@ -3484,6 +3484,166 @@
         "title": "SnapshotView",
         "type": "object"
       },
+      "StartPipelineRequest": {
+        "description": "Start a pipeline run. For results analysis, select the analysis phases (e.g.\n[\"reporting\", \"postmortem\"]) and supply `external_results`; gates default to auto.",
+        "properties": {
+          "agent_backend": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Backend"
+          },
+          "app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
+          "context_packets": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context Packets"
+          },
+          "document_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Ids"
+          },
+          "external_results": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Results"
+          },
+          "gates": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gates"
+          },
+          "model_by_phase": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model By Phase"
+          },
+          "phases": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phases"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "request": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "Request",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "StartPipelineRequest",
+        "type": "object"
+      },
+      "StartPipelineResponse": {
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "stream_url": {
+            "description": "Join the run's SSE stream: GET this path on the LangGraph surface (same host) with your API key.",
+            "title": "Stream Url",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "run_id",
+          "stream_url"
+        ],
+        "title": "StartPipelineResponse",
+        "type": "object"
+      },
       "SystemInfo": {
         "properties": {
           "consumer": {
@@ -6674,6 +6834,46 @@
           }
         },
         "summary": "List Pipelines",
+        "tags": [
+          "pipelines"
+        ]
+      },
+      "post": {
+        "description": "Create a thread and launch a pipeline run; returns the run id + SSE stream URL.\n\nConvenience entrypoint for external dashboard clients: drive the existing pipeline\n(e.g. an analysis-only run over externally-supplied results) without touching the\nraw LangGraph /threads + /runs API. `document_ids` are resolved into context packets\n(scoped per consumer) and merged with any inline `context_packets`.",
+        "operationId": "createPipelineRun",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartPipelineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartPipelineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Pipeline Run",
         "tags": [
           "pipelines"
         ]
