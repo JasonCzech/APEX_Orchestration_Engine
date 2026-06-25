@@ -127,6 +127,19 @@ export const ResolvedPromptSchema = z
   .passthrough();
 export type ResolvedPrompt = z.infer<typeof ResolvedPromptSchema>;
 
+export const PromptReviewDraftSchema = z
+  .object({
+    system: z.string(),
+    phase_prompt: z.string(),
+    application: z.string().nullable(),
+    additional_context: z.string(),
+    source: ResolvedPromptSourceSchema,
+    updated_at: z.string(),
+    updated_by: z.string(),
+  })
+  .passthrough();
+export type PromptReviewDraft = z.infer<typeof PromptReviewDraftSchema>;
+
 /** apex.domain.integrations.LoadTestSpec (extra entry key "load_test_spec"). */
 export const LoadTestSpecSchema = z
   .object({
@@ -215,6 +228,7 @@ export const PipelineStateSchema = z
     phases_plan: z.array(PhaseNameSchema).optional(),
     current_phase: PhaseNameSchema.nullish(),
     run_aborted: z.boolean().optional(),
+    prompt_reviews: z.record(PhaseNameSchema, PromptReviewDraftSchema).optional(),
     phase_results: z.record(PhaseResultEntrySchema).optional(),
     artifacts: z.array(ArtifactRefSchema).optional(),
     dialogue: z.array(DialogueEntrySchema).optional(),

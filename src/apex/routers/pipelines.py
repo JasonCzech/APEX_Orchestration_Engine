@@ -104,6 +104,23 @@ class AbortPipelineResponse(BaseModel):
     cancelled_run_ids: list[str]
 
 
+class PhasePromptReview(BaseModel):
+    system: str
+    phase_prompt: str
+    application: str | None = None
+    additional_context: str = ""
+    source: dict[str, Any] = Field(default_factory=dict)
+    updated_at: str
+    updated_by: str
+
+
+class PhasePromptReviewUpdate(BaseModel):
+    system: str
+    phase_prompt: str
+    application: str | None = None
+    additional_context: str = ""
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
@@ -127,6 +144,55 @@ async def list_pipelines(
 async def get_pipeline(thread_id: str, identity: CurrentIdentity, service: PipelineService) -> Any:
     try:
         return await service.get_pipeline(thread_id)
+    except NotFoundError:
+        raise HTTPException(
+            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
+        ) from None
+
+
+@router.get(
+    "/{thread_id}/phases/{phase}/prompt-review",
+    operation_id="getPhasePromptReview",
+    response_model=PhasePromptReview,
+)
+async def get_phase_prompt_review(
+    thread_id: str,
+    phase: str,
+    identity: CurrentIdentity,
+    service: PipelineService,
+) -> Any:
+    try:
+        return await service.get_phase_prompt_review(thread_id, phase)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except NotFoundError:
+        raise HTTPException(
+            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
+        ) from None
+
+
+@router.patch(
+    "/{thread_id}/phases/{phase}/prompt-review",
+    operation_id="patchPhasePromptReview",
+    response_model=PhasePromptReview,
+    dependencies=[Depends(require_role(Role.OPERATOR))],
+)
+async def patch_phase_prompt_review(
+    thread_id: str,
+    phase: str,
+    body: PhasePromptReviewUpdate,
+    identity: CurrentIdentity,
+    service: PipelineService,
+) -> Any:
+    try:
+        return await service.update_phase_prompt_review(
+            thread_id,
+            phase,
+            body.model_dump(mode="json"),
+            actor=identity.name or identity.consumer_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except NotFoundError:
         raise HTTPException(
             status_code=404, detail=f"pipeline thread {thread_id!r} not found"

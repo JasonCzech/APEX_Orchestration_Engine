@@ -1,0 +1,39 @@
+.prompt-review-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.prompt-review-tab {
+  appearance: none;
+  background: var(--subtle-fill, var(--bg-secondary));
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.prompt-review-tab:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.prompt-review-tab[aria-selected='true'] {
+  color: var(--accent);
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+}
+
+.prompt-review-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.prompt-review-editor .cm-editor {
+  min-height: 180px;
+}

@@ -16,9 +16,14 @@ from typing import Any, Protocol
 
 from langgraph_sdk.errors import ConflictError
 
-from apex.domain.pipeline import PHASE_ORDER
-from apex.graphs.pipeline.configurable import Limits
+from apex.domain.pipeline import PHASE_ORDER, Phase, utcnow_iso
+from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
+from apex.services.prompts import (
+    prompt_review_from_resolved,
+    resolve_phase_prompt_no_catalog,
+    resolve_phase_prompt_sync,
+)
 
 JsonDict = dict[str, Any]
 
@@ -127,6 +132,13 @@ def _public_gate(gate: JsonDict | None) -> JsonDict | None:
     return {k: gate.get(k) for k in ("interrupt_id", "kind", "phase")}
 
 
+def phase_by_name(name: str) -> Phase:
+    for phase in PHASE_ORDER:
+        if phase.value == name:
+            return phase
+    raise ValueError(f"unknown phase {name!r}")
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     values = thread.get("values") or {}
@@ -203,6 +215,78 @@ class PipelineReadService:
             "values": state.get("values") or {},
             "interrupts": gates,
         }
+
+    async def get_phase_prompt_review(self, thread_id: str, phase_name: str) -> JsonDict:
+        """Effective prompt-review draft for a phase, with old-run fallback."""
+        phase = phase_by_name(phase_name)
+        thread = await self._client.threads.get(thread_id)
+        state = await self._client.threads.get_state(thread_id)
+        values = state.get("values") or {}
+        review = (values.get("prompt_reviews") or {}).get(phase.value)
+        if isinstance(review, dict):
+            return dict(review)
+
+        entry = (values.get("phase_results") or {}).get(phase.value) or {}
+        prompt = entry.get("resolved_prompt")
+        if isinstance(prompt, dict) and (prompt.get("system") or prompt.get("user")):
+            source = entry.get("resolved_prompt_source")
+            return {
+                "system": prompt.get("system") or "",
+                "phase_prompt": prompt.get("user") or "",
+                "application": prompt.get("application"),
+                "additional_context": "",
+                "source": dict(source) if isinstance(source, dict) else {"origin": "catalog"},
+                "updated_at": utcnow_iso(),
+                "updated_by": "system",
+            }
+
+        metadata = thread.get("metadata") or {}
+        cfg = PipelineConfigurable(
+            project_id=metadata.get("project_id"),
+            app_id=metadata.get("app_id"),
+        )
+        variables = {
+            "title": values.get("title") or metadata.get("title") or "untitled run",
+            "request": values.get("request") or "(no request provided)",
+        }
+        try:
+            resolved = resolve_phase_prompt_sync(phase, cfg, variables=variables)
+        except Exception:
+            resolved = resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
+        return dict(prompt_review_from_resolved(resolved))
+
+    async def update_phase_prompt_review(
+        self,
+        thread_id: str,
+        phase_name: str,
+        body: JsonDict,
+        *,
+        actor: str,
+    ) -> JsonDict:
+        """Patch one phase's run-scoped prompt review draft without starting a run."""
+        phase = phase_by_name(phase_name)
+        state = await self._client.threads.get_state(thread_id)
+        values = state.get("values") or {}
+        current = (values.get("prompt_reviews") or {}).get(phase.value)
+        current_source = current.get("source") if isinstance(current, dict) else None
+        draft: JsonDict = {
+            "system": str(body.get("system") or ""),
+            "phase_prompt": str(body.get("phase_prompt") or ""),
+            "application": body.get("application") if body.get("application") is not None else None,
+            "additional_context": str(body.get("additional_context") or ""),
+            "source": {
+                "origin": "run_override",
+                "ref": current_source.get("ref") if isinstance(current_source, dict) else None,
+                "editor": actor,
+            },
+            "updated_at": utcnow_iso(),
+            "updated_by": actor,
+        }
+        await self._client.threads.update_state(
+            thread_id,
+            {"prompt_reviews": {phase.value: draft}},
+        )
+        return draft
 
     async def resume_gate(
         self, thread_id: str, interrupt_id: str, action: str, extras: JsonDict

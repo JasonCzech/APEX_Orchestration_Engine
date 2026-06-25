@@ -115,13 +115,21 @@ def test_modify_reinterrupts_with_edited_prompt_then_approve() -> None:
     cfg = config("t3", phases=["story_analysis"])
     g.invoke({"title": "Demo"}, cfg)
     result = g.invoke(
-        Command(resume={"action": "modify", "prompt": {"system": "You are edited."}}), cfg
+        Command(
+            resume={
+                "action": "modify",
+                "prompt": {"system": "You are edited."},
+                "note": "Operator context.",
+            }
+        ),
+        cfg,
     )
     payload = pending_interrupt(result)
     assert payload["kind"] == "prompt_review"
     assert payload["prompt"]["system"] == "You are edited."
     assert payload["prompt"]["source"]["origin"] == "gate_edit"
     assert payload["prompt"]["user"].startswith("Title: Demo")  # system-only edit
+    assert payload["additional_context"] == "Operator context."
 
     result = g.invoke(Command(resume={"action": "approve"}), cfg)
     assert pending_interrupt(result)["kind"] == "phase_review"
@@ -129,7 +137,25 @@ def test_modify_reinterrupts_with_edited_prompt_then_approve() -> None:
     entry = result["phase_results"]["story_analysis"]
     assert entry["status"] == "succeeded"
     assert entry["resolved_prompt"]["system"] == "You are edited."
+    assert "Operator context." in entry["resolved_prompt"]["user"]
     assert entry["resolved_prompt_source"]["origin"] == "gate_edit"
+    assert result["prompt_reviews"]["story_analysis"]["system"] == "You are edited."
+    assert result["prompt_reviews"]["story_analysis"]["additional_context"] == "Operator context."
+
+
+def test_prompt_review_approve_with_context_marks_gate_edit() -> None:
+    g = compiled()
+    cfg = config("t3-context", phases=["story_analysis"])
+    g.invoke({"title": "Demo"}, cfg)
+
+    result = g.invoke(Command(resume={"action": "approve", "note": "Operator context."}), cfg)
+    assert pending_interrupt(result)["kind"] == "phase_review"
+    result = g.invoke(Command(resume={"action": "approve"}), cfg)
+
+    entry = result["phase_results"]["story_analysis"]
+    assert entry["resolved_prompt_source"]["origin"] == "gate_edit"
+    assert "Operator context." in entry["resolved_prompt"]["user"]
+    assert result["prompt_reviews"]["story_analysis"]["additional_context"] == "Operator context."
 
 
 def test_skip_phase_blocks_downstream_prerequisite() -> None:
@@ -294,3 +320,33 @@ def test_prompt_override_sets_run_override_origin() -> None:
     entry = result["phase_results"]["story_analysis"]
     assert entry["resolved_prompt"]["system"] == "Custom system prompt."
     assert entry["resolved_prompt_source"]["origin"] == "run_override"
+
+
+def test_prompt_review_state_drives_prepare_and_preserves_existing_review() -> None:
+    g = compiled()
+    cfg = config("t14", gates=all_auto(), phases=["story_analysis"])
+    result = g.invoke(
+        {
+            "title": "Demo",
+            "request": "r",
+            "prompt_reviews": {
+                "story_analysis": {
+                    "system": "Run scoped system.",
+                    "phase_prompt": "Run scoped phase prompt.",
+                    "application": None,
+                    "additional_context": "Use checkout build 17.",
+                    "source": {"origin": "run_override", "ref": "manual", "editor": "op"},
+                    "updated_at": "2026-06-01T00:00:00+00:00",
+                    "updated_by": "op",
+                }
+            },
+        },
+        cfg,
+    )
+    entry = result["phase_results"]["story_analysis"]
+    assert entry["resolved_prompt"]["system"] == "Run scoped system."
+    assert entry["resolved_prompt"]["user"].startswith("Run scoped phase prompt.")
+    assert "Use checkout build 17." in entry["resolved_prompt"]["user"]
+    assert entry["resolved_prompt_source"]["origin"] == "run_override"
+    assert result["prompt_reviews"]["story_analysis"]["updated_by"] == "op"
+    assert len(result["prompt_reviews"]) == len(PHASE_ORDER)

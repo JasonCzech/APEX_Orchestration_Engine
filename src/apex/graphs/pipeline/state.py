@@ -65,6 +65,12 @@ def append_unique_by_id(
     return _merge_lists_by_id(list(left or []), list(right or []))
 
 
+def merge_prompt_reviews(
+    left: dict[str, JsonDict] | None, right: dict[str, JsonDict] | None
+) -> dict[str, JsonDict]:
+    return {**dict(left or {}), **dict(right or {})}
+
+
 class PipelineState(TypedDict, total=False):
     # Run intent (input)
     title: str
@@ -80,6 +86,7 @@ class PipelineState(TypedDict, total=False):
 
     # Accumulated thread state
     phase_results: Annotated[dict[str, JsonDict], merge_phase_results]
+    prompt_reviews: Annotated[dict[str, JsonDict], merge_prompt_reviews]
     artifacts: Annotated[list[JsonDict], append_unique_by_id]
     dialogue: Annotated[list[JsonDict], append_unique_by_id]
     context_packets: Annotated[list[JsonDict], append_unique_by_id]

@@ -207,6 +207,9 @@ export function RunDetailPage() {
           stream={live.stream}
           threadBusy={detail.thread_status === 'busy'}
           gateSlot={gateSlot}
+          appId={detail.app_id ?? null}
+          gate={hitl.gate}
+          gateState={hitl.state}
         />
       </div>
     </>

@@ -65,6 +65,17 @@ export const handlers = [
   // shell-level tests stay quiet. Tests that need rows register their own
   // handler via server.use(...), which takes precedence.
   http.get('*/v1/pipelines', () => HttpResponse.json({ items: [], limit: 100, offset: 0 })),
+  http.get('*/v1/pipelines/:threadId/phases/:phase/prompt-review', ({ params }) =>
+    HttpResponse.json({
+      system: `Test system prompt for ${String(params['phase'])}.`,
+      phase_prompt: `Test phase prompt for ${String(params['phase'])}.`,
+      application: null,
+      additional_context: '',
+      source: { origin: 'catalog', ref: `phase/${String(params['phase'])}@test` },
+      updated_at: '2026-06-01T00:00:00+00:00',
+      updated_by: 'system',
+    }),
+  ),
   // The Home dashboard (/, D7) additionally reads drafts + usage analytics on
   // mount; default to empty so tests that merely pass through '/' stay quiet.
   http.get('*/v1/drafts', () => HttpResponse.json([])),

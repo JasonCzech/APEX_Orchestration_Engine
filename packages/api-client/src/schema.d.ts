@@ -637,6 +637,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pipelines/{thread_id}/phases/{phase}/prompt-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Phase Prompt Review */
+        get: operations["getPhasePromptReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Patch Phase Prompt Review */
+        patch: operations["patchPhasePromptReview"];
+        trace?: never;
+    };
     "/v1/prompts": {
         parameters: {
             query?: never;
@@ -1694,6 +1712,42 @@ export interface components {
             kind?: string | null;
             /** Phase */
             phase?: string | null;
+        };
+        /** PhasePromptReview */
+        PhasePromptReview: {
+            /**
+             * Additional Context
+             * @default
+             */
+            additional_context: string;
+            /** Application */
+            application?: string | null;
+            /** Phase Prompt */
+            phase_prompt: string;
+            /** Source */
+            source?: {
+                [key: string]: unknown;
+            };
+            /** System */
+            system: string;
+            /** Updated At */
+            updated_at: string;
+            /** Updated By */
+            updated_by: string;
+        };
+        /** PhasePromptReviewUpdate */
+        PhasePromptReviewUpdate: {
+            /**
+             * Additional Context
+             * @default
+             */
+            additional_context: string;
+            /** Application */
+            application?: string | null;
+            /** Phase Prompt */
+            phase_prompt: string;
+            /** System */
+            system: string;
         };
         /** PhaseStripEntry */
         PhaseStripEntry: {
@@ -3900,6 +3954,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResumeGateResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getPhasePromptReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+                phase: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhasePromptReview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    patchPhasePromptReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+                phase: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhasePromptReviewUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhasePromptReview"];
                 };
             };
             /** @description Validation Error */

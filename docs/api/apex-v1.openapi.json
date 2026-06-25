@@ -2314,6 +2314,89 @@
         "title": "PendingGate",
         "type": "object"
       },
+      "PhasePromptReview": {
+        "properties": {
+          "additional_context": {
+            "default": "",
+            "title": "Additional Context",
+            "type": "string"
+          },
+          "application": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application"
+          },
+          "phase_prompt": {
+            "title": "Phase Prompt",
+            "type": "string"
+          },
+          "source": {
+            "additionalProperties": true,
+            "title": "Source",
+            "type": "object"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "phase_prompt",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "PhasePromptReview",
+        "type": "object"
+      },
+      "PhasePromptReviewUpdate": {
+        "properties": {
+          "additional_context": {
+            "default": "",
+            "title": "Additional Context",
+            "type": "string"
+          },
+          "application": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application"
+          },
+          "phase_prompt": {
+            "title": "Phase Prompt",
+            "type": "string"
+          },
+          "system": {
+            "title": "System",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "phase_prompt"
+        ],
+        "title": "PhasePromptReviewUpdate",
+        "type": "object"
+      },
       "PhaseStripEntry": {
         "properties": {
           "attempt": {
@@ -6738,6 +6821,116 @@
           }
         },
         "summary": "Resume Gate",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
+    "/v1/pipelines/{thread_id}/phases/{phase}/prompt-review": {
+      "get": {
+        "operationId": "getPhasePromptReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "phase",
+            "required": true,
+            "schema": {
+              "title": "Phase",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhasePromptReview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Phase Prompt Review",
+        "tags": [
+          "pipelines"
+        ]
+      },
+      "patch": {
+        "operationId": "patchPhasePromptReview",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "phase",
+            "required": true,
+            "schema": {
+              "title": "Phase",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhasePromptReviewUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhasePromptReview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Phase Prompt Review",
         "tags": [
           "pipelines"
         ]

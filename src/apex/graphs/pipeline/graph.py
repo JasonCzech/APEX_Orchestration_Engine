@@ -26,6 +26,14 @@ from apex.graphs.pipeline.phase_subgraph import (
     make_phase_subgraph,
 )
 from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.services.prompts import prompt_review_from_resolved, resolve_phase_prompts_sync
+
+
+def _prompt_variables(state: PipelineState) -> dict[str, str]:
+    return {
+        "title": state.get("title") or "untitled run",
+        "request": state.get("request") or "(no request provided)",
+    }
 
 
 def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
@@ -61,9 +69,23 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
             phase=phase, status=PhaseStatus.PENDING, attempt=attempt
         ).as_state()
 
+    existing_reviews = state.get("prompt_reviews") or {}
+    missing_review_phases = [phase for phase in PHASE_ORDER if phase.value not in existing_reviews]
+    seeded_reviews: dict[str, JsonDict] = {}
+    if missing_review_phases:
+        resolved_reviews = resolve_phase_prompts_sync(
+            missing_review_phases,
+            cfg,
+            variables=_prompt_variables(state),
+        )
+        seeded_reviews = {
+            phase.value: dict(prompt_review_from_resolved(resolved_reviews[phase]))
+            for phase in missing_review_phases
+        }
+
     plan = [phase.value for phase in selected]
     emit_event({"schema_version": EVENT_SCHEMA_VERSION, "type": "plan_resolved", "phases": plan})
-    return {
+    update = {
         "phases_plan": plan,
         "current_phase": None,
         "run_aborted": False,
@@ -72,6 +94,9 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         # configurable is not retrievable via get_state). See pipeline_read._limits_from_state.
         "limits": cfg.limits.model_dump(mode="json"),
     }
+    if seeded_reviews:
+        update["prompt_reviews"] = seeded_reviews
+    return update
 
 
 def route_next_phase(state: PipelineState) -> str:

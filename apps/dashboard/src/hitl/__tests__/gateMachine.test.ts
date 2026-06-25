@@ -196,10 +196,10 @@ describe('gateReducer semantics beyond tags', () => {
     })
     if (state.tag !== 'open') throw new Error('expected open')
     expect(state.dirty).toBe(false)
-    // note/message edits never flip the prompt-dirty bit.
+    // Prompt-review notes are Additional Context and count as edited run-scoped prompt state.
     state = gateReducer(state, { type: 'EDIT', patch: { note: 'looks fine' } })
     if (state.tag !== 'open') throw new Error('expected open')
-    expect(state.dirty).toBe(false)
+    expect(state.dirty).toBe(true)
     expect(state.draft.note).toBe('looks fine')
   })
 

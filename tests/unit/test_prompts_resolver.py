@@ -86,9 +86,7 @@ async def test_application_prompt_loaded_for_selected_app() -> None:
 
 
 async def test_application_override_beats_catalog() -> None:
-    store = FakeStore(
-        {("application", "app-checkout"): version("Catalog app requirements.", 4)}
-    )
+    store = FakeStore({("application", "app-checkout"): version("Catalog app requirements.", 4)})
     resolved = await resolve_phase_prompt(
         Phase.STORY_ANALYSIS,
         cfg(
@@ -121,6 +119,19 @@ async def test_run_override_beats_catalog() -> None:
     assert resolved["user"].startswith("Title: Demo")
     assert resolved["source"]["origin"] == "run_override"
     assert resolved["source"]["ref"] == "phase/story_analysis@override"
+
+
+async def test_run_user_override_beats_catalog() -> None:
+    store = FakeStore({("phase", "story_analysis/user"): version("Catalog user.", 4)})
+    configurable = cfg(
+        prompt_overrides={"phase/story_analysis/user": {"content": "Override user {title}."}}
+    )
+    resolved = await resolve_phase_prompt(
+        Phase.STORY_ANALYSIS, configurable, variables=VARS, store=store
+    )
+    assert resolved["user"] == "Override user Demo."
+    assert resolved["source"]["origin"] == "run_override"
+    assert resolved["source"]["ref"] == "phase/story_analysis/user@override"
 
 
 async def test_run_override_version_id_used_as_ref() -> None:

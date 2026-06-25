@@ -156,6 +156,7 @@ export function GateModuleView({
           gate={gate}
           payload={payload}
           prompt={draft.prompt}
+          note={draft.note}
           dirty={dirty}
           disabled={disabled}
           compact={compact}

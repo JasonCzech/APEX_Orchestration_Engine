@@ -114,9 +114,17 @@ export function originalPromptOf(gate: GateInstance): PromptDraft {
   return { system: '', user: '' }
 }
 
+export function originalNoteOf(gate: GateInstance): string {
+  if (gate.payload?.kind === 'prompt_review') return gate.payload.additional_context ?? ''
+  return ''
+}
+
 /** Fresh draft for a newly discovered gate (prompt seeded from the payload). */
 export function initialDraftFor(gate: GateInstance): GateDraft {
-  if (gate.kind === 'prompt_review') return { prompt: originalPromptOf(gate) }
+  if (gate.kind === 'prompt_review') {
+    const note = originalNoteOf(gate)
+    return note ? { prompt: originalPromptOf(gate), note } : { prompt: originalPromptOf(gate) }
+  }
   return {}
 }
 
@@ -127,7 +135,8 @@ export function isPromptDirty(gate: GateInstance, draft: GateDraft): boolean {
   return (
     draft.prompt.system !== original.system ||
     draft.prompt.user !== original.user ||
-    (draft.prompt.application ?? '') !== (original.application ?? '')
+    (draft.prompt.application ?? '') !== (original.application ?? '') ||
+    (draft.note ?? '') !== originalNoteOf(gate)
   )
 }
 
@@ -270,6 +279,6 @@ export function buildResumeBody(action: GateAction, draft: GateDraft): ResumeBod
     body.instructions = draft.instructions
   }
   if (action === 'discuss' && draft.message !== undefined) body.message = draft.message
-  if (draft.note) body.note = draft.note
+  if (draft.note !== undefined) body.note = draft.note
   return body
 }

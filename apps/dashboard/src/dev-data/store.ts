@@ -290,11 +290,26 @@ function makePipelineState(
     'Execution agent transcript',
   )
   const archive = artifactRef('results-archive', 'results.zip', 'archive', 'application/octet-stream', 'Raw engine results')
+  const promptReviews = Object.fromEntries(
+    PHASE_NAMES.map((phase) => [
+      phase,
+      {
+        system: `You are the ${phase.replaceAll('_', ' ')} phase operator.`,
+        phase_prompt: `Prepare the ${phase.replaceAll('_', ' ')} deliverable for: ${title}.`,
+        application: 'Checkout-specific requirements: preserve carts through payment retries and report p95 latency.',
+        additional_context: '',
+        source: { origin: 'catalog', ref: `phase/${phase}@dev` },
+        updated_at: isoMinutesAgo(140),
+        updated_by: 'system',
+      },
+    ]),
+  ) as PipelineState['prompt_reviews']
   return {
     title,
     request: 'Validate checkout and search latency before the release train.',
     current_phase: currentPhase,
     phases_plan: [...PHASE_NAMES],
+    prompt_reviews: promptReviews,
     phase_results: {
       story_analysis: {
         phase: 'story_analysis',
@@ -712,6 +727,44 @@ export class DevDataStore {
     }
     const parts = path.split('/')
     const threadId = decodePart(parts[3])
+    if (parts[4] === 'phases' && parts[6] === 'prompt-review') {
+      const detail = this.pipelineDetails.get(threadId)
+      if (!detail) return problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
+      const phase = decodePart(parts[5]) as PhaseName
+      const values = detail.values as PipelineState
+      const reviews = { ...(values.prompt_reviews ?? {}) }
+      const existing = reviews[phase]
+      const entry = values.phase_results?.[phase]
+      const fallback = existing ?? {
+        system: entry?.resolved_prompt?.system ?? `You are the ${phase.replaceAll('_', ' ')} phase operator.`,
+        phase_prompt: entry?.resolved_prompt?.user ?? `Prepare the ${phase.replaceAll('_', ' ')} deliverable.`,
+        application: detail.app_id ? `Application requirements for ${detail.app_id}.` : null,
+        additional_context: '',
+        source: entry?.resolved_prompt_source ?? { origin: 'catalog', ref: `phase/${phase}@dev` },
+        updated_at: detail.updated_at ?? nowIso(),
+        updated_by: 'system',
+      }
+      if (method === 'GET') return jsonResponse(fallback)
+      if (method === 'PATCH') {
+        return request.json().then((body) => {
+          const patch = body as Partial<typeof fallback>
+          const review = {
+            system: patch.system ?? fallback.system,
+            phase_prompt: patch.phase_prompt ?? fallback.phase_prompt,
+            application: patch.application === undefined ? fallback.application : patch.application,
+            additional_context: patch.additional_context ?? fallback.additional_context,
+            source: { origin: 'run_override' as const, ref: fallback.source?.ref ?? null, editor: 'dev' },
+            updated_at: nowIso(),
+            updated_by: 'dev',
+          }
+          reviews[phase] = review
+          values.prompt_reviews = reviews
+          detail.values = values as Record<string, unknown>
+          detail.updated_at = nowIso()
+          return jsonResponse(review)
+        })
+      }
+    }
     if (method === 'GET' && parts.length === 4) {
       const detail = this.pipelineDetails.get(threadId)
       return detail ? jsonResponse(detail) : problemResponse(404, 'not_found', `Run ${threadId} was not found.`)

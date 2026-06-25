@@ -28,14 +28,17 @@ vi.mock('@uiw/react-codemirror', async () => {
       onChange,
       editable,
       readOnly,
+      'aria-label': ariaLabel,
     }: {
       value: string
       onChange?: (value: string) => void
       editable?: boolean
       readOnly?: boolean
+      'aria-label'?: string
     }) =>
       createElement('textarea', {
         'data-testid': 'codemirror',
+        'aria-label': ariaLabel,
         value,
         readOnly: readOnly === true || editable === false,
         onChange: (event: { target: { value: string } }) => onChange?.(event.target.value),
@@ -82,11 +85,11 @@ describe('GateModule prompt_review', () => {
     expect(await screen.findByTestId('gate-provenance')).toHaveTextContent(
       'catalog · test_planning@v2',
     )
-    const systemEditor = within(screen.getByTestId('gate-editor-system')).getByTestId('codemirror')
+    const panel = await screen.findByTestId('prompt-review-panel')
+    let systemEditor = within(panel).getByLabelText('System Prompt')
     expect(systemEditor).toHaveValue('You are the planning agent.')
-    const applicationEditor = within(screen.getByTestId('gate-editor-application')).getByTestId(
-      'codemirror',
-    )
+    await user.click(within(panel).getByRole('tab', { name: 'Application Prompt' }))
+    let applicationEditor = within(panel).getByLabelText('Application Prompt')
     expect(applicationEditor).toHaveValue('Checkout must preserve carts during payment retries.')
 
     // Pristine: no dirty chip, base execute action is available.
@@ -94,7 +97,11 @@ describe('GateModule prompt_review', () => {
     expect(screen.getByRole('button', { name: /Execute Phase/i })).toBeEnabled()
 
     // Edit the system prompt -> dirty diff indicator + edited execute label.
+    await user.click(within(panel).getByRole('tab', { name: 'System Prompt' }))
+    systemEditor = within(panel).getByLabelText('System Prompt')
     fireEvent.change(systemEditor, { target: { value: 'You are the EDITED planning agent.' } })
+    await user.click(within(panel).getByRole('tab', { name: 'Application Prompt' }))
+    applicationEditor = within(panel).getByLabelText('Application Prompt')
     fireEvent.change(applicationEditor, {
       target: { value: 'Checkout must preserve carts and payment retry telemetry.' },
     })

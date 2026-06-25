@@ -17,9 +17,20 @@ import { gateInstanceOf, phaseInterrupt, promptInterrupt } from './gateFixtures'
 vi.mock('@uiw/react-codemirror', async () => {
   const { createElement } = await import('react')
   return {
-    default: ({ value, readOnly, editable }: { value: string; readOnly?: boolean; editable?: boolean }) =>
+    default: ({
+      value,
+      readOnly,
+      editable,
+      'aria-label': ariaLabel,
+    }: {
+      value: string
+      readOnly?: boolean
+      editable?: boolean
+      'aria-label'?: string
+    }) =>
       createElement('textarea', {
         'data-testid': 'codemirror',
+        'aria-label': ariaLabel,
         value,
         readOnly: readOnly === true || editable === false,
         onChange: () => undefined,
@@ -112,7 +123,8 @@ describe('GateModuleView machine states', () => {
     const card = screen.getByTestId('gate-failed')
     expect(card).toHaveTextContent('Resume failed: resume exploded')
     // Draft intact proof: the editors render the preserved draft text.
-    const system = within(screen.getByTestId('gate-editor-system')).getByTestId('codemirror')
+    const panel = screen.getByTestId('prompt-review-panel')
+    const system = within(panel).getByLabelText('System Prompt')
     expect(system).toHaveValue('EDITED SYSTEM')
     // And the dirty chip reflects the preserved diff.
     expect(screen.getByTestId('gate-dirty-chip')).toBeInTheDocument()

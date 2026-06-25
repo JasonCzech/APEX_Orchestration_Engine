@@ -34,6 +34,7 @@ class FakeThreads:
         self.threads = threads
         self.states = states or {}
         self.search_calls: list[JsonDict] = []
+        self.update_calls: list[JsonDict] = []
 
     async def search(self, **kwargs: Any) -> list[JsonDict]:
         self.search_calls.append(kwargs)
@@ -62,12 +63,29 @@ class FakeThreads:
         except KeyError:
             raise _not_found() from None
 
+    async def update_state(self, thread_id: str, values: JsonDict, **_: Any) -> JsonDict:
+        state = await self.get_state(thread_id)
+        current = state.setdefault("values", {})
+        for key, value in values.items():
+            if key == "prompt_reviews" and isinstance(value, dict):
+                merged = dict(current.get("prompt_reviews") or {})
+                merged.update(value)
+                current["prompt_reviews"] = merged
+            else:
+                current[key] = value
+        self.update_calls.append({"thread_id": thread_id, "values": values})
+        return {"checkpoint": {"thread_id": thread_id}}
+
 
 class FakeRuns:
+    def __init__(self) -> None:
+        self.create_calls: list[JsonDict] = []
+
     async def list(self, thread_id: str, *, status: str | None = None, **_: Any) -> list:
         return []
 
     async def create(self, *args: Any, **kwargs: Any) -> JsonDict:
+        self.create_calls.append({"args": args, "kwargs": kwargs})
         return {"run_id": "run-1"}
 
     async def cancel(self, thread_id: str, run_id: str, **_: Any) -> None:
@@ -261,6 +279,119 @@ def test_get_pipeline_unknown_thread_is_404_problem() -> None:
         response = client.get("/v1/pipelines/missing")
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/problem+json")
+
+
+def test_get_phase_prompt_review_uses_state_draft() -> None:
+    state = {
+        "values": {
+            "prompt_reviews": {
+                "story_analysis": {
+                    "system": "S",
+                    "phase_prompt": "P",
+                    "application": None,
+                    "additional_context": "C",
+                    "source": {"origin": "run_override"},
+                    "updated_at": "2026-06-01T00:00:00+00:00",
+                    "updated_by": "op",
+                }
+            }
+        },
+        "tasks": [],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        response = client.get("/v1/pipelines/t-1/phases/story_analysis/prompt-review")
+    assert response.status_code == 200
+    assert response.json()["phase_prompt"] == "P"
+    assert response.json()["additional_context"] == "C"
+
+
+def test_get_phase_prompt_review_falls_back_to_resolved_prompt() -> None:
+    state = {
+        "values": {
+            "phase_results": {
+                "story_analysis": {
+                    "resolved_prompt": {"system": "S", "user": "U", "application": "A"},
+                    "resolved_prompt_source": {"origin": "catalog", "ref": "phase/story@v1"},
+                    "started_at": "2026-06-01T00:00:00+00:00",
+                }
+            }
+        },
+        "tasks": [],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        response = client.get("/v1/pipelines/t-1/phases/story_analysis/prompt-review")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["system"] == "S"
+    assert body["phase_prompt"] == "U"
+    assert body["source"]["ref"] == "phase/story@v1"
+
+
+def test_patch_phase_prompt_review_updates_state_without_run() -> None:
+    state = {"values": {}, "tasks": [], "interrupts": []}
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    client_obj = FakeClient(fake)
+    app = make_app(client_obj, operator_identity())
+    with TestClient(app) as client:
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "S",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "C",
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"]["origin"] == "run_override"
+    assert body["updated_by"] == "op"
+    assert fake.update_calls[0]["values"]["prompt_reviews"]["story_analysis"]["phase_prompt"] == "P"
+    assert client_obj.runs.create_calls == []
+
+
+def test_patch_phase_prompt_review_invalid_phase_is_422() -> None:
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": {"values": {}}})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/not_a_phase/prompt-review",
+            json={
+                "system": "S",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "",
+            },
+        )
+    assert response.status_code == 422
+
+
+def test_patch_phase_prompt_review_requires_operator() -> None:
+    viewer = ConsumerIdentity(
+        consumer_id="v1",
+        name="viewer",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.VIEWER,
+    )
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": {"values": {}}})
+    app = make_app(FakeClient(fake), viewer)
+    with TestClient(app) as client:
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "S",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "",
+            },
+        )
+    assert response.status_code == 403
 
 
 def test_list_pipelines_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:

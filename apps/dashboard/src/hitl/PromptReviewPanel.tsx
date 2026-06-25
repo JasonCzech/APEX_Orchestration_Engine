@@ -6,53 +6,17 @@
  * Edits dispatch EDIT patches into the machine draft; the dirty diff chip
  * reflects machine-computed prompt dirtiness.
  */
-import CodeMirror from '@uiw/react-codemirror'
-
 import type { PromptReviewPayload } from '@apex/pipeline-events'
 
-import { originalPromptOf, type GateDraftPatch, type GateInstance, type PromptDraft } from './gateMachine'
+import { PromptTabsEditor, type PromptTabField } from '@/features/runs/PromptTabsEditor'
 
-function PromptEditor({
-  field,
-  label,
-  value,
-  editable,
-  onChange,
-}: {
-  field: keyof PromptDraft
-  label: string
-  value: string
-  editable: boolean
-  onChange: (patch: Partial<PromptDraft>) => void
-}) {
-  return (
-    <div className="gate-prompt-field">
-      <h4 className="gate-field-label">{label}</h4>
-      <div
-        className={`code-viewer gate-editor${editable ? ' editable' : ''}`}
-        data-testid={`gate-editor-${field}`}
-      >
-        <CodeMirror
-          value={value}
-          editable={editable}
-          readOnly={!editable}
-          basicSetup={{
-            lineNumbers: true,
-            foldGutter: false,
-            highlightActiveLine: editable,
-            highlightActiveLineGutter: false,
-          }}
-          onChange={(next: string) => onChange({ [field]: next })}
-        />
-      </div>
-    </div>
-  )
-}
+import { originalPromptOf, type GateDraftPatch, type GateInstance, type PromptDraft } from './gateMachine'
 
 export function PromptReviewPanel({
   gate,
   payload,
   prompt,
+  note,
   dirty,
   disabled,
   compact = false,
@@ -62,6 +26,7 @@ export function PromptReviewPanel({
   payload: PromptReviewPayload
   /** Draft prompt (machine draft.prompt — seeded from the payload). */
   prompt: PromptDraft | undefined
+  note: string | undefined
   dirty: boolean
   disabled: boolean
   compact?: boolean
@@ -70,6 +35,24 @@ export function PromptReviewPanel({
   const editable = payload.editable && !disabled
   const draft = prompt ?? originalPromptOf(gate)
   const source = payload.prompt.source
+  const appAvailable = payload.prompt.application !== null && payload.prompt.application !== undefined
+
+  function editField(field: PromptTabField, value: string) {
+    switch (field) {
+      case 'system':
+        onEdit({ prompt: { system: value } })
+        break
+      case 'phase_prompt':
+        onEdit({ prompt: { user: value } })
+        break
+      case 'application':
+        onEdit({ prompt: { application: value } })
+        break
+      case 'additional_context':
+        onEdit({ note: value })
+        break
+    }
+  }
 
   return (
     <div className="gate-panel prompt-review-layout" data-testid="prompt-review-panel">
@@ -101,29 +84,17 @@ export function PromptReviewPanel({
           )}
         </div>
 
-        <PromptEditor
-          field="system"
-          label="System prompt"
-          value={draft.system}
+        <PromptTabsEditor
+          values={{
+            system: draft.system,
+            phase_prompt: draft.user,
+            application: draft.application ?? null,
+            additional_context: note ?? payload.additional_context ?? '',
+          }}
           editable={editable}
-          onChange={(patch) => onEdit({ prompt: patch })}
+          appAvailable={appAvailable}
+          onChange={editField}
         />
-        <PromptEditor
-          field="user"
-          label="User prompt"
-          value={draft.user}
-          editable={editable}
-          onChange={(patch) => onEdit({ prompt: patch })}
-        />
-        {payload.prompt.application !== null && payload.prompt.application !== undefined && (
-          <PromptEditor
-            field="application"
-            label="Application prompt"
-            value={draft.application ?? ''}
-            editable={editable}
-            onChange={(patch) => onEdit({ prompt: patch })}
-          />
-        )}
       </div>
 
       <div className="prompt-review-sidebar">

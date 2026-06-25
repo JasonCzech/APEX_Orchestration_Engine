@@ -150,6 +150,62 @@
   background: var(--accent-soft);
 }
 
+.prompt-review-section {
+  padding: 16px 0 18px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.prompt-review-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.prompt-review-title {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.prompt-review-hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.prompt-review-hint a {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.prompt-review-hint a:hover {
+  text-decoration: underline;
+}
+
+.prompt-review-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 760px) {
+  .prompt-review-head {
+    flex-direction: column;
+  }
+
+  .prompt-review-actions {
+    justify-content: flex-start;
+  }
+}
+
 .workspace-section-title {
   font-size: 10px;
   font-weight: 700;

@@ -47,7 +47,12 @@ from apex.graphs.pipeline.gates import (
 )
 from apex.graphs.pipeline.state import JsonDict, PipelineState
 from apex.services import usage as usage_events
-from apex.services.prompts import resolve_phase_prompt_sync
+from apex.services.prompts import (
+    prompt_review_from_resolved,
+    resolve_phase_prompt_sync,
+    resolved_from_prompt_review,
+    user_prompt_with_context,
+)
 
 EVENT_SCHEMA_VERSION = 1
 
@@ -106,6 +111,93 @@ def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
     return None
 
 
+def _review_source_for_phase(
+    state: PipelineState,
+    phase: Phase,
+    cfg: PipelineConfigurable,
+) -> tuple[JsonDict, JsonDict]:
+    """Return (prompt-review draft, resolved prompt) for prepare/gates.
+
+    New runs seed state["prompt_reviews"] in plan_resolver. Old checkpoints may
+    not have it, so this keeps the previous resolved_prompt/locator behavior.
+    """
+    reviews = state.get("prompt_reviews") or {}
+    review = reviews.get(phase.value)
+    if isinstance(review, dict):
+        return review, dict(resolved_from_prompt_review(review))
+
+    entry = _entry(state, phase)
+    prompt = entry.get("resolved_prompt")
+    if isinstance(prompt, dict) and (prompt.get("system") or prompt.get("user")):
+        source = entry.get("resolved_prompt_source")
+        review = {
+            "system": prompt.get("system") or "",
+            "phase_prompt": prompt.get("user") or "",
+            "application": prompt.get("application"),
+            "additional_context": "",
+            "source": dict(source) if isinstance(source, dict) else {"origin": "catalog"},
+            "updated_at": utcnow_iso(),
+            "updated_by": "system",
+        }
+        return review, {
+            "system": review["system"],
+            "user": review["phase_prompt"],
+            "application": review["application"],
+            "source": review["source"],
+        }
+
+    resolved = resolve_phase_prompt_sync(phase, cfg, variables=_prompt_variables(state))
+    review = dict(prompt_review_from_resolved(resolved))
+    return review, dict(resolved)
+
+
+def _prompt_review_update(phase: Phase, review: JsonDict) -> JsonDict:
+    return {"prompt_reviews": {phase.value: review}}
+
+
+def _review_to_prompt(review: JsonDict) -> JsonDict:
+    return {
+        "system": review.get("system") or "",
+        "user": review.get("phase_prompt") or "",
+        "application": review.get("application"),
+    }
+
+
+def _resolved_prompt_from_review(review: JsonDict) -> JsonDict:
+    return {
+        "system": review.get("system") or "",
+        "user": user_prompt_with_context(
+            str(review.get("phase_prompt") or ""),
+            str(review.get("additional_context") or ""),
+        ),
+        "application": review.get("application"),
+    }
+
+
+def _gate_edited_review(
+    phase: Phase,
+    review: JsonDict,
+    prompt: JsonDict,
+    source: JsonDict,
+    config: RunnableConfig,
+    note: Any = None,
+) -> JsonDict:
+    next_review = {
+        **review,
+        "system": prompt.get("system") or "",
+        "phase_prompt": prompt.get("user") or "",
+        "application": prompt.get("application"),
+        "source": source,
+        "updated_at": utcnow_iso(),
+        "updated_by": resolve_actor(config),
+    }
+    if note is not None:
+        next_review["additional_context"] = str(note)
+    elif "additional_context" not in next_review:
+        next_review["additional_context"] = ""
+    return next_review
+
+
 def _make_prepare(phase: Phase):
     def prepare(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_config(config)
@@ -119,9 +211,7 @@ def _make_prepare(phase: Phase):
                 started_at=utcnow_iso(),
                 errors=[prereq_error],
             )
-        # Resolution order: run override -> catalog active version -> builtin
-        # defaults (catalog falls through silently when Postgres is absent).
-        resolved = resolve_phase_prompt_sync(phase, cfg, variables=_prompt_variables(state))
+        review, resolved = _review_source_for_phase(state, phase, cfg)
         emit_event(
             {
                 "schema_version": EVENT_SCHEMA_VERSION,
@@ -143,6 +233,8 @@ def _make_prepare(phase: Phase):
             },
             resolved_prompt_source=dict(resolved["source"]),
         )
+        if phase.value not in (state.get("prompt_reviews") or {}):
+            update.update(_prompt_review_update(phase, review))
         update["current_phase"] = phase.value
         return update
 
@@ -186,24 +278,63 @@ def _make_prompt_gate(phase: Phase):
             return Command(goto="agent")
         entry = _entry(state, phase)
         attempt = _attempt(entry)
-        prompt = dict(entry.get("resolved_prompt") or {})
-        source = dict(entry.get("resolved_prompt_source") or {})
+        review, _resolved = _review_source_for_phase(state, phase, cfg)
+        prompt = _review_to_prompt(review)
+        source = dict(review.get("source") or entry.get("resolved_prompt_source") or {})
+        additional_context = str(review.get("additional_context") or "")
         packets = list(state.get("context_packets") or [])
         tools = stub_tool_names(phase)
         error: str | None = None
         for _ in range(MAX_GATE_LOOPS):
-            payload = build_prompt_review_payload(phase, prompt, source, packets, tools, error)
+            payload = build_prompt_review_payload(
+                phase,
+                prompt,
+                source,
+                packets,
+                tools,
+                error,
+                additional_context=additional_context,
+            )
             decision = parse_gate_decision(interrupt(payload), PROMPT_REVIEW_ACTIONS)
             action = decision["action"]
             error = None
             if action == "approve":
+                note_changed = False
+                if decision.get("note") is not None:
+                    next_context = str(decision.get("note") or "")
+                    note_changed = next_context != additional_context
+                    additional_context = next_context
+                if note_changed and source.get("origin") != "gate_edit":
+                    source = {
+                        "origin": "gate_edit",
+                        "ref": source.get("ref"),
+                        "editor": resolve_actor(config),
+                    }
+                review = _gate_edited_review(
+                    phase,
+                    review,
+                    prompt,
+                    source,
+                    config,
+                    note=additional_context,
+                )
                 update = _phase_update(
                     phase,
                     attempt,
-                    resolved_prompt=prompt,
+                    resolved_prompt=_resolved_prompt_from_review(review),
                     resolved_prompt_source=source,
-                    approvals=[make_approval(phase, attempt, "prompt_review", "approve", config)],
+                    approvals=[
+                        make_approval(
+                            phase,
+                            attempt,
+                            "prompt_review",
+                            "approve",
+                            config,
+                            note=additional_context or None,
+                        )
+                    ],
                 )
+                update.update(_prompt_review_update(phase, review))
                 return Command(goto="agent", update=update)
             if action == "modify":
                 edit = decision.get("prompt")
@@ -213,11 +344,21 @@ def _make_prompt_gate(phase: Phase):
                         "user": edit.get("user", prompt.get("user")),
                         "application": edit.get("application", prompt.get("application")),
                     }
+                if decision.get("note") is not None:
+                    additional_context = str(decision.get("note") or "")
                 source = {
                     "origin": "gate_edit",
                     "ref": source.get("ref"),
                     "editor": resolve_actor(config),
                 }
+                review = _gate_edited_review(
+                    phase,
+                    review,
+                    prompt,
+                    source,
+                    config,
+                    note=additional_context,
+                )
                 continue  # re-interrupt for re-review of the edited prompt
             if action == "skip_phase":
                 update = _phase_update(
@@ -243,10 +384,11 @@ def _make_prompt_gate(phase: Phase):
         update = _phase_update(
             phase,
             attempt,
-            resolved_prompt=prompt,
+            resolved_prompt=_resolved_prompt_from_review(review),
             resolved_prompt_source=source,
             warnings=[warning],
         )
+        update.update(_prompt_review_update(phase, review))
         return Command(goto="agent", update=update)
 
     return prompt_gate

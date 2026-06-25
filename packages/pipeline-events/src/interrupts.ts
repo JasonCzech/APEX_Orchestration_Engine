@@ -73,6 +73,7 @@ export const PromptReviewPayloadSchema = z
     kind: z.literal("prompt_review"),
     phase: PhaseNameSchema,
     prompt: ReviewPromptSchema,
+    additional_context: z.string().optional(),
     context_packets: z.array(ContextPacketPreviewSchema),
     tools: z.array(z.string()),
     editable: z.boolean(),

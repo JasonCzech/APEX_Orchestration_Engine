@@ -19,6 +19,8 @@ export const queryKeys = {
   threads: {
     all: ['threads'] as const,
     state: (threadId: string) => [...queryKeys.threads.all, threadId, 'state'] as const,
+    promptReview: (threadId: string, phase: string) =>
+      [...queryKeys.threads.all, threadId, 'prompt-review', phase] as const,
     /** Active (running/pending) run id discovery for the live stream (D2). */
     activeRun: (threadId: string) => [...queryKeys.threads.all, threadId, 'active-run'] as const,
     artifact: (threadId: string, artifactId: string) =>

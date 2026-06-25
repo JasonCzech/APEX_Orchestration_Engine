@@ -54,6 +54,7 @@ def build_prompt_review_payload(
     context_packets: Sequence[JsonDict],
     tools: Sequence[str],
     error: str | None = None,
+    additional_context: str = "",
 ) -> JsonDict:
     payload: JsonDict = {
         "schema_version": GATE_SCHEMA_VERSION,
@@ -65,6 +66,7 @@ def build_prompt_review_payload(
             "application": prompt.get("application"),
             "source": {"origin": source.get("origin"), "ref": source.get("ref")},
         },
+        "additional_context": additional_context,
         "context_packets": [
             {
                 "id": packet.get("id"),

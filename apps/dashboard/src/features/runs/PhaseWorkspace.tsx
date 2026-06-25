@@ -13,10 +13,12 @@ import type {
 } from '@apex/pipeline-events'
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
+import type { GateInstance, GateMachineState } from '@/hitl/gateMachine'
 
 import { ActivityFeed } from './ActivityFeed'
 import { EngineStrip } from './EngineStrip'
 import type { LiveStreamViewLike } from './liveTypes'
+import { PromptReviewSection } from './PromptReviewSection'
 import { formatTimestamp, PHASE_LABELS } from './runDisplay'
 
 const TABS = ['details', 'log', 'reasoning'] as const
@@ -44,6 +46,9 @@ export function PhaseWorkspace({
   stream,
   threadBusy = false,
   gateSlot,
+  appId,
+  gate,
+  gateState,
 }: {
   threadId: string
   phase: PhaseName
@@ -53,6 +58,9 @@ export function PhaseWorkspace({
   threadBusy?: boolean
   /** D3 HITL: GateModule (gate on this phase) or slim banner, pinned above the tabs. */
   gateSlot?: ReactNode
+  appId?: string | null
+  gate?: GateInstance | null
+  gateState?: GateMachineState
 }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = activeTab(searchParams.get('tab'), threadBusy ? 'log' : 'details')
@@ -63,6 +71,10 @@ export function PhaseWorkspace({
   const showEngineStrip =
     phase === 'execution' &&
     (engineSamples.length > 0 || entry?.status === 'running' || liveStatus === 'running')
+  const promptGateEditorActive =
+    gate?.kind === 'prompt_review' &&
+    gate.phase === phase &&
+    (gateState?.tag === 'open' || gateState?.tag === 'submitting' || gateState?.tag === 'failed')
 
   function selectTab(next: WorkspaceTab) {
     setSearchParams(
@@ -77,6 +89,14 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
+      {!promptGateEditorActive && (
+        <PromptReviewSection
+          threadId={threadId}
+          phase={phase}
+          state={state}
+          appId={appId ?? null}
+        />
+      )}
       <div className="workspace-tabs" role="tablist" aria-label="Phase workspace tabs">
         {TABS.map((candidate) => (
           <button

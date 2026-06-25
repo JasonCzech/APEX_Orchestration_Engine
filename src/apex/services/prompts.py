@@ -21,7 +21,7 @@ log) so `langgraph dev` keeps working without Postgres.
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Protocol, TypedDict
 from uuid import uuid4
@@ -40,6 +40,8 @@ APPLICATION_NAMESPACE = "application"
 # Upper bound on one catalog lookup so a wedged database can never stall a
 # pipeline prepare node; on timeout we fall through to the builtin templates.
 CATALOG_TIMEOUT_S = 5.0
+
+ADDITIONAL_CONTEXT_DELIMITER = "\n\n===ADDITIONAL CONTEXT (operator)===\n"
 
 
 # ── Errors (routers map these onto problem-details responses) ───────────────
@@ -294,6 +296,16 @@ class ResolvedPhasePrompt(TypedDict):
     source: dict[str, Any]  # ResolvedPromptSource-shaped: origin / ref / editor
 
 
+class PromptReviewDraft(TypedDict):
+    system: str
+    phase_prompt: str
+    application: str | None
+    additional_context: str
+    source: dict[str, Any]
+    updated_at: str
+    updated_by: str
+
+
 def _app_override(cfg: PipelineConfigurable) -> PromptOverride | None:
     if not cfg.app_id:
         return None
@@ -330,18 +342,23 @@ def _compose_resolved(
         if system_v is not None:
             refs.append(f"phase/{phase.value}/system@v{system_v.version}")
 
-    user = user_v.content if user_v is not None else DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"]
-    if user_v is not None:
+    user_override = cfg.prompt_overrides.get(f"{PHASE_NAMESPACE}/{phase.value}/user")
+    if user_override is not None and user_override.content is not None:
+        user = user_override.content
+        refs.append(user_override.version_id or f"phase/{phase.value}/user@override")
+        origin = "run_override"
+    elif user_v is not None:
+        user = user_v.content
         refs.append(f"phase/{phase.value}/user@v{user_v.version}")
+    else:
+        user = DEFAULT_PHASE_PROMPTS[f"{phase.value}/user"]
 
     application: str | None = None
     if cfg.app_id:
         app_override = _app_override(cfg)
         if app_override is not None and app_override.content is not None:
             application = app_override.content
-            refs.append(
-                app_override.version_id or f"{APPLICATION_NAMESPACE}/{cfg.app_id}@override"
-            )
+            refs.append(app_override.version_id or f"{APPLICATION_NAMESPACE}/{cfg.app_id}@override")
             origin = "run_override"
         elif application_v is not None:
             application = render_template(application_v.content, variables)
@@ -359,6 +376,65 @@ def _compose_resolved(
         user=render_template(user, variables),
         application=application,
         source=_source(origin, refs),
+    )
+
+
+def resolve_phase_prompt_no_catalog(
+    phase: Phase,
+    cfg: PipelineConfigurable,
+    *,
+    variables: Mapping[str, Any] | None = None,
+) -> ResolvedPhasePrompt:
+    """Resolve with only config overrides + builtins.
+
+    Used as the safe fallback when catalog IO is unavailable or a sync graph
+    node is already running inside an event loop.
+    """
+    return _compose_resolved(
+        phase,
+        cfg,
+        dict(variables or {}),
+        system_v=None,
+        user_v=None,
+        application_v=None,
+    )
+
+
+def user_prompt_with_context(phase_prompt: str, additional_context: str | None) -> str:
+    context = (additional_context or "").strip()
+    if not context:
+        return phase_prompt
+    return f"{phase_prompt}{ADDITIONAL_CONTEXT_DELIMITER}{context}"
+
+
+def prompt_review_from_resolved(
+    resolved: ResolvedPhasePrompt,
+    *,
+    additional_context: str = "",
+    updated_by: str = "system",
+    updated_at: str | None = None,
+) -> PromptReviewDraft:
+    return PromptReviewDraft(
+        system=resolved["system"],
+        phase_prompt=resolved["user"],
+        application=resolved["application"],
+        additional_context=additional_context,
+        source=dict(resolved["source"]),
+        updated_at=updated_at or _utcnow().isoformat(),
+        updated_by=updated_by,
+    )
+
+
+def resolved_from_prompt_review(draft: Mapping[str, Any]) -> ResolvedPhasePrompt:
+    source = draft.get("source")
+    return ResolvedPhasePrompt(
+        system=str(draft.get("system") or ""),
+        user=user_prompt_with_context(
+            str(draft.get("phase_prompt") or ""),
+            str(draft.get("additional_context") or ""),
+        ),
+        application=draft.get("application") if draft.get("application") is not None else None,
+        source=dict(source) if isinstance(source, dict) else _source("run_override", ["run"]),
     )
 
 
@@ -415,6 +491,32 @@ class PromptResolver:
             return None, None, None
 
 
+async def resolve_phase_prompts(
+    phases: Sequence[Phase],
+    cfg: PipelineConfigurable,
+    *,
+    variables: Mapping[str, Any] | None = None,
+    store: ActiveVersionReader | None = None,
+) -> dict[Phase, ResolvedPhasePrompt]:
+    """Resolve multiple phase prompts using one catalog session when possible."""
+    variables = dict(variables or {})
+    if store is not None:
+        resolver = PromptResolver(store=store)
+        return {
+            phase: await resolver.resolve_phase_prompt(phase, cfg, variables=variables)
+            for phase in phases
+        }
+    try:
+        async with asyncio.timeout(CATALOG_TIMEOUT_S):
+            return await _resolve_phase_prompts_with_fresh_engine(phases, cfg, variables)
+    except Exception:
+        logger.debug("apex.prompts.catalog_unavailable_batch", exc_info=True)
+        return {
+            phase: resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
+            for phase in phases
+        }
+
+
 async def _load_prompts_with_fresh_engine(
     phase: Phase, app_id: str | None
 ) -> tuple[PromptVersion | None, PromptVersion | None, PromptVersion | None]:
@@ -433,6 +535,29 @@ async def _load_prompts_with_fresh_engine(
                 await repo.get_active_version(PHASE_NAMESPACE, f"{phase.value}/user"),
                 await repo.get_active_version(APPLICATION_NAMESPACE, app_id) if app_id else None,
             )
+    finally:
+        await engine.dispose()
+
+
+async def _resolve_phase_prompts_with_fresh_engine(
+    phases: Sequence[Phase],
+    cfg: PipelineConfigurable,
+    variables: Mapping[str, Any],
+) -> dict[Phase, ResolvedPhasePrompt]:
+    # Imported lazily so importing the graph module never drags engine machinery in.
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from apex.persistence.repositories.prompts import PromptRepository
+    from apex.settings import get_settings
+
+    engine = create_async_engine(get_settings().database.uri)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            resolver = PromptResolver(store=PromptRepository(session))
+            return {
+                phase: await resolver.resolve_phase_prompt(phase, cfg, variables=variables)
+                for phase in phases
+            }
     finally:
         await engine.dispose()
 
@@ -464,15 +589,23 @@ def resolve_phase_prompt_sync(
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(resolve_phase_prompt(phase, cfg, variables=variables))
-    variables = dict(variables or {})
-    return _compose_resolved(
-        phase,
-        cfg,
-        variables,
-        system_v=None,
-        user_v=None,
-        application_v=None,
-    )
+    return resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
+
+
+def resolve_phase_prompts_sync(
+    phases: Sequence[Phase],
+    cfg: PipelineConfigurable,
+    *,
+    variables: Mapping[str, Any] | None = None,
+) -> dict[Phase, ResolvedPhasePrompt]:
+    """Sync bridge for batch plan-resolver seeding."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(resolve_phase_prompts(phases, cfg, variables=variables))
+    return {
+        phase: resolve_phase_prompt_no_catalog(phase, cfg, variables=variables) for phase in phases
+    }
 
 
 __all__ = [
@@ -480,18 +613,26 @@ __all__ = [
     "DEFAULT_PHASE_PROMPTS",
     "DEFAULT_USER_TEMPLATE",
     "APPLICATION_NAMESPACE",
+    "ADDITIONAL_CONTEXT_DELIMITER",
     "PHASE_NAMESPACE",
     "ActiveVersionReader",
     "DuplicatePromptError",
     "PromptCatalogService",
     "PromptError",
     "PromptNotFoundError",
+    "PromptReviewDraft",
     "PromptResolver",
     "PromptStore",
     "PromptVersionMismatchError",
     "PromptVersionNotFoundError",
     "ResolvedPhasePrompt",
+    "prompt_review_from_resolved",
     "render_template",
+    "resolved_from_prompt_review",
     "resolve_phase_prompt",
+    "resolve_phase_prompt_no_catalog",
     "resolve_phase_prompt_sync",
+    "resolve_phase_prompts",
+    "resolve_phase_prompts_sync",
+    "user_prompt_with_context",
 ]
