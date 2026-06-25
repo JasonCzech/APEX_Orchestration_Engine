@@ -10,7 +10,12 @@ import httpx
 import pytest
 import respx
 
-from apex.adapters.k8s.cluster_inventory import KubernetesClusterInventoryAdapter
+from apex.adapters.k8s import cluster_inventory as k8s_mod
+from apex.adapters.k8s.cluster_inventory import (
+    KubernetesClusterInventoryAdapter,
+    _in_cluster_base_url,
+    _resolve_verify,
+)
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import EnvRef, SecretValue
 
@@ -348,3 +353,133 @@ def test_provider_registered_via_adapters_package_import() -> None:
     import apex.adapters  # noqa: F401  (side effect: registers real providers)
 
     assert "kubernetes" in AdapterRegistry.providers_for(PortKind.CLUSTER_INVENTORY)
+
+
+# ── in_cluster auth mode ──────────────────────────────────────────────────────
+
+
+def _mount_sa(
+    monkeypatch: Any,
+    tmp_path: Any,
+    *,
+    token: str = "pod-sa-token",
+    write_ca: bool = True,
+    namespace: str | None = None,
+) -> Any:
+    """Point the SA mount constants at fixtures and return the token file path."""
+    token_file = tmp_path / "token"
+    token_file.write_text(token)
+    monkeypatch.setattr(k8s_mod, "IN_CLUSTER_TOKEN_PATH", str(token_file))
+
+    ca_file = tmp_path / "ca.crt"
+    if write_ca:
+        ca_file.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+    monkeypatch.setattr(k8s_mod, "IN_CLUSTER_CA_PATH", str(ca_file))
+
+    ns_file = tmp_path / "namespace"
+    if namespace is not None:
+        ns_file.write_text(namespace)
+    monkeypatch.setattr(k8s_mod, "IN_CLUSTER_NAMESPACE_PATH", str(ns_file))
+    return token_file
+
+
+def make_in_cluster_adapter(**options: Any) -> KubernetesClusterInventoryAdapter:
+    conn = ConnectionConfig(
+        id="conn-k8s-incluster",
+        kind=PortKind.CLUSTER_INVENTORY,
+        provider="kubernetes",
+        name="In-cluster",
+        options={"auth_mode": "in_cluster", **options},
+    )
+    return KubernetesClusterInventoryAdapter(conn, None)  # no secret_ref in in_cluster mode
+
+
+@respx.mock
+async def test_in_cluster_scan_uses_pod_token_and_env_api_server(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    _mount_sa(monkeypatch, tmp_path, token="rotating-pod-token")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "6443")
+    base = "https://kube-api.test:6443"
+    deployments_route = respx.get(f"{base}/apis/apps/v1/namespaces/staging/deployments").mock(
+        return_value=httpx.Response(200, json=DEPLOYMENT_LIST)
+    )
+    respx.get(f"{base}/api/v1/namespaces/staging/services").mock(
+        return_value=httpx.Response(200, json=SERVICE_LIST)
+    )
+    respx.get(f"{base}/apis/networking.k8s.io/v1/namespaces/staging/ingresses").mock(
+        return_value=httpx.Response(200, json=INGRESS_LIST)
+    )
+    # base_url omitted -> derived from KUBERNETES_SERVICE_HOST/PORT. verify off to skip
+    # building a real SSL context from the fixture CA.
+    adapter = make_in_cluster_adapter(namespace="staging", verify_tls=False)
+
+    snapshot = await adapter.scan_environment(EnvRef(id="env-1", name=None))
+
+    assert [s.name for s in snapshot.services] == ["checkout-api", "cart-svc"]
+    request = deployments_route.calls.last.request
+    assert request.headers["authorization"] == "Bearer rotating-pod-token"
+
+
+@respx.mock
+async def test_in_cluster_namespace_falls_back_to_pod_namespace_file(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    _mount_sa(monkeypatch, tmp_path, namespace="team-a")
+    mock_namespace("team-a", deployments=EMPTY_DEPLOYMENTS, services=EMPTY_SERVICES)
+    # Explicit base_url, no options namespace, env_ref.name None -> pod namespace file.
+    adapter = make_in_cluster_adapter(base_url=BASE_URL, verify_tls=False)
+
+    snapshot = await adapter.scan_environment(EnvRef(id="env-9", name=None))
+
+    assert snapshot.services == []
+
+
+def test_in_cluster_construction_without_secret_succeeds(monkeypatch: Any, tmp_path: Any) -> None:
+    _mount_sa(monkeypatch, tmp_path)
+    # Must NOT raise the bearer-token ValueError that bearer mode raises.
+    make_in_cluster_adapter(base_url=BASE_URL)
+
+
+def test_in_cluster_without_api_server_is_value_error(monkeypatch: Any, tmp_path: Any) -> None:
+    _mount_sa(monkeypatch, tmp_path)
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    with pytest.raises(ValueError, match="in_cluster auth requires"):
+        make_in_cluster_adapter()  # no base_url, no env
+
+
+def test_unknown_auth_mode_is_value_error() -> None:
+    conn = ConnectionConfig(
+        id="conn-k8s",
+        kind=PortKind.CLUSTER_INVENTORY,
+        provider="kubernetes",
+        name="k8s",
+        options={"base_url": BASE_URL, "auth_mode": "sidecar"},
+    )
+    with pytest.raises(ValueError, match="unknown auth_mode"):
+        KubernetesClusterInventoryAdapter(conn, SecretValue(value=TOKEN))
+
+
+def test_in_cluster_base_url_from_env(monkeypatch: Any) -> None:
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "6443")
+    assert _in_cluster_base_url() == "https://10.0.0.1:6443"
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    assert _in_cluster_base_url() == ""
+
+
+def test_resolve_verify_matrix(monkeypatch: Any, tmp_path: Any) -> None:
+    # bearer: pass the option through unchanged.
+    assert _resolve_verify(False, None) is True
+    assert _resolve_verify(False, "false") is False
+    # in_cluster + explicit false disables TLS regardless of the CA bundle.
+    assert _resolve_verify(True, "false") is False
+    # in_cluster + CA bundle present -> verify against it (path string).
+    ca_file = tmp_path / "ca.crt"
+    ca_file.write_text("ca")
+    monkeypatch.setattr(k8s_mod, "IN_CLUSTER_CA_PATH", str(ca_file))
+    assert _resolve_verify(True, None) == str(ca_file)
+    # in_cluster + CA absent -> fall back to True.
+    monkeypatch.setattr(k8s_mod, "IN_CLUSTER_CA_PATH", str(tmp_path / "missing.crt"))
+    assert _resolve_verify(True, None) is True

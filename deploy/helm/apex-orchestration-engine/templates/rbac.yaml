@@ -1,0 +1,39 @@
+{{- if .Values.rbac.create -}}
+{{- $cluster := .Values.rbac.clusterScope -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if $cluster }}ClusterRole{{ else }}Role{{ end }}
+metadata:
+  name: {{ include "apex.fullname" . }}-inventory
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+rules:
+  {{- if .Values.rbac.rules }}
+  {{- toYaml .Values.rbac.rules | nindent 2 }}
+  {{- else }}
+  # Read-only inventory scan used by the in_cluster cluster-inventory adapter.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: {{ if $cluster }}ClusterRoleBinding{{ else }}RoleBinding{{ end }}
+metadata:
+  name: {{ include "apex.fullname" . }}-inventory
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: {{ if $cluster }}ClusterRole{{ else }}Role{{ end }}
+  name: {{ include "apex.fullname" . }}-inventory
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "apex.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

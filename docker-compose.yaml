@@ -2,12 +2,20 @@
 # Build the server image first:
 #   uv run langgraph build -t "${APEX_IMAGE:-apex-orchestration-engine:local}"
 # Production note: the standalone server requires LANGGRAPH_CLOUD_LICENSE_KEY (see plan/ADR-0001).
+#
+# Secrets/credentials are NOT inlined: they come from the shell environment or an
+# auto-loaded `.env` via ${VAR:-default} interpolation (same pattern as the HA rig,
+# deploy/compose-ha/docker-compose.ha.yaml). Override before `docker compose up`:
+#   APEX_POSTGRES_PASSWORD=… APEX_MINIO_SECRET_KEY=… LANGGRAPH_CLOUD_LICENSE_KEY=…
+# NOTE: do not point apex-server at the dev `.env` URIs (they use localhost); the
+# container reaches its dependencies by compose service name (postgres/redis/minio).
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: apex
-      POSTGRES_PASSWORD: apex
+      POSTGRES_PASSWORD: ${APEX_POSTGRES_PASSWORD:-apex}
       POSTGRES_DB: apex
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -16,39 +24,102 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1g
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512m
 
   minio:
     image: minio/minio:RELEASE.2024-07-16T23-46-41Z
+    restart: unless-stopped
     command: server /data
     environment:
       MINIO_ROOT_USER: apex
-      MINIO_ROOT_PASSWORD: apex-minio
+      MINIO_ROOT_PASSWORD: ${APEX_MINIO_SECRET_KEY:-apex-minio}
     volumes:
       - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
 
   apex-server:
     image: ${APEX_IMAGE:-apex-orchestration-engine:local}
+    restart: unless-stopped
     ports:
       - "8123:8000"
     environment:
-      DATABASE_URI: postgresql://apex:apex@postgres:5432/apex
+      DATABASE_URI: postgresql://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
       REDIS_URI: redis://redis:6379
       APEX_ENVIRONMENT: compose
-      APEX_DATABASE__URI: postgresql+asyncpg://apex:apex@postgres:5432/apex
-      # LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY}
+      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+      APEX_MINIO_SECRET_KEY: ${APEX_MINIO_SECRET_KEY:-apex-minio}
+      # Required for the standalone server to boot (Enterprise). Empty = unset.
+      LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY:-}
+    healthcheck:
+      # In-image Python (no curl in the langgraph base image); urlopen raises on non-2xx.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ok')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    image: ${APEX_DASHBOARD_IMAGE:-apex-dashboard:local}
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      # Same-origin: reverse-proxy API paths to the server, so the SPA's
+      # config.json origins stay empty (no CORS, SSE works).
+      BACKEND_UPSTREAM: http://apex-server:8000
+    depends_on:
+      apex-server:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/config.json"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256m
 
 volumes:
   pgdata:

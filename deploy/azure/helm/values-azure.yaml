@@ -1,0 +1,99 @@
+# Helm overlay for AKS. Structural choices live here; deployment-specific values
+# (ACR repo, Key Vault name, tenant/client id, ingress host) are passed by
+# scripts/deploy.py / the deploy-aks workflow via --set from Terraform outputs.
+#
+#   helm upgrade --install apex deploy/helm/apex-orchestration-engine \
+#     -f deploy/azure/helm/values-azure.yaml \
+#     --set image.repository=$ACR/apex-orchestration-engine --set image.tag=$TAG \
+#     --set dashboard.image.repository=$ACR/apex-dashboard --set dashboard.image.tag=$TAG \
+#     --set secretBackend.csi.keyvaultName=$KV --set secretBackend.csi.tenantId=$TENANT \
+#     --set workloadIdentity.clientId=$CLIENT_ID
+
+image:
+  repository: REPLACE_ME.azurecr.io/apex-orchestration-engine
+
+apexSettings:
+  APEX_ENVIRONMENT: production
+  APEX_AUTH__ENABLED: "true"
+  # Production lockdown requires explicit https CORS origins (JSON array). Set to the
+  # dashboard origin; with the same-origin dashboard reverse proxy this is the
+  # ingress/gateway host.
+  APEX_CORS_ORIGINS: '["https://apex.example.com"]'
+
+# Secrets sourced from Key Vault via the Secrets Store CSI driver + workload identity.
+workloadIdentity:
+  enabled: true
+  clientId: REPLACE_ME # Terraform output: workload_identity_client_id
+
+serviceAccount:
+  create: true
+  # automountServiceAccountToken stays false; the in_cluster inventory adapter is opt-in.
+
+secretBackend:
+  mode: secretsStoreCSI
+  csi:
+    keyvaultName: REPLACE_ME # Terraform output: key_vault_name
+    tenantId: REPLACE_ME     # Terraform output: tenant_id
+    # Full object list (lists replace, not merge): DB/redis/license + the MinIO secret.
+    objects:
+      - { objectName: database-uri, secretName: apex-database, key: DATABASE_URI }
+      - { objectName: apex-database-uri, secretName: apex-database, key: APEX_DATABASE__URI }
+      - { objectName: redis-uri, secretName: apex-redis, key: REDIS_URI }
+      - { objectName: langgraph-license, secretName: apex-langgraph-license, key: LANGGRAPH_CLOUD_LICENSE_KEY }
+      - { objectName: artifact-secret-key, secretName: apex-minio, key: APEX_MINIO_SECRET_KEY }
+
+# MinIO artifact store secret -> app env (the connection's secret_ref env:APEX_MINIO_SECRET_KEY).
+extraEnv:
+  - name: APEX_MINIO_SECRET_KEY
+    valueFrom:
+      secretKeyRef:
+        name: apex-minio
+        key: APEX_MINIO_SECRET_KEY
+
+# Run migrations + bootstrap as pre-upgrade hooks.
+migrations:
+  enabled: true
+
+bootstrap:
+  enabled: true
+  adminKeySecret:
+    existingSecret: apex-admin
+    key: APEX_BOOTSTRAP_ADMIN_KEY
+  document:
+    seed_default_prompts: true
+    connections:
+      - name: minio-artifacts
+        kind: artifact_store
+        provider: s3
+        options:
+          endpoint: apex-minio.apex.svc.cluster.local:9000
+          bucket: apex-artifacts
+          secure: false
+          access_key: apex
+        secret_ref: env:APEX_MINIO_SECRET_KEY
+    admin:
+      name: apex-admin
+      consumer_type: internal
+      role: admin
+      key_env: APEX_BOOTSTRAP_ADMIN_KEY
+
+# Routing: managed NGINX ingress with SSE-safe annotations (or switch to gateway.enabled).
+ingress:
+  enabled: true
+  className: webapprouting.kubernetes.io
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: apex.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+# Dashboard served alongside, same-origin reverse proxy to the server Service.
+dashboard:
+  enabled: true
+  image:
+    repository: REPLACE_ME.azurecr.io/apex-dashboard
+  backendUpstream: http://apex-apex-orchestration-engine:80

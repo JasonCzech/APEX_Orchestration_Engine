@@ -1,0 +1,21 @@
+{{- if .Values.metrics.serviceMonitor.enabled -}}
+# Forward-looking: the server exposes no /metrics endpoint yet. Enable only once it
+# does (otherwise scrapes 404). Requires the Prometheus Operator CRDs in-cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "apex.fullname" . }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "apex.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: {{ .Values.metrics.serviceMonitor.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+{{- end }}

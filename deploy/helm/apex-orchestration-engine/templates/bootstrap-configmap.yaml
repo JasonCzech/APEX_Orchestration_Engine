@@ -1,0 +1,16 @@
+{{- if .Values.bootstrap.enabled -}}
+# The bootstrap document is non-secret (secret_ref names only). Rendered as a
+# pre-upgrade hook ConfigMap so it exists before the bootstrap Job mounts it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "apex.fullname" . }}-bootstrap
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": before-hook-creation
+data:
+  bootstrap.json: {{ .Values.bootstrap.document | toJson | quote }}
+{{- end }}

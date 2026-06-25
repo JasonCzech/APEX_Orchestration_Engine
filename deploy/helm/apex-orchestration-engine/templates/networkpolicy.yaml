@@ -1,0 +1,36 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "apex.fullname" . }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "apex.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        {{- toYaml .Values.networkPolicy.ingress.ports | nindent 8 }}
+      {{- with .Values.networkPolicy.ingress.from }}
+      from:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  egress:
+    {{- if .Values.networkPolicy.egress.allowAll }}
+    - {}
+    {{- else }}
+    {{- if .Values.networkPolicy.egress.dns }}
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    {{- end }}
+    {{- with .Values.networkPolicy.egress.to }}
+    - to:
+        {{- toYaml . | nindent 8 }}
+    {{- end }}
+    {{- end }}
+{{- end }}

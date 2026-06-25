@@ -1,0 +1,64 @@
+{{- if .Values.migrations.enabled -}}
+# Pre-install/pre-upgrade hook: `alembic upgrade head` against the apex schema
+# BEFORE the Deployment rolls (ADR-0005 migrate-then-roll). A failure here aborts
+# the release, so new pods never start against an un-migrated schema. The Job runs
+# the exact image+tag being deployed; only APEX_DATABASE__URI is needed (Alembic's
+# env.py resolves the URL from it). alembic.ini lives outside the wheel, so the
+# config is built inline pointing at the packaged migrations tree.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "apex.fullname" . }}-migrate
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": {{ .Values.migrations.hookDeletePolicy }}
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "apex.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "apex.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["python", "-c"]
+          args:
+            - |
+              from alembic.config import Config
+              from alembic import command
+              from importlib.resources import files
+
+              cfg = Config()
+              cfg.set_main_option("script_location", str(files("apex.persistence") / "migrations"))
+              command.upgrade(cfg, "head")
+          env:
+            {{- include "apex.dbEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

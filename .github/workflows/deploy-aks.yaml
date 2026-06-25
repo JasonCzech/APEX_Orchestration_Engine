@@ -1,0 +1,153 @@
+name: deploy-aks
+
+# Manual, environment-gated deploy to AKS. Auth is OIDC (federated) — no stored
+# cloud credentials. Configure per GitHub Environment:
+#   vars:    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#            AZURE_TFSTATE_RG, AZURE_TFSTATE_SA
+#   secrets: PG_ADMIN_PASSWORD, LANGGRAPH_CLOUD_LICENSE_KEY, APEX_MINIO_SECRET_KEY
+# The AZURE_CLIENT_ID is a *deployer* identity federated to this repo+environment
+# (distinct from the in-cluster workload identity Terraform creates).
+#
+# Ordering enforces migrate-then-roll: the Helm pre-upgrade hooks run alembic and
+# the bootstrap Job before the Deployment rolls; `helm upgrade --wait` gates on them.
+# Rollback: `helm rollback <release>` (migrations are additive — old code is safe on
+# the newer schema; see docs/runbooks/deployment.md).
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options: [dev, staging, prod]
+      image_tag:
+        description: Image tag to build/deploy
+        required: true
+        default: latest
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_DIR: deploy/terraform
+  NAMESPACE: apex
+  RELEASE: apex
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      acr: ${{ steps.tf.outputs.acr }}
+      aks: ${{ steps.tf.outputs.aks }}
+      rg: ${{ steps.tf.outputs.rg }}
+      kv: ${{ steps.tf.outputs.kv }}
+      tenant: ${{ steps.tf.outputs.tenant }}
+      client_id: ${{ steps.tf.outputs.client_id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@v3 # TODO: pin to a SHA per repo policy
+        with:
+          terraform_wrapper: false
+      - name: Terraform init (remote state)
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=apex-${{ inputs.environment }}.tfstate"
+      - name: Terraform plan + apply
+        id: tf
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_postgres_admin_password: ${{ secrets.PG_ADMIN_PASSWORD }}
+          TF_VAR_langgraph_license_key: ${{ secrets.LANGGRAPH_CLOUD_LICENSE_KEY }}
+          TF_VAR_artifact_store_secret: ${{ secrets.APEX_MINIO_SECRET_KEY }}
+        run: |
+          terraform plan -input=false -out=tfplan -var-file="env/${{ inputs.environment }}.tfvars"
+          terraform apply -input=false -auto-approve tfplan
+          {
+            echo "acr=$(terraform output -raw acr_login_server)"
+            echo "aks=$(terraform output -raw aks_cluster_name)"
+            echo "rg=$(terraform output -raw resource_group)"
+            echo "kv=$(terraform output -raw key_vault_name)"
+            echo "tenant=$(terraform output -raw tenant_id)"
+            echo "client_id=$(terraform output -raw workload_identity_client_id)"
+          } >> "$GITHUB_OUTPUT"
+
+  build-push:
+    needs: provision
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: ACR login
+        run: az acr login --name "$(echo '${{ needs.provision.outputs.acr }}' | cut -d. -f1)"
+      - name: Build + push images
+        env:
+          ACR: ${{ needs.provision.outputs.acr }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          uv run langgraph build -t "$ACR/apex-orchestration-engine:$TAG"
+          docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
+          docker push "$ACR/apex-orchestration-engine:$TAG"
+          docker push "$ACR/apex-dashboard:$TAG"
+
+  deploy:
+    needs: [provision, build-push]
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+      - name: Cluster credentials
+        run: az aks get-credentials --resource-group "${{ needs.provision.outputs.rg }}" --name "${{ needs.provision.outputs.aks }}" --overwrite-existing
+      - name: MinIO artifact store
+        run: kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
+      - name: Helm upgrade (migrate + bootstrap hooks run first)
+        env:
+          ACR: ${{ needs.provision.outputs.acr }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          helm upgrade --install "$RELEASE" deploy/helm/apex-orchestration-engine \
+            -n "$NAMESPACE" --create-namespace \
+            -f deploy/azure/helm/values-azure.yaml \
+            --set image.repository="$ACR/apex-orchestration-engine" \
+            --set image.tag="$TAG" \
+            --set dashboard.image.repository="$ACR/apex-dashboard" \
+            --set dashboard.image.tag="$TAG" \
+            --set secretBackend.csi.keyvaultName="${{ needs.provision.outputs.kv }}" \
+            --set secretBackend.csi.tenantId="${{ needs.provision.outputs.tenant }}" \
+            --set workloadIdentity.clientId="${{ needs.provision.outputs.client_id }}" \
+            --wait --timeout 15m
+          kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE-apex-orchestration-engine"
+      - name: Smoke test
+        run: helm test "$RELEASE" -n "$NAMESPACE"

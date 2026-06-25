@@ -86,3 +86,64 @@ Three stores, three backups:
 Secrets (consumer keys) are stored only as sha256 hashes — there is nothing to
 back up beyond the DB; lost plaintext keys are re-issued via rotation
 (`operations.md`).
+
+## Deploy index (local → cloud)
+
+| Target | Command | Notes |
+|---|---|---|
+| Local infra only (`langgraph dev`) | `make infra-up` | Postgres/Redis/MinIO; app runs in-memory |
+| Full local stack | `make compose-up` | server + dashboard + infra (`docker-compose.yaml`) |
+| HA soak rig | `make compose-ha-up` | 2 replicas + nginx; needs the license env vars |
+| Any Kubernetes | `make helm-install` (or `helm upgrade`) | bring your own Postgres/Redis/secrets |
+| Azure AKS (turnkey) | `make aks-up` (`APEX_ENV=…`) | Terraform + ACR + Key Vault; see `aks-deployment.md` |
+
+## Helm chart modes (full-app)
+
+The chart (`deploy/helm/apex-orchestration-engine/`, v0.2.0) is the server **and**,
+opt-in, the dashboard. Everything new is values-gated and defaults to today's
+behavior.
+
+- **Migration hook** (`migrations.enabled=true`): a pre-install/pre-upgrade Job
+  runs `alembic upgrade head` on the exact image+tag before pods roll — automating
+  the migrate-then-roll order above. A failure aborts the release.
+- **Bootstrap hook** (`bootstrap.enabled=true`): a post-migration Job applies a
+  declarative document (`apex.bootstrap`) — prompts/applications/environments/
+  connections + an initial admin (key from `bootstrap.adminKeySecret`, hashed,
+  never logged). The document carries `secret_ref` names only, no secret values.
+- **Secret backends** (`secretBackend.mode`): `existingSecret` (default; pre-create
+  the Secrets), `secretsStoreCSI` (Azure Key Vault via the CSI driver — synthesizes
+  the same Secret names), or `externalSecrets` (External Secrets Operator). The env
+  wiring is identical across modes.
+- **ServiceAccount / RBAC / NetworkPolicy / topology spread / startup probe /
+  Gateway-or-Ingress / ServiceMonitor**: all gated; see `values.yaml` comments.
+- **`helm test <release>`**: an in-cluster `/ok` smoke.
+
+### Private registry / ACR
+On AKS the Terraform stack grants **AcrPull** to the kubelet identity, so no
+`imagePullSecrets` are needed. Elsewhere, create one and reference it:
+```bash
+kubectl create secret docker-registry acr-pull \
+  --docker-server=<registry> --docker-username=<u> --docker-password=<p>
+helm upgrade ... --set imagePullSecrets[0].name=acr-pull
+```
+
+### Dashboard
+`dashboard.enabled=true` deploys the SPA image (`apps/dashboard/Dockerfile`). One
+image serves any environment: `/config.json` (`apexOrigin`/`langgraphOrigin`) is
+generated at container start, and `backendUpstream` turns on an in-pod, SSE-safe
+reverse proxy for `/v1`, `/threads`, `/runs`, `/assistants`, `/ok` (same-origin —
+no CORS). Built/published as a separate image track in `release.yaml`.
+
+## Secret matrix
+
+| Secret | Compose (`docker-compose.yaml`) | Helm `existingSecret` | Key Vault (AKS) |
+|---|---|---|---|
+| `DATABASE_URI` (psycopg, `sslmode=require`) | `${APEX_POSTGRES_PASSWORD}` interp | `apex-database` / `DATABASE_URI` | `database-uri` |
+| `APEX_DATABASE__URI` (asyncpg, `ssl=true`) | interp | `apex-database` / `APEX_DATABASE__URI` | `apex-database-uri` |
+| `REDIS_URI` | static (`redis:6379`) | `apex-redis` / `REDIS_URI` | `redis-uri` |
+| `LANGGRAPH_CLOUD_LICENSE_KEY` | `${LANGGRAPH_CLOUD_LICENSE_KEY}` | `apex-langgraph-license` | `langgraph-license` |
+| `APEX_MINIO_SECRET_KEY` | `${APEX_MINIO_SECRET_KEY}` | `apex-minio` (via `extraEnv`) | `artifact-secret-key` |
+| initial admin key | n/a | `apex-admin` (`bootstrap.adminKeySecret`) | (operator-supplied) |
+
+Azure is the only place the psycopg/asyncpg SSL forms differ on the wire — see
+`aks-deployment.md`.
