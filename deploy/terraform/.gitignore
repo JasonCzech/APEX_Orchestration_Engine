@@ -1,0 +1,17 @@
+# Local Terraform working dirs and state — never commit. The .terraform.lock.hcl
+# (provider pinning) IS committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# Do not commit real secrets passed via tfvars.
+*.auto.tfvars
+secrets.tfvars

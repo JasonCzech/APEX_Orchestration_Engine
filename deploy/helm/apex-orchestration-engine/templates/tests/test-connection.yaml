@@ -1,0 +1,25 @@
+{{- if .Values.tests.enabled -}}
+# `helm test <release>` smoke: hit the unauthenticated /ok health endpoint.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "apex.fullname" . }}-test-ok
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: curl
+      image: {{ .Values.tests.image | quote }}
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      command:
+        - curl
+        - -fsS
+        - http://{{ include "apex.fullname" . }}:{{ .Values.service.port }}/ok
+{{- end }}

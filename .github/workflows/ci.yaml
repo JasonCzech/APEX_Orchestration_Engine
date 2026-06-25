@@ -54,12 +54,40 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-      - name: Lint and render the deployment chart
+      - name: Install kubeconform
         run: |
-          helm lint deploy/helm/apex-orchestration-engine
-          helm template smoke deploy/helm/apex-orchestration-engine >/dev/null
-          helm template smoke deploy/helm/apex-orchestration-engine \
-            --set ingress.enabled=true --set autoscaling.enabled=true >/dev/null
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz kubeconform
+          sudo install kubeconform /usr/local/bin/
+      - name: Lint (strict)
+        run: helm lint --strict deploy/helm/apex-orchestration-engine
+      - name: Render every variant + schema-validate
+        run: |
+          CHART=deploy/helm/apex-orchestration-engine
+          out=/tmp/manifests
+          mkdir -p "$out"
+          render() { helm template smoke "$CHART" "$@"; }
+          render > "$out/default.yaml"
+          render --set migrations.enabled=true --set bootstrap.enabled=true \
+            --set bootstrap.adminKeySecret.existingSecret=apex-admin > "$out/jobs.yaml"
+          render --set ingress.enabled=true --set autoscaling.enabled=true > "$out/ingress.yaml"
+          render --set gateway.enabled=true --set gateway.gatewayName=gw \
+            --set ingress.enabled=false > "$out/gateway.yaml"
+          render --set networkPolicy.enabled=true \
+            --set networkPolicy.egress.allowAll=true > "$out/netpol.yaml"
+          render --set serviceAccount.create=true --set rbac.create=true \
+            --set rbac.clusterScope=true > "$out/rbac.yaml"
+          render --set secretBackend.mode=secretsStoreCSI \
+            --set secretBackend.csi.keyvaultName=kv --set secretBackend.csi.tenantId=t \
+            --set workloadIdentity.enabled=true --set workloadIdentity.clientId=c > "$out/csi.yaml"
+          render -f "$CHART/ci/external-secrets-values.yaml" > "$out/eso.yaml"
+          render --set metrics.serviceMonitor.enabled=true \
+            --set metrics.podAnnotations=true > "$out/metrics.yaml"
+          render --set dashboard.enabled=true \
+            --set dashboard.backendUpstream=http://apex:80 > "$out/dashboard.yaml"
+          # Validate core resources against upstream schemas; CRDs (SecretProviderClass,
+          # ExternalSecret, ServiceMonitor, HTTPRoute) have no public schema -> skip them.
+          kubeconform -strict -ignore-missing-schemas -summary "$out"/*.yaml
 
   integration:
     # Postgres-gated tests (skipped in `checks` where APEX_TEST_DATABASE_URI is
@@ -140,3 +168,31 @@ jobs:
         run: |
           uv run alembic upgrade head
           uv run alembic check
+
+  compose-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate Compose files parse
+        run: |
+          docker compose -f docker-compose.yaml config --quiet
+          docker compose -f docker-compose.dev.yaml config --quiet
+          LANGGRAPH_CLOUD_LICENSE_KEY=ci APEX_AUTH__DEV_API_KEY=ci \
+            docker compose -f deploy/compose-ha/docker-compose.ha.yaml config --quiet
+      - name: Build dashboard image (smoke)
+        run: docker build -f apps/dashboard/Dockerfile -t apex-dashboard:ci .
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: hashicorp/setup-terraform@v3 # TODO: pin to a SHA per repo policy
+        with:
+          terraform_wrapper: false
+      - name: fmt + validate (no backend)
+        run: |
+          terraform -chdir=deploy/terraform fmt -check -recursive
+          terraform -chdir=deploy/terraform init -backend=false -input=false
+          terraform -chdir=deploy/terraform validate
+          terraform -chdir=deploy/terraform/bootstrap init -backend=false -input=false
+          terraform -chdir=deploy/terraform/bootstrap validate

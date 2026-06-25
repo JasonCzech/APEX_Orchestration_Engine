@@ -80,6 +80,12 @@ def seed(_: list[str]) -> None:
         run(["uv", "run", "python", f"scripts/{script}"])
 
 
+@task("bootstrap", "Apply a bootstrap document (default deploy/bootstrap/example.json).")
+def bootstrap(extra_args: list[str]) -> None:
+    args = extra_args or ["deploy/bootstrap/example.json"]
+    run(["uv", "run", "python", "scripts/bootstrap.py", *args])
+
+
 @task("setup", "Create .env, start infra, migrate, and seed. Run `uv sync` first.")
 def setup(_: list[str]) -> None:
     ensure_env([])

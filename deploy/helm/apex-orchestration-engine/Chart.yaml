@@ -5,7 +5,7 @@ description: >-
   domain API. Stateless replicas; Postgres, Redis, and the S3/MinIO artifact
   store are external dependencies (see values.yaml).
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "0.6.0"
 keywords:
   - langgraph

@@ -1,0 +1,45 @@
+# Slim the `langgraph build` context. Keep everything the wheel build needs:
+# pyproject.toml, README.md (project.readme), uv.lock, langgraph.json, .env, src/.
+#
+# VCS / tooling
+.git
+.gitignore
+.github
+.idea
+.vscode
+
+# Python virtualenvs / caches / build output
+.venv
+venv
+dist
+build
+*.egg-info
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+.python-version
+
+# Node / frontend (server image does not bundle the dashboard)
+node_modules
+**/node_modules
+apps/*/dist
+apps/*/coverage
+.npm
+
+# Tests, docs, deploy assets — not needed at server runtime
+tests
+docs
+deploy
+plan
+CHANGELOG.md
+CONTRIBUTING.md
+
+# Local env overrides that must never bake into an image
+.env.*.local
+*.tfvars
+*.tfstate
+*.tfstate.*

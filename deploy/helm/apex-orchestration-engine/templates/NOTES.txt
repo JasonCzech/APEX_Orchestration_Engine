@@ -2,9 +2,25 @@
 
 Before the pods can go Ready:
 
-1. Migrations must already be applied (run BEFORE every rollout):
-     APEX_DATABASE__URI=<asyncpg-uri> alembic upgrade head
+1. Migrations:
+{{- if .Values.migrations.enabled }}
+     Handled automatically by the pre-upgrade hook Job ({{ include "apex.fullname" . }}-migrate)
+     — it runs `alembic upgrade head` BEFORE pods roll. Check it with:
+       kubectl -n {{ .Release.Namespace }} logs job/{{ include "apex.fullname" . }}-migrate
+{{- else }}
+     Must already be applied (run BEFORE every rollout):
+       APEX_DATABASE__URI=<asyncpg-uri> alembic upgrade head
+     (or set migrations.enabled=true to run them via a pre-upgrade hook Job).
+{{- end }}
 2. Required secrets in namespace {{ .Release.Namespace }}:
+{{- if eq .Values.secretBackend.mode "secretsStoreCSI" }}
+     Synthesized from Azure Key Vault {{ .Values.secretBackend.csi.keyvaultName | quote }} via the
+     Secrets Store CSI driver (SecretProviderClass {{ include "apex.akvSecretProviderClassName" . }}).
+{{- else if eq .Values.secretBackend.mode "externalSecrets" }}
+     Produced by External Secrets Operator (mode=externalSecrets) into the names below.
+{{- else }}
+     Pre-created (mode=existingSecret):
+{{- end }}
      {{ .Values.database.existingSecret }}  ({{ .Values.database.uriKey }}{{ if .Values.database.apexUriKey }}, {{ .Values.database.apexUriKey }}{{ end }})
      {{ .Values.redis.existingSecret }}  ({{ .Values.redis.uriKey }})
 {{- if .Values.license.existingSecret }}
@@ -13,10 +29,29 @@ Before the pods can go Ready:
    WARNING: license.existingSecret is unset — the standalone LangGraph server
    WILL NOT BOOT without LANGGRAPH_CLOUD_LICENSE_KEY (ADR-0001).
 {{- end }}
+{{- if .Values.bootstrap.enabled }}
+3. Bootstrap: the pre-upgrade hook Job ({{ include "apex.fullname" . }}-bootstrap) seeds the
+   catalog + initial admin from the bootstrap document.
+{{- if not .Values.bootstrap.adminKeySecret.existingSecret }}
+   NOTE: bootstrap.adminKeySecret.existingSecret is unset — no initial admin will be created.
+{{- end }}
+{{- end }}
+
+Routing:
+{{- if .Values.gateway.enabled }}
+  Gateway API HTTPRoute via parent Gateway {{ .Values.gateway.gatewayName | quote }}.
+{{- else if .Values.ingress.enabled }}
+  Ingress ({{ .Values.ingress.className | default "default class" }}). Ensure SSE buffering is OFF.
+{{- else }}
+  ClusterIP only. Port-forward or enable ingress/gateway to reach it externally.
+{{- end }}
 
 Smoke check:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "apex.fullname" . }} 8123:{{ .Values.service.port }}
   curl -s http://127.0.0.1:8123/ok                 # LangGraph server health
   curl -s http://127.0.0.1:8123/v1/system/info -H 'x-api-key: <key>'
+{{- if .Values.tests.enabled }}
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}   # in-cluster /ok smoke
+{{- end }}
 
-Runbooks: docs/runbooks/ (deployment.md, operations.md, incident.md).
+Runbooks: docs/runbooks/ (deployment.md, aks-deployment.md, operations.md, incident.md).

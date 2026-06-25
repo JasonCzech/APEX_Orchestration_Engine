@@ -405,9 +405,7 @@ class AgentEvent(Base):
     output_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     total_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     cache_read_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
-    cache_creation_tokens: Mapped[int] = mapped_column(
-        BigInteger, server_default="0", default=0
-    )
+    cache_creation_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     reasoning_tokens: Mapped[int] = mapped_column(BigInteger, server_default="0", default=0)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     latency_ms: Mapped[int | None] = mapped_column(Integer)

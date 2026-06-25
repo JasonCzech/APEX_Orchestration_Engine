@@ -1,0 +1,43 @@
+{
+  "seed_default_prompts": true,
+  "applications": [
+    {
+      "project_id": "demo",
+      "name": "Checkout",
+      "description": "Demo checkout service (bootstrap)"
+    }
+  ],
+  "environments": [
+    {
+      "project_id": "demo",
+      "application": "Checkout",
+      "name": "staging-2",
+      "kind": "vm",
+      "base_url": "https://checkout.staging2.local",
+      "hosts": [
+        { "hostname": "checkout-app-01.staging2.local", "role": "app" },
+        { "hostname": "checkout-db-01.staging2.local", "role": "db" }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "name": "minio-artifacts",
+      "kind": "artifact_store",
+      "provider": "s3",
+      "options": {
+        "endpoint": "localhost:9000",
+        "bucket": "apex-artifacts",
+        "secure": false,
+        "access_key": "apex"
+      },
+      "secret_ref": "env:APEX_MINIO_SECRET_KEY"
+    }
+  ],
+  "admin": {
+    "name": "apex-admin",
+    "consumer_type": "internal",
+    "role": "admin",
+    "key_env": "APEX_BOOTSTRAP_ADMIN_KEY"
+  }
+}
