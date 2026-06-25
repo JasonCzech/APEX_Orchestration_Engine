@@ -47,7 +47,7 @@ jobs:
       tenant: ${{ steps.tf.outputs.tenant }}
       client_id: ${{ steps.tf.outputs.client_id }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -121,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
