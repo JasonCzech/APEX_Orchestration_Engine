@@ -127,7 +127,7 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
       - name: Cluster credentials
         run: az aks get-credentials --resource-group "${{ needs.provision.outputs.rg }}" --name "${{ needs.provision.outputs.aks }}" --overwrite-existing
       - name: MinIO artifact store
