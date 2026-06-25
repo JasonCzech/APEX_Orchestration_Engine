@@ -140,6 +140,21 @@ export const PromptReviewDraftSchema = z
   .passthrough();
 export type PromptReviewDraft = z.infer<typeof PromptReviewDraftSchema>;
 
+/**
+ * Run-scoped, app-wide application prompt override (state["application_reviews"],
+ * keyed by app_id). One entry per run; every phase resolves its application
+ * prompt from it, so an edit on any phase applies to all phases of the run.
+ */
+export const ApplicationReviewSchema = z
+  .object({
+    content: z.string().nullable(),
+    source: ResolvedPromptSourceSchema,
+    updated_at: z.string(),
+    updated_by: z.string(),
+  })
+  .passthrough();
+export type ApplicationReview = z.infer<typeof ApplicationReviewSchema>;
+
 /** apex.domain.integrations.LoadTestSpec (extra entry key "load_test_spec"). */
 export const LoadTestSpecSchema = z
   .object({
@@ -229,6 +244,7 @@ export const PipelineStateSchema = z
     current_phase: PhaseNameSchema.nullish(),
     run_aborted: z.boolean().optional(),
     prompt_reviews: z.record(PhaseNameSchema, PromptReviewDraftSchema).optional(),
+    application_reviews: z.record(z.string(), ApplicationReviewSchema).optional(),
     phase_results: z.record(PhaseResultEntrySchema).optional(),
     artifacts: z.array(ArtifactRefSchema).optional(),
     dialogue: z.array(DialogueEntrySchema).optional(),

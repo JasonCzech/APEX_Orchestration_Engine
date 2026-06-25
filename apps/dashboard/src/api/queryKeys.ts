@@ -21,6 +21,9 @@ export const queryKeys = {
     state: (threadId: string) => [...queryKeys.threads.all, threadId, 'state'] as const,
     promptReview: (threadId: string, phase: string) =>
       [...queryKeys.threads.all, threadId, 'prompt-review', phase] as const,
+    /** Prefix matching every phase's prompt-review — used when an app-wide edit invalidates all phases. */
+    promptReviews: (threadId: string) =>
+      [...queryKeys.threads.all, threadId, 'prompt-review'] as const,
     /** Active (running/pending) run id discovery for the live stream (D2). */
     activeRun: (threadId: string) => [...queryKeys.threads.all, threadId, 'active-run'] as const,
     artifact: (threadId: string, artifactId: string) =>

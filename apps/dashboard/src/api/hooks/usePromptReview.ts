@@ -82,8 +82,10 @@ export function useUpdatePromptReview(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: queryKeys.threads.state(variables.threadId),
       })
+      // The application prompt is app-wide, so a save can change every phase's
+      // effective prompt — invalidate all phases' prompt-review caches, not just this one.
       void queryClient.invalidateQueries({
-        queryKey: queryKeys.threads.promptReview(variables.threadId, variables.phase),
+        queryKey: queryKeys.threads.promptReviews(variables.threadId),
       })
     },
   })

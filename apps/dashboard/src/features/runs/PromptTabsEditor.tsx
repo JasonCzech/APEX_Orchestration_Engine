@@ -25,16 +25,27 @@ export function PromptTabsEditor({
   editable,
   appAvailable,
   onChange,
+  active: activeProp,
+  onActiveChange,
 }: {
   values: PromptTabValues
   editable: boolean
   appAvailable: boolean
   onChange: (field: PromptTabField, value: string) => void
+  /** Optional controlled active tab. Falls back to internal state (e.g. in the gate panel). */
+  active?: PromptTabField
+  onActiveChange?: (field: PromptTabField) => void
 }) {
-  const [active, setActive] = useState<PromptTabField>('system')
+  const [activeInternal, setActiveInternal] = useState<PromptTabField>('system')
+  const active = activeProp ?? activeInternal
+  const setActive = (field: PromptTabField) => {
+    onActiveChange?.(field)
+    if (activeProp === undefined) setActiveInternal(field)
+  }
 
   useEffect(() => {
     if (active === 'application' && !appAvailable) setActive('system')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, appAvailable])
 
   const activeValue =
@@ -69,25 +80,32 @@ export function PromptTabsEditor({
           No application prompt for this run.
         </div>
       ) : (
-        <div
-          className={`code-viewer prompt-review-editor${editable ? ' editable' : ''}`}
-          role="tabpanel"
-          data-testid={`prompt-tab-editor-${active}`}
-        >
-          <CodeMirror
-            value={activeValue}
-            editable={editable}
-            readOnly={!editable}
-            aria-label={activeLabel}
-            basicSetup={{
-              lineNumbers: true,
-              foldGutter: false,
-              highlightActiveLine: editable,
-              highlightActiveLineGutter: false,
-            }}
-            onChange={(next: string) => onChange(active, next)}
-          />
-        </div>
+        <>
+          {active === 'application' && (
+            <p className="prompt-review-tab-note" data-testid="prompt-tab-note-application">
+              Application-wide — saved edits apply to every phase in this run.
+            </p>
+          )}
+          <div
+            className={`code-viewer prompt-review-editor${editable ? ' editable' : ''}`}
+            role="tabpanel"
+            data-testid={`prompt-tab-editor-${active}`}
+          >
+            <CodeMirror
+              value={activeValue}
+              editable={editable}
+              readOnly={!editable}
+              aria-label={activeLabel}
+              basicSetup={{
+                lineNumbers: true,
+                foldGutter: false,
+                highlightActiveLine: editable,
+                highlightActiveLineGutter: false,
+              }}
+              onChange={(next: string) => onChange(active, next)}
+            />
+          </div>
+        </>
       )}
     </div>
   )

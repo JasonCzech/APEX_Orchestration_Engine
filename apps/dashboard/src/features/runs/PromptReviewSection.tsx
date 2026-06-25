@@ -12,15 +12,27 @@ import {
 
 import { promptPath } from '../prompts/promptPaths'
 import { PHASE_LABELS } from './runDisplay'
-import { PromptTabsEditor, type PromptTabValues } from './PromptTabsEditor'
+import { PromptTabsEditor, type PromptTabField, type PromptTabValues } from './PromptTabsEditor'
 
-function reviewFromState(state: PipelineState, phase: PhaseName): PhasePromptReview | null {
+/** Run-scoped, app-wide application prompt override content, if set for this run's app. */
+function appOverrideContent(state: PipelineState, appId: string | null): string | null {
+  if (!appId) return null
+  const override = state.application_reviews?.[appId]
+  return override && override.content != null ? override.content : null
+}
+
+function reviewFromState(
+  state: PipelineState,
+  phase: PhaseName,
+  appId: string | null,
+): PhasePromptReview | null {
+  const appOverride = appOverrideContent(state, appId)
   const review = state.prompt_reviews?.[phase]
   if (review) {
     return {
       system: review.system,
       phase_prompt: review.phase_prompt,
-      application: review.application ?? null,
+      application: appOverride ?? review.application ?? null,
       additional_context: review.additional_context,
       source: review.source ?? {},
       updated_at: review.updated_at,
@@ -33,7 +45,7 @@ function reviewFromState(state: PipelineState, phase: PhaseName): PhasePromptRev
     return {
       system: prompt.system ?? '',
       phase_prompt: prompt.user ?? '',
-      application: prompt.application ?? null,
+      application: appOverride ?? prompt.application ?? null,
       additional_context: '',
       source: entry?.resolved_prompt_source ?? {},
       updated_at: entry?.started_at ?? '',
@@ -41,6 +53,24 @@ function reviewFromState(state: PipelineState, phase: PhaseName): PhasePromptRev
     }
   }
   return null
+}
+
+/** Catalog deep-link for the active tab, or null when it has no catalog entry. */
+function catalogLinkFor(
+  active: PromptTabField,
+  phase: PhaseName,
+  appId: string | null,
+): string | null {
+  switch (active) {
+    case 'system':
+      return promptPath('phase', `${phase}/system`)
+    case 'phase_prompt':
+      return promptPath('phase', `${phase}/user`)
+    case 'application':
+      return appId ? promptPath('application', appId) : null
+    default:
+      return null
+  }
 }
 
 function valuesOf(review: PhasePromptReview): PromptTabValues {
@@ -79,7 +109,7 @@ export function PromptReviewSection({
   state: PipelineState
   appId: string | null
 }) {
-  const snapshotReview = useMemo(() => reviewFromState(state, phase), [state, phase])
+  const snapshotReview = useMemo(() => reviewFromState(state, phase, appId), [state, phase, appId])
   const query = usePromptReview(threadId, phase)
   const update = useUpdatePromptReview()
   const baseline = query.data ?? snapshotReview
@@ -87,7 +117,9 @@ export function PromptReviewSection({
   const [draft, setDraft] = useState<PromptTabValues | null>(baselineValues)
   const [saved, setSaved] = useState(false)
   const [userTouched, setUserTouched] = useState(false)
+  const [activeTab, setActiveTab] = useState<PromptTabField>('system')
   const dirty = !sameValues(draft, baselineValues)
+  const catalogLink = catalogLinkFor(activeTab, phase, appId)
 
   useEffect(() => {
     if (!userTouched) setDraft(baselineValues)
@@ -151,12 +183,11 @@ export function PromptReviewSection({
           )}
           {dirty && <span className="topbar-meta-chip warning">edited</span>}
           {saved && !dirty && <span className="topbar-meta-chip success">saved</span>}
-          <Link
-            className="btn btn-ghost btn-sm"
-            to={promptPath('phase', `${phase}/system`)}
-          >
-            Catalog
-          </Link>
+          {catalogLink && (
+            <Link className="btn btn-ghost btn-sm" to={catalogLink}>
+              Catalog
+            </Link>
+          )}
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -187,6 +218,8 @@ export function PromptReviewSection({
           values={draft}
           editable={!update.isPending}
           appAvailable={appAvailable}
+          active={activeTab}
+          onActiveChange={setActiveTab}
           onChange={(field, value) => {
             setSaved(false)
             setUserTouched(true)
@@ -197,10 +230,7 @@ export function PromptReviewSection({
                 application: null,
                 additional_context: '',
               }
-              return {
-                ...current,
-                [field]: field === 'application' ? value : value,
-              }
+              return { ...current, [field]: value }
             })
           }}
         />

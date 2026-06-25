@@ -148,4 +148,20 @@ describe('PromptReviewSection', () => {
     expect(screen.queryByTestId('prompt-review-section')).not.toBeInTheDocument()
     expect(screen.getAllByRole('tablist', { name: 'Prompt Review tabs' })).toHaveLength(1)
   })
+
+  it('labels the Application Prompt as app-wide and links to the application catalog', async () => {
+    server.use(pipelineDetailHandler(), ...promptReviewHandlers({}))
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=details`])
+
+    const section = await screen.findByTestId('prompt-review-section')
+    await user.click(within(section).getByRole('tab', { name: 'Application Prompt' }))
+
+    expect(within(section).getByTestId('prompt-tab-note-application')).toBeInTheDocument()
+    // The tab-aware catalog quick-link targets the application namespace, not phase/system.
+    expect(within(section).getByRole('link', { name: 'Catalog' })).toHaveAttribute(
+      'href',
+      expect.stringContaining('/prompts/application'),
+    )
+  })
 })

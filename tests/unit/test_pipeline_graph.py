@@ -350,3 +350,32 @@ def test_prompt_review_state_drives_prepare_and_preserves_existing_review() -> N
     assert entry["resolved_prompt_source"]["origin"] == "run_override"
     assert result["prompt_reviews"]["story_analysis"]["updated_by"] == "op"
     assert len(result["prompt_reviews"]) == len(PHASE_ORDER)
+
+
+def test_application_review_is_app_wide_across_phases() -> None:
+    g = compiled()
+    cfg = config(
+        "t15",
+        gates=all_auto(),
+        phases=["story_analysis", "test_planning"],
+        app_id="a1",
+    )
+    result = g.invoke(
+        {
+            "title": "Demo",
+            "request": "r",
+            "application_reviews": {
+                "a1": {
+                    "content": "App-wide requirements.",
+                    "source": {"origin": "run_override", "editor": "op"},
+                    "updated_at": "2026-06-01T00:00:00+00:00",
+                    "updated_by": "op",
+                }
+            },
+        },
+        cfg,
+    )
+    # A single run-scoped override resolves into every phase's application prompt.
+    for phase in ("story_analysis", "test_planning"):
+        entry = result["phase_results"][phase]
+        assert entry["resolved_prompt"]["application"] == "App-wide requirements."

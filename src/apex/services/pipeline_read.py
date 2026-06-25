@@ -139,6 +139,23 @@ def phase_by_name(name: str) -> Phase:
     raise ValueError(f"unknown phase {name!r}")
 
 
+def _application_override_content(values: JsonDict, app_id: str | None) -> str | None:
+    """Run-scoped, app-wide application prompt override content, if set."""
+    if not app_id:
+        return None
+    override = (values.get("application_reviews") or {}).get(app_id)
+    if isinstance(override, dict) and override.get("content") is not None:
+        return str(override["content"])
+    return None
+
+
+def _with_application_override(review: JsonDict, values: JsonDict, app_id: str | None) -> JsonDict:
+    override = _application_override_content(values, app_id)
+    if override is not None:
+        return {**review, "application": override}
+    return review
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     values = thread.get("values") or {}
@@ -217,33 +234,43 @@ class PipelineReadService:
         }
 
     async def get_phase_prompt_review(self, thread_id: str, phase_name: str) -> JsonDict:
-        """Effective prompt-review draft for a phase, with old-run fallback."""
+        """Effective prompt-review draft for a phase, with old-run fallback.
+
+        The application prompt is layered from the run-scoped, app-wide override
+        so every phase reports the same application text.
+        """
         phase = phase_by_name(phase_name)
         thread = await self._client.threads.get(thread_id)
         state = await self._client.threads.get_state(thread_id)
         values = state.get("values") or {}
+        metadata = thread.get("metadata") or {}
+        app_id = metadata.get("app_id")
+
         review = (values.get("prompt_reviews") or {}).get(phase.value)
         if isinstance(review, dict):
-            return dict(review)
+            return _with_application_override(dict(review), values, app_id)
 
         entry = (values.get("phase_results") or {}).get(phase.value) or {}
         prompt = entry.get("resolved_prompt")
         if isinstance(prompt, dict) and (prompt.get("system") or prompt.get("user")):
             source = entry.get("resolved_prompt_source")
-            return {
-                "system": prompt.get("system") or "",
-                "phase_prompt": prompt.get("user") or "",
-                "application": prompt.get("application"),
-                "additional_context": "",
-                "source": dict(source) if isinstance(source, dict) else {"origin": "catalog"},
-                "updated_at": utcnow_iso(),
-                "updated_by": "system",
-            }
+            return _with_application_override(
+                {
+                    "system": prompt.get("system") or "",
+                    "phase_prompt": prompt.get("user") or "",
+                    "application": prompt.get("application"),
+                    "additional_context": "",
+                    "source": dict(source) if isinstance(source, dict) else {"origin": "catalog"},
+                    "updated_at": utcnow_iso(),
+                    "updated_by": "system",
+                },
+                values,
+                app_id,
+            )
 
-        metadata = thread.get("metadata") or {}
         cfg = PipelineConfigurable(
             project_id=metadata.get("project_id"),
-            app_id=metadata.get("app_id"),
+            app_id=app_id,
         )
         variables = {
             "title": values.get("title") or metadata.get("title") or "untitled run",
@@ -253,7 +280,9 @@ class PipelineReadService:
             resolved = resolve_phase_prompt_sync(phase, cfg, variables=variables)
         except Exception:
             resolved = resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
-        return dict(prompt_review_from_resolved(resolved))
+        return _with_application_override(
+            dict(prompt_review_from_resolved(resolved)), values, app_id
+        )
 
     async def update_phase_prompt_review(
         self,
@@ -263,29 +292,61 @@ class PipelineReadService:
         *,
         actor: str,
     ) -> JsonDict:
-        """Patch one phase's run-scoped prompt review draft without starting a run."""
+        """Patch one phase's run-scoped prompt review draft without starting a run.
+
+        Per-phase fields (system / phase prompt / additional context) are stored
+        under prompt_reviews[phase]. The application prompt is app-wide: when it
+        changes it is written once under application_reviews[app_id] so the edit
+        propagates to every phase of the run.
+        """
         phase = phase_by_name(phase_name)
+        thread = await self._client.threads.get(thread_id)
+        metadata = thread.get("metadata") or {}
+        app_id = metadata.get("app_id")
         state = await self._client.threads.get_state(thread_id)
         values = state.get("values") or {}
         current = (values.get("prompt_reviews") or {}).get(phase.value)
         current_source = current.get("source") if isinstance(current, dict) else None
+        now = utcnow_iso()
+        source = {
+            "origin": "run_override",
+            "ref": current_source.get("ref") if isinstance(current_source, dict) else None,
+            "editor": actor,
+        }
+
+        body_application = body.get("application") if body.get("application") is not None else None
+        update_values: JsonDict = {}
+        effective_application = body_application
+        if app_id and body_application is not None:
+            existing = _application_override_content(values, app_id)
+            prior = (
+                existing
+                if existing is not None
+                else (current.get("application") if isinstance(current, dict) else None)
+            )
+            if body_application != prior:
+                update_values["application_reviews"] = {
+                    app_id: {
+                        "content": body_application,
+                        "source": source,
+                        "updated_at": now,
+                        "updated_by": actor,
+                    }
+                }
+            elif prior is not None:
+                effective_application = prior
+
         draft: JsonDict = {
             "system": str(body.get("system") or ""),
             "phase_prompt": str(body.get("phase_prompt") or ""),
-            "application": body.get("application") if body.get("application") is not None else None,
+            "application": effective_application,
             "additional_context": str(body.get("additional_context") or ""),
-            "source": {
-                "origin": "run_override",
-                "ref": current_source.get("ref") if isinstance(current_source, dict) else None,
-                "editor": actor,
-            },
-            "updated_at": utcnow_iso(),
+            "source": source,
+            "updated_at": now,
             "updated_by": actor,
         }
-        await self._client.threads.update_state(
-            thread_id,
-            {"prompt_reviews": {phase.value: draft}},
-        )
+        update_values["prompt_reviews"] = {phase.value: draft}
+        await self._client.threads.update_state(thread_id, update_values)
         return draft
 
     async def resume_gate(

@@ -111,6 +111,53 @@ def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
     return None
 
 
+def _state_application_override(state: PipelineState, cfg: PipelineConfigurable) -> str | None:
+    """Run-scoped, app-wide application prompt override content, if set.
+
+    Stored once per run keyed by app_id, so an edit on any phase is shared by
+    every phase of the run.
+    """
+    if not cfg.app_id:
+        return None
+    override = (state.get("application_reviews") or {}).get(cfg.app_id)
+    if isinstance(override, dict) and override.get("content") is not None:
+        return str(override["content"])
+    return None
+
+
+def _apply_application_override(
+    state: PipelineState,
+    cfg: PipelineConfigurable,
+    review: JsonDict,
+    resolved: JsonDict,
+) -> tuple[JsonDict, JsonDict]:
+    override = _state_application_override(state, cfg)
+    if override is None:
+        return review, resolved
+    return {**review, "application": override}, {**resolved, "application": override}
+
+
+def _application_review_update(
+    cfg: PipelineConfigurable,
+    application: Any,
+    source: JsonDict,
+    config: RunnableConfig,
+) -> JsonDict:
+    """State update recording the run-scoped, app-wide application override."""
+    if not cfg.app_id or application is None:
+        return {}
+    return {
+        "application_reviews": {
+            cfg.app_id: {
+                "content": str(application),
+                "source": source,
+                "updated_at": utcnow_iso(),
+                "updated_by": resolve_actor(config),
+            }
+        }
+    }
+
+
 def _review_source_for_phase(
     state: PipelineState,
     phase: Phase,
@@ -120,11 +167,15 @@ def _review_source_for_phase(
 
     New runs seed state["prompt_reviews"] in plan_resolver. Old checkpoints may
     not have it, so this keeps the previous resolved_prompt/locator behavior.
+    The application prompt is layered from the run-scoped, app-wide override so
+    that every phase resolves the same application text.
     """
     reviews = state.get("prompt_reviews") or {}
     review = reviews.get(phase.value)
     if isinstance(review, dict):
-        return review, dict(resolved_from_prompt_review(review))
+        return _apply_application_override(
+            state, cfg, review, dict(resolved_from_prompt_review(review))
+        )
 
     entry = _entry(state, phase)
     prompt = entry.get("resolved_prompt")
@@ -139,16 +190,21 @@ def _review_source_for_phase(
             "updated_at": utcnow_iso(),
             "updated_by": "system",
         }
-        return review, {
-            "system": review["system"],
-            "user": review["phase_prompt"],
-            "application": review["application"],
-            "source": review["source"],
-        }
+        return _apply_application_override(
+            state,
+            cfg,
+            review,
+            {
+                "system": review["system"],
+                "user": review["phase_prompt"],
+                "application": review["application"],
+                "source": review["source"],
+            },
+        )
 
     resolved = resolve_phase_prompt_sync(phase, cfg, variables=_prompt_variables(state))
     review = dict(prompt_review_from_resolved(resolved))
-    return review, dict(resolved)
+    return _apply_application_override(state, cfg, review, dict(resolved))
 
 
 def _prompt_review_update(phase: Phase, review: JsonDict) -> JsonDict:
@@ -282,6 +338,7 @@ def _make_prompt_gate(phase: Phase):
         prompt = _review_to_prompt(review)
         source = dict(review.get("source") or entry.get("resolved_prompt_source") or {})
         additional_context = str(review.get("additional_context") or "")
+        original_application = review.get("application")
         packets = list(state.get("context_packets") or [])
         tools = stub_tool_names(phase)
         error: str | None = None
@@ -335,6 +392,10 @@ def _make_prompt_gate(phase: Phase):
                     ],
                 )
                 update.update(_prompt_review_update(phase, review))
+                if review.get("application") != original_application:
+                    update.update(
+                        _application_review_update(cfg, review.get("application"), source, config)
+                    )
                 return Command(goto="agent", update=update)
             if action == "modify":
                 edit = decision.get("prompt")
@@ -389,6 +450,10 @@ def _make_prompt_gate(phase: Phase):
             warnings=[warning],
         )
         update.update(_prompt_review_update(phase, review))
+        if review.get("application") != original_application:
+            update.update(
+                _application_review_update(cfg, review.get("application"), source, config)
+            )
         return Command(goto="agent", update=update)
 
     return prompt_gate

@@ -67,10 +67,10 @@ class FakeThreads:
         state = await self.get_state(thread_id)
         current = state.setdefault("values", {})
         for key, value in values.items():
-            if key == "prompt_reviews" and isinstance(value, dict):
-                merged = dict(current.get("prompt_reviews") or {})
+            if key in ("prompt_reviews", "application_reviews") and isinstance(value, dict):
+                merged = dict(current.get(key) or {})
                 merged.update(value)
-                current["prompt_reviews"] = merged
+                current[key] = merged
             else:
                 current[key] = value
         self.update_calls.append({"thread_id": thread_id, "values": values})
@@ -392,6 +392,99 @@ def test_patch_phase_prompt_review_requires_operator() -> None:
             },
         )
     assert response.status_code == 403
+
+
+def _seeded_review(system: str, application: str | None) -> JsonDict:
+    return {
+        "system": system,
+        "phase_prompt": "P",
+        "application": application,
+        "additional_context": "",
+        "source": {"origin": "catalog"},
+        "updated_at": "2026-06-01T00:00:00+00:00",
+        "updated_by": "system",
+    }
+
+
+def test_patch_application_prompt_is_app_wide() -> None:
+    state = {
+        "values": {
+            "prompt_reviews": {
+                "story_analysis": _seeded_review("S1", "App catalog"),
+                "test_planning": _seeded_review("S2", "App catalog"),
+            }
+        },
+        "tasks": [],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})  # metadata app_id="a1"
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        patched = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "S1",
+                "phase_prompt": "P",
+                "application": "Edited app prompt",
+                "additional_context": "",
+            },
+        )
+        assert patched.status_code == 200
+        assert patched.json()["application"] == "Edited app prompt"
+        # The app-wide override is visible from a DIFFERENT phase.
+        other = client.get("/v1/pipelines/t-1/phases/test_planning/prompt-review")
+    assert other.status_code == 200
+    assert other.json()["application"] == "Edited app prompt"
+    # Stored once under application_reviews[app_id], not duplicated per-phase.
+    stored = fake.states["t-1"]["values"]["application_reviews"]["a1"]
+    assert stored["content"] == "Edited app prompt"
+
+
+def test_patch_application_unchanged_does_not_write_override() -> None:
+    state = {
+        "values": {"prompt_reviews": {"story_analysis": _seeded_review("S1", "App catalog")}},
+        "tasks": [],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "Edited system",
+                "phase_prompt": "P",
+                "application": "App catalog",  # unchanged
+                "additional_context": "",
+            },
+        )
+    assert response.status_code == 200
+    # A system-only edit must not freeze the app prompt as a run override.
+    assert "application_reviews" not in fake.states["t-1"]["values"]
+
+
+def test_patch_phase_prompt_review_unknown_thread_is_404() -> None:
+    fake = FakeThreads([], states={})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        response = client.patch(
+            "/v1/pipelines/missing/phases/story_analysis/prompt-review",
+            json={
+                "system": "S",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "",
+            },
+        )
+    assert response.status_code == 404
+
+
+def test_get_phase_prompt_review_unknown_thread_is_404() -> None:
+    fake = FakeThreads([], states={})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        response = client.get("/v1/pipelines/missing/phases/story_analysis/prompt-review")
+    assert response.status_code == 404
 
 
 def test_list_pipelines_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:

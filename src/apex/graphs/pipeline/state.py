@@ -87,6 +87,10 @@ class PipelineState(TypedDict, total=False):
     # Accumulated thread state
     phase_results: Annotated[dict[str, JsonDict], merge_phase_results]
     prompt_reviews: Annotated[dict[str, JsonDict], merge_prompt_reviews]
+    # Run-scoped application prompt override, keyed by app_id. App-wide for the
+    # run: every phase resolves its application prompt from this single entry, so
+    # an operator edit on one phase propagates to all phases of the run.
+    application_reviews: Annotated[dict[str, JsonDict], merge_prompt_reviews]
     artifacts: Annotated[list[JsonDict], append_unique_by_id]
     dialogue: Annotated[list[JsonDict], append_unique_by_id]
     context_packets: Annotated[list[JsonDict], append_unique_by_id]
