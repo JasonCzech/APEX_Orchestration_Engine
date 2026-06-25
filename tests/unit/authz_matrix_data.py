@@ -18,6 +18,8 @@ MIN_ROLE: dict[str, str] = {
     # ── pipelines ───────────────────────────────────────────────────────────
     "listPipelines": "viewer",
     "getPipeline": "viewer",
+    "getPhasePromptReview": "viewer",
+    "patchPhasePromptReview": "operator",
     "resumeGate": "operator",
     "abortPipeline": "operator",
     # ── prompts ─────────────────────────────────────────────────────────────
