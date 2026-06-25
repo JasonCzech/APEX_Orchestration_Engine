@@ -314,17 +314,22 @@ class PipelineReadService:
             "editor": actor,
         }
 
-        body_application = body.get("application") if body.get("application") is not None else None
+        body_application = body.get("application")
         update_values: JsonDict = {}
         effective_application = body_application
-        if app_id and body_application is not None:
+        if app_id:
             existing = _application_override_content(values, app_id)
             prior = (
                 existing
                 if existing is not None
                 else (current.get("application") if isinstance(current, dict) else None)
             )
-            if body_application != prior:
+            # The application prompt is app-wide and run-scoped. A non-null edit updates
+            # the single override; a null is treated as "no change" (run-scoped prompts
+            # are not reverted to the catalog — match the system/phase-prompt behavior).
+            # Either way effective_application reflects the value the next GET will return,
+            # so the response never disagrees with the persisted state.
+            if body_application is not None and body_application != prior:
                 update_values["application_reviews"] = {
                     app_id: {
                         "content": body_application,
@@ -333,7 +338,8 @@ class PipelineReadService:
                         "updated_by": actor,
                     }
                 }
-            elif prior is not None:
+                effective_application = body_application
+            else:
                 effective_application = prior
 
         draft: JsonDict = {

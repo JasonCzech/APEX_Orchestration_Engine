@@ -463,6 +463,44 @@ def test_patch_application_unchanged_does_not_write_override() -> None:
     assert "application_reviews" not in fake.states["t-1"]["values"]
 
 
+def test_patch_null_application_is_truthful_and_preserves_override() -> None:
+    state = {
+        "values": {
+            "prompt_reviews": {"story_analysis": _seeded_review("S1", "Edited app")},
+            "application_reviews": {
+                "a1": {
+                    "content": "Edited app",
+                    "source": {"origin": "run_override"},
+                    "updated_at": "2026-06-01T00:00:00+00:00",
+                    "updated_by": "op",
+                }
+            },
+        },
+        "tasks": [],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    app = make_app(FakeClient(fake), operator_identity())
+    with TestClient(app) as client:
+        # A null application (e.g. a system-only edit) must not make the response claim
+        # null while the app-wide override silently persists. The response reflects the
+        # effective value, and a later GET agrees.
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "S1 edited",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["application"] == "Edited app"
+        later = client.get("/v1/pipelines/t-1/phases/test_planning/prompt-review")
+    assert later.json()["application"] == "Edited app"
+    assert fake.states["t-1"]["values"]["application_reviews"]["a1"]["content"] == "Edited app"
+
+
 def test_patch_phase_prompt_review_unknown_thread_is_404() -> None:
     fake = FakeThreads([], states={})
     app = make_app(FakeClient(fake), operator_identity())
