@@ -12,7 +12,6 @@ import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
 
 import { LiveStatusChip } from './LiveStatusChip'
-import { PhaseRail } from './PhaseRail'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
@@ -37,8 +36,7 @@ function RunDetailSkeleton() {
  * Mounted on BOTH routes:
  * - /runs/:threadId            -> redirects to /phases/:phase (current phase,
  *   else first phase with a result)
- * - /runs/:threadId/phases/:phase?tab= -> three-region layout
- *   (PhaseRail 260px | PhaseWorkspace | RunRail 320px)
+ * - /runs/:threadId/phases/:phase?tab= -> shared phase flow + phase workspace
  */
 export function RunDetailPage() {
   const { threadId = '', phase: phaseParam } = useParams()
@@ -70,7 +68,7 @@ export function RunDetailPage() {
     )
   }
 
-  const { detail, state, interrupts, stateParseFailed } = query.data
+  const { detail, state, stateParseFailed } = query.data
   const completedCount = PHASE_NAMES.filter((phase) =>
     isPipelinePhaseComplete(state.phase_results?.[phase]?.status),
   ).length
@@ -90,7 +88,7 @@ export function RunDetailPage() {
       <div className="dash-empty">
         <h2>Unknown phase</h2>
         <p>
-          “{phaseParam}” is not a pipeline phase. Pick a phase from the rail on a valid run page.
+          “{phaseParam}” is not a pipeline phase. Pick a phase from the flow on a valid run page.
         </p>
         <Link className="btn btn-secondary btn-sm" to={`/runs/${threadId}`}>
           Back to run
@@ -201,8 +199,7 @@ export function RunDetailPage() {
           }}
         />
       </section>
-      <div className={`run-detail-grid${interrupts.length > 0 ? ' has-gate' : ''}`}>
-        <PhaseRail threadId={threadId} detail={detail} state={state} />
+      <div className="run-detail-grid">
         <PhaseWorkspace
           threadId={threadId}
           phase={phaseParam}

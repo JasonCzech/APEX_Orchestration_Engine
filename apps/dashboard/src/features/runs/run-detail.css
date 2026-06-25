@@ -27,7 +27,7 @@
 
 .run-detail-grid {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
@@ -86,12 +86,7 @@
   animation: pulse 1.6s ease-in-out infinite;
 }
 
-/* Rails collapse to a stacked column below 1320px (plan: drawers/stacked). */
 @media (max-width: 1320px) {
-  .run-detail-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .run-pipeline-hero-head {
     align-items: flex-start;
     flex-direction: column;
@@ -102,14 +97,8 @@
 
 .run-detail-skeleton {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
-}
-
-@media (max-width: 1320px) {
-  .run-detail-skeleton {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 .skeleton-block {
@@ -120,251 +109,6 @@
 
 .skeleton-block.short {
   min-height: 120px;
-}
-
-/* ── Phase rail (left, 260px stepper) ────────────────────────────────────── */
-
-.phase-rail {
-  border-radius: var(--radius);
-  padding: 18px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.phase-rail-summary {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 0 4px 10px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-}
-
-.phase-rail-summary-heading {
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.phase-rail-summary-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.phase-rail-summary-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 12px;
-}
-
-.phase-rail-summary-stats div {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.phase-rail-summary-stats dt {
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.phase-rail-summary-stats dd {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.phase-rail-heading {
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  padding: 4px;
-}
-
-.phase-rail-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 12px 12px 14px;
-  border-radius: 12px;
-  text-decoration: none;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-left: 4px solid transparent;
-  background: var(--bg-card);
-  transition: background var(--transition-fast), border-color var(--transition-fast);
-}
-
-.phase-rail-item:hover {
-  background: var(--bg-hover);
-}
-
-.phase-rail-item.active {
-  background: var(--bg-hover);
-  border-color: var(--accent-border);
-  border-left-color: var(--accent);
-  color: var(--text-primary);
-}
-
-.phase-rail-item.skipped .phase-rail-name {
-  color: var(--text-muted);
-  text-decoration: line-through;
-}
-
-.phase-rail-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 800;
-  flex: 0 0 auto;
-}
-
-.phase-rail-icon--prompt_review {
-  border-color: var(--info-border);
-  background: var(--info-bg);
-  color: var(--info-text);
-}
-
-.phase-rail-icon--running {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--accent);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-.phase-rail-icon--results_ready {
-  border-color: color-mix(in srgb, var(--accent-results) 36%, var(--border));
-  background: color-mix(in srgb, var(--accent-results) 12%, var(--bg-card));
-  color: var(--accent-results);
-}
-
-.phase-rail-icon--completed {
-  border-color: var(--success-border);
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.phase-rail-icon--failed {
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
-  color: var(--danger);
-}
-
-.phase-rail-body {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex: 1;
-}
-
-.phase-rail-name-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.phase-rail-name {
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.phase-rail-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.pipeline-status-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 24px;
-  padding: 4px 10px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--subtle-fill, var(--bg-secondary));
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.pipeline-status-pill--prompt_review {
-  border-color: var(--info-border);
-  background: var(--info-bg);
-  color: var(--info-text);
-}
-
-.pipeline-status-pill--running {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.pipeline-status-pill--results_ready {
-  border-color: color-mix(in srgb, var(--accent-results) 36%, var(--border));
-  background: color-mix(in srgb, var(--accent-results) 12%, var(--bg-card));
-  color: var(--accent-results);
-}
-
-.pipeline-status-pill--completed {
-  border-color: var(--success-border);
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
-.pipeline-status-pill--failed {
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
-  color: var(--danger-text);
-}
-
-.attempt-badge {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--accent);
-  background: var(--accent-soft);
-  border: 1px solid var(--accent-border);
-  border-radius: 999px;
-  padding: 0 6px;
-  line-height: 16px;
-}
-
-.warning-chip {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--warning-text);
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-border);
-  border-radius: 999px;
-  padding: 0 6px;
-  line-height: 16px;
 }
 
 /* ── Phase workspace (center) ────────────────────────────────────────────── */

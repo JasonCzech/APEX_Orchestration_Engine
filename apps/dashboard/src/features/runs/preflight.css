@@ -1,5 +1,5 @@
 /* Phase-subset re-runs (plan Part 2 §4): pre-flight modal, shared overflow
-   menu, phase-rail kebab row, runs-grid actions cell, run-detail split button.
+   menu, runs-grid actions cell, run-detail split button.
    Theme tokens + primitives only — APEX Load density (10-13px). */
 
 /* ── Pre-flight modal ────────────────────────────────────────────────────── */
@@ -252,33 +252,7 @@
   color: var(--text-primary);
 }
 
-/* ── Entry point 1: phase-rail kebab row ─────────────────────────────────── */
-
-.phase-rail-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.phase-rail-row > .phase-rail-item {
-  flex: 1;
-  min-width: 0;
-}
-
-.phase-rail-kebab {
-  flex: 0 0 auto;
-  opacity: 0;
-  transition: opacity var(--transition-fast);
-}
-
-.phase-rail-row:hover .phase-rail-kebab,
-.phase-rail-kebab:focus-within,
-.phase-rail-kebab:has([aria-expanded='true']) {
-  opacity: 1;
-}
-
-/* ── Entry point 2: runs-grid actions cell ───────────────────────────────── */
+/* ── Entry point 1: runs-grid actions cell ───────────────────────────────── */
 
 .runs-actions-cell {
   width: 36px;
@@ -299,7 +273,7 @@
   white-space: nowrap;
 }
 
-/* ── Entry point 3: run-detail header split button ───────────────────────── */
+/* ── Entry point 2: run-detail header split button ───────────────────────── */
 
 .split-button {
   display: inline-flex;

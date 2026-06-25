@@ -148,6 +148,53 @@
   background: var(--accent-soft);
 }
 
+.pipeline-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--subtle-fill, var(--bg-secondary));
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.pipeline-status-pill--prompt_review {
+  border-color: var(--info-border);
+  background: var(--info-bg);
+  color: var(--info-text);
+}
+
+.pipeline-status-pill--running {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.pipeline-status-pill--results_ready {
+  border-color: color-mix(in srgb, var(--accent-results) 36%, var(--border));
+  background: color-mix(in srgb, var(--accent-results) 12%, var(--bg-card));
+  color: var(--accent-results);
+}
+
+.pipeline-status-pill--completed {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+
+.pipeline-status-pill--failed {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-text);
+}
+
 .runs-inspector-json {
   border: 1px solid var(--border);
   border-radius: 12px;

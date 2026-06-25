@@ -88,9 +88,9 @@ The existing route table already lazy-loads those four export names from
   `/runs/:threadId/phases/<current_phase>` (falls back to the first phase with
   a result, then the plan head). Keep both paths on the same component.
 - Workspace tab state lives in `?tab=output|artifacts|prompt|dialogue`
-  (default `output`); phase-rail links preserve the current search string, so
-  the grid agent's phase-strip deep links (`/runs/:threadId/phases/:phase`)
-  compose with tabs.
+  (default `output`); the phase-strip buttons preserve the current search
+  string, so phase deep links (`/runs/:threadId/phases/:phase`) compose with
+  tabs.
 - Data: all three screens read `useThreadState(threadId)`
   (`GET /v1/pipelines/{thread_id}` facade — summary + values + interrupts in
   one call; `values` parsed through the lenient `@apex/pipeline-events`
@@ -224,20 +224,16 @@ pages (`RunDetailPage`, `RunsListPage`).
 | `PreflightModal {threadId, initialSelection?, onClose}` | `PreflightModal.tsx` | the single pre-flight checkpoint every entry point funnels through |
 | `OverflowMenu {label, items, trigger?, className?}` | `PreflightModal.tsx` | shared glass dropdown (menu role, Escape/outside-click close, arrow keys, focus-first-item); stops click propagation so it is row-click safe |
 | `useRerun` / `buildRerunConfigurable` / `ALL_GATED_GATES` | `useRerun.ts` | `runs.create(threadId, 'pipeline', {input: {}, config:{configurable:{phases, gates?}}})` on the EXISTING thread |
-| styles | `preflight.css` | modal, overflow menu, kebab row, actions cell, split button, `.sr-only` |
+| styles | `preflight.css` | modal, overflow menu, actions cell, split button, `.sr-only` |
 
 ## Entry points (surgical edits)
 
-1. `PhaseRail.tsx` — each phase row is now `.phase-rail-row` (NavLink + kebab
-   as SIBLINGS, so the link markup/behavior is unchanged). Kebab menu:
-   [Re-run this phase] (selection = that phase) | [Run from here] (phase +
-   downstream ∩ `state.phases_plan`) | [Run phases…] (last plan pre-checked).
-2. `RunsListPage.tsx` — new trailing actions column (`⋯`): [Re-run…] opens the
+1. `RunsListPage.tsx` — new trailing actions column (`⋯`): [Re-run…] opens the
    modal for that thread WITHOUT initialSelection (the modal hydrates the
    default from the fetched plan; loading state lives inside the modal) |
    [Open] navigates. Row-click navigation untouched (the menu stops
    propagation internally).
-3. `RunDetailPage.tsx` — header split button: [Re-run] (all phases) +
+2. `RunDetailPage.tsx` — header split button: [Re-run] (all phases) +
    [▾] → [All phases] / [Run phases…].
 
 ## Semantics (plan Part 2 §4 — verified against the backend)

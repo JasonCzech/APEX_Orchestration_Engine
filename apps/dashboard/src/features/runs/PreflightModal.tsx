@@ -1,14 +1,14 @@
 /**
  * Pre-flight modal for phase-subset re-runs (plan Part 2 §4) — the single
- * checkpoint every entry point funnels through (PhaseRail kebab, runs-grid
- * row menu, run-detail header split button).
+ * checkpoint every entry point funnels through (runs-grid row menu,
+ * run-detail header split button).
  *
  * Warn-don't-block: blocked rows render as danger and a caption warns that
  * the server will reject at plan resolution, but Start stays enabled — the
  * backend plan_resolver is the authority.
  *
- * Also exports OverflowMenu, the small glass dropdown all three entry points
- * share (menu role, Escape/outside-click close, arrow-key focus).
+ * Also exports OverflowMenu, the small glass dropdown both entry points share
+ * (menu role, Escape/outside-click close, arrow-key focus).
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
@@ -186,7 +186,7 @@ function ReadinessItem({ row }: { row: ReadinessRow }) {
   )
 }
 
-/* ── OverflowMenu — shared glass dropdown for the three entry points ─────── */
+/* ── OverflowMenu — shared glass dropdown for the re-run entry points ────── */
 
 export interface OverflowMenuItem {
   label: string

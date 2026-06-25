@@ -49,22 +49,22 @@ describe('RunDetailPage', () => {
     )
   })
 
-  it('renders rail statuses, attempt badges, warning chips, and skipped styling', async () => {
+  it('renders phase progress without the duplicate pipeline context sidebar', async () => {
     server.use(pipelineDetailHandler())
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
 
-    const rail = await screen.findByRole('navigation', { name: 'Pipeline phases' })
-    const planning = within(rail).getByText('Test Planning').closest('a')
-    expect(planning).toHaveAttribute('data-status', 'succeeded')
-    expect(within(planning as HTMLElement).getByText('×2')).toBeInTheDocument()
-    expect(within(planning as HTMLElement).getByText('⚠ 1')).toBeInTheDocument()
-
-    const triage = within(rail).getByText('Env Triage').closest('a')
-    expect(triage).toHaveAttribute('data-status', 'skipped')
-    expect(triage?.className).toContain('skipped')
-
-    const reporting = within(rail).getByText('Reporting').closest('a')
-    expect(reporting).toHaveAttribute('data-status', 'running')
+    const progress = await screen.findByRole('group', { name: 'Phase progress' })
+    expect(screen.queryByRole('navigation', { name: 'Pipeline phases' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Pipeline context/i)).not.toBeInTheDocument()
+    expect(
+      within(progress).getByRole('button', { name: 'test_planning — succeeded (attempt 2)' }),
+    ).toBeInTheDocument()
+    expect(
+      within(progress).getByRole('button', { name: 'env_triage — skipped (attempt 1)' }),
+    ).toBeInTheDocument()
+    expect(
+      within(progress).getByRole('button', { name: 'reporting — running (attempt 1)' }),
+    ).toBeInTheDocument()
   })
 
   it('switches workspace tabs via ?tab=', async () => {
