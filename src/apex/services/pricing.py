@@ -9,35 +9,37 @@ from decimal import Decimal
 from typing import Any
 
 MODEL_PRICING_USD_PER_MTOK: dict[str, dict[str, Decimal]] = {
-    "claude-3-5-sonnet-latest": {
+    # Current Claude catalog (USD per million tokens). Cache reads bill at ~0.1x
+    # input; 5-minute cache writes at ~1.25x input.
+    "claude-opus-4-8": {
+        "input": Decimal("5.00"),
+        "output": Decimal("25.00"),
+        "cache_read": Decimal("0.50"),
+        "cache_creation": Decimal("6.25"),
+    },
+    "claude-opus-4-7": {
+        "input": Decimal("5.00"),
+        "output": Decimal("25.00"),
+        "cache_read": Decimal("0.50"),
+        "cache_creation": Decimal("6.25"),
+    },
+    "claude-sonnet-4-6": {
         "input": Decimal("3.00"),
         "output": Decimal("15.00"),
         "cache_read": Decimal("0.30"),
         "cache_creation": Decimal("3.75"),
     },
-    "claude-sonnet-4-20250514": {
-        "input": Decimal("3.00"),
-        "output": Decimal("15.00"),
-        "cache_read": Decimal("0.30"),
-        "cache_creation": Decimal("3.75"),
+    "claude-haiku-4-5": {
+        "input": Decimal("1.00"),
+        "output": Decimal("5.00"),
+        "cache_read": Decimal("0.10"),
+        "cache_creation": Decimal("1.25"),
     },
-    "claude-opus-4-20250514": {
-        "input": Decimal("15.00"),
-        "output": Decimal("75.00"),
-        "cache_read": Decimal("1.50"),
-        "cache_creation": Decimal("18.75"),
-    },
-    "claude-3-5-haiku-latest": {
-        "input": Decimal("0.80"),
-        "output": Decimal("4.00"),
-        "cache_read": Decimal("0.08"),
-        "cache_creation": Decimal("1.00"),
-    },
-    "claude-3-5-haiku-20241022": {
-        "input": Decimal("0.80"),
-        "output": Decimal("4.00"),
-        "cache_read": Decimal("0.08"),
-        "cache_creation": Decimal("1.00"),
+    "claude-fable-5": {
+        "input": Decimal("10.00"),
+        "output": Decimal("50.00"),
+        "cache_read": Decimal("1.00"),
+        "cache_creation": Decimal("12.50"),
     },
     "gpt-4o": {
         "input": Decimal("2.50"),

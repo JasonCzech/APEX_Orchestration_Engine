@@ -52,6 +52,10 @@ class PipelineConfigurable(BaseModel):
     prompt_overrides: dict[str, PromptOverride] = Field(default_factory=dict)
     pre_execution_context: list[str] = Field(default_factory=list)
     model_by_phase: dict[Phase, str] = Field(default_factory=dict)
+    # Agent backend selector (mirrors the engine selector). "stub" is the
+    # deterministic, offline default; "anthropic" wires a real LLM but only takes
+    # effect when an Anthropic key is configured (else it degrades to the stub).
+    agent_backend: str = "stub"
     limits: Limits = Field(default_factory=Limits)
 
     @classmethod

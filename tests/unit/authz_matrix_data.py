@@ -16,8 +16,11 @@ MIN_ROLE: dict[str, str] = {
     # ── system ──────────────────────────────────────────────────────────────
     "getSystemInfo": "viewer",
     # ── pipelines ───────────────────────────────────────────────────────────
+    "createPipelineRun": "operator",
     "listPipelines": "viewer",
     "getPipeline": "viewer",
+    "getPhasePromptReview": "viewer",
+    "patchPhasePromptReview": "operator",
     "resumeGate": "operator",
     "abortPipeline": "operator",
     # ── prompts ─────────────────────────────────────────────────────────────
@@ -125,4 +128,7 @@ BODY_OVERRIDES: dict[str, Any] = {
     # putHostMappings replaces the full mapping list — the body is a JSON array.
     "putHostMappings": [],
     "resumeGate": {"action": "approve"},
+    # createPipelineRun requires a non-empty title; provide one so operator/admin
+    # reach the handler (the exploding loopback stub then 5xxs — fine post-authz).
+    "createPipelineRun": {"title": "matrix-run"},
 }

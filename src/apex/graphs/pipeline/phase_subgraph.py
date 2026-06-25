@@ -53,6 +53,7 @@ from apex.services.prompts import (
     resolved_from_prompt_review,
     user_prompt_with_context,
 )
+from apex.settings import get_settings
 
 EVENT_SCHEMA_VERSION = 1
 
@@ -505,52 +506,318 @@ def _reporting_kpi_suffix(state: PipelineState) -> str:
     )
 
 
+def _stub_agent_body(
+    phase: Phase,
+    state: PipelineState,
+    config: RunnableConfig,
+    *,
+    warning: str | None = None,
+) -> JsonDict:
+    """Deterministic, offline agent stub (the default backend)."""
+    entry = _entry(state, phase)
+    attempt = _attempt(entry)
+    revise_count = int(entry.get("revise_count") or 0)
+    title = state.get("title") or "untitled run"
+    request = state.get("request") or "(no request provided)"
+    summary = f"[{phase.value}] stub result for '{title}': {request}"
+    instructions = entry.get("revise_instructions")
+    if instructions:
+        summary += f" (revised per: {instructions})"
+    if phase is Phase.REPORTING:
+        summary += _reporting_kpi_suffix(state)
+    digest = (
+        f"Deterministic stub reasoning for {phase.value} "
+        f"(attempt {attempt}, revision {revise_count})."
+    )
+    tool_call = ToolCallRecord(
+        id=f"{phase.value}-a{attempt}-r{revise_count}-stub-lookup",
+        tool=f"{phase.value}.stub_lookup",
+        args_preview={"title": title},
+        status="ok",
+        duration_ms=0,
+    ).model_dump(mode="json")
+    emit_event(
+        {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "type": "tool_call",
+            "phase": phase.value,
+            "id": tool_call["id"],
+            "tool": tool_call["tool"],
+            "status": tool_call["status"],
+        }
+    )
+    extra: dict[str, Any] = {}
+    if phase is Phase.SCRIPT_SCENARIO:
+        extra["load_test_spec"] = _script_scenario_load_test_spec(state, config, attempt)
+    if warning:
+        extra["warnings"] = [warning]
+    return _phase_update(
+        phase,
+        attempt,
+        status=PhaseStatus.RUNNING.value,
+        summary=summary,
+        reasoning_digest=digest,
+        tool_calls=[tool_call],
+        **extra,
+    )
+
+
+def _message_text(message: Any) -> str:
+    """Extract the text from an AIMessage whose content may be a string or, when
+    thinking is enabled, a list of content blocks (thinking + text)."""
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    parts: list[str] = []
+    for block in content or []:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+            parts.append(str(block["text"]))
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _compose_system(resolved: JsonDict) -> str:
+    system = str(resolved.get("system") or "").strip()
+    application = resolved.get("application")
+    app = str(application or "").strip()
+    if app:
+        system = f"{system}\n\n=== APPLICATION CONTEXT ===\n{app}" if system else app
+    return system or "You are an APEX analysis agent."
+
+
+def _context_packets_block(state: PipelineState) -> str:
+    packets = state.get("context_packets") or []
+    lines: list[str] = []
+    for packet in packets:
+        if not isinstance(packet, dict):
+            continue
+        title = str(packet.get("title") or packet.get("source") or "evidence")
+        line = f"- {title}"
+        summary = str(packet.get("summary") or "")
+        if summary:
+            line += f": {summary}"
+        ref = str(packet.get("ref") or "")
+        if ref:
+            line += f" ({ref})"
+        lines.append(line)
+    if not lines:
+        return ""
+    return "=== CONTEXT / EVIDENCE ===\n" + "\n".join(lines)
+
+
+def _compose_user(
+    state: PipelineState, phase: Phase, resolved: JsonDict, entry: JsonDict
+) -> str:
+    blocks: list[str] = []
+    user = str(resolved.get("user") or "").strip()
+    if user:
+        blocks.append(user)
+    packets = _context_packets_block(state)
+    if packets:
+        blocks.append(packets)
+    if phase is Phase.REPORTING:
+        suffix = _reporting_kpi_suffix(state).strip(" |").strip()
+        if suffix:
+            blocks.append(f"Execution results: {suffix}")
+    instructions = entry.get("revise_instructions")
+    if instructions:
+        blocks.append(f"Operator revision instructions: {instructions}")
+    return "\n\n".join(blocks) or "(no request provided)"
+
+
+def _build_agent_tools(settings: Any) -> list[Any]:
+    """The `fetch_results` tool when enabled with an allow-list, else no tools.
+
+    Deny-by-default: returns [] unless explicitly enabled, so the agent binds no
+    egress capability by default. Lazy-imports langchain so the stub path is clean.
+    """
+    if not settings.llm.fetch_tool_enabled or not settings.llm.fetch_allowed_hosts:
+        return []
+    from langchain_core.tools import tool
+
+    from apex.services.results_fetch import FetchError, fetch_results_text
+
+    @tool
+    def fetch_results(url: str) -> str:
+        """Fetch the contents at a results URL (an allow-listed host) so you can analyze it.
+
+        Use this when given a link to results/data you should read before reporting.
+        """
+        try:
+            return fetch_results_text(
+                url,
+                allowed_hosts=settings.llm.fetch_allowed_hosts,
+                allow_private=settings.llm.fetch_allow_private_hosts,
+                max_bytes=settings.llm.fetch_max_bytes,
+                timeout_s=settings.llm.fetch_timeout_s,
+            )
+        except FetchError as exc:
+            return f"error: {exc}"
+
+    return [fetch_results]
+
+
+def _accumulate_usage(acc: dict[str, Any], usage: Any) -> None:
+    """Sum LangChain usage_metadata across tool-loop iterations (tokens + details)."""
+    if not isinstance(usage, dict):
+        return
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        acc[key] = int(acc.get(key, 0)) + int(usage.get(key) or 0)
+    for detail_key in ("input_token_details", "output_token_details"):
+        source = usage.get(detail_key)
+        if isinstance(source, dict):
+            target = acc.setdefault(detail_key, {})
+            for name, value in source.items():
+                try:
+                    target[name] = int(target.get(name, 0)) + int(value or 0)
+                except (TypeError, ValueError):
+                    continue
+
+
+def _llm_agent_body(
+    phase: Phase,
+    state: PipelineState,
+    config: RunnableConfig,
+    cfg: PipelineConfigurable,
+    entry: JsonDict,
+    attempt: int,
+) -> JsonDict:
+    """Anthropic-backed agent. Reads the resolved prompt + context packets, calls the
+    model (optionally looping through the fetch tool), and records the model + usage so
+    finalize writes a costed AgentEvent."""
+    from langchain_anthropic import ChatAnthropic
+    from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
+    settings = get_settings()
+    model = cfg.model_by_phase.get(phase) or settings.llm.default_model
+    resolved = entry.get("resolved_prompt")
+    if not (isinstance(resolved, dict) and (resolved.get("system") or resolved.get("user"))):
+        _review, resolved = _review_source_for_phase(state, phase, cfg)
+    system_text = _compose_system(resolved)
+    user_text = _compose_user(state, phase, resolved, entry)
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": settings.llm.max_tokens,
+        "timeout": settings.llm.timeout_s,
+    }
+    if settings.llm.anthropic_api_key:
+        kwargs["api_key"] = settings.llm.anthropic_api_key
+    if settings.llm.adaptive_thinking:
+        kwargs["thinking"] = {"type": "adaptive"}
+    llm = ChatAnthropic(**kwargs)
+
+    tools = _build_agent_tools(settings)
+    tools_by_name = {tool.name: tool for tool in tools}
+    runnable = llm.bind_tools(tools) if tools else llm
+
+    messages: list[Any] = [SystemMessage(content=system_text), HumanMessage(content=user_text)]
+    usage: dict[str, Any] = {}
+    tool_calls_record: list[JsonDict] = []
+    response: Any = None
+    max_iters = max(1, settings.llm.fetch_max_tool_iters) if tools else 1
+    for _ in range(max_iters):
+        response = runnable.invoke(messages)
+        messages.append(response)
+        _accumulate_usage(usage, getattr(response, "usage_metadata", None))
+        calls = getattr(response, "tool_calls", None) or []
+        for call in calls:
+            record = ToolCallRecord(
+                id=str(call.get("id") or f"{phase.value}-a{attempt}-tool{len(tool_calls_record)}"),
+                tool=str(call.get("name") or "tool"),
+                args_preview=dict(call.get("args") or {}),
+                status="ok",
+            ).model_dump(mode="json")
+            tool_calls_record.append(record)
+            emit_event(
+                {
+                    "schema_version": EVENT_SCHEMA_VERSION,
+                    "type": "tool_call",
+                    "phase": phase.value,
+                    "id": record["id"],
+                    "tool": record["tool"],
+                    "status": record["status"],
+                }
+            )
+        if not calls:
+            break
+        for call in calls:
+            tool = tools_by_name.get(call.get("name"))
+            try:
+                output = (
+                    tool.invoke(call.get("args") or {})
+                    if tool is not None
+                    else f"error: unknown tool {call.get('name')!r}"
+                )
+            except Exception as exc:  # noqa: BLE001 — tool failures feed back to the model
+                output = f"error: {exc}"
+            messages.append(
+                ToolMessage(content=str(output), tool_call_id=str(call.get("id") or ""))
+            )
+
+    summary = _message_text(response) or f"[{phase.value}] (no text returned)"
+    emit_event(
+        {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "type": "agent_message",
+            "phase": phase.value,
+            "model": model,
+            "chars": len(summary),
+        }
+    )
+    extra: dict[str, Any] = {}
+    if phase is Phase.SCRIPT_SCENARIO:
+        extra["load_test_spec"] = _script_scenario_load_test_spec(state, config, attempt)
+    return _phase_update(
+        phase,
+        attempt,
+        status=PhaseStatus.RUNNING.value,
+        summary=summary,
+        reasoning_digest=f"LLM reasoning for {phase.value} via {model} (attempt {attempt}).",
+        tool_calls=tool_calls_record,
+        model=model,
+        usage_metadata=usage,
+        **extra,
+    )
+
+
 def _make_agent(phase: Phase):
     def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
-        entry = _entry(state, phase)
-        attempt = _attempt(entry)
-        revise_count = int(entry.get("revise_count") or 0)
-        title = state.get("title") or "untitled run"
-        request = state.get("request") or "(no request provided)"
-        summary = f"[{phase.value}] stub result for '{title}': {request}"
-        instructions = entry.get("revise_instructions")
-        if instructions:
-            summary += f" (revised per: {instructions})"
-        if phase is Phase.REPORTING:
-            summary += _reporting_kpi_suffix(state)
-        digest = (
-            f"Deterministic stub reasoning for {phase.value} "
-            f"(attempt {attempt}, revision {revise_count})."
-        )
-        tool_call = ToolCallRecord(
-            id=f"{phase.value}-a{attempt}-r{revise_count}-stub-lookup",
-            tool=f"{phase.value}.stub_lookup",
-            args_preview={"title": title},
-            status="ok",
-            duration_ms=0,
-        ).model_dump(mode="json")
-        emit_event(
-            {
-                "schema_version": EVENT_SCHEMA_VERSION,
-                "type": "tool_call",
-                "phase": phase.value,
-                "id": tool_call["id"],
-                "tool": tool_call["tool"],
-                "status": tool_call["status"],
-            }
-        )
-        extra: dict[str, Any] = {}
-        if phase is Phase.SCRIPT_SCENARIO:
-            extra["load_test_spec"] = _script_scenario_load_test_spec(state, config, attempt)
-        return _phase_update(
-            phase,
-            attempt,
-            status=PhaseStatus.RUNNING.value,
-            summary=summary,
-            reasoning_digest=digest,
-            tool_calls=[tool_call],
-            **extra,
-        )
+        cfg = PipelineConfigurable.from_config(config)
+        if cfg.agent_backend == "anthropic":
+            entry = _entry(state, phase)
+            attempt = _attempt(entry)
+            if not get_settings().llm.anthropic_api_key:
+                # Backend requested but unconfigured: degrade to the stub so a
+                # misconfigured run still produces output instead of crashing.
+                return _stub_agent_body(
+                    phase,
+                    state,
+                    config,
+                    warning="agent_backend=anthropic but no Anthropic API key configured; "
+                    "used the deterministic stub",
+                )
+            try:
+                return _llm_agent_body(phase, state, config, cfg, entry, attempt)
+            except Exception as exc:  # noqa: BLE001 — surface as a failed phase, not a crash
+                emit_event(
+                    {
+                        "schema_version": EVENT_SCHEMA_VERSION,
+                        "type": "agent_error",
+                        "phase": phase.value,
+                        "error": str(exc),
+                    }
+                )
+                return _phase_update(
+                    phase,
+                    attempt,
+                    status=PhaseStatus.FAILED.value,
+                    summary=f"[{phase.value}] LLM agent error",
+                    reasoning_digest=str(exc),
+                    errors=[f"LLM agent error: {exc}"],
+                )
+        return _stub_agent_body(phase, state, config)
 
     return agent
 
@@ -733,6 +1000,7 @@ def _make_finalize(phase: Phase):
         # Usage analytics (M6): best-effort, never fails the run.
         usage_events.record_phase_usage_sync(phase.value, str(status), config)
         usage_metadata = entry.get("usage_metadata")
+        recorded_model = entry.get("model")
         usage_events.record_agent_event_sync(
             phase=phase.value,
             status=str(status),
@@ -741,6 +1009,7 @@ def _make_finalize(phase: Phase):
             latency_ms=max(0, round(duration_s * 1000)) if duration_s is not None else None,
             usage=usage_metadata if isinstance(usage_metadata, dict) else None,
             agent_name=f"{phase.value}.worker",
+            model=recorded_model if isinstance(recorded_model, str) else None,
         )
         update = _phase_update(
             phase,

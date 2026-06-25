@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "langgraph>=1.0",
+    "langchain-anthropic>=0.3",
     "fastapi>=0.115",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",

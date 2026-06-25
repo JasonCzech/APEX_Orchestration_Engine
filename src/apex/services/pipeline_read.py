@@ -176,6 +176,12 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
     }
 
 
+def _auto_gates(phases: list[str] | None) -> JsonDict:
+    """Auto (un-gated) policy for the selected phases — the default for headless runs."""
+    targets = phases or [phase.value for phase in PHASE_ORDER]
+    return {name: {"prompt_review": "auto", "output_review": "auto"} for name in targets}
+
+
 # ── Service ──────────────────────────────────────────────────────────────────
 
 
@@ -184,6 +190,78 @@ class PipelineReadService:
 
     def __init__(self, client: LangGraphClientLike) -> None:
         self._client = client
+
+    async def start_run(
+        self,
+        *,
+        title: str,
+        request: str = "",
+        project_id: str | None = None,
+        app_id: str | None = None,
+        phases: list[str] | None = None,
+        gates: JsonDict | None = None,
+        agent_backend: str | None = None,
+        model_by_phase: JsonDict | None = None,
+        external_results: JsonDict | None = None,
+        context_packets: list[JsonDict] | None = None,
+    ) -> JsonDict:
+        """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
+
+        Convenience entrypoint for external clients (e.g. a results-analysis dashboard):
+        wraps thread-create + run-start over the loopback API so callers don't drive the
+        raw LangGraph surface. Gates default to "auto" for the selected phases so an
+        unattended analysis run completes without an operator resuming gates; pass an
+        explicit `gates` map for interactive runs. Raises ValueError on unknown phases.
+        """
+        if phases:
+            known = {phase.value for phase in PHASE_ORDER}
+            unknown = sorted(name for name in phases if name not in known)
+            if unknown:
+                raise ValueError(f"unknown phase(s): {unknown}")
+
+        metadata: JsonDict = {"title": title}
+        if project_id:
+            metadata["project_id"] = project_id
+        if app_id:
+            metadata["app_id"] = app_id
+        thread = await self._client.threads.create(metadata=metadata)
+        thread_id = thread["thread_id"]
+
+        configurable: JsonDict = {}
+        if project_id:
+            configurable["project_id"] = project_id
+        if app_id:
+            configurable["app_id"] = app_id
+        if phases:
+            configurable["phases"] = phases
+        if agent_backend:
+            configurable["agent_backend"] = agent_backend
+        if model_by_phase:
+            configurable["model_by_phase"] = model_by_phase
+        resolved_gates = gates if gates is not None else _auto_gates(phases)
+        if resolved_gates:
+            configurable["gates"] = resolved_gates
+
+        run_input: JsonDict = {"title": title, "request": request}
+        if external_results:
+            run_input["external_results"] = external_results
+        if context_packets:
+            run_input["context_packets"] = context_packets
+
+        run = await self._client.runs.create(
+            thread_id,
+            PIPELINE_GRAPH_ID,
+            input=run_input,
+            config={
+                "configurable": configurable,
+                "recursion_limit": recommended_recursion_limit(Limits()),
+            },
+        )
+        return {
+            "thread_id": thread_id,
+            "run_id": run["run_id"],
+            "stream_url": f"/runs/{run['run_id']}/stream",
+        }
 
     async def list_pipelines(
         self,

@@ -16,6 +16,9 @@ from apex.domain.pipeline import (
     PHASE_ORDER,
     PHASE_PREREQUISITES,
     TERMINAL_PHASE_STATUSES,
+    ContextPacket,
+    ExternalResults,
+    Phase,
     PhaseResult,
     PhaseStatus,
 )
@@ -36,15 +39,65 @@ def _prompt_variables(state: PipelineState) -> dict[str, str]:
     }
 
 
+def _external_seed(external: JsonDict) -> tuple[JsonDict, JsonDict]:
+    """Synthetic succeeded-execution result + context packet from external results.
+
+    Maps the ExternalResults payload onto the execution phase's test_summary shape so
+    the reporting phase reads externally-supplied results exactly as it reads a real
+    engine run. The packet gives the analysis agent the source link/notes as evidence.
+    """
+    results = ExternalResults.model_validate(external)
+    test_summary = {
+        "engine": results.engine or results.source,
+        "passed": True if results.passed is None else bool(results.passed),
+        "kpis": dict(results.kpis),
+        "sla_breaches": [],
+        "notes": results.notes,
+    }
+    summary_text = results.summary or f"External results supplied by {results.source}"
+    execution_entry = {
+        **PhaseResult(
+            phase=Phase.EXECUTION,
+            status=PhaseStatus.SUCCEEDED,
+            attempt=1,
+            summary=summary_text,
+        ).as_state(),
+        "test_summary": test_summary,
+        "external": True,
+        "source_uri": results.uri,
+    }
+    packet = ContextPacket(
+        id="external-results",
+        source=results.source,
+        title="External results",
+        summary=summary_text,
+        ref=results.uri,
+    ).model_dump(mode="json")
+    return execution_entry, packet
+
+
 def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     """Resolve the run plan from config, validate prerequisites, seed phase entries."""
     cfg = PipelineConfigurable.from_config(config)
     selected = cfg.selected_phases()
     if not selected:
         raise ValueError("Pipeline phase plan is empty")
-    existing = state.get("phase_results") or {}
-
     selected_set = set(selected)  # canonical order => membership implies "runs earlier"
+    existing = dict(state.get("phase_results") or {})
+
+    # Externally-supplied results seed a succeeded execution entry so analysis-only
+    # runs (reporting/postmortem) satisfy the execution prerequisite honestly, without
+    # the caller forging internal phase state. Skipped if execution is itself selected
+    # or already succeeded on this thread.
+    external = state.get("external_results")
+    external_execution: JsonDict | None = None
+    external_packet: JsonDict | None = None
+    if external and Phase.EXECUTION not in selected_set:
+        exec_current = existing.get(Phase.EXECUTION.value) or {}
+        if exec_current.get("status") != PhaseStatus.SUCCEEDED.value:
+            external_execution, external_packet = _external_seed(external)
+            existing[Phase.EXECUTION.value] = external_execution
+
     for phase in selected:
         for prereq in PHASE_PREREQUISITES[phase]:
             if prereq in selected_set:
@@ -57,6 +110,8 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
             )
 
     seeded: dict[str, JsonDict] = {}
+    if external_execution is not None:
+        seeded[Phase.EXECUTION.value] = external_execution
     for phase in selected:
         current = existing.get(phase.value)
         if current and current.get("status") in TERMINAL_PHASE_STATUSES:
@@ -96,6 +151,8 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     }
     if seeded_reviews:
         update["prompt_reviews"] = seeded_reviews
+    if external_packet is not None:
+        update["context_packets"] = [external_packet]
     return update
 
 

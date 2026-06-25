@@ -11,11 +11,11 @@ from apex.services.usage import normalize_usage_metadata
 
 
 def test_compute_cost_subtracts_cached_tokens_from_full_input_rate() -> None:
-    # claude-sonnet-4 per-MTok: input 3.00, output 15.00, cache_read 0.30, cache_creation 3.75.
+    # claude-sonnet-4-6 per-MTok: input 3.00, output 15.00, cache_read 0.30, cache_creation 3.75.
     # input_tokens INCLUDES the cached tokens, so only the uncached remainder bills at
     # the full input rate: (1000-50-20)*3 + 100*15 + 50*0.30 + 20*3.75 = 4380 / 1e6.
     cost, snapshot = compute_cost(
-        "claude-sonnet-4-20250514",
+        "claude-sonnet-4-6",
         {
             "input_tokens": 1000,
             "output_tokens": 100,
@@ -45,7 +45,7 @@ def test_compute_cost_unknown_or_missing_model_returns_none() -> None:
 
 def test_compute_cost_never_negative_on_malformed_counts() -> None:
     cost, _ = compute_cost(
-        "claude-3-5-haiku-latest",
+        "claude-haiku-4-5",
         {"input_tokens": -10, "output_tokens": -5, "cache_read_tokens": 999},
     )
     assert cost is not None

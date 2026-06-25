@@ -320,16 +320,22 @@ def record_agent_event_sync(
     latency_ms: int | None,
     usage: Mapping[str, Any] | None = None,
     agent_name: str | None = None,
+    model: str | None = None,
 ) -> None:
-    """Sync bridge for graph nodes: one row per phase/agent invocation."""
+    """Sync bridge for graph nodes: one row per phase/agent invocation.
+
+    `model` is the model the agent actually used (recorded by the LLM agent). When
+    omitted (e.g. the deterministic stub) it falls back to the per-phase config
+    override so behavior is unchanged for stub runs.
+    """
     try:
         configurable: dict[str, Any] = dict((config or {}).get("configurable") or {})
         cfg = PipelineConfigurable.from_config(config)
-        model: str | None = None
-        for key, value in cfg.model_by_phase.items():
-            if str(key) == phase:
-                model = value
-                break
+        if model is None:
+            for key, value in cfg.model_by_phase.items():
+                if str(key) == phase:
+                    model = value
+                    break
         asyncio.run(
             record_agent_event(
                 thread_id=str(configurable.get("thread_id"))
