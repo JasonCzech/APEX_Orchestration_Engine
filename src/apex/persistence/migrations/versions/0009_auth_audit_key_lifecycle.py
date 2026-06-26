@@ -22,7 +22,7 @@ def _is_postgres() -> bool:
     return op.get_bind().dialect.name == "postgresql"
 
 
-def _json_type() -> sa.TypeEngine[Any]:
+def _json_type() -> sa.types.TypeEngine[Any]:
     return sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")
 
 
