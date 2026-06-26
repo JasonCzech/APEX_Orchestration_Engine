@@ -2,13 +2,18 @@ from typing import Any
 
 import pytest
 
-from apex.app.security import RateLimitMiddleware, SecurityHeadersMiddleware
+from apex.app.security import AuthAuditMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
 from apex.settings import RateLimitSettings, SecurityHeadersSettings
 
 
 async def ok_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
     await send({"type": "http.response.start", "status": 200, "headers": []})
     await send({"type": "http.response.body", "body": b"ok"})
+
+
+async def unauthorized_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+    await send({"type": "http.response.start", "status": 401, "headers": []})
+    await send({"type": "http.response.body", "body": b"no"})
 
 
 async def call_app(app: Any, *, path: str = "/v1/system/info", key: str = "k") -> list[dict]:
@@ -118,6 +123,63 @@ def test_rate_limit_rejects_new_bucket_after_cap() -> None:
 
     assert app._check(first, now=0.0) is None
     assert app._check(second, now=0.1) == 60
+
+
+@pytest.mark.asyncio
+async def test_auth_audit_locks_out_repeated_401s(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def capture_audit(event: Any) -> None:
+        return None
+
+    monkeypatch.setattr("apex.app.security.append_audit_event_best_effort", capture_audit)
+    app = AuthAuditMiddleware(
+        unauthorized_app,
+        RateLimitSettings(auth_failures=2, auth_failure_window_s=60, auth_lockout_s=30),
+    )
+
+    first = await call_app(app, key="bad-key")
+    second = await call_app(app, key="bad-key")
+    third = await call_app(app, key="bad-key")
+
+    assert first[0]["status"] == 401
+    assert second[0]["status"] == 401
+    assert third[0]["status"] == 429
+    assert (b"retry-after", b"29") in third[0]["headers"] or (
+        b"retry-after",
+        b"30",
+    ) in third[0]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_auth_audit_success_resets_failed_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def capture_audit(event: Any) -> None:
+        return None
+
+    statuses = [401, 200, 401, 401]
+
+    async def app_under_test(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        status = statuses.pop(0)
+        await send({"type": "http.response.start", "status": status, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    monkeypatch.setattr("apex.app.security.append_audit_event_best_effort", capture_audit)
+    app = AuthAuditMiddleware(
+        app_under_test,
+        RateLimitSettings(auth_failures=2, auth_failure_window_s=60, auth_lockout_s=30),
+    )
+
+    assert (await call_app(app, key="flaky"))[0]["status"] == 401
+    assert (await call_app(app, key="flaky"))[0]["status"] == 200
+    assert (await call_app(app, key="flaky"))[0]["status"] == 401
+    assert (await call_app(app, key="flaky"))[0]["status"] == 401
+    assert app._auth_lockout_retry_after(  # noqa: SLF001 - focused middleware invariant
+        {
+            "type": "http",
+            "path": "/v1/system/info",
+            "headers": [(b"x-api-key", b"flaky")],
+            "client": ("203.0.113.10", 12345),
+        },
+        now=0,
+    )
 
 
 @pytest.mark.asyncio

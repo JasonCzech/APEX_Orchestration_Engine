@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.app.dependencies import CurrentIdentity, require_role
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.persistence.db import get_session
 from apex.persistence.models import Draft
@@ -99,6 +99,7 @@ async def list_drafts(
     repo: DraftsRepo,
     project: Annotated[str | None, Query(description="Filter to one project")] = None,
 ) -> list[DraftRead]:
+    ensure_scope(identity, project_id=project)
     drafts = await repo.list_all(project_id=project)
     return [_read_model(draft) for draft in drafts if _visible(identity, draft)]
 
@@ -107,11 +108,7 @@ async def list_drafts(
 async def create_draft(
     body: DraftCreateRequest, identity: OperatorIdentity, repo: DraftsRepo
 ) -> DraftRead:
-    if body.project_id is not None and not identity.allows_project(body.project_id):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Project '{body.project_id}' is outside this consumer's scopes",
-        )
+    ensure_scope(identity, project_id=body.project_id)
     draft = await repo.create(
         title=body.title,
         project_id=body.project_id,

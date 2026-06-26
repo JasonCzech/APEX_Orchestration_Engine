@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from langgraph_sdk.errors import NotFoundError
 from pydantic import BaseModel, Field
 
-from apex.app.dependencies import CurrentIdentity, require_role
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.app.errors import problem
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
@@ -33,6 +33,14 @@ ThreadStatusFilter = Literal["idle", "busy", "interrupted", "error"]
 def get_pipeline_read_service(request: Request) -> PipelineReadService:
     """Per-request service over the loopback client, forwarding the caller's key."""
     return PipelineReadService(loopback_client(extract_api_key(request.headers)))
+
+
+def _pipeline_read_service_after_scope(request: Request) -> PipelineReadService:
+    overrides: Any = getattr(request.app, "dependency_overrides", {})
+    override = overrides.get(get_pipeline_read_service)
+    if override is not None:
+        return override()
+    return get_pipeline_read_service(request)
 
 
 PipelineService = Annotated[PipelineReadService, Depends(get_pipeline_read_service)]
@@ -191,8 +199,8 @@ class PhasePromptReviewUpdate(BaseModel):
 async def create_pipeline_run(
     body: StartPipelineRequest,
     identity: CurrentIdentity,
-    service: PipelineService,
     documents: DocumentsRepo,
+    request: Request,
 ) -> Any:
     """Create a thread and launch a pipeline run; returns the run id + SSE stream URL.
 
@@ -201,11 +209,8 @@ async def create_pipeline_run(
     raw LangGraph /threads + /runs API. `document_ids` are resolved into context packets
     (scoped per consumer) and merged with any inline `context_packets`.
     """
-    if body.project_id is not None and not identity.allows_project(body.project_id):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Project '{body.project_id}' is outside this consumer's scopes",
-        )
+    ensure_scope(identity, project_id=body.project_id, app_id=body.app_id)
+    service = _pipeline_read_service_after_scope(request)
     context_packets = list(body.context_packets or [])
     if body.document_ids:
         context_packets += await _documents_to_packets(documents, identity, body.document_ids)
@@ -230,13 +235,15 @@ async def create_pipeline_run(
 @router.get("", operation_id="listPipelines", response_model=PipelineListResponse)
 async def list_pipelines(
     identity: CurrentIdentity,
-    service: PipelineService,
+    request: Request,
     project: str | None = None,
     status: ThreadStatusFilter | None = None,
     q: str | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Any:
+    ensure_scope(identity, project_id=project)
+    service = _pipeline_read_service_after_scope(request)
     items = await service.list_pipelines(
         project=project, status=status, q=q, limit=limit, offset=offset
     )

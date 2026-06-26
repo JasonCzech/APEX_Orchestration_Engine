@@ -41,7 +41,7 @@ from apex.auth.service import extract_api_key, get_default_resolver, hash_api_ke
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.models import AgentEvent, UsageEvent
 from apex.services.pricing import compute_cost
-from apex.settings import get_settings
+from apex.settings import database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -73,7 +73,12 @@ async def record_usage_event(
     try:
         # Throwaway engine per call: callers include graph worker threads with
         # short-lived event loops, so pooled connections must not outlive them.
-        engine_db = create_async_engine(get_settings().database.uri, poolclass=NullPool)
+        database = get_settings().database
+        engine_db = create_async_engine(
+            database.uri,
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
         try:
             session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
             await _insert_usage_event(
@@ -287,7 +292,12 @@ async def record_agent_event(
         if finish_reason:
             extra["finish_reason"] = finish_reason
     try:
-        engine_db = create_async_engine(get_settings().database.uri, poolclass=NullPool)
+        database = get_settings().database
+        engine_db = create_async_engine(
+            database.uri,
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
         try:
             session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
             await _insert_agent_event(

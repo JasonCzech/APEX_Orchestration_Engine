@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from apex.settings import get_settings
+from apex.settings import database_ssl_connect_args, get_settings
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -25,10 +25,9 @@ def get_engine() -> AsyncEngine:
                 max_overflow=database.max_overflow,
                 pool_recycle=database.pool_recycle_s,
             )
-            url = make_url(database.uri)
-            ssl_mode = database.ssl_mode or str(url.query.get("sslmode") or "")
-            if ssl_mode.lower() in {"require", "verify-ca", "verify-full"}:
-                kwargs["connect_args"] = {"ssl": True}
+            connect_args = database_ssl_connect_args(database.uri, database.ssl_mode)
+            if connect_args:
+                kwargs["connect_args"] = connect_args
         _engine = create_async_engine(database.uri, **kwargs)
     return _engine
 

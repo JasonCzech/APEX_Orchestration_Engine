@@ -18,10 +18,26 @@ async def get_current_identity(request: Request) -> ConsumerIdentity:
         raise HTTPException(status_code=503, detail="API key store is unavailable") from exc
     if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    request.state.identity = identity
     return identity
 
 
 CurrentIdentity = Annotated[ConsumerIdentity, Depends(get_current_identity)]
+
+
+def ensure_scope(
+    identity: ConsumerIdentity,
+    *,
+    project_id: str | None = None,
+    app_id: str | None = None,
+) -> None:
+    if project_id is None:
+        return
+    if not identity.allows_scope(project_id=project_id, app_id=app_id):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Project '{project_id}' is outside this consumer's scopes",
+        )
 
 
 def require_role(minimum: Role) -> Callable[..., Awaitable[ConsumerIdentity]]:
@@ -50,13 +66,7 @@ def require_scope(
     """
 
     async def dependency(identity: CurrentIdentity) -> ConsumerIdentity:
-        if project_id is None:
-            return identity
-        if not identity.allows_scope(project_id=project_id, app_id=app_id):
-            raise HTTPException(
-                status_code=403,
-                detail=f"Project '{project_id}' is outside this consumer's scopes",
-            )
+        ensure_scope(identity, project_id=project_id, app_id=app_id)
         return identity
 
     return dependency

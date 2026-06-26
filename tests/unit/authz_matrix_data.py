@@ -111,6 +111,12 @@ MIN_ROLE: dict[str, str] = {
     "getHostMappings": "admin",
     "putHostMappings": "admin",
     "testConnection": "admin",
+    # ── /admin/compliance (admin-only surface) ──────────────────────────────
+    "verifyAuditChain": "admin",
+    "exportAuditJsonl": "admin",
+    "exportAuditCef": "admin",
+    "getAuditRetention": "admin",
+    "pruneAuditRetention": "admin",
 }
 
 SCOPE: dict[str, str] = {
@@ -207,6 +213,12 @@ SCOPE: dict[str, str] = {
     "getHostMappings": "admin_scope",
     "putHostMappings": "admin_scope",
     "testConnection": "admin_scope",
+    # ── /admin/compliance (admin-only surface) ──────────────────────────────
+    "verifyAuditChain": "admin_scope",
+    "exportAuditJsonl": "admin_scope",
+    "exportAuditCef": "admin_scope",
+    "getAuditRetention": "admin_scope",
+    "pruneAuditRetention": "admin_scope",
 }
 
 # Per-operation path-parameter values where the generic synthetic id would not
@@ -229,4 +241,61 @@ BODY_OVERRIDES: dict[str, Any] = {
     # createPipelineRun requires a non-empty title; provide one so operator/admin
     # reach the handler (the exploding loopback stub then 5xxs — fine post-authz).
     "createPipelineRun": {"title": "matrix-run"},
+}
+
+OUT_OF_SCOPE_PROJECT = "proj-matrix-other"
+
+# Scope-denial cases for operations where the caller can supply the project in
+# the request itself. Resource-owner checks that require loading a row still live
+# in router-specific tests and return 404 to avoid existence leaks.
+SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
+    "getAgentAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "getUsageAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "listApplications": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "createApplication": {
+        "json": {"project_id": OUT_OF_SCOPE_PROJECT, "name": "matrix-app"}
+    },
+    "listContextEvidence": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "createContextSummary": {
+        "json": {"subject": "matrix-summary", "project_id": OUT_OF_SCOPE_PROJECT}
+    },
+    "listDocuments": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "uploadDocument": {
+        "data": {"project_id": OUT_OF_SCOPE_PROJECT},
+        "files": {"file": ("matrix.txt", b"scope matrix", "text/plain")},
+    },
+    "listDrafts": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "createDraft": {"json": {"title": "matrix-draft", "project_id": OUT_OF_SCOPE_PROJECT}},
+    "searchLogs": {
+        "json": {"query": {"filters": {"project_id": OUT_OF_SCOPE_PROJECT}}}
+    },
+    "listPipelines": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "createPipelineRun": {
+        "json": {"title": "matrix-run", "project_id": OUT_OF_SCOPE_PROJECT}
+    },
+    "listSavedQueries": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "createSavedQuery": {
+        "json": {
+            "name": "matrix-query",
+            "provider": "jira",
+            "query": "project = PHX",
+            "project_id": OUT_OF_SCOPE_PROJECT,
+        }
+    },
+    "createConsumer": {
+        "json": {
+            "name": "matrix-child",
+            "consumer_type": "headless",
+            "role": "viewer",
+            "scopes": [{"project_id": OUT_OF_SCOPE_PROJECT}],
+        }
+    },
+    "createConnection": {
+        "json": {
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "matrix-connection",
+            "project_id": OUT_OF_SCOPE_PROJECT,
+        }
+    },
 }

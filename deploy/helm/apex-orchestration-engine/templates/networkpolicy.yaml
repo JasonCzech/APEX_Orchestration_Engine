@@ -28,6 +28,9 @@ spec:
         - { port: 53, protocol: UDP }
         - { port: 53, protocol: TCP }
     {{- end }}
+    {{- with .Values.networkPolicy.egress.rules }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
     {{- with .Values.networkPolicy.egress.to }}
     - to:
         {{- toYaml . | nindent 8 }}

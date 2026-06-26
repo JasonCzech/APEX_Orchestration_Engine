@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
-from apex.settings import ApexSettings
+from apex.settings import ApexSettings, database_ssl_connect_args
 
 
 class CleanEnvSettings(ApexSettings):
@@ -120,3 +120,47 @@ def test_locked_down_env_rejects_missing_api_key_hash_pepper(
 
     with pytest.raises(ValidationError, match="api_key_hash_pepper"):
         CleanEnvSettings()
+
+
+def test_locked_down_env_rejects_disabled_security_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv(
+        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
+    )
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_SECURITY_HEADERS__ENABLED", "false")
+
+    with pytest.raises(ValidationError, match="security_headers.enabled"):
+        CleanEnvSettings()
+
+
+def test_locked_down_env_rejects_disabled_hsts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv(
+        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
+    )
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_SECURITY_HEADERS__HSTS_MAX_AGE_S", "0")
+
+    with pytest.raises(ValidationError, match="hsts_max_age_s"):
+        CleanEnvSettings()
+
+
+def test_database_ssl_connect_args_defaults_remote_postgres_to_ssl() -> None:
+    assert database_ssl_connect_args("postgresql+asyncpg://u:p@db.example.com:5432/x", None) == {
+        "ssl": True
+    }
+    assert database_ssl_connect_args("postgresql+asyncpg://u:p@localhost:5432/x", None) == {}
+    assert (
+        database_ssl_connect_args(
+            "postgresql+asyncpg://u:p@db.example.com:5432/x",
+            "disable",
+        )
+        == {}
+    )

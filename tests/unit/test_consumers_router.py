@@ -2,8 +2,10 @@
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -68,6 +70,9 @@ class FakeConsumersRepository:
             return None
         return consumer
 
+    async def get_for_update(self, consumer_id: str) -> ApiConsumer | None:
+        return await self.get(consumer_id)
+
     async def get_by_name(self, name: str) -> ApiConsumer | None:
         return next((c for c in self.rows.values() if c.name == name), None)
 
@@ -126,6 +131,29 @@ class FakeConsumersRepository:
         consumer = self.rows.get(consumer_id)
         if consumer is None:
             return None
+        return await self.update_existing(
+            consumer,
+            name=name,
+            role=role,
+            enabled=enabled,
+            scopes=scopes,
+            expires_at=expires_at,
+            revoked_at=revoked_at,
+            updated_by=updated_by,
+        )
+
+    async def update_existing(
+        self,
+        consumer: ApiConsumer,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+        enabled: bool | None = None,
+        scopes: Sequence[ScopeRef] | None = None,
+        expires_at: datetime | None = None,
+        revoked_at: datetime | None = None,
+        updated_by: str | None = None,
+    ) -> ApiConsumer:
         if name is not None:
             consumer.name = name
         if role is not None:
@@ -226,6 +254,17 @@ def make_client(repo: FakeConsumersRepository, identity: ConsumerIdentity = ADMI
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def audit_events(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    events: list[Any] = []
+
+    async def capture(event: Any) -> None:
+        events.append(event)
+
+    monkeypatch.setattr("apex.routers.consumers.append_audit_event_best_effort", capture)
+    return events
+
+
 CREATE_BODY = {
     "name": "dashboard-ui",
     "consumer_type": "dashboard",
@@ -234,7 +273,9 @@ CREATE_BODY = {
 }
 
 
-def test_create_returns_raw_key_exactly_once_and_stores_only_hash() -> None:
+def test_create_returns_raw_key_exactly_once_and_stores_only_hash(
+    audit_events: list[Any],
+) -> None:
     repo = FakeConsumersRepository()
     with make_client(repo) as client:
         response = client.post("/v1/admin/consumers", json=CREATE_BODY)
@@ -255,6 +296,9 @@ def test_create_returns_raw_key_exactly_once_and_stores_only_hash() -> None:
         assert "api_key" not in read.json()
         listing = client.get("/v1/admin/consumers")
         assert all("api_key" not in row for row in listing.json())
+    assert [(event.action, event.resource_id) for event in audit_events] == [
+        ("consumer.create", body["id"])
+    ]
 
 
 def test_create_duplicate_name_conflicts() -> None:
@@ -264,7 +308,7 @@ def test_create_duplicate_name_conflicts() -> None:
         assert client.post("/v1/admin/consumers", json=CREATE_BODY).status_code == 409
 
 
-def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
+def test_rotate_replaces_hash_and_returns_new_key_once(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     with make_client(repo) as client:
         created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
@@ -286,6 +330,10 @@ def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
         assert old_key.revoked_at is not None
         assert len(repo.rows[created["id"]].keys) == 2
         assert repo.rows[created["id"]].keys[-1].rotated_from_id == old_key.id
+    assert [event.action for event in audit_events] == [
+        "consumer.create",
+        "consumer.rotate_key",
+    ]
 
 
 def test_rotate_with_grace_keeps_old_key_temporarily() -> None:
@@ -321,7 +369,7 @@ def test_rotate_unknown_consumer_404() -> None:
         assert client.post("/v1/admin/consumers/nope/rotate").status_code == 404
 
 
-def test_update_role_scopes_and_enabled() -> None:
+def test_update_role_scopes_and_enabled(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     with make_client(repo) as client:
         created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
@@ -335,6 +383,7 @@ def test_update_role_scopes_and_enabled() -> None:
         assert body["enabled"] is False
         assert body["scopes"] == [{"project_id": "proj-b", "app_id": None}]
         assert body["updated_by"] == ADMIN.consumer_id
+    assert [event.action for event in audit_events] == ["consumer.create", "consumer.update"]
 
 
 def test_update_can_revoke_consumer() -> None:
@@ -349,7 +398,7 @@ def test_update_can_revoke_consumer() -> None:
         assert response.json()["revoked_at"] is not None
 
 
-def test_scoped_admin_cannot_create_unscoped_admin() -> None:
+def test_scoped_admin_cannot_create_unscoped_admin(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     with make_client(repo, identity=SCOPED_ADMIN) as client:
         response = client.post(
@@ -357,9 +406,12 @@ def test_scoped_admin_cannot_create_unscoped_admin() -> None:
             json={"name": "platform", "consumer_type": "headless", "role": "admin", "scopes": []},
         )
     assert response.status_code == 403
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.create", "denied", "Scoped admins cannot grant platform admin")
+    ]
 
 
-def test_scoped_admin_cannot_grant_out_of_scope_project() -> None:
+def test_scoped_admin_cannot_grant_out_of_scope_project(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     with make_client(repo, identity=SCOPED_ADMIN) as client:
         response = client.post(
@@ -372,9 +424,12 @@ def test_scoped_admin_cannot_grant_out_of_scope_project() -> None:
             },
         )
     assert response.status_code == 403
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.create", "denied", "Scoped admins cannot grant out-of-scope access")
+    ]
 
 
-def test_scoped_admin_can_manage_in_scope_consumer_only() -> None:
+def test_scoped_admin_can_manage_in_scope_consumer_only(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     in_scope = repo.seed(consumer_id="in", name="in", key_hash=hash_api_key("k-in"))
     in_scope.scopes = [ConsumerScope(id="s-in", project_id="proj-a", app_id=None)]
@@ -386,18 +441,24 @@ def test_scoped_admin_can_manage_in_scope_consumer_only() -> None:
         assert [row["id"] for row in listed] == ["in"]
         assert client.get("/v1/admin/consumers/in").status_code == 200
         assert client.get("/v1/admin/consumers/out").status_code == 404
+    assert [(event.action, event.decision, event.resource_id) for event in audit_events] == [
+        ("consumer.get", "denied", "out")
+    ]
 
 
-def test_self_delete_conflicts_409() -> None:
+def test_self_delete_conflicts_409(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
     with make_client(repo) as client:
         response = client.delete(f"/v1/admin/consumers/{ADMIN.consumer_id}")
         assert response.status_code == 409
         assert ADMIN.consumer_id in repo.rows
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.delete", "denied", "A consumer cannot delete itself")
+    ]
 
 
-def test_self_disable_conflicts_409() -> None:
+def test_self_disable_conflicts_409(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
     with make_client(repo) as client:
@@ -406,9 +467,45 @@ def test_self_disable_conflicts_409() -> None:
         # Other field updates on yourself remain allowed.
         ok = client.patch(f"/v1/admin/consumers/{ADMIN.consumer_id}", json={"name": "root2"})
         assert ok.status_code == 200
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.update", "denied", "A consumer cannot disable itself"),
+        ("consumer.update", "allowed", None),
+    ]
 
 
-def test_delete_other_consumer_soft_deletes_and_404_when_missing() -> None:
+def test_self_role_change_conflicts_409(audit_events: list[Any]) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+    row.role = "admin"
+    with make_client(repo) as client:
+        response = client.patch(f"/v1/admin/consumers/{ADMIN.consumer_id}", json={"role": "viewer"})
+        assert response.status_code == 409
+        assert repo.rows[ADMIN.consumer_id].role == "admin"
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.update", "denied", "A consumer cannot change its own role or scopes")
+    ]
+
+
+def test_self_scope_change_conflicts_409(audit_events: list[Any]) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+    row.role = "admin"
+    row.scopes = []
+    with make_client(repo) as client:
+        response = client.patch(
+            f"/v1/admin/consumers/{ADMIN.consumer_id}",
+            json={"scopes": [{"project_id": "proj-a"}]},
+        )
+        assert response.status_code == 409
+        assert repo.rows[ADMIN.consumer_id].scopes == []
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.update", "denied", "A consumer cannot change its own role or scopes")
+    ]
+
+
+def test_delete_other_consumer_soft_deletes_and_404_when_missing(
+    audit_events: list[Any],
+) -> None:
     repo = FakeConsumersRepository()
     victim = repo.seed(consumer_id="victim", name="victim", key_hash=hash_api_key("k2"))
     victim.scopes = [ConsumerScope(id="s-victim", project_id="proj-a", app_id=None)]
@@ -427,6 +524,9 @@ def test_delete_other_consumer_soft_deletes_and_404_when_missing() -> None:
     assert record.consumer_id == "victim"
     assert record.deleted_by == ADMIN.consumer_id
     assert record.scopes == {"scopes": [{"project_id": "proj-a", "app_id": None}]}
+    assert [(event.action, event.resource_id) for event in audit_events] == [
+        ("consumer.delete", "victim")
+    ]
 
 
 def test_get_unknown_consumer_404() -> None:

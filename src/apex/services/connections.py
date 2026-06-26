@@ -46,9 +46,14 @@ def _throwaway_session_factory():  # noqa: ANN202 — (engine, sessionmaker) pai
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
     from sqlalchemy.pool import NullPool
 
-    from apex.settings import get_settings
+    from apex.settings import database_ssl_connect_args, get_settings
 
-    engine = create_async_engine(get_settings().database.uri, poolclass=NullPool)
+    database = get_settings().database
+    engine = create_async_engine(
+        database.uri,
+        poolclass=NullPool,
+        connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+    )
     return engine, async_sessionmaker(engine, expire_on_commit=False)
 
 

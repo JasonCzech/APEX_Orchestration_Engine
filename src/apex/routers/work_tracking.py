@@ -1,10 +1,12 @@
 """/work-tracking: NL query translation, tracker passthrough, saved-query CRUD.
 
 Adapter resolution follows the M2 pattern: get_connection_resolver().resolve(
-WORK_TRACKING, connection_id=<body or ?connection_id>, project_id=<first scoped
+WORK_TRACKING, connection_id=<body or ?connection_id>, project_id=<selected scoped
 project or None>) — explicit connection > project row > global row > stub
 fallback. Every passthrough endpoint accepts an optional connection_id query
-parameter; the two POST /query endpoints additionally accept it in the body
+parameter; scoped consumers with multiple projects must also select a project
+with ?project=... so adapter resolution and provider query constraints match.
+The two POST /query endpoints additionally accept connection_id in the body
 (the body value wins when both are present).
 
 Error contract (adapters raise, this router translates to problem details):
@@ -29,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from apex.adapters.registry import PortKind
-from apex.app.dependencies import CurrentIdentity, require_role
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.domain.integrations import (
     Enrichment,
@@ -55,6 +57,10 @@ ResolverDep = Annotated[ConnectionResolver, Depends(get_work_tracking_resolver)]
 RepositoryDep = Annotated[SavedQueriesRepository, Depends(get_saved_queries_repository)]
 ConnectionIdParam = Annotated[
     str | None, Query(description="Explicit work-tracking connection id (default: resolved)")
+]
+ProjectParam = Annotated[
+    str | None,
+    Query(description="Project used to resolve scoped work-tracking connections"),
 ]
 
 
@@ -111,25 +117,52 @@ class SavedQueryListResponse(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _scoped_project(identity: ConsumerIdentity) -> str | None:
-    """First scoped project id, or None for unscoped consumers."""
+def _selected_project(identity: ConsumerIdentity, project: str | None) -> str | None:
+    """Resolve the single project used for adapter selection.
+
+    None means default connection. Scoped multi-project consumers must choose explicitly so
+    the adapter cannot be resolved for one project while a provider query is
+    constrained to another set.
+    """
+    if project is not None:
+        if not identity.is_unscoped:
+            ensure_scope(identity, project_id=project)
+        return project
+    if identity.is_unscoped:
+        return None
     project_ids = identity.scoped_project_ids()
-    return project_ids[0] if project_ids else None
+    if len(project_ids) == 1:
+        return project_ids[0]
+    if not project_ids:
+        raise HTTPException(
+            status_code=403,
+            detail="consumer has no project scope for work-tracking connections",
+        )
+    raise HTTPException(
+        status_code=403,
+        detail="project query parameter is required for multi-project work-tracking consumers",
+    )
 
 
-def _scoped_projects(identity: ConsumerIdentity) -> tuple[str, ...] | None:
-    """None means unscoped; otherwise every allowed project id."""
-    return None if identity.is_unscoped else identity.scoped_project_ids()
+def _query_projects(identity: ConsumerIdentity, project: str | None) -> tuple[str, ...] | None:
+    if identity.is_unscoped:
+        return None
+    selected = _selected_project(identity, project)
+    return (selected,) if selected is not None else ()
 
 
 async def _resolve_adapter(
-    resolver: ConnectionResolver, identity: ConsumerIdentity, connection_id: str | None
+    resolver: ConnectionResolver,
+    identity: ConsumerIdentity,
+    connection_id: str | None,
+    project: str | None = None,
 ) -> Any:
+    selected_project = _selected_project(identity, project)
     try:
         return await resolver.resolve(
             PortKind.WORK_TRACKING,
             connection_id=connection_id,
-            project_id=_scoped_project(identity),
+            project_id=selected_project,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=_exc_detail(exc)) from exc
@@ -138,9 +171,12 @@ async def _resolve_adapter(
 
 
 async def get_work_tracking_adapter(
-    identity: CurrentIdentity, resolver: ResolverDep, connection_id: ConnectionIdParam = None
+    identity: CurrentIdentity,
+    resolver: ResolverDep,
+    connection_id: ConnectionIdParam = None,
+    project: ProjectParam = None,
 ) -> Any:
-    return await _resolve_adapter(resolver, identity, connection_id)
+    return await _resolve_adapter(resolver, identity, connection_id, project)
 
 
 AdapterDep = Annotated[Any, Depends(get_work_tracking_adapter)]
@@ -184,9 +220,9 @@ _WIQL_PROJECT = re.compile(
 
 
 def _constrain_translated_query(
-    identity: ConsumerIdentity, query: TranslatedQuery
+    identity: ConsumerIdentity, query: TranslatedQuery, project: str | None
 ) -> TranslatedQuery:
-    allowed = _scoped_projects(identity)
+    allowed = _query_projects(identity, project)
     if allowed is None:
         return query
     if not allowed:
@@ -286,9 +322,13 @@ async def translate_work_query(
     identity: CurrentIdentity,
     resolver: ResolverDep,
     connection_id: ConnectionIdParam = None,
+    project: ProjectParam = None,
 ) -> Any:
-    adapter = await _resolve_adapter(resolver, identity, body.connection_id or connection_id)
-    context = QueryContext(project_id=_scoped_project(identity))
+    selected_project = _selected_project(identity, project)
+    adapter = await _resolve_adapter(
+        resolver, identity, body.connection_id or connection_id, selected_project
+    )
+    context = QueryContext(project_id=selected_project)
     with adapter_errors():
         return await adapter.translate_query(body.text, context=context)
 
@@ -299,10 +339,14 @@ async def execute_work_query(
     identity: CurrentIdentity,
     resolver: ResolverDep,
     connection_id: ConnectionIdParam = None,
+    project: ProjectParam = None,
 ) -> Any:
-    adapter = await _resolve_adapter(resolver, identity, body.connection_id or connection_id)
+    selected_project = _selected_project(identity, project)
+    scoped_query = _constrain_translated_query(identity, body.query, selected_project)
+    adapter = await _resolve_adapter(
+        resolver, identity, body.connection_id or connection_id, selected_project
+    )
     page = Page(offset=body.offset, limit=body.limit)
-    scoped_query = _constrain_translated_query(identity, body.query)
     with adapter_errors():
         return await adapter.execute_query(scoped_query, page=page)
 
@@ -367,6 +411,7 @@ async def list_saved_queries(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Any:
+    ensure_scope(identity, project_id=project)
     allowed = None if identity.is_unscoped else identity.scoped_project_ids()
     rows = await repository.list(
         project=project,
@@ -389,10 +434,7 @@ async def create_saved_query(
     identity: Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))],
     repository: RepositoryDep,
 ) -> Any:
-    if body.project_id is not None and not identity.allows_project(body.project_id):
-        raise HTTPException(
-            status_code=403, detail=f"consumer is not scoped to project {body.project_id!r}"
-        )
+    ensure_scope(identity, project_id=body.project_id)
     row = SavedQuery(
         name=body.name,
         project_id=body.project_id,

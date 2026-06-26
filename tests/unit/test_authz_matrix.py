@@ -8,7 +8,8 @@ are FastAPI's unauthenticated docs surface and are deliberately outside the
 matrix.)
 
 For each route x principal in (no_key, viewer, operator, admin):
-- no key             -> 401 (authentication precedes everything else)
+- no key             -> 401, or 429 after auth-failure lockout
+                        (authentication/lockout precedes everything else)
 - below minimum role -> 403 exactly (a 5xx here would mean fallible IO ran
   BEFORE require_role — an ordering bug the matrix exists to catch)
 - at/above minimum   -> anything but 401/403; 404/409/415/422/5xx are all fine
@@ -39,13 +40,20 @@ from apex.app.http import app
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import IdentityResolver
 from apex.settings import get_settings
-from tests.unit.authz_matrix_data import BODY_OVERRIDES, MIN_ROLE, PATH_PARAM_OVERRIDES, SCOPE
+from tests.unit.authz_matrix_data import (
+    BODY_OVERRIDES,
+    MIN_ROLE,
+    PATH_PARAM_OVERRIDES,
+    SCOPE,
+    SCOPE_DENIAL_CASES,
+)
 
 # ── Principals ───────────────────────────────────────────────────────────────
 
 DEV_ADMIN_KEY = "matrix-dev-admin-key"  # resolved via the real dev-key path
 VIEWER_KEY = "matrix-viewer-key"
 OPERATOR_KEY = "matrix-operator-key"
+SCOPED_ADMIN_KEY = "matrix-scoped-admin-key"
 
 API_KEYS: dict[str, str] = {
     "viewer": VIEWER_KEY,
@@ -54,6 +62,7 @@ API_KEYS: dict[str, str] = {
 }
 RANK: dict[str, int] = {"viewer": 0, "operator": 1, "admin": 2}
 PRINCIPALS: tuple[str, ...] = ("no_key", "viewer", "operator", "admin")
+UNAUTHENTICATED_STATUSES = {401, 429}
 
 
 def _identity(role: Role) -> ConsumerIdentity:
@@ -72,6 +81,7 @@ class MatrixResolver(IdentityResolver):
     _by_key: dict[str, ConsumerIdentity] = {
         VIEWER_KEY: _identity(Role.VIEWER),
         OPERATOR_KEY: _identity(Role.OPERATOR),
+        SCOPED_ADMIN_KEY: _identity(Role.ADMIN),
     }
 
     async def _resolve_from_db(self, api_key: str) -> ConsumerIdentity | None:
@@ -160,6 +170,20 @@ def test_every_v1_route_has_scope_classification() -> None:
     assert not invalid, f"SCOPE entries with invalid mode: {invalid}"
 
 
+def test_scope_denial_cases_match_live_scoped_routes() -> None:
+    """Scope-denial cases should only target live operations that declare scope."""
+    live = {operation_id for _, _, operation_id in INVENTORY}
+    stale = set(SCOPE_DENIAL_CASES) - live
+    unscoped = {
+        operation_id: SCOPE[operation_id]
+        for operation_id in SCOPE_DENIAL_CASES
+        if operation_id in SCOPE and SCOPE[operation_id] == "none"
+    }
+
+    assert not stale, f"SCOPE_DENIAL_CASES entries with no matching live route: {sorted(stale)}"
+    assert not unscoped, f"SCOPE_DENIAL_CASES entries for unscoped routes: {unscoped}"
+
+
 def test_inventory_matches_published_surface() -> None:
     """Sanity: the matrix saw a one-method-per-route /v1 surface of real size."""
     assert len(INVENTORY) == len({(m, p) for m, p, _ in INVENTORY})
@@ -189,9 +213,9 @@ def test_authz_matrix(method: str, path: str, operation_id: str, principal: str)
     response = client.request(method, _fill_path(path, operation_id), headers=headers, json=body)
 
     if principal == "no_key":
-        assert response.status_code == 401, (
-            f"{method} {path} ({operation_id}): unauthenticated requests must 401, "
-            f"got {response.status_code}"
+        assert response.status_code in UNAUTHENTICATED_STATUSES, (
+            f"{method} {path} ({operation_id}): unauthenticated requests must 401 "
+            f"or 429 after auth lockout, got {response.status_code}"
         )
     elif RANK[principal] < RANK[minimum]:
         assert response.status_code == 403, (
@@ -204,3 +228,30 @@ def test_authz_matrix(method: str, path: str, operation_id: str, principal: str)
             f"{method} {path} ({operation_id}): role '{principal}' meets minimum "
             f"'{minimum}' but was rejected with {response.status_code}"
         )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "operation_id"),
+    [row for row in INVENTORY if row[2] in SCOPE_DENIAL_CASES],
+    ids=lambda row: row[2] if isinstance(row, tuple) else str(row),
+)
+def test_authz_scope_matrix(method: str, path: str, operation_id: str) -> None:
+    minimum = MIN_ROLE[operation_id]
+    api_key = {
+        "viewer": VIEWER_KEY,
+        "operator": OPERATOR_KEY,
+        "admin": SCOPED_ADMIN_KEY,
+    }[minimum]
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.request(
+        method,
+        _fill_path(path, operation_id),
+        headers={"x-api-key": api_key},
+        **SCOPE_DENIAL_CASES[operation_id],
+    )
+
+    assert response.status_code == 403, (
+        f"{method} {path} ({operation_id}): out-of-scope project input must 403 "
+        f"for scoped {minimum}, got {response.status_code}"
+    )

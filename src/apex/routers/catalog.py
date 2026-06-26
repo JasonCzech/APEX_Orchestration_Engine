@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.app.dependencies import CurrentIdentity, require_role
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.persistence.db import get_session
 from apex.persistence.models import Environment, EnvironmentSnapshot
@@ -160,6 +160,7 @@ async def list_applications(
     project: str | None = None,
     include_archived: bool = False,
 ) -> list[ApplicationOut]:
+    ensure_scope(identity, project_id=project)
     apps = await repo.list_applications(
         project=project,
         visible_projects=_visible_projects(identity),
@@ -176,8 +177,7 @@ async def list_applications(
 async def create_application(
     body: ApplicationCreate, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
-    if not identity.allows_project(body.project_id):
-        raise HTTPException(status_code=403, detail=f"Not scoped to project {body.project_id!r}")
+    ensure_scope(identity, project_id=body.project_id)
     try:
         app = await repo.create_application(
             project_id=body.project_id, name=body.name, description=body.description

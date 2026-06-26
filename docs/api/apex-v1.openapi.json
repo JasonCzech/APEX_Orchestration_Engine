@@ -614,6 +614,94 @@
         "title": "ApplicationUpdate",
         "type": "object"
       },
+      "AuditChainVerificationOut": {
+        "properties": {
+          "checked": {
+            "title": "Checked",
+            "type": "integer"
+          },
+          "first_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Error"
+          },
+          "last_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Hash"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "checked"
+        ],
+        "title": "AuditChainVerificationOut",
+        "type": "object"
+      },
+      "AuditPruneOut": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "integer"
+          },
+          "retained_anchor": {
+            "title": "Retained Anchor",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted",
+          "retained_anchor"
+        ],
+        "title": "AuditPruneOut",
+        "type": "object"
+      },
+      "AuditRetentionOut": {
+        "properties": {
+          "before": {
+            "format": "date-time",
+            "title": "Before",
+            "type": "string"
+          },
+          "candidates": {
+            "title": "Candidates",
+            "type": "integer"
+          },
+          "preserved_anchor_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preserved Anchor Id"
+          }
+        },
+        "required": [
+          "before",
+          "candidates"
+        ],
+        "title": "AuditRetentionOut",
+        "type": "object"
+      },
       "ConnectionCreate": {
         "properties": {
           "base_url": {
@@ -847,6 +935,18 @@
           "consumer_type": {
             "$ref": "#/components/schemas/ConsumerType"
           },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "name": {
             "maxLength": 255,
             "minLength": 1,
@@ -875,7 +975,7 @@
       "ConsumerCreated": {
         "properties": {
           "api_key": {
-            "description": "The raw API key. Shown exactly once \u2014 it is stored only as a sha256 hash and can never be retrieved again.",
+            "description": "The raw API key. Shown exactly once \u2014 it is stored only as a configured hash and can never be retrieved again.",
             "title": "Api Key",
             "type": "string"
           },
@@ -894,16 +994,51 @@
             ],
             "title": "Created At"
           },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
           },
           "id": {
             "title": "Id",
             "type": "string"
           },
           "key_fingerprint": {
-            "description": "First 8 hex chars of the stored sha256 key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.",
+            "description": "First 8 hex chars of the stored key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.",
             "title": "Key Fingerprint",
             "type": "string"
           },
@@ -923,8 +1058,37 @@
             "title": "Name",
             "type": "string"
           },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
           "role": {
             "$ref": "#/components/schemas/Role"
+          },
+          "rotated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rotated At"
+          },
+          "rotation_count": {
+            "default": 0,
+            "title": "Rotation Count",
+            "type": "integer"
           },
           "scopes": {
             "items": {
@@ -932,6 +1096,17 @@
             },
             "title": "Scopes",
             "type": "array"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
           }
         },
         "required": [
@@ -991,16 +1166,51 @@
             ],
             "title": "Created At"
           },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
           },
           "id": {
             "title": "Id",
             "type": "string"
           },
           "key_fingerprint": {
-            "description": "First 8 hex chars of the stored sha256 key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.",
+            "description": "First 8 hex chars of the stored key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.",
             "title": "Key Fingerprint",
             "type": "string"
           },
@@ -1020,8 +1230,37 @@
             "title": "Name",
             "type": "string"
           },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
           "role": {
             "$ref": "#/components/schemas/Role"
+          },
+          "rotated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rotated At"
+          },
+          "rotation_count": {
+            "default": 0,
+            "title": "Rotation Count",
+            "type": "integer"
           },
           "scopes": {
             "items": {
@@ -1029,6 +1268,17 @@
             },
             "title": "Scopes",
             "type": "array"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
           }
         },
         "required": [
@@ -1068,6 +1318,18 @@
             ],
             "title": "Enabled"
           },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "name": {
             "anyOf": [
               {
@@ -1080,6 +1342,18 @@
               }
             ],
             "title": "Name"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
           },
           "role": {
             "anyOf": [
@@ -1211,6 +1485,97 @@
           "content"
         ],
         "title": "CreatePromptRequest",
+        "type": "object"
+      },
+      "CurrentPrincipalResponse": {
+        "properties": {
+          "capabilities": {
+            "additionalProperties": true,
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "consumer_type": {
+            "$ref": "#/components/schemas/ConsumerType"
+          },
+          "is_unscoped": {
+            "title": "Is Unscoped",
+            "type": "boolean"
+          },
+          "mfa_required": {
+            "default": false,
+            "title": "Mfa Required",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "org_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Org Id"
+          },
+          "principal_id": {
+            "title": "Principal Id",
+            "type": "string"
+          },
+          "principal_kind": {
+            "default": "api_consumer",
+            "title": "Principal Kind",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "scopes": {
+            "items": {
+              "$ref": "#/components/schemas/ScopeRef"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "session_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Expires At"
+          },
+          "step_up_required": {
+            "default": false,
+            "title": "Step Up Required",
+            "type": "boolean"
+          },
+          "workspace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Id"
+          }
+        },
+        "required": [
+          "principal_id",
+          "name",
+          "consumer_type",
+          "role",
+          "is_unscoped"
+        ],
+        "title": "CurrentPrincipalResponse",
         "type": "object"
       },
       "DocumentListResponse": {
@@ -3149,6 +3514,31 @@
         "title": "RollbackRequest",
         "type": "object"
       },
+      "RotateConsumerKeyRequest": {
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "grace_period_seconds": {
+            "default": 0,
+            "maximum": 604800.0,
+            "minimum": 0.0,
+            "title": "Grace Period Seconds",
+            "type": "integer"
+          }
+        },
+        "title": "RotateConsumerKeyRequest",
+        "type": "object"
+      },
       "SaveVersionRequest": {
         "properties": {
           "content": {
@@ -4142,6 +4532,205 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/v1/admin/compliance/audit/chain": {
+      "get": {
+        "operationId": "verifyAuditChain",
+        "parameters": [
+          {
+            "description": "Allow the first retained row to reference an archived prior hash",
+            "in": "query",
+            "name": "allow_truncated",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Allow the first retained row to reference an archived prior hash",
+              "title": "Allow Truncated",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditChainVerificationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Audit Chain",
+        "tags": [
+          "admin-compliance"
+        ]
+      }
+    },
+    "/v1/admin/compliance/audit/export.cef": {
+      "get": {
+        "operationId": "exportAuditCef",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Export Audit Cef",
+        "tags": [
+          "admin-compliance"
+        ]
+      }
+    },
+    "/v1/admin/compliance/audit/export.jsonl": {
+      "get": {
+        "operationId": "exportAuditJsonl",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Export Audit Jsonl",
+        "tags": [
+          "admin-compliance"
+        ]
+      }
+    },
+    "/v1/admin/compliance/audit/retention": {
+      "delete": {
+        "operationId": "pruneAuditRetention",
+        "parameters": [
+          {
+            "description": "Delete or inspect audit rows before this timestamp",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Delete or inspect audit rows before this timestamp",
+              "title": "Before"
+            }
+          },
+          {
+            "description": "Keep the newest pruned-window row as a truncated-chain anchor",
+            "in": "query",
+            "name": "retain_anchor",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Keep the newest pruned-window row as a truncated-chain anchor",
+              "title": "Retain Anchor",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPruneOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prune Audit Retention",
+        "tags": [
+          "admin-compliance"
+        ]
+      },
+      "get": {
+        "operationId": "getAuditRetention",
+        "parameters": [
+          {
+            "description": "Delete or inspect audit rows before this timestamp",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Delete or inspect audit rows before this timestamp",
+              "title": "Before"
+            }
+          },
+          {
+            "description": "Keep the newest pruned-window row as a truncated-chain anchor",
+            "in": "query",
+            "name": "retain_anchor",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Keep the newest pruned-window row as a truncated-chain anchor",
+              "title": "Retain Anchor",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditRetentionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Audit Retention",
+        "tags": [
+          "admin-compliance"
+        ]
+      }
+    },
     "/v1/admin/connections": {
       "get": {
         "operationId": "listConnections",
@@ -4818,6 +5407,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RotateConsumerKeyRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {
@@ -5283,6 +5889,27 @@
         "summary": "Get Artifact",
         "tags": [
           "artifacts"
+        ]
+      }
+    },
+    "/v1/auth/me": {
+      "get": {
+        "operationId": "getAuthMe",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentPrincipalResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Auth Me",
+        "tags": [
+          "auth"
         ]
       }
     },
@@ -7745,6 +8372,24 @@
               "description": "Explicit work-tracking connection id (default: resolved)",
               "title": "Connection Id"
             }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
+            }
           }
         ],
         "responses": {
@@ -7793,6 +8438,24 @@
               ],
               "description": "Explicit work-tracking connection id (default: resolved)",
               "title": "Connection Id"
+            }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
             }
           }
         ],
@@ -7864,6 +8527,24 @@
               "description": "Explicit work-tracking connection id (default: resolved)",
               "title": "Connection Id"
             }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
+            }
           }
         ],
         "responses": {
@@ -7923,6 +8604,24 @@
               ],
               "description": "Explicit work-tracking connection id (default: resolved)",
               "title": "Connection Id"
+            }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
             }
           }
         ],
@@ -7985,6 +8684,24 @@
               "description": "Explicit work-tracking connection id (default: resolved)",
               "title": "Connection Id"
             }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
+            }
           }
         ],
         "requestBody": {
@@ -8045,6 +8762,24 @@
               ],
               "description": "Explicit work-tracking connection id (default: resolved)",
               "title": "Connection Id"
+            }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
             }
           }
         ],

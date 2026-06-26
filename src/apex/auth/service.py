@@ -24,13 +24,16 @@ class AuthStoreUnavailableError(RuntimeError):
 
 
 def hash_api_key(api_key: str) -> str:
-    pepper = get_settings().auth.api_key_hash_pepper
+    settings = get_settings()
+    pepper = settings.auth.api_key_hash_pepper
     if pepper:
         return hmac.new(
             pepper.encode("utf-8"),
             api_key.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
+    if settings.is_locked_down:
+        raise RuntimeError("API key hash pepper is required in locked-down environments")
     return legacy_hash_api_key(api_key)
 
 
@@ -158,7 +161,10 @@ class IdentityResolver:
         async with session_factory() as session:
             credential = await session.scalar(
                 select(ConsumerKey)
-                .options(selectinload(ConsumerKey.consumer).selectinload(ApiConsumer.scopes))
+                .options(
+                    selectinload(ConsumerKey.consumer).selectinload(ApiConsumer.scopes),
+                    selectinload(ConsumerKey.consumer).selectinload(ApiConsumer.keys),
+                )
                 .where(
                     ConsumerKey.key_hash.in_(key_hashes),
                     ConsumerKey.revoked_at.is_(None),
@@ -176,7 +182,9 @@ class IdentityResolver:
             consumer = credential if isinstance(credential, ApiConsumer) else None
             if consumer is None:
                 consumer = await session.scalar(
-                    select(ApiConsumer).where(
+                    select(ApiConsumer)
+                    .options(selectinload(ApiConsumer.scopes), selectinload(ApiConsumer.keys))
+                    .where(
                         ApiConsumer.key_hash.in_(key_hashes),
                         ApiConsumer.enabled.is_(True),
                         ApiConsumer.revoked_at.is_(None),
@@ -223,13 +231,21 @@ class IdentityResolver:
         )
         if should_rehash_key:
             key.key_hash = current_hash
-            if secrets.compare_digest(consumer.key_hash, legacy_hash):
-                consumer.key_hash = current_hash
+        should_sync_consumer_hash = not _active_key_hashes_include(
+            consumer, consumer.key_hash, now
+        )
+        if should_rehash_key or should_sync_consumer_hash:
+            consumer.key_hash = key.key_hash
         if should_touch_key:
             key.last_used_at = now
         if should_touch_consumer:
             consumer.last_used_at = now
-        if should_rehash_key or should_touch_key or should_touch_consumer:
+        if (
+            should_rehash_key
+            or should_sync_consumer_hash
+            or should_touch_key
+            or should_touch_consumer
+        ):
             try:
                 await session.commit()
             except Exception:
@@ -261,12 +277,22 @@ class IdentityResolver:
             and secrets.compare_digest(consumer.key_hash, legacy_hash)
             and not secrets.compare_digest(consumer.key_hash, current_hash)
         )
+        target_hash = current_hash if should_rehash_key else consumer.key_hash
+        should_create_consumer_key = not _active_key_hashes_include(consumer, target_hash, now)
         should_touch_last_used = (
             consumer.last_used_at is None or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
         )
         if should_rehash_key:
             consumer.key_hash = current_hash
-        if should_touch_last_used or should_rehash_key:
+        if should_create_consumer_key:
+            consumer.keys.append(
+                ConsumerKey(
+                    key_hash=target_hash,
+                    expires_at=consumer.expires_at,
+                    created_by=consumer.created_by,
+                )
+            )
+        if should_touch_last_used or should_rehash_key or should_create_consumer_key:
             try:
                 consumer.last_used_at = now
                 await session.commit()
@@ -283,6 +309,14 @@ def _consumer_is_active(consumer: ApiConsumer, now: datetime) -> bool:
     if consumer.revoked_at is not None or consumer.deleted_at is not None:
         return False
     return not (consumer.expires_at is not None and consumer.expires_at <= now)
+
+
+def _active_key_hashes_include(consumer: ApiConsumer, key_hash: str, now: datetime) -> bool:
+    return any(
+        secrets.compare_digest(key.key_hash, key_hash)
+        for key in consumer.keys
+        if key.revoked_at is None and (key.expires_at is None or key.expires_at > now)
+    )
 
 
 def _identity_from_consumer(consumer: ApiConsumer) -> ConsumerIdentity:

@@ -15,7 +15,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
-from apex.app.dependencies import CurrentIdentity, require_role
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.persistence.models import Document
 from apex.persistence.repositories.documents import DocumentsRepository
@@ -156,6 +156,7 @@ async def list_documents(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Any:
+    ensure_scope(identity, project_id=project)
     allowed = None if identity.is_unscoped else identity.scoped_project_ids()
     documents = await repository.list(
         project=project, q=q, allowed_project_ids=allowed, limit=limit, offset=offset

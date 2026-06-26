@@ -15,6 +15,7 @@ from apex.routers.analytics import router as analytics_router
 from apex.routers.artifacts import router as artifacts_router
 from apex.routers.auth import router as auth_router
 from apex.routers.catalog import router as catalog_router
+from apex.routers.compliance import router as compliance_router
 from apex.routers.connections import router as connections_router
 from apex.routers.consumers import router as consumers_router
 from apex.routers.context import router as context_router
@@ -60,7 +61,7 @@ if settings.cors_origins:
 
 app.add_middleware(SecurityHeadersMiddleware, settings=settings.security_headers)
 app.add_middleware(RateLimitMiddleware, settings=settings.rate_limit)
-app.add_middleware(AuthAuditMiddleware)
+app.add_middleware(AuthAuditMiddleware, settings=settings.rate_limit)
 
 # Usage analytics (M6): one best-effort event per matched /v1 operation.
 app.add_middleware(UsageTrackingMiddleware)
@@ -80,4 +81,5 @@ app.include_router(inventory_router, prefix="/v1")
 app.include_router(context_router, prefix="/v1")
 app.include_router(consumers_router, prefix="/v1")
 app.include_router(connections_router, prefix="/v1")
+app.include_router(compliance_router, prefix="/v1")
 app.include_router(analytics_router, prefix="/v1")

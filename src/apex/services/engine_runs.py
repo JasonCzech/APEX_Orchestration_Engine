@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from apex.persistence.models import EngineRun
-from apex.settings import get_settings
+from apex.settings import database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -37,7 +37,12 @@ async def record_engine_run(
     try:
         # Throwaway engine per call: graph nodes run on worker threads with
         # short-lived event loops, so pooled connections must not outlive them.
-        engine_db = create_async_engine(get_settings().database.uri, poolclass=NullPool)
+        database = get_settings().database
+        engine_db = create_async_engine(
+            database.uri,
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
         try:
             session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
             async with session_factory() as session:

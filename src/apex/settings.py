@@ -1,7 +1,7 @@
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_DATABASE_URI = "postgresql+asyncpg://apex:apex@localhost:5432/apex"
 LOCKED_DOWN_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
 LOCAL_DATABASE_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
+DATABASE_SSL_MODES = {"require", "verify-ca", "verify-full"}
 
 
 def _package_version() -> str:
@@ -40,6 +41,9 @@ class RateLimitSettings(BaseModel):
     requests: int = 600
     window_s: int = 60
     max_buckets: int = 10000
+    auth_failures: int = 10
+    auth_failure_window_s: int = 300
+    auth_lockout_s: int = 300
     protected_path_prefixes: list[str] = [
         "/v1/",
         "/threads",
@@ -86,6 +90,22 @@ class LLMSettings(BaseModel):
     fetch_max_tool_iters: int = 4
 
 
+class DocumentIngestionSettings(BaseModel):
+    """Context-document text extraction + injection budgets (env: APEX_DOCUMENTS__*).
+
+    Uploaded context files are parsed to text on upload and stored capped at
+    ``max_extract_chars``. When assembled into a phase prompt they're trimmed again to
+    ``max_context_chars_per_doc`` each and ``max_context_chars_total`` across all evidence,
+    so a large attachment can't blow the model's context window. ``summary_chars`` bounds
+    the auto-derived summary used when an uploader provides none.
+    """
+
+    max_extract_chars: int = 200_000
+    max_context_chars_per_doc: int = 50_000
+    max_context_chars_total: int = 150_000
+    summary_chars: int = 280
+
+
 class ApexSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="APEX_",
@@ -107,6 +127,7 @@ class ApexSettings(BaseSettings):
     rate_limit: RateLimitSettings = RateLimitSettings()
     security_headers: SecurityHeadersSettings = SecurityHeadersSettings()
     llm: LLMSettings = LLMSettings()
+    documents: DocumentIngestionSettings = DocumentIngestionSettings()
 
     @property
     def is_locked_down(self) -> bool:
@@ -135,6 +156,12 @@ class ApexSettings(BaseSettings):
             errors.append("database.uri must not point at localhost/default credentials")
         if not _database_uri_requires_ssl(self.database.uri, self.database.ssl_mode):
             errors.append("database.uri must require TLS/SSL in locked environments")
+        if not self.security_headers.enabled:
+            errors.append(
+                "security_headers.enabled=false is allowed only in local/test environments"
+            )
+        if self.security_headers.hsts_max_age_s <= 0:
+            errors.append("security_headers.hsts_max_age_s must be > 0 in locked environments")
         insecure_origins = [
             origin for origin in normalized_origins if origin and not origin.startswith("https://")
         ]
@@ -162,12 +189,41 @@ def _database_uri_requires_ssl(uri: str, ssl_mode: str | None) -> bool:
         return False
     if parsed.scheme.startswith("sqlite"):
         return True
-    mode = ssl_mode or ""
-    if not mode:
-        from urllib.parse import parse_qs
+    return _database_ssl_mode(uri, ssl_mode).lower() in DATABASE_SSL_MODES
 
-        mode = (parse_qs(parsed.query).get("sslmode") or [""])[0]
-    return mode.lower() in {"require", "verify-ca", "verify-full"}
+
+def database_uses_ssl(uri: str, ssl_mode: str | None) -> bool:
+    """True when SQLAlchemy/asyncpg should force a TLS connection."""
+
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return False
+    if parsed.scheme.startswith("sqlite"):
+        return False
+    mode = _database_ssl_mode(uri, ssl_mode).lower()
+    if mode:
+        return mode in DATABASE_SSL_MODES
+    return not _is_local_database_uri(uri)
+
+
+def database_ssl_connect_args(uri: str, ssl_mode: str | None) -> dict[str, object]:
+    if database_uses_ssl(uri, ssl_mode):
+        return {"ssl": True}
+    return {}
+
+
+def _database_ssl_mode(uri: str, ssl_mode: str | None) -> str:
+    mode = ssl_mode or ""
+    if mode:
+        return mode
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return ""
+    if parsed.scheme.startswith("sqlite"):
+        return ""
+    return (parse_qs(parsed.query).get("sslmode") or [""])[0]
 
 
 @lru_cache

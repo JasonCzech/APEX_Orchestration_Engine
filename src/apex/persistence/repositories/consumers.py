@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from apex.auth.identity import ScopeRef
 from apex.persistence.models import ApiConsumer, ConsumerDeletionRecord, ConsumerKey, ConsumerScope
@@ -28,6 +29,18 @@ class ConsumersRepository:
 
     async def get(self, consumer_id: str) -> ApiConsumer | None:
         consumer = await self._session.get(ApiConsumer, consumer_id)
+        if consumer is None or consumer.deleted_at is not None:
+            return None
+        return consumer
+
+    async def get_for_update(self, consumer_id: str) -> ApiConsumer | None:
+        result = await self._session.scalars(
+            select(ApiConsumer)
+            .where(ApiConsumer.id == consumer_id)
+            .options(selectinload(ApiConsumer.scopes), selectinload(ApiConsumer.keys))
+            .with_for_update()
+        )
+        consumer = result.first()
         if consumer is None or consumer.deleted_at is not None:
             return None
         return consumer
@@ -87,6 +100,30 @@ class ConsumersRepository:
         consumer = await self.get(consumer_id)
         if consumer is None:
             return None
+        return await self.update_existing(
+            consumer,
+            name=name,
+            role=role,
+            enabled=enabled,
+            scopes=scopes,
+            expires_at=expires_at,
+            revoked_at=revoked_at,
+            updated_by=updated_by,
+        )
+
+    async def update_existing(
+        self,
+        consumer: ApiConsumer,
+        *,
+        name: str | None = None,
+        role: str | None = None,
+        enabled: bool | None = None,
+        scopes: Sequence[ScopeRef] | None = None,
+        expires_at: datetime | None = None,
+        revoked_at: datetime | None = None,
+        updated_by: str | None = None,
+    ) -> ApiConsumer:
+        """Partial update of an already-loaded consumer row."""
         if name is not None:
             consumer.name = name
         if role is not None:

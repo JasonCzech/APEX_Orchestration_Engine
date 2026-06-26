@@ -76,6 +76,11 @@ variable "postgres_public_access" {
   type        = bool
   description = "true = public endpoint + firewall (dev); false = private VNet-integrated (secure default)."
   default     = false
+
+  validation {
+    condition     = !var.postgres_public_access || lower(var.environment) == "dev"
+    error_message = "postgres_public_access=true is allowed only when environment is dev."
+  }
 }
 
 variable "postgres_sku_name" {

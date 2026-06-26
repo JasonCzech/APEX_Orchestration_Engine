@@ -30,7 +30,7 @@ class ExplodingFactory:
 
 
 class FakeSession:
-    def __init__(self, consumer: ApiConsumer | None) -> None:
+    def __init__(self, consumer: Any | None) -> None:
         self._consumer = consumer
         self.committed = False
 
@@ -40,7 +40,7 @@ class FakeSession:
     async def __aexit__(self, *exc_info: object) -> bool:
         return False
 
-    async def scalar(self, _stmt: Any) -> ApiConsumer | None:
+    async def scalar(self, _stmt: Any) -> Any | None:
         return self._consumer
 
     async def commit(self) -> None:
@@ -97,6 +97,21 @@ def test_hash_api_key_uses_peppered_hmac_when_configured(
 
     assert hash_api_key("some-key") == expected
     assert hash_api_key("some-key") != legacy_hash_api_key("some-key")
+
+
+def test_hash_api_key_requires_pepper_in_locked_down_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apex.auth.service as svc
+    from apex.settings import ApexSettings, AuthSettings
+
+    unsafe = ApexSettings.model_construct(
+        environment="production", auth=AuthSettings(api_key_hash_pepper=None)
+    )
+    monkeypatch.setattr(svc, "get_settings", lambda: unsafe)
+
+    with pytest.raises(RuntimeError, match="pepper is required"):
+        hash_api_key("some-key")
 
 
 # ── IdentityResolver ─────────────────────────────────────────────────────────
@@ -204,6 +219,60 @@ async def test_db_lookup_resolves_consumer_key_and_updates_key_usage() -> None:
     assert session.committed
 
 
+async def test_db_lookup_resyncs_legacy_hash_pointer_from_active_consumer_key() -> None:
+    stale_hash = legacy_hash_api_key("different-key")
+    key_hash = hash_api_key("some-key")
+    consumer = ApiConsumer(
+        id="abc123",
+        name="ops-bot",
+        key_hash=stale_hash,
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+        last_used_at=datetime.now(UTC),
+    )
+    consumer.scopes = []
+    key = ConsumerKey(
+        id="k1",
+        consumer_id="abc123",
+        key_hash=key_hash,
+        last_used_at=datetime.now(UTC),
+    )
+    key.consumer = consumer
+    consumer.keys = [key]
+    session = FakeSession(key)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    identity = await resolver.resolve("some-key")
+
+    assert identity is not None
+    assert consumer.key_hash == key_hash
+    assert session.committed
+
+
+async def test_db_lookup_backfills_consumer_key_for_legacy_consumer_row() -> None:
+    key_hash = hash_api_key("some-key")
+    consumer = ApiConsumer(
+        id="abc123",
+        name="ops-bot",
+        key_hash=key_hash,
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+        last_used_at=datetime.now(UTC),
+    )
+    consumer.scopes = []
+    consumer.keys = []
+    session = FakeSession(consumer)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    identity = await resolver.resolve("some-key")
+
+    assert identity is not None
+    assert [key.key_hash for key in consumer.keys] == [key_hash]
+    assert session.committed
+
+
 async def test_db_lookup_rejects_expired_consumer_key() -> None:
     consumer = ApiConsumer(
         id="abc123",
@@ -262,16 +331,25 @@ async def test_db_lookup_rehashes_legacy_consumer_key_with_configured_pepper(
 
 
 async def test_db_lookup_throttles_last_used_at_write() -> None:
+    key_hash = hash_api_key("some-key")
     consumer = ApiConsumer(
         id="abc123",
         name="ops-bot",
-        key_hash=hash_api_key("some-key"),
+        key_hash=key_hash,
         consumer_type="headless",
         role="operator",
         enabled=True,
         last_used_at=datetime.now(UTC),
     )
     consumer.scopes = []
+    consumer.keys = [
+        ConsumerKey(
+            id="k1",
+            consumer_id="abc123",
+            key_hash=key_hash,
+            last_used_at=datetime.now(UTC),
+        )
+    ]
     session = FakeSession(consumer)
     resolver = IdentityResolver(session_factory=lambda: session)
     identity = await resolver.resolve("some-key")

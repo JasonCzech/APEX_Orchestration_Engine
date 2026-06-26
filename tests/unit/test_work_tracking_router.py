@@ -244,6 +244,43 @@ def test_translate_body_connection_id_wins_over_query_param() -> None:
     assert resolver.calls[0][1] == "from-body"
 
 
+def test_translate_multi_project_requires_project() -> None:
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
+    )
+    with TestClient(app) as client:
+        response = client.post("/v1/work-tracking/query/translate", json={"text": "open bugs"})
+    assert response.status_code == 403
+    assert resolver.calls == []
+
+
+def test_translate_multi_project_uses_selected_project() -> None:
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/translate",
+            params={"project": "CAT"},
+            json={"text": "open bugs"},
+        )
+    assert response.status_code == 200
+    assert resolver.calls == [(PortKind.WORK_TRACKING, None, "CAT")]
+    assert resolver.adapter.translate_calls[0][1].project_id == "CAT"
+
+
+def test_translate_rejects_out_of_scope_project() -> None:
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/translate",
+            params={"project": "CAT"},
+            json={"text": "open bugs"},
+        )
+    assert response.status_code == 403
+    assert resolver.calls == []
+
+
 def test_translate_blank_text_is_422() -> None:
     app, _, _ = make_app(identity())
     with TestClient(app) as client:
@@ -296,13 +333,40 @@ def test_execute_query_injects_ado_multi_project_scope() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/query/execute",
+            params={"project": "CAT"},
             json={"query": {"provider": "ado", "query": "SELECT [System.Id] FROM WorkItems"}},
         )
     assert response.status_code == 200
     query, _ = resolver.adapter.execute_calls[0]
-    assert query.query == (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] IN ('PHX', 'CAT')"
+    assert query.query == "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] IN ('CAT')"
+    assert resolver.calls == [(PortKind.WORK_TRACKING, None, "CAT")]
+
+
+def test_execute_query_multi_project_requires_project() -> None:
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
     )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "ado", "query": "SELECT [System.Id] FROM WorkItems"}},
+        )
+    assert response.status_code == 403
+    assert resolver.adapter.execute_calls == []
+    assert resolver.calls == []
+
+
+def test_execute_query_rejects_project_outside_scope_before_adapter_resolution() -> None:
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            params={"project": "CAT"},
+            json={"query": {"provider": "ado", "query": "SELECT [System.Id] FROM WorkItems"}},
+        )
+    assert response.status_code == 403
+    assert resolver.adapter.execute_calls == []
+    assert resolver.calls == []
 
 
 def test_execute_query_unknown_provider_requires_unscoped_admin() -> None:
@@ -373,6 +437,26 @@ def test_list_work_items_passes_filters_and_connection_id() -> None:
     filters, page = resolver.adapter.list_calls[0]
     assert filters == WorkItemFilters(status="open", kind="bug", text="checkout")
     assert (page.offset, page.limit) == (2, 5)
+
+
+def test_list_work_items_multi_project_requires_project() -> None:
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
+    )
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/items")
+    assert response.status_code == 403
+    assert resolver.calls == []
+
+
+def test_list_work_items_multi_project_uses_selected_project() -> None:
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
+    )
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/items", params={"project": "PHX"})
+    assert response.status_code == 200
+    assert resolver.calls == [(PortKind.WORK_TRACKING, None, "PHX")]
 
 
 def test_create_work_item_requires_operator() -> None:

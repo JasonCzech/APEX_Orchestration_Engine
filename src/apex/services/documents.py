@@ -8,6 +8,7 @@ that browsers/httpx produce: one file part + simple text fields. Swap back to
 UploadFile if python-multipart ever lands in the lockfile.
 """
 
+import asyncio
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -24,6 +25,8 @@ from apex.persistence.models import Document
 from apex.persistence.repositories.documents import DocumentsRepository
 from apex.ports.artifact_store import ArtifactStorePort
 from apex.services.connections import get_connection_resolver
+from apex.services.text_extraction import PARSE_PARSED, derive_summary, extract_text
+from apex.settings import get_settings
 
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024  # 25 MB hard cap per uploaded document
 # Stream cap: file cap + slack for multipart framing and small text fields.
@@ -150,6 +153,20 @@ class DocumentsService:
         name = safe_filename(filename)
         key = document_artifact_key(document_id, name)
         await self._store.put(key, data, content_type=content_type)
+
+        # Parse the bytes into text the agent can actually read. Off-thread because
+        # pypdf/python-docx are blocking; soft-fails (status set) never break the upload.
+        ingest = get_settings().documents
+        extraction = await asyncio.to_thread(
+            extract_text,
+            data,
+            filename=name,
+            content_type=content_type,
+            max_chars=ingest.max_extract_chars,
+        )
+        if not summary and extraction.status == PARSE_PARSED and extraction.text:
+            summary = derive_summary(extraction.text, max_chars=ingest.summary_chars)
+
         document = Document(
             id=document_id,
             name=name,
@@ -160,6 +177,10 @@ class DocumentsService:
             app_id=app_id,
             summary=summary,
             uploaded_by=uploaded_by,
+            extracted_text=extraction.text or None,
+            extracted_chars=extraction.char_count,
+            parse_status=extraction.status,
+            parse_error=extraction.error,
         )
         return await self._repository.add(document)
 

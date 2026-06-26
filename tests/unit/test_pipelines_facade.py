@@ -10,7 +10,7 @@ from langgraph_sdk.errors import NotFoundError
 
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
+from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.domain.pipeline import PHASE_ORDER
 from apex.routers.pipelines import get_pipeline_read_service, router
 from apex.services.pipeline_read import (
@@ -133,12 +133,13 @@ THREAD_IDLE = {
 }
 
 
-def operator_identity() -> ConsumerIdentity:
+def operator_identity(projects: tuple[str, ...] = ()) -> ConsumerIdentity:
     return ConsumerIdentity(
         consumer_id="c1",
         name="op",
         consumer_type=ConsumerType.DASHBOARD,
         role=Role.OPERATOR,
+        scopes=[ScopeRef(project_id=project) for project in projects],
     )
 
 
@@ -236,7 +237,7 @@ def test_list_pipelines_returns_mapped_items() -> None:
 
 def test_list_pipelines_passes_project_filter_to_metadata_search() -> None:
     fake = FakeThreads([THREAD_INTERRUPTED, THREAD_IDLE])
-    app = make_app(FakeClient(fake), operator_identity())
+    app = make_app(FakeClient(fake), operator_identity(("p2",)))
     with TestClient(app) as client:
         response = client.get("/v1/pipelines", params={"project": "p2", "status": "idle"})
     assert response.status_code == 200
@@ -244,6 +245,15 @@ def test_list_pipelines_passes_project_filter_to_metadata_search() -> None:
     assert fake.search_calls[0]["metadata"] == {"project_id": "p2"}
     assert fake.search_calls[0]["status"] == "idle"
     assert fake.search_calls[0]["sort_by"] == "updated_at"
+
+
+def test_list_pipelines_rejects_out_of_scope_project_before_loopback() -> None:
+    fake = FakeThreads([THREAD_INTERRUPTED, THREAD_IDLE])
+    app = make_app(FakeClient(fake), operator_identity(("p1",)))
+    with TestClient(app) as client:
+        response = client.get("/v1/pipelines", params={"project": "p2"})
+    assert response.status_code == 403
+    assert fake.search_calls == []
 
 
 def test_list_pipelines_q_filters_current_page_by_title() -> None:

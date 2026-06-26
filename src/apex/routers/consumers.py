@@ -6,7 +6,6 @@ is stored, so `key_fingerprint` is the first 8 hex chars of the stored *hash*
 (not of the key); it identifies a credential in the UI but can never reconstruct it.
 """
 
-import asyncio
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -136,6 +135,13 @@ async def _get_or_404(repo: ConsumersRepository, consumer_id: str) -> ApiConsume
     return consumer
 
 
+async def _get_for_update_or_404(repo: ConsumersRepository, consumer_id: str) -> ApiConsumer:
+    consumer = await repo.get_for_update(consumer_id)
+    if consumer is None:
+        raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
+    return consumer
+
+
 def _scope_refs(consumer: ApiConsumer) -> list[ScopeRef]:
     return [ScopeRef(project_id=scope.project_id, app_id=scope.app_id) for scope in consumer.scopes]
 
@@ -158,36 +164,71 @@ def _can_manage_consumer(identity: ConsumerIdentity, consumer: ApiConsumer) -> b
     return not _consumer_is_unscoped_admin(role, scopes) and _scopes_inside_admin(identity, scopes)
 
 
-def _ensure_can_grant(identity: ConsumerIdentity, role: Role, scopes: list[ScopeRef]) -> None:
+def _grant_denial_detail(
+    identity: ConsumerIdentity, role: Role, scopes: list[ScopeRef]
+) -> str | None:
     if identity.is_unscoped:
-        return
+        return None
     if _consumer_is_unscoped_admin(role, scopes):
-        raise HTTPException(status_code=403, detail="Scoped admins cannot grant platform admin")
+        return "Scoped admins cannot grant platform admin"
     if not _scopes_inside_admin(identity, scopes):
-        raise HTTPException(
-            status_code=403,
-            detail="Scoped admins cannot grant out-of-scope access",
-        )
+        return "Scoped admins cannot grant out-of-scope access"
+    return None
+
+
+async def _ensure_can_grant(
+    identity: ConsumerIdentity,
+    role: Role,
+    scopes: list[ScopeRef],
+    *,
+    action: str,
+    consumer_id: str | None = None,
+) -> None:
+    detail = _grant_denial_detail(identity, role, scopes)
+    if detail is None:
+        return
+    await _audit_consumer_action(
+        identity,
+        action,
+        consumer_id,
+        decision="denied",
+        reason=detail,
+    )
+    raise HTTPException(status_code=403, detail=detail)
 
 
 async def _audit_consumer_action(
-    identity: ConsumerIdentity, action: str, consumer_id: str, *, decision: str = "allowed"
+    identity: ConsumerIdentity,
+    action: str,
+    consumer_id: str | None,
+    *,
+    decision: str = "allowed",
+    reason: str | None = None,
 ) -> None:
-    try:
-        asyncio.get_running_loop().create_task(
-            append_audit_event_best_effort(
-                event_from_identity(
-                    identity=identity,
-                    category="security_event",
-                    action=action,
-                    decision=decision,
-                    resource_type="api_consumer",
-                    resource_id=consumer_id,
-                )
-            )
+    await append_audit_event_best_effort(
+        event_from_identity(
+            identity=identity,
+            category="security_event",
+            action=action,
+            decision=decision,
+            reason=reason,
+            resource_type="api_consumer",
+            resource_id=consumer_id,
         )
-    except RuntimeError:
-        return
+    )
+
+
+async def _raise_unmanageable_consumer(
+    identity: ConsumerIdentity, action: str, consumer_id: str
+) -> None:
+    await _audit_consumer_action(
+        identity,
+        action,
+        consumer_id,
+        decision="denied",
+        reason="Consumer is outside this admin's manageable scope",
+    )
+    raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
 
 
 # ── Routes (all admin-only) ──────────────────────────────────────────────────
@@ -206,7 +247,7 @@ async def list_consumers(identity: AdminIdentity, repo: ConsumersRepo) -> list[C
 async def create_consumer(
     body: ConsumerCreateRequest, identity: AdminIdentity, repo: ConsumersRepo
 ) -> ConsumerCreated:
-    _ensure_can_grant(identity, body.role, body.scopes)
+    await _ensure_can_grant(identity, body.role, body.scopes, action="consumer.create")
     if await repo.get_by_name(body.name) is not None:
         raise HTTPException(status_code=409, detail=f"Consumer name '{body.name}' already exists")
     api_key = _generate_api_key()
@@ -229,7 +270,7 @@ async def get_consumer(
 ) -> ConsumerRead:
     consumer = await _get_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, consumer):
-        raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
+        await _raise_unmanageable_consumer(identity, "consumer.get", consumer_id)
     return _read_model(consumer)
 
 
@@ -241,10 +282,28 @@ async def update_consumer(
     repo: ConsumersRepo,
 ) -> ConsumerRead:
     if body.enabled is False and consumer_id == identity.consumer_id:
+        await _audit_consumer_action(
+            identity,
+            "consumer.update",
+            consumer_id,
+            decision="denied",
+            reason="A consumer cannot disable itself",
+        )
         raise HTTPException(status_code=409, detail="A consumer cannot disable itself")
-    existing = await _get_or_404(repo, consumer_id)
+    if consumer_id == identity.consumer_id and (body.role is not None or body.scopes is not None):
+        await _audit_consumer_action(
+            identity,
+            "consumer.update",
+            consumer_id,
+            decision="denied",
+            reason="A consumer cannot change its own role or scopes",
+        )
+        raise HTTPException(
+            status_code=409, detail="A consumer cannot change its own role or scopes"
+        )
+    existing = await _get_for_update_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, existing):
-        raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
+        await _raise_unmanageable_consumer(identity, "consumer.update", consumer_id)
     if body.name is not None and body.name != existing.name:
         if await repo.get_by_name(body.name) is not None:
             raise HTTPException(
@@ -252,9 +311,15 @@ async def update_consumer(
             )
     next_role = body.role or Role(existing.role)
     next_scopes = body.scopes if body.scopes is not None else _scope_refs(existing)
-    _ensure_can_grant(identity, next_role, next_scopes)
-    updated = await repo.update(
-        consumer_id,
+    await _ensure_can_grant(
+        identity,
+        next_role,
+        next_scopes,
+        action="consumer.update",
+        consumer_id=consumer_id,
+    )
+    updated = await repo.update_existing(
+        existing,
         name=body.name,
         role=body.role.value if body.role is not None else None,
         enabled=body.enabled,
@@ -263,8 +328,6 @@ async def update_consumer(
         revoked_at=body.revoked_at,
         updated_by=identity.consumer_id,
     )
-    if updated is None:  # deleted between the two lookups
-        raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
     await _audit_consumer_action(identity, "consumer.update", consumer_id)
     return _read_model(updated)
 
@@ -274,10 +337,17 @@ async def delete_consumer(
     consumer_id: ConsumerId, identity: AdminIdentity, repo: ConsumersRepo
 ) -> None:
     if consumer_id == identity.consumer_id:
+        await _audit_consumer_action(
+            identity,
+            "consumer.delete",
+            consumer_id,
+            decision="denied",
+            reason="A consumer cannot delete itself",
+        )
         raise HTTPException(status_code=409, detail="A consumer cannot delete itself")
     consumer = await _get_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, consumer):
-        raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
+        await _raise_unmanageable_consumer(identity, "consumer.delete", consumer_id)
     if not await repo.delete(consumer_id, deleted_by=identity.consumer_id):
         raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
     await _audit_consumer_action(identity, "consumer.delete", consumer_id)
@@ -293,7 +363,7 @@ async def rotate_consumer_key(
     api_key = _generate_api_key()
     existing = await _get_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, existing):
-        raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
+        await _raise_unmanageable_consumer(identity, "consumer.rotate_key", consumer_id)
     grace_expires_at = None
     if body is not None and body.grace_period_seconds > 0:
         grace_expires_at = datetime.now(UTC) + timedelta(seconds=body.grace_period_seconds)

@@ -524,9 +524,13 @@ async def _load_prompts_with_fresh_engine(
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from apex.persistence.repositories.prompts import PromptRepository
-    from apex.settings import get_settings
+    from apex.settings import database_ssl_connect_args, get_settings
 
-    engine = create_async_engine(get_settings().database.uri)
+    database = get_settings().database
+    engine = create_async_engine(
+        database.uri,
+        connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+    )
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             repo = PromptRepository(session)
@@ -548,9 +552,13 @@ async def _resolve_phase_prompts_with_fresh_engine(
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from apex.persistence.repositories.prompts import PromptRepository
-    from apex.settings import get_settings
+    from apex.settings import database_ssl_connect_args, get_settings
 
-    engine = create_async_engine(get_settings().database.uri)
+    database = get_settings().database
+    engine = create_async_engine(
+        database.uri,
+        connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+    )
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             resolver = PromptResolver(store=PromptRepository(session))

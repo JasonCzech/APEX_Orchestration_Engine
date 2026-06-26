@@ -67,15 +67,24 @@ class SecurityHeadersMiddleware:
 
 
 class AuthAuditMiddleware:
-    """Best-effort audit logging for authentication/authorization decisions."""
+    """Best-effort audit logging plus process-local 401 lockout."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, settings: RateLimitSettings | None = None) -> None:
         self._app = app
+        self._settings = settings or RateLimitSettings()
+        self._failure_buckets: defaultdict[str, deque[float]] = defaultdict(deque)
+        self._lockouts: dict[str, float] = {}
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
             await self._app(scope, receive, send)
             return
+        if self._settings.enabled and _is_rate_limited_path(scope, self._settings):
+            retry_after = self._auth_lockout_retry_after(scope, now=time.monotonic())
+            if retry_after is not None:
+                _schedule_audit(scope, 429, reason="authentication lockout")
+                await _send_rate_limited(send, retry_after)
+                return
         status_code = 500
 
         async def send_wrapper(message: dict[str, Any]) -> None:
@@ -91,6 +100,39 @@ class AuthAuditMiddleware:
             raise
         if status_code in _AUDITED_STATUSES:
             _schedule_audit(scope, status_code)
+        if self._settings.enabled and _is_rate_limited_path(scope, self._settings):
+            self._record_auth_result(scope, status_code=status_code, now=time.monotonic())
+
+    def _auth_lockout_retry_after(self, scope: Mapping[str, Any], *, now: float) -> int | None:
+        key = _rate_key(scope)
+        until = self._lockouts.get(key)
+        if until is None:
+            return None
+        if now >= until:
+            self._lockouts.pop(key, None)
+            self._failure_buckets.pop(key, None)
+            return None
+        return max(int(until - now), 1)
+
+    def _record_auth_result(
+        self, scope: Mapping[str, Any], *, status_code: int, now: float
+    ) -> None:
+        key = _rate_key(scope)
+        if status_code != 401:
+            self._failure_buckets.pop(key, None)
+            self._lockouts.pop(key, None)
+            return
+        limit = max(int(self._settings.auth_failures), 0)
+        if limit <= 0:
+            return
+        window = max(float(self._settings.auth_failure_window_s), 1.0)
+        lockout = max(float(self._settings.auth_lockout_s), 1.0)
+        bucket = self._failure_buckets[key]
+        while bucket and now - bucket[0] >= window:
+            bucket.popleft()
+        bucket.append(now)
+        if len(bucket) >= limit:
+            self._lockouts[key] = now + lockout
 
 
 class RateLimitMiddleware:

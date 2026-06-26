@@ -11,7 +11,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from apex.app.dependencies import CurrentIdentity, require_role
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
 from apex.services.context import collect_context_evidence, start_context_summary
@@ -23,6 +23,14 @@ router = APIRouter(prefix="/context", tags=["context"])
 def get_loopback_client(request: Request) -> Any:
     """Loopback LangGraph client carrying the caller's API key (override in tests)."""
     return loopback_client(extract_api_key(request.headers))
+
+
+def _loopback_client_after_scope(request: Request) -> Any:
+    overrides: Any = getattr(request.app, "dependency_overrides", {})
+    override = overrides.get(get_loopback_client)
+    if override is not None:
+        return override()
+    return get_loopback_client(request)
 
 
 LoopbackClient = Annotated[Any, Depends(get_loopback_client)]
@@ -61,13 +69,10 @@ class EvidencePacket(BaseModel):
 
 @router.post("/summaries", operation_id="createContextSummary", status_code=202)
 async def create_context_summary(
-    body: ContextSummaryRequest, identity: OperatorIdentity, client: LoopbackClient
+    body: ContextSummaryRequest, identity: OperatorIdentity, request: Request
 ) -> ContextSummaryAccepted:
-    if body.project_id is not None and not identity.allows_project(body.project_id):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Project '{body.project_id}' is outside this consumer's scopes",
-        )
+    ensure_scope(identity, project_id=body.project_id)
+    client = _loopback_client_after_scope(request)
     result = await start_context_summary(
         client,
         subject=body.subject,
@@ -81,14 +86,12 @@ async def create_context_summary(
 @router.get("/evidence", operation_id="listContextEvidence")
 async def list_context_evidence(
     identity: CurrentIdentity,
-    client: LoopbackClient,
+    request: Request,
     project: Annotated[str | None, Query(description="Filter to one project")] = None,
     thread_id: Annotated[str | None, Query(description="Narrow to one thread")] = None,
 ) -> list[EvidencePacket]:
-    if project is not None and not identity.allows_project(project):
-        raise HTTPException(
-            status_code=403, detail=f"Project '{project}' is outside this consumer's scopes"
-        )
+    ensure_scope(identity, project_id=project)
+    client = _loopback_client_after_scope(request)
     try:
         packets = await collect_context_evidence(client, project_id=project, thread_id=thread_id)
     except LookupError as exc:

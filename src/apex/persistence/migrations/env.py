@@ -6,7 +6,7 @@ from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from apex.persistence.models import Base
-from apex.settings import get_settings
+from apex.settings import database_ssl_connect_args, get_settings
 
 config = context.config
 if config.config_file_name is not None:
@@ -57,7 +57,13 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(_database_uri(), poolclass=pool.NullPool)
+    uri = _database_uri()
+    database = get_settings().database
+    engine = create_async_engine(
+        uri,
+        poolclass=pool.NullPool,
+        connect_args=database_ssl_connect_args(uri, database.ssl_mode),
+    )
     async with engine.connect() as connection:
         await connection.run_sync(do_run_migrations)
         await connection.commit()

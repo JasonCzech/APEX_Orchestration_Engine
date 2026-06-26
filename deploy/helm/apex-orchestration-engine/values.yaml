@@ -296,8 +296,9 @@ gateway:
 
 # ───────────────────────────── network policy ────────────────────────────────
 # ON by default: matched pods are default-deny except for the explicit rules below.
-# Set networkPolicy.egress.to for your Postgres, Redis, S3/MinIO, and Kubernetes
-# API destinations before production rollout.
+# Defaults allow DNS plus private-network data-plane ports commonly used by
+# Postgres, Redis, private object storage/MinIO, and the Kubernetes API. Tighten
+# these CIDRs/selectors for your cluster in production.
 networkPolicy:
   enabled: true
   ingress:
@@ -307,7 +308,30 @@ networkPolicy:
   egress:
     dns: true                       # allow udp/tcp 53 to kube-dns
     allowAll: false                 # single allow-all egress (LLM/registry endpoints are public + varied)
-    to: []                          # explicit CIDRs/selectors (Postgres, Redis, S3, K8s API)
+    rules:
+      # Same-namespace data services, e.g. an in-cluster Redis/MinIO dependency.
+      - to:
+          - podSelector: {}
+        ports:
+          - { port: 443, protocol: TCP }   # Kubernetes API / HTTPS private endpoints
+          - { port: 5432, protocol: TCP }  # Postgres
+          - { port: 6379, protocol: TCP }  # Redis
+          - { port: 6380, protocol: TCP }  # Redis TLS
+          - { port: 9000, protocol: TCP }  # MinIO/S3 API
+          - { port: 9001, protocol: TCP }  # MinIO console
+      # Private endpoint / VNet destinations for managed Postgres, Redis, object
+      # storage, and the Kubernetes API.
+      - to:
+          - ipBlock: { cidr: 10.0.0.0/8 }
+          - ipBlock: { cidr: 172.16.0.0/12 }
+          - ipBlock: { cidr: 192.168.0.0/16 }
+        ports:
+          - { port: 443, protocol: TCP }
+          - { port: 5432, protocol: TCP }
+          - { port: 6379, protocol: TCP }
+          - { port: 6380, protocol: TCP }
+          - { port: 9000, protocol: TCP }
+    to: []                          # legacy extra destinations; allows all ports to listed peers
 
 # ─────────────────────────── observability hooks ─────────────────────────────
 # The server exposes no /metrics endpoint yet (see ADR / docs). These ship OFF;

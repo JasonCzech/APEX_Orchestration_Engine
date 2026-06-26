@@ -152,6 +152,7 @@ class AuditLog(Base):
     resource_type: Mapped[str | None] = mapped_column(String(128))
     resource_id: Mapped[str | None] = mapped_column(String(255))
     extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    event_nonce: Mapped[str | None] = mapped_column(String(32))
     previous_hash: Mapped[str | None] = mapped_column(String(64))
     event_hash: Mapped[str] = mapped_column(String(64), unique=True)
 
@@ -355,6 +356,10 @@ class HostMapping(Base):
 
 # ── Documents + wizard drafts (M2) ──────────────────────────────────────────
 
+# Length of the inline text snippet returned in API responses; full extracted text stays
+# server-side (used only to build phase context), so list/detail payloads stay small.
+DOCUMENT_TEXT_PREVIEW_CHARS = 2000
+
 
 class Document(Base):
     """Uploaded context document metadata; bytes live in the artifact store."""
@@ -376,6 +381,20 @@ class Document(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     uploaded_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Extracted plain text + parse outcome, populated on upload by the text extractor.
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    extracted_chars: Mapped[int | None] = mapped_column(Integer)
+    parse_status: Mapped[str | None] = mapped_column(String(32))
+    parse_error: Mapped[str | None] = mapped_column(Text)
+
+    @property
+    def text_preview(self) -> str | None:
+        """Short snippet of the extracted text for API responses (full text stays server-side)."""
+        if not self.extracted_text:
+            return None
+        if len(self.extracted_text) <= DOCUMENT_TEXT_PREVIEW_CHARS:
+            return self.extracted_text
+        return self.extracted_text[:DOCUMENT_TEXT_PREVIEW_CHARS] + "…"
 
 
 class SavedQuery(Base):
