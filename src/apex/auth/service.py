@@ -1,6 +1,7 @@
 """API-key -> ConsumerIdentity resolution, shared by the LangGraph and /v1 surfaces."""
 
 import hashlib
+import hmac
 import secrets
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
@@ -8,9 +9,10 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
-from apex.persistence.models import ApiConsumer
+from apex.persistence.models import ApiConsumer, ConsumerKey
 from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -22,7 +24,26 @@ class AuthStoreUnavailableError(RuntimeError):
 
 
 def hash_api_key(api_key: str) -> str:
+    pepper = get_settings().auth.api_key_hash_pepper
+    if pepper:
+        return hmac.new(
+            pepper.encode("utf-8"),
+            api_key.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+    return legacy_hash_api_key(api_key)
+
+
+def legacy_hash_api_key(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+
+
+def _candidate_key_hashes(api_key: str) -> tuple[str, ...]:
+    current = hash_api_key(api_key)
+    legacy = legacy_hash_api_key(api_key)
+    if secrets.compare_digest(current, legacy):
+        return (current,)
+    return (current, legacy)
 
 
 HeaderInput = Mapping[Any, Any] | Iterable[tuple[Any, Any]]
@@ -131,46 +152,149 @@ class IdentityResolver:
             from apex.persistence.db import get_sessionmaker
 
             session_factory = get_sessionmaker()
-        key_hash = hash_api_key(api_key)
+        current_hash = hash_api_key(api_key)
+        legacy_hash = legacy_hash_api_key(api_key)
+        key_hashes = _candidate_key_hashes(api_key)
         async with session_factory() as session:
-            consumer = await session.scalar(
-                select(ApiConsumer).where(
-                    ApiConsumer.key_hash == key_hash,
-                    ApiConsumer.enabled.is_(True),
-                    ApiConsumer.revoked_at.is_(None),
-                    ApiConsumer.deleted_at.is_(None),
+            credential = await session.scalar(
+                select(ConsumerKey)
+                .options(selectinload(ConsumerKey.consumer).selectinload(ApiConsumer.scopes))
+                .where(
+                    ConsumerKey.key_hash.in_(key_hashes),
+                    ConsumerKey.revoked_at.is_(None),
                 )
             )
+            if isinstance(credential, ConsumerKey):
+                return await self._identity_from_key(
+                    session=session,
+                    key=credential,
+                    key_hashes=key_hashes,
+                    current_hash=current_hash,
+                    legacy_hash=legacy_hash,
+                )
+
+            consumer = credential if isinstance(credential, ApiConsumer) else None
             if consumer is None:
-                return None
-            now = datetime.now(UTC)
-            if consumer.revoked_at is not None or consumer.deleted_at is not None:
-                return None
-            if consumer.expires_at is not None and consumer.expires_at <= now:
-                return None
-            identity = ConsumerIdentity(
-                consumer_id=consumer.id,
-                name=consumer.name,
-                consumer_type=ConsumerType(consumer.consumer_type),
-                role=Role(consumer.role),
-                scopes=[
-                    ScopeRef(project_id=scope.project_id, app_id=scope.app_id)
-                    for scope in consumer.scopes
-                ],
-            )
-            should_touch_last_used = (
-                consumer.last_used_at is None
-                or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
-            )
-            if should_touch_last_used:
-                try:
-                    consumer.last_used_at = now
-                    await session.commit()
-                except Exception:
-                    logger.warning(
-                        "apex.auth.last_used_update_failed", consumer=consumer.name, exc_info=True
+                consumer = await session.scalar(
+                    select(ApiConsumer).where(
+                        ApiConsumer.key_hash.in_(key_hashes),
+                        ApiConsumer.enabled.is_(True),
+                        ApiConsumer.revoked_at.is_(None),
+                        ApiConsumer.deleted_at.is_(None),
                     )
-            return identity
+                )
+            return await self._identity_from_legacy_consumer(
+                session=session,
+                consumer=consumer,
+                key_hashes=key_hashes,
+                current_hash=current_hash,
+                legacy_hash=legacy_hash,
+            )
+
+    async def _identity_from_key(
+        self,
+        *,
+        session: Any,
+        key: ConsumerKey,
+        key_hashes: tuple[str, ...],
+        current_hash: str,
+        legacy_hash: str,
+    ) -> ConsumerIdentity | None:
+        if not any(secrets.compare_digest(key.key_hash, value) for value in key_hashes):
+            return None
+        consumer = key.consumer
+        now = datetime.now(UTC)
+        if not _consumer_is_active(consumer, now):
+            return None
+        if key.revoked_at is not None:
+            return None
+        if key.expires_at is not None and key.expires_at <= now:
+            return None
+        should_rehash_key = (
+            get_settings().auth.api_key_hash_pepper is not None
+            and secrets.compare_digest(key.key_hash, legacy_hash)
+            and not secrets.compare_digest(key.key_hash, current_hash)
+        )
+        should_touch_key = (
+            key.last_used_at is None or now - key.last_used_at > LAST_USED_WRITE_INTERVAL
+        )
+        should_touch_consumer = (
+            consumer.last_used_at is None or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
+        )
+        if should_rehash_key:
+            key.key_hash = current_hash
+            if secrets.compare_digest(consumer.key_hash, legacy_hash):
+                consumer.key_hash = current_hash
+        if should_touch_key:
+            key.last_used_at = now
+        if should_touch_consumer:
+            consumer.last_used_at = now
+        if should_rehash_key or should_touch_key or should_touch_consumer:
+            try:
+                await session.commit()
+            except Exception:
+                logger.warning(
+                    "apex.auth.key_metadata_update_failed",
+                    consumer=consumer.name,
+                    exc_info=True,
+                )
+        return _identity_from_consumer(consumer)
+
+    async def _identity_from_legacy_consumer(
+        self,
+        *,
+        session: Any,
+        consumer: ApiConsumer | None,
+        key_hashes: tuple[str, ...],
+        current_hash: str,
+        legacy_hash: str,
+    ) -> ConsumerIdentity | None:
+        if consumer is None:
+            return None
+        if not any(secrets.compare_digest(consumer.key_hash, value) for value in key_hashes):
+            return None
+        now = datetime.now(UTC)
+        if not _consumer_is_active(consumer, now):
+            return None
+        should_rehash_key = (
+            get_settings().auth.api_key_hash_pepper is not None
+            and secrets.compare_digest(consumer.key_hash, legacy_hash)
+            and not secrets.compare_digest(consumer.key_hash, current_hash)
+        )
+        should_touch_last_used = (
+            consumer.last_used_at is None or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
+        )
+        if should_rehash_key:
+            consumer.key_hash = current_hash
+        if should_touch_last_used or should_rehash_key:
+            try:
+                consumer.last_used_at = now
+                await session.commit()
+            except Exception:
+                logger.warning(
+                    "apex.auth.last_used_update_failed", consumer=consumer.name, exc_info=True
+                )
+        return _identity_from_consumer(consumer)
+
+
+def _consumer_is_active(consumer: ApiConsumer, now: datetime) -> bool:
+    if not consumer.enabled:
+        return False
+    if consumer.revoked_at is not None or consumer.deleted_at is not None:
+        return False
+    return not (consumer.expires_at is not None and consumer.expires_at <= now)
+
+
+def _identity_from_consumer(consumer: ApiConsumer) -> ConsumerIdentity:
+    return ConsumerIdentity(
+        consumer_id=consumer.id,
+        name=consumer.name,
+        consumer_type=ConsumerType(consumer.consumer_type),
+        role=Role(consumer.role),
+        scopes=[
+            ScopeRef(project_id=scope.project_id, app_id=scope.app_id) for scope in consumer.scopes
+        ],
+    )
 
 
 default_resolver = IdentityResolver()

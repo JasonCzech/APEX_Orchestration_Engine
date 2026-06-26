@@ -82,9 +82,43 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "consumer_keys",
+        sa.Column("id", sa.String(length=32), nullable=False),
+        sa.Column("consumer_id", sa.String(length=32), nullable=False),
+        sa.Column("key_hash", sa.String(length=64), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("rotated_from_id", sa.String(length=32), nullable=True),
+        sa.Column("created_by", sa.String(length=255), nullable=True),
+        sa.ForeignKeyConstraint(
+            ["consumer_id"],
+            ["apex.api_consumers.id"],
+            name=op.f("fk_consumer_keys_api_consumers_consumer_id"),
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_consumer_keys")),
+        sa.UniqueConstraint("key_hash", name=op.f("uq_consumer_keys_key_hash")),
+        schema="apex",
+    )
+    _create_index("ix_consumer_keys_consumer_id", "consumer_keys", ["consumer_id"])
+    _create_index("ix_consumer_keys_expires_at", "consumer_keys", ["expires_at"])
+
+    op.create_table(
         "audit_log",
         sa.Column("id", sa.String(length=32), nullable=False),
-        sa.Column("at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
         sa.Column("category", sa.String(length=64), nullable=False),
         sa.Column("action", sa.String(length=128), nullable=False),
         sa.Column("decision", sa.String(length=32), nullable=False),
@@ -112,12 +146,47 @@ def upgrade() -> None:
     _create_index("ix_audit_log_principal_at", "audit_log", ["principal_id", "at"])
     _create_index("ix_audit_log_decision_at", "audit_log", ["decision", "at"])
 
+    op.create_table(
+        "consumer_deletion_records",
+        sa.Column("id", sa.String(length=32), nullable=False),
+        sa.Column("consumer_id", sa.String(length=32), nullable=False),
+        sa.Column(
+            "deleted_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("deleted_by", sa.String(length=255), nullable=True),
+        sa.Column("name", sa.String(length=255), nullable=False),
+        sa.Column("consumer_type", sa.String(length=32), nullable=False),
+        sa.Column("role", sa.String(length=32), nullable=False),
+        sa.Column("scopes", _json_type(), nullable=False, server_default=sa.text("'{}'")),
+        sa.PrimaryKeyConstraint("id", name=op.f("pk_consumer_deletion_records")),
+        schema="apex",
+    )
+    _create_index(
+        "ix_consumer_deletion_records_consumer_id",
+        "consumer_deletion_records",
+        ["consumer_id"],
+    )
+    _create_index(
+        "ix_consumer_deletion_records_deleted_at",
+        "consumer_deletion_records",
+        ["deleted_at"],
+    )
+
 
 def downgrade() -> None:
+    _drop_index("ix_consumer_deletion_records_deleted_at", "consumer_deletion_records")
+    _drop_index("ix_consumer_deletion_records_consumer_id", "consumer_deletion_records")
+    op.drop_table("consumer_deletion_records", schema="apex")
     _drop_index("ix_audit_log_decision_at", "audit_log")
     _drop_index("ix_audit_log_principal_at", "audit_log")
     _drop_index("ix_audit_log_at", "audit_log")
     op.drop_table("audit_log", schema="apex")
+    _drop_index("ix_consumer_keys_expires_at", "consumer_keys")
+    _drop_index("ix_consumer_keys_consumer_id", "consumer_keys")
+    op.drop_table("consumer_keys", schema="apex")
     for column in (
         "deleted_at",
         "rotation_count",

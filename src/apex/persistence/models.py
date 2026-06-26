@@ -71,6 +71,9 @@ class ApiConsumer(Base):
     scopes: Mapped[list["ConsumerScope"]] = relationship(
         back_populates="consumer", cascade="all, delete-orphan", lazy="selectin"
     )
+    keys: Mapped[list["ConsumerKey"]] = relationship(
+        back_populates="consumer", cascade="all, delete-orphan", lazy="selectin"
+    )
 
 
 class ConsumerScope(Base):
@@ -96,6 +99,28 @@ class ConsumerScope(Base):
     app_id: Mapped[str | None] = mapped_column(String(255))
 
     consumer: Mapped[ApiConsumer] = relationship(back_populates="scopes")
+
+
+class ConsumerKey(Base):
+    """One hashed API key belonging to an API consumer."""
+
+    __tablename__ = "consumer_keys"
+    __table_args__ = (
+        Index("ix_consumer_keys_consumer_id", "consumer_id"),
+        Index("ix_consumer_keys_expires_at", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    consumer_id: Mapped[str] = mapped_column(ForeignKey("api_consumers.id", ondelete="CASCADE"))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rotated_from_id: Mapped[str | None] = mapped_column(String(32))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+
+    consumer: Mapped[ApiConsumer] = relationship(back_populates="keys")
 
 
 class AuditLog(Base):
@@ -129,6 +154,25 @@ class AuditLog(Base):
     extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     previous_hash: Mapped[str | None] = mapped_column(String(64))
     event_hash: Mapped[str] = mapped_column(String(64), unique=True)
+
+
+class ConsumerDeletionRecord(Base):
+    """Immutable tombstone for API consumer deletion events."""
+
+    __tablename__ = "consumer_deletion_records"
+    __table_args__ = (
+        Index("ix_consumer_deletion_records_consumer_id", "consumer_id"),
+        Index("ix_consumer_deletion_records_deleted_at", "deleted_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    consumer_id: Mapped[str] = mapped_column(String(32))
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deleted_by: Mapped[str | None] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255))
+    consumer_type: Mapped[str] = mapped_column(String(32))
+    role: Mapped[str] = mapped_column(String(32))
+    scopes: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
 
 
 # ── Prompt catalog (M2) ─────────────────────────────────────────────────────

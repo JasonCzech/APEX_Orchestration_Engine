@@ -11,7 +11,7 @@ from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import hash_api_key
-from apex.persistence.models import ApiConsumer, ConsumerScope
+from apex.persistence.models import ApiConsumer, ConsumerDeletionRecord, ConsumerKey, ConsumerScope
 from apex.routers.consumers import get_consumers_repository, router
 
 ADMIN = ConsumerIdentity(
@@ -34,6 +34,7 @@ class FakeConsumersRepository:
 
     def __init__(self) -> None:
         self.rows: dict[str, ApiConsumer] = {}
+        self.deletion_records: list[ConsumerDeletionRecord] = []
 
     def seed(self, *, consumer_id: str, name: str, key_hash: str) -> ApiConsumer:
         consumer = ApiConsumer(
@@ -47,14 +48,25 @@ class FakeConsumersRepository:
             last_used_at=None,
         )
         consumer.scopes = []
+        consumer.keys = [
+            ConsumerKey(
+                id=uuid4().hex,
+                consumer_id=consumer_id,
+                key_hash=key_hash,
+                created_at=datetime.now(UTC),
+            )
+        ]
         self.rows[consumer_id] = consumer
         return consumer
 
     async def list_all(self) -> list[ApiConsumer]:
-        return list(self.rows.values())
+        return [consumer for consumer in self.rows.values() if consumer.deleted_at is None]
 
     async def get(self, consumer_id: str) -> ApiConsumer | None:
-        return self.rows.get(consumer_id)
+        consumer = self.rows.get(consumer_id)
+        if consumer is None or consumer.deleted_at is not None:
+            return None
+        return consumer
 
     async def get_by_name(self, name: str) -> ApiConsumer | None:
         return next((c for c in self.rows.values() if c.name == name), None)
@@ -85,6 +97,16 @@ class FakeConsumersRepository:
         )
         consumer.scopes = [
             ConsumerScope(id=uuid4().hex, project_id=s.project_id, app_id=s.app_id) for s in scopes
+        ]
+        consumer.keys = [
+            ConsumerKey(
+                id=uuid4().hex,
+                consumer_id=consumer.id,
+                key_hash=key_hash,
+                expires_at=expires_at,
+                created_at=datetime.now(UTC),
+                created_by=created_by,
+            )
         ]
         self.rows[consumer.id] = consumer
         return consumer
@@ -124,19 +146,75 @@ class FakeConsumersRepository:
         return consumer
 
     async def replace_key_hash(
-        self, consumer_id: str, key_hash: str, *, rotated_by: str | None = None
+        self,
+        consumer_id: str,
+        key_hash: str,
+        *,
+        rotated_by: str | None = None,
+        grace_expires_at: datetime | None = None,
+        expires_at: datetime | None = None,
     ) -> ApiConsumer | None:
         consumer = self.rows.get(consumer_id)
         if consumer is None:
             return None
+        now = datetime.now(UTC)
+        active_keys = [
+            key
+            for key in consumer.keys
+            if key.revoked_at is None and (key.expires_at is None or key.expires_at > now)
+        ]
+        for key in active_keys:
+            if grace_expires_at is None or grace_expires_at <= now:
+                key.revoked_at = now
+            elif key.expires_at is None or key.expires_at > grace_expires_at:
+                key.expires_at = grace_expires_at
+        rotated_from_id = active_keys[0].id if active_keys else None
+        consumer.keys.append(
+            ConsumerKey(
+                id=uuid4().hex,
+                consumer_id=consumer_id,
+                key_hash=key_hash,
+                expires_at=expires_at or consumer.expires_at,
+                rotated_from_id=rotated_from_id,
+                created_at=now,
+                created_by=rotated_by,
+            )
+        )
         consumer.key_hash = key_hash
-        consumer.rotated_at = datetime.now(UTC)
+        consumer.rotated_at = now
         consumer.rotation_count = int(consumer.rotation_count or 0) + 1
         consumer.updated_by = rotated_by
         return consumer
 
-    async def delete(self, consumer_id: str) -> bool:
-        return self.rows.pop(consumer_id, None) is not None
+    async def delete(self, consumer_id: str, *, deleted_by: str | None = None) -> bool:
+        consumer = await self.get(consumer_id)
+        if consumer is None:
+            return False
+        deleted_at = datetime.now(UTC)
+        consumer.deleted_at = deleted_at
+        consumer.revoked_at = consumer.revoked_at or deleted_at
+        consumer.enabled = False
+        consumer.updated_by = deleted_by
+        for key in consumer.keys:
+            key.revoked_at = key.revoked_at or deleted_at
+        self.deletion_records.append(
+            ConsumerDeletionRecord(
+                id=uuid4().hex,
+                consumer_id=consumer_id,
+                deleted_at=deleted_at,
+                deleted_by=deleted_by,
+                name=consumer.name,
+                consumer_type=consumer.consumer_type,
+                role=consumer.role,
+                scopes={
+                    "scopes": [
+                        {"project_id": scope.project_id, "app_id": scope.app_id}
+                        for scope in consumer.scopes
+                    ]
+                },
+            )
+        )
+        return True
 
 
 def make_client(repo: FakeConsumersRepository, identity: ConsumerIdentity = ADMIN) -> TestClient:
@@ -166,6 +244,7 @@ def test_create_returns_raw_key_exactly_once_and_stores_only_hash() -> None:
         assert len(api_key) >= 32
         stored = repo.rows[body["id"]]
         assert stored.key_hash == hash_api_key(api_key)
+        assert [key.key_hash for key in stored.keys] == [stored.key_hash]
         assert api_key != stored.key_hash  # raw key is not what's persisted
         assert body["key_fingerprint"] == stored.key_hash[:8]
         assert body["scopes"] == [{"project_id": "proj-a", "app_id": None}]
@@ -190,6 +269,7 @@ def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
     with make_client(repo) as client:
         created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
         old_hash = repo.rows[created["id"]].key_hash
+        old_key = repo.rows[created["id"]].keys[0]
         old_last_used = datetime(2025, 1, 2, tzinfo=UTC)
         repo.rows[created["id"]].last_used_at = old_last_used
         response = client.post(f"/v1/admin/consumers/{created['id']}/rotate")
@@ -203,6 +283,25 @@ def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
         assert body["key_fingerprint"] == new_hash[:8]
         assert body["rotation_count"] == 1
         assert body["rotated_at"] is not None
+        assert old_key.revoked_at is not None
+        assert len(repo.rows[created["id"]].keys) == 2
+        assert repo.rows[created["id"]].keys[-1].rotated_from_id == old_key.id
+
+
+def test_rotate_with_grace_keeps_old_key_temporarily() -> None:
+    repo = FakeConsumersRepository()
+    with make_client(repo) as client:
+        created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
+        old_key = repo.rows[created["id"]].keys[0]
+        response = client.post(
+            f"/v1/admin/consumers/{created['id']}/rotate",
+            json={"grace_period_seconds": 120},
+        )
+        assert response.status_code == 200
+        assert old_key.revoked_at is None
+        assert old_key.expires_at is not None
+        assert old_key.expires_at > datetime.now(UTC)
+        assert repo.rows[created["id"]].keys[-1].created_by == ADMIN.consumer_id
 
 
 def test_create_accepts_expires_at() -> None:
@@ -309,13 +408,25 @@ def test_self_disable_conflicts_409() -> None:
         assert ok.status_code == 200
 
 
-def test_delete_other_consumer_and_404_when_missing() -> None:
+def test_delete_other_consumer_soft_deletes_and_404_when_missing() -> None:
     repo = FakeConsumersRepository()
-    repo.seed(consumer_id="victim", name="victim", key_hash=hash_api_key("k2"))
+    victim = repo.seed(consumer_id="victim", name="victim", key_hash=hash_api_key("k2"))
+    victim.scopes = [ConsumerScope(id="s-victim", project_id="proj-a", app_id=None)]
     with make_client(repo) as client:
         assert client.delete("/v1/admin/consumers/victim").status_code == 204
-        assert "victim" not in repo.rows
+        assert "victim" in repo.rows
+        assert repo.rows["victim"].deleted_at is not None
+        assert repo.rows["victim"].revoked_at is not None
+        assert repo.rows["victim"].enabled is False
+        assert repo.rows["victim"].updated_by == ADMIN.consumer_id
+        assert client.get("/v1/admin/consumers/victim").status_code == 404
+        assert [row["id"] for row in client.get("/v1/admin/consumers").json()] == []
         assert client.delete("/v1/admin/consumers/victim").status_code == 404
+    assert len(repo.deletion_records) == 1
+    record = repo.deletion_records[0]
+    assert record.consumer_id == "victim"
+    assert record.deleted_by == ADMIN.consumer_id
+    assert record.scopes == {"scopes": [{"project_id": "proj-a", "app_id": None}]}
 
 
 def test_get_unknown_consumer_404() -> None:

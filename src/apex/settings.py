@@ -31,6 +31,8 @@ class AuthSettings(BaseModel):
     enabled: bool = True
     # Local-dev shortcut: a key resolving to a synthetic unscoped admin without DB access.
     dev_api_key: str | None = None
+    # Server-held secret used to HMAC API keys at rest. Required in locked environments.
+    api_key_hash_pepper: str | None = None
 
 
 class RateLimitSettings(BaseModel):
@@ -127,6 +129,8 @@ class ApexSettings(BaseSettings):
             errors.append("auth.enabled=false is allowed only in local/test environments")
         if self.auth.dev_api_key:
             errors.append("auth.dev_api_key is allowed only in local/test environments")
+        if not self.auth.api_key_hash_pepper:
+            errors.append("auth.api_key_hash_pepper is required in locked environments")
         if _is_local_database_uri(self.database.uri):
             errors.append("database.uri must not point at localhost/default credentials")
         if not _database_uri_requires_ssl(self.database.uri, self.database.ssl_mode):

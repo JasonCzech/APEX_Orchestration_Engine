@@ -5,13 +5,13 @@ before handing the digest to this repository.
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.auth.identity import ScopeRef
-from apex.persistence.models import ApiConsumer, ConsumerScope
+from apex.persistence.models import ApiConsumer, ConsumerDeletionRecord, ConsumerKey, ConsumerScope
 
 
 class ConsumersRepository:
@@ -20,12 +20,17 @@ class ConsumersRepository:
 
     async def list_all(self) -> list[ApiConsumer]:
         result = await self._session.scalars(
-            select(ApiConsumer).order_by(ApiConsumer.created_at, ApiConsumer.id)
+            select(ApiConsumer)
+            .where(ApiConsumer.deleted_at.is_(None))
+            .order_by(ApiConsumer.created_at, ApiConsumer.id)
         )
         return list(result)
 
     async def get(self, consumer_id: str) -> ApiConsumer | None:
-        return await self._session.get(ApiConsumer, consumer_id)
+        consumer = await self._session.get(ApiConsumer, consumer_id)
+        if consumer is None or consumer.deleted_at is not None:
+            return None
+        return consumer
 
     async def get_by_name(self, name: str) -> ApiConsumer | None:
         return await self._session.scalar(select(ApiConsumer).where(ApiConsumer.name == name))
@@ -52,6 +57,13 @@ class ConsumersRepository:
             updated_by=created_by,
             scopes=[
                 ConsumerScope(project_id=scope.project_id, app_id=scope.app_id) for scope in scopes
+            ],
+            keys=[
+                ConsumerKey(
+                    key_hash=key_hash,
+                    expires_at=expires_at,
+                    created_by=created_by,
+                )
             ],
         )
         self._session.add(consumer)
@@ -96,16 +108,40 @@ class ConsumersRepository:
         return consumer
 
     async def replace_key_hash(
-        self, consumer_id: str, key_hash: str, *, rotated_by: str | None = None
+        self,
+        consumer_id: str,
+        key_hash: str,
+        *,
+        rotated_by: str | None = None,
+        grace_expires_at: datetime | None = None,
+        expires_at: datetime | None = None,
     ) -> ApiConsumer | None:
-        """Rotate: overwrite the stored hash (the old key stops working immediately)."""
-        from datetime import UTC
-
+        """Rotate: issue a new key; old active keys may survive until grace_expires_at."""
         consumer = await self.get(consumer_id)
         if consumer is None:
             return None
+        now = datetime.now(UTC)
+        active_keys = [
+            key
+            for key in consumer.keys
+            if key.revoked_at is None and (key.expires_at is None or key.expires_at > now)
+        ]
+        for key in active_keys:
+            if grace_expires_at is None or grace_expires_at <= now:
+                key.revoked_at = now
+            elif key.expires_at is None or key.expires_at > grace_expires_at:
+                key.expires_at = grace_expires_at
+        rotated_from_id = active_keys[0].id if active_keys else None
+        consumer.keys.append(
+            ConsumerKey(
+                key_hash=key_hash,
+                expires_at=expires_at or consumer.expires_at,
+                rotated_from_id=rotated_from_id,
+                created_by=rotated_by,
+            )
+        )
         consumer.key_hash = key_hash
-        consumer.rotated_at = datetime.now(UTC)
+        consumer.rotated_at = now
         consumer.rotation_count = int(consumer.rotation_count or 0) + 1
         if rotated_by is not None:
             consumer.updated_by = rotated_by
@@ -113,10 +149,32 @@ class ConsumersRepository:
         await self._session.refresh(consumer)
         return consumer
 
-    async def delete(self, consumer_id: str) -> bool:
+    async def delete(self, consumer_id: str, *, deleted_by: str | None = None) -> bool:
         consumer = await self.get(consumer_id)
         if consumer is None:
             return False
-        await self._session.delete(consumer)
+        deleted_at = datetime.now(UTC)
+        consumer.deleted_at = deleted_at
+        consumer.revoked_at = consumer.revoked_at or deleted_at
+        consumer.enabled = False
+        consumer.updated_by = deleted_by
+        for key in consumer.keys:
+            key.revoked_at = key.revoked_at or deleted_at
+        self._session.add(
+            ConsumerDeletionRecord(
+                consumer_id=consumer.id,
+                deleted_at=deleted_at,
+                deleted_by=deleted_by,
+                name=consumer.name,
+                consumer_type=consumer.consumer_type,
+                role=consumer.role,
+                scopes={
+                    "scopes": [
+                        {"project_id": scope.project_id, "app_id": scope.app_id}
+                        for scope in consumer.scopes
+                    ]
+                },
+            )
+        )
         await self._session.commit()
         return True

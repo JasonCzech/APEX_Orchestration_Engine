@@ -1,14 +1,14 @@
 """API-consumer administration (`/admin/consumers`, admin-only).
 
 Key handling: the raw API key is generated server-side and returned exactly once —
-in the `api_key` field of the create/rotate responses. Only its sha256 hash is
-stored, so `key_fingerprint` is the first 8 hex chars of the stored *hash* (not of
-the key); it identifies a credential in the UI but can never reconstruct it.
+in the `api_key` field of the create/rotate responses. Only its configured hash
+is stored, so `key_fingerprint` is the first 8 hex chars of the stored *hash*
+(not of the key); it identifies a credential in the UI but can never reconstruct it.
 """
 
 import asyncio
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path
@@ -59,7 +59,7 @@ class ConsumerRead(BaseModel):
     rotation_count: int = 0
     deleted_at: datetime | None = None
     key_fingerprint: str = Field(
-        description="First 8 hex chars of the stored sha256 key hash (NOT of the raw "
+        description="First 8 hex chars of the stored key hash (NOT of the raw "
         "key, which is never persisted). Stable identifier for a credential."
     )
 
@@ -67,7 +67,7 @@ class ConsumerRead(BaseModel):
 class ConsumerCreated(ConsumerRead):
     api_key: str = Field(
         description="The raw API key. Shown exactly once — it is stored only as a "
-        "sha256 hash and can never be retrieved again."
+        "configured hash and can never be retrieved again."
     )
 
 
@@ -88,6 +88,11 @@ class ConsumerUpdateRequest(BaseModel):
     scopes: list[ScopeRef] | None = None
     expires_at: datetime | None = None
     revoked_at: datetime | None = None
+
+
+class RotateConsumerKeyRequest(BaseModel):
+    grace_period_seconds: int = Field(default=0, ge=0, le=604800)
+    expires_at: datetime | None = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -273,21 +278,31 @@ async def delete_consumer(
     consumer = await _get_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, consumer):
         raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
-    if not await repo.delete(consumer_id):
+    if not await repo.delete(consumer_id, deleted_by=identity.consumer_id):
         raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
     await _audit_consumer_action(identity, "consumer.delete", consumer_id)
 
 
 @router.post("/{consumer_id}/rotate", operation_id="rotateConsumerKey")
 async def rotate_consumer_key(
-    consumer_id: ConsumerId, identity: AdminIdentity, repo: ConsumersRepo
+    consumer_id: ConsumerId,
+    identity: AdminIdentity,
+    repo: ConsumersRepo,
+    body: RotateConsumerKeyRequest | None = None,
 ) -> ConsumerCreated:
     api_key = _generate_api_key()
     existing = await _get_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, existing):
         raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
+    grace_expires_at = None
+    if body is not None and body.grace_period_seconds > 0:
+        grace_expires_at = datetime.now(UTC) + timedelta(seconds=body.grace_period_seconds)
     consumer = await repo.replace_key_hash(
-        consumer_id, hash_api_key(api_key), rotated_by=identity.consumer_id
+        consumer_id,
+        hash_api_key(api_key),
+        rotated_by=identity.consumer_id,
+        grace_expires_at=grace_expires_at,
+        expires_at=body.expires_at if body is not None else None,
     )
     if consumer is None:
         raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
