@@ -308,8 +308,7 @@ async def test_non_json_success_body_is_runtime_error() -> None:
 )
 def test_verify_tls_option_is_parsed_not_bool_coerced(option: object, expected: bool) -> None:
     # A string "false" must disable TLS verification, not become bool("false") == True.
-    kwargs = {} if option is None else {"verify_tls": option}
-    adapter = make_adapter(**kwargs)
+    adapter = make_adapter() if option is None else make_adapter(verify_tls=option)
     assert adapter._verify_tls is expected
 
 
