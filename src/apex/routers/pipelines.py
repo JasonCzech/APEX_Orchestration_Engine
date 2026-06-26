@@ -24,6 +24,7 @@ from apex.services.pipeline_read import (
     NoActiveRunError,
     PipelineReadService,
 )
+from apex.settings import get_settings
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
@@ -56,6 +57,7 @@ async def _documents_to_packets(
     not leaked. The artifact key is exposed as a /v1/artifacts URL the agent (or a
     human) can dereference.
     """
+    per_doc_cap = get_settings().documents.max_context_chars_per_doc
     packets: list[dict[str, Any]] = []
     for document_id in document_ids:
         document = await repository.get(document_id)
@@ -63,6 +65,9 @@ async def _documents_to_packets(
             document.project_id is None or identity.allows_project(document.project_id)
         ):
             raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
+        text = document.extracted_text or None
+        if text and len(text) > per_doc_cap:
+            text = text[:per_doc_cap].rstrip() + "\n\n…[truncated]"
         packets.append(
             {
                 "id": f"document-{document.id}",
@@ -70,6 +75,7 @@ async def _documents_to_packets(
                 "title": document.name,
                 "summary": document.summary,
                 "ref": f"/v1/artifacts/{document.artifact_key}",
+                "text": text,
             }
         )
     return packets

@@ -115,6 +115,7 @@ class ContextPacket(BaseModel):
     title: str
     summary: str | None = None
     ref: str | None = None
+    text: str | None = None
 
 
 class ExternalResults(BaseModel):

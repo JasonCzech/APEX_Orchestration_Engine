@@ -124,6 +124,59 @@ def test_compose_user_includes_packets_and_external_kpis() -> None:
     assert "Execution results:" in out
 
 
+def test_context_packets_block_fences_document_text() -> None:
+    state = {
+        "context_packets": [
+            {
+                "id": "document-d1",
+                "source": "document",
+                "title": "Spec",
+                "summary": "the spec",
+                "ref": "/v1/artifacts/k",
+                "text": "Story: user signs in.",
+            }
+        ]
+    }
+    block = ps._context_packets_block(state)
+    assert "CONTEXT / EVIDENCE" in block
+    assert "- Spec: the spec (/v1/artifacts/k)" in block
+    assert '"""' in block
+    assert "Story: user signs in." in block
+
+
+def test_context_packets_block_truncates_to_total_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        ps,
+        "get_settings",
+        lambda: SimpleNamespace(documents=SimpleNamespace(max_context_chars_total=30)),
+    )
+    state = {
+        "context_packets": [
+            {"id": "d1", "source": "document", "title": "A", "text": "X" * 25},
+            {"id": "d2", "source": "document", "title": "B", "text": "Y" * 25},
+        ]
+    }
+    block = ps._context_packets_block(state)
+    # First packet consumes 25 of 30; the second is truncated to the remaining 5.
+    assert "X" * 25 in block
+    assert "…[truncated]" in block
+    assert "Y" * 5 in block
+    assert "Y" * 6 not in block
+
+
+def test_compose_user_injects_document_text_for_story_analysis() -> None:
+    state = {
+        "context_packets": [
+            {"id": "document-d1", "source": "document", "title": "Spec", "text": "Login via SSO."}
+        ]
+    }
+    resolved = {"system": "sys", "user": "Analyze this story", "application": None}
+    out = ps._compose_user(state, Phase.STORY_ANALYSIS, resolved, {})
+    assert "Analyze this story" in out
+    assert "Login via SSO." in out
+    assert "CONTEXT / EVIDENCE" in out
+
+
 def test_accumulate_usage_sums_tokens_and_details() -> None:
     acc: dict[str, Any] = {}
     ps._accumulate_usage(

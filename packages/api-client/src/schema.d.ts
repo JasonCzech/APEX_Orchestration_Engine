@@ -1361,18 +1361,26 @@ export interface components {
             artifact_key: string;
             /** Created At */
             created_at?: string | null;
+            /** Extracted Chars */
+            extracted_chars?: number | null;
             /** Id */
             id: string;
             /** Media Type */
             media_type: string;
             /** Name */
             name: string;
+            /** Parse Error */
+            parse_error?: string | null;
+            /** Parse Status */
+            parse_status?: string | null;
             /** Project Id */
             project_id?: string | null;
             /** Size Bytes */
             size_bytes: number;
             /** Summary */
             summary?: string | null;
+            /** Text Preview */
+            text_preview?: string | null;
             /** Uploaded By */
             uploaded_by?: string | null;
         };

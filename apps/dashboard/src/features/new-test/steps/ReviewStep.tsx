@@ -5,6 +5,9 @@
  */
 import type { ReactNode } from 'react'
 
+import { useDocumentsList } from '@/api/hooks/useDocuments'
+
+import { summarizeContext } from '../contextFiles'
 import type { StepProps } from '../NewRunWizard'
 import {
   allIssues,
@@ -51,6 +54,10 @@ export function ReviewStep({
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
   const overrides = Object.keys(draft.prompt_overrides)
+
+  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined)
+  const knownDocs = new Map((documents.data ?? []).map((doc) => [doc.id, doc]))
+  const contextSummary = summarizeContext(draft.document_ids.map((id) => knownDocs.get(id)))
 
   return (
     <section className="wizard-step" aria-label="Review">
@@ -108,6 +115,18 @@ export function ReviewStep({
             {draft.document_ids.length} document{draft.document_ids.length === 1 ? '' : 's'}{' '}
             attached
           </p>
+          {contextSummary.includedCount > 0 && (
+            <p className="wizard-caption">
+              {contextSummary.includedCount} parsed · ~
+              {contextSummary.totalChars.toLocaleString()} characters included as context
+            </p>
+          )}
+          {contextSummary.unreadableCount > 0 && (
+            <p className="wizard-caption wizard-caption--warning">
+              {contextSummary.unreadableCount} file{contextSummary.unreadableCount === 1 ? '' : 's'}{' '}
+              couldn’t be read and won’t be used as context
+            </p>
+          )}
         </ReviewCard>
 
         <ReviewCard title="Config" step="config" onEdit={onEditStep}>

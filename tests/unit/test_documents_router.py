@@ -170,6 +170,60 @@ def test_upload_document_stores_bytes_and_metadata() -> None:
     assert body["id"] in repo.rows
 
 
+def test_upload_parses_text_and_populates_fields() -> None:
+    repo = FakeDocumentsRepository()
+    app = make_app(repo, identity(scopes=[ScopeRef(project_id="p1")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("story.md", b"# Login\n\nUser can sign in with SSO.", "text/markdown")},
+            data={"project_id": "p1", "summary": "Story"},
+        )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["parse_status"] == "parsed"
+    assert body["extracted_chars"] == len("# Login\n\nUser can sign in with SSO.")
+    assert body["parse_error"] is None
+    assert "User can sign in with SSO." in body["text_preview"]
+    # The extracted text is persisted on the row for later context injection.
+    assert "User can sign in with SSO." in (repo.rows[body["id"]].extracted_text or "")
+
+
+def test_upload_auto_derives_summary_when_missing() -> None:
+    repo = FakeDocumentsRepository()
+    app = make_app(repo, identity(scopes=[ScopeRef(project_id="p1")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={
+                "file": ("story.md", b"First evidence paragraph.\n\nMore detail.", "text/markdown")
+            },
+            data={"project_id": "p1"},
+        )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["summary"] == "First evidence paragraph."
+    assert body["parse_status"] == "parsed"
+
+
+def test_upload_unsupported_type_marks_unsupported_but_succeeds() -> None:
+    repo = FakeDocumentsRepository()
+    app = make_app(repo, identity(scopes=[ScopeRef(project_id="p1")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("diagram.png", b"\x89PNG\r\n\x1a\n binary", "image/png")},
+            data={"project_id": "p1", "summary": "Diagram"},
+        )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["parse_status"] == "unsupported"
+    assert body["text_preview"] is None
+    assert not body["extracted_chars"]
+    # Still stored and attachable as a titled reference.
+    assert body["id"] in repo.rows
+
+
 def test_upload_document_rejects_oversize_with_413() -> None:
     repo = FakeDocumentsRepository()
     app = make_app(repo, identity())

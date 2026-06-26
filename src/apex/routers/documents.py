@@ -53,6 +53,10 @@ class DocumentOut(BaseModel):
     summary: str | None = None
     uploaded_by: str | None = None
     created_at: datetime | None = None
+    parse_status: str | None = None
+    extracted_chars: int | None = None
+    parse_error: str | None = None
+    text_preview: str | None = None
 
 
 class DocumentListResponse(BaseModel):

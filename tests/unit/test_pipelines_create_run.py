@@ -40,6 +40,7 @@ def _doc(doc_id: str, project_id: str | None) -> Any:
         name=f"name-{doc_id}",
         summary=f"summary-{doc_id}",
         artifact_key=f"key/{doc_id}",
+        extracted_text=f"text-{doc_id}",
     )
 
 
@@ -54,6 +55,7 @@ async def test_documents_to_packets_maps_and_scopes() -> None:
             "title": "name-d1",
             "summary": "summary-d1",
             "ref": "/v1/artifacts/key/d1",
+            "text": "text-d1",
         },
         {
             "id": "document-g1",
@@ -61,6 +63,7 @@ async def test_documents_to_packets_maps_and_scopes() -> None:
             "title": "name-g1",
             "summary": "summary-g1",
             "ref": "/v1/artifacts/key/g1",
+            "text": "text-g1",
         },
     ]
 

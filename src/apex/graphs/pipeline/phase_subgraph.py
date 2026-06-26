@@ -588,22 +588,34 @@ def _compose_system(resolved: JsonDict) -> str:
 
 def _context_packets_block(state: PipelineState) -> str:
     packets = state.get("context_packets") or []
-    lines: list[str] = []
+    remaining = get_settings().documents.max_context_chars_total
+    sections: list[str] = []
     for packet in packets:
         if not isinstance(packet, dict):
             continue
         title = str(packet.get("title") or packet.get("source") or "evidence")
-        line = f"- {title}"
+        header = f"- {title}"
         summary = str(packet.get("summary") or "")
         if summary:
-            line += f": {summary}"
+            header += f": {summary}"
         ref = str(packet.get("ref") or "")
         if ref:
-            line += f" ({ref})"
-        lines.append(line)
-    if not lines:
+            header += f" ({ref})"
+        text = str(packet.get("text") or "").strip()
+        if text and remaining > 0:
+            if len(text) > remaining:
+                text = text[:remaining].rstrip() + "\n…[truncated]"
+            remaining -= len(text)
+            header += "\n" + _fence(text)
+        sections.append(header)
+    if not sections:
         return ""
-    return "=== CONTEXT / EVIDENCE ===\n" + "\n".join(lines)
+    return "=== CONTEXT / EVIDENCE ===\n" + "\n".join(sections)
+
+
+def _fence(text: str) -> str:
+    """Delimit document text so the model can tell evidence content from instructions."""
+    return f'"""\n{text}\n"""'
 
 
 def _compose_user(

@@ -1633,6 +1633,17 @@
             ],
             "title": "Created At"
           },
+          "extracted_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extracted Chars"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -1644,6 +1655,28 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "parse_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Error"
+          },
+          "parse_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Status"
           },
           "project_id": {
             "anyOf": [
@@ -1670,6 +1703,17 @@
               }
             ],
             "title": "Summary"
+          },
+          "text_preview": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text Preview"
           },
           "uploaded_by": {
             "anyOf": [

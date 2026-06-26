@@ -8,12 +8,23 @@ import { useRef, useState, type DragEvent } from 'react'
 
 import { useDocumentsList, useUploadDocument, type DocumentOut } from '@/api/hooks/useDocuments'
 
+import {
+  ACCEPTED_CONTEXT_ATTR,
+  ACCEPTED_CONTEXT_LABEL,
+  parseStatusBadge,
+  validateContextFile,
+} from '../contextFiles'
 import type { StepProps } from '../NewRunWizard'
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function StatusBadge({ status }: { status: string | null | undefined }) {
+  const badge = parseStatusBadge(status)
+  return <span className={`wizard-badge wizard-badge--${badge.tone}`}>{badge.label}</span>
 }
 
 export function ContextStep({ draft, onChange }: StepProps) {
@@ -23,7 +34,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
   // Documents uploaded in this session (the list query may lag behind).
   const [uploaded, setUploaded] = useState<DocumentOut[]>([])
   const [dragOver, setDragOver] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [uploadErrors, setUploadErrors] = useState<string[]>([])
 
   const known = new Map<string, DocumentOut>()
   for (const doc of documents.data ?? []) known.set(doc.id, doc)
@@ -45,8 +56,14 @@ export function ContextStep({ draft, onChange }: StepProps) {
   }
 
   async function uploadFiles(files: FileList | File[]) {
-    setUploadError(null)
+    setUploadErrors([])
+    const errors: string[] = []
     for (const file of Array.from(files)) {
+      const invalid = validateContextFile(file)
+      if (invalid) {
+        errors.push(invalid)
+        continue
+      }
       try {
         const doc = await upload.mutateAsync({
           file,
@@ -55,9 +72,10 @@ export function ContextStep({ draft, onChange }: StepProps) {
         setUploaded((prev) => [...prev, doc])
         addDocument(doc.id)
       } catch (error) {
-        setUploadError(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
+        errors.push(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
       }
     }
+    if (errors.length > 0) setUploadErrors(errors)
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
@@ -97,6 +115,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
           ref={inputRef}
           type="file"
           multiple
+          accept={ACCEPTED_CONTEXT_ATTR}
           aria-label="Upload documents"
           className="wizard-file-input"
           onChange={(event) => {
@@ -106,35 +125,68 @@ export function ContextStep({ draft, onChange }: StepProps) {
             }
           }}
         />
+        <p className="wizard-caption">Accepted: {ACCEPTED_CONTEXT_LABEL}</p>
         {upload.isPending && <p className="wizard-caption">Uploading…</p>}
-        {uploadError && (
-          <p className="wizard-caption wizard-caption--danger" role="alert">
-            {uploadError}
-          </p>
+        {uploadErrors.length > 0 && (
+          <ul className="wizard-upload-errors" role="alert" data-testid="upload-errors">
+            {uploadErrors.map((message) => (
+              <li key={message} className="wizard-caption wizard-caption--danger">
+                {message}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
       {draft.document_ids.length > 0 && (
         <div className="wizard-field">
           <span className="wizard-label">Attached ({draft.document_ids.length})</span>
-          <div className="wizard-chip-row" data-testid="attached-documents">
+          <ul className="wizard-attached-list" data-testid="attached-documents">
             {draft.document_ids.map((id) => {
               const doc = known.get(id)
               return (
-                <span key={id} className="wizard-chip">
-                  {doc ? `${doc.name} · ${formatBytes(doc.size_bytes)}` : id}
-                  <button
-                    type="button"
-                    className="wizard-chip-remove"
-                    aria-label={`Remove ${doc?.name ?? id}`}
-                    onClick={() => removeDocument(id)}
-                  >
-                    ×
-                  </button>
-                </span>
+                <li key={id} className="wizard-attached">
+                  <div className="wizard-attached-head">
+                    <span className="wizard-attached-name">
+                      {doc ? `${doc.name} · ${formatBytes(doc.size_bytes)}` : id}
+                    </span>
+                    {doc?.parse_status && <StatusBadge status={doc.parse_status} />}
+                    <button
+                      type="button"
+                      className="wizard-chip-remove"
+                      aria-label={`Remove ${doc?.name ?? id}`}
+                      onClick={() => removeDocument(id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {doc?.parse_status === 'parsed' && typeof doc.extracted_chars === 'number' && (
+                    <p className="wizard-caption">
+                      {doc.extracted_chars.toLocaleString()} characters extracted for context
+                    </p>
+                  )}
+                  {doc?.parse_status === 'failed' && (
+                    <p className="wizard-caption wizard-caption--danger">
+                      Couldn’t read this file{doc.parse_error ? `: ${doc.parse_error}` : ''}. It
+                      won’t be used as context.
+                    </p>
+                  )}
+                  {doc?.parse_status === 'unsupported' && (
+                    <p className="wizard-caption wizard-caption--warning">
+                      This file type can’t be read for context; it stays attached as a reference
+                      only.
+                    </p>
+                  )}
+                  {doc?.text_preview && (
+                    <details className="wizard-preview">
+                      <summary className="wizard-preview-summary">Preview extracted text</summary>
+                      <pre className="wizard-preview-body">{doc.text_preview}</pre>
+                    </details>
+                  )}
+                </li>
               )
             })}
-          </div>
+          </ul>
         </div>
       )}
 
@@ -154,6 +206,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
                 <span className="wizard-caption">
                   {doc.media_type} · {formatBytes(doc.size_bytes)}
                 </span>
+                {doc.parse_status && <StatusBadge status={doc.parse_status} />}
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
