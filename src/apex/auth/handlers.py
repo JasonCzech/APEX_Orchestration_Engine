@@ -285,6 +285,41 @@ async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> None:
     ensure_role(identity_from_user(ctx.user), Role.ADMIN)
 
 
+@auth.on(resources="assistants", actions=["read", "search"])
+async def on_assistants_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.VIEWER)
+    return scope_filter(identity)
+
+
+@auth.on(resources="crons", actions=["read", "search"])
+async def on_crons_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.VIEWER)
+    return scope_filter(identity)
+
+
+@auth.on(resources="crons", actions=["create", "update", "delete"])
+async def on_crons_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.OPERATOR)
+    return scope_filter(identity)
+
+
+@auth.on(resources="store", actions=["get", "list", "search"])
+async def on_store_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.VIEWER)
+    return scope_filter(identity)
+
+
+@auth.on(resources="store", actions=["put", "delete", "create", "update"])
+async def on_store_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
+    identity = identity_from_user(ctx.user)
+    ensure_role(identity, Role.OPERATOR)
+    return scope_filter(identity)
+
+
 @auth.on
 async def on_anything_else(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
     """Fallback: authenticated but still project-filtered; scoped consumers fail closed."""

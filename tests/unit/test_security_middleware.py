@@ -56,6 +56,28 @@ async def test_rate_limit_uses_api_key_not_shared_ip() -> None:
     assert second_key[0]["status"] == 200
 
 
+@pytest.mark.asyncio
+async def test_rate_limit_covers_langgraph_paths() -> None:
+    app = RateLimitMiddleware(ok_app, RateLimitSettings(requests=1, window_s=60))
+
+    first = await call_app(app, path="/threads")
+    second = await call_app(app, path="/threads")
+
+    assert first[0]["status"] == 200
+    assert second[0]["status"] == 429
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_ignores_unprotected_paths() -> None:
+    app = RateLimitMiddleware(ok_app, RateLimitSettings(requests=1, window_s=60))
+
+    first = await call_app(app, path="/health")
+    second = await call_app(app, path="/health")
+
+    assert first[0]["status"] == 200
+    assert second[0]["status"] == 200
+
+
 def test_rate_limit_sweeps_expired_distinct_key_buckets() -> None:
     app = RateLimitMiddleware(ok_app, RateLimitSettings(requests=10, window_s=1))
 
@@ -110,3 +132,4 @@ async def test_security_headers_are_added() -> None:
     assert headers[b"x-content-type-options"] == b"nosniff"
     assert headers[b"x-frame-options"] == b"DENY"
     assert headers[b"content-security-policy"] == b"default-src 'none'"
+    assert headers[b"strict-transport-security"] == b"max-age=31536000; includeSubDomains"

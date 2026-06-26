@@ -24,6 +24,7 @@ class DatabaseSettings(BaseModel):
     pool_size: int = 5
     max_overflow: int = 10
     pool_recycle_s: int = 1800
+    ssl_mode: str | None = None
 
 
 class AuthSettings(BaseModel):
@@ -37,6 +38,14 @@ class RateLimitSettings(BaseModel):
     requests: int = 600
     window_s: int = 60
     max_buckets: int = 10000
+    protected_path_prefixes: list[str] = [
+        "/v1/",
+        "/threads",
+        "/runs",
+        "/assistants",
+        "/crons",
+        "/store",
+    ]
 
 
 class SecurityHeadersSettings(BaseModel):
@@ -44,6 +53,8 @@ class SecurityHeadersSettings(BaseModel):
     content_security_policy: str = (
         "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
     )
+    hsts_max_age_s: int = 31536000
+    hsts_include_subdomains: bool = True
 
 
 class LLMSettings(BaseModel):
@@ -118,6 +129,8 @@ class ApexSettings(BaseSettings):
             errors.append("auth.dev_api_key is allowed only in local/test environments")
         if _is_local_database_uri(self.database.uri):
             errors.append("database.uri must not point at localhost/default credentials")
+        if not _database_uri_requires_ssl(self.database.uri, self.database.ssl_mode):
+            errors.append("database.uri must require TLS/SSL in locked environments")
         insecure_origins = [
             origin for origin in normalized_origins if origin and not origin.startswith("https://")
         ]
@@ -136,6 +149,21 @@ def _is_local_database_uri(uri: str) -> bool:
     except ValueError:
         return False
     return (parsed.hostname or "").lower() in LOCAL_DATABASE_HOSTS
+
+
+def _database_uri_requires_ssl(uri: str, ssl_mode: str | None) -> bool:
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return False
+    if parsed.scheme.startswith("sqlite"):
+        return True
+    mode = ssl_mode or ""
+    if not mode:
+        from urllib.parse import parse_qs
+
+        mode = (parse_qs(parsed.query).get("sslmode") or [""])[0]
+    return mode.lower() in {"require", "verify-ca", "verify-full"}
 
 
 @lru_cache

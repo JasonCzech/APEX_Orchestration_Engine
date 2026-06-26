@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.app.dependencies import get_current_identity
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
+from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.domain.integrations import SecretValue
 from apex.persistence.models import Connection, HostMapping
 from apex.persistence.repositories.connections import DuplicateConnectionNameError
@@ -100,9 +100,13 @@ class FakeConnectionsRepository:
         return conn
 
 
-def identity(role: Role) -> ConsumerIdentity:
+def identity(role: Role, scopes: list[ScopeRef] | None = None) -> ConsumerIdentity:
     return ConsumerIdentity(
-        consumer_id="c-test", name="test", consumer_type=ConsumerType.INTERNAL, role=role
+        consumer_id="c-test",
+        name="test",
+        consumer_type=ConsumerType.INTERNAL,
+        role=role,
+        scopes=scopes or [],
     )
 
 
@@ -199,6 +203,51 @@ def test_duplicate_connection_name_is_409(admin: TestClient) -> None:
     payload = {"kind": "work_tracking", "provider": "stub", "name": "dupe"}
     assert admin.post("/admin/connections", json=payload).status_code == 201
     assert admin.post("/admin/connections", json=payload).status_code == 409
+
+
+def test_scoped_admin_cannot_create_global_or_out_of_scope_connection(
+    repo: FakeConnectionsRepository,
+) -> None:
+    client = make_client(repo, identity(Role.ADMIN, [ScopeRef(project_id="demo")]))
+
+    assert (
+        client.post(
+            "/admin/connections",
+            json={"kind": "work_tracking", "provider": "stub", "name": "global"},
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            "/admin/connections",
+            json={
+                "kind": "work_tracking",
+                "provider": "stub",
+                "name": "other",
+                "project_id": "other",
+            },
+        ).status_code
+        == 403
+    )
+
+
+def test_scoped_admin_lists_only_in_scope_connections(repo: FakeConnectionsRepository) -> None:
+    client = make_client(repo, identity(Role.ADMIN, [ScopeRef(project_id="demo")]))
+    repo.connections["global"] = _make_connection(
+        id="global", kind="work_tracking", provider="stub", name="global"
+    )
+    repo.connections["demo"] = _make_connection(
+        id="demo", kind="work_tracking", provider="stub", name="demo", project_id="demo"
+    )
+    repo.connections["other"] = _make_connection(
+        id="other", kind="work_tracking", provider="stub", name="other", project_id="other"
+    )
+
+    listed = client.get("/admin/connections").json()
+    assert [row["name"] for row in listed] == ["demo"]
+    assert client.get("/admin/connections/demo").status_code == 200
+    assert client.get("/admin/connections/global").status_code == 403
+    assert client.get("/admin/connections/other").status_code == 403
 
 
 def test_create_rejects_private_base_url(admin: TestClient) -> None:

@@ -1,7 +1,7 @@
 """/admin/consumers routes against an in-memory fake repository."""
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -19,6 +19,13 @@ ADMIN = ConsumerIdentity(
 )
 OPERATOR = ConsumerIdentity(
     consumer_id="op-1", name="op", consumer_type=ConsumerType.DASHBOARD, role=Role.OPERATOR
+)
+SCOPED_ADMIN = ConsumerIdentity(
+    consumer_id="tenant-admin",
+    name="tenant-admin",
+    consumer_type=ConsumerType.DASHBOARD,
+    role=Role.ADMIN,
+    scopes=[ScopeRef(project_id="proj-a")],
 )
 
 
@@ -60,6 +67,8 @@ class FakeConsumersRepository:
         role: str,
         key_hash: str,
         scopes: Sequence[ScopeRef] = (),
+        expires_at: datetime | None = None,
+        created_by: str | None = None,
     ) -> ApiConsumer:
         consumer = ApiConsumer(
             id=uuid4().hex,
@@ -68,6 +77,9 @@ class FakeConsumersRepository:
             role=role,
             key_hash=key_hash,
             enabled=True,
+            expires_at=expires_at,
+            created_by=created_by,
+            updated_by=created_by,
             created_at=datetime.now(UTC),
             last_used_at=None,
         )
@@ -85,6 +97,9 @@ class FakeConsumersRepository:
         role: str | None = None,
         enabled: bool | None = None,
         scopes: Sequence[ScopeRef] | None = None,
+        expires_at: datetime | None = None,
+        revoked_at: datetime | None = None,
+        updated_by: str | None = None,
     ) -> ApiConsumer | None:
         consumer = self.rows.get(consumer_id)
         if consumer is None:
@@ -100,13 +115,24 @@ class FakeConsumersRepository:
                 ConsumerScope(id=uuid4().hex, project_id=s.project_id, app_id=s.app_id)
                 for s in scopes
             ]
+        if expires_at is not None:
+            consumer.expires_at = expires_at
+        if revoked_at is not None:
+            consumer.revoked_at = revoked_at
+        if updated_by is not None:
+            consumer.updated_by = updated_by
         return consumer
 
-    async def replace_key_hash(self, consumer_id: str, key_hash: str) -> ApiConsumer | None:
+    async def replace_key_hash(
+        self, consumer_id: str, key_hash: str, *, rotated_by: str | None = None
+    ) -> ApiConsumer | None:
         consumer = self.rows.get(consumer_id)
         if consumer is None:
             return None
         consumer.key_hash = key_hash
+        consumer.rotated_at = datetime.now(UTC)
+        consumer.rotation_count = int(consumer.rotation_count or 0) + 1
+        consumer.updated_by = rotated_by
         return consumer
 
     async def delete(self, consumer_id: str) -> bool:
@@ -143,6 +169,7 @@ def test_create_returns_raw_key_exactly_once_and_stores_only_hash() -> None:
         assert api_key != stored.key_hash  # raw key is not what's persisted
         assert body["key_fingerprint"] == stored.key_hash[:8]
         assert body["scopes"] == [{"project_id": "proj-a", "app_id": None}]
+        assert body["created_by"] == ADMIN.consumer_id
         # Never retrievable again: subsequent reads expose no api_key.
         read = client.get(f"/v1/admin/consumers/{body['id']}")
         assert read.status_code == 200
@@ -174,6 +201,20 @@ def test_rotate_replaces_hash_and_returns_new_key_once() -> None:
         assert new_hash != old_hash
         assert repo.rows[created["id"]].last_used_at == old_last_used
         assert body["key_fingerprint"] == new_hash[:8]
+        assert body["rotation_count"] == 1
+        assert body["rotated_at"] is not None
+
+
+def test_create_accepts_expires_at() -> None:
+    repo = FakeConsumersRepository()
+    expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers",
+            json={**CREATE_BODY, "expires_at": expires_at},
+        )
+        assert response.status_code == 201
+        assert response.json()["expires_at"] is not None
 
 
 def test_rotate_unknown_consumer_404() -> None:
@@ -194,6 +235,58 @@ def test_update_role_scopes_and_enabled() -> None:
         assert body["role"] == "viewer"
         assert body["enabled"] is False
         assert body["scopes"] == [{"project_id": "proj-b", "app_id": None}]
+        assert body["updated_by"] == ADMIN.consumer_id
+
+
+def test_update_can_revoke_consumer() -> None:
+    repo = FakeConsumersRepository()
+    revoked_at = datetime.now(UTC).isoformat()
+    with make_client(repo) as client:
+        created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
+        response = client.patch(
+            f"/v1/admin/consumers/{created['id']}", json={"revoked_at": revoked_at}
+        )
+        assert response.status_code == 200
+        assert response.json()["revoked_at"] is not None
+
+
+def test_scoped_admin_cannot_create_unscoped_admin() -> None:
+    repo = FakeConsumersRepository()
+    with make_client(repo, identity=SCOPED_ADMIN) as client:
+        response = client.post(
+            "/v1/admin/consumers",
+            json={"name": "platform", "consumer_type": "headless", "role": "admin", "scopes": []},
+        )
+    assert response.status_code == 403
+
+
+def test_scoped_admin_cannot_grant_out_of_scope_project() -> None:
+    repo = FakeConsumersRepository()
+    with make_client(repo, identity=SCOPED_ADMIN) as client:
+        response = client.post(
+            "/v1/admin/consumers",
+            json={
+                "name": "other-project",
+                "consumer_type": "headless",
+                "role": "operator",
+                "scopes": [{"project_id": "proj-b"}],
+            },
+        )
+    assert response.status_code == 403
+
+
+def test_scoped_admin_can_manage_in_scope_consumer_only() -> None:
+    repo = FakeConsumersRepository()
+    in_scope = repo.seed(consumer_id="in", name="in", key_hash=hash_api_key("k-in"))
+    in_scope.scopes = [ConsumerScope(id="s-in", project_id="proj-a", app_id=None)]
+    out_scope = repo.seed(consumer_id="out", name="out", key_hash=hash_api_key("k-out"))
+    out_scope.scopes = [ConsumerScope(id="s-out", project_id="proj-b", app_id=None)]
+
+    with make_client(repo, identity=SCOPED_ADMIN) as client:
+        listed = client.get("/v1/admin/consumers").json()
+        assert [row["id"] for row in listed] == ["in"]
+        assert client.get("/v1/admin/consumers/in").status_code == 200
+        assert client.get("/v1/admin/consumers/out").status_code == 404
 
 
 def test_self_delete_conflicts_409() -> None:

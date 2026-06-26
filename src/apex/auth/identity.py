@@ -61,3 +61,24 @@ class ConsumerIdentity(BaseModel):
 
     def allows_project(self, project_id: str) -> bool:
         return self.is_unscoped or project_id in self.scoped_project_ids()
+
+    def allows_app(self, project_id: str, app_id: str | None) -> bool:
+        """True when the consumer may access an app or project-level resource.
+
+        A project-only scope (`app_id is None`) grants all apps in that project.
+        An app-narrowed scope grants that specific app. For project-level resources
+        with no app id, any scope in that project is sufficient to preserve the
+        current project-level behavior.
+        """
+
+        if self.is_unscoped:
+            return True
+        if app_id is None:
+            return self.allows_project(project_id)
+        return any(
+            scope.project_id == project_id and (scope.app_id is None or scope.app_id == app_id)
+            for scope in self.scopes
+        )
+
+    def allows_scope(self, *, project_id: str, app_id: str | None = None) -> bool:
+        return self.allows_app(project_id, app_id)

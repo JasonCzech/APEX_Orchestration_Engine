@@ -56,12 +56,15 @@ class FakeResolver:
 
 
 def identity(role: Role = Role.VIEWER, scopes: list[ScopeRef] | None = None) -> ConsumerIdentity:
+    actual_scopes = (
+        [ScopeRef(project_id="p1")] if scopes is None and role is not Role.ADMIN else scopes or []
+    )
     return ConsumerIdentity(
         consumer_id="c1",
         name="viewer",
         consumer_type=ConsumerType.DASHBOARD,
         role=role,
-        scopes=scopes or [],
+        scopes=actual_scopes,
     )
 
 
@@ -100,7 +103,7 @@ def test_search_maps_entries_total_and_extras_for_any_authenticated_role() -> No
     }
     assert body["entries"][1]["fields"] == {}  # plain LogEntry has no extras
     (query, _, page) = adapter.calls[0]
-    assert query.query == "timeout" and query.filters == {}
+    assert query.query == "timeout" and query.filters == {"project_id": "p1"}
     assert (page.offset, page.limit) == (0, 50)
 
 
@@ -136,7 +139,7 @@ def test_search_forwards_filters_including_thread_id_convention() -> None:
     body = {"query": {"filters": {"thread_id": "thread-99", "service": "payment-svc"}}}
     assert post_search(make_app(FakeResolver(adapter), identity()), body).status_code == 200
     (query, _, _) = adapter.calls[0]
-    assert query.filters == {"thread_id": "thread-99", "service": "payment-svc"}
+    assert query.filters == {"thread_id": "thread-99", "service": "payment-svc", "project_id": "p1"}
     assert query.query == ""  # no text -> blank query_string is omitted by adapters
 
 
@@ -210,7 +213,7 @@ def test_connection_id_from_body_reaches_resolver() -> None:
         post_search(make_app(resolver, identity()), {"connection_id": "conn-elk-prod"}).status_code
         == 200
     )
-    assert resolver.calls == [("conn-elk-prod", None)]
+    assert resolver.calls == [("conn-elk-prod", "p1")]
 
 
 def test_connection_id_query_param_overrides_body() -> None:
@@ -221,7 +224,7 @@ def test_connection_id_query_param_overrides_body() -> None:
         params={"connection_id": "conn-param"},
     )
     assert response.status_code == 200
-    assert resolver.calls == [("conn-param", None)]
+    assert resolver.calls == [("conn-param", "p1")]
 
 
 def test_single_project_scope_is_passed_to_resolver() -> None:
@@ -231,11 +234,28 @@ def test_single_project_scope_is_passed_to_resolver() -> None:
     assert resolver.calls == [(None, "p1")]
 
 
-def test_multi_project_scope_resolves_globally() -> None:
+def test_multi_project_scope_requires_project_filter() -> None:
     resolver = FakeResolver(FakeLogSearchAdapter())
     who = identity(scopes=[ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
-    assert post_search(make_app(resolver, who), {}).status_code == 200
-    assert resolver.calls == [(None, None)]
+    response = post_search(make_app(resolver, who), {})
+    assert response.status_code == 403
+    assert resolver.calls == []
+
+
+def test_multi_project_scope_accepts_allowed_project_filter() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    who = identity(scopes=[ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    response = post_search(make_app(resolver, who), {"query": {"filters": {"project_id": "p2"}}})
+    assert response.status_code == 200
+    assert resolver.calls == [(None, "p2")]
+
+
+def test_project_filter_outside_scope_is_403_before_adapter_resolution() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    who = identity(scopes=[ScopeRef(project_id="p1")])
+    response = post_search(make_app(resolver, who), {"query": {"filters": {"project_id": "p9"}}})
+    assert response.status_code == 403
+    assert resolver.calls == []
 
 
 # ── error translation ─────────────────────────────────────────────────────────

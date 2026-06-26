@@ -135,10 +135,18 @@ class IdentityResolver:
         async with session_factory() as session:
             consumer = await session.scalar(
                 select(ApiConsumer).where(
-                    ApiConsumer.key_hash == key_hash, ApiConsumer.enabled.is_(True)
+                    ApiConsumer.key_hash == key_hash,
+                    ApiConsumer.enabled.is_(True),
+                    ApiConsumer.revoked_at.is_(None),
+                    ApiConsumer.deleted_at.is_(None),
                 )
             )
             if consumer is None:
+                return None
+            now = datetime.now(UTC)
+            if consumer.revoked_at is not None or consumer.deleted_at is not None:
+                return None
+            if consumer.expires_at is not None and consumer.expires_at <= now:
                 return None
             identity = ConsumerIdentity(
                 consumer_id=consumer.id,
@@ -150,7 +158,6 @@ class IdentityResolver:
                     for scope in consumer.scopes
                 ],
             )
-            now = datetime.now(UTC)
             should_touch_last_used = (
                 consumer.last_used_at is None
                 or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL

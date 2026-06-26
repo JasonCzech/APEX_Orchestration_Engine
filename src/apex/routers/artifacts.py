@@ -83,7 +83,9 @@ async def _authorize_artifact_key(
 ) -> str:
     document = await documents.get_by_artifact_key(key)
     if document is not None:
-        if document.project_id is None or identity.allows_project(document.project_id):
+        if document.project_id is None or identity.allows_scope(
+            project_id=document.project_id, app_id=document.app_id
+        ):
             return document.media_type
         raise HTTPException(status_code=404, detail=f"artifact {key!r} not found")
 

@@ -25,6 +25,10 @@ def get_engine() -> AsyncEngine:
                 max_overflow=database.max_overflow,
                 pool_recycle=database.pool_recycle_s,
             )
+            url = make_url(database.uri)
+            ssl_mode = database.ssl_mode or str(url.query.get("sslmode") or "")
+            if ssl_mode.lower() in {"require", "verify-ca", "verify-full"}:
+                kwargs["connect_args"] = {"ssl": True}
         _engine = create_async_engine(database.uri, **kwargs)
     return _engine
 

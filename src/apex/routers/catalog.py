@@ -142,6 +142,14 @@ def _environment_out(
     return out
 
 
+def _can_access_application(identity: ConsumerIdentity, app: Any) -> bool:
+    return identity.allows_scope(project_id=app.project_id, app_id=app.id)
+
+
+def _can_access_environment(identity: ConsumerIdentity, env: Environment) -> bool:
+    return identity.allows_scope(project_id=env.application.project_id, app_id=env.application_id)
+
+
 # ── applications ─────────────────────────────────────────────────────────────
 
 
@@ -157,7 +165,11 @@ async def list_applications(
         visible_projects=_visible_projects(identity),
         include_archived=include_archived,
     )
-    return [ApplicationOut.model_validate(app) for app in apps]
+    return [
+        ApplicationOut.model_validate(app)
+        for app in apps
+        if _can_access_application(identity, app)
+    ]
 
 
 @router.post("/applications", operation_id="createApplication", status_code=201)
@@ -183,7 +195,7 @@ async def get_application(
     application_id: str, identity: CurrentIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
-    if app is None or not identity.allows_project(app.project_id):
+    if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
     return ApplicationOut.model_validate(app)
 
@@ -193,7 +205,7 @@ async def update_application(
     application_id: str, body: ApplicationUpdate, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
-    if app is None or not identity.allows_project(app.project_id):
+    if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
     project_id = app.project_id  # capture before mutation: rollback expires the instance
     try:
@@ -211,7 +223,7 @@ async def archive_application(
     application_id: str, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
-    if app is None or not identity.allows_project(app.project_id):
+    if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
     return ApplicationOut.model_validate(await repo.set_application_archived(app, True))
 
@@ -221,7 +233,7 @@ async def unarchive_application(
     application_id: str, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
-    if app is None or not identity.allows_project(app.project_id):
+    if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
     return ApplicationOut.model_validate(await repo.set_application_archived(app, False))
 
@@ -231,7 +243,7 @@ async def delete_application(
     application_id: str, identity: AdminIdentity, repo: CatalogRepo
 ) -> None:
     app = await repo.get_application(application_id)
-    if app is None or not identity.allows_project(app.project_id):
+    if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
     await repo.delete_application(app)
 
@@ -248,7 +260,7 @@ async def list_environments(
     envs = await repo.list_environments(
         application_id=application, visible_projects=_visible_projects(identity)
     )
-    return [_environment_out(env) for env in envs]
+    return [_environment_out(env) for env in envs if _can_access_environment(identity, env)]
 
 
 @router.post("/environments", operation_id="createEnvironment", status_code=201)
@@ -256,7 +268,7 @@ async def create_environment(
     body: EnvironmentCreate, identity: OperatorIdentity, repo: CatalogRepo
 ) -> EnvironmentOut:
     app = await repo.get_application(body.application_id)
-    if app is None or not identity.allows_project(app.project_id):
+    if app is None or not _can_access_application(identity, app):
         raise _not_found("application", body.application_id)
     try:
         env = await repo.create_environment(
@@ -281,7 +293,7 @@ async def get_environment(
     environment_id: str, identity: CurrentIdentity, repo: CatalogRepo
 ) -> EnvironmentOut:
     env = await repo.get_environment(environment_id)
-    if env is None or not identity.allows_project(env.application.project_id):
+    if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
     snapshot = await repo.latest_snapshot(env.id)
     return _environment_out(env, snapshot)
@@ -292,7 +304,7 @@ async def update_environment(
     environment_id: str, body: EnvironmentUpdate, identity: OperatorIdentity, repo: CatalogRepo
 ) -> EnvironmentOut:
     env = await repo.get_environment(environment_id)
-    if env is None or not identity.allows_project(env.application.project_id):
+    if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
     application_id = env.application_id  # capture before mutation: rollback expires the instance
     changes = body.model_dump(exclude_unset=True)
@@ -312,6 +324,6 @@ async def delete_environment(
     environment_id: str, identity: OperatorIdentity, repo: CatalogRepo
 ) -> None:
     env = await repo.get_environment(environment_id)
-    if env is None or not identity.allows_project(env.application.project_id):
+    if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
     await repo.delete_environment(env)

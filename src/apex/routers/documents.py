@@ -66,7 +66,9 @@ class DocumentListResponse(BaseModel):
 
 def _visible(identity: ConsumerIdentity, document: Document) -> bool:
     """Global rows (project_id NULL) are visible to everyone; scoped rows need scope."""
-    return document.project_id is None or identity.allows_project(document.project_id)
+    return document.project_id is None or identity.allows_scope(
+        project_id=document.project_id, app_id=document.app_id
+    )
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -119,7 +121,10 @@ async def upload_document(
         raise HTTPException(status_code=422, detail="multipart body is missing a 'file' part")
 
     project_id = upload.fields.get("project_id") or None
-    if project_id is not None and not identity.allows_project(project_id):
+    app_id = upload.fields.get("app_id") or None
+    if app_id is not None and project_id is None:
+        raise HTTPException(status_code=422, detail="app_id requires project_id")
+    if project_id is not None and not identity.allows_scope(project_id=project_id, app_id=app_id):
         raise HTTPException(
             status_code=403, detail=f"consumer is not scoped to project {project_id!r}"
         )
@@ -131,7 +136,7 @@ async def upload_document(
             content_type=upload.file.content_type,
             data=upload.file.data,
             project_id=project_id,
-            app_id=upload.fields.get("app_id") or None,
+            app_id=app_id,
             summary=upload.fields.get("summary") or None,
             uploaded_by=identity.name,
         )

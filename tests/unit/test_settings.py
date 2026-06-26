@@ -25,11 +25,13 @@ def test_defaults() -> None:
 
 def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "staging")
-    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv(
+        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
+    )
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     settings = CleanEnvSettings()
     assert settings.environment == "staging"
-    assert settings.database.uri == "postgresql+asyncpg://u:p@db:5432/x"
+    assert settings.database.uri == "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
@@ -81,4 +83,24 @@ def test_locked_down_env_rejects_insecure_cors_origin(monkeypatch: pytest.Monkey
     monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["http://dashboard.example.com"]')
     with pytest.raises(ValidationError, match="cors_origins"):
+        CleanEnvSettings()
+
+
+def test_locked_down_env_accepts_database_ssl_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv("APEX_DATABASE__SSL_MODE", "require")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+
+    settings = CleanEnvSettings()
+
+    assert settings.database.ssl_mode == "require"
+
+
+def test_locked_down_env_rejects_database_without_ssl(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+
+    with pytest.raises(ValidationError, match="TLS/SSL"):
         CleanEnvSettings()

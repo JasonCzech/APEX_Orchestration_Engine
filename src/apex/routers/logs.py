@@ -173,8 +173,8 @@ async def search_logs(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    scoped = identity.scoped_project_ids()
-    project_id = scoped[0] if len(scoped) == 1 else None
+    filters = dict(body.query.filters)
+    project_id = _effective_project_filter(identity, filters)
     try:
         adapter = await resolver(connection_id or body.connection_id, project_id)
     except KeyError as exc:
@@ -183,7 +183,7 @@ async def search_logs(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    query = LogQuery(query=body.query.text or "", filters=dict(body.query.filters))
+    query = LogQuery(query=body.query.text or "", filters=filters)
     page = Page(offset=body.offset, limit=body.limit)
     try:
         result = await adapter.search(query, window=window, page=page)
@@ -208,4 +208,26 @@ async def search_logs(
         limit=body.limit,
         offset=body.offset,
         window=WindowOut.model_validate({"from": window.start, "to": window.end}),
+    )
+
+
+def _effective_project_filter(identity: Any, filters: dict[str, str]) -> str | None:
+    """Inject or verify the mandatory project filter for scoped consumers."""
+
+    if identity.is_unscoped:
+        return filters.get("project_id")
+    allowed = identity.scoped_project_ids()
+    requested = filters.get("project_id")
+    if requested is not None:
+        if requested not in allowed:
+            raise HTTPException(
+                status_code=403, detail=f"Project '{requested}' is outside this consumer's scopes"
+            )
+        return requested
+    if len(allowed) == 1:
+        filters["project_id"] = allowed[0]
+        return allowed[0]
+    raise HTTPException(
+        status_code=403,
+        detail="project_id filter is required for consumers scoped to multiple projects",
     )

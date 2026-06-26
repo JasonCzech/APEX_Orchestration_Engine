@@ -11,7 +11,12 @@ from apex.auth.handlers import (
     ensure_thread_scope,
     identity_from_user,
     on_anything_else,
+    on_assistants_read,
     on_assistants_write,
+    on_crons_read,
+    on_crons_write,
+    on_store_read,
+    on_store_write,
     on_threads_create,
     on_threads_create_run,
     on_threads_delete,
@@ -389,3 +394,40 @@ async def test_assistants_write_rejects_non_admin(role: Role) -> None:
 async def test_assistants_write_allows_admin() -> None:
     ctx = make_ctx(make_identity(Role.ADMIN), resource="assistants", action="delete")
     assert await on_assistants_write(ctx=ctx, value={}) is None
+
+
+async def test_assistants_read_is_viewer_scoped() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
+    assert await on_assistants_read(
+        ctx=make_ctx(identity, resource="assistants", action="search"), value={}
+    ) == {"project_id": {"$eq": "p1"}}
+
+
+async def test_crons_write_requires_operator() -> None:
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_crons_write(
+            ctx=make_ctx(make_identity(Role.VIEWER), resource="crons", action="create"), value={}
+        )
+    assert excinfo.value.status_code == 403
+
+
+async def test_crons_read_is_viewer_scoped() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
+    assert await on_crons_read(
+        ctx=make_ctx(identity, resource="crons", action="search"), value={}
+    ) == {"project_id": {"$eq": "p1"}}
+
+
+async def test_store_write_requires_operator() -> None:
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_store_write(
+            ctx=make_ctx(make_identity(Role.VIEWER), resource="store", action="put"), value={}
+        )
+    assert excinfo.value.status_code == 403
+
+
+async def test_store_read_is_viewer_scoped() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
+    assert await on_store_read(
+        ctx=make_ctx(identity, resource="store", action="get"), value={}
+    ) == {"project_id": {"$eq": "p1"}}

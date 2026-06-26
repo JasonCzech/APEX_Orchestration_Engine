@@ -35,3 +35,28 @@ def require_role(minimum: Role) -> Callable[..., Awaitable[ConsumerIdentity]]:
         return identity
 
     return dependency
+
+
+def require_scope(
+    *,
+    project_id: str | None = None,
+    app_id: str | None = None,
+) -> Callable[..., Awaitable[ConsumerIdentity]]:
+    """Dependency factory: 403 unless the consumer may access the requested scope.
+
+    This covers static route-level checks. Routes whose project/app owner must be
+    loaded from the database should call `identity.allows_scope(...)` after the
+    resource lookup so cross-scope reads can continue returning 404.
+    """
+
+    async def dependency(identity: CurrentIdentity) -> ConsumerIdentity:
+        if project_id is None:
+            return identity
+        if not identity.allows_scope(project_id=project_id, app_id=app_id):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Project '{project_id}' is outside this consumer's scopes",
+            )
+        return identity
+
+    return dependency

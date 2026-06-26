@@ -39,7 +39,7 @@ from apex.app.http import app
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import IdentityResolver
 from apex.settings import get_settings
-from tests.unit.authz_matrix_data import BODY_OVERRIDES, MIN_ROLE, PATH_PARAM_OVERRIDES
+from tests.unit.authz_matrix_data import BODY_OVERRIDES, MIN_ROLE, PATH_PARAM_OVERRIDES, SCOPE
 
 # ── Principals ───────────────────────────────────────────────────────────────
 
@@ -141,6 +141,23 @@ def test_every_v1_route_is_classified() -> None:
         f"MIN_ROLE with an explicit minimum role: {sorted(unclassified)}"
     )
     assert not stale, f"MIN_ROLE entries with no matching live route (remove them): {sorted(stale)}"
+
+
+def test_every_v1_route_has_scope_classification() -> None:
+    """New endpoints must also declare their tenant-scope behavior."""
+    live = {operation_id for _, _, operation_id in INVENTORY}
+    expected = set(SCOPE)
+    unclassified = live - expected
+    stale = expected - live
+    allowed = {"none", "project", "project_app", "provider_project", "admin_scope"}
+    invalid = {operation_id: scope for operation_id, scope in SCOPE.items() if scope not in allowed}
+
+    assert not unclassified, (
+        "unclassified scope operation_id(s) — add them to tests/unit/authz_matrix_data.py "
+        f"SCOPE with an explicit scope mode: {sorted(unclassified)}"
+    )
+    assert not stale, f"SCOPE entries with no matching live route (remove them): {sorted(stale)}"
+    assert not invalid, f"SCOPE entries with invalid mode: {invalid}"
 
 
 def test_inventory_matches_published_surface() -> None:

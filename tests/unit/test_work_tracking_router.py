@@ -266,6 +266,56 @@ def test_execute_query_pages_through_adapter() -> None:
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, None)]  # unscoped admin
 
 
+def test_execute_query_injects_jira_project_scope() -> None:
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "jira", "query": "status = Open ORDER BY updated DESC"}},
+        )
+    assert response.status_code == 200
+    query, _ = resolver.adapter.execute_calls[0]
+    assert query.query == "project in (PHX) AND (status = Open) ORDER BY updated DESC"
+
+
+def test_execute_query_rejects_conflicting_jira_project_scope() -> None:
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "jira", "query": "project = OTH AND status = Open"}},
+        )
+    assert response.status_code == 403
+    assert resolver.adapter.execute_calls == []
+
+
+def test_execute_query_injects_ado_multi_project_scope() -> None:
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "ado", "query": "SELECT [System.Id] FROM WorkItems"}},
+        )
+    assert response.status_code == 200
+    query, _ = resolver.adapter.execute_calls[0]
+    assert query.query == (
+        "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] IN ('PHX', 'CAT')"
+    )
+
+
+def test_execute_query_unknown_provider_requires_unscoped_admin() -> None:
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "unknown", "query": "project = PHX"}},
+        )
+    assert response.status_code == 403
+    assert resolver.adapter.execute_calls == []
+
+
 def test_unknown_connection_id_is_404_problem() -> None:
     resolver = FakeResolver(FakeWorkTrackingAdapter())
     resolver.raises = KeyError("unknown connection_id 'nope'; known: []")

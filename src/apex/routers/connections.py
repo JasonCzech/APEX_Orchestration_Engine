@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.app.dependencies import require_role
-from apex.auth.identity import Role
+from apex.auth.identity import ConsumerIdentity, Role
 from apex.domain.integrations import (
     DocScope,
     EnvRef,
@@ -59,6 +59,7 @@ def get_connections_repository(
 
 
 ConnectionsRepo = Annotated[ConnectionsRepository, Depends(get_connections_repository)]
+AdminIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.ADMIN))]
 
 
 # ── schemas ──────────────────────────────────────────────────────────────────
@@ -217,6 +218,20 @@ async def _get_or_404(repo: ConnectionsRepository, connection_id: str) -> Connec
     return conn
 
 
+def _can_manage_connection(identity: ConsumerIdentity, project_id: str | None) -> bool:
+    if identity.is_unscoped:
+        return True
+    return project_id is not None and identity.allows_project(project_id)
+
+
+def _ensure_can_manage_connection(identity: ConsumerIdentity, project_id: str | None) -> None:
+    if not _can_manage_connection(identity, project_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Scoped admins cannot manage global or out-of-scope connections",
+        )
+
+
 def _validate_probe_target(config: ConnectionConfig) -> None:
     """Block admin probes from reaching private hosts unless local dev opts in."""
 
@@ -234,16 +249,23 @@ def _probe_failure_detail(exc: Exception) -> str:
 
 @router.get("", operation_id="listConnections")
 async def list_connections(
-    repo: ConnectionsRepo, kind: PortKind | None = None, project: str | None = None
+    identity: AdminIdentity,
+    repo: ConnectionsRepo,
+    kind: PortKind | None = None,
+    project: str | None = None,
 ) -> list[ConnectionOut]:
     rows = await repo.list_connections(
         kind=kind.value if kind is not None else None, project=project
     )
+    rows = [row for row in rows if _can_manage_connection(identity, row.project_id)]
     return [ConnectionOut.model_validate(row) for row in rows]
 
 
 @router.post("", operation_id="createConnection", status_code=201)
-async def create_connection(body: ConnectionCreate, repo: ConnectionsRepo) -> ConnectionOut:
+async def create_connection(
+    body: ConnectionCreate, identity: AdminIdentity, repo: ConnectionsRepo
+) -> ConnectionOut:
+    _ensure_can_manage_connection(identity, body.project_id)
     _validate_provider(body.kind, body.provider)
     _validate_connection_target(body.base_url, body.options)
     try:
@@ -264,16 +286,23 @@ async def create_connection(body: ConnectionCreate, repo: ConnectionsRepo) -> Co
 
 
 @router.get("/{connection_id}", operation_id="getConnection")
-async def get_connection(connection_id: str, repo: ConnectionsRepo) -> ConnectionOut:
-    return ConnectionOut.model_validate(await _get_or_404(repo, connection_id))
+async def get_connection(
+    connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
+) -> ConnectionOut:
+    conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
+    return ConnectionOut.model_validate(conn)
 
 
 @router.patch("/{connection_id}", operation_id="updateConnection")
 async def update_connection(
-    connection_id: str, body: ConnectionUpdate, repo: ConnectionsRepo
+    connection_id: str, body: ConnectionUpdate, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
     changes = body.model_dump(exclude_unset=True)
+    if "project_id" in changes:
+        _ensure_can_manage_connection(identity, changes["project_id"])
     if "provider" in changes:
         _validate_provider(PortKind(conn.kind), changes["provider"])
     _validate_connection_target(
@@ -291,46 +320,63 @@ async def update_connection(
 
 
 @router.delete("/{connection_id}", operation_id="deleteConnection", status_code=204)
-async def delete_connection(connection_id: str, repo: ConnectionsRepo) -> None:
-    await repo.delete(await _get_or_404(repo, connection_id))
+async def delete_connection(
+    connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
+) -> None:
+    conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
+    await repo.delete(conn)
 
 
 @router.post("/{connection_id}/enable", operation_id="enableConnection")
-async def enable_connection(connection_id: str, repo: ConnectionsRepo) -> ConnectionOut:
+async def enable_connection(
+    connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
+) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, True))
 
 
 @router.post("/{connection_id}/disable", operation_id="disableConnection")
-async def disable_connection(connection_id: str, repo: ConnectionsRepo) -> ConnectionOut:
+async def disable_connection(
+    connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
+) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, False))
 
 
 @router.get("/{connection_id}/host-mappings", operation_id="getHostMappings")
-async def get_host_mappings(connection_id: str, repo: ConnectionsRepo) -> list[HostMappingOut]:
+async def get_host_mappings(
+    connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
+) -> list[HostMappingOut]:
     conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
     return [HostMappingOut.model_validate(m) for m in conn.host_mappings]
 
 
 @router.put("/{connection_id}/host-mappings", operation_id="putHostMappings")
 async def put_host_mappings(
-    connection_id: str, body: list[HostMappingIn], repo: ConnectionsRepo
+    connection_id: str, body: list[HostMappingIn], identity: AdminIdentity, repo: ConnectionsRepo
 ) -> list[HostMappingOut]:
     """Replaces the FULL mapping list (PUT semantics)."""
     conn = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, conn.project_id)
     conn = await repo.replace_host_mappings(conn, [m.model_dump() for m in body])
     return [HostMappingOut.model_validate(m) for m in conn.host_mappings]
 
 
 @router.post("/{connection_id}/test", operation_id="testConnection")
-async def test_connection(connection_id: str, repo: ConnectionsRepo) -> ProbeResult:
+async def test_connection(
+    connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
+) -> ProbeResult:
     """Build the adapter exactly as the resolver would and run the kind's probe.
 
     Always 200: failures (bad secret_ref, unreachable backend, misconfigured
     options) come back inline as ok=false so the admin UI can show them.
     """
     row = await _get_or_404(repo, connection_id)
+    _ensure_can_manage_connection(identity, row.project_id)
     started = time.perf_counter()
     try:
         config = connection_config_from_row(row)

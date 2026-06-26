@@ -5,6 +5,7 @@ before handing the digest to this repository.
 """
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,8 @@ class ConsumersRepository:
         role: str,
         key_hash: str,
         scopes: Sequence[ScopeRef] = (),
+        expires_at: datetime | None = None,
+        created_by: str | None = None,
     ) -> ApiConsumer:
         consumer = ApiConsumer(
             name=name,
@@ -44,6 +47,9 @@ class ConsumersRepository:
             role=role,
             key_hash=key_hash,
             enabled=True,
+            expires_at=expires_at,
+            created_by=created_by,
+            updated_by=created_by,
             scopes=[
                 ConsumerScope(project_id=scope.project_id, app_id=scope.app_id) for scope in scopes
             ],
@@ -61,6 +67,9 @@ class ConsumersRepository:
         role: str | None = None,
         enabled: bool | None = None,
         scopes: Sequence[ScopeRef] | None = None,
+        expires_at: datetime | None = None,
+        revoked_at: datetime | None = None,
+        updated_by: str | None = None,
     ) -> ApiConsumer | None:
         """Partial update; `None` means "leave unchanged" for every field."""
         consumer = await self.get(consumer_id)
@@ -76,16 +85,30 @@ class ConsumersRepository:
             consumer.scopes = [
                 ConsumerScope(project_id=scope.project_id, app_id=scope.app_id) for scope in scopes
             ]
+        if expires_at is not None:
+            consumer.expires_at = expires_at
+        if revoked_at is not None:
+            consumer.revoked_at = revoked_at
+        if updated_by is not None:
+            consumer.updated_by = updated_by
         await self._session.commit()
         await self._session.refresh(consumer)
         return consumer
 
-    async def replace_key_hash(self, consumer_id: str, key_hash: str) -> ApiConsumer | None:
+    async def replace_key_hash(
+        self, consumer_id: str, key_hash: str, *, rotated_by: str | None = None
+    ) -> ApiConsumer | None:
         """Rotate: overwrite the stored hash (the old key stops working immediately)."""
+        from datetime import UTC
+
         consumer = await self.get(consumer_id)
         if consumer is None:
             return None
         consumer.key_hash = key_hash
+        consumer.rotated_at = datetime.now(UTC)
+        consumer.rotation_count = int(consumer.rotation_count or 0) + 1
+        if rotated_by is not None:
+            consumer.updated_by = rotated_by
         await self._session.commit()
         await self._session.refresh(consumer)
         return consumer

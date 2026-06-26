@@ -295,9 +295,11 @@ gateway:
   annotations: {}
 
 # ───────────────────────────── network policy ────────────────────────────────
-# OFF by default — applying ANY NetworkPolicy flips matched pods to default-deny.
+# ON by default: matched pods are default-deny except for the explicit rules below.
+# Set networkPolicy.egress.to for your Postgres, Redis, S3/MinIO, and Kubernetes
+# API destinations before production rollout.
 networkPolicy:
-  enabled: false
+  enabled: true
   ingress:
     from: []                        # namespaceSelector/podSelector of the gateway/controller
     ports:

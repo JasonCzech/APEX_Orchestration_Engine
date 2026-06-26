@@ -10,9 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apex.app.errors import register_exception_handlers
 from apex.app.lifespan import lifespan
-from apex.app.security import RateLimitMiddleware, SecurityHeadersMiddleware
+from apex.app.security import AuthAuditMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
 from apex.routers.analytics import router as analytics_router
 from apex.routers.artifacts import router as artifacts_router
+from apex.routers.auth import router as auth_router
 from apex.routers.catalog import router as catalog_router
 from apex.routers.connections import router as connections_router
 from apex.routers.consumers import router as consumers_router
@@ -59,11 +60,13 @@ if settings.cors_origins:
 
 app.add_middleware(SecurityHeadersMiddleware, settings=settings.security_headers)
 app.add_middleware(RateLimitMiddleware, settings=settings.rate_limit)
+app.add_middleware(AuthAuditMiddleware)
 
 # Usage analytics (M6): one best-effort event per matched /v1 operation.
 app.add_middleware(UsageTrackingMiddleware)
 
 app.include_router(system_router, prefix="/v1")
+app.include_router(auth_router, prefix="/v1")
 app.include_router(pipelines_router, prefix="/v1")
 app.include_router(prompts_router, prefix="/v1")
 app.include_router(catalog_router, prefix="/v1")

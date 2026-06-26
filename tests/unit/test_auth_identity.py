@@ -63,3 +63,19 @@ def test_allows_project() -> None:
 def test_scope_ref_app_id_optional() -> None:
     assert ScopeRef(project_id="p1").app_id is None
     assert ScopeRef(project_id="p1", app_id="a1").app_id == "a1"
+
+
+def test_allows_app_respects_app_narrowed_scopes() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1", app_id="app-a")])
+
+    assert identity.allows_app("p1", "app-a")
+    assert not identity.allows_app("p1", "app-b")
+    assert identity.allows_app("p1", None)  # project-level resources preserve legacy behavior
+    assert not identity.allows_app("p2", "app-a")
+
+
+def test_project_scope_allows_all_apps_in_project() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
+
+    assert identity.allows_scope(project_id="p1", app_id="app-a")
+    assert identity.allows_scope(project_id="p1", app_id="app-b")

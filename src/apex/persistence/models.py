@@ -60,6 +60,13 @@ class ApiConsumer(Base):
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rotation_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     scopes: Mapped[list["ConsumerScope"]] = relationship(
         back_populates="consumer", cascade="all, delete-orphan", lazy="selectin"
@@ -89,6 +96,39 @@ class ConsumerScope(Base):
     app_id: Mapped[str | None] = mapped_column(String(255))
 
     consumer: Mapped[ApiConsumer] = relationship(back_populates="scopes")
+
+
+class AuditLog(Base):
+    """Append-only security/audit event with a hash-chain for tamper evidence."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_at", "at"),
+        Index("ix_audit_log_principal_at", "principal_id", "at"),
+        Index("ix_audit_log_decision_at", "decision", "at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    category: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(128))
+    decision: Mapped[str] = mapped_column(String(32))
+    reason: Mapped[str | None] = mapped_column(Text)
+    principal_id: Mapped[str | None] = mapped_column(String(255))
+    principal_type: Mapped[str | None] = mapped_column(String(64))
+    principal_role: Mapped[str | None] = mapped_column(String(32))
+    principal_scopes: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    request_method: Mapped[str | None] = mapped_column(String(16))
+    request_path: Mapped[str | None] = mapped_column(String(2048))
+    request_id: Mapped[str | None] = mapped_column(String(255))
+    ip_address: Mapped[str | None] = mapped_column(String(255))
+    user_agent: Mapped[str | None] = mapped_column(String(1024))
+    status_code: Mapped[int | None] = mapped_column(Integer)
+    resource_type: Mapped[str | None] = mapped_column(String(128))
+    resource_id: Mapped[str | None] = mapped_column(String(255))
+    extra: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    previous_hash: Mapped[str | None] = mapped_column(String(64))
+    event_hash: Mapped[str] = mapped_column(String(64), unique=True)
 
 
 # ── Prompt catalog (M2) ─────────────────────────────────────────────────────

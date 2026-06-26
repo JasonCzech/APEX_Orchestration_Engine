@@ -29,7 +29,7 @@ resource "azurerm_postgresql_flexible_server_database" "apex" {
 # Dev-only: allow other Azure services in (0.0.0.0) when running with public access.
 # Tighten to specific egress IPs for anything beyond dev.
 resource "azurerm_postgresql_flexible_server_firewall_rule" "azure" {
-  count            = var.postgres_public_access ? 1 : 0
+  count            = var.postgres_public_access && lower(var.environment) == "dev" ? 1 : 0
   name             = "allow-azure-services"
   server_id        = azurerm_postgresql_flexible_server.main.id
   start_ip_address = "0.0.0.0"

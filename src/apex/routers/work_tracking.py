@@ -18,6 +18,7 @@ NULL) are visible to everyone, scoped rows only to consumers with that project
 scope; mutations require operator+.
 """
 
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -116,6 +117,11 @@ def _scoped_project(identity: ConsumerIdentity) -> str | None:
     return project_ids[0] if project_ids else None
 
 
+def _scoped_projects(identity: ConsumerIdentity) -> tuple[str, ...] | None:
+    """None means unscoped; otherwise every allowed project id."""
+    return None if identity.is_unscoped else identity.scoped_project_ids()
+
+
 async def _resolve_adapter(
     resolver: ConnectionResolver, identity: ConsumerIdentity, connection_id: str | None
 ) -> Any:
@@ -164,6 +170,113 @@ def _visible(identity: ConsumerIdentity, row: SavedQuery) -> bool:
     return row.project_id is None or identity.allows_project(row.project_id)
 
 
+_ORDER_BY = re.compile(r"\border\s+by\b", re.IGNORECASE)
+_WIQL_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
+_JQL_PROJECT = re.compile(
+    r"\bproject\s*(?:=|in)\s*(?P<value>\([^)]*\)|\"[^\"]+\"|'[^']+'|[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+_WIQL_PROJECT = re.compile(
+    r"\[System\.TeamProject\]\s*(?:=|in)\s*"
+    r"(?P<value>\([^)]*\)|\"[^\"]+\"|'[^']+'|[A-Za-z0-9_-]+)",
+    re.IGNORECASE,
+)
+
+
+def _constrain_translated_query(
+    identity: ConsumerIdentity, query: TranslatedQuery
+) -> TranslatedQuery:
+    allowed = _scoped_projects(identity)
+    if allowed is None:
+        return query
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="consumer has no project scope for work queries",
+        )
+
+    provider = query.provider.lower()
+    if provider == "jira":
+        scoped = _constrain_jql(query.query, allowed)
+    elif provider == "ado":
+        scoped = _constrain_wiql(query.query, allowed)
+    elif provider in {"stub", "fake"}:
+        scoped = query.query
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail=f"provider {query.provider!r} does not support provable project scoping",
+        )
+    return query.model_copy(update={"query": scoped})
+
+
+def _constrain_jql(raw: str, allowed: tuple[str, ...]) -> str:
+    _reject_conflicting_projects(_JQL_PROJECT.findall(raw), allowed)
+    predicate, order = _split_order_by(raw)
+    scope = f"project in ({', '.join(_jql_value(project) for project in allowed)})"
+    if predicate:
+        return f"{scope} AND ({predicate}){_prefixed(order)}"
+    return f"{scope}{_prefixed(order)}"
+
+
+def _constrain_wiql(raw: str, allowed: tuple[str, ...]) -> str:
+    _reject_conflicting_projects(_WIQL_PROJECT.findall(raw), allowed)
+    scope = f"[System.TeamProject] IN ({', '.join(_wiql_value(project) for project in allowed)})"
+    order_match = _ORDER_BY.search(raw)
+    head = raw[: order_match.start()].strip() if order_match else raw.strip()
+    order = raw[order_match.start() :].strip() if order_match else ""
+    where_match = _WIQL_WHERE.search(head)
+    if where_match:
+        prefix = head[: where_match.end()].strip()
+        predicate = head[where_match.end() :].strip()
+        if predicate:
+            return f"{prefix} {scope} AND ({predicate}){_prefixed(order)}"
+        return f"{prefix} {scope}{_prefixed(order)}"
+    return f"{head} WHERE {scope}{_prefixed(order)}"
+
+
+def _split_order_by(raw: str) -> tuple[str, str]:
+    match = _ORDER_BY.search(raw)
+    if match is None:
+        return raw.strip(), ""
+    return raw[: match.start()].strip(), raw[match.start() :].strip()
+
+
+def _prefixed(value: str) -> str:
+    return f" {value}" if value else ""
+
+
+def _reject_conflicting_projects(raw_values: list[str], allowed: tuple[str, ...]) -> None:
+    allowed_set = set(allowed)
+    requested = {
+        project
+        for raw in raw_values
+        for project in _project_values(raw)
+        if project not in allowed_set
+    }
+    if requested:
+        raise HTTPException(
+            status_code=403,
+            detail=f"work query references project outside scope: {', '.join(sorted(requested))}",
+        )
+
+
+def _project_values(raw: str) -> tuple[str, ...]:
+    value = raw.strip()
+    if value.startswith("(") and value.endswith(")"):
+        value = value[1:-1]
+    parts = [part.strip().strip("\"'") for part in value.split(",")]
+    return tuple(part for part in parts if part)
+
+
+def _jql_value(value: str) -> str:
+    return value if value.replace("_", "").replace("-", "").isalnum() else f'"{value}"'
+
+
+def _wiql_value(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
 # ── Query passthrough ────────────────────────────────────────────────────────
 
 
@@ -189,8 +302,9 @@ async def execute_work_query(
 ) -> Any:
     adapter = await _resolve_adapter(resolver, identity, body.connection_id or connection_id)
     page = Page(offset=body.offset, limit=body.limit)
+    scoped_query = _constrain_translated_query(identity, body.query)
     with adapter_errors():
-        return await adapter.execute_query(body.query, page=page)
+        return await adapter.execute_query(scoped_query, page=page)
 
 
 # ── Item passthrough ─────────────────────────────────────────────────────────

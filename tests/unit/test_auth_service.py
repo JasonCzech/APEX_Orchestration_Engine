@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -184,3 +184,38 @@ async def test_db_lookup_throttles_last_used_at_write() -> None:
 async def test_db_lookup_unknown_key_returns_none() -> None:
     resolver = IdentityResolver(session_factory=lambda: FakeSession(None))
     assert await resolver.resolve("unknown-key") is None
+
+
+async def test_db_lookup_rejects_expired_consumer() -> None:
+    consumer = ApiConsumer(
+        id="abc123",
+        name="old-bot",
+        key_hash=hash_api_key("some-key"),
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+        expires_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    consumer.scopes = []
+    session = FakeSession(consumer)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    assert await resolver.resolve("some-key") is None
+    assert not session.committed
+
+
+async def test_db_lookup_rejects_revoked_or_deleted_consumer() -> None:
+    for field in ("revoked_at", "deleted_at"):
+        consumer = ApiConsumer(
+            id=f"abc-{field}",
+            name=f"{field}-bot",
+            key_hash=hash_api_key("some-key"),
+            consumer_type="headless",
+            role="operator",
+            enabled=True,
+        )
+        setattr(consumer, field, datetime.now(UTC))
+        consumer.scopes = []
+        resolver = IdentityResolver(session_factory=lambda consumer=consumer: FakeSession(consumer))
+
+        assert await resolver.resolve("some-key") is None

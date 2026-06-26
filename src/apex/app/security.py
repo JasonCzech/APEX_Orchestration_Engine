@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections import defaultdict, deque
@@ -9,6 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping, MutableSequence
 from typing import Any
 
 from apex.auth.service import extract_api_key, hash_api_key
+from apex.services.audit import append_audit_event_best_effort, request_audit_event
 from apex.settings import RateLimitSettings, SecurityHeadersSettings
 
 ASGIApp = Callable[
@@ -21,6 +23,8 @@ ASGIApp = Callable[
 ]
 
 _HeaderList = MutableSequence[tuple[bytes, bytes]]
+_AUDITED_STATUSES = {401, 403, 429}
+_PENDING_AUDIT: set[asyncio.Task[None]] = set()
 
 
 class SecurityHeadersMiddleware:
@@ -52,9 +56,41 @@ class SecurityHeadersMiddleware:
                         b"content-security-policy",
                         self._settings.content_security_policy.encode("utf-8"),
                     )
+                if self._settings.hsts_max_age_s > 0:
+                    value = f"max-age={int(self._settings.hsts_max_age_s)}"
+                    if self._settings.hsts_include_subdomains:
+                        value += "; includeSubDomains"
+                    _set_header(headers, b"strict-transport-security", value.encode("ascii"))
             await send(message)
 
         await self._app(scope, receive, send_wrapper)
+
+
+class AuthAuditMiddleware:
+    """Best-effort audit logging for authentication/authorization decisions."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        status_code = 500
+
+        async def send_wrapper(message: dict[str, Any]) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = int(message["status"])
+            await send(message)
+
+        try:
+            await self._app(scope, receive, send_wrapper)
+        except Exception:
+            _schedule_audit(scope, 500, reason="unhandled exception")
+            raise
+        if status_code in _AUDITED_STATUSES:
+            _schedule_audit(scope, status_code)
 
 
 class RateLimitMiddleware:
@@ -75,13 +111,14 @@ class RateLimitMiddleware:
         if (
             scope["type"] != "http"
             or not self._settings.enabled
-            or not str(scope.get("path") or "").startswith("/v1/")
+            or not _is_rate_limited_path(scope, self._settings)
         ):
             await self._app(scope, receive, send)
             return
 
         retry_after = self._check(scope, now=time.monotonic())
         if retry_after is not None:
+            _schedule_audit(scope, 429, reason="rate limit exceeded")
             await _send_rate_limited(send, retry_after)
             return
         await self._app(scope, receive, send)
@@ -127,6 +164,24 @@ def _rate_key(scope: Mapping[str, Any]) -> str:
     if isinstance(client, tuple) and client:
         return f"ip:{client[0]}"
     return "anonymous"
+
+
+def _is_rate_limited_path(scope: Mapping[str, Any], settings: RateLimitSettings) -> bool:
+    path = str(scope.get("path") or "")
+    return any(path.startswith(prefix) for prefix in settings.protected_path_prefixes)
+
+
+def _schedule_audit(scope: Mapping[str, Any], status_code: int, reason: str | None = None) -> None:
+    try:
+        task = asyncio.get_running_loop().create_task(
+            append_audit_event_best_effort(
+                request_audit_event(scope, status_code=status_code, reason=reason)
+            )
+        )
+        _PENDING_AUDIT.add(task)
+        task.add_done_callback(_PENDING_AUDIT.discard)
+    except Exception:
+        return
 
 
 async def _send_rate_limited(send: Any, retry_after: int) -> None:
