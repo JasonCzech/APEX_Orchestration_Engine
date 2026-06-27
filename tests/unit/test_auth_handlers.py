@@ -531,12 +531,9 @@ async def test_assistants_delete_requires_unscoped_admin() -> None:
 async def test_assistants_read_is_viewer_scoped() -> None:
     identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
     value: dict[str, Any] = {}
-    assert (
-        await on_assistants_read(
-            ctx=make_ctx(identity, resource="assistants", action="search"), value=value
-        )
-        == {"project_id": {"$eq": "p1"}}
-    )
+    assert await on_assistants_read(
+        ctx=make_ctx(identity, resource="assistants", action="search"), value=value
+    ) == {"project_id": {"$eq": "p1"}}
     assert value["metadata"]["project_id"] == "p1"
 
 
@@ -561,9 +558,7 @@ async def test_crons_write_requires_operator() -> None:
 async def test_crons_read_requires_unscoped_admin_for_existing_crons() -> None:
     identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
     with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
-        await on_crons_read(
-            ctx=make_ctx(identity, resource="crons", action="search"), value={}
-        )
+        await on_crons_read(ctx=make_ctx(identity, resource="crons", action="search"), value={})
     assert excinfo.value.status_code == 403
 
 
@@ -588,9 +583,7 @@ async def test_store_read_prefixes_single_project_namespace() -> None:
     identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
     value: dict[str, Any] = {"namespace": ("memories",), "key": "k1"}
     assert (
-        await on_store_read(
-            ctx=make_ctx(identity, resource="store", action="get"), value=value
-        )
+        await on_store_read(ctx=make_ctx(identity, resource="store", action="get"), value=value)
         is None
     )
     assert value["namespace"] == ("apex", "project", "p1", "memories")
@@ -600,9 +593,7 @@ async def test_store_write_accepts_allowed_project_prefixed_namespace() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
     value: dict[str, Any] = {"namespace": ("apex", "project", "p2", "memories"), "key": "k1"}
     assert (
-        await on_store_write(
-            ctx=make_ctx(identity, resource="store", action="put"), value=value
-        )
+        await on_store_write(ctx=make_ctx(identity, resource="store", action="put"), value=value)
         is None
     )
     assert value["namespace"] == ("apex", "project", "p2", "memories")

@@ -618,9 +618,7 @@ def _fence(text: str) -> str:
     return f'"""\n{text}\n"""'
 
 
-def _compose_user(
-    state: PipelineState, phase: Phase, resolved: JsonDict, entry: JsonDict
-) -> str:
+def _compose_user(state: PipelineState, phase: Phase, resolved: JsonDict, entry: JsonDict) -> str:
     blocks: list[str] = []
     user = str(resolved.get("user") or "").strip()
     if user:

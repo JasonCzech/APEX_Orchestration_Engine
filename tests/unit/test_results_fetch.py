@@ -54,6 +54,4 @@ def test_link_local_metadata_ip_is_rejected() -> None:
 
 def test_non_http_scheme_is_rejected() -> None:
     with pytest.raises(FetchError, match="scheme"):
-        validate_fetch_url(
-            "file:///etc/passwd", allowed_hosts=["results.example.com"]
-        )
+        validate_fetch_url("file:///etc/passwd", allowed_hosts=["results.example.com"])

@@ -167,9 +167,7 @@ async def list_applications(
         include_archived=include_archived,
     )
     return [
-        ApplicationOut.model_validate(app)
-        for app in apps
-        if _can_access_application(identity, app)
+        ApplicationOut.model_validate(app) for app in apps if _can_access_application(identity, app)
     ]
 
 

@@ -231,9 +231,7 @@ class IdentityResolver:
         )
         if should_rehash_key:
             key.key_hash = current_hash
-        should_sync_consumer_hash = not _active_key_hashes_include(
-            consumer, consumer.key_hash, now
-        )
+        should_sync_consumer_hash = not _active_key_hashes_include(consumer, consumer.key_hash, now)
         if should_rehash_key or should_sync_consumer_hash:
             consumer.key_hash = key.key_hash
         if should_touch_key:

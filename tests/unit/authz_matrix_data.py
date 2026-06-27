@@ -252,9 +252,7 @@ SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
     "getAgentAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "getUsageAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "listApplications": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
-    "createApplication": {
-        "json": {"project_id": OUT_OF_SCOPE_PROJECT, "name": "matrix-app"}
-    },
+    "createApplication": {"json": {"project_id": OUT_OF_SCOPE_PROJECT, "name": "matrix-app"}},
     "listContextEvidence": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "createContextSummary": {
         "json": {"subject": "matrix-summary", "project_id": OUT_OF_SCOPE_PROJECT}
@@ -266,13 +264,9 @@ SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
     },
     "listDrafts": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "createDraft": {"json": {"title": "matrix-draft", "project_id": OUT_OF_SCOPE_PROJECT}},
-    "searchLogs": {
-        "json": {"query": {"filters": {"project_id": OUT_OF_SCOPE_PROJECT}}}
-    },
+    "searchLogs": {"json": {"query": {"filters": {"project_id": OUT_OF_SCOPE_PROJECT}}}},
     "listPipelines": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
-    "createPipelineRun": {
-        "json": {"title": "matrix-run", "project_id": OUT_OF_SCOPE_PROJECT}
-    },
+    "createPipelineRun": {"json": {"title": "matrix-run", "project_id": OUT_OF_SCOPE_PROJECT}},
     "listSavedQueries": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "createSavedQuery": {
         "json": {

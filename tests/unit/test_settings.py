@@ -25,9 +25,7 @@ def test_defaults() -> None:
 
 def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "staging")
-    monkeypatch.setenv(
-        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
-    )
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
     monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     settings = CleanEnvSettings()
@@ -113,9 +111,7 @@ def test_locked_down_env_rejects_missing_api_key_hash_pepper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "production")
-    monkeypatch.setenv(
-        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
-    )
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
 
     with pytest.raises(ValidationError, match="api_key_hash_pepper"):
@@ -126,9 +122,7 @@ def test_locked_down_env_rejects_disabled_security_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "production")
-    monkeypatch.setenv(
-        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
-    )
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
     monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     monkeypatch.setenv("APEX_SECURITY_HEADERS__ENABLED", "false")
@@ -141,9 +135,7 @@ def test_locked_down_env_rejects_disabled_hsts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("APEX_ENVIRONMENT", "production")
-    monkeypatch.setenv(
-        "APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
-    )
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
     monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
     monkeypatch.setenv("APEX_SECURITY_HEADERS__HSTS_MAX_AGE_S", "0")

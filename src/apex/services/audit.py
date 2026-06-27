@@ -361,11 +361,7 @@ def _row_cef(row: AuditLog) -> str:
 
 def _cef_escape(value: Any) -> str:
     return (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace("=", "\\=")
-        .replace("\n", "\\n")
-        .replace("\r", "")
+        str(value).replace("\\", "\\\\").replace("=", "\\=").replace("\n", "\\n").replace("\r", "")
     )
 
 

@@ -151,8 +151,13 @@ def _consumer_is_unscoped_admin(role: Role, scopes: list[ScopeRef]) -> bool:
 
 
 def _scopes_inside_admin(identity: ConsumerIdentity, scopes: list[ScopeRef]) -> bool:
-    return identity.is_unscoped or bool(scopes) and all(
-        identity.allows_scope(project_id=scope.project_id, app_id=scope.app_id) for scope in scopes
+    return (
+        identity.is_unscoped
+        or bool(scopes)
+        and all(
+            identity.allows_scope(project_id=scope.project_id, app_id=scope.app_id)
+            for scope in scopes
+        )
     )
 
 
