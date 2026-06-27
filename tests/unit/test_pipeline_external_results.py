@@ -16,6 +16,7 @@ from langgraph.graph.state import CompiledStateGraph
 import apex.graphs.pipeline.phase_subgraph as ps
 from apex.domain.pipeline import Phase
 from apex.graphs.pipeline.graph import builder
+from apex.graphs.pipeline.state import PipelineState
 
 AUTO = {"prompt_review": "auto", "output_review": "auto"}
 
@@ -78,7 +79,11 @@ def test_anthropic_backend_without_key_degrades_to_stub(monkeypatch: pytest.Monk
         ps, "get_settings", lambda: SimpleNamespace(llm=SimpleNamespace(anthropic_api_key=None))
     )
     agent = ps._make_agent(Phase.REPORTING)
-    state = {"title": "X", "request": "Y", "phase_results": {"reporting": {"attempt": 1}}}
+    state: PipelineState = {
+        "title": "X",
+        "request": "Y",
+        "phase_results": {"reporting": {"attempt": 1}},
+    }
     update = agent(state, config("t", agent_backend="anthropic"))
     entry = update["phase_results"]["reporting"]
     assert "stub result" in entry["summary"]
@@ -87,7 +92,11 @@ def test_anthropic_backend_without_key_degrades_to_stub(monkeypatch: pytest.Monk
 
 def test_default_backend_uses_stub() -> None:
     agent = ps._make_agent(Phase.STORY_ANALYSIS)
-    state = {"title": "X", "request": "Y", "phase_results": {"story_analysis": {"attempt": 1}}}
+    state: PipelineState = {
+        "title": "X",
+        "request": "Y",
+        "phase_results": {"story_analysis": {"attempt": 1}},
+    }
     update = agent(state, config("t"))  # no agent_backend -> "stub"
     entry = update["phase_results"]["story_analysis"]
     assert "stub result" in entry["summary"]
@@ -108,7 +117,7 @@ def test_compose_system_layers_application_context() -> None:
 
 
 def test_compose_user_includes_packets_and_external_kpis() -> None:
-    state = {
+    state: PipelineState = {
         "context_packets": [
             {"id": "p1", "source": "s", "title": "Run meta", "summary": "ran ok", "ref": "u"}
         ],
@@ -125,7 +134,7 @@ def test_compose_user_includes_packets_and_external_kpis() -> None:
 
 
 def test_context_packets_block_fences_document_text() -> None:
-    state = {
+    state: PipelineState = {
         "context_packets": [
             {
                 "id": "document-d1",
@@ -150,7 +159,7 @@ def test_context_packets_block_truncates_to_total_budget(monkeypatch: pytest.Mon
         "get_settings",
         lambda: SimpleNamespace(documents=SimpleNamespace(max_context_chars_total=30)),
     )
-    state = {
+    state: PipelineState = {
         "context_packets": [
             {"id": "d1", "source": "document", "title": "A", "text": "X" * 25},
             {"id": "d2", "source": "document", "title": "B", "text": "Y" * 25},
@@ -165,7 +174,7 @@ def test_context_packets_block_truncates_to_total_budget(monkeypatch: pytest.Mon
 
 
 def test_compose_user_injects_document_text_for_story_analysis() -> None:
-    state = {
+    state: PipelineState = {
         "context_packets": [
             {"id": "document-d1", "source": "document", "title": "Spec", "text": "Login via SSO."}
         ]

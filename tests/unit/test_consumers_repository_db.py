@@ -52,7 +52,9 @@ async def test_consumer_crud_roundtrip() -> None:
             finally:
                 assert await repo.delete(consumer.id, deleted_by="admin-it") is True
             assert await repo.get(consumer.id) is None
-            assert (await session.get(ApiConsumer, consumer.id)).deleted_at is not None
+            deleted = await session.get(ApiConsumer, consumer.id)
+            assert deleted is not None
+            assert deleted.deleted_at is not None
             tombstones = list(
                 await session.scalars(
                     select(ConsumerDeletionRecord).where(

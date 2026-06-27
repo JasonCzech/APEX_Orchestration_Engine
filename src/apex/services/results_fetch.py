@@ -27,7 +27,7 @@ def _host_resolves_private(host: str) -> bool:
         candidates: list[str] = [str(ipaddress.ip_address(host))]
     except ValueError:
         try:
-            candidates = [info[4][0] for info in socket.getaddrinfo(host, None)]
+            candidates = [str(info[4][0]) for info in socket.getaddrinfo(host, None)]
         except OSError as exc:
             raise FetchError(f"could not resolve host {host!r}") from exc
     for addr in candidates:

@@ -5,13 +5,14 @@ a fake documents repository drives the packet expansion. No DB, no LangGraph ser
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
 
 import apex.routers.pipelines as pipelines
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
+from apex.persistence.repositories.documents import DocumentsRepository
 from apex.services.pipeline_read import PipelineReadService
 
 
@@ -47,7 +48,9 @@ def _doc(doc_id: str, project_id: str | None) -> Any:
 async def test_documents_to_packets_maps_and_scopes() -> None:
     identity = _identity(["proj-1"])
     repo = FakeDocsRepo({"d1": _doc("d1", "proj-1"), "g1": _doc("g1", None)})
-    packets = await pipelines._documents_to_packets(repo, identity, ["d1", "g1"])
+    packets = await pipelines._documents_to_packets(
+        cast(DocumentsRepository, repo), identity, ["d1", "g1"]
+    )
     assert packets == [
         {
             "id": "document-d1",
@@ -72,7 +75,7 @@ async def test_documents_to_packets_rejects_out_of_scope() -> None:
     identity = _identity(["proj-1"])
     repo = FakeDocsRepo({"d2": _doc("d2", "proj-2")})
     with pytest.raises(HTTPException) as exc:
-        await pipelines._documents_to_packets(repo, identity, ["d2"])
+        await pipelines._documents_to_packets(cast(DocumentsRepository, repo), identity, ["d2"])
     assert exc.value.status_code == 404
 
 
@@ -80,7 +83,7 @@ async def test_documents_to_packets_missing_is_404() -> None:
     identity = _identity(["proj-1"])
     repo = FakeDocsRepo({})
     with pytest.raises(HTTPException) as exc:
-        await pipelines._documents_to_packets(repo, identity, ["nope"])
+        await pipelines._documents_to_packets(cast(DocumentsRepository, repo), identity, ["nope"])
     assert exc.value.status_code == 404
 
 
