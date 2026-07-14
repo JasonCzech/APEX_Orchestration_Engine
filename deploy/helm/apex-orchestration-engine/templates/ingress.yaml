@@ -33,7 +33,7 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "apex.fullname" $ }}
+                name: {{ if $.Values.dashboard.enabled }}{{ include "apex.dashboard.fullname" $ }}{{ else }}{{ include "apex.fullname" $ }}{{ end }}
                 port:
                   name: http
           {{- end }}

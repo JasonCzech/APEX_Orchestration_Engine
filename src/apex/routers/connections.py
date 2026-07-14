@@ -11,6 +11,7 @@ runs one cheap, read-only, stub-safe probe call per port kind; failures are
 reported inline as {ok: false, detail} with HTTP 200 — never a 5xx.
 """
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
@@ -90,6 +91,11 @@ class ConnectionCreate(BaseModel):
         _reject_raw_secret_options(value)
         return value
 
+    @field_validator("secret_ref")
+    @classmethod
+    def validate_secret_ref(cls, value: str | None) -> str | None:
+        return _validate_secret_ref(value)
+
 
 class ConnectionUpdate(BaseModel):
     """`kind` is immutable — create a new connection to change port kinds."""
@@ -107,6 +113,19 @@ class ConnectionUpdate(BaseModel):
         if value is not None:
             _reject_raw_secret_options(value)
         return value
+
+    @field_validator("secret_ref")
+    @classmethod
+    def validate_secret_ref(cls, value: str | None) -> str | None:
+        return _validate_secret_ref(value)
+
+
+def _validate_secret_ref(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if len(value) > 1024 or not re.fullmatch(r"(?:env|vault|file):[A-Za-z0-9_./:-]+", value):
+        raise ValueError("secret_ref must use an approved env:, vault:, or file: reference")
+    return value
 
 
 class ConnectionOut(BaseModel):
@@ -126,18 +145,40 @@ class ConnectionOut(BaseModel):
 
 
 def _reject_raw_secret_options(options: dict[str, Any]) -> None:
-    secret_names = {"password", "token", "secret", "secretkey", "apikey", "clientsecret", "bearertoken", "privatekey", "credential"}
+    secret_names = {
+        "password",
+        "token",
+        "secret",
+        "secretkey",
+        "apikey",
+        "clientsecret",
+        "bearertoken",
+        "privatekey",
+        "credential",
+    }
+
     def walk(value: Any) -> bool:
         if isinstance(value, dict):
             for key, nested in value.items():
                 normalized = "".join(ch for ch in str(key).lower() if ch.isalnum())
-                if normalized in secret_names or normalized.endswith("password"):
+                if normalized in secret_names or any(
+                    marker in normalized
+                    for marker in (
+                        "password",
+                        "token",
+                        "secret",
+                        "apikey",
+                        "credential",
+                        "authorization",
+                    )
+                ):
                     return True
                 if walk(nested):
                     return True
         elif isinstance(value, list):
             return any(walk(item) for item in value)
         return False
+
     if walk(options):
         raise ValueError("connection secrets must be supplied through secret_ref")
 

@@ -156,6 +156,10 @@ class S3ArtifactStore:
                 raise KeyError(f"artifact {key!r} not found in bucket {self._bucket!r}") from None
             raise
 
+    async def delete(self, key: str) -> None:
+        await self._ensure_bucket()
+        await asyncio.to_thread(self._client.remove_object, self._bucket, key)
+
     async def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         if chunk_size < 1:
             raise ValueError("chunk_size must be >= 1")

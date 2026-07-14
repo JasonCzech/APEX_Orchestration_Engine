@@ -19,6 +19,7 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import structlog
 from langchain_core.runnables import RunnableConfig
@@ -835,21 +836,53 @@ def _llm_agent_body(
     usage: dict[str, Any] = {}
     tool_calls_record: list[JsonDict] = []
     response: Any = None
-    max_iters = (max(1, settings.llm.fetch_max_tool_iters) + 1) if tools else 1
-    for _ in range(max_iters):
+    max_tool_rounds = max(1, settings.llm.fetch_max_tool_iters) if tools else 0
+    tool_rounds = 0
+    while True:
         response = runnable.invoke(messages)
         messages.append(response)
         _accumulate_usage(usage, getattr(response, "usage_metadata", None))
         calls = getattr(response, "tool_calls", None) or []
         if len(calls) > 8:
             raise ValueError("model returned too many tool calls in one response")
+        if not calls:
+            break
+        if tool_rounds >= max_tool_rounds:
+            response = llm.invoke(messages)
+            messages.append(response)
+            _accumulate_usage(usage, getattr(response, "usage_metadata", None))
+            if getattr(response, "tool_calls", None):
+                raise ValueError("model exceeded the configured tool-call round limit")
+            break
+        tool_rounds += 1
         for call in calls:
-            record = ToolCallRecord(
-                id=str(call.get("id") or f"{phase.value}-a{attempt}-tool{len(tool_calls_record)}"),
-                tool=str(call.get("name") or "tool"),
-                args_preview=dict(call.get("args") or {}),
-                status="pending",
-            ).model_dump(mode="json")
+            tool = tools_by_name.get(call.get("name"))
+            tool_id = str(
+                call.get("id") or f"{phase.value}-a{attempt}-tool{len(tool_calls_record)}"
+            )
+            args = dict(call.get("args") or {})
+            try:
+                output = (
+                    tool.invoke(args)
+                    if tool is not None
+                    else f"error: unknown tool {call.get('name')!r}"
+                )
+            except Exception as exc:  # noqa: BLE001 — tool failures feed back to the model
+                output = f"error: {exc}"
+                record = ToolCallRecord(
+                    id=tool_id,
+                    tool=str(call.get("name") or "tool"),
+                    args_preview=_safe_tool_args(args),
+                    status="error",
+                    error=str(exc),
+                ).model_dump(mode="json")
+            else:
+                record = ToolCallRecord(
+                    id=tool_id,
+                    tool=str(call.get("name") or "tool"),
+                    args_preview=_safe_tool_args(args),
+                    status="ok",
+                ).model_dump(mode="json")
             tool_calls_record.append(record)
             emit_event(
                 {
@@ -861,30 +894,14 @@ def _llm_agent_body(
                     "status": record["status"],
                 }
             )
-        if not calls:
-            break
-        for call in calls:
-            tool = tools_by_name.get(call.get("name"))
-            try:
-                output = (
-                    tool.invoke(call.get("args") or {})
-                    if tool is not None
-                    else f"error: unknown tool {call.get('name')!r}"
-                )
-            except Exception as exc:  # noqa: BLE001 — tool failures feed back to the model
-                output = f"error: {exc}"
-                record["status"] = "error"
-                record["error"] = str(exc)
-            else:
-                record["status"] = "ok"
-            messages.append(
-                ToolMessage(content=str(output), tool_call_id=str(call.get("id") or ""))
-            )
+            messages.append(ToolMessage(content=str(output), tool_call_id=tool_id))
         # Tool results are untrusted model input too. Re-check the complete
         # rendered budget after every tool round instead of validating only the
         # initial prompt.
         tool_context = "\n".join(
-            str(getattr(message, "content", "")) for message in messages if isinstance(message, ToolMessage)
+            str(getattr(message, "content", ""))
+            for message in messages
+            if isinstance(message, ToolMessage)
         )
         validate_rendered_model_input(
             system_text, user_text + "\n" + tool_context, settings=settings
@@ -916,6 +933,20 @@ def _llm_agent_body(
     )
 
 
+def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Keep credentials out of durable tool-call previews."""
+    safe: dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str) and (key.lower() in {"url", "uri", "link"}):
+            parsed = urlsplit(value)
+            safe[key] = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:512]
+        elif isinstance(value, str):
+            safe[key] = value[:512]
+        else:
+            safe[key] = value
+    return safe
+
+
 def _make_agent(phase: Phase):
     def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_config(config)
@@ -923,6 +954,15 @@ def _make_agent(phase: Phase):
             entry = _entry(state, phase)
             attempt = _attempt(entry)
             if not get_settings().llm.anthropic_api_key:
+                if getattr(get_settings(), "is_locked_down", False):
+                    return _phase_update(
+                        phase,
+                        attempt,
+                        status=PhaseStatus.FAILED.value,
+                        summary=f"[{phase.value}] LLM backend unavailable",
+                        reasoning_digest="Anthropic API key is required in locked environments",
+                        errors=["agent_backend=anthropic requires an Anthropic API key"],
+                    )
                 # Backend requested but unconfigured: degrade to the stub so a
                 # misconfigured run still produces output instead of crashing.
                 return _stub_agent_body(

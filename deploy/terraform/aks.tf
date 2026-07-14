@@ -15,6 +15,11 @@ resource "azurerm_kubernetes_cluster" "main" {
   oidc_issuer_enabled       = true
   workload_identity_enabled = true
 
+  # Install the managed ingress controller used by the Azure Helm overlay.
+  web_app_routing {
+    dns_zone_ids = []
+  }
+
   # Azure Key Vault Secrets Provider (Secrets Store CSI driver) for secretsStoreCSI.
   key_vault_secrets_provider {
     secret_rotation_enabled = true

@@ -21,10 +21,6 @@ on:
         required: true
         type: choice
         options: [dev, staging, prod]
-      image_tag:
-        description: Image tag to build/deploy
-        required: true
-        default: ""
 
 permissions:
   id-token: write
@@ -40,6 +36,20 @@ env:
   RELEASE: apex
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run pytest tests/unit -q
+
   provision:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
@@ -100,7 +110,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build-push:
-    needs: provision
+    needs: [provision, verify]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
@@ -146,10 +156,6 @@ jobs:
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl wait --for=condition=Established \
             crd/secretproviderclasses.secrets-store.csi.x-k8s.io --timeout=5m
-      - name: MinIO artifact store
-        run: |
-          kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
-          kubectl -n "$NAMESPACE" rollout status deployment/minio --timeout=5m
       - name: Helm upgrade (migrate + bootstrap hooks run first)
         env:
           ACR: ${{ needs.provision.outputs.acr }}
@@ -169,5 +175,9 @@ jobs:
             --set hookServiceAccountName="${{ needs.provision.outputs.hook_service_account }}" \
             --wait --timeout 15m
           kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE-apex-orchestration-engine"
+      - name: MinIO artifact store
+        run: |
+          kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
+          kubectl -n "$NAMESPACE" rollout status deployment/apex-minio --timeout=5m
       - name: Smoke test
         run: helm test "$RELEASE" -n "$NAMESPACE"

@@ -24,6 +24,6 @@ spec:
   {{- end }}
   rules:
     - backendRefs:
-        - name: {{ include "apex.fullname" . }}
+        - name: {{ if .Values.dashboard.enabled }}{{ include "apex.dashboard.fullname" . }}{{ else }}{{ include "apex.fullname" . }}{{ end }}
           port: {{ .Values.service.port }}
 {{- end }}

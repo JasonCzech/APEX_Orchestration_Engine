@@ -102,7 +102,7 @@ class AuditService:
         await self._lock_chain()
         event = _materialize_event(event)
         head = await self._chain_head()
-        chain_seq = (head.chain_seq + 1) if head is not None and head.chain_seq is not None else 1
+        chain_seq = await self._next_chain_seq(head)
         previous_hash = head.event_hash if head is not None else None
         event_hash = _event_hash(event, previous_hash)
         row = AuditLog(
@@ -134,8 +134,19 @@ class AuditService:
         await self._session.refresh(row)
         return row
 
+    async def _next_chain_seq(self, head: AuditLog | None) -> int:
+        if _dialect_name(self._session) == "postgresql":
+            value = await self._session.scalar(text("SELECT nextval('apex.audit_chain_seq_seq')"))
+            if isinstance(value, (int, float, str)):
+                return int(value)
+        return (head.chain_seq + 1) if head is not None else 1
+
     async def _chain_head(self) -> AuditLog | None:
-        stmt = select(AuditLog).order_by(desc(AuditLog.chain_seq).nullslast(), desc(AuditLog.at)).limit(1)
+        stmt = (
+            select(AuditLog)
+            .order_by(desc(AuditLog.chain_seq).nullslast(), desc(AuditLog.at))
+            .limit(1)
+        )
         return await self._session.scalar(stmt)
 
     async def _lock_chain(self) -> None:

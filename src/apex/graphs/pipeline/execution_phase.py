@@ -261,17 +261,12 @@ async def _teardown_after_confirmed_abort(adapter: Any, handle: EngineHandle) ->
         )
 
 
-async def _confirm_abort(
-    adapter: Any, handle: EngineHandle, reason: str, *, confirm_status: bool = True
-) -> None:
+async def _confirm_abort(adapter: Any, handle: EngineHandle, reason: str) -> None:
     await adapter.abort(handle, reason=reason)
-    if not confirm_status:
-        return
     try:
         status = await adapter.get_status(handle)
-    except Exception:
-        # A provider that has accepted the abort may make status temporarily
-        # unavailable; the abort itself is idempotent and can be retried safely.
+    except KeyError:
+        # A definitive not-found means the provider has already discarded it.
         return
     if status.phase not in TERMINAL_ENGINE_PHASES:
         raise RuntimeError(f"abort accepted but external run remains {status.phase.value}")
@@ -717,10 +712,7 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
     async def _cleanup() -> None:
         adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
-            await _confirm_abort(
-                adapter, handle, reason,
-                confirm_status=int(entry.get("engine_cleanup_failures") or 0) == 0,
-            )
+            await _confirm_abort(adapter, handle, reason)
             await _teardown_after_confirmed_abort(adapter, handle)
         finally:
             await _close_resource(adapter)
@@ -805,20 +797,36 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     last = dict(entry.get("engine_poll_last") or {})
     state_errors: list[str] = []
     raw_engine_phase = last.get("status")
+    invalid_collection_state = False
     try:
         engine_phase = EngineRunPhase(str(raw_engine_phase))
     except ValueError:
         engine_phase = EngineRunPhase.FAILED
+        invalid_collection_state = True
         state_errors.append(
             "execution collection state is invalid: a terminal engine status is missing "
             f"or malformed (got {raw_engine_phase!r})"
         )
     if engine_phase not in TERMINAL_ENGINE_PHASES:
+        invalid_collection_state = True
         state_errors.append(
             "execution collection requires a confirmed terminal engine status; "
             f"got {engine_phase.value!r}"
         )
         engine_phase = EngineRunPhase.FAILED
+
+    if invalid_collection_state:
+        reason = "; ".join(state_errors)
+        return Command(
+            goto="engine_cleanup",
+            update=_update(
+                attempt,
+                status=PhaseStatus.RUNNING.value,
+                engine_cleanup_required=True,
+                engine_cleanup_reason=reason,
+                engine_cleanup_last_error=reason,
+            ),
+        )
 
     async def _collect() -> tuple[
         list[JsonDict], TestResultSummary | None, str | None, list[str], list[str]
@@ -831,7 +839,9 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         adapter: Any | None = None
         store: Any | None = None
         try:
-            resolved_adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
+            resolved_adapter = await _resolve_engine(
+                _config_for_handle(cfg, handle), engine_options
+            )
             adapter = resolved_adapter
             try:
                 store, artifact_connection_id = await _resolve_artifact_store(cfg)

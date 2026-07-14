@@ -47,6 +47,9 @@ class MemoryArtifactStore:
         except KeyError:
             raise KeyError(f"artifact {key!r} not found in memory store") from None
 
+    async def delete(self, key: str) -> None:
+        self._objects.pop(key, None)
+
     async def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         if chunk_size < 1:
             raise ValueError("chunk_size must be >= 1")

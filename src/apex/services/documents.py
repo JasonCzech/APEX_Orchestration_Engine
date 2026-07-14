@@ -16,6 +16,7 @@ from posixpath import basename
 from typing import Annotated, Any
 from uuid import uuid4
 
+import structlog
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,7 @@ from apex.services.text_extraction import PARSE_PARSED, derive_summary, extract_
 from apex.settings import get_settings
 
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024  # 25 MB hard cap per uploaded document
+logger = structlog.get_logger(__name__)
 # Stream cap: file cap + slack for multipart framing and small text fields.
 MAX_UPLOAD_BODY_BYTES = MAX_DOCUMENT_BYTES + 1024 * 1024
 
@@ -227,7 +229,16 @@ class DocumentsService:
             parse_status=extraction.status,
             parse_error=extraction.error,
         )
-        return await self._repository.add(document)
+        try:
+            return await self._repository.add(document)
+        except Exception:
+            try:
+                delete = getattr(self._store, "delete", None)
+                if delete is not None:
+                    await delete(key)
+            except Exception:
+                logger.warning("documents.orphan_cleanup_failed", key=key, exc_info=True)
+            raise
 
 
 # ── FastAPI dependency providers (shared by /documents and /artifacts) ──────

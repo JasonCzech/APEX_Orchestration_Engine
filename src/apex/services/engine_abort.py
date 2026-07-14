@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from apex.adapters.registry import PortKind
 from apex.auth.identity import ScopeRef
 from apex.domain.pipeline import EngineHandle
+from apex.ports.execution_engine import TERMINAL_ENGINE_PHASES
 from apex.services.connections import ConnectionResolver, get_connection_resolver
 from apex.services.pipeline_read import LangGraphClientLike
 
@@ -127,6 +128,14 @@ class EngineAbortService:
         )
         try:
             await adapter.abort(handle, reason=reason or DEFAULT_ABORT_REASON)
+            try:
+                status = await adapter.get_status(handle)
+            except KeyError:
+                status = None
+            if status is not None and status.phase not in TERMINAL_ENGINE_PHASES:
+                raise RuntimeError(
+                    f"external engine remains nonterminal after abort: {status.phase.value}"
+                )
         except Exception:
             # Do not cancel the poller or claim the projection is aborted when the
             # external provider rejected/failed the kill. The operator must see the

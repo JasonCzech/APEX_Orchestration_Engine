@@ -6,6 +6,7 @@ is swallowed and logged. Upsert key: (thread_id, attempt).
 """
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -106,10 +107,14 @@ def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
     """Sync bridge that is safe when called from either sync or async graph nodes."""
     try:
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(record_engine_run(*args, **kwargs))
         else:
-            loop.create_task(record_engine_run(*args, **kwargs))
+            # The caller may be inside an asyncio.run wrapper whose loop will
+            # close immediately after the graph node returns. Run the durable
+            # projection on a short-lived worker loop and wait for completion.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(asyncio.run, record_engine_run(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
         logger.warning("engine_runs.record_failed", error=str(exc))

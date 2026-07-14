@@ -14,6 +14,7 @@ scope visibility server-side. Verified against langgraph_sdk 0.4.2:
 
 from typing import Any, Protocol
 
+import structlog
 from langgraph_sdk.errors import ConflictError
 
 from apex.domain.pipeline import PHASE_ORDER, ExternalResults, Phase, utcnow_iso
@@ -33,6 +34,7 @@ from apex.services.run_validation import (
 JsonDict = dict[str, Any]
 
 PIPELINE_GRAPH_ID = "pipeline"
+logger = structlog.get_logger(__name__)
 
 
 class LangGraphClientLike(Protocol):
@@ -275,20 +277,27 @@ class PipelineReadService:
         thread = await self._client.threads.create(metadata=metadata)
         thread_id = thread["thread_id"]
 
-        run = await self._client.runs.create(
-            thread_id,
-            selected_assistant_id,
-            input=run_input,
-            config={
-                "configurable": run_configurable,
-                "recursion_limit": recommended_recursion_limit(validated_config.limits),
-            },
-            stream_mode=("updates", "messages-tuple", "custom"),
-            stream_subgraphs=True,
-            stream_resumable=True,
-            durability="sync",
-            multitask_strategy="reject",
-        )
+        try:
+            run = await self._client.runs.create(
+                thread_id,
+                selected_assistant_id,
+                input=run_input,
+                config={
+                    "configurable": run_configurable,
+                    "recursion_limit": recommended_recursion_limit(validated_config.limits),
+                },
+                stream_mode=("updates", "messages-tuple", "custom"),
+                stream_subgraphs=True,
+                stream_resumable=True,
+                durability="sync",
+                multitask_strategy="reject",
+            )
+        except Exception:
+            try:
+                await self._client.threads.delete(thread_id)
+            except Exception:
+                logger.warning("pipeline.thread_cleanup_failed", thread_id=thread_id, exc_info=True)
+            raise
         return {
             "thread_id": thread_id,
             "run_id": run["run_id"],

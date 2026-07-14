@@ -28,6 +28,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.schema import FetchedValue
 
 JsonColumn = JSON().with_variant(JSONB(), "postgresql")
 
@@ -136,7 +137,9 @@ class AuditLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    chain_seq: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
+    chain_seq: Mapped[int] = mapped_column(
+        BigInteger, unique=True, nullable=False, server_default=FetchedValue()
+    )
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     category: Mapped[str] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(String(128))

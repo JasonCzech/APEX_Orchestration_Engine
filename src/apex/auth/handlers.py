@@ -41,6 +41,21 @@ _MAX_PENDING_AUTH_AUDIT = 1024
 _PROJECT_NAMESPACE_PREFIX = ("apex", "project")
 
 
+def _requested_app_id(value: Mapping[str, Any]) -> str | None:
+    """Extract an app selector before the auth hook stamps server-owned scope."""
+    config = value.get("config") if isinstance(value.get("config"), Mapping) else {}
+    kwargs = value.get("kwargs") if isinstance(value.get("kwargs"), Mapping) else {}
+    nested = kwargs.get("config") if isinstance(kwargs, Mapping) else {}
+    candidates: list[Any] = [value.get("app_id"), value.get("metadata")]
+    for source in (config, nested):
+        if isinstance(source, Mapping):
+            candidates.extend([source, source.get("configurable")])
+    for candidate in candidates:
+        if isinstance(candidate, Mapping) and candidate.get("app_id"):
+            return str(candidate["app_id"])
+    return None
+
+
 def user_payload(identity: ConsumerIdentity, *, trusted_loopback: bool = False) -> dict[str, Any]:
     """Authenticate return shape; surfaces in `configurable.langgraph_auth_user`."""
     return {
@@ -159,10 +174,29 @@ async def _ensure_catalog_app_scope(identity: ConsumerIdentity, value: Mapping[s
     if identity.is_unscoped:
         return
     config = value.get("config") if isinstance(value.get("config"), Mapping) else {}
+    kwargs = value.get("kwargs") if isinstance(value.get("kwargs"), Mapping) else {}
+    nested_config = kwargs.get("config") if isinstance(kwargs, Mapping) else {}
+    if not isinstance(nested_config, Mapping):
+        nested_config = {}
     configurable = config.get("configurable") if isinstance(config, Mapping) else {}
+    nested_configurable = (
+        nested_config.get("configurable") if isinstance(nested_config, Mapping) else {}
+    )
+    if not isinstance(configurable, Mapping):
+        configurable = {}
+    if not isinstance(nested_configurable, Mapping):
+        nested_configurable = {}
     metadata = value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {}
-    app_id = (configurable or {}).get("app_id") or metadata.get("app_id")
-    project_id = (configurable or {}).get("project_id") or metadata.get("project_id")
+    if not isinstance(metadata, Mapping):
+        metadata = {}
+    app_id = (
+        configurable.get("app_id") or nested_configurable.get("app_id") or metadata.get("app_id")
+    )
+    project_id = (
+        configurable.get("project_id")
+        or nested_configurable.get("project_id")
+        or metadata.get("project_id")
+    )
     if not app_id or not project_id:
         return
     from apex.persistence.db import get_sessionmaker
@@ -171,7 +205,11 @@ async def _ensure_catalog_app_scope(identity: ConsumerIdentity, value: Mapping[s
     async with get_sessionmaker()() as session:
         app = await CatalogRepository(session).get_application(str(app_id))
     if app is None or app.archived_at is not None or app.project_id != project_id:
-        _deny_authz(identity, action="threads.scope", detail="app_id is not authorized for project_id")
+        _deny_authz(
+            identity,
+            action="threads.scope",
+            detail="app_id is not authorized for project_id",
+        )
 
 
 def ensure_role(
@@ -604,9 +642,11 @@ def ensure_run_controls(
         PipelineConfigurable.model_validate(configurable)
         validate_public_run_input(input_payload)
         assistant_id = str(payload.get("assistant_id") or run_args.get("assistant_id") or "")
-        if assistant_id == "context":
+        context_keys = {"subject", "work_item_keys", "document_packets"}
+        playground_keys = {"prompt", "sample_input"}
+        if assistant_id == "context" or context_keys.intersection(input_payload):
             validate_context_run_input(input_payload)
-        elif assistant_id == "playground":
+        elif assistant_id == "playground" or playground_keys.intersection(input_payload):
             validate_playground_run_input(input_payload)
         command = run_args.get("command")
         if command is not None:
@@ -814,8 +854,10 @@ async def on_threads_create(
     ensure_role(identity, Role.OPERATOR, action=action)
     metadata = value.setdefault("metadata", {})
     metadata.setdefault("created_by", identity.consumer_id)
-    await _ensure_catalog_app_scope(identity, value)
+    requested_app = _requested_app_id(value)
     ensure_thread_scope(identity, metadata, action=action)
+    if requested_app is not None:
+        await _ensure_catalog_app_scope(identity, value)
     return scope_filter(identity)
 
 
@@ -826,8 +868,10 @@ async def on_threads_create_run(
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
-    await _ensure_catalog_app_scope(identity, value)
+    requested_app = _requested_app_id(value)
     result = ensure_run_scope(identity, value, action=action)
+    if requested_app is not None:
+        await _ensure_catalog_app_scope(identity, value)
     await ensure_run_environment(identity, value, action=action)
     ensure_run_controls(
         identity,

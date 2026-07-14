@@ -103,11 +103,17 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
   hosts:
     - host: apex.example.com
       paths:
         - path: /
           pathType: Prefix
+  # Provision this secret through the cluster certificate process before deploy.
+  tls:
+    - hosts: [apex.example.com]
+      secretName: apex-tls
 
 # Dashboard served alongside, same-origin reverse proxy to the server Service.
 dashboard:

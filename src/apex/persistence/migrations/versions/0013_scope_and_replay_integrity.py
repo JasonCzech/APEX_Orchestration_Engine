@@ -41,7 +41,9 @@ def upgrade() -> None:
         ),
         schema="apex",
     )
-    op.add_column("audit_log", sa.Column("chain_seq", sa.BigInteger(), nullable=True), schema="apex")
+    op.add_column(
+        "audit_log", sa.Column("chain_seq", sa.BigInteger(), nullable=True), schema="apex"
+    )
     # Preserve the ordering used by audit verification before this migration.
     # Hashes are intentionally not rewritten: the sequence is an ordering and
     # continuity guard layered around the existing tamper-evident hash chain.

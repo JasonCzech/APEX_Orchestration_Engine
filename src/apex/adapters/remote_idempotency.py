@@ -28,7 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from apex.settings import database_ssl_connect_args, get_settings
+from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 _INITIAL_WAIT_S = 0.001
 _MAX_WAIT_S = 0.05
@@ -87,7 +87,7 @@ async def _postgres_guard(key: str) -> AsyncIterator[None]:
     settings = get_settings()
     database = settings.database
     engine = create_async_engine(
-        database.uri,
+        database_asyncpg_uri(database.uri),
         poolclass=NullPool,
         connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
     )

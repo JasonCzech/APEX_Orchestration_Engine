@@ -13,12 +13,15 @@ class DraftsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def list_all(self, *, project_id: str | None = None) -> list[Draft]:
+    async def list_all(
+        self, *, project_id: str | None = None, limit: int = 50, offset: int = 0
+    ) -> list[Draft]:
         """All drafts, optionally narrowed to one project (identity scoping is the
         router's job — this is a plain storage filter)."""
         stmt = select(Draft).order_by(Draft.updated_at.desc(), Draft.id)
         if project_id is not None:
             stmt = stmt.where(Draft.project_id == project_id)
+        stmt = stmt.limit(limit).offset(offset)
         result = await self._session.scalars(stmt)
         return list(result)
 

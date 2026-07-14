@@ -5,8 +5,7 @@ in the locked dependencies, so the route parses multipart/form-data from the raw
 request stream instead of using UploadFile/Form. The wire contract is unchanged:
 POST multipart with a `file` part and optional `project_id`/`app_id`/`summary` fields.
 
-DELETE removes the metadata row only — artifact-store garbage collection is out of
-scope for M2 (the orphaned object stays in the store until an M3+ GC pass).
+DELETE removes both the metadata row and its stored artifact.
 """
 
 from datetime import datetime
@@ -18,8 +17,11 @@ from pydantic import BaseModel, ConfigDict
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
+from apex.persistence.db import get_sessionmaker
 from apex.persistence.models import Document
+from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
+from apex.ports.artifact_store import ArtifactStorePort
 from apex.services.connections import ConnectionResolver, get_connection_resolver
 from apex.services.documents import (
     MAX_DOCUMENT_BYTES,
@@ -28,6 +30,7 @@ from apex.services.documents import (
     DocumentTooLargeError,
     MultipartParseError,
     extract_boundary,
+    get_artifact_store,
     get_documents_repository,
     parse_multipart,
     read_body_capped,
@@ -191,11 +194,21 @@ async def upload_document(
 
     project_id = (upload.fields.get("project_id") or "").strip() or None
     app_id = (upload.fields.get("app_id") or "").strip() or None
+    explicit_app_id = app_id is not None
     project_id, app_id = _resolve_upload_scope(
         identity,
         project_id=project_id,
         app_id=app_id,
     )
+    if explicit_app_id and app_id is not None:
+        async with get_sessionmaker()() as session:
+            application = await CatalogRepository(session).get_application(app_id)
+        if (
+            application is None
+            or application.archived_at is not None
+            or application.project_id != project_id
+        ):
+            raise HTTPException(status_code=422, detail="app_id is not valid for project_id")
 
     try:
         store, artifact_connection_id = await resolver.resolve_with_connection_id(
@@ -258,10 +271,15 @@ async def get_document(
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def delete_document(
-    document_id: str, identity: CurrentIdentity, repository: RepositoryDep
+    document_id: str,
+    identity: CurrentIdentity,
+    repository: RepositoryDep,
+    store: Annotated[ArtifactStorePort, Depends(get_artifact_store)],
 ) -> None:
     document = await repository.get(document_id)
     if document is None or not _writable(identity, document):
         raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
-    # Metadata row only; artifact bytes are left for a future GC pass (out of scope).
+    delete = getattr(store, "delete", None)
+    if delete is not None:
+        await delete(document.artifact_key)
     await repository.delete(document)

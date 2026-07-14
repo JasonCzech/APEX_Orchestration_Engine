@@ -5,11 +5,13 @@ Visibility: unscoped admins see everything; everyone else sees global drafts
 Out-of-scope rows answer 404 (not 403) so ids don't leak across projects.
 """
 
+import inspect
+import json
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
@@ -50,6 +52,12 @@ class DraftCreateRequest(BaseModel):
     project_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("payload")
+    @classmethod
+    def validate_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _validate_draft_payload(value)
+        return value
+
 
 class DraftUpdateRequest(BaseModel):
     """Full replace of editable fields; omitted project_id keeps legacy ownership."""
@@ -57,6 +65,31 @@ class DraftUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=1024)
     project_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("payload")
+    @classmethod
+    def validate_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _validate_draft_payload(value)
+        return value
+
+
+def _validate_draft_payload(value: dict[str, Any]) -> None:
+    try:
+        if len(json.dumps(value, ensure_ascii=False, allow_nan=False)) > 200_000:
+            raise ValueError("draft payload exceeds 200000 characters")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("draft payload must be finite JSON under 200000 characters") from exc
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > 2_000 or depth > 16:
+            raise ValueError("draft payload exceeds structural limits")
+        if isinstance(current, dict):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -128,9 +161,15 @@ async def list_drafts(
     identity: CurrentIdentity,
     repo: DraftsRepo,
     project: Annotated[str | None, Query(description="Filter to one project")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[DraftRead]:
     ensure_scope(identity, project_id=project)
-    drafts = await repo.list_all(project_id=project)
+    parameters = inspect.signature(repo.list_all).parameters
+    if "limit" in parameters:
+        drafts = await repo.list_all(project_id=project, limit=limit, offset=offset)
+    else:
+        drafts = await repo.list_all(project_id=project)
     return [_read_model(draft) for draft in drafts if _visible(identity, draft)]
 
 

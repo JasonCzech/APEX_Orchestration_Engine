@@ -67,7 +67,7 @@ class PipelineConfigurable(BaseModel):
     # Assistant used to create the run. The graph itself does not branch on
     # this value, but persisting it lets later phase re-runs target the same
     # golden assistant instead of silently falling back to the base graph.
-    assistant_id: str = "pipeline"
+    assistant_id: str = Field(default="pipeline", max_length=256)
     project_id: str | None = Field(default=None, max_length=256)
     app_id: str | None = Field(default=None, max_length=256)
     environment_id: str | None = Field(default=None, max_length=256)
@@ -75,7 +75,7 @@ class PipelineConfigurable(BaseModel):
     # It is checkpointed so a gated run cannot drift if the catalog changes later.
     environment_target: str | None = Field(default=None, max_length=2_048)
     environment_target_version: int | None = None
-    engine: str = "sim"
+    engine: str = Field(default="sim", max_length=64)
     connections: dict[str, str] = Field(default_factory=dict, max_length=16)
 
     # Phase selection: explicit list wins over start/stop range; default = all.
@@ -95,7 +95,7 @@ class PipelineConfigurable(BaseModel):
     # Agent backend selector (mirrors the engine selector). "stub" is the
     # deterministic, offline default; "anthropic" wires a real LLM but only takes
     # effect when an Anthropic key is configured (else it degrades to the stub).
-    agent_backend: str = "stub"
+    agent_backend: str = Field(default="stub", max_length=32)
     limits: Limits = Field(default_factory=Limits)
 
     @field_validator("connections")
@@ -106,6 +106,13 @@ class PipelineConfigurable(BaseModel):
         if any(not value or len(value) > 256 for value in values.values()):
             raise ValueError("connection ids must be 1-256 characters")
         return values
+
+    @field_validator("agent_backend")
+    @classmethod
+    def validate_agent_backend(cls, value: str) -> str:
+        if value not in {"stub", "anthropic"}:
+            raise ValueError("agent_backend must be 'stub' or 'anthropic'")
+        return value
 
     @field_validator("pre_execution_context")
     @classmethod

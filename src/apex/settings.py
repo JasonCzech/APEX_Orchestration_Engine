@@ -2,13 +2,14 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import ip_network
-from urllib.parse import parse_qs, urlsplit, urlunsplit, urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATABASE_URI = "postgresql+asyncpg://apex:apex@localhost:5432/apex"
 LOCKED_DOWN_ENVIRONMENTS = {"production", "prod", "staging", "stage"}
+UNLOCKED_ENVIRONMENTS = {"local", "development", "dev", "test", "testing", "compose"}
 LOCAL_DATABASE_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
 DATABASE_SSL_MODES = {"require", "verify-ca", "verify-full"}
 
@@ -186,6 +187,11 @@ class ApexSettings(BaseSettings):
     # connection secret_ref from resolving database/auth/platform credentials.
     env_secret_prefixes: list[str] = ["APEX_INTEGRATION_"]
     database: DatabaseSettings = DatabaseSettings()
+    # LangGraph's own checkpoint DSN and Redis stream DSN use unprefixed
+    # environment variables; mirror them here so locked-down validation covers
+    # both transports rather than only the apex schema database.
+    langgraph_database_uri: str | None = Field(default=None, validation_alias="DATABASE_URI")
+    redis_uri: str | None = Field(default=None, validation_alias="REDIS_URI")
     auth: AuthSettings = AuthSettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
     security_headers: SecurityHeadersSettings = SecurityHeadersSettings()
@@ -196,7 +202,7 @@ class ApexSettings(BaseSettings):
     @property
     def is_locked_down(self) -> bool:
         """True for production/staging-class environments (no dev affordances)."""
-        return self.environment.strip().lower() in LOCKED_DOWN_ENVIRONMENTS
+        return self.environment.strip().lower() not in UNLOCKED_ENVIRONMENTS
 
     @model_validator(mode="after")
     def validate_production_lockdown(self) -> "ApexSettings":
@@ -212,7 +218,7 @@ class ApexSettings(BaseSettings):
                 database_scheme = ""
             if not database_scheme.startswith("postgresql"):
                 errors.append("distributed_remote_creation_lock requires a PostgreSQL database URI")
-        if env not in LOCKED_DOWN_ENVIRONMENTS:
+        if env in UNLOCKED_ENVIRONMENTS:
             if errors:
                 raise ValueError(f"Unsafe configuration: {'; '.join(errors)}")
             return self
@@ -227,6 +233,12 @@ class ApexSettings(BaseSettings):
             errors.append("database.uri must not point at localhost/default credentials")
         if not _database_uri_requires_ssl(self.database.uri, self.database.ssl_mode):
             errors.append("database.uri must require TLS/SSL in locked environments")
+        if self.langgraph_database_uri is not None and not _database_uri_requires_ssl(
+            self.langgraph_database_uri, None
+        ):
+            errors.append("DATABASE_URI must require TLS/SSL in locked environments")
+        if self.redis_uri is not None and not self.redis_uri.lower().startswith("rediss://"):
+            errors.append("REDIS_URI must use rediss:// in locked environments")
         if not self.security_headers.enabled:
             errors.append(
                 "security_headers.enabled=false is allowed only in local/test environments"
@@ -313,9 +325,15 @@ def database_asyncpg_uri(uri: str) -> str:
         return uri
     if parsed.scheme != "postgresql+asyncpg":
         return uri
-    query = [(key, value) for key, value in parse_qs(parsed.query, keep_blank_values=True).items()
-             if key not in {"sslmode", "ssl"} for value in value]
-    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
+    query = [
+        (key, value)
+        for key, value in parse_qs(parsed.query, keep_blank_values=True).items()
+        if key not in {"sslmode", "ssl"}
+        for value in value
+    ]
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
 
 
 def _database_ssl_mode(uri: str, ssl_mode: str | None) -> str:

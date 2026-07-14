@@ -703,6 +703,7 @@
         "type": "object"
       },
       "ConnectionCreate": {
+        "additionalProperties": false,
         "properties": {
           "base_url": {
             "anyOf": [
@@ -7122,6 +7123,29 @@
               ],
               "description": "Filter to one project",
               "title": "Project"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
