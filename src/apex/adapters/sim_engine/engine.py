@@ -8,8 +8,8 @@ checkpointed. M1 limitations (by design, documented for the integrator):
 - Get-or-create holds at the identity level only: the same idempotency_key always
   derives the same external_run_id, but re-provisioning resets the simulated clock
   (there is no server side to consult).
-- abort() is a logged no-op: there is no server-side run to kill, so the caller
-  simply stops polling. Real engine abort lands in M3.
+- abort() records terminal state in the durable handle; there is no server-side
+  process, but subsequent status checks still observe a faithful ABORTED result.
 
 Connection options: {"duration_s": float} overrides the spec duration (fast tests);
 {"fail_at_pct": float} injects a failure once progress reaches that percentage.
@@ -120,6 +120,12 @@ class SimExecutionEngine:
 
     async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
         started_at, duration_s, vusers, fail_at_pct = _parse_extras(handle)
+        if handle.extras.get("aborted") == "true":
+            return EngineRunStatus(
+                phase=EngineRunPhase.ABORTED,
+                progress_pct=float(handle.extras.get("aborted_progress_pct", "0")),
+                message=handle.extras.get("abort_reason") or "simulated run aborted",
+            )
         elapsed = max(0.0, time.time() - started_at)
         pct = 100.0 if duration_s <= 0 else min(100.0, elapsed / duration_s * 100.0)
         if fail_at_pct is not None and pct >= fail_at_pct:
@@ -142,8 +148,13 @@ class SimExecutionEngine:
         )
 
     async def abort(self, handle: EngineHandle, *, reason: str) -> None:
-        # M1 limitation: nothing server-side to kill (see module docstring).
-        logger.info("sim_engine.abort_noop", external_run_id=handle.external_run_id, reason=reason)
+        started_at, duration_s, _, _ = _parse_extras(handle)
+        elapsed = max(0.0, time.time() - started_at)
+        progress = 100.0 if duration_s <= 0 else min(100.0, elapsed / duration_s * 100.0)
+        handle.extras["aborted"] = "true"
+        handle.extras["aborted_progress_pct"] = f"{progress:.1f}"
+        handle.extras["abort_reason"] = reason
+        logger.info("sim_engine.aborted", external_run_id=handle.external_run_id, reason=reason)
 
     async def collect_artifacts(
         self, handle: EngineHandle, store: ArtifactStorePort

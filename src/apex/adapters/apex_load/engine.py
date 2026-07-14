@@ -794,11 +794,16 @@ class ApexLoadExecutionEngine:
                 await asyncio.sleep(_CONFLICT_RECHECK_DELAY_S * (attempt + 1))
         return None
 
-    async def _upload_script(self, script: dict[str, Any]) -> str:
+    async def _upload_script(self, script: dict[str, Any], *, idempotency_key: str) -> str:
         payload: dict[str, Any] = {"script": script}
         if self._project_id:
             payload["project_id"] = self._project_id
-        response = await self._request("POST", "/api/v1/scripts", json=payload)
+        response = await self._request(
+            "POST",
+            "/api/v1/scripts",
+            json=payload,
+            headers={"Idempotency-Key": idempotency_key},
+        )
         stored = _json_object(response, "POST /api/v1/scripts")
         script_id = str(stored.get("id") or "")
         if not script_id:
@@ -822,7 +827,10 @@ class ApexLoadExecutionEngine:
                         f"script_refs[{index}] must be a JSON object (APEX Load DSL script)"
                     )
                 script_ids.append(
-                    await self._upload_script(_prepare_inline_script(parsed, spec, index))
+                    await self._upload_script(
+                        _prepare_inline_script(parsed, spec, index),
+                        idempotency_key=f"{spec.idempotency_key}:script:{index}",
+                    )
                 )
             else:
                 if not _is_safe_named_ref(ref):
@@ -834,7 +842,12 @@ class ApexLoadExecutionEngine:
                     "the generated default workload needs spec.target_environment "
                     "(or provide script_refs)"
                 )
-            script_ids.append(await self._upload_script(_default_script(spec)))
+            script_ids.append(
+                await self._upload_script(
+                    _default_script(spec),
+                    idempotency_key=f"{spec.idempotency_key}:script:default",
+                )
+            )
 
         ramp = format_go_duration(spec.ramp_s)
         groups = [

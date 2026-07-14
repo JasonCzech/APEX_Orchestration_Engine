@@ -21,6 +21,14 @@ on:
         required: true
         type: choice
         options: [dev, staging, prod]
+      hostname:
+        description: Public HTTPS hostname for APEX
+        required: true
+        type: string
+      tls_secret_name:
+        description: Existing Kubernetes TLS Secret for the hostname
+        required: true
+        type: string
 
 permissions:
   id-token: write
@@ -51,6 +59,7 @@ jobs:
       - run: uv run pytest tests/unit -q
 
   provision:
+    needs: verify
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     outputs:
@@ -156,6 +165,7 @@ jobs:
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl wait --for=condition=Established \
             crd/secretproviderclasses.secrets-store.csi.x-k8s.io --timeout=5m
+          kubectl -n "$NAMESPACE" get secret "${{ inputs.tls_secret_name }}"
       - name: Helm upgrade (migrate + bootstrap hooks run first)
         env:
           ACR: ${{ needs.provision.outputs.acr }}
@@ -168,6 +178,12 @@ jobs:
             --set image.tag="$TAG" \
             --set dashboard.image.repository="$ACR/apex-dashboard" \
             --set dashboard.image.tag="$TAG" \
+            --set-string dashboard.backendUpstream="http://$RELEASE-apex-orchestration-engine:80" \
+            --set-string bootstrap.document.connections[0].options.endpoint="apex-minio:9000" \
+            --set-string ingress.hosts[0].host="${{ inputs.hostname }}" \
+            --set-string ingress.tls[0].hosts[0]="${{ inputs.hostname }}" \
+            --set-string ingress.tls[0].secretName="${{ inputs.tls_secret_name }}" \
+            --set-string apexSettings.APEX_CORS_ORIGINS='["https://${{ inputs.hostname }}"]' \
             --set secretBackend.csi.keyvaultName="${{ needs.provision.outputs.kv }}" \
             --set secretBackend.csi.tenantId="${{ needs.provision.outputs.tenant }}" \
             --set workloadIdentity.clientId="${{ needs.provision.outputs.client_id }}" \
@@ -178,6 +194,8 @@ jobs:
       - name: MinIO artifact store
         run: |
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
+          kubectl -n "$NAMESPACE" rollout restart deployment/apex-minio
           kubectl -n "$NAMESPACE" rollout status deployment/apex-minio --timeout=5m
+          kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/backup-cronjob.yaml
       - name: Smoke test
         run: helm test "$RELEASE" -n "$NAMESPACE"

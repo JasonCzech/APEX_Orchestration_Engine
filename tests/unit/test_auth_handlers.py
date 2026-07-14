@@ -6,6 +6,7 @@ from typing import Any, cast
 import pytest
 from langgraph_sdk import Auth
 
+import apex.auth.handlers as auth_handlers
 import apex.auth.service as auth_service
 from apex.auth.handlers import (
     authenticate,
@@ -28,6 +29,14 @@ from apex.auth.handlers import (
     user_payload,
 )
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
+
+
+@pytest.fixture(autouse=True)
+def _catalog_application(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def load(app_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=app_id, project_id="p1", archived_at=None)
+
+    monkeypatch.setattr(auth_handlers, "_load_catalog_application", load)
 
 
 def make_identity(role: Role, scopes: list[ScopeRef] | None = None) -> ConsumerIdentity:

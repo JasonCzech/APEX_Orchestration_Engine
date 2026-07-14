@@ -44,9 +44,16 @@ def legacy_hash_api_key(api_key: str) -> str:
 def _candidate_key_hashes(api_key: str) -> tuple[str, ...]:
     current = hash_api_key(api_key)
     legacy = legacy_hash_api_key(api_key)
-    if secrets.compare_digest(current, legacy):
-        return (current,)
-    return (current, legacy)
+    candidates = [current]
+    for pepper in get_settings().auth.previous_api_key_hash_peppers:
+        candidate = hmac.new(
+            pepper.encode("utf-8"), api_key.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if candidate not in candidates:
+            candidates.append(candidate)
+    if legacy not in candidates:
+        candidates.append(legacy)
+    return tuple(candidates)
 
 
 HeaderInput = Mapping[Any, Any] | Iterable[tuple[Any, Any]]
@@ -156,7 +163,6 @@ class IdentityResolver:
 
             session_factory = get_sessionmaker()
         current_hash = hash_api_key(api_key)
-        legacy_hash = legacy_hash_api_key(api_key)
         key_hashes = _candidate_key_hashes(api_key)
         async with session_factory() as session:
             credential = await session.scalar(
@@ -176,7 +182,6 @@ class IdentityResolver:
                     key=credential,
                     key_hashes=key_hashes,
                     current_hash=current_hash,
-                    legacy_hash=legacy_hash,
                 )
 
             consumer = credential if isinstance(credential, ApiConsumer) else None
@@ -196,7 +201,6 @@ class IdentityResolver:
                 consumer=consumer,
                 key_hashes=key_hashes,
                 current_hash=current_hash,
-                legacy_hash=legacy_hash,
             )
 
     async def _identity_from_key(
@@ -206,7 +210,6 @@ class IdentityResolver:
         key: ConsumerKey,
         key_hashes: tuple[str, ...],
         current_hash: str,
-        legacy_hash: str,
     ) -> ConsumerIdentity | None:
         if not any(secrets.compare_digest(key.key_hash, value) for value in key_hashes):
             return None
@@ -218,10 +221,8 @@ class IdentityResolver:
             return None
         if key.expires_at is not None and key.expires_at <= now:
             return None
-        should_rehash_key = (
-            get_settings().auth.api_key_hash_pepper is not None
-            and secrets.compare_digest(key.key_hash, legacy_hash)
-            and not secrets.compare_digest(key.key_hash, current_hash)
+        should_rehash_key = get_settings().auth.api_key_hash_pepper is not None and not (
+            secrets.compare_digest(key.key_hash, current_hash)
         )
         should_touch_key = (
             key.last_used_at is None or now - key.last_used_at > LAST_USED_WRITE_INTERVAL
@@ -261,7 +262,6 @@ class IdentityResolver:
         consumer: ApiConsumer | None,
         key_hashes: tuple[str, ...],
         current_hash: str,
-        legacy_hash: str,
     ) -> ConsumerIdentity | None:
         if consumer is None:
             return None
@@ -270,10 +270,8 @@ class IdentityResolver:
         now = datetime.now(UTC)
         if not _consumer_is_active(consumer, now):
             return None
-        should_rehash_key = (
-            get_settings().auth.api_key_hash_pepper is not None
-            and secrets.compare_digest(consumer.key_hash, legacy_hash)
-            and not secrets.compare_digest(consumer.key_hash, current_hash)
+        should_rehash_key = get_settings().auth.api_key_hash_pepper is not None and not (
+            secrets.compare_digest(consumer.key_hash, current_hash)
         )
         target_hash = current_hash if should_rehash_key else consumer.key_hash
         should_create_consumer_key = not _active_key_hashes_include(consumer, target_hash, now)

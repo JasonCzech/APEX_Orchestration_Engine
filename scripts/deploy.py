@@ -144,6 +144,8 @@ def _tf_output(name: str) -> str:
 @task("aks-up", "Provision Azure + deploy. Needs APEX_ENV (dev|staging|prod) and `az login`.")
 def aks_up(_: list[str]) -> None:
     env = require_env("APEX_ENV")
+    hostname = require_env("APEX_HOSTNAME")
+    tls_secret = require_env("APEX_TLS_SECRET")
     tag = os.environ.get("APEX_TAG", "latest")
     namespace = os.environ.get("APEX_NAMESPACE", "apex")
     release = os.environ.get("APEX_RELEASE", "apex")
@@ -160,7 +162,6 @@ def aks_up(_: list[str]) -> None:
             f"-var=workload_namespace={namespace}",
         ]
     )
-
     acr = _tf_output("acr_login_server")
     aks = _tf_output("aks_cluster_name")
     rg = _tf_output("resource_group")
@@ -212,6 +213,7 @@ def aks_up(_: list[str]) -> None:
             "--timeout=5m",
         ]
     )
+    run(["kubectl", "-n", namespace, "get", "secret", tls_secret])
 
     # 5) MinIO may remain Pending until the chart's CSI sync hook creates its Secret.
     run(["kubectl", "apply", "-n", namespace, "-f", "deploy/azure/k8s/minio/minio.yaml"])
@@ -237,6 +239,18 @@ def aks_up(_: list[str]) -> None:
             f"dashboard.image.repository={acr}/apex-dashboard",
             "--set",
             f"dashboard.image.tag={tag}",
+            "--set-string",
+            f"dashboard.backendUpstream=http://{release}-apex-orchestration-engine:80",
+            "--set-string",
+            "bootstrap.document.connections[0].options.endpoint=apex-minio:9000",
+            "--set-string",
+            f"ingress.hosts[0].host={hostname}",
+            "--set-string",
+            f"ingress.tls[0].hosts[0]={hostname}",
+            "--set-string",
+            f"ingress.tls[0].secretName={tls_secret}",
+            "--set-string",
+            f'apexSettings.APEX_CORS_ORIGINS=["https://{hostname}"]',
             "--set",
             f"secretBackend.csi.keyvaultName={kv}",
             "--set",
@@ -260,6 +274,28 @@ def aks_up(_: list[str]) -> None:
             "rollout",
             "status",
             f"deployment/{release}-apex-orchestration-engine",
+        ]
+    )
+    run(["kubectl", "-n", namespace, "rollout", "restart", "deployment/apex-minio"])
+    run(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "rollout",
+            "status",
+            "deployment/apex-minio",
+            "--timeout=5m",
+        ]
+    )
+    run(
+        [
+            "kubectl",
+            "apply",
+            "-n",
+            namespace,
+            "-f",
+            "deploy/azure/k8s/minio/backup-cronjob.yaml",
         ]
     )
     print("aks-up complete. Smoke /ok — see docs/runbooks/aks-deployment.md.")

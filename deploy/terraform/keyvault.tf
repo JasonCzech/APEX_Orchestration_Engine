@@ -84,6 +84,20 @@ resource "azurerm_key_vault_secret" "artifact_secret_key" {
   depends_on   = [azurerm_role_assignment.kv_deployer]
 }
 
+resource "azurerm_key_vault_secret" "artifact_backup_account" {
+  name         = "artifact-backup-account"
+  value        = azurerm_storage_account.main.name
+  key_vault_id = azurerm_key_vault.main.id
+  depends_on   = [azurerm_role_assignment.kv_deployer]
+}
+
+resource "azurerm_key_vault_secret" "artifact_backup_key" {
+  name         = "artifact-backup-key"
+  value        = azurerm_storage_account.main.primary_access_key
+  key_vault_id = azurerm_key_vault.main.id
+  depends_on   = [azurerm_role_assignment.kv_deployer]
+}
+
 resource "azurerm_key_vault_secret" "bootstrap_admin_key" {
   name         = "bootstrap-admin-key"
   value        = local.bootstrap_admin_key

@@ -3,7 +3,8 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,21 +80,31 @@ async def verify_audit_chain(
 @router.get(
     "/audit/export.jsonl",
     operation_id="exportAuditJsonl",
-    response_class=Response,
+    response_class=StreamingResponse,
 )
-async def export_audit_jsonl(session: SessionDep) -> Response:
-    body = await AuditService(session).export_jsonl()
-    return Response(content=body, media_type="application/x-ndjson")
+async def export_audit_jsonl(session: SessionDep) -> StreamingResponse:
+    service = AuditService(session)
+
+    async def body():
+        async for line in service.iter_jsonl():
+            yield line + "\n"
+
+    return StreamingResponse(body(), media_type="application/x-ndjson")
 
 
 @router.get(
     "/audit/export.cef",
     operation_id="exportAuditCef",
-    response_class=Response,
+    response_class=StreamingResponse,
 )
-async def export_audit_cef(session: SessionDep) -> Response:
-    body = await AuditService(session).export_cef()
-    return Response(content=body, media_type="text/plain; charset=utf-8")
+async def export_audit_cef(session: SessionDep) -> StreamingResponse:
+    service = AuditService(session)
+
+    async def body():
+        async for line in service.iter_cef():
+            yield line + "\n"
+
+    return StreamingResponse(body(), media_type="text/plain; charset=utf-8")
 
 
 @router.get(

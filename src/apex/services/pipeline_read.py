@@ -18,7 +18,11 @@ import structlog
 from langgraph_sdk.errors import ConflictError
 
 from apex.domain.pipeline import PHASE_ORDER, ExternalResults, Phase, utcnow_iso
-from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
+from apex.graphs.pipeline.configurable import (
+    MAX_RECOMMENDED_RECURSION_LIMIT,
+    Limits,
+    PipelineConfigurable,
+)
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 from apex.services.prompts import (
     prompt_review_from_resolved,
@@ -260,6 +264,11 @@ class PipelineReadService:
         # selected assistant's pinned configuration must remain able to fill fields
         # the caller omitted. Graph execution validates the final merged layer again.
         validated_config = PipelineConfigurable.model_validate(run_configurable)
+        recursion_limit = (
+            recommended_recursion_limit(validated_config.limits)
+            if "limits" in run_configurable
+            else MAX_RECOMMENDED_RECURSION_LIMIT
+        )
 
         run_input: JsonDict = {"title": title, "request": request}
         if external_results:
@@ -284,7 +293,10 @@ class PipelineReadService:
                 input=run_input,
                 config={
                     "configurable": run_configurable,
-                    "recursion_limit": recommended_recursion_limit(validated_config.limits),
+                    # An assistant may supply limits omitted by the sparse caller
+                    # layer. Use the hard safe ceiling in that case so inherited
+                    # long-running polls are not launched with the default budget.
+                    "recursion_limit": recursion_limit,
                 },
                 stream_mode=("updates", "messages-tuple", "custom"),
                 stream_subgraphs=True,

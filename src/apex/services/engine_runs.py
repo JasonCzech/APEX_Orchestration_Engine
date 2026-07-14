@@ -55,8 +55,14 @@ async def record_engine_run(
     artifact_namespace: str | None = None,
     artifact_connection_id: str | None = None,
     summary: dict[str, Any] | None = None,
+    required: bool = False,
 ) -> None:
-    """Upsert one engine-run row; terminal statuses stamp ended_at. Never raises."""
+    """Upsert one engine-run row; terminal statuses stamp ended_at.
+
+    Ordinary lifecycle projection remains best-effort. Artifact ownership writes
+    pass ``required=True`` so a retryable graph node cannot checkpoint inaccessible
+    objects without their authorization record.
+    """
     try:
         # Throwaway engine per call: graph nodes run on worker threads with
         # short-lived event loops, so pooled connections must not outlive them.
@@ -101,6 +107,8 @@ async def record_engine_run(
             await engine_db.dispose()
     except Exception as exc:  # noqa: BLE001 — projection writes never fail a run
         logger.warning("engine_runs.record_failed", thread_id=thread_id, error=str(exc))
+        if required:
+            raise
 
 
 def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
@@ -118,3 +126,5 @@ def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
                 executor.submit(asyncio.run, record_engine_run(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
         logger.warning("engine_runs.record_failed", error=str(exc))
+        if kwargs.get("required") is True:
+            raise

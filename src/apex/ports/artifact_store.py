@@ -25,9 +25,14 @@ def engine_artifact_namespace(idempotency_key: str) -> str:
 def engine_artifact_key(idempotency_key: str, name: str) -> str:
     """Return a traversal-safe key beneath the attempt's private namespace."""
 
-    filename = PurePath(name.replace("\\", "/")).name.strip()
+    # Preserve uniqueness prefixes added by adapters even when a provider name
+    # contains path separators. Flatten the path instead of taking only basename.
+    filename = "_".join(
+        part for part in name.replace("\\", "/").split("/") if part not in {"", ".", ".."}
+    ).strip()
     if filename in {"", ".", ".."}:
         filename = "artifact.bin"
+    filename = filename[:512]
     return f"{engine_artifact_namespace(idempotency_key)}/{filename}"
 
 

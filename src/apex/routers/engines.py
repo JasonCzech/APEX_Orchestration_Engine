@@ -91,6 +91,8 @@ class AbortEngineRunResponse(BaseModel):
     engine: str
     external_run_id: str | None
     cancelled_runs: list[str]
+    phase: EngineRunPhase | None = None
+    confirmed: bool = False
 
 
 def _read_model(run: EngineRun) -> EngineRunRead:
@@ -178,4 +180,6 @@ async def abort_engine_run(
         engine=result.engine,
         external_run_id=result.external_run_id,
         cancelled_runs=result.cancelled_runs,
+        phase=EngineRunPhase(result.phase) if result.phase is not None else None,
+        confirmed=result.confirmed,
     )

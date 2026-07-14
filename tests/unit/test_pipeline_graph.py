@@ -20,6 +20,7 @@ from apex.graphs.pipeline import phase_subgraph
 from apex.graphs.pipeline.graph import builder, graph
 from apex.graphs.pipeline.state import PipelineState
 from apex.ports.artifact_store import transcript_artifact_key
+from apex.services import engine_runs
 from apex.services.connections import ConnectionResolver
 
 AUTO = {"prompt_review": "auto", "output_review": "auto"}
@@ -29,6 +30,7 @@ AUTO = {"prompt_review": "auto", "output_review": "auto"}
 def _static_artifact_store(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     MemoryArtifactStore.clear()
     monkeypatch.setattr(phase_subgraph, "_make_artifact_resolver", lambda: ConnectionResolver())
+    monkeypatch.setattr(engine_runs, "record_engine_run_sync", lambda *args, **kwargs: None)
     yield
     MemoryArtifactStore.clear()
 

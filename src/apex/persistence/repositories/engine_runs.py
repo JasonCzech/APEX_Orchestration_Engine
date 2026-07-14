@@ -195,7 +195,10 @@ class EngineRunsRepository:
         allowed_scopes: Sequence[ScopeRef] | None = None,
         allowed_project_ids: tuple[str, ...] | None = None,
     ) -> EngineRun | None:
-        filters: list[ColumnElement[bool]] = [EngineRun.thread_id == thread_id]
+        filters: list[ColumnElement[bool]] = [
+            EngineRun.thread_id == thread_id,
+            EngineRun.status.not_in(TERMINAL_STATUSES),
+        ]
         _append_mutation_scope(
             filters,
             allowed_scopes=allowed_scopes,

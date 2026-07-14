@@ -417,7 +417,11 @@ def _make_prompt_gate(phase: Phase):
         additional_context = str(review.get("additional_context") or "")
         original_application = review.get("application")
         packets = list(state.get("context_packets") or [])
-        tools = stub_tool_names(phase)
+        settings = get_settings()
+        if cfg.agent_backend == "anthropic" and settings.llm.anthropic_api_key:
+            tools = [tool.name for tool in _build_agent_tools(settings)]
+        else:
+            tools = stub_tool_names(phase)
         error: str | None = None
         for _ in range(MAX_GATE_LOOPS):
             payload = build_prompt_review_payload(
@@ -777,6 +781,34 @@ def _build_agent_tools(settings: Any) -> list[Any]:
     return [fetch_results]
 
 
+def _invoke_agent_tool(
+    tool: Any,
+    args: dict[str, Any],
+    *,
+    settings: Any,
+    remaining_chars: int,
+) -> Any:
+    """Invoke one tool without allowing its result to exceed the prompt budget."""
+
+    if remaining_chars <= 256:
+        return "error: model-input budget exhausted; tool call skipped"
+    if getattr(tool, "name", None) != "fetch_results":
+        return tool.invoke(args)
+
+    from apex.services.results_fetch import FetchError, fetch_results_text
+
+    try:
+        return fetch_results_text(
+            str(args.get("url") or ""),
+            allowed_hosts=settings.llm.fetch_allowed_hosts,
+            allow_private=settings.llm.fetch_allow_private_hosts,
+            max_bytes=min(settings.llm.fetch_max_bytes, remaining_chars),
+            timeout_s=settings.llm.fetch_timeout_s,
+        )
+    except FetchError as exc:
+        return f"error: {exc}"
+
+
 def _accumulate_usage(acc: dict[str, Any], usage: Any) -> None:
     """Sum LangChain usage_metadata across tool-loop iterations (tokens + details)."""
     if not isinstance(usage, dict):
@@ -838,6 +870,7 @@ def _llm_agent_body(
     response: Any = None
     max_tool_rounds = max(1, settings.llm.fetch_max_tool_iters) if tools else 0
     tool_rounds = 0
+    tool_context_chars = 0
     while True:
         response = runnable.invoke(messages)
         messages.append(response)
@@ -848,6 +881,16 @@ def _llm_agent_body(
         if not calls:
             break
         if tool_rounds >= max_tool_rounds:
+            for call in calls:
+                tool_id = str(
+                    call.get("id") or f"{phase.value}-a{attempt}-tool-limit-{len(messages)}"
+                )
+                messages.append(
+                    ToolMessage(
+                        content="error: configured tool-call round limit reached",
+                        tool_call_id=tool_id,
+                    )
+                )
             response = llm.invoke(messages)
             messages.append(response)
             _accumulate_usage(usage, getattr(response, "usage_metadata", None))
@@ -862,8 +905,20 @@ def _llm_agent_body(
             )
             args = dict(call.get("args") or {})
             try:
+                remaining_chars = (
+                    settings.runs.max_model_input_chars
+                    - len(system_text)
+                    - len(user_text)
+                    - tool_context_chars
+                    - 1_024
+                )
                 output = (
-                    tool.invoke(args)
+                    _invoke_agent_tool(
+                        tool,
+                        args,
+                        settings=settings,
+                        remaining_chars=remaining_chars,
+                    )
                     if tool is not None
                     else f"error: unknown tool {call.get('name')!r}"
                 )
@@ -894,7 +949,19 @@ def _llm_agent_body(
                     "status": record["status"],
                 }
             )
-            messages.append(ToolMessage(content=str(output), tool_call_id=tool_id))
+            output_text = str(output)
+            remaining_chars = max(
+                0,
+                settings.runs.max_model_input_chars
+                - len(system_text)
+                - len(user_text)
+                - tool_context_chars
+                - 1_024,
+            )
+            if len(output_text) > remaining_chars:
+                output_text = output_text[:remaining_chars] + "\n…[tool result truncated]"
+            tool_context_chars += len(output_text)
+            messages.append(ToolMessage(content=output_text, tool_call_id=tool_id))
         # Tool results are untrusted model input too. Re-check the complete
         # rendered budget after every tool round instead of validating only the
         # initial prompt.

@@ -21,8 +21,7 @@ from apex.persistence.db import get_sessionmaker
 from apex.persistence.models import Document
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.ports.artifact_store import ArtifactStorePort
-from apex.services.connections import ConnectionResolver, get_connection_resolver
+from apex.services.connections import ConnectionResolver, close_adapter, get_connection_resolver
 from apex.services.documents import (
     MAX_DOCUMENT_BYTES,
     MAX_UPLOAD_BODY_BYTES,
@@ -30,7 +29,6 @@ from apex.services.documents import (
     DocumentTooLargeError,
     MultipartParseError,
     extract_boundary,
-    get_artifact_store,
     get_documents_repository,
     parse_multipart,
     read_body_capped,
@@ -274,12 +272,23 @@ async def delete_document(
     document_id: str,
     identity: CurrentIdentity,
     repository: RepositoryDep,
-    store: Annotated[ArtifactStorePort, Depends(get_artifact_store)],
+    resolver: ConnectionResolverDep,
 ) -> None:
     document = await repository.get(document_id)
     if document is None or not _writable(identity, document):
         raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
-    delete = getattr(store, "delete", None)
-    if delete is not None:
-        await delete(document.artifact_key)
+    try:
+        store, _connection_id = await resolver.resolve_with_connection_id(
+            PortKind.ARTIFACT_STORE,
+            connection_id=document.artifact_connection_id,
+            project_id=document.project_id,
+        )
+    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
+    try:
+        delete = getattr(store, "delete", None)
+        if delete is not None:
+            await delete(document.artifact_key)
+    finally:
+        await close_adapter(store)
     await repository.delete(document)

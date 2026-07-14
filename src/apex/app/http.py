@@ -32,12 +32,7 @@ from apex.services.usage import UsageTrackingMiddleware
 from apex.settings import get_settings
 
 settings = get_settings()
-docs_enabled = settings.environment.strip().lower() not in {
-    "production",
-    "prod",
-    "staging",
-    "stage",
-}
+docs_enabled = not settings.is_locked_down
 
 app = FastAPI(
     title="APEX Orchestration Engine — Domain API",

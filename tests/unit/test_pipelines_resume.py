@@ -151,7 +151,7 @@ def test_resume_gate_restores_complete_checkpointed_run_config() -> None:
         "engine": "loadrunner",
         "connections": {"execution_engine": "lre-a"},
         "agent_backend": "anthropic",
-        "load_test": {"test_id": 42},
+        "load_test": {},
         "gates": {"execution": {"prompt_review": "auto", "output_review": "gated"}},
         "limits": {"poll_interval_s": 7.0, "poll_timeout_s": 70.0},
     }
@@ -172,7 +172,7 @@ def test_resume_gate_restores_complete_checkpointed_run_config() -> None:
     assert restored["engine"] == "loadrunner"
     assert restored["connections"] == {"execution_engine": "lre-a"}
     assert restored["agent_backend"] == "anthropic"
-    assert restored["load_test"] == {"test_id": 42}
+    assert restored["load_test"] == {}
 
 
 def test_resume_gate_uses_thread_limits_for_recursion_budget() -> None:

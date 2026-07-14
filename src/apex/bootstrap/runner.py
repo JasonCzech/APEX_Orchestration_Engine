@@ -207,7 +207,25 @@ async def _apply_connections(
     for spec in doc.connections:
         existing = await session.scalar(select(Connection).where(Connection.name == spec.name))
         if existing is not None:
-            log(f"connection {spec.name}: exists (id={existing.id})")
+            expected = {
+                "kind": spec.kind.value,
+                "provider": spec.provider,
+                "project_id": spec.project_id,
+                "base_url": spec.base_url,
+                "options": dict(spec.options),
+                "secret_ref": spec.secret_ref,
+                "enabled": spec.enabled,
+            }
+            drift = sorted(
+                field for field, value in expected.items() if getattr(existing, field) != value
+            )
+            if drift:
+                raise BootstrapError(
+                    f"connection {spec.name!r} differs from bootstrap configuration "
+                    f"({', '.join(drift)}); create a versioned replacement or reconcile it "
+                    "explicitly before bootstrap"
+                )
+            log(f"connection {spec.name}: exists and matches (id={existing.id})")
             continue
         session.add(
             Connection(

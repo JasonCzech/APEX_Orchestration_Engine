@@ -157,13 +157,13 @@ async def test_failure_injection_at_pct() -> None:
     assert summary.sla_breaches
 
 
-async def test_abort_is_noop_in_m1() -> None:
+async def test_abort_persists_terminal_state_in_handle() -> None:
     engine = _engine(duration_s=FAST_DURATION_S)
     handle = await engine.provision(_spec())
     assert await engine.abort(handle, reason="operator request") is None
-    # Stateless M1 sim: the run still completes on its simulated clock.
+    # Abort state lives in the durable handle and remains terminal over time.
     await asyncio.sleep(FAST_DURATION_S * 2)
-    assert (await engine.get_status(handle)).phase is EngineRunPhase.COMPLETED
+    assert (await engine.get_status(handle)).phase is EngineRunPhase.ABORTED
 
 
 async def test_unprovisioned_handle_raises() -> None:

@@ -167,7 +167,10 @@ async def list_drafts(
     ensure_scope(identity, project_id=project)
     parameters = inspect.signature(repo.list_all).parameters
     if "limit" in parameters:
-        drafts = await repo.list_all(project_id=project, limit=limit, offset=offset)
+        kwargs: dict[str, Any] = {"project_id": project, "limit": limit, "offset": offset}
+        if "allowed_scopes" in parameters:
+            kwargs["allowed_scopes"] = None if identity.is_unscoped else tuple(identity.scopes)
+        drafts = await repo.list_all(**kwargs)
     else:
         drafts = await repo.list_all(project_id=project)
     return [_read_model(draft) for draft in drafts if _visible(identity, draft)]

@@ -11,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.persistence.models import Connection, HostMapping
+from apex.persistence.models import Connection, Document, EngineRun, HostMapping
+
+_TERMINAL_ENGINE_STATUSES = ("completed", "failed", "aborted")
 
 
 class DuplicateConnectionNameError(Exception):
@@ -74,6 +76,31 @@ class ConnectionsRepository:
     async def delete(self, conn: Connection) -> None:
         await self._session.delete(conn)
         await self._session.commit()
+
+    async def durable_reference_reason(self, conn: Connection) -> str | None:
+        """Return why disabling/deleting this row would break durable state."""
+
+        if conn.kind == "artifact_store":
+            document_id = await self._session.scalar(
+                select(Document.id).where(Document.artifact_connection_id == conn.id).limit(1)
+            )
+            if document_id is not None:
+                return "stored documents"
+            engine_artifact_id = await self._session.scalar(
+                select(EngineRun.id).where(EngineRun.artifact_connection_id == conn.id).limit(1)
+            )
+            if engine_artifact_id is not None:
+                return "stored engine artifacts"
+        if conn.kind == "execution_engine":
+            handles = await self._session.scalars(
+                select(EngineRun.handle).where(EngineRun.status.not_in(_TERMINAL_ENGINE_STATUSES))
+            )
+            if any(
+                isinstance(handle, dict) and handle.get("connection_id") == conn.id
+                for handle in handles
+            ):
+                return "active engine runs"
+        return None
 
     async def replace_host_mappings(
         self, conn: Connection, mappings: Sequence[dict[str, Any]]

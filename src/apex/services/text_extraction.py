@@ -12,6 +12,7 @@ stays attached as a titled reference. Callers run :func:`extract_text` in a work
 """
 
 import io
+import zipfile
 from dataclasses import dataclass
 from posixpath import splitext
 
@@ -29,6 +30,10 @@ _TEXT_EXTS = {".md", ".markdown", ".txt", ".text"}
 _PDF_MIMES = {"application/pdf"}
 _DOCX_MIMES = {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
 _TEXT_MIMES = {"text/markdown", "text/x-markdown", "text/plain"}
+_MAX_PDF_PAGES = 2_000
+_MAX_DOCX_ENTRIES = 2_048
+_MAX_DOCX_EXPANDED_BYTES = 64 * 1024 * 1024
+_MAX_DOCX_COMPRESSION_RATIO = 100
 
 
 @dataclass(frozen=True)
@@ -64,7 +69,7 @@ def _kind(filename: str, content_type: str | None) -> str | None:
     return None
 
 
-def _extract_pdf(data: bytes) -> str:
+def _extract_pdf(data: bytes, *, max_chars: int) -> str:
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(data))
@@ -74,17 +79,58 @@ def _extract_pdf(data: bytes) -> str:
             reader.decrypt("")
         except Exception:
             raise ValueError("PDF is password-protected") from None
-    return "\n\n".join((page.extract_text() or "") for page in reader.pages)
+    if len(reader.pages) > _MAX_PDF_PAGES:
+        raise ValueError(f"PDF exceeds the {_MAX_PDF_PAGES}-page extraction limit")
+    blocks: list[str] = []
+    extracted = 0
+    budget = max_chars if max_chars > 0 else 1_000_000
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        blocks.append(text[: max(budget - extracted, 0) + 1])
+        extracted += len(text)
+        if extracted > budget:
+            break
+    return "\n\n".join(blocks)
 
 
-def _extract_docx(data: bytes) -> str:
+def _extract_docx(data: bytes, *, max_chars: int) -> str:
     from docx import Document as DocxDocument
 
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        members = archive.infolist()
+        if len(members) > _MAX_DOCX_ENTRIES:
+            raise ValueError("DOCX contains too many archive entries")
+        expanded_limit = min(
+            _MAX_DOCX_EXPANDED_BYTES,
+            max(8 * 1024 * 1024, max_chars * 32 if max_chars > 0 else 0),
+        )
+        expanded = sum(member.file_size for member in members)
+        if expanded > expanded_limit:
+            raise ValueError("DOCX expanded content exceeds the extraction limit")
+        for member in members:
+            if member.file_size > 0 and member.compress_size == 0:
+                raise ValueError("DOCX contains an invalid compressed entry")
+            if (
+                member.compress_size > 0
+                and member.file_size / member.compress_size > _MAX_DOCX_COMPRESSION_RATIO
+            ):
+                raise ValueError("DOCX archive compression ratio exceeds the safety limit")
     document = DocxDocument(io.BytesIO(data))
-    blocks: list[str] = [para.text for para in document.paragraphs]
+    blocks: list[str] = []
+    extracted = 0
+    budget = max_chars if max_chars > 0 else 1_000_000
+    for para in document.paragraphs:
+        blocks.append(para.text)
+        extracted += len(para.text)
+        if extracted > budget:
+            return "\n".join(blocks)
     for table in document.tables:
         for row in table.rows:
-            blocks.append("\t".join(cell.text for cell in row.cells))
+            text = "\t".join(cell.text for cell in row.cells)
+            blocks.append(text)
+            extracted += len(text)
+            if extracted > budget:
+                return "\n".join(blocks)
     return "\n".join(blocks)
 
 
@@ -116,9 +162,9 @@ def extract_text(
         return ExtractionResult(text="", status=PARSE_UNSUPPORTED, char_count=0)
     try:
         if kind == "pdf":
-            raw = _extract_pdf(data)
+            raw = _extract_pdf(data, max_chars=max_chars)
         elif kind == "docx":
-            raw = _extract_docx(data)
+            raw = _extract_docx(data, max_chars=max_chars)
         else:
             raw = _extract_plaintext(data)
     except Exception as exc:

@@ -24,7 +24,7 @@ from pydantic import ValidationError
 from apex.adapters.registry import PortKind
 from apex.auth.identity import ScopeRef
 from apex.domain.pipeline import EngineHandle
-from apex.ports.execution_engine import TERMINAL_ENGINE_PHASES
+from apex.ports.execution_engine import TERMINAL_ENGINE_PHASES, EngineRunPhase
 from apex.services.connections import ConnectionResolver, get_connection_resolver
 from apex.services.pipeline_read import LangGraphClientLike
 
@@ -75,6 +75,8 @@ class EngineAbortResult:
     engine: str
     external_run_id: str | None
     cancelled_runs: list[str] = field(default_factory=list)
+    phase: str | None = None
+    confirmed: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,13 +128,23 @@ class EngineAbortService:
             project_id=target.project_id,
             expected_provider=handle.engine,
         )
+        observed_phase: EngineRunPhase | None = None
+        confirmed = False
         try:
             await adapter.abort(handle, reason=reason or DEFAULT_ABORT_REASON)
             try:
                 status = await adapter.get_status(handle)
             except KeyError:
                 status = None
-            if status is not None and status.phase not in TERMINAL_ENGINE_PHASES:
+                observed_phase = EngineRunPhase.ABORTED
+                confirmed = True
+            if status is not None:
+                observed_phase = status.phase
+                confirmed = status.phase in TERMINAL_ENGINE_PHASES
+            if status is not None and status.phase not in {
+                *TERMINAL_ENGINE_PHASES,
+                EngineRunPhase.STOPPING,
+            }:
                 raise RuntimeError(
                     f"external engine remains nonterminal after abort: {status.phase.value}"
                 )
@@ -149,25 +161,28 @@ class EngineAbortService:
 
         cancelled = await self._cancel_runs(thread_id)
 
-        try:
-            projected = await self._repo.mark_aborted(
-                thread_id,
-                allowed_scopes=self._allowed_scopes,
-                allowed_project_ids=self._allowed_project_ids,
-            )
-        except Exception as exc:  # noqa: BLE001 — projection writes never gate an abort
-            logger.warning(
-                "engine_abort.projection_update_failed", thread_id=thread_id, error=str(exc)
-            )
-        else:
-            if projected == 0:
-                logger.warning("engine_abort.projection_update_empty", thread_id=thread_id)
+        if observed_phase is EngineRunPhase.ABORTED:
+            try:
+                projected = await self._repo.mark_aborted(
+                    thread_id,
+                    allowed_scopes=self._allowed_scopes,
+                    allowed_project_ids=self._allowed_project_ids,
+                )
+            except Exception as exc:  # noqa: BLE001 — projection writes never gate an abort
+                logger.warning(
+                    "engine_abort.projection_update_failed", thread_id=thread_id, error=str(exc)
+                )
+            else:
+                if projected == 0:
+                    logger.warning("engine_abort.projection_update_empty", thread_id=thread_id)
 
         return EngineAbortResult(
             thread_id=thread_id,
             engine=handle.engine,
             external_run_id=handle.external_run_id,
             cancelled_runs=cancelled,
+            phase=observed_phase.value if observed_phase is not None else None,
+            confirmed=confirmed,
         )
 
     # ── handle discovery ─────────────────────────────────────────────────────

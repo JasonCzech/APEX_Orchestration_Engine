@@ -41,6 +41,7 @@ async def resolve_environment_target(
     if (
         env is None
         or application is None
+        or getattr(application, "archived_at", None) is not None
         or project_id is None
         or application.project_id != project_id
         or (app_id is not None and env.application_id != app_id)

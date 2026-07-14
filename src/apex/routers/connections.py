@@ -16,6 +16,7 @@ import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -245,14 +246,21 @@ async def _probe_execution_engine(adapter: Any) -> str:
 
 
 async def _probe_artifact_store(adapter: Any) -> str:
-    artifact = await adapter.put("apex-connection-probe", b"probe", content_type="text/plain")
-    url = await adapter.get_url(artifact.key)
-    return f"artifact round-trip ok: {url}"
+    key = f".apex-probes/{uuid4().hex}"
+    artifact = await adapter.put(key, b"probe", content_type="text/plain")
+    try:
+        url = await adapter.get_url(artifact.key)
+        return f"artifact round-trip ok: {url}"
+    finally:
+        await adapter.delete(artifact.key)
 
 
 async def _probe_secrets(adapter: Any) -> str:
-    await adapter.resolve("env:PATH")  # value is never returned or logged
-    return "resolved secret_ref env:PATH"
+    # There is deliberately no universal probe secret. Resolving PATH violates
+    # the locked-down integration prefix and probing an operator secret would
+    # create an unnecessary access. Successful construction validates provider
+    # configuration without reading secret material.
+    return f"secrets adapter initialized: {adapter.__class__.__name__}"
 
 
 PROBE_CALLS: dict[PortKind, Callable[[Any], Awaitable[str]]] = {
@@ -267,7 +275,7 @@ PROBE_CALLS: dict[PortKind, Callable[[Any], Awaitable[str]]] = {
     PortKind.SECRETS: _probe_secrets,
 }
 
-_ARTIFACT_STORE_IDENTITY_FIELDS = frozenset(
+_RUNTIME_IDENTITY_FIELDS = frozenset(
     {"provider", "project_id", "base_url", "options", "secret_ref"}
 )
 
@@ -385,23 +393,35 @@ def _validate_probe_target(config: ConnectionConfig) -> None:
     validate_connection_config(config)
 
 
-def _protect_artifact_store_identity(conn: Connection, changes: dict[str, Any]) -> None:
-    """Keep historical artifact references bound to one immutable store location."""
+def _protect_runtime_identity(conn: Connection, changes: dict[str, Any]) -> None:
+    """Keep durable engine/artifact handles bound to one immutable endpoint."""
 
     if PortKind(conn.kind) is not PortKind.ARTIFACT_STORE:
         return
     changed = sorted(
         field
-        for field in _ARTIFACT_STORE_IDENTITY_FIELDS.intersection(changes)
+        for field in _RUNTIME_IDENTITY_FIELDS.intersection(changes)
         if changes[field] != getattr(conn, field)
     )
     if changed:
         raise HTTPException(
             status_code=409,
             detail=(
-                "artifact-store location fields are immutable once a connection id is "
+                "runtime connection identity fields are immutable once a connection id is "
                 f"created ({', '.join(changed)}); create a new connection id instead"
             ),
+        )
+
+
+async def _protect_durable_references(repo: ConnectionsRepository, conn: Connection) -> None:
+    checker = getattr(repo, "durable_reference_reason", None)
+    if checker is None:
+        return
+    reason = await checker(conn)
+    if reason is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"connection is still referenced by {reason}; migrate references first",
         )
 
 
@@ -492,7 +512,6 @@ async def update_connection(
         )
     if "options" in changes:
         _ensure_options_are_mutable_by(identity, changes["options"] or {})
-    _protect_artifact_store_identity(conn, changes)
     if "project_id" in changes:
         _ensure_can_manage_connection(
             identity,
@@ -503,6 +522,12 @@ async def update_connection(
         )
     if "provider" in changes:
         _validate_provider(PortKind(conn.kind), changes["provider"])
+    _protect_runtime_identity(conn, changes)
+    if PortKind(conn.kind) is PortKind.EXECUTION_ENGINE and any(
+        field in changes and changes[field] != getattr(conn, field)
+        for field in _RUNTIME_IDENTITY_FIELDS
+    ):
+        await _protect_durable_references(repo, conn)
     _validate_connection_target(
         changes.get("base_url", conn.base_url),
         changes.get("options", conn.options),
@@ -523,6 +548,7 @@ async def delete_connection(
 ) -> None:
     conn = await _get_or_404(repo, connection_id)
     _ensure_can_manage_row(identity, conn)
+    await _protect_durable_references(repo, conn)
     await repo.delete(conn)
 
 
@@ -541,6 +567,7 @@ async def disable_connection(
 ) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
     _ensure_can_manage_row(identity, conn)
+    await _protect_durable_references(repo, conn)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, False))
 
 

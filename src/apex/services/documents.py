@@ -10,6 +10,7 @@ UploadFile if python-multipart ever lands in the lockfile.
 
 import asyncio
 import re
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from posixpath import basename
@@ -27,11 +28,24 @@ from apex.persistence.models import Document
 from apex.persistence.repositories.documents import DocumentsRepository
 from apex.ports.artifact_store import ArtifactStorePort
 from apex.services.connections import get_connection_resolver
-from apex.services.text_extraction import PARSE_PARSED, derive_summary, extract_text
+from apex.services.text_extraction import (
+    PARSE_PARSED,
+    ExtractionResult,
+    derive_summary,
+    extract_text,
+)
 from apex.settings import get_settings
 
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024  # 25 MB hard cap per uploaded document
 logger = structlog.get_logger(__name__)
+_EXTRACTION_LIMITER = threading.BoundedSemaphore(4)
+
+
+def _extract_text_bounded(*args: Any, **kwargs: Any) -> ExtractionResult:
+    with _EXTRACTION_LIMITER:
+        return extract_text(*args, **kwargs)
+
+
 # Stream cap: file cap + slack for multipart framing and small text fields.
 MAX_UPLOAD_BODY_BYTES = MAX_DOCUMENT_BYTES + 1024 * 1024
 
@@ -204,7 +218,7 @@ class DocumentsService:
         # pypdf/python-docx are blocking; soft-fails (status set) never break the upload.
         ingest = get_settings().documents
         extraction = await asyncio.to_thread(
-            extract_text,
+            _extract_text_bounded,
             data,
             filename=name,
             content_type=content_type,

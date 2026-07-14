@@ -52,6 +52,8 @@ secretBackend:
       - { objectName: artifact-secret-key, secretName: apex-minio, key: APEX_INTEGRATION_MINIO_SECRET_KEY }
       - { objectName: bootstrap-admin-key, secretName: apex-admin, key: APEX_BOOTSTRAP_ADMIN_KEY }
       - { objectName: api-key-hash-pepper, secretName: apex-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
+      - { objectName: artifact-backup-account, secretName: apex-minio-backup, key: AZURE_STORAGE_ACCOUNT }
+      - { objectName: artifact-backup-key, secretName: apex-minio-backup, key: AZURE_STORAGE_KEY }
 
 # MinIO artifact store secret -> app env
 # (the connection's secret_ref env:APEX_INTEGRATION_MINIO_SECRET_KEY).
@@ -83,7 +85,7 @@ bootstrap:
         kind: artifact_store
         provider: s3
         options:
-          endpoint: apex-minio.apex.svc.cluster.local:9000
+          endpoint: apex-minio:9000
           bucket: apex-artifacts
           secure: false
           access_key: apex
@@ -120,7 +122,7 @@ dashboard:
   enabled: true
   image:
     repository: REPLACE_ME.azurecr.io/apex-dashboard
-  backendUpstream: http://apex-apex-orchestration-engine:80
+  backendUpstream: http://apex-apex-orchestration-engine:80 # workflow/deploy.py override by release
 
 # AKS app-routing ingress reaches the server from its controller namespace; the
 # chart separately admits its same-release dashboard proxy. Public egress is

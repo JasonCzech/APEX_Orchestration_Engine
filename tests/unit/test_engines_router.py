@@ -18,6 +18,7 @@ from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.domain.pipeline import EngineHandle
 from apex.persistence.models import EngineRun
+from apex.ports.execution_engine import EngineRunPhase, EngineRunStatus
 from apex.routers.engines import (
     get_engine_abort_service,
     get_engine_runs_repository,
@@ -281,6 +282,9 @@ class FakeEngineAdapter:
         if self.abort_error is not None:
             raise self.abort_error
 
+    async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
+        return EngineRunStatus(phase=EngineRunPhase.ABORTED, progress_pct=100.0)
+
     async def teardown(self, handle: EngineHandle) -> None:
         if self.teardown_error is not None:
             raise self.teardown_error
@@ -457,6 +461,8 @@ def test_abort_uses_handle_from_state_and_cancels_runs() -> None:
         "engine": "sim",
         "external_run_id": "sim-abc123",
         "cancelled_runs": ["r-run", "r-pend"],
+        "phase": "aborted",
+        "confirmed": True,
     }
     # adapter saw the state handle and the operator's reason; teardown followed
     (handle, reason), *_ = adapter.aborts

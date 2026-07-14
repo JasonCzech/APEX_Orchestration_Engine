@@ -36,6 +36,9 @@ class AuthSettings(BaseModel):
     dev_api_key: str | None = None
     # Server-held secret used to HMAC API keys at rest. Required in locked environments.
     api_key_hash_pepper: str | None = None
+    # Ordered fallback peppers used only during rotation. Successful auth is
+    # rehashed with the current pepper, so old values can be removed after use.
+    previous_api_key_hash_peppers: list[str] = Field(default_factory=list)
 
 
 class RateLimitSettings(BaseModel):

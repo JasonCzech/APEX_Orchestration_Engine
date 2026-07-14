@@ -717,36 +717,48 @@ class LoadRunnerExecutionEngine:
         results = payload if isinstance(payload, list) else list(payload.get("Results") or [])
         chosen = [result for result in results if _is_report(result)] or results
         refs: list[dict[str, Any]] = []
-        for ordinal, result in enumerate(chosen):
-            result_id = result.get("ID")
-            name = str(result.get("Name") or f"result-{result_id}.zip")
-            data_response = await self._stream_download(
-                f"{self._project_base}/Runs/{run_id}/Results/{result_id}/data",
-                not_found=f"LRE result {result_id} data not found for run {run_id}",
-            )
-            result_token = str(result_id) if result_id is not None else "unknown"
-            key = engine_artifact_key(
-                handle.idempotency_key,
-                f"{ordinal:04d}-result-{result_token}-{name}",
-            )
-            try:
-                stored = await store.put_stream(
-                    key,
-                    data_response.aiter_bytes(),
-                    content_type="application/zip",
-                    max_bytes=self._max_report_bytes,
+        try:
+            for ordinal, result in enumerate(chosen):
+                result_id = result.get("ID")
+                name = str(result.get("Name") or f"result-{result_id}.zip")
+                data_response = await self._stream_download(
+                    f"{self._project_base}/Runs/{run_id}/Results/{result_id}/data",
+                    not_found=f"LRE result {result_id} data not found for run {run_id}",
                 )
-            finally:
-                await data_response.aclose()
-            ref = ArtifactRef(
-                kind="engine_report",
-                name=name,
-                uri=stored.uri,
-                key=stored.key,
-                media_type="application/zip",
-                summary=f"LRE {result.get('Type') or 'result'} for run {run_id}",
-            )
-            refs.append(ref.model_dump(mode="json"))
+                result_token = str(result_id) if result_id is not None else "unknown"
+                key = engine_artifact_key(
+                    handle.idempotency_key,
+                    f"{ordinal:04d}-result-{result_token}-{name}",
+                )
+                try:
+                    stored = await store.put_stream(
+                        key,
+                        data_response.aiter_bytes(),
+                        content_type="application/zip",
+                        max_bytes=self._max_report_bytes,
+                    )
+                finally:
+                    await data_response.aclose()
+                ref = ArtifactRef(
+                    kind="engine_report",
+                    name=name,
+                    uri=stored.uri,
+                    key=stored.key,
+                    media_type="application/zip",
+                    summary=f"LRE {result.get('Type') or 'result'} for run {run_id}",
+                )
+                refs.append(ref.model_dump(mode="json"))
+        except Exception:
+            # Do not leave successful earlier items unreachable when a later
+            # provider download/store operation fails.
+            for ref in refs:
+                try:
+                    delete_artifact = getattr(store, "delete", None)
+                    if delete_artifact is not None:
+                        await delete_artifact(str(ref["key"]))
+                except Exception:  # noqa: BLE001 - preserve the original collection error
+                    logger.warning("loadrunner.artifact_rollback_failed", key=ref.get("key"))
+            raise
         return refs
 
     async def fetch_summary(self, handle: EngineHandle) -> TestResultSummary:

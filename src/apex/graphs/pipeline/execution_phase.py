@@ -79,10 +79,13 @@ _SPEC_OVERRIDE_FIELDS = frozenset(LoadTestSpec.model_fields) - {
     # Targets are server-resolved from configurable.environment_id. Accepting
     # this through load_test would turn the engine into a caller-controlled SSRF proxy.
     "target_environment",
+    # Provider-owned workload selectors can carry a target of their own and must
+    # be selected by an approved connection/catalog binding, never by a run.
+    "script_refs",
 }
 _ENGINE_OPTION_FIELDS = {
     "apex_load": frozenset[str](),
-    "loadrunner": frozenset({"abortive_stop", "test_id", "test_instance_id"}),
+    "loadrunner": frozenset({"abortive_stop"}),
     "sim": frozenset({"fail_at_pct"}),
 }
 
@@ -92,7 +95,10 @@ def recommended_recursion_limit(limits: Limits) -> int:
     # Revalidate even if a caller manufactured a model with model_construct().
     checked = Limits.model_validate(limits.model_dump(mode="python"))
     cycles = math.ceil(checked.poll_timeout_s / checked.poll_interval_s)
-    return min(cycles + SPINE_SUPERSTEPS + 25, MAX_RECOMMENDED_RECURSION_LIMIT)
+    # Reserve a second full polling window for durable asynchronous abort
+    # confirmation. Cleanup no longer competes with the normal poll loop for the
+    # same recursion budget.
+    return min(cycles * 2 + SPINE_SUPERSTEPS + 25, MAX_RECOMMENDED_RECURSION_LIMIT)
 
 
 def execution_idempotency_key(thread_id: str, attempt: int) -> str:
@@ -261,15 +267,16 @@ async def _teardown_after_confirmed_abort(adapter: Any, handle: EngineHandle) ->
         )
 
 
-async def _confirm_abort(adapter: Any, handle: EngineHandle, reason: str) -> None:
+async def _confirm_abort(adapter: Any, handle: EngineHandle, reason: str) -> EngineRunPhase:
     await adapter.abort(handle, reason=reason)
     try:
         status = await adapter.get_status(handle)
     except KeyError:
         # A definitive not-found means the provider has already discarded it.
-        return
+        return EngineRunPhase.ABORTED
     if status.phase not in TERMINAL_ENGINE_PHASES:
         raise RuntimeError(f"abort accepted but external run remains {status.phase.value}")
+    return status.phase
 
 
 # ── event/sample shapes ────────────────────────────────────────────────────────
@@ -339,6 +346,9 @@ def _build_spec(
     engine_options = {k: v for k, v in overrides.items() if k not in _SPEC_OVERRIDE_FIELDS}
     _validate_engine_options(engine, engine_options)
     base.update(spec_overrides)
+    # The script-scenario phase is model-authored input. Provider workload IDs are
+    # security-sensitive because their stored definitions may target other hosts.
+    base.pop("script_refs", None)
     # Ignore any caller-seeded upstream target; only the auth-resolved immutable
     # run target may reach an execution adapter.
     base["target_environment"] = target_environment
@@ -709,16 +719,17 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
     engine_options = _engine_options(entry)
     reason = str(entry.get("engine_cleanup_reason") or "execution cleanup required")
 
-    async def _cleanup() -> None:
+    async def _cleanup() -> EngineRunPhase:
         adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
-            await _confirm_abort(adapter, handle, reason)
+            observed_phase = await _confirm_abort(adapter, handle, reason)
             await _teardown_after_confirmed_abort(adapter, handle)
+            return observed_phase
         finally:
             await _close_resource(adapter)
 
     try:
-        await _cleanup()
+        observed_phase = await _cleanup()
     except Exception as exc:  # noqa: BLE001 - durable retry is the safety contract
         failures = int(entry.get("engine_cleanup_failures") or 0) + 1
         logger.warning(
@@ -727,6 +738,15 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
             failures=failures,
             error=str(exc),
         )
+        cleanup_budget = max(
+            3,
+            math.ceil(cfg.limits.poll_timeout_s / cfg.limits.poll_interval_s),
+        )
+        if failures >= cleanup_budget:
+            raise RuntimeError(
+                "external engine abort is still unconfirmed after the cleanup retry budget; "
+                "the durable handle remains checkpointed for operator resume"
+            ) from exc
         await asyncio.sleep(cfg.limits.poll_interval_s)
         return Command(
             goto="engine_cleanup",
@@ -744,19 +764,24 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
         attempt,
         handle.engine,
         handle.model_dump(mode="json"),
-        EngineRunPhase.ABORTED.value,
+        observed_phase.value,
         project_id=cfg.project_id,
         app_id=cfg.app_id,
         external_run_id=handle.external_run_id,
         artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
     )
     final_error = str(entry.get("engine_cleanup_final_error") or reason)
+    outcome = (
+        "external engine abort confirmed"
+        if observed_phase is EngineRunPhase.ABORTED
+        else f"external engine reached {observed_phase.value} during cleanup"
+    )
     return Command(
         goto="finalize",
         update=_update(
             attempt,
             status=PhaseStatus.FAILED.value,
-            errors=[f"{final_error}; external engine abort confirmed"],
+            errors=[f"{final_error}; {outcome}"],
             engine_cleanup_required=False,
             engine_cleanup_completed_at=utcnow_iso(),
             engine_cleanup_last_error=None,
@@ -939,6 +964,7 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         summary=summary_json,
         artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
         artifact_connection_id=artifact_connection_id,
+        required=True,
     )
     update = _update(attempt, **fields)
     update["artifacts"] = artifacts

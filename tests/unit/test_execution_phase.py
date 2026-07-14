@@ -74,6 +74,7 @@ def projection_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         app_id: str | None = None,
         artifact_namespace: str | None = None,
         artifact_connection_id: str | None = None,
+        required: bool = False,
     ) -> None:
         calls.append(
             {
@@ -87,6 +88,7 @@ def projection_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
                 "app_id": app_id,
                 "artifact_namespace": artifact_namespace,
                 "artifact_connection_id": artifact_connection_id,
+                "required": required,
             }
         )
 
@@ -411,14 +413,15 @@ def test_apex_load_inline_script_cannot_bypass_catalog_target() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="inline Apex Load script_refs are not allowed"):
-        execution_phase._build_spec(
-            state,
-            cfg,
-            1,
-            "apex_load",
-            target_environment="https://approved.example.test",
-        )
+    spec, _options = execution_phase._build_spec(
+        state,
+        cfg,
+        1,
+        "apex_load",
+        target_environment="https://approved.example.test",
+    )
+    assert spec.script_refs == []
+    assert spec.target_environment == "https://approved.example.test"
 
 
 def test_engine_reserve_checkpoints_server_resolved_catalog_target(
@@ -478,19 +481,15 @@ def test_assistant_only_environment_config_requires_run_authorization_stamp() ->
         execution_phase._verified_stamped_target(cfg, "https://8.8.8.8/load", 1)
 
 
-def test_loadrunner_safe_engine_options_are_allowed() -> None:
+def test_loadrunner_provider_workload_options_are_rejected() -> None:
     cfg = exec_config(
         "exec-loadrunner-options",
         load_test={"test_id": 42, "test_instance_id": 7, "abortive_stop": True},
     )
     configurable = dict(cfg.get("configurable") or {})
     cfg = cast(RunnableConfig, {**cfg, "configurable": {**configurable, "engine": "loadrunner"}})
-    spec, options = execution_phase._build_spec(
-        cast(PipelineState, seeded_inputs(0.1)), cfg, 1, "loadrunner"
-    )
-
-    assert spec.idempotency_key == "exec-loadrunner-options-execution-a1"
-    assert options == {"test_id": 42, "test_instance_id": 7, "abortive_stop": True}
+    with pytest.raises(ValueError, match="provider workload selectors"):
+        execution_phase._build_spec(cast(PipelineState, seeded_inputs(0.1)), cfg, 1, "loadrunner")
 
 
 def test_engine_resolution_verifies_selector_and_overlays_stored_connection(
@@ -674,6 +673,8 @@ def test_poll_failure_cleanup_is_checkpointed_and_retried_until_abort_succeeds(
     class RecoveringCleanupEngine:
         async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
             calls.append("status")
+            if calls.count("abort") >= 2:
+                return EngineRunStatus(phase=EngineRunPhase.ABORTED)
             raise OSError("provider status API unavailable")
 
         async def abort(self, handle: EngineHandle, *, reason: str) -> None:
@@ -753,7 +754,7 @@ def test_poll_failure_cleanup_is_checkpointed_and_retried_until_abort_succeeds(
     assert completed_entry["status"] == PhaseStatus.FAILED.value
     assert completed_entry["engine_cleanup_required"] is False
     assert "abort confirmed" in completed_entry["errors"][0]
-    assert calls == ["status", "abort", "abort", "teardown"]
+    assert calls == ["status", "abort", "abort", "status", "teardown"]
     assert [call["status"] for call in projection_calls] == ["aborted"]
 
 
@@ -930,12 +931,13 @@ def test_collection_fails_closed_without_confirmed_terminal_status(
 
     command = execution_phase.engine_collect(state, exec_config("collect-state-check"))
 
-    assert command.goto == "finalize"
+    assert command.goto == "engine_cleanup"
     assert isinstance(command.update, dict)
     result = command.update["phase_results"]["execution"]
-    assert result["status"] == "failed"
-    assert any(expected_error in error for error in result["errors"])
-    assert calls == ["collect", "summary", "teardown"]
+    assert result["status"] == "running"
+    assert result["engine_cleanup_required"] is True
+    assert expected_error in result["engine_cleanup_reason"]
+    assert calls == []
 
 
 def test_poll_timeout_aborts_engine_and_fails_phase(

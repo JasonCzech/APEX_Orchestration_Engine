@@ -10,13 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, desc, select, text
+from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apex.auth.identity import ConsumerIdentity
@@ -135,10 +135,10 @@ class AuditService:
         return row
 
     async def _next_chain_seq(self, head: AuditLog | None) -> int:
-        if _dialect_name(self._session) == "postgresql":
-            value = await self._session.scalar(text("SELECT nextval('apex.audit_chain_seq_seq')"))
-            if isinstance(value, (int, float, str)):
-                return int(value)
+        # PostgreSQL sequences are not transactional: a rollback after nextval()
+        # leaves a permanent gap that gapless chain verification reports as
+        # tampering. The advisory xact lock above already serializes writers, so
+        # allocating from the locked head is both transactional and race-free.
         return (head.chain_seq + 1) if head is not None else 1
 
     async def _chain_head(self) -> AuditLog | None:
@@ -157,14 +157,15 @@ class AuditService:
         )
 
     async def verify_chain(self, *, allow_truncated: bool = False) -> AuditChainVerification:
-        rows = await self._rows()
         previous_hash: str | None = None
         expected_chain_seq = 1
-        if allow_truncated and rows:
-            previous_hash = rows[0].previous_hash
-            expected_chain_seq = rows[0].chain_seq
         checked = 0
-        for row in rows:
+        first = True
+        async for row in self._iter_rows():
+            if first and allow_truncated:
+                previous_hash = row.previous_hash
+                expected_chain_seq = row.chain_seq
+            first = False
             checked += 1
             if row.chain_seq != expected_chain_seq:
                 return AuditChainVerification(
@@ -206,17 +207,56 @@ class AuditService:
         return AuditChainVerification(ok=True, checked=checked, last_hash=previous_hash)
 
     async def export_jsonl(self) -> str:
-        return "\n".join(json.dumps(_row_dict(row), sort_keys=True) for row in await self._rows())
+        return "\n".join([line async for line in self.iter_jsonl()])
 
     async def export_cef(self) -> str:
-        return "\n".join(_row_cef(row) for row in await self._rows())
+        return "\n".join([line async for line in self.iter_cef()])
+
+    async def iter_jsonl(self) -> AsyncIterator[str]:
+        async for row in self._iter_rows():
+            yield json.dumps(_row_dict(row), sort_keys=True)
+
+    async def iter_cef(self) -> AsyncIterator[str]:
+        async for row in self._iter_rows():
+            yield _row_cef(row)
+
+    async def _iter_rows(self) -> AsyncIterator[AuditLog]:
+        stream_scalars = getattr(self._session, "stream_scalars", None)
+        if stream_scalars is None:
+            for row in await self._rows():
+                yield row
+            return
+        result = await stream_scalars(select(AuditLog).order_by(AuditLog.chain_seq))
+        async for row in result:
+            yield row
 
     async def retention_summary(
         self, *, before: datetime, retain_anchor: bool = True
     ) -> AuditRetentionSummary:
-        rows = [row for row in await self._rows() if row.at < before]
-        preserved_anchor_id = rows[-1].id if retain_anchor and rows else None
-        candidates = max(len(rows) - 1, 0) if retain_anchor and rows else len(rows)
+        if getattr(self._session, "stream_scalars", None) is None:
+            rows = [row for row in await self._rows() if row.at < before]
+            preserved_anchor_id = rows[-1].id if retain_anchor and rows else None
+            candidates = max(len(rows) - 1, 0) if retain_anchor and rows else len(rows)
+            return AuditRetentionSummary(
+                before=before,
+                candidates=candidates,
+                preserved_anchor_id=preserved_anchor_id,
+            )
+        count = int(
+            await self._session.scalar(
+                select(func.count()).select_from(AuditLog).where(AuditLog.at < before)
+            )
+            or 0
+        )
+        preserved_anchor_id = None
+        if retain_anchor and count:
+            preserved_anchor_id = await self._session.scalar(
+                select(AuditLog.id)
+                .where(AuditLog.at < before)
+                .order_by(AuditLog.chain_seq.desc())
+                .limit(1)
+            )
+        candidates = max(count - 1, 0) if retain_anchor and count else count
         return AuditRetentionSummary(
             before=before,
             candidates=candidates,
@@ -224,15 +264,36 @@ class AuditService:
         )
 
     async def prune_before(self, *, before: datetime, retain_anchor: bool = True) -> int:
-        rows = [row for row in await self._rows() if row.at < before]
-        if retain_anchor and rows:
-            rows = rows[:-1]
-        ids = [row.id for row in rows]
-        if not ids:
-            return 0
-        await self._session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
-        await self._session.commit()
-        return len(ids)
+        if getattr(self._session, "stream_scalars", None) is None:
+            rows = [row for row in await self._rows() if row.at < before]
+            if retain_anchor and rows:
+                rows = rows[:-1]
+            ids = [row.id for row in rows]
+            if not ids:
+                return 0
+            await self._session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
+            await self._session.commit()
+            return len(ids)
+        anchor_id = None
+        if retain_anchor:
+            anchor_id = await self._session.scalar(
+                select(AuditLog.id)
+                .where(AuditLog.at < before)
+                .order_by(AuditLog.chain_seq.desc())
+                .limit(1)
+            )
+        deleted = 0
+        while True:
+            stmt = select(AuditLog.id).where(AuditLog.at < before)
+            if anchor_id is not None:
+                stmt = stmt.where(AuditLog.id != anchor_id)
+            ids = list(await self._session.scalars(stmt.order_by(AuditLog.chain_seq).limit(1_000)))
+            if not ids:
+                break
+            await self._session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
+            await self._session.commit()
+            deleted += len(ids)
+        return deleted
 
     async def _rows(self) -> list[AuditLog]:
         result = await self._session.scalars(select(AuditLog).order_by(AuditLog.chain_seq))

@@ -1,0 +1,77 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: apex-minio-backup
+  labels:
+    app.kubernetes.io/name: apex-minio-backup
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: apex-minio-backup
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: mirror
+              image: rclone/rclone:1.70.3
+              args:
+                - sync
+                - source:apex-artifacts
+                - backup:apex-artifacts-backup
+                - --checksum
+                - --delete-during
+                - --log-level=INFO
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              env:
+                - name: RCLONE_CONFIG_SOURCE_TYPE
+                  value: s3
+                - name: RCLONE_CONFIG_SOURCE_PROVIDER
+                  value: Minio
+                - name: RCLONE_CONFIG_SOURCE_ACCESS_KEY_ID
+                  value: apex
+                - name: RCLONE_CONFIG_SOURCE_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: apex-minio
+                      key: APEX_INTEGRATION_MINIO_SECRET_KEY
+                - name: RCLONE_CONFIG_SOURCE_ENDPOINT
+                  value: http://apex-minio:9000
+                - name: RCLONE_CONFIG_SOURCE_FORCE_PATH_STYLE
+                  value: "true"
+                - name: RCLONE_CONFIG_BACKUP_TYPE
+                  value: azureblob
+                - name: RCLONE_CONFIG_BACKUP_ACCOUNT
+                  valueFrom:
+                    secretKeyRef:
+                      name: apex-minio-backup
+                      key: AZURE_STORAGE_ACCOUNT
+                - name: RCLONE_CONFIG_BACKUP_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: apex-minio-backup
+                      key: AZURE_STORAGE_KEY
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 128Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi

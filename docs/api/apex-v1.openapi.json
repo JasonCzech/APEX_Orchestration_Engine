@@ -28,6 +28,11 @@
             "title": "Cancelled Runs",
             "type": "array"
           },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
           "engine": {
             "title": "Engine",
             "type": "string"
@@ -42,6 +47,16 @@
               }
             ],
             "title": "External Run Id"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EngineRunPhase"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "thread_id": {
             "title": "Thread Id",

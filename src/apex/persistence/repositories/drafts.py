@@ -3,9 +3,10 @@
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apex.auth.identity import ScopeRef
 from apex.persistence.models import Draft
 
 
@@ -14,11 +15,24 @@ class DraftsRepository:
         self._session = session
 
     async def list_all(
-        self, *, project_id: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        *,
+        project_id: str | None = None,
+        allowed_scopes: tuple[ScopeRef, ...] | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[Draft]:
         """All drafts, optionally narrowed to one project (identity scoping is the
         router's job — this is a plain storage filter)."""
         stmt = select(Draft).order_by(Draft.updated_at.desc(), Draft.id)
+        if allowed_scopes is not None:
+            project_wide = sorted(
+                {scope.project_id for scope in allowed_scopes if scope.app_id is None}
+            )
+            visibility = [Draft.project_id.is_(None)]
+            if project_wide:
+                visibility.append(Draft.project_id.in_(project_wide))
+            stmt = stmt.where(or_(*visibility))
         if project_id is not None:
             stmt = stmt.where(Draft.project_id == project_id)
         stmt = stmt.limit(limit).offset(offset)
