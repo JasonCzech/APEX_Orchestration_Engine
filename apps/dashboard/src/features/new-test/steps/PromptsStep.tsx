@@ -16,7 +16,7 @@ import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 
 import type { StepProps } from '../NewRunWizard'
-import { focusedPromptPhase } from '../wizardState'
+import { focusedPromptPhase, isRecord } from '../wizardState'
 
 type PromptSummary = components['schemas']['PromptSummary']
 type PromptDetail = components['schemas']['PromptDetail']
@@ -133,11 +133,7 @@ function PromptBlock({
         )}
       </div>
 
-      {error ? (
-        <p className="wizard-caption wizard-caption--danger" role="alert">
-          Catalog prompt could not be loaded. Retry or use an explicit override.
-        </p>
-      ) : override ? (
+      {override ? (
         <div className="code-viewer editable">
           <CodeMirror
             value={override.content}
@@ -152,6 +148,10 @@ function PromptBlock({
             onChange={(next: string) => onEdit(next)}
           />
         </div>
+      ) : error ? (
+        <p className="wizard-caption wizard-caption--danger" role="alert">
+          Catalog prompt could not be loaded. Retry or use an explicit override.
+        </p>
       ) : loading ? (
         <p className="wizard-caption">Loading…</p>
       ) : prompt ? (
@@ -218,10 +218,21 @@ export function PromptsStep({ draft, onChange }: StepProps) {
     return `${APPLICATION_NAMESPACE}/${applicationId}`
   }
 
-  const systemOverride = phase ? draft.prompt_overrides[systemOverrideKey(phase)] : undefined
-  const applicationOverride = appId
-    ? draft.prompt_overrides[applicationOverrideKey(appId)]
-    : undefined
+  const inheritedOverrides =
+    draft.config.golden_configurable && isRecord(draft.config.golden_configurable['prompt_overrides'])
+      ? draft.config.golden_configurable['prompt_overrides']
+      : {}
+  const removedOverrides = new Set(draft.prompt_override_removals)
+  function effectiveOverride(key: string): { content: string } | undefined {
+    if (draft.prompt_overrides[key]) return draft.prompt_overrides[key]
+    if (removedOverrides.has(key)) return undefined
+    const inherited = inheritedOverrides[key]
+    return isRecord(inherited)
+      ? { content: typeof inherited['content'] === 'string' ? inherited['content'] : '' }
+      : undefined
+  }
+  const systemOverride = phase ? effectiveOverride(systemOverrideKey(phase)) : undefined
+  const applicationOverride = appId ? effectiveOverride(applicationOverrideKey(appId)) : undefined
 
   return (
     <section className="wizard-step" aria-label="Prompts">
@@ -274,13 +285,21 @@ export function PromptsStep({ draft, onChange }: StepProps) {
                   ...prev.prompt_overrides,
                   [systemOverrideKey(phase)]: { content: seed },
                 },
+                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase)),
               }))
             }
             onRevert={() =>
               onChange((prev) => {
                 const next = { ...prev.prompt_overrides }
                 delete next[systemOverrideKey(phase)]
-                return { ...prev, prompt_overrides: next }
+                const inherited =
+                  prev.config.golden_configurable && isRecord(prev.config.golden_configurable['prompt_overrides'])
+                    ? prev.config.golden_configurable['prompt_overrides']
+                    : {}
+                const removals = Object.prototype.hasOwnProperty.call(inherited, systemOverrideKey(phase))
+                  ? [...new Set([...prev.prompt_override_removals, systemOverrideKey(phase)])]
+                  : prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase))
+                return { ...prev, prompt_overrides: next, prompt_override_removals: removals }
               })
             }
             onEdit={(content) =>
@@ -290,6 +309,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
                   ...prev.prompt_overrides,
                   [systemOverrideKey(phase)]: { content },
                 },
+                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase)),
               }))
             }
           />
@@ -313,13 +333,22 @@ export function PromptsStep({ draft, onChange }: StepProps) {
                     ...prev.prompt_overrides,
                     [applicationOverrideKey(appId)]: { content: seed },
                   },
+                  prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== applicationOverrideKey(appId)),
                 }))
               }
               onRevert={() =>
                 onChange((prev) => {
                   const next = { ...prev.prompt_overrides }
                   delete next[applicationOverrideKey(appId)]
-                  return { ...prev, prompt_overrides: next }
+                  const inherited =
+                    prev.config.golden_configurable && isRecord(prev.config.golden_configurable['prompt_overrides'])
+                      ? prev.config.golden_configurable['prompt_overrides']
+                      : {}
+                  const key = applicationOverrideKey(appId)
+                  const removals = Object.prototype.hasOwnProperty.call(inherited, key)
+                    ? [...new Set([...prev.prompt_override_removals, key])]
+                    : prev.prompt_override_removals.filter((entry) => entry !== key)
+                  return { ...prev, prompt_overrides: next, prompt_override_removals: removals }
                 })
               }
               onEdit={(content) =>
@@ -329,6 +358,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
                     ...prev.prompt_overrides,
                     [applicationOverrideKey(appId)]: { content },
                   },
+                  prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== applicationOverrideKey(appId)),
                 }))
               }
             />

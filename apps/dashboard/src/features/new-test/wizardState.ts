@@ -84,6 +84,7 @@ export interface WizardDraft {
   context_summary_ids: string[]
   config: WizardConfig
   prompt_overrides: Record<string, { content: string }>
+  prompt_override_removals: string[]
 }
 
 export function emptyDraft(): WizardDraft {
@@ -103,12 +104,13 @@ export function emptyDraft(): WizardDraft {
       golden_configurable: null,
     },
     prompt_overrides: {},
+    prompt_override_removals: [],
   }
 }
 
 // ── Lenient payload parse (drafts payload is free-form JSONB) ────────────────
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
@@ -204,6 +206,7 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
         : null,
     },
     prompt_overrides,
+    prompt_override_removals: stringArray(payload['prompt_override_removals']),
   }
 }
 
@@ -345,20 +348,25 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
   const inheritedOverrides = isRecord(inherited['prompt_overrides'])
     ? inherited['prompt_overrides']
     : {}
+  const removedOverrides = new Set(draft.prompt_override_removals)
+  const effectiveOverrides: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(inheritedOverrides)) {
+    if (removedOverrides.has(key)) continue
+    effectiveOverrides[key] = value
+  }
+  for (const [key, value] of overrides) effectiveOverrides[key] = { content: value.content }
   const configurable: Record<string, unknown> = {
     ...inherited,
     project_id: scope.project_id.trim(),
     engine: config.engine,
     gates: gateMatrixOf(config),
-    ...(overrides.length > 0
+    ...(Object.keys(effectiveOverrides).length > 0
       ? {
-          prompt_overrides: {
-            ...inheritedOverrides,
-            ...Object.fromEntries(overrides.map(([k, v]) => [k, { content: v.content }])),
-          },
+          prompt_overrides: effectiveOverrides,
         }
       : {}),
   }
+  if (Object.keys(effectiveOverrides).length === 0) delete configurable['prompt_overrides']
 
   // The compact scope/phase controls are authoritative even when they clear a
   // value inherited from an assistant bundle.
@@ -366,6 +374,8 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
   else delete configurable['app_id']
   if (scope.environment_id) configurable['environment_id'] = scope.environment_id
   else delete configurable['environment_id']
+  delete configurable['environment_target']
+  delete configurable['environment_target_version']
   delete configurable['start_phase']
   delete configurable['stop_after']
   if (config.phases !== null) configurable['phases'] = config.phases

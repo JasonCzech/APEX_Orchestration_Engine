@@ -495,7 +495,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
   return (
     <div className="analytics-charts analytics-charts-secondary">
       <section className="glass-panel chart-panel" data-testid="analytics-token-split-chart">
-        <h2 className="chart-title">Input vs output tokens</h2>
+        <h2 className="chart-title">Input vs output tokens (top series)</h2>
         <ResponsiveContainer width="100%" height={200}>
           <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />

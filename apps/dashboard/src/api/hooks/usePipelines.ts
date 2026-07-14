@@ -40,9 +40,10 @@ function normalizeQuery(filters: PipelinesQuery): PipelinesQuery {
   }
 }
 
-async function fetchPipelines(query: PipelinesQuery): Promise<PipelineListResponse> {
+async function fetchPipelines(query: PipelinesQuery, signal?: AbortSignal): Promise<PipelineListResponse> {
   const { data, error, response } = await getApexClient().GET('/v1/pipelines', {
     params: { query },
+    signal,
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -65,7 +66,7 @@ export function usePipelines(
   const query = normalizeQuery(filters)
   return useQuery({
     queryKey: queryKeys.pipelines.list(query as Record<string, unknown>),
-    queryFn: () => fetchPipelines(query),
+    queryFn: ({ signal }) => fetchPipelines(query, signal),
     placeholderData: keepPreviousData,
     staleTime: STALE_TIMES.pipelinesList,
     refetchInterval: PIPELINES_POLL_INTERVAL_MS,

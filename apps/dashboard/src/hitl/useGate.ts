@@ -136,6 +136,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   // interrupt_id the server already resolved (202 / superseded + viewCurrent):
   // suppresses stale cache echoes until the refetched snapshot moves on.
   const settledGateIdRef = useRef<string | null>(null)
+  const settledGatePayloadRef = useRef<string | null>(null)
   const reopeningRef = useRef<{
     interruptId: string
     baselineUpdatedAt: number
@@ -158,6 +159,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         }
       } else {
         settledGateIdRef.current = variables.interruptId
+        settledGatePayloadRef.current = gatePayloadSignature(gateOf(stateRef.current))
       }
       setLastAccepted({ interruptId: variables.interruptId, action: variables.body.action, runId })
       dispatch({ type: 'RESUME_ACCEPTED' })
@@ -171,6 +173,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   useEffect(() => {
     return () => {
       settledGateIdRef.current = null
+      settledGatePayloadRef.current = null
       reopeningRef.current = null
       setLastAccepted(null)
       dispatch({ type: 'RESET' })
@@ -203,7 +206,14 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         return
       }
       if (reopening) reopeningRef.current = null
-      if (snapshotGate.interrupt_id !== settledGateIdRef.current) {
+      const settledPayloadChanged =
+        snapshotGate.interrupt_id === settledGateIdRef.current &&
+        gatePayloadSignature(snapshotGate) !== settledGatePayloadRef.current
+      if (snapshotGate.interrupt_id !== settledGateIdRef.current || settledPayloadChanged) {
+        if (settledPayloadChanged) {
+          settledGateIdRef.current = null
+          settledGatePayloadRef.current = null
+        }
         // LangGraph may reuse an interrupt id for a newer payload. Treat a
         // changed payload as a new gate even when no explicit re-gate action
         // originated in this tab; otherwise a second tab can approve stale UI.
@@ -215,6 +225,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
     let reopeningSettled = false
     if (!snapshotGate) {
       settledGateIdRef.current = null
+      settledGatePayloadRef.current = null
       const reopening = reopeningRef.current
       if (reopening) {
         reopening.observedClear = true
@@ -279,7 +290,10 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
     const current = stateRef.current
     // A superseded gate is settled by definition — do not let the pre-refetch
     // cache echo re-open it during the round trip.
-    if (current.tag === 'superseded') settledGateIdRef.current = current.gate.interrupt_id
+    if (current.tag === 'superseded') {
+      settledGateIdRef.current = current.gate.interrupt_id
+      settledGatePayloadRef.current = gatePayloadSignature(current.gate)
+    }
     dispatch({ type: 'RESET' })
     void refetch()
   }, [refetch])

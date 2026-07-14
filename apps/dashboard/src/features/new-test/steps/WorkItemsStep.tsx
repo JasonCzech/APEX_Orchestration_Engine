@@ -38,6 +38,7 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
       setResults(null)
       setText('')
       setDirectKey('')
+      setAddState({ busy: false, error: null })
     }
   }, [draft.scope.project_id])
 
@@ -81,15 +82,22 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
     const key = directKey.trim()
     if (!key) return
     setAddState({ busy: true, error: null })
+    const requestGeneration = generationRef.current
+    const requestProject = projectRef.current || undefined
     try {
-      const requestGeneration = generationRef.current
-      const requestProject = projectRef.current || undefined
       const item = await fetchWorkItem(key, requestProject)
-      if (requestGeneration !== generationRef.current || requestProject !== (projectRef.current || undefined)) return
+      if (requestGeneration !== generationRef.current || requestProject !== (projectRef.current || undefined)) {
+        setAddState({ busy: false, error: null })
+        return
+      }
       addKey(item.key)
       setDirectKey('')
       setAddState({ busy: false, error: null })
     } catch (error) {
+      if (requestGeneration !== generationRef.current || requestProject !== (projectRef.current || undefined)) {
+        setAddState({ busy: false, error: null })
+        return
+      }
       setAddState({
         busy: false,
         error: error instanceof Error ? error.message : `Work item ${key} not found`,
@@ -164,7 +172,9 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
             }}
           >
             <option value="">Run a saved query…</option>
-            {savedQueries.data.map((saved) => (
+            {savedQueries.data
+              .filter((saved) => !saved.project_id || saved.project_id === projectRef.current)
+              .map((saved) => (
               <option key={saved.id} value={saved.id}>
                 {saved.name}
               </option>

@@ -33,13 +33,19 @@ async function buildClient(): Promise<Client> {
   const requestKey = getApiKey()
   const requestRevision = getApiKeyRevision()
   const { Client } = await import('@langchain/langgraph-sdk')
+  if (requestRevision !== getApiKeyRevision() || requestKey !== getApiKey()) {
+    throw new Error('API key changed while the LangGraph client was loading')
+  }
   const authFetch: typeof fetch = async (input, init) => {
+    if (requestRevision !== getApiKeyRevision() || requestKey !== getApiKey()) {
+      throw new Error('API key changed while using the LangGraph client')
+    }
     const response = await fetch(input, init)
-    const requestKey = new Request(input, init).headers.get('x-api-key')
+    const responseKey = new Request(input, init).headers.get('x-api-key')
     if (
       response.status === 401 &&
-      requestKey &&
-      requestKey === getApiKey() &&
+      responseKey &&
+      responseKey === getApiKey() &&
       requestRevision === getApiKeyRevision()
     ) {
       notifyUnauthorized()

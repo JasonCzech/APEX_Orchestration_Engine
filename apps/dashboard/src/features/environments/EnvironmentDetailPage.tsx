@@ -117,7 +117,8 @@ function EditEnvironmentForm({
           if ((baseUrl.trim() || null) !== (environment.base_url ?? null)) body.base_url = baseUrl.trim() || null
           if (kind !== environment.kind) body.kind = kind
           const nextHosts = hostsToPayload(hosts)
-          if (JSON.stringify(nextHosts) !== JSON.stringify(environment.hosts ?? [])) body.hosts = nextHosts
+          const currentHosts = (environment.hosts ?? []).map(({ hostname, role }) => ({ hostname, role }))
+          if (JSON.stringify(nextHosts) !== JSON.stringify(currentHosts)) body.hosts = nextHosts
           if (optionsText !== JSON.stringify(environment.options, null, 2)) body.options = optionsParse.value
           return body
         })(),

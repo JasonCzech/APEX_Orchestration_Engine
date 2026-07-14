@@ -12,6 +12,7 @@ import type { StepProps } from '../NewRunWizard'
 import {
   allIssues,
   buildLaunchPreview,
+  isRecord,
   selectedPhases,
   STEP_LABELS,
   type WizardStepId,
@@ -53,7 +54,13 @@ export function ReviewStep({
   const issues = allIssues(draft)
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
-  const overrides = Object.keys(draft.prompt_overrides)
+  const inherited =
+    draft.config.golden_configurable && isRecord(draft.config.golden_configurable['prompt_overrides'])
+      ? draft.config.golden_configurable['prompt_overrides']
+      : {}
+  const overrides = Array.from(
+    new Set([...Object.keys(inherited), ...Object.keys(draft.prompt_overrides)]),
+  ).filter((key) => !draft.prompt_override_removals.includes(key))
 
   const documents = useDocumentsList(draft.scope.project_id.trim() || undefined)
   const knownDocs = new Map((documents.data ?? []).map((doc) => [doc.id, doc]))

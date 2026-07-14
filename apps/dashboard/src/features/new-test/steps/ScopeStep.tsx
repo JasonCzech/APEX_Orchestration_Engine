@@ -63,6 +63,8 @@ export function ScopeStep({ draft, onChange }: StepProps) {
               document_ids: [],
               work_item_keys: [],
               context_summary_ids: [],
+              prompt_overrides: {},
+              prompt_override_removals: [],
               config: {
                 ...prev.config,
                 golden_config_id: null,

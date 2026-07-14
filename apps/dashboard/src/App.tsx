@@ -4,7 +4,7 @@ import { RouterProvider } from 'react-router'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import { createQueryClient } from '@/api/queryClient'
-import { getApiKeyRevision, subscribeApiKey } from '@/auth/keyStorage'
+import { getApiKeyRevision, getSessionRevision, subscribeApiKey, subscribeSession } from '@/auth/keyStorage'
 import { ApiKeyGate } from '@/auth/ApiKeyGate'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TopbarContributionProvider } from '@/components/layout/TopbarContributionProvider'
@@ -19,9 +19,16 @@ import { ThemeProvider } from '@/theme/useTheme'
  */
 export default function App() {
   const authRevision = useSyncExternalStore(
-    (onStoreChange) => subscribeApiKey(() => onStoreChange()),
-    getApiKeyRevision,
-    getApiKeyRevision,
+    (onStoreChange) => {
+      const unsubscribeKey = subscribeApiKey(() => onStoreChange())
+      const unsubscribeSession = subscribeSession(onStoreChange)
+      return () => {
+        unsubscribeKey()
+        unsubscribeSession()
+      }
+    },
+    () => `${getApiKeyRevision()}:${getSessionRevision()}`,
+    () => `${getApiKeyRevision()}:${getSessionRevision()}`,
   )
   const queryClient = useMemo(createQueryClient, [authRevision])
   const router = useMemo(createAppRouter, [])

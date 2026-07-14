@@ -307,6 +307,11 @@ export function WorkItemsPage() {
   projectRef.current = project
   const projectGenerationRef = useRef(0)
   const initialProjectRef = useRef(project)
+  const pendingSavedRunRef = useRef<{
+    provider: string
+    query: string
+    project: string
+  } | null>(null)
 
   const translate = useTranslateQuery()
   const execute = useExecuteQuery()
@@ -363,6 +368,15 @@ export function WorkItemsPage() {
       },
     )
   }
+
+  const runQueryRef = useRef(runQuery)
+  runQueryRef.current = runQuery
+  useEffect(() => {
+    const pending = pendingSavedRunRef.current
+    if (!pending || pending.project !== project) return
+    pendingSavedRunRef.current = null
+    runQueryRef.current({ provider: pending.provider, query: pending.query }, 0, limit, project)
+  }, [project, limit])
 
   // Auto-execute a preloaded query exactly once (SavedQueriesPage Run links here).
   const autoRan = useRef(false)
@@ -603,7 +617,18 @@ export function WorkItemsPage() {
                 const saved = savedQueries.data.find((entry) => entry.id === event.target.value)
                 if (!saved) return
                 const savedProject = (saved.project_id ?? project) || undefined
-                if (saved.project_id) setProject(saved.project_id)
+                if (saved.project_id && saved.project_id !== project) {
+                  pendingSavedRunRef.current = {
+                    provider: saved.provider,
+                    query: saved.query,
+                    project: saved.project_id,
+                  }
+                  setProject(saved.project_id)
+                  setProvider(saved.provider)
+                  setQueryText(saved.query)
+                  setConfidence(null)
+                  return
+                }
                 setProvider(saved.provider)
                 setQueryText(saved.query)
                 setConfidence(null)

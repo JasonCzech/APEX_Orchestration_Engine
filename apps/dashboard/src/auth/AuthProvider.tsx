@@ -21,7 +21,13 @@ import {
 import { isApiError } from '@/api/errors'
 
 import { getDevSystemInfo, isDevAuthEnabled } from './devAuth'
-import { clearApiKey, getApiKey, setApiKey, subscribeApiKey } from './keyStorage'
+import {
+  bumpSessionRevision,
+  clearApiKey,
+  getApiKey,
+  setApiKey,
+  subscribeApiKey,
+} from './keyStorage'
 
 export type AuthState =
   | { status: 'no-key' }
@@ -162,21 +168,24 @@ export function AuthProvider({
 
   const reconcileSystemInfo = useCallback(
     (info: SystemInfo) => {
-      setState((previous) => {
-        if (previous.status !== 'authenticated') return previous
-        const before = previous.consumer
-        const after = info.consumer
-        if (
-          before.name === after.name &&
-          before.role === after.role &&
-          JSON.stringify(before.scopes) === JSON.stringify(after.scopes)
-        ) {
-          return previous
-        }
+      const previous = stateRef.current
+      if (previous.status !== 'authenticated') return
+      const beforeScopes = JSON.stringify(
+        [...previous.consumer.scopes].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      )
+      const afterScopes = JSON.stringify(
+        [...info.consumer.scopes].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      )
+      const identityChanged =
+        previous.consumer.name !== info.consumer.name ||
+        previous.consumer.role !== info.consumer.role ||
+        beforeScopes !== afterScopes
+      if (identityChanged) {
+        bumpSessionRevision()
         clearSessionCache()
         setAuthEpoch((epoch) => epoch + 1)
-        return { status: 'authenticated', consumer: after, systemInfo: info }
-      })
+      }
+      setState({ status: 'authenticated', consumer: info.consumer, systemInfo: info })
     },
     [clearSessionCache],
   )

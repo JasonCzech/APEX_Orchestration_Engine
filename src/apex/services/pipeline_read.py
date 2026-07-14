@@ -354,6 +354,8 @@ class PipelineReadService:
                 if needle in (item["title"] or "").lower()
                 or needle in (item["thread_id"] or "").lower()
             )
+            if len(matches) >= offset + limit:
+                break
             if len(page) < scan_limit:
                 break
             scan_offset += scan_limit

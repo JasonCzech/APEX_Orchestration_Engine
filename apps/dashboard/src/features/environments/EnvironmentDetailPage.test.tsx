@@ -44,10 +44,9 @@ describe('EnvironmentDetailPage', () => {
     await waitFor(() => expect(patch.captured).toHaveLength(1))
     const body = patch.captured[0]!
     // Only changed fields are sent; unchanged target fields must not trigger re-approval.
-    expect(Object.keys(body).sort()).toEqual(['base_url', 'hosts'])
+    expect(Object.keys(body).sort()).toEqual(['base_url'])
     expect(body).toEqual({
       base_url: 'https://staging2.checkout.example.com',
-      hosts: [{ hostname: 'stg-node-1', role: 'worker' }],
     })
     // Save closes the editor back to the read-mode reference card.
     expect(await screen.findByRole('heading', { name: 'Reference' })).toBeInTheDocument()

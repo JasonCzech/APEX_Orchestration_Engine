@@ -28,7 +28,7 @@
  * - Stream end/error → exactly one healing invalidate of threads.state
  *   (refetch wins — the simple monotonicity stance from the task spec).
  */
-import { useEffect, useReducer } from 'react'
+import { useEffect, useReducer, useRef } from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -139,6 +139,10 @@ export function usePipelineStream(
 ): PipelineStreamView {
   const queryClient = useQueryClient()
   const [view, dispatch] = useReducer(streamReducer, initialStreamView)
+  const identity = `${threadId ?? ''}:${runId ?? ''}`
+  const identityRef = useRef(identity)
+  const identityChanged = identityRef.current !== identity
+  identityRef.current = identity
 
   useEffect(() => {
     dispatch({ type: 'reset' })
@@ -292,7 +296,8 @@ export function usePipelineStream(
     }
 
     document.addEventListener('visibilitychange', onVisibility)
-    connect()
+    onVisibility()
+    if (!document.hidden) connect()
 
     return () => {
       disposed = true
@@ -303,7 +308,7 @@ export function usePipelineStream(
     }
   }, [threadId, runId, queryClient])
 
-  return view
+  return identityChanged ? initialStreamView : view
 }
 
 export interface RunLiveness {

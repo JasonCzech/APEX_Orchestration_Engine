@@ -184,6 +184,7 @@ export function GateModuleView({
 
       <RequireRole role="operator">
         <GateActionBar
+          key={`${gate.interrupt_id}:${JSON.stringify(gate.payload)}`}
           kind={gate.kind}
           actions={payload?.actions ?? ['approve', 'abort']}
           draft={draft}

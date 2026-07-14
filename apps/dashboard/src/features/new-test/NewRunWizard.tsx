@@ -338,10 +338,12 @@ export function NewRunWizardPage() {
       {loading ? (
         <p className="wizard-caption">Loading draft…</p>
       ) : (
-        <div className="wizard-stack">
-          {renderTabs()}
-          {WIZARD_STEPS.map(renderStepSection)}
-        </div>
+          <fieldset className="wizard-fieldset" disabled={finalizing}>
+            <div className="wizard-stack">
+              {renderTabs()}
+              {WIZARD_STEPS.map(renderStepSection)}
+            </div>
+          </fieldset>
       )}
 
       <footer className="glass-panel wizard-footer">
@@ -374,7 +376,7 @@ export function NewRunWizardPage() {
         )}
         <div className="wizard-footer-actions">
           <RequireRole role="operator">
-            <button type="button" className="btn btn-ghost" onClick={() => void saveNow()}>
+            <button type="button" className="btn btn-ghost" disabled={finalizing} onClick={() => void saveNow()}>
               Save Draft
             </button>
             <button

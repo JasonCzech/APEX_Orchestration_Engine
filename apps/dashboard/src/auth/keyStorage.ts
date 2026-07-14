@@ -6,7 +6,11 @@ type KeyListener = (key: string | null) => void
 
 const listeners = new Set<KeyListener>()
 let keyRevision = 0
+let sessionRevision = 0
+let memoryKey: string | null = null
+let memoryOnly = false
 let storageListenerAttached = false
+const sessionListeners = new Set<() => void>()
 
 function safeStorage(): Storage | null {
   try {
@@ -18,29 +22,56 @@ function safeStorage(): Storage | null {
 
 export function getApiKey(): string | null {
   if (isDevAuthEnabled()) return getDevApiKey()
+  if (memoryOnly) {
+    try {
+      const storage = safeStorage()
+      if (!storage) return memoryKey
+      memoryOnly = false
+      const stored = storage.getItem(API_KEY_STORAGE_KEY)
+      return stored && stored.length > 0 ? stored : null
+    } catch {
+      return memoryKey
+    }
+  }
   try {
-    const stored = safeStorage()?.getItem(API_KEY_STORAGE_KEY) ?? null
+    const storage = safeStorage()
+    if (!storage) {
+      memoryOnly = true
+      return memoryKey
+    }
+    const stored = storage.getItem(API_KEY_STORAGE_KEY)
     return stored && stored.length > 0 ? stored : null
   } catch {
-    return null
+    memoryOnly = true
+    return memoryKey
   }
 }
 
 export function setApiKey(key: string): void {
+  memoryKey = key
   try {
-    safeStorage()?.setItem(API_KEY_STORAGE_KEY, key)
+    const storage = safeStorage()
+    if (!storage) throw new Error('localStorage unavailable')
+    storage.setItem(API_KEY_STORAGE_KEY, key)
+    memoryOnly = false
   } catch {
     // Keep the in-memory revision/listener transition usable when persistence is blocked.
+    memoryOnly = true
   }
   keyRevision += 1
   notify(key)
 }
 
 export function clearApiKey(): void {
+  memoryKey = null
   try {
-    safeStorage()?.removeItem(API_KEY_STORAGE_KEY)
+    const storage = safeStorage()
+    if (!storage) throw new Error('localStorage unavailable')
+    storage.removeItem(API_KEY_STORAGE_KEY)
+    memoryOnly = false
   } catch {
     // Sign-out must still invalidate the in-memory session if storage is unavailable.
+    memoryOnly = true
   }
   keyRevision += 1
   notify(null)
@@ -53,6 +84,21 @@ export function clearApiKey(): void {
  */
 export function getApiKeyRevision(): number {
   return keyRevision
+}
+
+/** Revision for semantic identity changes that do not rotate the API key. */
+export function getSessionRevision(): number {
+  return sessionRevision
+}
+
+export function bumpSessionRevision(): void {
+  sessionRevision += 1
+  for (const listener of sessionListeners) listener()
+}
+
+export function subscribeSession(listener: () => void): () => void {
+  sessionListeners.add(listener)
+  return () => sessionListeners.delete(listener)
 }
 
 export function subscribeApiKey(listener: KeyListener): () => void {
@@ -81,7 +127,8 @@ function handleStorageChange(event: StorageEvent): void {
       ? event.newValue && event.newValue.length > 0
         ? event.newValue
         : null
-      : getApiKey()
+        : getApiKey()
+  memoryOnly = false
   keyRevision += 1
   notify(key)
 }

@@ -331,6 +331,10 @@ async def create_pipeline_run(
                 ),
             )
     environment_id = run_configurable.get("environment_id")
+    # Environment targets are server-owned; never honor values inherited from a
+    # client-side golden bundle when the current scope omits the environment.
+    run_configurable.pop("environment_target", None)
+    run_configurable.pop("environment_target_version", None)
     if environment_id is not None:
         if not isinstance(environment_id, str) or not environment_id.strip():
             raise HTTPException(

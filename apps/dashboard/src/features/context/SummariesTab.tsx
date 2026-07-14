@@ -4,9 +4,11 @@
  * follow the prompt playground pattern (D5): no polling, deep-link to
  * /runs/{thread_id} when the stream URL carries one.
  */
-import { useState, type FormEvent } from 'react'
+import { useCallback, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 
+import { getApiKey } from '@/auth/keyStorage'
+import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { threadIdFromStreamUrl, useCreateSummary } from '@/api/hooks/useContextApi'
 import { RequireRole } from '@/auth/RequireRole'
 import { formatRelative } from '@/utils/time'
@@ -17,6 +19,68 @@ interface SummaryRun {
   streamUrl: string
   at: string
   subject: string
+}
+
+function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
+  const [state, setState] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; text?: string }>({
+    status: 'idle',
+  })
+
+  const open = useCallback(async () => {
+    setState({ status: 'loading' })
+    try {
+      const url = new URL(streamUrl, resolveLanggraphBaseUrl() || window.location.origin)
+      const response = await fetch(url, {
+        headers: { ...(getApiKey() ? { 'x-api-key': getApiKey()! } : {}) },
+      })
+      if (!response.ok || !response.body) throw new Error(`Stream request failed (${response.status})`)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let summary = ''
+      const consume = (raw: string) => {
+        for (const block of raw.split('\n\n')) {
+          const data = block
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trim())
+            .join('')
+          if (!data) continue
+          try {
+            const parsed: unknown = JSON.parse(data)
+            const record = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
+            const candidate = record['data'] ?? record['value'] ?? parsed
+            const value = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {}
+            const nested = value['values'] && typeof value['values'] === 'object' ? value['values'] as Record<string, unknown> : value
+            if (typeof nested['summary'] === 'string') summary = nested['summary']
+          } catch {
+            // Ignore non-JSON keep-alives and let the stream continue.
+          }
+        }
+      }
+      while (true) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        buffer += decoder.decode(chunk.value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() ?? ''
+        consume(parts.join('\n\n'))
+      }
+      consume(buffer)
+      setState({ status: 'done', text: summary || 'Stream completed without a summary payload.' })
+    } catch (error) {
+      setState({ status: 'error', text: error instanceof Error ? error.message : 'Unable to read the summary stream.' })
+    }
+  }, [streamUrl])
+
+  return (
+    <span className="ctx-stream-result">
+      <button type="button" className="btn btn-secondary btn-sm" onClick={() => void open()} disabled={state.status === 'loading'}>
+        {state.status === 'loading' ? 'Loading…' : 'Open live stream'}
+      </button>
+      {state.text && <pre className={`ctx-stream-output${state.status === 'error' ? ' danger' : ''}`}>{state.text}</pre>}
+    </span>
+  )
 }
 
 export function SummariesTab() {
@@ -175,9 +239,7 @@ export function SummariesTab() {
                 Open run
               </Link>
             ) : (
-              <a className="btn btn-secondary btn-sm" href={latest.streamUrl} target="_blank" rel="noreferrer">
-                Open live stream
-              </a>
+              <SummaryStreamButton streamUrl={latest.streamUrl} />
             )}
           </div>
         ) : (
@@ -198,9 +260,7 @@ export function SummariesTab() {
                 <li key={entry.runId} className="ctx-history-item">
                     <span className="ctx-run-id">{entry.runId}</span>
                     {!entry.threadId && (
-                      <a className="ctx-run-link" href={entry.streamUrl} target="_blank" rel="noreferrer">
-                        stream
-                      </a>
+                      <SummaryStreamButton streamUrl={entry.streamUrl} />
                     )}
                   <span className="ctx-caption">
                     {entry.subject} · {formatRelative(entry.at)}

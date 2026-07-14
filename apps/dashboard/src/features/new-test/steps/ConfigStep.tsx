@@ -93,26 +93,46 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       const environment = bundle['environment_id']
       const projectId = typeof project === 'string' && project.length > 0 ? project : prev.scope.project_id
       const projectChanged = projectId !== prev.scope.project_id
+      const appId =
+        typeof app === 'string' && app.length > 0
+          ? app
+          : projectChanged
+            ? null
+            : prev.scope.app_id
+      const appChanged = appId !== prev.scope.app_id
+      const environmentId =
+        typeof environment === 'string' && environment.length > 0
+          ? environment
+          : projectChanged || appChanged
+            ? null
+            : prev.scope.environment_id
       return {
         ...prev,
         scope: {
           project_id: projectId,
-          app_id: typeof app === 'string' && app.length > 0 ? app : prev.scope.app_id,
-          environment_id:
-            typeof environment === 'string' && environment.length > 0
-              ? environment
-              : prev.scope.environment_id,
+          app_id: appId,
+          environment_id: environmentId,
         },
         config: next,
-        ...(projectChanged
-          ? { document_ids: [], work_item_keys: [], context_summary_ids: [], prompt_overrides: {} }
+        prompt_overrides: {},
+        prompt_override_removals: [],
+        ...(projectChanged || appChanged
+          ? {
+              document_ids: projectChanged ? [] : prev.document_ids,
+              work_item_keys: projectChanged ? [] : prev.work_item_keys,
+              context_summary_ids: projectChanged ? [] : prev.context_summary_ids,
+            }
           : {}),
       }
     })
   }
 
   function clearGoldenConfig() {
-    patchConfig({ golden_config_id: null, golden_configurable: null })
+    onChange((prev) => ({
+      ...prev,
+      config: { ...prev.config, golden_config_id: null, golden_configurable: null },
+      prompt_override_removals: [],
+    }))
   }
 
   function togglePhase(phase: PhaseName) {
@@ -134,7 +154,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       nextFocus = next[0] ?? null
     }
     onChange((prev) => {
-      const allowed = new Set(next.map((name) => `phase/${name}/system`))
+      const allowed = new Set(next.map((name) => `phase/${name}`))
       const prompt_overrides = Object.fromEntries(
         Object.entries(prev.prompt_overrides).filter(
           ([key]) => !key.startsWith('phase/') || allowed.has(key),

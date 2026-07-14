@@ -25,9 +25,9 @@ export const ACTIVE_RUN_SCAN_LIMIT = 20
 /** Run statuses that mean "this run is (about to be) streaming". */
 const ACTIVE_RUN_STATUSES = ['running', 'pending'] as const
 
-async function fetchActiveRunId(threadId: string): Promise<string | null> {
+async function fetchActiveRunId(threadId: string, signal?: AbortSignal): Promise<string | null> {
   const client = await getLangGraphClient()
-  const runs = await client.runs.list(threadId, { limit: ACTIVE_RUN_SCAN_LIMIT })
+  const runs = await client.runs.list(threadId, { limit: ACTIVE_RUN_SCAN_LIMIT, signal })
   for (const status of ACTIVE_RUN_STATUSES) {
     const match = runs.find((run) => run.status === status)
     if (match) return match.run_id
@@ -55,7 +55,7 @@ export function useActiveRun(
 
   const query = useQuery({
     queryKey: queryKeys.threads.activeRun(threadId ?? ''),
-    queryFn: () => fetchActiveRunId(threadId ?? ''),
+    queryFn: ({ signal }) => fetchActiveRunId(threadId ?? '', signal),
     enabled,
     staleTime: 0,
     refetchInterval: (q) => {
@@ -69,6 +69,7 @@ export function useActiveRun(
 
   useEffect(() => {
     if (!enabled && threadId) {
+      void queryClient.cancelQueries({ queryKey: queryKeys.threads.activeRun(threadId) })
       queryClient.setQueryData(queryKeys.threads.activeRun(threadId), null)
     }
   }, [enabled, threadId, queryClient])

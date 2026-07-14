@@ -319,6 +319,8 @@ async def get_agent_analytics(
             status_code=403, detail=f"Project '{project}' is outside this consumer's scopes"
         )
     visible = None if identity.is_unscoped else tuple(identity.scopes)
+    show_cost = _cost_visible(identity, settings)
+    effective_sort = "total_tokens" if not show_cost and sort == "cost_usd" else sort
     data = await repo.aggregate(
         window_from=window_from,
         window_to=window_to,
@@ -331,12 +333,11 @@ async def get_agent_analytics(
         agents=_multi(agent),
         test=test,
         status=status,
-        sort=sort,
+        sort=effective_sort,
         order=order,
         limit=limit,
         offset=offset,
     )
-    show_cost = _cost_visible(identity, settings)
     if not show_cost:
         data = _scrub_costs(data)
     return AgentAnalyticsResponse(
