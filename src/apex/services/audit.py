@@ -175,7 +175,14 @@ class AuditService:
                     ),
                     last_hash=previous_hash,
                 )
-            expected_hash = _event_hash(_event_from_row(row), previous_hash)
+            row_event = _event_from_row(row)
+            # Rows written before migration 0010 do not have an event nonce and
+            # were hashed without the post-migration timestamp/nonce fields.
+            expected_hash = (
+                _legacy_event_hash(row_event, previous_hash)
+                if row.event_nonce is None
+                else _event_hash(row_event, previous_hash)
+            )
             if row.event_hash != expected_hash:
                 return AuditChainVerification(
                     ok=False,
@@ -281,6 +288,21 @@ def _event_hash(event: AuditEvent, previous_hash: str | None) -> str:
             key: _jsonable(value)
             for key, value in event.__dict__.items()
             if key not in {"previous_hash", "event_hash"}
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _legacy_event_hash(event: AuditEvent, previous_hash: str | None) -> str:
+    payload = {
+        "previous_hash": previous_hash,
+        "event": {
+            key: _jsonable(value)
+            for key, value in event.__dict__.items()
+            if key not in {"previous_hash", "event_hash", "at", "event_nonce"}
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(

@@ -6,6 +6,8 @@ list channels de-dup on stable `id`s; phase_results merges per phase, replacing
 wholesale when the attempt number changes (a re-run overwrites, a resume merges).
 """
 
+import hashlib
+import json
 from typing import Annotated, Any, TypedDict
 
 JsonDict = dict[str, Any]
@@ -15,9 +17,16 @@ _PLAIN_LIST_FIELDS = ("warnings", "errors", "artifact_ids")
 
 
 def _merge_lists_by_id(current: list[JsonDict], incoming: list[JsonDict]) -> list[JsonDict]:
-    seen = {entry.get("id") for entry in current}
-    merged = list(current)
-    for entry in incoming:
+    def stable_entry(entry: JsonDict) -> JsonDict:
+        if entry.get("id"):
+            return entry
+        canonical = json.dumps(entry, sort_keys=True, separators=(",", ":"), default=str)
+        return {"id": f"derived-{hashlib.sha256(canonical.encode()).hexdigest()[:24]}", **entry}
+
+    merged = [stable_entry(entry) for entry in current]
+    seen = {entry.get("id") for entry in merged}
+    for raw_entry in incoming:
+        entry = stable_entry(raw_entry)
         if entry.get("id") not in seen:
             merged.append(entry)
             seen.add(entry.get("id"))

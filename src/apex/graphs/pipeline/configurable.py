@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import PHASE_ORDER, Phase
@@ -63,6 +63,7 @@ class PromptOverride(BaseModel):
 
 
 class PipelineConfigurable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     # Assistant used to create the run. The graph itself does not branch on
     # this value, but persisting it lets later phase re-runs target the same
     # golden assistant instead of silently falling back to the base graph.

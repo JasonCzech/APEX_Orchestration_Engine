@@ -26,6 +26,7 @@ ASGIApp = Callable[
 _HeaderList = MutableSequence[tuple[bytes, bytes]]
 _AUDITED_STATUSES = {401, 403, 429}
 _PENDING_AUDIT: set[asyncio.Task[None]] = set()
+_MAX_PENDING_AUDIT = 1024
 _IPNetwork = IPv4Network | IPv6Network
 
 
@@ -339,6 +340,10 @@ def _is_rate_limited_path(scope: Mapping[str, Any], settings: RateLimitSettings)
 
 def _schedule_audit(scope: Mapping[str, Any], status_code: int, reason: str | None = None) -> None:
     try:
+        # Audit is deliberately best-effort. Never let a slow database turn an
+        # unauthenticated stream of 401/429 responses into unbounded tasks.
+        if len(_PENDING_AUDIT) >= _MAX_PENDING_AUDIT:
+            return
         task = asyncio.get_running_loop().create_task(
             append_audit_event_best_effort(
                 request_audit_event(scope, status_code=status_code, reason=reason)

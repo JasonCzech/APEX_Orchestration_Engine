@@ -55,8 +55,16 @@ def _throwaway_session_factory():  # noqa: ANN202 — (engine, sessionmaker) pai
     from apex.settings import database_ssl_connect_args, get_settings
 
     database = get_settings().database
+    from sqlalchemy.engine import make_url
+
+    database_url = make_url(database.uri)
+    if database_url.drivername == "postgresql+asyncpg":
+        query = dict(database_url.query)
+        query.pop("sslmode", None)
+        query.pop("ssl", None)
+        database_url = database_url.set(query=query)
     engine = create_async_engine(
-        database.uri,
+        database_url,
         poolclass=NullPool,
         connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
     )

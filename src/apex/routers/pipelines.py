@@ -83,11 +83,12 @@ async def _documents_to_packets(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-def _resolve_pipeline_scope(
+async def _resolve_pipeline_scope(
     identity: ConsumerIdentity,
     *,
     project_id: str | None,
     app_id: str | None,
+    catalog: CatalogRepository,
 ) -> tuple[str | None, str | None]:
     """Resolve the same project/app ownership LangGraph stamps on a thread.
 
@@ -107,7 +108,22 @@ def _resolve_pipeline_scope(
         ensure_thread_scope(identity, metadata, action="pipelines.create")
     except Auth.exceptions.HTTPException as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return metadata.get("project_id"), metadata.get("app_id")
+    resolved_project = metadata.get("project_id")
+    resolved_app = metadata.get("app_id")
+    if resolved_app is not None:
+        get_application = getattr(catalog, "get_application", None)
+        if get_application is not None:
+            application = await get_application(resolved_app)
+            if application is None or application.archived_at is not None:
+                raise HTTPException(status_code=404, detail="application not found")
+            if resolved_project is not None and application.project_id != resolved_project:
+                raise HTTPException(
+                    status_code=403,
+                    detail="application is outside the requested project",
+                )
+            resolved_project = application.project_id
+            metadata["project_id"] = resolved_project
+    return resolved_project, resolved_app
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -289,10 +305,11 @@ async def create_pipeline_run(
         )
     if body.app_id and configured_app and body.app_id != configured_app:
         raise HTTPException(status_code=422, detail="app_id conflicts with configurable.app_id")
-    project_id, app_id = _resolve_pipeline_scope(
+    project_id, app_id = await _resolve_pipeline_scope(
         identity,
         project_id=body.project_id or configured_project,
         app_id=body.app_id or configured_app,
+        catalog=catalog,
     )
     load_test = run_configurable.get("load_test")
     if isinstance(load_test, dict) and "target_environment" in load_test:

@@ -24,7 +24,7 @@ on:
       image_tag:
         description: Image tag to build/deploy
         required: true
-        default: latest
+        default: ""
 
 permissions:
   id-token: write
@@ -50,12 +50,12 @@ jobs:
       hook_service_account: ${{ steps.tf.outputs.hook_service_account }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
+      - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - uses: hashicorp/setup-terraform@v3 # TODO: pin to a SHA per repo policy
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_wrapper: false
       - name: Terraform init (remote state)
@@ -101,7 +101,7 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
+      - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -118,6 +118,7 @@ jobs:
           ACR: ${{ needs.provision.outputs.acr }}
           TAG: ${{ inputs.image_tag }}
         run: |
+          if [[ -z "$TAG" || "$TAG" == "latest" ]]; then TAG="sha-${GITHUB_SHA}"; fi
           uv run langgraph build -t "$ACR/apex-orchestration-engine:$TAG"
           docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
           docker push "$ACR/apex-orchestration-engine:$TAG"
@@ -129,7 +130,7 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
+      - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -149,6 +150,7 @@ jobs:
           ACR: ${{ needs.provision.outputs.acr }}
           TAG: ${{ inputs.image_tag }}
         run: |
+          if [[ -z "$TAG" || "$TAG" == "latest" ]]; then TAG="sha-${GITHUB_SHA}"; fi
           helm upgrade --install "$RELEASE" deploy/helm/apex-orchestration-engine \
             -n "$NAMESPACE" --create-namespace \
             -f deploy/azure/helm/values-azure.yaml \

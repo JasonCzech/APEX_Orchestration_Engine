@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters import register_builtin_adapters
@@ -75,6 +75,7 @@ AdminIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.ADMIN))]
 
 
 class ConnectionCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     kind: PortKind
     provider: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=255)
@@ -82,6 +83,12 @@ class ConnectionCreate(BaseModel):
     base_url: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
     secret_ref: str | None = None  # reference string only, e.g. "env:NAME"
+
+    @field_validator("options")
+    @classmethod
+    def reject_raw_secrets(cls, value: dict[str, Any]) -> dict[str, Any]:
+        _reject_raw_secret_options(value)
+        return value
 
 
 class ConnectionUpdate(BaseModel):
@@ -93,6 +100,13 @@ class ConnectionUpdate(BaseModel):
     base_url: str | None = None
     options: dict[str, Any] | None = None
     secret_ref: str | None = None
+
+    @field_validator("options")
+    @classmethod
+    def reject_raw_secrets(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is not None:
+            _reject_raw_secret_options(value)
+        return value
 
 
 class ConnectionOut(BaseModel):
@@ -109,6 +123,12 @@ class ConnectionOut(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
+
+
+def _reject_raw_secret_options(options: dict[str, Any]) -> None:
+    secret_names = {"password", "token", "secret", "secret_key", "api_key", "access_key"}
+    if any(str(key).lower() in secret_names for key in options):
+        raise ValueError("connection secrets must be supplied through secret_ref")
 
 
 class HostMappingIn(BaseModel):

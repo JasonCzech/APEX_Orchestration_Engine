@@ -28,7 +28,15 @@ def get_engine() -> AsyncEngine:
             connect_args = database_ssl_connect_args(database.uri, database.ssl_mode)
             if connect_args:
                 kwargs["connect_args"] = connect_args
-        _engine = create_async_engine(database.uri, **kwargs)
+        url = make_url(database.uri)
+        if url.drivername == "postgresql+asyncpg":
+            # asyncpg receives TLS through connect_args; forwarding psycopg-style
+            # sslmode (or a URL ssl query key) becomes an invalid connect kwarg.
+            query = dict(url.query)
+            query.pop("sslmode", None)
+            query.pop("ssl", None)
+            url = url.set(query=query)
+        _engine = create_async_engine(url, **kwargs)
     return _engine
 
 

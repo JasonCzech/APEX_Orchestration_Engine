@@ -583,6 +583,10 @@ def ensure_run_controls(
             validate_playground_run_input(input_payload)
         command = run_args.get("command")
         if command is not None:
+            if not trusted_loopback:
+                raise ValueError(
+                    "native run commands are server-owned; use the gate resume endpoint"
+                )
             validate_gate_payload(command)
     except (ValidationError, ValueError) as exc:
         _schedule_auth_decision(

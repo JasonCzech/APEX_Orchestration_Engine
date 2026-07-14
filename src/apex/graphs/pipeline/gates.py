@@ -38,9 +38,11 @@ def make_approval(
     action: str,
     config: RunnableConfig | None,
     note: str | None = None,
+    sequence: int = 0,
 ) -> JsonDict:
+    suffix = f"-s{sequence}" if sequence else ""
     return ApprovalRecord(
-        id=f"{phase.value}-a{attempt}-{gate}-{action}",
+        id=f"{phase.value}-a{attempt}-{gate}-{action}{suffix}",
         gate=gate,
         action=action,
         actor=resolve_actor(config),

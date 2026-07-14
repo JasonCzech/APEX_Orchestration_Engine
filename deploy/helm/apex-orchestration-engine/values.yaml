@@ -15,7 +15,7 @@ image:
   # Built with: langgraph build -t <repository>:<tag>  (see docs/runbooks/deployment.md)
   repository: apex-orchestration-engine
   tag: ""  # defaults to .Chart.AppVersion
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 imagePullSecrets: []
 nameOverride: ""
@@ -379,7 +379,7 @@ dashboard:
   image:
     repository: apex-dashboard
     tag: ""                       # defaults to .Chart.AppVersion
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
   containerPort: 8080
   service:
     type: ClusterIP

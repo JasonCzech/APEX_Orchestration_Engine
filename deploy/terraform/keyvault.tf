@@ -29,7 +29,7 @@ resource "azurerm_key_vault" "main" {
   tenant_id                  = data.azurerm_client_config.current.tenant_id
   sku_name                   = "standard"
   rbac_authorization_enabled = true
-  purge_protection_enabled   = false
+  purge_protection_enabled   = true
   tags                       = local.tags
 }
 

@@ -159,7 +159,12 @@ def _make_resolver() -> ConnectionResolver:
     return ConnectionResolver(store=DbConnectionStore())
 
 
-async def _resolve_engine(cfg: PipelineConfigurable, engine_options: JsonDict) -> Any:
+async def _resolve_engine(
+    cfg: PipelineConfigurable,
+    engine_options: JsonDict,
+    *,
+    connection_id: str | None = None,
+) -> Any:
     """Resolve the execution-engine adapter.
 
     Resolve the selected stored connection and overlay only the validated per-run
@@ -168,12 +173,21 @@ async def _resolve_engine(cfg: PipelineConfigurable, engine_options: JsonDict) -
     """
     adapter, _connection_id = await _make_resolver().resolve_with_connection_id(
         PortKind.EXECUTION_ENGINE,
-        connection_id=cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
+        connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
         project_id=cfg.project_id,
         expected_provider=cfg.engine,
         options_overlay=engine_options,
     )
     return adapter
+
+
+def _config_for_handle(cfg: PipelineConfigurable, handle: EngineHandle) -> PipelineConfigurable:
+    """Pin adapter resolution to the durable handle while preserving test seams."""
+    if not handle.connection_id:
+        return cfg
+    connections = dict(cfg.connections)
+    connections[PortKind.EXECUTION_ENGINE.value] = handle.connection_id
+    return cfg.model_copy(update={"connections": connections})
 
 
 async def _resolve_artifact_store(cfg: PipelineConfigurable) -> tuple[Any, str]:
@@ -446,7 +460,7 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
     engine_options = _engine_options(entry)
 
     async def _start() -> tuple[str | None, JsonDict]:
-        adapter = await _resolve_engine(cfg, engine_options)
+        adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
             try:
                 await adapter.start(handle)
@@ -506,7 +520,7 @@ def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
     engine_options = _engine_options(entry)
 
     async def _status() -> EngineRunStatus:
-        adapter = await _resolve_engine(cfg, engine_options)
+        adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
             return await adapter.get_status(handle)
         finally:
@@ -574,7 +588,7 @@ async def _engine_poll_async(state: PipelineState, config: RunnableConfig) -> Co
     engine_options = _engine_options(entry)
 
     async def _poll() -> EngineRunStatus:
-        adapter = await _resolve_engine(cfg, engine_options)
+        adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
             return await adapter.get_status(handle)
         finally:
@@ -685,7 +699,7 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
     reason = str(entry.get("engine_cleanup_reason") or "execution cleanup required")
 
     async def _cleanup() -> None:
-        adapter = await _resolve_engine(cfg, engine_options)
+        adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
             await adapter.abort(handle, reason=reason)
             await _teardown_after_confirmed_abort(adapter, handle)

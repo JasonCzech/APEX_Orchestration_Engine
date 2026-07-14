@@ -244,7 +244,10 @@ class LoadRunnerExecutionEngine:
         raw_instance = options.get("test_instance_id")
         # -1 asks LRE to auto-assign/create the test instance for the test set.
         self._test_instance_id = int(raw_instance) if raw_instance is not None else -1
-        self._abortive_stop = bool(options.get("abortive_stop"))
+        raw_abortive_stop = options.get("abortive_stop", False)
+        if not isinstance(raw_abortive_stop, bool):
+            raise ValueError("loadrunner abortive_stop must be a boolean")
+        self._abortive_stop = raw_abortive_stop
         self._max_report_bytes = int(options.get("max_report_bytes", _DEFAULT_MAX_REPORT_BYTES))
         if self._max_report_bytes < 1:
             raise ValueError("loadrunner max_report_bytes must be >= 1")

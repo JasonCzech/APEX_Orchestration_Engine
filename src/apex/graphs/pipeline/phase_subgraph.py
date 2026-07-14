@@ -874,6 +874,13 @@ def _llm_agent_body(
             messages.append(
                 ToolMessage(content=str(output), tool_call_id=str(call.get("id") or ""))
             )
+        # Tool results are untrusted model input too. Re-check the complete
+        # rendered budget after every tool round instead of validating only the
+        # initial prompt.
+        tool_context = "\n".join(str(getattr(message, "content", "")) for message in messages)
+        validate_rendered_model_input(
+            system_text, user_text + "\n" + tool_context, settings=settings
+        )
 
     summary = _message_text(response) or f"[{phase.value}] (no text returned)"
     emit_event(
@@ -1036,6 +1043,7 @@ def _make_output_gate(phase: Phase):
                             "revise",
                             config,
                             instructions,
+                            sequence=revise_count + 1,
                         )
                     ],
                     **revision_fields,
