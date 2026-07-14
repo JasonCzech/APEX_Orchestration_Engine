@@ -118,7 +118,7 @@ export function PhaseWorkspace({
       {tab === 'log' && (
         <div className="pipeline-log-panel" role="tabpanel" aria-label="Pipeline log">
           <ActivityFeed
-            key={phase}
+            key={`${threadId}:${phase}`}
             phase={phase}
             streamStatus={stream?.status}
             progress={stream?.phaseProgress?.[phase]}

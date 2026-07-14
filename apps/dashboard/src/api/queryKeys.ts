@@ -31,7 +31,10 @@ export const queryKeys = {
       [...queryKeys.threads.all, threadId, 'artifact', artifactId] as const,
   },
   approvals: {
-    all: ['approvals'] as const,
+    // Keep the inbox under the pipeline-list prefix so broad pipeline
+    // invalidations also refresh approval rows, while the discriminator keeps
+    // it disjoint from ordinary list(filters) caches.
+    all: ['pipelines', 'list', 'approvals'] as const,
     inbox: () => [...queryKeys.approvals.all, 'inbox'] as const,
   },
   prompts: {

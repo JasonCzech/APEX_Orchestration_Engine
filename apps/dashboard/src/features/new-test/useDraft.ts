@@ -13,6 +13,7 @@
  *   delete-on-launch.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 
 import {
   createDraftRequest,
@@ -56,6 +57,7 @@ export function useDraft({
   /** Called with the new id after the autosave create lands (URL sync). */
   onDraftCreated?: (id: string) => void
 }): UseDraftResult {
+  const queryClient = useQueryClient()
   const [draft, setDraftState] = useState<WizardDraft>(emptyDraft)
   const [draftId, setDraftId] = useState<string | null>(initialDraftId)
   const [saveState, setSaveState] = useState<DraftSaveState>('idle')
@@ -95,8 +97,10 @@ export function useDraft({
             setDraftId(created.id)
             onCreatedRef.current?.(created.id)
           }
+          void queryClient.invalidateQueries({ queryKey: ['drafts', 'list'] })
         } else {
           await updateDraftRequest(idRef.current, body)
+          void queryClient.invalidateQueries({ queryKey: ['drafts', 'list'] })
         }
         if (mountedRef.current) setSaveState('saved')
       } catch {
@@ -113,7 +117,7 @@ export function useDraft({
     saveQueueRef.current = stable
     await queued
     if (saveQueueRef.current === stable) saveQueueRef.current = null
-  }, [])
+  }, [queryClient])
 
   const scheduleSave = useCallback(() => {
     if (timerRef.current !== null) clearTimeout(timerRef.current)
@@ -150,6 +154,11 @@ export function useDraft({
       setDraftId(stored.id)
       setSaveState('saved')
     } catch (error) {
+      // A stale/deleted URL id must fall back to a local draft so autosave can
+      // create a new record instead of retrying PUT forever.
+      idRef.current = null
+      dirtyRef.current = false
+      setDraftId(null)
       setLoadError(error instanceof Error ? error.message : 'Draft could not be loaded')
     } finally {
       setLoading(false)
@@ -191,10 +200,11 @@ export function useDraft({
       idRef.current = null
       dirtyRef.current = false
       if (mountedRef.current) setDraftId(null)
+      void queryClient.invalidateQueries({ queryKey: ['drafts', 'list'] })
     } catch {
       // Best-effort: an orphaned draft is harmless; the run is already launched.
     }
-  }, [flush])
+  }, [flush, queryClient])
 
   return {
     draft,

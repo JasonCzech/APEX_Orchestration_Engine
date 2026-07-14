@@ -308,7 +308,15 @@ function CreateConsumerPanel({
 }
 
 /** Edit modal: role / scopes / enabled PATCH. */
-function EditConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose: () => void }) {
+function EditConsumerModal({
+  consumer,
+  isCurrentConsumer,
+  onClose,
+}: {
+  consumer: Consumer
+  isCurrentConsumer: boolean
+  onClose: () => void
+}) {
   const update = useUpdateConsumer()
   const [role, setRole] = useState<Role>(consumer.role)
   const [enabled, setEnabled] = useState(consumer.enabled)
@@ -332,7 +340,7 @@ function EditConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose:
       <div className="adm-field">
         <span className="adm-field-label">Role</span>
         <div className="adm-segmented" role="group" aria-label="Role">
-          {ROLES.map((option) => (
+          {!isCurrentConsumer && ROLES.map((option) => (
             <button
               key={option}
               type="button"
@@ -347,12 +355,17 @@ function EditConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose:
       </div>
       <div className="adm-field">
         <span className="adm-field-label">Scopes</span>
-        <ScopesEditor scopes={scopes} onChange={setScopes} />
+        {isCurrentConsumer ? (
+          <span className="adm-field-help">Your own role and scopes cannot be changed.</span>
+        ) : (
+          <ScopesEditor scopes={scopes} onChange={setScopes} />
+        )}
       </div>
       <label className="adm-confirm-check">
         <input
           type="checkbox"
           checked={enabled}
+          disabled={isCurrentConsumer}
           onChange={(event) => setEnabled(event.target.checked)}
           aria-label="Enabled"
         />
@@ -380,7 +393,9 @@ function EditConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose:
             update.mutate(
               {
                 consumerId: consumer.id,
-                body: { role, enabled, scopes: scopesToPayload(scopes) },
+                body: isCurrentConsumer
+                  ? { enabled: true }
+                  : { role, enabled, scopes: scopesToPayload(scopes) },
               },
               { onSuccess: onClose },
             )
@@ -643,7 +658,13 @@ function ConsumersContent() {
         </div>
       )}
 
-      {editing && <EditConsumerModal consumer={editing} onClose={() => setEditing(null)} />}
+      {editing && (
+        <EditConsumerModal
+          consumer={editing}
+          isCurrentConsumer={principal.data?.principal_id === editing.id}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {rotating && (
         <RotateConsumerModal
           consumer={rotating}

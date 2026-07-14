@@ -1,5 +1,6 @@
 import {
   createContext,
+  Fragment,
   useCallback,
   useContext,
   useEffect,
@@ -64,6 +65,7 @@ export function AuthProvider({
         : { status: 'no-key' }),
   )
   const attemptRef = useRef(0)
+  const [authEpoch, setAuthEpoch] = useState(0)
   const queryClient = useQueryClient()
 
   const clearSessionCache = useCallback(() => {
@@ -102,6 +104,11 @@ export function AuthProvider({
     }
 
     const unsubscribeKey = subscribeApiKey((key) => {
+      // Invalidate every in-flight validation before reacting to a storage
+      // event.  Storage events are asynchronous, so a request started under
+      // the previous key may otherwise authenticate after sign-out.
+      attemptRef.current += 1
+      setAuthEpoch((epoch) => epoch + 1)
       clearSessionCache()
       if (key) {
         void validate()
@@ -143,7 +150,15 @@ export function AuthProvider({
     [staticState, state, submitKey, signOut],
   )
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+  const consumer = value.state.status === 'authenticated' ? value.state.consumer : null
+  const sessionRenderKey = staticState
+    ? 'static-auth'
+    : `${authEpoch}:${value.state.status}:${consumer?.name ?? 'anonymous'}`
+  return (
+    <AuthContext.Provider value={value}>
+      <Fragment key={sessionRenderKey}>{children}</Fragment>
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth(): AuthContextValue {
@@ -155,4 +170,11 @@ export function useAuth(): AuthContextValue {
 export function useConsumer(): ConsumerInfo | null {
   const { state } = useAuth()
   return state.status === 'authenticated' ? state.consumer : null
+}
+
+/** Optional variant for reusable controls that are also rendered in isolation by tests. */
+export function useOptionalConsumer(): ConsumerInfo | null | undefined {
+  const ctx = useContext(AuthContext)
+  if (!ctx) return undefined
+  return ctx.state.status === 'authenticated' ? ctx.state.consumer : null
 }

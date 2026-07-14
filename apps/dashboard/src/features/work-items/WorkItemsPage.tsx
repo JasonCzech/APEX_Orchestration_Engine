@@ -303,10 +303,24 @@ export function WorkItemsPage() {
   } | null>(null)
   const [saving, setSaving] = useState(false)
   const [creating, setCreating] = useState(false)
+  const projectRef = useRef(project)
+  projectRef.current = project
 
   const translate = useTranslateQuery()
   const execute = useExecuteQuery()
   const savedQueries = useSavedQueries()
+
+  // A project change invalidates every result and query draft tied to the old
+  // tracker scope. Pending callbacks are guarded by the project captured by
+  // runQuery below so they cannot repaint the new project.
+  useEffect(() => {
+    setPage(null)
+    setSubmitted(null)
+    setOffset(0)
+    setProvider('')
+    setQueryText('')
+    setConfidence(null)
+  }, [project])
 
   function runQuery(
     next: { provider: string; query: string; confidence?: number },
@@ -314,6 +328,7 @@ export function WorkItemsPage() {
     nextLimit = limit,
     nextProject = project || undefined,
   ) {
+    const requestProject = nextProject
     const submittedQuery = {
       provider: next.provider.trim(),
       query: next.query.trim(),
@@ -328,6 +343,7 @@ export function WorkItemsPage() {
       },
       {
         onSuccess: (result) => {
+          if ((requestProject ?? '') !== projectRef.current) return
           setPage(result)
           setOffset(nextOffset)
           setSubmitted({
@@ -568,7 +584,7 @@ export function WorkItemsPage() {
             <select
               id="wi-saved-query"
               className="field-select"
-              disabled={!projectSelected}
+              disabled={!projectSelected || execute.isPending}
               value=""
               onChange={(event) => {
                 const saved = savedQueries.data.find((entry) => entry.id === event.target.value)

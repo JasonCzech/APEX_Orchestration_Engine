@@ -102,6 +102,7 @@ export function useResumeGate(
         queryKey: queryKeys.threads.state(variables.threadId),
       })
       void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.lists() })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() })
       options.onAccepted?.(data.run_id, variables)
     },
     onError: (error, variables) => {

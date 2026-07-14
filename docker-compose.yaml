@@ -73,6 +73,10 @@ services:
       DATABASE_URI: postgresql://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
       REDIS_URI: redis://redis:6379
       APEX_ENVIRONMENT: compose
+      # The dashboard reverse proxy is the trusted hop that forwards the
+      # browser's address. Without this, all auth failures share the proxy
+      # container's lockout bucket.
+      APEX_RATE_LIMIT__TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
       APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
       APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
       # Required for the standalone server to boot (Enterprise). Empty = unset.

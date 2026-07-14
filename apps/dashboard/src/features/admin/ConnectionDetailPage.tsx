@@ -255,6 +255,7 @@ function HostMappingsEditor({
                       className="field-input"
                       aria-label={`Mapping ${index + 1} pattern`}
                       value={row.pattern}
+                      disabled={put.isPending}
                       onChange={(event) => patchRow(index, { pattern: event.target.value })}
                     />
                   </td>
@@ -264,6 +265,7 @@ function HostMappingsEditor({
                       className="field-input"
                       aria-label={`Mapping ${index + 1} target`}
                       value={row.target}
+                      disabled={put.isPending}
                       onChange={(event) => patchRow(index, { target: event.target.value })}
                     />
                   </td>
@@ -272,6 +274,7 @@ function HostMappingsEditor({
                       type="checkbox"
                       aria-label={`Mapping ${index + 1} enabled`}
                       checked={row.enabled}
+                      disabled={put.isPending}
                       onChange={(event) => patchRow(index, { enabled: event.target.checked })}
                     />
                   </td>
@@ -284,6 +287,7 @@ function HostMappingsEditor({
                         setIsDirty(true)
                         setRows((current) => current.filter((_, i) => i !== index))
                       }}
+                      disabled={put.isPending}
                     >
                       Remove
                     </button>
@@ -307,6 +311,7 @@ function HostMappingsEditor({
             setIsDirty(true)
             setRows((current) => [...current, { pattern: '', target: '', enabled: true }])
           }}
+          disabled={put.isPending}
         >
           Add mapping
         </button>
@@ -532,8 +537,8 @@ function ConnectionDetailContent() {
       </div>
 
       {tab === 'config' ? (
-        // Key on the record version so an outside update reseeds the form.
-        <ConfigTab key={conn.updated_at} connection={conn} />
+        // ConfigTab preserves dirty edits while lifecycle mutations refetch.
+        <ConfigTab connection={conn} />
       ) : (
         <HostMappingsTab connectionId={conn.id} />
       )}

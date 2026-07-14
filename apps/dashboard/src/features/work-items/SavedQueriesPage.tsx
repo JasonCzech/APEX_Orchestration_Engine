@@ -235,6 +235,12 @@ export function SavedQueriesPage() {
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
 
+  function canMutateRow(saved: SavedQuery): boolean {
+    if (!consumer || !canMutate) return false
+    if (!saved.project_id) return consumer.scopes.length === 0 && consumer.role === 'admin'
+    return consumer.scopes.length === 0 || consumer.scopes.some((scope) => scope.project_id === saved.project_id)
+  }
+
   const [editing, setEditing] = useState<SavedQuery | null>(null)
   const [deleting, setDeleting] = useState<SavedQuery | null>(null)
 
@@ -296,7 +302,7 @@ export function SavedQueriesPage() {
                 <SavedQueryRow
                   key={saved.id}
                   saved={saved}
-                  canMutate={canMutate}
+                  canMutate={canMutateRow(saved)}
                   onEdit={setEditing}
                   onDelete={setDeleting}
                 />

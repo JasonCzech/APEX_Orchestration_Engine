@@ -26,6 +26,11 @@ export function onUnauthorized(handler: UnauthorizedHandler): () => void {
   }
 }
 
+/** Notify the auth provider about unauthorized requests made outside openapi-fetch. */
+export function notifyUnauthorized(): void {
+  for (const handler of unauthorizedHandlers) handler()
+}
+
 const authMiddleware: Middleware = {
   onRequest({ request }) {
     const key = getApiKey()

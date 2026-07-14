@@ -56,10 +56,12 @@ function DiffIndicator({ active, draft }: { active: string; draft: string }) {
 
 function NewVersionEditor({
   detail,
+  maxVersion,
   onDone,
   onCancel,
 }: {
   detail: PromptDetail
+  maxVersion: number
   onDone: () => void
   onCancel: () => void
 }) {
@@ -67,7 +69,7 @@ function NewVersionEditor({
   const activeContent = detail.content ?? ''
   const [content, setContent] = useState(activeContent)
   const [note, setNote] = useState('')
-  const nextVersion = (detail.active_version?.version ?? 0) + 1
+  const nextVersion = maxVersion + 1
   const unchanged = content === activeContent
 
   function submit() {
@@ -222,6 +224,7 @@ export function PromptDetailPage() {
   const detailQuery = usePrompt(ns, name)
   const detail = detailQuery.data
   const setArchived = useSetArchived(ns, name, detail?.id)
+  const versionsQuery = usePromptVersions(ns, name, detail?.id)
 
   function selectTab(next: Tab) {
     setSearchParams((prev) => {
@@ -325,6 +328,10 @@ export function PromptDetailPage() {
         editing ? (
           <NewVersionEditor
             detail={detail}
+            maxVersion={Math.max(
+              detail.active_version?.version ?? 0,
+              ...(versionsQuery.data ?? []).map((entry) => entry.version),
+            )}
             onDone={() => setEditing(false)}
             onCancel={() => setEditing(false)}
           />

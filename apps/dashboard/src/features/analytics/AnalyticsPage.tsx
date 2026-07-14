@@ -262,8 +262,13 @@ function seriesRows(data: AgentAnalytics, measure: Measure) {
   // keys from the series payload itself so chart identity is independent of
   // table pagination.
   const totalsByKey = new Map<string, number>()
+  const countsByKey = new Map<string, number>()
   for (const row of data.series) {
     totalsByKey.set(row.key, (totalsByKey.get(row.key) ?? 0) + metricValue(row, measure))
+    countsByKey.set(row.key, (countsByKey.get(row.key) ?? 0) + 1)
+  }
+  if (measure === 'latency') {
+    for (const [key, total] of totalsByKey) totalsByKey.set(key, total / (countsByKey.get(key) ?? 1))
   }
   const rankedKeys = Array.from(totalsByKey, ([key, value]) => ({ key, value }))
     .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
@@ -276,9 +281,13 @@ function seriesRows(data: AgentAnalytics, measure: Measure) {
     const target = buckets.get(bucket) ?? { bucket_start: bucket }
     if (keys.includes(row.key)) {
       const field = `series_${keys.indexOf(row.key)}`
-      target[field] = Number(target[field] ?? 0) + metricValue(row, measure)
+      target[field] = measure === 'latency'
+        ? metricValue(row, measure)
+        : Number(target[field] ?? 0) + metricValue(row, measure)
     } else if (rest.includes(row.key)) {
-      target.other = Number(target.other ?? 0) + metricValue(row, measure)
+      target.other = measure === 'latency'
+        ? metricValue(row, measure)
+        : Number(target.other ?? 0) + metricValue(row, measure)
     }
     buckets.set(bucket, target)
   }
@@ -345,15 +354,23 @@ function AgentUsageCharts({
   bucket: Bucket
 }) {
   const stacked = useMemo(() => seriesRows(data, measure), [data, measure])
-  const bars = useMemo(
-    () =>
-      data.breakdown.slice(0, TOP_N_BARS).map((row) => ({
-        key: row.key,
-        label: truncate(row.key),
-        value: metricValue(row, measure),
-      })),
-    [data.breakdown, measure],
-  )
+  const bars = useMemo(() => {
+    const grouped = new Map<string, number[]>()
+    for (const row of data.series) {
+      const values = grouped.get(row.key) ?? []
+      values.push(metricValue(row, measure))
+      grouped.set(row.key, values)
+    }
+    return Array.from(grouped, ([key, values]) => ({
+      key,
+      label: truncate(key),
+      value: measure === 'latency'
+        ? values.reduce((sum, value) => sum + value, 0) / values.length
+        : values.reduce((sum, value) => sum + value, 0),
+    }))
+      .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
+      .slice(0, TOP_N_BARS)
+  }, [data.series, measure])
 
   return (
     <div className="analytics-charts">
@@ -394,7 +411,7 @@ function AgentUsageCharts({
                 type="monotone"
                 dataKey={field}
                 name={stacked.keys[index]}
-                stackId="agent"
+                stackId={measure === 'latency' ? undefined : 'agent'}
                 stroke={CHART_COLORS[index % CHART_COLORS.length]}
                 fill={CHART_COLORS[index % CHART_COLORS.length]}
                 fillOpacity={0.16}

@@ -94,7 +94,9 @@ export function DocumentsTab() {
     setUploadError(null)
     for (const file of Array.from(files)) {
       try {
-        await upload.mutateAsync({ file, projectId: filters.project })
+        // Upload follows the project currently visible in the filter input,
+        // even before the user presses Apply; never reuse the prior query key.
+        await upload.mutateAsync({ file, projectId: projectDraft.trim() || undefined })
       } catch (error) {
         setUploadError(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
       }

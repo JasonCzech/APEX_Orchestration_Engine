@@ -185,6 +185,10 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   useEffect(() => {
     if (!interrupts) return
     if (snapshotGate) {
+      const currentGate = gateOf(stateRef.current)
+      const sameIdPayloadChanged =
+        currentGate?.interrupt_id === snapshotGate.interrupt_id &&
+        gatePayloadSignature(currentGate) !== gatePayloadSignature(snapshotGate)
       const reopening = reopeningRef.current
       if (reopening && snapshotGate.interrupt_id === reopening.interruptId) {
         const refreshed = thread.dataUpdatedAt > reopening.baselineUpdatedAt
@@ -200,7 +204,10 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       }
       if (reopening) reopeningRef.current = null
       if (snapshotGate.interrupt_id !== settledGateIdRef.current) {
-        dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate })
+        // LangGraph may reuse an interrupt id for a newer payload. Treat a
+        // changed payload as a new gate even when no explicit re-gate action
+        // originated in this tab; otherwise a second tab can approve stale UI.
+        dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: sameIdPayloadChanged })
         return
       }
     }

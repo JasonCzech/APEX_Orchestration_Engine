@@ -2,6 +2,7 @@ import { useCallback, type KeyboardEvent, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { useDraftsList } from '@/api/hooks/useDrafts'
+import { RequireRole } from '@/auth/RequireRole'
 
 import { ConfigStep } from './steps/ConfigStep'
 import { ContextStep } from './steps/ContextStep'
@@ -359,17 +360,19 @@ export function NewRunWizardPage() {
           </span>
         )}
         <div className="wizard-footer-actions">
-          <button type="button" className="btn btn-ghost" onClick={() => void saveNow()}>
-            Save Draft
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={issues.length > 0 || launch.isPending || loading}
-            onClick={() => void handleLaunch()}
-          >
-            {launch.isPending ? 'Launching…' : 'Launch Pipeline'}
-          </button>
+          <RequireRole role="operator">
+            <button type="button" className="btn btn-ghost" onClick={() => void saveNow()}>
+              Save Draft
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={issues.length > 0 || launch.isPending || loading}
+              onClick={() => void handleLaunch()}
+            >
+              {launch.isPending ? 'Launching…' : 'Launch Pipeline'}
+            </button>
+          </RequireRole>
         </div>
       </footer>
     </div>

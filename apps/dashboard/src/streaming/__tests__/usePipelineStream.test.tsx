@@ -455,7 +455,7 @@ describe('usePipelineStream', () => {
     expect(result.current.pendingGateHint).toBeNull()
   })
 
-  it('stream end: status ended, resume cursor cleared, threads.state invalidated exactly once', async () => {
+  it('stream end while busy: reconnects and preserves the resume cursor', async () => {
     const { queryClient, wrapper } = setup()
     const stream = fake.scriptStream()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
@@ -468,17 +468,17 @@ describe('usePipelineStream', () => {
       stream.end()
       await vi.advanceTimersByTimeAsync(0)
     })
-    expect(result.current.status).toBe('ended')
-    expect(resumeStore.get('t1', 'r1')).toBeNull()
+    expect(result.current.status).toBe('reconnecting')
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-2')
     const healingCalls = invalidate.mock.calls.filter(
       ([filters]) =>
         JSON.stringify(filters?.queryKey) === JSON.stringify(queryKeys.threads.state('t1')),
     )
     expect(healingCalls).toHaveLength(1)
 
-    // No reconnect after a natural end.
-    await pump(30_000)
-    expect(fake.joinStreamCalls).toHaveLength(1)
+    await pump(1_500)
+    expect(fake.joinStreamCalls).toHaveLength(2)
+    expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-2')
   })
 
   it('terminal error event surfaces as status error (single healing refetch still applies)', async () => {

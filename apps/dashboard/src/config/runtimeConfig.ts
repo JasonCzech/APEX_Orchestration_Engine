@@ -17,7 +17,12 @@ export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
 let current: RuntimeConfig = DEFAULT_RUNTIME_CONFIG
 
 export function setRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
-  current = config
+  // Treat configured values as origins. A trailing slash causes openapi-fetch
+  // to generate `//v1/...` URLs, which some proxies route differently.
+  current = {
+    apexOrigin: config.apexOrigin.replace(/\/+$/, ''),
+    langgraphOrigin: config.langgraphOrigin.replace(/\/+$/, ''),
+  }
   return current
 }
 

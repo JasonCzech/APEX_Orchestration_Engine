@@ -76,7 +76,7 @@ export function PreflightModal({ threadId, initialSelection, onClose }: Prefligh
       {
         onSuccess: () => {
           onClose()
-          void navigate(`/runs/${threadId}?tab=activity`)
+          void navigate(`/runs/${threadId}?tab=log`)
         },
       },
     )

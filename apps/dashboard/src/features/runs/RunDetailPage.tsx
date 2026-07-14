@@ -4,6 +4,7 @@ import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-route
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
+import { RequireRole } from '@/auth/RequireRole'
 import { ProblemCard } from '@/components/ProblemCard'
 import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { AbortConfirm } from '@/hitl/GateActionBar'
@@ -135,34 +136,36 @@ export function RunDetailPage() {
           </span>
         )}
         <span className="spacer" />
-        {hitl.state.tag === 'open' || hitl.state.tag === 'failed' ? (
-          // Header abort drives the SAME machine as the gate action bar
-          // (same type-to-confirm arm step, action 'abort').
-          <AbortConfirm onConfirm={() => hitl.submit('abort')} />
-        ) : detail.thread_status === 'busy' ? (
-          // No gate to resume through — cancel the active run(s) server-side.
-          <AbortConfirm disabled={abortRun.isPending} onConfirm={() => abortRun.mutate()} />
-        ) : null}
-        <span className="split-button">
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm split-button-main"
-            onClick={() => setPreflight([...PHASE_NAMES])}
-          >
-            Re-run
-          </button>
-          <OverflowMenu
-            label="Re-run options"
-            trigger="▾"
-            items={[
-              { label: 'All phases', onSelect: () => setPreflight([...PHASE_NAMES]) },
-              {
-                label: 'Run phases…',
-                onSelect: () => setPreflight(lastPlanSelection(state.phases_plan)),
-              },
-            ]}
-          />
-        </span>
+        <RequireRole role="operator">
+          {hitl.state.tag === 'open' || hitl.state.tag === 'failed' ? (
+            // Header abort drives the SAME machine as the gate action bar
+            // (same type-to-confirm arm step, action 'abort').
+            <AbortConfirm onConfirm={() => hitl.submit('abort')} />
+          ) : detail.thread_status === 'busy' ? (
+            // No gate to resume through — cancel the active run(s) server-side.
+            <AbortConfirm disabled={abortRun.isPending} onConfirm={() => abortRun.mutate()} />
+          ) : null}
+          <span className="split-button">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm split-button-main"
+              onClick={() => setPreflight([...PHASE_NAMES])}
+            >
+              Re-run
+            </button>
+            <OverflowMenu
+              label="Re-run options"
+              trigger="▾"
+              items={[
+                { label: 'All phases', onSelect: () => setPreflight([...PHASE_NAMES]) },
+                {
+                  label: 'Run phases…',
+                  onSelect: () => setPreflight(lastPlanSelection(state.phases_plan)),
+                },
+              ]}
+            />
+          </span>
+        </RequireRole>
         <Link className="btn btn-ghost btn-sm" to={`/runs/${threadId}/timeline`}>
           Timeline
         </Link>

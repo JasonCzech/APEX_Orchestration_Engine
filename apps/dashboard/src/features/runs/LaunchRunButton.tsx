@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router'
 
 import { useLaunchRun } from '@/api/hooks/useLaunchRun'
 import { Dialog } from '@/components/Dialog'
+import { RequireRole } from '@/auth/RequireRole'
 
 import './live.css'
 
@@ -10,7 +11,7 @@ import './live.css'
  * Minimal D2 launch entry point: btn-primary + a small modal (title, request,
  * project). Gates run ALL-AUTO in D2 (see launchRun.ts); the gate-policy
  * matrix, phase subsets, and drafts arrive with the D4 wizard at /runs/new.
- * On success navigates straight into the live run at ?tab=activity.
+ * On success navigates straight into the live run's Pipeline Log tab.
  */
 export function LaunchRunButton() {
   const [open, setOpen] = useState(false)
@@ -41,14 +42,15 @@ export function LaunchRunButton() {
       {
         onSuccess: ({ threadId }) => {
           setOpen(false)
-          void navigate(`/runs/${threadId}?tab=activity`)
+          void navigate(`/runs/${threadId}?tab=log`)
         },
       },
     )
   }
 
   return (
-    <>
+    <RequireRole role="operator">
+      <>
       <button type="button" className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>
         New run
       </button>
@@ -119,6 +121,7 @@ export function LaunchRunButton() {
           </form>
         </Dialog>
       )}
-    </>
+      </>
+    </RequireRole>
   )
 }

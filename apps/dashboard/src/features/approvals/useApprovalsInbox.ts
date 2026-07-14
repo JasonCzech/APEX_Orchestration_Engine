@@ -1,7 +1,7 @@
 /**
  * Approvals inbox data layer (plan UX 2.b).
  *
- * Uses the pipelines list cache family and the same 15s visibility-aware poll,
+ * Uses a dedicated approvals cache key and the same 15s visibility-aware poll,
  * but walks every 100-row page before publishing the snapshot. Because the
  * Sidebar badge and inbox page use the same key, React Query dedupes them onto
  * one paginated scan/poll.
@@ -128,7 +128,7 @@ function toItem(
 
 export function useApprovalsInbox(): ApprovalsInboxResult {
   const query = useQuery({
-    queryKey: queryKeys.pipelines.list(INBOX_FILTER),
+    queryKey: queryKeys.approvals.inbox(),
     queryFn: fetchAllInterruptedPipelines,
     staleTime: STALE_TIMES.pipelinesList,
     refetchInterval: PIPELINES_POLL_INTERVAL_MS,

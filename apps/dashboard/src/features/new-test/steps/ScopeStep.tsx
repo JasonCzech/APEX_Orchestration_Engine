@@ -58,6 +58,16 @@ export function ScopeStep({ draft, onChange }: StepProps) {
             onChange((prev) => ({
               ...prev,
               scope: { project_id: event.target.value, app_id: null, environment_id: null },
+              // These selections are project-owned; never carry them into a
+              // different project where their ids/keys may resolve differently.
+              document_ids: [],
+              work_item_keys: [],
+              context_summary_ids: [],
+              config: {
+                ...prev.config,
+                golden_config_id: null,
+                golden_configurable: null,
+              },
             }))
           }
         />

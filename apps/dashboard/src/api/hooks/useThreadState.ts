@@ -33,6 +33,44 @@ const ACTIVE_THREAD_STATUSES = new Set(['busy', 'interrupted'])
 
 export const THREAD_STATE_REFETCH_MS = 10_000
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Keep the run page usable when one server field drifts from the mirror schema. */
+function normalizeDriftedState(raw: unknown): PipelineState {
+  const source = isRecord(raw) ? raw : {}
+  const safe: Record<string, unknown> = {}
+  if (typeof source.title === 'string') safe.title = source.title
+  if (typeof source.request === 'string') safe.request = source.request
+  if (Array.isArray(source.phases_plan)) {
+    safe.phases_plan = source.phases_plan.filter((phase): phase is string => typeof phase === 'string')
+  }
+  if (typeof source.current_phase === 'string' || source.current_phase === null) {
+    safe.current_phase = source.current_phase
+  }
+  if (typeof source.run_aborted === 'boolean') safe.run_aborted = source.run_aborted
+  if (isRecord(source.run_config)) safe.run_config = source.run_config
+  if (isRecord(source.prompt_reviews)) safe.prompt_reviews = source.prompt_reviews
+  if (isRecord(source.application_reviews)) safe.application_reviews = source.application_reviews
+  if (isRecord(source.phase_results)) {
+    safe.phase_results = Object.fromEntries(
+      Object.entries(source.phase_results)
+        .filter(([, entry]) => isRecord(entry))
+        .map(([phase, entry]) => {
+          const normalized = { ...(entry as Record<string, unknown>) }
+          if (typeof normalized.summary !== 'string') delete normalized.summary
+          return [phase, normalized]
+        }),
+    )
+  }
+  if (Array.isArray(source.artifacts)) safe.artifacts = source.artifacts.filter(isRecord)
+  if (Array.isArray(source.dialogue)) safe.dialogue = source.dialogue.filter(isRecord)
+  if (Array.isArray(source.context_packets)) safe.context_packets = source.context_packets.filter(isRecord)
+  if (isRecord(source.engine_handle)) safe.engine_handle = source.engine_handle
+  return safe as PipelineState
+}
+
 async function fetchThreadState(threadId: string): Promise<ThreadStateSnapshot> {
   const { data, error, response } = await getApexClient().GET('/v1/pipelines/{thread_id}', {
     params: { path: { thread_id: threadId } },
@@ -55,7 +93,7 @@ async function fetchThreadState(threadId: string): Promise<ThreadStateSnapshot> 
   }
   return {
     detail: data,
-    state: parsed.success ? parsed.data : (rawValues as PipelineState),
+    state: parsed.success ? parsed.data : normalizeDriftedState(rawValues),
     interrupts: data.interrupts ?? [],
     stateParseFailed: !parsed.success,
   }

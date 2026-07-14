@@ -224,13 +224,25 @@ export function usePipelineStream(
             if (runError) break
           }
           if (signal.aborted || disposed) return
-          // Natural end of the run's stream.
-          finished = true
           flushGate.flushNow()
-          resumeStore.clear(tid, rid)
-          dispatch(runError ? { type: 'failed', error: runError } : { type: 'ended' })
-          invalidateSnapshot() // exactly one healing refetch
-          return
+          invalidateSnapshot()
+          // A clean EOF is not itself a terminal run signal: proxies and
+          // servers can close SSE while a run remains busy. Preserve the
+          // cursor and rejoin after backoff unless the stream reported an
+          // explicit error or the latest snapshot is terminal.
+          const snapshot = queryClient.getQueryData<{
+            detail?: { thread_status?: string | null }
+          }>(queryKeys.threads.state(tid))
+          const status = snapshot?.detail?.thread_status
+          if (runError || !status || (status !== 'busy' && status !== 'interrupted')) {
+            finished = true
+            resumeStore.clear(tid, rid)
+            dispatch(runError ? { type: 'failed', error: runError } : { type: 'ended' })
+            return
+          }
+          attempt += 1
+          dispatch({ type: 'reconnecting', error: new Error('Run stream ended before terminal state') })
+          await abortableDelay(backoffDelayMs(attempt), signal)
         } catch (err) {
           if (signal.aborted || disposed) return
           const error = err instanceof Error ? err : new Error(String(err))

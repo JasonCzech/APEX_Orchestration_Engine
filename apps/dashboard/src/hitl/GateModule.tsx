@@ -28,6 +28,8 @@ import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 import { Link } from 'react-router'
 
 import type { GateInterrupt } from '@/api/hooks/useThreadState'
+import { roleAtLeast, RequireRole } from '@/auth/RequireRole'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
 
 import { GateActionBar } from './GateActionBar'
@@ -178,17 +180,19 @@ export function GateModuleView({
         />
       )}
 
-      <GateActionBar
-        kind={gate.kind}
-        actions={payload?.actions ?? ['approve', 'abort']}
-        draft={draft}
-        dirty={dirty}
-        disabled={disabled}
-        submitting={submitting}
-        submittingAction={submitting ? machineState.action : undefined}
-        onEdit={onEdit}
-        onSubmit={onSubmit}
-      />
+      <RequireRole role="operator">
+        <GateActionBar
+          kind={gate.kind}
+          actions={payload?.actions ?? ['approve', 'abort']}
+          draft={draft}
+          dirty={dirty}
+          disabled={disabled}
+          submitting={submitting}
+          submittingAction={submitting ? machineState.action : undefined}
+          onEdit={onEdit}
+          onSubmit={onSubmit}
+        />
+      </RequireRole>
     </section>
   )
 }
@@ -235,6 +239,8 @@ export function GateModule({
   // the snapshot — the facade exposes one pending gate per thread).
   const hitl = useGate(threadId)
   const rootRef = useRef<HTMLDivElement>(null)
+  const consumer = useOptionalConsumer()
+  const canAct = consumer === undefined || Boolean(consumer && roleAtLeast(consumer.role, 'operator'))
 
   const stateRef = useRef(hitl.state)
   stateRef.current = hitl.state
@@ -274,8 +280,9 @@ export function GateModule({
   useImperativeHandle(
     handleRef,
     (): GateModuleHandle => ({
-      isActionable: () => stateRef.current.tag === 'open',
+      isActionable: () => canAct && stateRef.current.tag === 'open',
       invoke: (action: GateAction): boolean => {
+        if (!canAct) return false
         const state = stateRef.current
         if (state.tag !== 'open') return false
         const { gate } = state
@@ -318,7 +325,7 @@ export function GateModule({
         rootRef.current?.focus()
       },
     }),
-    [hitl],
+    [canAct, hitl],
   )
 
   if (!hitl.gate) return null

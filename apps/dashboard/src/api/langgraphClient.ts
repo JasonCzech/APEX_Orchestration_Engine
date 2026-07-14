@@ -1,6 +1,7 @@
 import type { Client } from '@langchain/langgraph-sdk'
 
 import { getApiKey, subscribeApiKey } from '@/auth/keyStorage'
+import { notifyUnauthorized } from '@/api/apexClient'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { createDevLangGraphClient, subscribeDevDataMode } from '@/dev-data'
 
@@ -30,9 +31,18 @@ export function getLangGraphClient(): Promise<Client> {
 
 async function buildClient(): Promise<Client> {
   const { Client } = await import('@langchain/langgraph-sdk')
+  const authFetch: typeof fetch = async (input, init) => {
+    const response = await fetch(input, init)
+    const requestKey = new Request(input, init).headers.get('x-api-key')
+    if (response.status === 401 && requestKey && requestKey === getApiKey()) {
+      notifyUnauthorized()
+    }
+    return response
+  }
   return new Client({
     apiUrl: resolveLanggraphBaseUrl(),
     apiKey: getApiKey() ?? undefined,
+    callerOptions: { fetch: authFetch, maxRetries: 0 },
   })
 }
 

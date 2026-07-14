@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Link } from 'react-router'
 
@@ -118,6 +118,8 @@ export function PromptReviewSection({
   const [saved, setSaved] = useState(false)
   const [userTouched, setUserTouched] = useState(false)
   const [activeTab, setActiveTab] = useState<PromptTabField>('system')
+  const identityRef = useRef(`${threadId}:${phase}`)
+  const saveAttemptRef = useRef(0)
   const dirty = !sameValues(draft, baselineValues)
   const catalogLink = catalogLinkFor(activeTab, phase, appId)
 
@@ -126,14 +128,18 @@ export function PromptReviewSection({
   }, [baselineValues, userTouched])
 
   useEffect(() => {
+    identityRef.current = `${threadId}:${phase}`
+    saveAttemptRef.current += 1
     setSaved(false)
     setUserTouched(false)
-  }, [phase])
+  }, [threadId, phase])
 
   const appAvailable = Boolean(appId)
 
   function save() {
     if (!draft || !dirty || update.isPending) return
+    const identity = `${threadId}:${phase}`
+    const attempt = ++saveAttemptRef.current
     update.mutate(
       {
         threadId,
@@ -147,6 +153,7 @@ export function PromptReviewSection({
       },
       {
         onSuccess: (next) => {
+          if (identityRef.current !== identity || saveAttemptRef.current !== attempt) return
           setDraft(valuesOf(next))
           setUserTouched(false)
           setSaved(true)

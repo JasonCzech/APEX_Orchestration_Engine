@@ -24,7 +24,7 @@ import { formatTimestamp, PHASE_LABELS, statusLabel, statusVisual, TONE_COLOR_VA
  * nothing here touches the react-query cache. Rendered entries are capped at
  * MAX_ENTRIES with an "older truncated" notice (no virtualization dep in D2).
  *
- * Mount with key={phase} — internal bookkeeping is per-phase.
+ * Mount with a run/phase key — internal bookkeeping is scoped to one run.
  */
 
 export const ACTIVITY_FEED_MAX_ENTRIES = 500
@@ -138,6 +138,7 @@ export function ActivityFeed({
   const seenEngineErrors = useRef(new Set<LiveEngineError>())
   const lastDividerSig = useRef<string | null>(null)
   const prevSampleLen = useRef(0)
+  const prevSamples = useRef<readonly LiveEngineSample[]>([])
   const pendingSamples = useRef<LiveEngineSample[]>([])
   const consumedTicks = useRef(0)
 
@@ -216,12 +217,21 @@ export function ActivityFeed({
         pendingSamples.current = []
         appended = [...engineSamples]
       } else {
-        // Saturated ring buffer flushes keep length flat; tick numbering
-        // becomes approximate past the 300-sample horizon (acceptable for D2 —
-        // the strip chart shows the rolling window, the feed the cadence).
-        appended = []
+        // Once the ring is saturated its length stays flat. Find the previous
+        // tail by identity and consume the newly appended suffix instead of
+        // freezing the activity feed forever.
+        let overlap = -1
+        for (let i = prevSamples.current.length - 1; i >= 0; i -= 1) {
+          const found = engineSamples.lastIndexOf(prevSamples.current[i]!)
+          if (found >= 0) {
+            overlap = found
+            break
+          }
+        }
+        appended = overlap >= 0 ? engineSamples.slice(overlap + 1) : [...engineSamples]
       }
       prevSampleLen.current = engineSamples.length
+      prevSamples.current = engineSamples
       pendingSamples.current.push(...appended)
       while (pendingSamples.current.length >= ENGINE_TICKS_PER_ROW) {
         const chunk = pendingSamples.current.splice(0, ENGINE_TICKS_PER_ROW)

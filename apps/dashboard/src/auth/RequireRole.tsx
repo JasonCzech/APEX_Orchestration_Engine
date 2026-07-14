@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 import type { Role } from '@/api/apexClient'
 
-import { useConsumer } from './AuthProvider'
+import { useOptionalConsumer } from './AuthProvider'
 
 /** Ordered roles per the backend contract: viewer < operator < admin. */
 const ROLE_ORDER: Record<Role, number> = {
@@ -28,7 +28,11 @@ export function RequireRole({
   children: ReactNode
   fallback?: ReactNode
 }) {
-  const consumer = useConsumer()
+  const consumer = useOptionalConsumer()
+  // Standalone component tests and embedded consumers may not mount AuthProvider.
+  // Production routes always do, so an absent provider should not make controls
+  // disappear in those isolated contexts.
+  if (consumer === undefined) return <>{children}</>
   if (!consumer || !roleAtLeast(consumer.role, role)) return <>{fallback}</>
   return <>{children}</>
 }

@@ -13,6 +13,7 @@ import type { PhaseName } from '@apex/pipeline-events'
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
 
 import type { StepProps } from '../NewRunWizard'
 import { focusedPromptPhase } from '../wizardState'
@@ -61,7 +62,7 @@ function useCatalogPrompt(
   summaries: PromptSummary[] | undefined,
   key: string | null,
   enabled = true,
-): { prompt: CatalogPrompt | null; loading: boolean } {
+): { prompt: CatalogPrompt | null; loading: boolean; error: Error | null } {
   const summary = enabled && key ? summaries?.find((entry) => entry.key === key) : undefined
   const detail = useQuery({
     queryKey: queryKeys.prompts.byId(summary?.id ?? 'missing'),
@@ -69,15 +70,17 @@ function useCatalogPrompt(
     enabled: enabled && Boolean(summary),
     staleTime: STALE_TIMES.prompts,
   })
-  if (!enabled || !key) return { prompt: null, loading: false }
-  if (!summary) return { prompt: null, loading: summaries === undefined }
-  if (!detail.data) return { prompt: null, loading: detail.isLoading }
+  if (!enabled || !key) return { prompt: null, loading: false, error: null }
+  if (!summary) return { prompt: null, loading: summaries === undefined, error: null }
+  if (detail.isError) return { prompt: null, loading: false, error: detail.error }
+  if (!detail.data) return { prompt: null, loading: detail.isLoading, error: null }
   return {
     prompt: {
       content: detail.data.content ?? '',
       version: detail.data.active_version?.version ?? null,
     },
     loading: false,
+    error: null,
   }
 }
 
@@ -85,6 +88,7 @@ function PromptBlock({
   label,
   prompt,
   loading,
+  error,
   override,
   overrideLabel,
   editorLabel,
@@ -98,6 +102,7 @@ function PromptBlock({
   label: string
   prompt: CatalogPrompt | null
   loading: boolean
+  error?: Error | null
   override: { content: string } | undefined
   overrideLabel: string
   editorLabel: string
@@ -128,7 +133,11 @@ function PromptBlock({
         )}
       </div>
 
-      {override ? (
+      {error ? (
+        <p className="wizard-caption wizard-caption--danger" role="alert">
+          Catalog prompt could not be loaded. Retry or use an explicit override.
+        </p>
+      ) : override ? (
         <div className="code-viewer editable">
           <CodeMirror
             value={override.content}
@@ -163,7 +172,7 @@ function PromptBlock({
         <p className="wizard-caption">{emptyText}</p>
       )}
 
-      {!override && !loading && (
+      {!override && !loading && !error && (
         <button
           type="button"
           className="btn btn-ghost btn-sm wizard-prompt-override"
@@ -177,6 +186,7 @@ function PromptBlock({
 }
 
 export function PromptsStep({ draft, onChange }: StepProps) {
+  const consumer = useOptionalConsumer()
   const phase = focusedPromptPhase(draft.config)
   const appId = draft.scope.app_id
   const phaseList = useQuery({
@@ -187,7 +197,9 @@ export function PromptsStep({ draft, onChange }: StepProps) {
   const applicationList = useQuery({
     queryKey: queryKeys.prompts.listNamespace(APPLICATION_NAMESPACE),
     queryFn: () => fetchPromptList(APPLICATION_NAMESPACE),
-    enabled: Boolean(appId),
+    // Application namespace is intentionally unavailable to scoped
+    // identities; avoid a guaranteed 403 and explain that limitation below.
+    enabled: Boolean(appId) && (consumer === undefined || (consumer != null && consumer.scopes.length === 0)),
     staleTime: STALE_TIMES.prompts,
   })
 
@@ -222,6 +234,9 @@ export function PromptsStep({ draft, onChange }: StepProps) {
           Application prompt catalog failed to load.
         </p>
       )}
+      {appId && consumer != null && consumer.scopes.length > 0 && (
+        <p className="wizard-caption">Application prompt catalog is available only to unscoped operators.</p>
+      )}
 
       {phase === null ? (
         <p className="wizard-caption wizard-caption--danger">Select at least one phase first.</p>
@@ -242,6 +257,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
             label="System prompt"
             prompt={system.prompt}
             loading={system.loading}
+            error={system.error}
             override={systemOverride}
             overrideLabel={phase}
             editorLabel={`${phase} system prompt override`}
@@ -279,6 +295,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
               label="Application prompt"
               prompt={application.prompt}
               loading={application.loading}
+              error={application.error}
               override={applicationOverride}
               overrideLabel={appId}
               editorLabel={`${appId} application prompt override`}
