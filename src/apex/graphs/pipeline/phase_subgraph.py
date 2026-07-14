@@ -835,18 +835,20 @@ def _llm_agent_body(
     usage: dict[str, Any] = {}
     tool_calls_record: list[JsonDict] = []
     response: Any = None
-    max_iters = max(1, settings.llm.fetch_max_tool_iters) if tools else 1
+    max_iters = (max(1, settings.llm.fetch_max_tool_iters) + 1) if tools else 1
     for _ in range(max_iters):
         response = runnable.invoke(messages)
         messages.append(response)
         _accumulate_usage(usage, getattr(response, "usage_metadata", None))
         calls = getattr(response, "tool_calls", None) or []
+        if len(calls) > 8:
+            raise ValueError("model returned too many tool calls in one response")
         for call in calls:
             record = ToolCallRecord(
                 id=str(call.get("id") or f"{phase.value}-a{attempt}-tool{len(tool_calls_record)}"),
                 tool=str(call.get("name") or "tool"),
                 args_preview=dict(call.get("args") or {}),
-                status="ok",
+                status="pending",
             ).model_dump(mode="json")
             tool_calls_record.append(record)
             emit_event(
@@ -871,13 +873,19 @@ def _llm_agent_body(
                 )
             except Exception as exc:  # noqa: BLE001 — tool failures feed back to the model
                 output = f"error: {exc}"
+                record["status"] = "error"
+                record["error"] = str(exc)
+            else:
+                record["status"] = "ok"
             messages.append(
                 ToolMessage(content=str(output), tool_call_id=str(call.get("id") or ""))
             )
         # Tool results are untrusted model input too. Re-check the complete
         # rendered budget after every tool round instead of validating only the
         # initial prompt.
-        tool_context = "\n".join(str(getattr(message, "content", "")) for message in messages)
+        tool_context = "\n".join(
+            str(getattr(message, "content", "")) for message in messages if isinstance(message, ToolMessage)
+        )
         validate_rendered_model_input(
             system_text, user_text + "\n" + tool_context, settings=settings
         )

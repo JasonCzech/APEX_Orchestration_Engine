@@ -187,7 +187,7 @@ def _config_for_handle(cfg: PipelineConfigurable, handle: EngineHandle) -> Pipel
         return cfg
     connections = dict(cfg.connections)
     connections[PortKind.EXECUTION_ENGINE.value] = handle.connection_id
-    return cfg.model_copy(update={"connections": connections})
+    return cfg.model_copy(update={"connections": connections, "engine": handle.engine})
 
 
 async def _resolve_artifact_store(cfg: PipelineConfigurable) -> tuple[Any, str]:
@@ -259,6 +259,22 @@ async def _teardown_after_confirmed_abort(adapter: Any, handle: EngineHandle) ->
             external_run_id=handle.external_run_id,
             exc_info=True,
         )
+
+
+async def _confirm_abort(
+    adapter: Any, handle: EngineHandle, reason: str, *, confirm_status: bool = True
+) -> None:
+    await adapter.abort(handle, reason=reason)
+    if not confirm_status:
+        return
+    try:
+        status = await adapter.get_status(handle)
+    except Exception:
+        # A provider that has accepted the abort may make status temporarily
+        # unavailable; the abort itself is idempotent and can be retried safely.
+        return
+    if status.phase not in TERMINAL_ENGINE_PHASES:
+        raise RuntimeError(f"abort accepted but external run remains {status.phase.value}")
 
 
 # ── event/sample shapes ────────────────────────────────────────────────────────
@@ -701,7 +717,10 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
     async def _cleanup() -> None:
         adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
         try:
-            await adapter.abort(handle, reason=reason)
+            await _confirm_abort(
+                adapter, handle, reason,
+                confirm_status=int(entry.get("engine_cleanup_failures") or 0) == 0,
+            )
             await _teardown_after_confirmed_abort(adapter, handle)
         finally:
             await _close_resource(adapter)
@@ -812,7 +831,7 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         adapter: Any | None = None
         store: Any | None = None
         try:
-            resolved_adapter = await _resolve_engine(cfg, engine_options)
+            resolved_adapter = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
             adapter = resolved_adapter
             try:
                 store, artifact_connection_id = await _resolve_artifact_store(cfg)

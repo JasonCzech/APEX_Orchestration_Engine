@@ -102,7 +102,7 @@ class AuditService:
         await self._lock_chain()
         event = _materialize_event(event)
         head = await self._chain_head()
-        chain_seq = (head.chain_seq + 1) if head is not None else 1
+        chain_seq = (head.chain_seq + 1) if head is not None and head.chain_seq is not None else 1
         previous_hash = head.event_hash if head is not None else None
         event_hash = _event_hash(event, previous_hash)
         row = AuditLog(
@@ -135,7 +135,7 @@ class AuditService:
         return row
 
     async def _chain_head(self) -> AuditLog | None:
-        stmt = select(AuditLog).order_by(desc(AuditLog.chain_seq)).limit(1)
+        stmt = select(AuditLog).order_by(desc(AuditLog.chain_seq).nullslast(), desc(AuditLog.at)).limit(1)
         return await self._session.scalar(stmt)
 
     async def _lock_chain(self) -> None:

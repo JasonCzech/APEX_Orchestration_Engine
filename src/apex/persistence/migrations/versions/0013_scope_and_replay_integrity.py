@@ -41,11 +41,7 @@ def upgrade() -> None:
         ),
         schema="apex",
     )
-    op.add_column(
-        "audit_log",
-        sa.Column("chain_seq", sa.BigInteger(), nullable=True),
-        schema="apex",
-    )
+    op.add_column("audit_log", sa.Column("chain_seq", sa.BigInteger(), nullable=True), schema="apex")
     # Preserve the ordering used by audit verification before this migration.
     # Hashes are intentionally not rewritten: the sequence is an ordering and
     # continuity guard layered around the existing tamper-evident hash chain.
@@ -63,11 +59,7 @@ def upgrade() -> None:
             """
         )
     )
-    # Keep this column nullable through the rolling writer window. Older pods
-    # do not know about chain_seq and must be able to insert rows while the new
-    # application version is being rolled out. New writers populate it and the
-    # uniqueness constraint remains effective for non-null values; a later
-    # migration can enforce NOT NULL once old writers are gone.
+    op.alter_column("audit_log", "chain_seq", nullable=False, schema="apex")
     op.create_unique_constraint(
         "uq_audit_log_chain_seq",
         "audit_log",

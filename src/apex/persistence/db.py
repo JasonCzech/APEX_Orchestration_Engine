@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from apex.settings import database_ssl_connect_args, get_settings
+from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
@@ -28,15 +28,7 @@ def get_engine() -> AsyncEngine:
             connect_args = database_ssl_connect_args(database.uri, database.ssl_mode)
             if connect_args:
                 kwargs["connect_args"] = connect_args
-        url = make_url(database.uri)
-        if url.drivername == "postgresql+asyncpg":
-            # asyncpg receives TLS through connect_args; forwarding psycopg-style
-            # sslmode (or a URL ssl query key) becomes an invalid connect kwarg.
-            query = dict(url.query)
-            query.pop("sslmode", None)
-            query.pop("ssl", None)
-            url = url.set(query=query)
-        _engine = create_async_engine(url, **kwargs)
+        _engine = create_async_engine(database_asyncpg_uri(database.uri), **kwargs)
     return _engine
 
 

@@ -126,8 +126,19 @@ class ConnectionOut(BaseModel):
 
 
 def _reject_raw_secret_options(options: dict[str, Any]) -> None:
-    secret_names = {"password", "token", "secret", "secret_key", "api_key", "access_key"}
-    if any(str(key).lower() in secret_names for key in options):
+    secret_names = {"password", "token", "secret", "secretkey", "apikey", "clientsecret", "bearertoken", "privatekey", "credential"}
+    def walk(value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized = "".join(ch for ch in str(key).lower() if ch.isalnum())
+                if normalized in secret_names or normalized.endswith("password"):
+                    return True
+                if walk(nested):
+                    return True
+        elif isinstance(value, list):
+            return any(walk(item) for item in value)
+        return False
+    if walk(options):
         raise ValueError("connection secrets must be supplied through secret_ref")
 
 

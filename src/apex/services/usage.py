@@ -48,7 +48,7 @@ from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.models import AgentEvent, UsageEvent
 from apex.services.analytics_scope import analytics_scope_filter
 from apex.services.pricing import compute_cost
-from apex.settings import database_ssl_connect_args, get_settings
+from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -60,6 +60,7 @@ _OK_PHASE_STATUSES = ("succeeded", "skipped")
 
 # Strong references to in-flight fire-and-forget writes (loops may GC bare tasks).
 _PENDING: set[asyncio.Task[None]] = set()
+_MAX_PENDING = 1024
 
 
 def _replay_event_key(kind: str, **identity: Any) -> str:
@@ -131,7 +132,7 @@ async def record_usage_event(
         # short-lived event loops, so pooled connections must not outlive them.
         database = get_settings().database
         engine_db = create_async_engine(
-            database.uri,
+            database_asyncpg_uri(database.uri),
             poolclass=NullPool,
             connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
         )
@@ -393,7 +394,7 @@ async def record_agent_event(
     try:
         database = get_settings().database
         engine_db = create_async_engine(
-            database.uri,
+            database_asyncpg_uri(database.uri),
             poolclass=NullPool,
             connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
         )
@@ -618,6 +619,8 @@ class UsageTrackingMiddleware:
             duration_ms = int((time.perf_counter() - started) * 1000)
             api_key = extract_api_key(dict(scope.get("headers") or []))
             project_id, app_id = _request_scope(scope)
+            if len(_PENDING) >= _MAX_PENDING:
+                return
             task = asyncio.get_running_loop().create_task(
                 _record_request_event(
                     api_key=api_key,

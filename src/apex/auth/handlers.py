@@ -35,6 +35,9 @@ _STUDIO_IDENTITY = ConsumerIdentity(
     consumer_type=ConsumerType.INTERNAL,
     role=Role.ADMIN,
 )
+
+_PENDING_AUTH_AUDIT: set[asyncio.Task[None]] = set()
+_MAX_PENDING_AUTH_AUDIT = 1024
 _PROJECT_NAMESPACE_PREFIX = ("apex", "project")
 
 
@@ -130,7 +133,9 @@ def _schedule_auth_decision(
     reason: str,
 ) -> None:
     try:
-        asyncio.get_running_loop().create_task(
+        if len(_PENDING_AUTH_AUDIT) >= _MAX_PENDING_AUTH_AUDIT:
+            return
+        task = asyncio.get_running_loop().create_task(
             append_audit_event_best_effort(
                 event_from_identity(
                     identity=identity,
@@ -143,8 +148,30 @@ def _schedule_auth_decision(
                 )
             )
         )
+        _PENDING_AUTH_AUDIT.add(task)
+        task.add_done_callback(_PENDING_AUTH_AUDIT.discard)
     except RuntimeError:
         return
+
+
+async def _ensure_catalog_app_scope(identity: ConsumerIdentity, value: Mapping[str, Any]) -> None:
+    """Bind explicit LangGraph app IDs to the authoritative catalog project."""
+    if identity.is_unscoped:
+        return
+    config = value.get("config") if isinstance(value.get("config"), Mapping) else {}
+    configurable = config.get("configurable") if isinstance(config, Mapping) else {}
+    metadata = value.get("metadata") if isinstance(value.get("metadata"), Mapping) else {}
+    app_id = (configurable or {}).get("app_id") or metadata.get("app_id")
+    project_id = (configurable or {}).get("project_id") or metadata.get("project_id")
+    if not app_id or not project_id:
+        return
+    from apex.persistence.db import get_sessionmaker
+    from apex.persistence.repositories.catalog import CatalogRepository
+
+    async with get_sessionmaker()() as session:
+        app = await CatalogRepository(session).get_application(str(app_id))
+    if app is None or app.archived_at is not None or app.project_id != project_id:
+        _deny_authz(identity, action="threads.scope", detail="app_id is not authorized for project_id")
 
 
 def ensure_role(
@@ -787,6 +814,7 @@ async def on_threads_create(
     ensure_role(identity, Role.OPERATOR, action=action)
     metadata = value.setdefault("metadata", {})
     metadata.setdefault("created_by", identity.consumer_id)
+    await _ensure_catalog_app_scope(identity, value)
     ensure_thread_scope(identity, metadata, action=action)
     return scope_filter(identity)
 
@@ -798,6 +826,7 @@ async def on_threads_create_run(
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
+    await _ensure_catalog_app_scope(identity, value)
     result = ensure_run_scope(identity, value, action=action)
     await ensure_run_environment(identity, value, action=action)
     ensure_run_controls(

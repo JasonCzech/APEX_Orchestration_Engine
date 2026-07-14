@@ -458,7 +458,7 @@ class LoadRunnerExecutionEngine:
         payload = response.json()
         runs = payload if isinstance(payload, list) else list(payload.get("Runs") or [])
         marker = COMMENT_PREFIX + key
-        matches = [run for run in runs if marker in str(run.get("RunComment") or "")]
+        matches = [run for run in runs if str(run.get("RunComment") or "").strip() == marker]
         if not matches:
             return None
         return min(matches, key=lambda run: int(run.get("ID") or 0))

@@ -68,7 +68,7 @@ services:
     image: ${APEX_IMAGE:-apex-orchestration-engine:local}
     restart: unless-stopped
     ports:
-      - "8123:8000"
+      - "127.0.0.1:8123:8000"
     environment:
       DATABASE_URI: postgresql://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
       REDIS_URI: redis://redis:6379

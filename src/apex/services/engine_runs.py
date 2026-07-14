@@ -17,7 +17,7 @@ from sqlalchemy.pool import NullPool
 
 from apex.persistence.models import EngineRun
 from apex.ports.artifact_store import engine_artifact_namespace
-from apex.settings import database_ssl_connect_args, get_settings
+from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -61,7 +61,7 @@ async def record_engine_run(
         # short-lived event loops, so pooled connections must not outlive them.
         database = get_settings().database
         engine_db = create_async_engine(
-            database.uri,
+            database_asyncpg_uri(database.uri),
             poolclass=NullPool,
             connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
         )
@@ -103,8 +103,13 @@ async def record_engine_run(
 
 
 def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
-    """Sync bridge for graph nodes (which run sync on worker threads)."""
+    """Sync bridge that is safe when called from either sync or async graph nodes."""
     try:
-        asyncio.run(record_engine_run(*args, **kwargs))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(record_engine_run(*args, **kwargs))
+        else:
+            loop.create_task(record_engine_run(*args, **kwargs))
     except Exception as exc:  # noqa: BLE001
         logger.warning("engine_runs.record_failed", error=str(exc))

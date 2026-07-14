@@ -2,7 +2,7 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import ip_network
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit, urlencode
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -296,8 +296,26 @@ def database_uses_ssl(uri: str, ssl_mode: str | None) -> bool:
 
 def database_ssl_connect_args(uri: str, ssl_mode: str | None) -> dict[str, object]:
     if database_uses_ssl(uri, ssl_mode):
-        return {"ssl": True}
+        mode = _database_ssl_mode(uri, ssl_mode).lower()
+        # Preserve the historical secure default for remote databases; explicit
+        # modes retain their exact asyncpg semantics.
+        if not ssl_mode and not parse_qs(urlsplit(uri).query).get("sslmode"):
+            return {"ssl": True}
+        return {"ssl": mode if mode in DATABASE_SSL_MODES else "require"}
     return {}
+
+
+def database_asyncpg_uri(uri: str) -> str:
+    """Remove psycopg-style TLS query keys before handing a URL to asyncpg."""
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return uri
+    if parsed.scheme != "postgresql+asyncpg":
+        return uri
+    query = [(key, value) for key, value in parse_qs(parsed.query, keep_blank_values=True).items()
+             if key not in {"sslmode", "ssl"} for value in value]
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment))
 
 
 def _database_ssl_mode(uri: str, ssl_mode: str | None) -> str:

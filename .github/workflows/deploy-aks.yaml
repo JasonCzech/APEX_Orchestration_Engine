@@ -30,6 +30,10 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  group: apex-deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
 env:
   TF_DIR: deploy/terraform
   NAMESPACE: apex
@@ -116,9 +120,8 @@ jobs:
       - name: Build + push images
         env:
           ACR: ${{ needs.provision.outputs.acr }}
-          TAG: ${{ inputs.image_tag }}
+          TAG: sha-${GITHUB_SHA}
         run: |
-          if [[ -z "$TAG" || "$TAG" == "latest" ]]; then TAG="sha-${GITHUB_SHA}"; fi
           uv run langgraph build -t "$ACR/apex-orchestration-engine:$TAG"
           docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
           docker push "$ACR/apex-orchestration-engine:$TAG"
@@ -144,13 +147,14 @@ jobs:
           kubectl wait --for=condition=Established \
             crd/secretproviderclasses.secrets-store.csi.x-k8s.io --timeout=5m
       - name: MinIO artifact store
-        run: kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
+        run: |
+          kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
+          kubectl -n "$NAMESPACE" rollout status deployment/minio --timeout=5m
       - name: Helm upgrade (migrate + bootstrap hooks run first)
         env:
           ACR: ${{ needs.provision.outputs.acr }}
-          TAG: ${{ inputs.image_tag }}
+          TAG: sha-${GITHUB_SHA}
         run: |
-          if [[ -z "$TAG" || "$TAG" == "latest" ]]; then TAG="sha-${GITHUB_SHA}"; fi
           helm upgrade --install "$RELEASE" deploy/helm/apex-orchestration-engine \
             -n "$NAMESPACE" --create-namespace \
             -f deploy/azure/helm/values-azure.yaml \
