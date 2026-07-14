@@ -24,7 +24,7 @@ VALID_DOC: dict[str, Any] = {
             "kind": "artifact_store",
             "provider": "s3",
             "options": {"endpoint": "localhost:9000"},
-            "secret_ref": "env:APEX_MINIO_SECRET_KEY",
+            "secret_ref": "env:APEX_INTEGRATION_MINIO_SECRET_KEY",
         }
     ],
     "admin": {"name": "apex-admin", "key_env": "APEX_BOOTSTRAP_ADMIN_KEY"},

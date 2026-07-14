@@ -15,6 +15,7 @@ import pytest
 from minio import Minio
 from minio.error import S3Error
 
+from apex.adapters.network_safety import SafePoolManager
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.s3 import S3ArtifactStore
 from apex.adapters.stubs import EnvSecretsAdapter
@@ -38,7 +39,7 @@ def _conn(**option_overrides: Any) -> ConnectionConfig:
         provider="s3",
         name="minio-artifacts",
         options=options,
-        secret_ref="env:APEX_MINIO_SECRET_KEY",
+        secret_ref="env:APEX_INTEGRATION_MINIO_SECRET_KEY",
     )
 
 
@@ -63,8 +64,12 @@ class FakeObjectResponse:
         self.closed = False
         self.released = False
 
-    def read(self) -> bytes:
-        return self._payload
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            payload, self._payload = self._payload, b""
+            return payload
+        payload, self._payload = self._payload[:size], self._payload[size:]
+        return payload
 
     def close(self) -> None:
         self.closed = True
@@ -160,11 +165,52 @@ async def test_put_get_url_roundtrip_with_fake_client() -> None:
     assert url == "http://localhost:9000/apex-artifacts/runs/r1/results.json?X-Amz-Expires=600"
 
 
+async def test_put_stream_uploads_chunks_and_enforces_hard_cap() -> None:
+    fake = FakeMinio()
+    store = S3ArtifactStore(_conn(), client=fake)
+
+    async def chunks():  # type: ignore[no-untyped-def]
+        yield b"abc"
+        yield b"def"
+
+    stored = await store.put_stream(
+        "runs/r1/stream.bin",
+        chunks(),
+        content_type="application/octet-stream",
+        max_bytes=6,
+    )
+    assert stored.size == 6
+    assert fake.objects[("apex-artifacts", "runs/r1/stream.bin")][0] == b"abcdef"
+
+    with pytest.raises(ValueError, match="maximum size"):
+        await store.put_stream(
+            "runs/r1/too-big.bin",
+            chunks(),
+            content_type="application/octet-stream",
+            max_bytes=5,
+        )
+    assert ("apex-artifacts", "runs/r1/too-big.bin") not in fake.objects
+
+
 async def test_get_closes_and_releases_response() -> None:
     fake = FakeMinio()
     store = S3ArtifactStore(_conn(), client=fake)
     await store.put("k", b"v", content_type="text/plain")
     await store.get("k")
+    (response,) = fake.responses
+    assert response.closed and response.released
+
+
+async def test_iter_bytes_streams_and_releases_response() -> None:
+    fake = FakeMinio()
+    store = S3ArtifactStore(_conn(), client=fake)
+    await store.put("k", b"abcdef", content_type="text/plain")
+
+    assert [chunk async for chunk in store.iter_bytes("k", chunk_size=2)] == [
+        b"ab",
+        b"cd",
+        b"ef",
+    ]
     (response,) = fake.responses
     assert response.closed and response.released
 
@@ -233,11 +279,12 @@ async def test_missing_secret_raises_value_error() -> None:
 async def test_registry_builds_s3_provider_with_env_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("APEX_MINIO_SECRET_KEY", "apex-minio")
+    monkeypatch.setenv("APEX_INTEGRATION_MINIO_SECRET_KEY", "apex-minio")
     adapter = await AdapterRegistry.build(_conn(), EnvSecretsAdapter())
     assert isinstance(adapter, S3ArtifactStore)
     # Real client constructed (lazily — no network at build time).
     assert isinstance(adapter._client, Minio)
+    assert isinstance(adapter._client._http, SafePoolManager)
 
 
 # --- integration: real MinIO (env-gated) ----------------------------------------
@@ -249,7 +296,7 @@ requires_minio = pytest.mark.skipif(
 
 
 def _real_store() -> S3ArtifactStore:
-    secret = SecretValue(value=os.environ.get("APEX_MINIO_SECRET_KEY", "apex-minio"))
+    secret = SecretValue(value=os.environ.get("APEX_INTEGRATION_MINIO_SECRET_KEY", "apex-minio"))
     return S3ArtifactStore(_conn(bucket="apex-artifacts-test"), secret)
 
 

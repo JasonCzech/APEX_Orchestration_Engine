@@ -14,12 +14,12 @@ from apex.routers.analytics import get_usage_analytics_repository, router
 ADMIN = ConsumerIdentity(
     consumer_id="admin-1", name="root", consumer_type=ConsumerType.INTERNAL, role=Role.ADMIN
 )
-ALICE = ConsumerIdentity(  # viewer scoped to proj-a + proj-b
+ALICE = ConsumerIdentity(  # one app scope plus one project-wide scope
     consumer_id="view-alice",
     name="alice",
     consumer_type=ConsumerType.DASHBOARD,
     role=Role.VIEWER,
-    scopes=[ScopeRef(project_id="proj-a"), ScopeRef(project_id="proj-b")],
+    scopes=[ScopeRef(project_id="proj-a", app_id="app-a"), ScopeRef(project_id="proj-b")],
 )
 
 CANNED = {
@@ -77,7 +77,7 @@ def test_response_shape_and_defaults() -> None:
     assert call["window_to"] - call["window_from"] == timedelta(days=7)
     assert call["bucket"] == "day"
     assert call["project_id"] is None
-    assert call["visible_project_ids"] is None
+    assert call["visible_scopes"] is None
 
 
 def test_explicit_window_and_hour_bucket_pass_through() -> None:
@@ -130,7 +130,7 @@ def test_scoped_consumer_gets_visibility_filter() -> None:
     repo = FakeUsageAnalyticsRepository()
     with make_client(repo, ALICE) as client:
         assert client.get("/v1/analytics/usage").status_code == 200
-    assert repo.calls[0]["visible_project_ids"] == ("proj-a", "proj-b")
+    assert repo.calls[0]["visible_scopes"] == tuple(ALICE.scopes)
 
 
 def test_project_filter_inside_scope_is_passed_through() -> None:

@@ -1,7 +1,7 @@
 /**
  * Step 4 — Config: engine radio cards, golden-config picker (assistants),
- * phase-subset toggle strip with warn-only dependency hints (mirrors
- * PHASE_PREREQUISITES), and the gates segmented control with the 7x2 custom
+ * phase-subset toggle strip with blocking dependency errors (mirrors
+ * PHASE_PREREQUISITES for the new thread), and the gates segmented control with the 7x2 custom
  * matrix (checked = gated).
  */
 import { useEffect, useRef } from 'react'
@@ -10,6 +10,7 @@ import { useSearchParams } from 'react-router'
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useAssistants, type GoldenConfig } from '@/api/hooks/useAssistants'
+import { selectedPhasesView } from '@/features/golden-configs/configView'
 
 import type { StepProps } from '../NewRunWizard'
 import {
@@ -64,7 +65,16 @@ export function ConfigStep({ draft, onChange }: StepProps) {
   function applyGoldenConfig(golden: GoldenConfig) {
     onChange((prev) => {
       const bundle = golden.configurable
-      const next: WizardConfig = { ...prev.config, golden_config_id: golden.assistantId }
+      const next: WizardConfig = {
+        ...prev.config,
+        // A newly selected assistant inherits PipelineConfigurable defaults,
+        // never UI overrides left behind by the previously selected assistant.
+        engine: 'sim',
+        gates_mode: 'all_gated',
+        golden_config_id: golden.assistantId,
+        golden_configurable: { ...bundle },
+      }
+      delete next.gates_custom
       const engine = bundle['engine']
       if (typeof engine === 'string' && (ENGINES as readonly string[]).includes(engine)) {
         next.engine = engine as EngineId
@@ -73,15 +83,34 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         next.gates_mode = 'custom'
         next.gates_custom = normalizeGateMatrix(bundle['gates'])
       }
-      if (Array.isArray(bundle['phases'])) {
-        next.phases = normalizePhases(bundle['phases'])
-      }
+      next.phases = normalizePhases(selectedPhasesView(bundle))
       const nextPhases = selectedPhases(next)
       if (!next.prompt_focus_phase || !nextPhases.includes(next.prompt_focus_phase)) {
         next.prompt_focus_phase = nextPhases[0] ?? null
       }
-      return { ...prev, config: next }
+      const project = bundle['project_id']
+      const app = bundle['app_id']
+      const environment = bundle['environment_id']
+      return {
+        ...prev,
+        scope: {
+          project_id:
+            typeof project === 'string' && project.length > 0
+              ? project
+              : prev.scope.project_id,
+          app_id: typeof app === 'string' && app.length > 0 ? app : prev.scope.app_id,
+          environment_id:
+            typeof environment === 'string' && environment.length > 0
+              ? environment
+              : prev.scope.environment_id,
+        },
+        config: next,
+      }
     })
+  }
+
+  function clearGoldenConfig() {
+    patchConfig({ golden_config_id: null, golden_configurable: null })
   }
 
   function togglePhase(phase: PhaseName) {
@@ -184,7 +213,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              onClick={() => patchConfig({ golden_config_id: null })}
+              onClick={clearGoldenConfig}
             >
               Clear
             </button>
@@ -242,7 +271,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         {hints.length > 0 && (
           <ul className="wizard-hint-list" data-testid="phase-dependency-hints">
             {hints.map((hint) => (
-              <li key={hint} className="wizard-caption wizard-caption--warning">
+              <li key={hint} className="wizard-caption wizard-caption--danger">
                 {hint}
               </li>
             ))}

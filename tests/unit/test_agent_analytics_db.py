@@ -39,6 +39,7 @@ def test_agent_event_capture_and_aggregation_round_trip(
     get_settings.cache_clear()
 
     marker = f"proj-agent-{uuid4().hex[:8]}"
+    app_marker = f"app-agent-{uuid4().hex[:8]}"
     thread_id = f"thread-agent-{uuid4().hex[:8]}"
     engine = create_async_engine(test_uri, poolclass=NullPool)
     maker = async_sessionmaker(engine, expire_on_commit=False)
@@ -100,12 +101,29 @@ def test_agent_event_capture_and_aggregation_round_trip(
             "configurable": {
                 "thread_id": thread_id,
                 "project_id": marker,
+                "app_id": app_marker,
                 "model_by_phase": {
                     "reporting": "claude-sonnet-4-20250514",
                     "execution": "unknown-model",
                 },
             }
         }
+        usage.record_agent_event_sync(
+            phase="reporting",
+            status="succeeded",
+            attempt=1,
+            config=config,
+            latency_ms=1234,
+            usage={
+                "input_tokens": 1000,
+                "output_tokens": 100,
+                "total_tokens": 1100,
+                "input_token_details": {"cache_read": 50, "cache_creation": 20},
+                "output_token_details": {"reasoning": 25},
+                "finish_reason": "stop",
+            },
+        )
+        # Checkpoint replay of the same phase attempt is idempotent.
         usage.record_agent_event_sync(
             phase="reporting",
             status="succeeded",
@@ -132,6 +150,7 @@ def test_agent_event_capture_and_aggregation_round_trip(
 
         reporting = asyncio.run(read_reporting_event())
         assert reporting.model == "claude-sonnet-4-20250514"
+        assert reporting.app_id == app_marker
         assert reporting.provider == "anthropic"
         assert reporting.total_tokens == 1100
         # Cached tokens are a subset of input_tokens, billed once at the cache rate

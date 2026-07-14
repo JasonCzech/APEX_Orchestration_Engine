@@ -71,7 +71,7 @@ async def test_start_context_summary_creates_stateless_background_run() -> None:
     assert call["input"] == {
         "subject": "Checkout latency",
         "work_item_keys": ["PHX-241"],
-        "document_ids": [],
+        "document_packets": [],
         "project_id": "proj-a",
     }
 

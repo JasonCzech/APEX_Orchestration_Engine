@@ -5,8 +5,11 @@ import os
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from apex.persistence.models import SavedQuery
+from apex.persistence.models import Base, SavedQuery
 from apex.persistence.repositories.saved_queries import SavedQueriesRepository
 
 needs_postgres = pytest.mark.skipif(
@@ -18,6 +21,20 @@ async def test_update_rejects_unknown_fields_without_touching_db() -> None:
     repo = SavedQueriesRepository(session=None)  # type: ignore[arg-type] — fails before any IO
     with pytest.raises(ValueError, match="not updatable"):
         await repo.update(SavedQuery(name="n", provider="jira", query="q"), {"id": "nope"})
+
+
+def test_global_saved_query_names_are_unique_when_project_is_null() -> None:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
+        Base.metadata.tables["apex.saved_queries"].create(connection)
+
+    with Session(engine) as session:
+        session.add(SavedQuery(name="global", project_id=None, provider="jira", query="q1"))
+        session.commit()
+        session.add(SavedQuery(name="global", project_id=None, provider="ado", query="q2"))
+        with pytest.raises(IntegrityError):
+            session.commit()
 
 
 @needs_postgres

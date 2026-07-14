@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
@@ -131,6 +131,40 @@ describe('LogsPage', () => {
     await waitFor(() => expect(logs.captured).toHaveLength(2))
     expect(logs.captured[1]!.offset).toBe(50)
     expect(logs.captured[1]!.query?.text).toBe('anything')
+  })
+
+  it('re-runs the URL-committed search on browser Back navigation', async () => {
+    const logs = logsHandler()
+    server.use(logs.handler)
+    const user = userEvent.setup()
+    const { router, queryClient } = renderLogs('?q=first')
+
+    const input = await screen.findByRole('searchbox', { name: 'Log query' })
+    await waitFor(() => expect(logs.captured.at(-1)?.query?.text).toBe('first'))
+    await user.clear(input)
+    await user.type(input, 'second')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+    await waitFor(() => expect(logs.captured.at(-1)?.query?.text).toBe('second'))
+
+    await act(async () => {
+      await router.navigate(-1)
+    })
+    await waitFor(() => expect(input).toHaveValue('first'))
+    // The first search is still fresh in React Query, so Back may reuse it
+    // without another POST. The active observer must nevertheless move back
+    // to the URL's committed query rather than keep observing "second".
+    await waitFor(() => {
+      const active = queryClient
+        .getQueryCache()
+        .getAll()
+        .find(
+          (query) =>
+            query.getObserversCount() > 0 &&
+            query.queryKey[0] === 'logs' &&
+            query.queryKey[1] === 'search',
+        )
+      expect(active?.queryKey[2]).toMatchObject({ text: 'first', offset: 0 })
+    })
   })
 
   it('shows the empty state when the window has no entries', async () => {

@@ -74,21 +74,25 @@ interface ExecuteBody {
 /** POST query/translate — captures bodies, answers a fixed translation. */
 export function translateHandler(result: TranslatedQuery = TRANSLATED) {
   const captured: { text: string }[] = []
+  const projects: Array<string | null> = []
   const handler = http.post('*/v1/work-tracking/query/translate', async ({ request }) => {
+    projects.push(new URL(request.url).searchParams.get('project'))
     captured.push((await request.json()) as { text: string })
     return HttpResponse.json(result)
   })
-  return { handler, captured }
+  return { handler, captured, projects }
 }
 
 /** POST query/execute — captures bodies, answers a fixed page. */
 export function executeHandler(items: WorkItem[] = [ITEM_PAYMENT, ITEM_BUG], total = items.length) {
   const captured: ExecuteBody[] = []
+  const projects: Array<string | null> = []
   const handler = http.post('*/v1/work-tracking/query/execute', async ({ request }) => {
+    projects.push(new URL(request.url).searchParams.get('project'))
     captured.push((await request.json()) as ExecuteBody)
     return HttpResponse.json({ items, total })
   })
-  return { handler, captured }
+  return { handler, captured, projects }
 }
 
 export function savedQueriesHandler(items: SavedQuery[] = [SAVED_OPEN, SAVED_BUGS]) {

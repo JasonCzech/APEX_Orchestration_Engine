@@ -23,7 +23,7 @@ ALICE = ConsumerIdentity(
     name="alice",
     consumer_type=ConsumerType.DASHBOARD,
     role=Role.VIEWER,
-    scopes=[ScopeRef(project_id="proj-a"), ScopeRef(project_id="proj-b")],
+    scopes=[ScopeRef(project_id="proj-a", app_id="app-a"), ScopeRef(project_id="proj-b")],
 )
 
 CANNED = {
@@ -190,7 +190,7 @@ def test_scoped_consumer_gets_visibility_filter() -> None:
     repo = FakeAgentAnalyticsRepository()
     with make_client(repo, ALICE) as client:
         assert client.get("/v1/analytics/agents").status_code == 200
-    assert repo.calls[0]["visible_project_ids"] == ("proj-a", "proj-b")
+    assert repo.calls[0]["visible_scopes"] == tuple(ALICE.scopes)
 
 
 def test_project_filter_inside_scope_is_passed_through() -> None:

@@ -15,15 +15,19 @@ key) that the execution phase consumes, and the reporting stub mentions the
 execution phase's test_summary KPIs when present.
 """
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Any
 
+import structlog
 from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
+from apex.adapters.registry import PortKind
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import (
     PHASE_PREREQUISITES,
@@ -46,16 +50,20 @@ from apex.graphs.pipeline.gates import (
     resolve_actor,
 )
 from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import usage as usage_events
+from apex.services.connections import ConnectionResolver, DbConnectionStore
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_sync,
     resolved_from_prompt_review,
     user_prompt_with_context,
 )
+from apex.services.run_validation import validate_rendered_model_input
 from apex.settings import get_settings
 
 EVENT_SCHEMA_VERSION = 1
+logger = structlog.get_logger(__name__)
 
 # Bounds re-interrupt loops inside a single gate node (modify re-reviews, bad actions).
 MAX_GATE_LOOPS = 10
@@ -97,7 +105,74 @@ def _phase_update(phase: Phase, attempt: int, **fields: Any) -> JsonDict:
 
 def _thread_id(config: RunnableConfig | None) -> str:
     configurable = dict((config or {}).get("configurable") or {})
-    return str(configurable.get("thread_id") or "no-thread")
+    thread_id = str(configurable.get("thread_id") or "").strip()
+    if not thread_id:
+        raise ValueError("pipeline runs require a durable thread_id")
+    return thread_id
+
+
+def _make_artifact_resolver() -> ConnectionResolver:
+    return ConnectionResolver(store=DbConnectionStore())
+
+
+def _transcript_bytes(
+    state: PipelineState,
+    phase: Phase,
+    entry: JsonDict,
+    *,
+    attempt: int,
+    status: str,
+) -> bytes:
+    """Render a deterministic, human-readable record from checkpointed state."""
+
+    dialogue = [item for item in state.get("dialogue") or [] if item.get("phase") == phase.value]
+    document = {
+        "schema_version": EVENT_SCHEMA_VERSION,
+        "phase": phase.value,
+        "attempt": attempt,
+        "status": status,
+        "summary": entry.get("summary"),
+        "reasoning_digest": entry.get("reasoning_digest"),
+        "resolved_prompt": entry.get("resolved_prompt"),
+        "approvals": entry.get("approvals") or [],
+        "tool_calls": entry.get("tool_calls") or [],
+        "warnings": entry.get("warnings") or [],
+        "errors": entry.get("errors") or [],
+        "dialogue": dialogue,
+    }
+    return (
+        "APEX phase transcript\n"
+        + json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+
+
+async def _persist_transcript(
+    state: PipelineState,
+    phase: Phase,
+    entry: JsonDict,
+    config: RunnableConfig,
+    *,
+    attempt: int,
+    status: str,
+) -> tuple[StoredArtifact, str]:
+    cfg = PipelineConfigurable.from_config(config)
+    key = transcript_artifact_key(_thread_id(config), phase.value, attempt)
+    resolver = _make_artifact_resolver()
+    try:
+        store, connection_id = await resolver.resolve_with_connection_id(
+            PortKind.ARTIFACT_STORE,
+            connection_id=cfg.connections.get(PortKind.ARTIFACT_STORE.value),
+            project_id=cfg.project_id,
+        )
+        stored = await store.put(
+            key,
+            _transcript_bytes(state, phase, entry, attempt=attempt, status=status),
+            content_type="text/plain; charset=utf-8",
+        )
+        return stored, connection_id
+    finally:
+        await resolver.close()
 
 
 def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
@@ -442,20 +517,22 @@ def _make_prompt_gate(phase: Phase):
                 update["run_aborted"] = True
                 return Command(goto="finalize", update=update)
             error = decision.get("error") or "unsupported action"
-        warning = f"prompt review loop cap ({MAX_GATE_LOOPS}) reached; proceeding with last prompt"
+        error = (
+            f"prompt review loop cap ({MAX_GATE_LOOPS}) reached without an explicit "
+            "terminal decision"
+        )
         update = _phase_update(
             phase,
             attempt,
-            resolved_prompt=_resolved_prompt_from_review(review),
-            resolved_prompt_source=source,
-            warnings=[warning],
+            status=PhaseStatus.FAILED.value,
+            errors=[error],
         )
         update.update(_prompt_review_update(phase, review))
         if review.get("application") != original_application:
             update.update(
                 _application_review_update(cfg, review.get("application"), source, config)
             )
-        return Command(goto="agent", update=update)
+        return Command(goto="finalize", update=update)
 
     return prompt_gate
 
@@ -472,19 +549,23 @@ def _script_scenario_load_test_spec(
     "load_test" configurable dict so demos and tests can shrink vusers/duration.
     """
     configurable = dict((config or {}).get("configurable") or {})
-    thread_id = str(configurable.get("thread_id") or "no-thread")
+    thread_id = _thread_id(config)
     overrides = configurable.get("load_test")
     overrides = dict(overrides) if isinstance(overrides, dict) else {}
     title = state.get("title") or "untitled run"
     spec = LoadTestSpec(
         idempotency_key=f"{thread_id}-execution-a{attempt}",
         title=f"{title} load test",
-        script_refs=[f"stub://scripts/{thread_id}/script_scenario-a{attempt}.jmx"],
+        # No fake remote id: APEX Load generates its default inline workload,
+        # while LoadRunner uses the selected connection's configured test_id.
+        script_refs=[],
         vusers=int(overrides.get("vusers") or 10),
         ramp_s=float(overrides.get("ramp_s") or 1.0),
         duration_s=float(overrides.get("duration_s") or 2.0),
         slas={"p95_ms": 500.0, "error_rate": 0.05},
-        target_environment=PipelineConfigurable.from_config(config).environment_id,
+        # Preview only. The execution reserve node re-resolves environment_id
+        # after assistant config merging and checkpoints the approved target.
+        target_environment=None,
     )
     return spec.model_dump(mode="json")
 
@@ -588,9 +669,19 @@ def _compose_system(resolved: JsonDict) -> str:
 
 def _context_packets_block(state: PipelineState) -> str:
     packets = state.get("context_packets") or []
-    remaining = get_settings().documents.max_context_chars_total
+    settings = get_settings()
+    document_budget = settings.documents.max_context_chars_total
+    runs = getattr(settings, "runs", None)
+    run_budget = getattr(runs, "max_context_chars_total", document_budget)
+    remaining = min(document_budget, run_budget)
+    prefix = "=== CONTEXT / EVIDENCE ===\n"
+    remaining -= len(prefix)
+    if remaining <= 0:
+        return prefix[: min(len(prefix), min(document_budget, run_budget))]
     sections: list[str] = []
     for packet in packets:
+        if remaining <= 0:
+            break
         if not isinstance(packet, dict):
             continue
         title = str(packet.get("title") or packet.get("source") or "evidence")
@@ -602,15 +693,32 @@ def _context_packets_block(state: PipelineState) -> str:
         if ref:
             header += f" ({ref})"
         text = str(packet.get("text") or "").strip()
-        if text and remaining > 0:
-            if len(text) > remaining:
-                text = text[:remaining].rstrip() + "\n…[truncated]"
-            remaining -= len(text)
-            header += "\n" + _fence(text)
-        sections.append(header)
+        separator_cost = 1 if sections else 0
+        available = remaining - separator_cost
+        if available <= 0:
+            break
+        section = header
+        if text:
+            framing = len(header) + len('\n"""\n') + len('\n"""')
+            text_budget = max(0, available - framing)
+            if len(text) > text_budget:
+                marker = "…[truncated]"
+                if text_budget >= len(marker):
+                    text = text[: text_budget - len(marker)].rstrip() + marker
+                else:
+                    text = text[:text_budget]
+            section = header + "\n" + _fence(text)
+        if len(section) > available:
+            marker = "…[truncated]"
+            if available >= len(marker):
+                section = section[: available - len(marker)].rstrip() + marker
+            else:
+                section = section[:available]
+        sections.append(section)
+        remaining -= separator_cost + len(section)
     if not sections:
         return ""
-    return "=== CONTEXT / EVIDENCE ===\n" + "\n".join(sections)
+    return prefix + "\n".join(sections)
 
 
 def _fence(text: str) -> str:
@@ -706,6 +814,7 @@ def _llm_agent_body(
         _review, resolved = _review_source_for_phase(state, phase, cfg)
     system_text = _compose_system(resolved)
     user_text = _compose_user(state, phase, resolved, entry)
+    validate_rendered_model_input(system_text, user_text, settings=settings)
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -892,26 +1001,27 @@ def _make_output_gate(phase: Phase):
             if action == "revise":
                 instructions = str(decision.get("instructions") or "")
                 if revise_count >= cfg.limits.max_revise_loops:
-                    warning = (
+                    error = (
                         f"max_revise_loops ({cfg.limits.max_revise_loops}) reached; "
-                        "proceeding as approve"
+                        "choose approve or abort explicitly"
                     )
-                    update = _phase_update(
-                        phase,
-                        attempt,
-                        warnings=[warning],
-                        approvals=[
-                            make_approval(
-                                phase,
-                                attempt,
-                                "phase_review",
-                                "approve",
-                                config,
-                                warning,
-                            )
-                        ],
-                    )
-                    return Command(goto="finalize", update={**update, **extra})
+                    continue
+                revision_fields: JsonDict = {}
+                target = "agent"
+                if phase is Phase.EXECUTION:
+                    # Engine artifacts and normalized KPIs already exist. A report
+                    # wording revision must not traverse reserve/start/poll again.
+                    target = "open_output_gate"
+                    revision_fields = {
+                        "summary": (
+                            f"{summary or 'Execution results'} | analysis revised per: "
+                            f"{instructions or '(no instructions supplied)'}"
+                        ),
+                        "reasoning_digest": (
+                            "Execution analysis revision only; the external load run "
+                            "was not restarted."
+                        ),
+                    }
                 update = _phase_update(
                     phase,
                     attempt,
@@ -928,8 +1038,9 @@ def _make_output_gate(phase: Phase):
                             instructions,
                         )
                     ],
+                    **revision_fields,
                 )
-                return Command(goto="agent", update={**update, **extra})
+                return Command(goto=target, update={**update, **extra})
             if action == "discuss":
                 message = str(decision.get("message") or "")
                 operator_turns = sum(
@@ -964,12 +1075,12 @@ def _make_output_gate(phase: Phase):
                 update["run_aborted"] = True
                 return Command(goto="finalize", update={**update, **extra})
             error = decision.get("error") or "unsupported action"
-        warning = "phase review loop cap reached; proceeding as approve"
+        error = "phase review loop cap reached without an explicit terminal decision"
         update = _phase_update(
             phase,
             attempt,
-            warnings=[warning],
-            approvals=[make_approval(phase, attempt, "phase_review", "approve", config, warning)],
+            status=PhaseStatus.FAILED.value,
+            errors=[error],
         )
         extra = {"dialogue": new_dialogue} if new_dialogue else {}
         return Command(goto="finalize", update={**update, **extra})
@@ -990,14 +1101,37 @@ def _make_finalize(phase: Phase):
         if started_at:
             delta = datetime.fromisoformat(ended_at) - datetime.fromisoformat(started_at)
             duration_s = delta.total_seconds()
-        transcript = ArtifactRef(
-            id=f"{phase.value}-a{attempt}-transcript",
-            kind="transcript",
-            name=f"{phase.value} transcript (attempt {attempt})",
-            uri=f"memory://transcripts/{_thread_id(config)}/{phase.value}/attempt-{attempt}",
-            media_type="text/plain",
-            summary=entry.get("reasoning_digest"),
-        ).model_dump(mode="json")
+        transcript: JsonDict | None = None
+        transcript_warning: str | None = None
+        try:
+            stored, artifact_connection_id = asyncio.run(
+                _persist_transcript(
+                    state,
+                    phase,
+                    entry,
+                    config,
+                    attempt=attempt,
+                    status=str(status),
+                )
+            )
+            transcript = ArtifactRef(
+                id=f"{phase.value}-a{attempt}-transcript",
+                kind="transcript",
+                name=f"{phase.value} transcript (attempt {attempt})",
+                uri=stored.uri,
+                key=stored.key,
+                artifact_connection_id=artifact_connection_id,
+                media_type="text/plain",
+                summary=entry.get("reasoning_digest"),
+            ).model_dump(mode="json")
+        except Exception:  # noqa: BLE001 - terminal phase state is authoritative
+            transcript_warning = "phase transcript persistence failed"
+            logger.warning(
+                "pipeline.transcript_persistence_failed",
+                phase=phase.value,
+                attempt=attempt,
+                exc_info=True,
+            )
         emit_event(
             {
                 "schema_version": EVENT_SCHEMA_VERSION,
@@ -1008,7 +1142,7 @@ def _make_finalize(phase: Phase):
             }
         )
         # Usage analytics (M6): best-effort, never fails the run.
-        usage_events.record_phase_usage_sync(phase.value, str(status), config)
+        usage_events.record_phase_usage_sync(phase.value, str(status), config, attempt=attempt)
         usage_metadata = entry.get("usage_metadata")
         recorded_model = entry.get("model")
         usage_events.record_agent_event_sync(
@@ -1021,16 +1155,21 @@ def _make_finalize(phase: Phase):
             agent_name=f"{phase.value}.worker",
             model=recorded_model if isinstance(recorded_model, str) else None,
         )
+        warnings = list(entry.get("warnings") or [])
+        if transcript_warning is not None:
+            warnings.append(transcript_warning)
         update = _phase_update(
             phase,
             attempt,
             status=status,
             ended_at=ended_at,
             duration_s=duration_s,
-            artifact_ids=[transcript["id"]],
+            artifact_ids=[transcript["id"]] if transcript is not None else [],
             transcript_ref=transcript,
+            warnings=warnings,
         )
-        update["artifacts"] = [transcript]
+        if transcript is not None:
+            update["artifacts"] = [transcript]
         return update
 
     return finalize
@@ -1049,9 +1188,12 @@ def make_phase_subgraph(phase: Phase) -> CompiledStateGraph[PipelineState, Any, 
     builder.add_node("open_prompt_gate", _make_open_prompt_gate(phase))
     builder.add_node("prompt_gate", _make_prompt_gate(phase), destinations=("agent", "finalize"))
     builder.add_node("open_output_gate", _make_open_output_gate(phase))
-    builder.add_node("output_gate", _make_output_gate(phase), destinations=("agent", "finalize"))
+    builder.add_node(
+        "output_gate",
+        _make_output_gate(phase),
+        destinations=("agent", "open_output_gate", "finalize"),
+    )
     builder.add_node("finalize", _make_finalize(phase))
-    builder.add_edge(START, "prepare")
     builder.add_conditional_edges(
         "prepare", _make_route_after_prepare(phase), ["open_prompt_gate", "finalize"]
     )
@@ -1059,10 +1201,19 @@ def make_phase_subgraph(phase: Phase) -> CompiledStateGraph[PipelineState, Any, 
     if phase is Phase.EXECUTION:
         # Imported lazily: execution_phase imports helpers from this module, so a
         # top-level import here would be circular.
-        from apex.graphs.pipeline.execution_phase import add_execution_engine_nodes
+        from apex.graphs.pipeline.execution_phase import (
+            add_execution_engine_nodes,
+            route_execution_entry,
+        )
 
         add_execution_engine_nodes(builder)
+        builder.add_conditional_edges(
+            START,
+            route_execution_entry,
+            ["prepare", "engine_cleanup"],
+        )
     else:
+        builder.add_edge(START, "prepare")
         builder.add_node("agent", _make_agent(phase))
         builder.add_edge("agent", "open_output_gate")
     builder.add_edge("open_output_gate", "output_gate")

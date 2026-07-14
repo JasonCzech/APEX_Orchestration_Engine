@@ -14,6 +14,7 @@
       "name": "staging-2",
       "kind": "vm",
       "base_url": "https://checkout.staging2.local",
+      "options": {"_apex_trusted_private_host": true},
       "hosts": [
         { "hostname": "checkout-app-01.staging2.local", "role": "app" },
         { "hostname": "checkout-db-01.staging2.local", "role": "db" }
@@ -29,9 +30,10 @@
         "endpoint": "localhost:9000",
         "bucket": "apex-artifacts",
         "secure": false,
-        "access_key": "apex"
+        "access_key": "apex",
+        "_apex_trusted_private_host": true
       },
-      "secret_ref": "env:APEX_MINIO_SECRET_KEY"
+      "secret_ref": "env:APEX_INTEGRATION_MINIO_SECRET_KEY"
     }
   ],
   "admin": {

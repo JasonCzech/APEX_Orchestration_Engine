@@ -1,11 +1,10 @@
 /**
  * Approvals inbox data layer (plan UX 2.b).
  *
- * Reuses usePipelines — the same 15s visibility-aware poll on
- * queryKeys.pipelines.list — with a fixed `{status: 'interrupted', limit: 100}`
- * filter, then derives the gate queue client-side from `pending_gate`. Because
- * the Sidebar badge and the inbox page both call this hook with the same
- * constant filter, react-query dedupes them onto ONE cache entry / ONE poll.
+ * Uses the pipelines list cache family and the same 15s visibility-aware poll,
+ * but walks every 100-row page before publishing the snapshot. Because the
+ * Sidebar badge and inbox page use the same key, React Query dedupes them onto
+ * one paginated scan/poll.
  *
  * Also tracks rows that vanish between polls ("actioned elsewhere"): a row
  * present in the previous successful response but missing from the latest one
@@ -14,18 +13,68 @@
  */
 import { useRef } from 'react'
 
-import type { PendingGate } from '@/api/hooks/usePipelines'
-import { usePipelines } from '@/api/hooks/usePipelines'
+import { useQuery } from '@tanstack/react-query'
+
+import { getApexClient } from '@/api/apexClient'
+import { ApiError, errorMessageOf } from '@/api/errors'
+import {
+  PIPELINES_POLL_INTERVAL_MS,
+  type PendingGate,
+  type PipelineListResponse,
+  type PipelineSummary,
+} from '@/api/hooks/usePipelines'
+import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 import { formatRelative } from '@/utils/time'
 
 /** A gate older than this pulses amber in the queue + sidebar badge. */
 export const STALE_GATE_MS = 15 * 60_000
 
-/** Single page scan — the backend caps limit at 100 (runs ROUTES.md contract). */
+/** Backend page cap (runs ROUTES.md contract). */
 const INBOX_SCAN_LIMIT = 100
 
 /** Fixed filter — keep referentially stable semantics for query-key dedupe. */
 const INBOX_FILTER = { status: 'interrupted' as const, limit: INBOX_SCAN_LIMIT }
+
+async function fetchAllInterruptedPipelines(): Promise<PipelineListResponse> {
+  const items: PipelineSummary[] = []
+  const seen = new Set<string>()
+  let offset = 0
+
+  for (;;) {
+    const { data, error, response } = await getApexClient().GET('/v1/pipelines', {
+      params: {
+        query: { status: INBOX_FILTER.status, limit: INBOX_SCAN_LIMIT, offset },
+      },
+    })
+    if (!response.ok || !data) {
+      throw new ApiError(
+        response.status,
+        errorMessageOf(error, `Approvals request failed (${response.status})`),
+        error,
+      )
+    }
+
+    const page = data as PipelineListResponse
+    let added = 0
+    for (const row of page.items) {
+      if (seen.has(row.thread_id)) continue
+      seen.add(row.thread_id)
+      items.push(row)
+      added += 1
+    }
+
+    offset += page.items.length
+    const total = page.total
+    if (
+      page.items.length < INBOX_SCAN_LIMIT ||
+      page.items.length === 0 ||
+      added === 0 ||
+      (total !== undefined && offset >= total)
+    ) {
+      return { items, limit: INBOX_SCAN_LIMIT, offset: 0, ...(total !== undefined ? { total } : {}) }
+    }
+  }
+}
 
 export interface ApprovalItem {
   thread_id: string
@@ -78,9 +127,15 @@ function toItem(
 }
 
 export function useApprovalsInbox(): ApprovalsInboxResult {
-  const query = usePipelines(INBOX_FILTER)
+  const query = useQuery({
+    queryKey: queryKeys.pipelines.list(INBOX_FILTER),
+    queryFn: fetchAllInterruptedPipelines,
+    staleTime: STALE_TIMES.pipelinesList,
+    refetchInterval: PIPELINES_POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+  })
 
-  // Derivations are cheap (≤100 rows); recompute per render so ages stay
+  // Derivations are cheap; recompute per render so ages stay
   // current without extra timers. Sorting: oldest updated_at first (nulls
   // last) — the longest-waiting gate is the queue head.
   const now = Date.now()

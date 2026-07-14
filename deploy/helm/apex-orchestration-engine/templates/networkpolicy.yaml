@@ -15,10 +15,23 @@ spec:
   ingress:
     - ports:
         {{- toYaml .Values.networkPolicy.ingress.ports | nindent 8 }}
-      {{- with .Values.networkPolicy.ingress.from }}
       from:
+        {{- if .Values.dashboard.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "apex.dashboard.selectorLabels" . | nindent 14 }}
+        {{- end }}
+        {{- if .Values.tests.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "apex.test.selectorLabels" . | nindent 14 }}
+        {{- end }}
+        {{- with .Values.networkPolicy.ingress.from }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+        {{- if and (not .Values.dashboard.enabled) (not .Values.tests.enabled) (not .Values.networkPolicy.ingress.from) }}
+        []
+        {{- end }}
   egress:
     {{- if .Values.networkPolicy.egress.allowAll }}
     - {}
@@ -36,4 +49,33 @@ spec:
         {{- toYaml . | nindent 8 }}
     {{- end }}
     {{- end }}
+{{- end }}
+
+{{- if and .Values.networkPolicy.enabled .Values.tests.enabled }}
+---
+# The Helm test is deliberately not selected by the server policy above. Give
+# the ephemeral pod only DNS plus access to this release's server target port,
+# so the smoke check also works in namespaces with a default-deny egress policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "apex.fullname" . }}-helm-test
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "apex.test.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "apex.selectorLabels" . | nindent 14 }}
+      ports:
+        - { port: {{ .Values.containerPort }}, protocol: TCP }
 {{- end }}

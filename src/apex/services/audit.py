@@ -101,9 +101,12 @@ class AuditService:
     async def append(self, event: AuditEvent) -> AuditLog:
         await self._lock_chain()
         event = _materialize_event(event)
-        previous_hash = await self._previous_hash()
+        head = await self._chain_head()
+        chain_seq = (head.chain_seq + 1) if head is not None else 1
+        previous_hash = head.event_hash if head is not None else None
         event_hash = _event_hash(event, previous_hash)
         row = AuditLog(
+            chain_seq=chain_seq,
             at=event.at,
             category=event.category,
             action=event.action,
@@ -131,8 +134,8 @@ class AuditService:
         await self._session.refresh(row)
         return row
 
-    async def _previous_hash(self) -> str | None:
-        stmt = select(AuditLog.event_hash).order_by(desc(AuditLog.at), desc(AuditLog.id)).limit(1)
+    async def _chain_head(self) -> AuditLog | None:
+        stmt = select(AuditLog).order_by(desc(AuditLog.chain_seq)).limit(1)
         return await self._session.scalar(stmt)
 
     async def _lock_chain(self) -> None:
@@ -145,11 +148,23 @@ class AuditService:
     async def verify_chain(self, *, allow_truncated: bool = False) -> AuditChainVerification:
         rows = await self._rows()
         previous_hash: str | None = None
+        expected_chain_seq = 1
         if allow_truncated and rows:
             previous_hash = rows[0].previous_hash
+            expected_chain_seq = rows[0].chain_seq
         checked = 0
         for row in rows:
             checked += 1
+            if row.chain_seq != expected_chain_seq:
+                return AuditChainVerification(
+                    ok=False,
+                    checked=checked,
+                    first_error=(
+                        f"row {row.id} chain_seq mismatch: expected "
+                        f"{expected_chain_seq}, found {row.chain_seq}"
+                    ),
+                    last_hash=previous_hash,
+                )
             if row.previous_hash != previous_hash:
                 return AuditChainVerification(
                     ok=False,
@@ -169,6 +184,7 @@ class AuditService:
                     last_hash=previous_hash,
                 )
             previous_hash = row.event_hash
+            expected_chain_seq += 1
         return AuditChainVerification(ok=True, checked=checked, last_hash=previous_hash)
 
     async def export_jsonl(self) -> str:
@@ -201,7 +217,7 @@ class AuditService:
         return len(ids)
 
     async def _rows(self) -> list[AuditLog]:
-        result = await self._session.scalars(select(AuditLog).order_by(AuditLog.at, AuditLog.id))
+        result = await self._session.scalars(select(AuditLog).order_by(AuditLog.chain_seq))
         return list(result)
 
 
@@ -276,7 +292,7 @@ def _event_hash(event: AuditEvent, previous_hash: str | None) -> str:
 def _materialize_event(event: AuditEvent) -> AuditEvent:
     return replace(
         event,
-        at=datetime.now(UTC),
+        at=event.at or datetime.now(UTC),
         event_nonce=secrets.token_hex(8),
     )
 
@@ -308,6 +324,7 @@ def _event_from_row(row: AuditLog) -> AuditEvent:
 def _row_dict(row: AuditLog) -> dict[str, Any]:
     return {
         "id": row.id,
+        "chain_seq": row.chain_seq,
         "at": _jsonable(row.at),
         "category": row.category,
         "action": row.action,
@@ -335,6 +352,8 @@ def _row_dict(row: AuditLog) -> dict[str, Any]:
 def _row_cef(row: AuditLog) -> str:
     fields = {
         "rt": _jsonable(row.at),
+        "cn1Label": "chain_seq",
+        "cn1": row.chain_seq,
         "suser": row.principal_id,
         "spriv": row.principal_role,
         "requestMethod": row.request_method,

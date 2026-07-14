@@ -8,10 +8,15 @@
  *  - Connection: runtime-config origins (read-only) + live connectivity dot.
  *  - About: system name/version/environment + the validated consumer identity.
  */
-import { useState, useSyncExternalStore, type FormEvent } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 
 import { useAuth } from '@/auth/AuthProvider'
-import { getApiKey, setApiKey, subscribeApiKey } from '@/auth/keyStorage'
+import {
+  getApiKey,
+  getApiKeyRevision,
+  setApiKey,
+  subscribeApiKey,
+} from '@/auth/keyStorage'
 import { getRuntimeConfig, resolveApexBaseUrl } from '@/config/runtimeConfig'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { THEME_LABELS, useTheme, type ThemeName } from '@/theme/useTheme'
@@ -84,6 +89,14 @@ function ApiKeySection() {
   const storedKey = useSyncExternalStore(subscribeApiKey, getApiKey)
   const [draft, setDraft] = useState('')
   const [state, setState] = useState<ReplaceState>({ kind: 'idle' })
+  const validationRef = useRef<AbortController | null>(null)
+
+  useEffect(
+    () => () => {
+      validationRef.current?.abort()
+    },
+    [],
+  )
 
   const validating = state.kind === 'validating'
   const canSubmit = draft.trim() !== '' && !validating
@@ -92,12 +105,19 @@ function ApiKeySection() {
     event.preventDefault()
     const candidate = draft.trim()
     if (!candidate) return
+    validationRef.current?.abort()
+    const controller = new AbortController()
+    const authRevision = getApiKeyRevision()
+    validationRef.current = controller
     setState({ kind: 'validating' })
     try {
       // Validate BEFORE persisting: the active session must survive a typo.
       const response = await fetch(`${resolveApexBaseUrl()}/v1/system/info`, {
         headers: { 'x-api-key': candidate },
+        signal: controller.signal,
       })
+      // Sign-out or any other credential transition invalidates this result.
+      if (controller.signal.aborted || authRevision !== getApiKeyRevision()) return
       if (!response.ok) {
         setState({
           kind: 'error',
@@ -112,8 +132,16 @@ function ApiKeySection() {
       setDraft('')
       setState({ kind: 'saved' })
     } catch {
+      if (controller.signal.aborted || authRevision !== getApiKeyRevision()) return
       setState({ kind: 'error', message: 'Unable to reach the APEX API — the stored key is unchanged.' })
+    } finally {
+      if (validationRef.current === controller) validationRef.current = null
     }
+  }
+
+  function handleSignOut() {
+    validationRef.current?.abort()
+    signOut()
   }
 
   return (
@@ -156,7 +184,7 @@ function ApiKeySection() {
         </p>
       )}
       <div className="settings-signout-row">
-        <button type="button" className="btn btn-danger btn-sm" onClick={signOut}>
+        <button type="button" className="btn btn-danger btn-sm" onClick={handleSignOut}>
           Sign out
         </button>
         <span className="settings-hint">Clears the stored key and returns to the key gate.</span>

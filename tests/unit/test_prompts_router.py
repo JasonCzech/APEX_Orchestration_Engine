@@ -12,15 +12,19 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from apex.app.dependencies import get_current_identity
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
+from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.routers.prompts import get_catalog, router
 from apex.services.prompts import PromptCatalogService
 from tests.unit.test_prompts_service import FakePromptRepository
 
 
-def identity(role: Role) -> ConsumerIdentity:
+def identity(role: Role, scopes: list[ScopeRef] | None = None) -> ConsumerIdentity:
     return ConsumerIdentity(
-        consumer_id="c1", name="tester", consumer_type=ConsumerType.INTERNAL, role=role
+        consumer_id="c1",
+        name="tester",
+        consumer_type=ConsumerType.INTERNAL,
+        role=role,
+        scopes=scopes or [],
     )
 
 
@@ -35,7 +39,7 @@ def app(repo: FakePromptRepository) -> FastAPI:
     app.include_router(router, prefix="/v1")
     service = PromptCatalogService(repo)
     app.dependency_overrides[get_catalog] = lambda: service
-    app.dependency_overrides[get_current_identity] = lambda: identity(Role.OPERATOR)
+    app.dependency_overrides[get_current_identity] = lambda: identity(Role.ADMIN)
     return app
 
 
@@ -166,6 +170,81 @@ def test_viewer_can_read_but_not_mutate(app: FastAPI) -> None:
         assert client.post("/v1/prompts/x/test", json={}).status_code == 403
 
 
+@pytest.mark.parametrize("role", [Role.OPERATOR, Role.ADMIN])
+def test_scoped_identity_cannot_mutate_global_prompt_catalog(app: FastAPI, role: Role) -> None:
+    app.dependency_overrides[get_current_identity] = lambda: identity(
+        role, [ScopeRef(project_id="p1", app_id="a1")]
+    )
+    body = {"namespace": "n", "key": "k", "content": "c"}
+    with TestClient(app) as client:
+        assert client.get("/v1/prompts").status_code == 200
+        assert client.post("/v1/prompts", json=body).status_code == 403
+        assert client.post("/v1/prompts/x/versions", json={"content": "c"}).status_code == 403
+        assert client.post("/v1/prompts/x/rollback", json={"version_id": "v"}).status_code == 403
+        assert client.post("/v1/prompts/x/archive").status_code == 403
+        assert client.post("/v1/prompts/x/unarchive").status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("role", "scopes"),
+    [
+        (Role.VIEWER, []),
+        (Role.OPERATOR, []),
+        (Role.VIEWER, [ScopeRef(project_id="p1", app_id="a1")]),
+        (Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")]),
+        (Role.ADMIN, [ScopeRef(project_id="p1", app_id="a1")]),
+    ],
+)
+def test_application_prompt_catalog_reads_are_hidden_from_non_platform_admins(
+    client: TestClient,
+    app: FastAPI,
+    role: Role,
+    scopes: list[ScopeRef],
+) -> None:
+    phase = create_prompt(client, key="story_analysis/system")
+    application = create_prompt(
+        client,
+        namespace="application",
+        key="a1",
+        content="application-only requirements",
+    )
+    version_id = application["active_version"]["id"]
+    app.dependency_overrides[get_current_identity] = lambda: identity(role, scopes)
+
+    listed = client.get("/v1/prompts")
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [phase["id"]]
+    assert client.get("/v1/prompts", params={"namespace": "application"}).json() == []
+    assert client.get(f"/v1/prompts/{application['id']}").status_code == 404
+    assert client.get(f"/v1/prompts/{application['id']}/versions").status_code == 404
+    assert client.get(f"/v1/prompts/{application['id']}/versions/{version_id}").status_code == 404
+
+    # Deployment-global phase templates retain the existing authenticated-read policy.
+    assert client.get(f"/v1/prompts/{phase['id']}").status_code == 200
+    assert client.get(f"/v1/prompts/{phase['id']}/versions").status_code == 200
+
+
+def test_unscoped_platform_admin_can_read_application_prompt_catalog(
+    client: TestClient,
+) -> None:
+    application = create_prompt(
+        client,
+        namespace="application",
+        key="a1",
+        content="application-only requirements",
+    )
+    version_id = application["active_version"]["id"]
+
+    listed = client.get("/v1/prompts", params={"namespace": "application"})
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [application["id"]]
+    assert client.get(f"/v1/prompts/{application['id']}").status_code == 200
+    assert client.get(f"/v1/prompts/{application['id']}/versions").status_code == 200
+    version = client.get(f"/v1/prompts/{application['id']}/versions/{version_id}")
+    assert version.status_code == 200
+    assert version.json()["content"] == "application-only requirements"
+
+
 class FakeRuns:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -212,6 +291,25 @@ def test_test_prompt_creates_stateless_playground_run(
     assert call["on_completion"] == "keep"
 
 
+def test_test_prompt_rejects_render_amplification_before_run_creation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeLoopbackClient()
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    created = create_prompt(client)
+
+    response = client.post(
+        f"/v1/prompts/{created['id']}/test",
+        json={
+            "content": "{value}" * 1_000,
+            "sample_input": {"value": "x" * 100},
+        },
+    )
+
+    assert response.status_code == 422
+    assert fake.runs.calls == []
+
+
 def test_test_prompt_with_explicit_content_and_version(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,6 +330,30 @@ def test_test_prompt_with_explicit_content_and_version(
     response = client.post(f"/v1/prompts/{created['id']}/test", json={"version_id": "nope"})
     assert response.status_code == 404
     assert client.post("/v1/prompts/nope/test", json={}).status_code == 404
+
+
+def test_scoped_operator_cannot_test_application_catalog_prompt(
+    client: TestClient,
+    app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeLoopbackClient()
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    application = create_prompt(
+        client,
+        namespace="application",
+        key="a1",
+        content="application-only requirements",
+    )
+    app.dependency_overrides[get_current_identity] = lambda: identity(
+        Role.OPERATOR,
+        [ScopeRef(project_id="p1", app_id="a1")],
+    )
+
+    response = client.post(f"/v1/prompts/{application['id']}/test", json={})
+
+    assert response.status_code == 404
+    assert fake.runs.calls == []
 
 
 def test_test_prompt_maps_loopback_failure_to_502(

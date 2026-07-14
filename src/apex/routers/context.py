@@ -14,8 +14,26 @@ from pydantic import BaseModel, Field
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
+from apex.persistence.repositories.documents import DocumentsRepository
+from apex.routers.work_tracking import (
+    resolve_scoped_work_tracking_adapter,
+    select_work_tracking_project,
+)
+from apex.services.connections import ConnectionResolver
 from apex.services.context import collect_context_evidence, start_context_summary
+from apex.services.documents import (
+    DocumentContextNotFoundError,
+    get_documents_repository,
+    uploaded_document_context_packets,
+)
 from apex.services.langgraph_client import loopback_client
+from apex.services.run_validation import (
+    MAX_WORK_ITEM_KEY_CHARS,
+    MAX_WORK_ITEM_KEYS_HARD,
+    validate_context_run_input,
+)
+from apex.services.work_tracking import get_work_tracking_resolver
+from apex.settings import get_settings
 
 router = APIRouter(prefix="/context", tags=["context"])
 
@@ -35,6 +53,8 @@ def _loopback_client_after_scope(request: Request) -> Any:
 
 LoopbackClient = Annotated[Any, Depends(get_loopback_client)]
 OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
+WorkTrackingResolver = Annotated[ConnectionResolver, Depends(get_work_tracking_resolver)]
+DocumentsRepo = Annotated[DocumentsRepository, Depends(get_documents_repository)]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -42,9 +62,13 @@ OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATO
 
 class ContextSummaryRequest(BaseModel):
     subject: str = Field(min_length=1, max_length=2000)
-    work_item_keys: list[str] = Field(default_factory=list)
-    document_ids: list[str] = Field(default_factory=list)
-    project_id: str | None = None
+    work_item_keys: list[
+        Annotated[str, Field(min_length=1, max_length=MAX_WORK_ITEM_KEY_CHARS)]
+    ] = Field(default_factory=list, max_length=MAX_WORK_ITEM_KEYS_HARD)
+    document_ids: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(
+        default_factory=list, max_length=64
+    )
+    project_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class ContextSummaryAccepted(BaseModel):
@@ -69,16 +93,67 @@ class EvidencePacket(BaseModel):
 
 @router.post("/summaries", operation_id="createContextSummary", status_code=202)
 async def create_context_summary(
-    body: ContextSummaryRequest, identity: OperatorIdentity, request: Request
+    body: ContextSummaryRequest,
+    identity: OperatorIdentity,
+    request: Request,
+    resolver: WorkTrackingResolver,
+    documents: DocumentsRepo,
 ) -> ContextSummaryAccepted:
-    ensure_scope(identity, project_id=body.project_id)
+    selected_project = select_work_tracking_project(identity, body.project_id)
+    limits = get_settings().runs
+    if len(body.document_ids) > limits.max_context_packets:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"document_ids exceeds the deployment limit ({limits.max_context_packets})"),
+        )
+    if len(set(body.document_ids)) != len(body.document_ids):
+        raise HTTPException(status_code=422, detail="document_ids must not contain duplicates")
+    try:
+        validated = validate_context_run_input(
+            {
+                "subject": body.subject,
+                "work_item_keys": body.work_item_keys,
+                "document_packets": [],
+                "project_id": selected_project,
+            }
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if validated.work_item_keys:
+        # The graph fetches keys outside the HTTP dependency chain. Prove here
+        # that its resolved real-provider adapter is bound to the caller's project.
+        await resolve_scoped_work_tracking_adapter(
+            resolver,
+            identity,
+            project=selected_project,
+        )
+    try:
+        document_packets = await uploaded_document_context_packets(
+            documents, identity, body.document_ids
+        )
+    except DocumentContextNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        validated = validate_context_run_input(
+            {
+                "subject": validated.subject,
+                "work_item_keys": validated.work_item_keys,
+                "document_packets": document_packets,
+                "project_id": validated.project_id,
+            }
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     client = _loopback_client_after_scope(request)
     result = await start_context_summary(
         client,
-        subject=body.subject,
-        work_item_keys=body.work_item_keys,
-        document_ids=body.document_ids,
-        project_id=body.project_id,
+        subject=validated.subject,
+        work_item_keys=validated.work_item_keys,
+        document_packets=[
+            packet.model_dump(mode="json", exclude_none=True)
+            for packet in validated.document_packets
+        ],
+        project_id=validated.project_id,
     )
     return ContextSummaryAccepted(**result)
 

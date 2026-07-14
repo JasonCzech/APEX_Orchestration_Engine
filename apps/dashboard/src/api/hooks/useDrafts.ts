@@ -10,6 +10,7 @@ export type DraftRead = components['schemas']['DraftRead']
 
 export interface DraftWriteBody {
   title: string
+  project_id?: string | null
   payload: Record<string, unknown>
 }
 
@@ -19,7 +20,7 @@ export interface DraftWriteBody {
  * react-query surface is just the resume-draft list below).
  */
 export async function createDraftRequest(
-  body: DraftWriteBody & { project_id?: string | null },
+  body: DraftWriteBody,
 ): Promise<DraftRead> {
   const { data, error, response } = await getApexClient().POST('/v1/drafts', { body })
   if (!response.ok || !data) {

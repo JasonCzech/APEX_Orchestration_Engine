@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from apex.adapters.network_safety import safe_http_client
+
 _ALLOWED_SCHEMES = ("https", "http")
 
 
@@ -81,13 +83,26 @@ def fetch_results_text(
     request to a host outside the allow-list.
     """
     validate_fetch_url(url, allowed_hosts=allowed_hosts, allow_private=allow_private)
+    if max_bytes < 1:
+        raise FetchError("max_bytes must be >= 1")
     try:
-        with httpx.Client(timeout=timeout_s, follow_redirects=False) as client:
-            response = client.get(url)
-            if response.is_redirect:
-                raise FetchError(f"refusing to follow redirect from {url!r}")
-            response.raise_for_status()
-            content = response.content[:max_bytes]
+        with safe_http_client(
+            timeout=timeout_s,
+            follow_redirects=False,
+            allow_private_hosts=allow_private,
+        ) as client:
+            content = bytearray()
+            with client.stream("GET", url) as response:
+                if response.is_redirect:
+                    raise FetchError(f"refusing to follow redirect from {url!r}")
+                response.raise_for_status()
+                for chunk in response.iter_bytes():
+                    remaining = max_bytes - len(content)
+                    if remaining <= 0:
+                        break
+                    content.extend(chunk[:remaining])
+                    if len(chunk) > remaining:
+                        break
     except httpx.HTTPError as exc:
         raise FetchError(f"failed to fetch {url!r}: {exc}") from exc
-    return content.decode("utf-8", errors="replace")
+    return bytes(content).decode("utf-8", errors="replace")

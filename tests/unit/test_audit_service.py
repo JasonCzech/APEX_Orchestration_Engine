@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from datetime import UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -17,11 +17,11 @@ class FakeAuditSession:
         self.rows: list[Any] = []
         self.executed: list[Any] = []
 
-    async def scalar(self, statement: Any) -> str | None:
-        return self.rows[-1].event_hash if self.rows else None
+    async def scalar(self, statement: Any) -> Any | None:
+        return max(self.rows, key=lambda row: row.chain_seq) if self.rows else None
 
     async def scalars(self, statement: Any) -> list[Any]:
-        return sorted(self.rows, key=lambda row: (row.at, row.id or ""))
+        return sorted(self.rows, key=lambda row: row.chain_seq)
 
     async def execute(self, statement: Any) -> None:
         self.executed.append(statement)
@@ -56,8 +56,8 @@ class ConcurrentAuditSession:
         await self._store.lock.acquire()
         self._locked = True
 
-    async def scalar(self, statement: Any) -> str | None:
-        return self._store.rows[-1].event_hash if self._store.rows else None
+    async def scalar(self, statement: Any) -> Any | None:
+        return max(self._store.rows, key=lambda row: row.chain_seq) if self._store.rows else None
 
     def add(self, row: Any) -> None:
         self._pending = row
@@ -104,8 +104,10 @@ async def test_audit_service_appends_hash_chained_rows() -> None:
     )
 
     assert first.previous_hash is None
+    assert first.chain_seq == 1
     assert len(first.event_hash) == 64
     assert second.previous_hash == first.event_hash
+    assert second.chain_seq == 2
     assert second.event_hash != first.event_hash
     assert first.event_nonce != second.event_nonce
     assert first.at is not None and second.at is not None
@@ -154,12 +156,88 @@ async def test_audit_service_exports_jsonl_and_cef() -> None:
 
     jsonl = await service.export_jsonl()
     assert json.loads(jsonl)["id"] == "r1"
+    assert json.loads(jsonl)["chain_seq"] == 1
     assert json.loads(jsonl)["event_hash"] == row.event_hash
 
     cef = await service.export_cef()
     assert cef.startswith("CEF:0|APEX|Orchestration Engine|1|authz_decision|threads.create|8|")
     assert "outcome=denied" in cef
+    assert "cn1Label=chain_seq cn1=1" in cef
     assert f"cs3={row.event_hash}" in cef
+
+
+@pytest.mark.asyncio
+async def test_audit_chain_uses_sequence_when_clock_moves_backwards() -> None:
+    session = FakeAuditSession()
+    service = AuditService(session)  # type: ignore[arg-type]
+    now = datetime.now(UTC)
+
+    first = await service.append(
+        AuditEvent(
+            category="authz",
+            action="first",
+            decision="allowed",
+            at=now + timedelta(hours=1),
+        )
+    )
+    second = await service.append(
+        AuditEvent(
+            category="authz",
+            action="second",
+            decision="allowed",
+            at=now - timedelta(hours=1),
+        )
+    )
+
+    third = await service.append(
+        AuditEvent(category="authz", action="third", decision="allowed", at=now)
+    )
+
+    assert [row.chain_seq for row in session.rows] == [1, 2, 3]
+    assert second.previous_hash == first.event_hash
+    assert third.previous_hash == second.event_hash
+    assert (await service.verify_chain()).ok is True
+
+
+@pytest.mark.asyncio
+async def test_audit_chain_uses_sequence_when_timestamps_are_equal() -> None:
+    session = FakeAuditSession()
+    service = AuditService(session)  # type: ignore[arg-type]
+    at = datetime.now(UTC)
+
+    first = await service.append(
+        AuditEvent(category="authz", action="first", decision="allowed", at=at)
+    )
+    second = await service.append(
+        AuditEvent(category="authz", action="second", decision="allowed", at=at)
+    )
+    first.id = "z-last-by-id"
+    second.id = "a-first-by-id"
+
+    third = await service.append(
+        AuditEvent(category="authz", action="third", decision="allowed", at=at)
+    )
+
+    assert third.previous_hash == second.event_hash
+    assert json.loads((await service.export_jsonl()).splitlines()[-1])["chain_seq"] == 3
+    assert (await service.verify_chain()).ok is True
+
+
+@pytest.mark.asyncio
+async def test_audit_verification_detects_sequence_gap() -> None:
+    session = FakeAuditSession()
+    service = AuditService(session)  # type: ignore[arg-type]
+    first = await service.append(AuditEvent(category="authz", action="first", decision="allowed"))
+    second = await service.append(AuditEvent(category="authz", action="second", decision="allowed"))
+    first.id = "r1"
+    second.id = "r2"
+    second.chain_seq = 3
+
+    verification = await service.verify_chain()
+
+    assert verification.ok is False
+    assert verification.checked == 2
+    assert verification.first_error == "row r2 chain_seq mismatch: expected 2, found 3"
 
 
 @pytest.mark.asyncio
@@ -204,6 +282,7 @@ async def test_audit_service_serializes_concurrent_identical_events() -> None:
     assert len({row.event_hash for row in store.rows}) == 25
     assert len({row.event_nonce for row in store.rows}) == 25
     assert store.rows[0].previous_hash is None
+    assert [row.chain_seq for row in store.rows] == list(range(1, 26))
     for previous, current in zip(store.rows[:-1], store.rows[1:], strict=True):
         assert current.previous_hash == previous.event_hash
 

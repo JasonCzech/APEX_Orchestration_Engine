@@ -96,7 +96,7 @@ describe('ConsumersPage', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Rotate key…' }))
 
     const confirm = await screen.findByRole('dialog', { name: 'Rotate key for ci-bot' })
-    expect(confirm).toHaveTextContent('revokes the current one immediately')
+    expect(confirm).toHaveTextContent('remains valid for five minutes')
     await user.click(within(confirm).getByRole('button', { name: 'Rotate key' }))
 
     const reveal = await screen.findByRole('dialog', { name: 'API key rotated' })
@@ -104,9 +104,39 @@ describe('ConsumersPage', () => {
       'apex_key_rotated_456',
     )
     expect(rotate.callCount()).toBe(1)
+    expect(rotate.captured).toEqual([{ grace_period_seconds: 300 }])
     expect(
       within(reveal).getByRole('button', { name: 'I’ve stored it' }),
     ).toBeDisabled()
+    expect(
+      within(reveal).queryByRole('button', { name: /Use this key for this dashboard/ }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('recommends switching the dashboard when the current consumer rotates itself', async () => {
+    const rotate = rotateConsumerHandler(CONSUMER_OPS, 'apex_key_self_rotated')
+    server.use(...consumersReadHandlers(), rotate.handler)
+    const user = userEvent.setup()
+    renderList()
+
+    const row = await screen.findByTestId('consumer-row-cons-ops')
+    await user.click(within(row).getByRole('button', { name: 'Consumer actions: Dash Ops' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rotate key…' }))
+    await user.click(
+      within(await screen.findByRole('dialog', { name: 'Rotate key for Dash Ops' })).getByRole(
+        'button',
+        { name: 'Rotate key' },
+      ),
+    )
+
+    const reveal = await screen.findByRole('dialog', { name: 'API key rotated' })
+    expect(reveal).toHaveTextContent('previous key remains valid for five minutes')
+    await user.click(
+      within(reveal).getByRole('button', {
+        name: 'Use this key for this dashboard (recommended)',
+      }),
+    )
+    expect(window.localStorage.getItem('apex.apiKey')).toBe('apex_key_self_rotated')
   })
 
   it("maps the self-delete 409 to an inline 'your own consumer' message", async () => {

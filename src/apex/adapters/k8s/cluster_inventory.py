@@ -2,7 +2,8 @@
 
 Talks to the plain Kubernetes REST API with httpx — no `kubernetes` client
 dependency. Connection options: {"base_url": "https://kube-api.internal:6443",
-"namespace": "staging" | "namespaces": ["staging", "staging-jobs"],
+"namespace": "staging" | "namespaces": ["staging", "staging-jobs"] |
+"environment_namespaces": {"<immutable-environment-id>": "staging"},
 "verify_tls": true, "auth_mode": "bearer" | "in_cluster"}.
 
 Auth modes:
@@ -16,10 +17,10 @@ Auth modes:
   each client rebuild so projected-token rotation is honored. RBAC comes from the
   pod's ServiceAccount (see the Helm chart's workloadIdentity/rbac values).
 
-Namespace precedence (documented contract): options["namespaces"] (list) >
-options["namespace"] (string) > env_ref.name (the catalog environment's name
-doubles as the namespace) > the pod's own namespace file (in_cluster only). No
-namespace anywhere is a ValueError.
+Namespace precedence (documented contract): options["environment_namespaces"]
+looked up by immutable environment id > options["namespaces"] >
+options["namespace"] > the pod's own namespace file (in_cluster only). The
+editable catalog display name is intentionally never an authorization input.
 
 A scan lists deployments, services, and ingresses per namespace. Only
 deployments are representable today: the domain ServiceInfo model carries
@@ -38,6 +39,7 @@ from typing import Any
 import httpx
 
 from apex.adapters.http_resilience import resilient_request
+from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.options import coerce_bool
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import EnvironmentSnapshot, EnvRef, SecretValue, ServiceInfo
@@ -97,11 +99,12 @@ class KubernetesClusterInventoryAdapter:
         if not in_cluster and secret is None:
             raise ValueError(
                 f"kubernetes connection {conn_id!r} requires a bearer ServiceAccount token; "
-                'set secret_ref on the connection (e.g. "env:APEX_K8S_TOKEN"), '
+                'set secret_ref on the connection (e.g. "env:APEX_INTEGRATION_K8S_TOKEN"), '
                 'or set options["auth_mode"]="in_cluster" to use the pod ServiceAccount'
             )
 
         self._base_url = base_url.rstrip("/")
+        self._allow_private_hosts = in_cluster or private_hosts_allowed(options)
         # bearer: static token from the resolved secret. in_cluster: the projected
         # token is read per client rebuild (rotation), unless a secret is supplied.
         self._static_token: str | None = secret.value if secret is not None else None
@@ -135,6 +138,17 @@ class KubernetesClusterInventoryAdapter:
     # ── namespace + client plumbing ───────────────────────────────────────────
 
     def _namespaces_for(self, env_ref: EnvRef) -> list[str]:
+        bindings = self._options.get("environment_namespaces")
+        if bindings is not None:
+            if not isinstance(bindings, dict):
+                raise ValueError("options['environment_namespaces'] must be an object")
+            bound = bindings.get(env_ref.id)
+            if bound is not None:
+                values = bound if isinstance(bound, (list, tuple)) else [bound]
+                namespaces = [str(namespace).strip() for namespace in values]
+                if namespaces and all(namespaces):
+                    return namespaces
+                raise ValueError(f"environment {env_ref.id!r} has an empty namespace binding")
         configured = self._options.get("namespaces")
         if isinstance(configured, str):
             configured = [configured]
@@ -143,17 +157,15 @@ class KubernetesClusterInventoryAdapter:
         single = self._options.get("namespace")
         if single:
             return [str(single)]
-        if env_ref.name:
-            return [env_ref.name]
         if self._in_cluster:
             pod_namespace = _read_file(IN_CLUSTER_NAMESPACE_PATH)
             if pod_namespace:
                 return [pod_namespace]
         raise ValueError(
             f"no namespace configured for environment {env_ref.id!r}: set "
-            "options['namespace'] or options['namespaces'] on the connection, give "
-            "the catalog environment a name to use as the namespace, or (in_cluster) "
-            "mount the pod's serviceaccount namespace file"
+            "options['environment_namespaces'], options['namespace'], or "
+            "options['namespaces'] on the connection, or (in_cluster) mount the "
+            "pod's serviceaccount namespace file"
         )
 
     def _bearer_token(self) -> str:
@@ -172,11 +184,12 @@ class KubernetesClusterInventoryAdapter:
     def _client_for_loop(self) -> httpx.AsyncClient:
         loop = asyncio.get_running_loop()
         if self._client is None or self._client_loop is not loop:
-            self._client = httpx.AsyncClient(
+            self._client = safe_async_http_client(
                 base_url=self._base_url,
                 headers={"Authorization": f"Bearer {self._bearer_token()}"},
                 verify=self._verify,
                 timeout=DEFAULT_TIMEOUT_S,
+                allow_private_hosts=self._allow_private_hosts,
             )
             self._client_loop = loop
         return self._client

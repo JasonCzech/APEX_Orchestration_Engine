@@ -94,6 +94,13 @@ describe('GateModuleView machine states', () => {
     expect(screen.queryByTestId('gate-actions')).not.toBeInTheDocument()
   })
 
+  it('awaiting_agent explains that prompt edits will be re-reviewed', () => {
+    renderState({ tag: 'awaiting_agent', gate: promptGate, action: 'modify' })
+    expect(screen.getByTestId('gate-awaiting')).toHaveTextContent(
+      'Agent working on your prompt edits — the gate will reopen.',
+    )
+  })
+
   it('superseded(conflict) says another operator resumed; View current resets', async () => {
     const user = userEvent.setup()
     const { onViewCurrent } = renderState({ tag: 'superseded', gate: promptGate, by: 'conflict' })

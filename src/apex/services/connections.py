@@ -13,7 +13,11 @@ options["base_url"] for the adapter factory.
 """
 
 import asyncio
+import hashlib
+import json
 import socket
+import threading
+import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,6 +44,8 @@ DENIED_ADAPTER_HOSTS = {
     "metadata.google.internal",
 }
 DENIED_ADAPTER_HOST_SUFFIXES = (".metadata.google.internal",)
+INTERNAL_PROJECT_BINDING_ATTR = "apex_project_id"
+TRUSTED_PRIVATE_HOST_OPTION = "_apex_trusted_private_host"
 
 
 def _throwaway_session_factory():  # noqa: ANN202 — (engine, sessionmaker) pair
@@ -116,6 +122,14 @@ class StoredConnection:
     updated_at: datetime | None
 
 
+@dataclass
+class _LoopCache:
+    """Adapter instances and build locks owned by exactly one event loop."""
+
+    instances: dict[str, tuple[datetime | None, Any]]
+    locks: dict[str, asyncio.Lock]
+
+
 def connection_config_from_row(row: Any) -> ConnectionConfig:
     """Map a Connection ORM row (or anything row-shaped) to a ConnectionConfig.
 
@@ -140,16 +154,24 @@ def validate_adapter_base_url(raw_url: Any, *, allow_private_hosts: bool | None 
 
     if raw_url is None:
         return
+    raw_url = str(raw_url).strip()
+    if not raw_url:
+        raise ValueError("adapter URL must be a non-empty http(s) URL")
+
+    parsed = urlsplit(raw_url)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("adapter URL must be an http(s) URL without embedded credentials")
     if allow_private_hosts is None:
         allow_private_hosts = get_settings().allow_private_adapter_hosts
     if allow_private_hosts:
         return
 
-    parsed = urlsplit(str(raw_url))
-    host = parsed.hostname
-    if host is None:
-        return
-    normalized = host.rstrip(".").lower()
+    normalized = parsed.hostname.rstrip(".").lower()
     if normalized in DENIED_ADAPTER_HOSTS or normalized.endswith(DENIED_ADAPTER_HOST_SUFFIXES):
         raise ValueError("private adapter hosts are disabled")
 
@@ -160,7 +182,20 @@ def validate_adapter_base_url(raw_url: Any, *, allow_private_hosts: bool | None 
 
 
 def validate_connection_config(config: ConnectionConfig) -> None:
-    validate_adapter_base_url(config.options.get("base_url"))
+    # `endpoint` is the S3/MinIO transport target. It is just as security
+    # sensitive as the conventional adapter `base_url` and must not bypass the
+    # SSRF policy.
+    allow_private = config.options.get(TRUSTED_PRIVATE_HOST_OPTION) is True
+    validate_adapter_base_url(
+        config.options.get("base_url"), allow_private_hosts=allow_private or None
+    )
+    endpoint = config.options.get("endpoint")
+    if endpoint is not None:
+        raw_endpoint = str(endpoint).strip()
+        if "://" not in raw_endpoint:
+            scheme = "https" if config.options.get("secure") is True else "http"
+            raw_endpoint = f"{scheme}://{raw_endpoint}"
+        validate_adapter_base_url(raw_endpoint, allow_private_hosts=allow_private or None)
 
 
 def _resolve_adapter_host(host: str, port: int | None) -> list[Any]:
@@ -241,10 +276,11 @@ class DbConnectionStore:
 
 
 class ConnectionResolver:
-    """Resolves adapters from connection rows/configs, caching built instances.
+    """Resolves adapters from connection rows/configs, caching per event loop.
 
     Cache key per connection id is its updated_at (None for static configs):
     an admin PATCH bumps updated_at, so the next resolve rebuilds the adapter.
+    Async clients and ``asyncio.Lock`` objects never cross loop boundaries.
     """
 
     def __init__(
@@ -258,8 +294,14 @@ class ConnectionResolver:
         for conn in conns:
             self._default_by_kind.setdefault(conn.kind, conn)
         self._store = store
-        self._instances: dict[str, tuple[datetime | None, Any]] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._loop_caches: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, _LoopCache] = (
+            weakref.WeakKeyDictionary()
+        )
+        # The process-global resolver can be reached by concurrent request and
+        # graph loops on different threads. WeakKeyDictionary itself is not
+        # thread-safe, so only registry access uses a regular lock; adapter
+        # construction remains guarded by a loop-local asyncio.Lock.
+        self._loop_caches_lock = threading.Lock()
 
     async def resolve(
         self,
@@ -269,11 +311,73 @@ class ConnectionResolver:
     ) -> Any:
         """Precedence: explicit connection_id > project-scoped row > global row >
         static DEV_CONNECTIONS fallback."""
+        adapter, _resolved_id = await self.resolve_with_connection_id(
+            kind, connection_id=connection_id, project_id=project_id
+        )
+        return adapter
+
+    async def resolve_with_connection_id(
+        self,
+        kind: PortKind,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+        *,
+        expected_provider: str | None = None,
+        options_overlay: dict[str, Any] | None = None,
+    ) -> tuple[Any, str]:
+        """Resolve an adapter and return the durable connection id actually used.
+
+        ``options_overlay`` supports validated per-run knobs without replacing
+        stored connection fields such as URL, project/domain, or secret_ref. The
+        connection id remains the persisted base id so later abort and artifact
+        reads can resolve the same resource. ``expected_provider`` prevents an
+        engine selector from silently executing against a different default.
+        """
         stored = await self._select_stored(kind, connection_id, project_id)
         if stored is not None:
-            return await self._build_cached(stored.config, stored.updated_at)
-        conn = self._select_static(kind, connection_id)
-        return await self._build_cached(conn, None)
+            conn = stored.config
+            version = stored.updated_at
+            internal_project_id = stored.project_id
+        else:
+            if self._store is not None and get_settings().is_locked_down:
+                raise RuntimeError(
+                    f"no enabled persisted connection available for {kind.value!r}; "
+                    "static development fallbacks are disabled"
+                )
+            conn = self._select_static(kind, connection_id)
+            version = None
+            internal_project_id = None
+        if expected_provider is not None and conn.provider != expected_provider:
+            raise ValueError(
+                f"connection {conn.id!r} uses provider {conn.provider!r}, "
+                f"not requested provider {expected_provider!r}"
+            )
+        _validate_internal_connection_binding(
+            kind,
+            provider=conn.provider,
+            internal_project_id=internal_project_id,
+            requested_project_id=project_id,
+        )
+        cache_key: str | None = None
+        if options_overlay:
+            forbidden_overlay_keys = sorted(
+                key
+                for key in options_overlay
+                if key in {"base_url", "endpoint"} or key.startswith("_apex_")
+            )
+            if forbidden_overlay_keys:
+                raise ValueError(
+                    "connection options overlay cannot change network target or trust policy: "
+                    + ", ".join(forbidden_overlay_keys)
+                )
+            conn = conn.model_copy(update={"options": {**conn.options, **options_overlay}})
+            digest = hashlib.sha256(
+                json.dumps(options_overlay, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()[:16]
+            cache_key = f"{conn.id}:overlay:{digest}"
+        adapter = await self._build_cached(conn, version, cache_key=cache_key)
+        _expose_internal_connection_binding(adapter, internal_project_id)
+        return adapter, conn.id
 
     # ── selection ───────────────────────────────────────────────────────────
 
@@ -302,6 +406,10 @@ class ConnectionResolver:
                 connection_id=connection_id,
                 error=f"{exc.__class__.__name__}: {exc}",
             )
+            if get_settings().is_locked_down:
+                raise RuntimeError(
+                    f"connection store unavailable while resolving {kind.value!r}"
+                ) from exc
             return None
 
     @staticmethod
@@ -339,32 +447,68 @@ class ConnectionResolver:
 
     # ── building ────────────────────────────────────────────────────────────
 
-    async def _build_cached(self, conn: ConnectionConfig, version: datetime | None) -> Any:
-        lock = self._locks.setdefault(conn.id, asyncio.Lock())
+    async def _build_cached(
+        self,
+        conn: ConnectionConfig,
+        version: datetime | None,
+        *,
+        cache_key: str | None = None,
+    ) -> Any:
+        key = cache_key or conn.id
+        cache = self._cache_for_current_loop()
+        lock = cache.locks.setdefault(key, asyncio.Lock())
         async with lock:
-            cached = self._instances.get(conn.id)
+            cached = cache.instances.get(key)
             if cached is not None and cached[0] == version:
                 return cached[1]
             secrets: SecretsPort | None = None
             if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
                 secrets = await self.resolve(PortKind.SECRETS)
             validate_connection_config(conn)
+            _ensure_builtin_adapters_registered()
             adapter = await AdapterRegistry.build(conn, secrets)
-            self._instances[conn.id] = (version, adapter)
+            cache.instances[key] = (version, adapter)
             if cached is not None:
-                await _close_adapter(cached[1])
+                await close_adapter(cached[1])
             return adapter
 
     async def close(self) -> None:
-        """Close cached adapter clients before process shutdown or test teardown."""
-        instances = list(self._instances.values())
-        self._instances.clear()
-        self._locks.clear()
+        """Close adapters owned by the calling loop.
+
+        A client must be closed on the loop that owns its network streams.  A
+        resolver used from multiple loops should therefore be closed once by
+        each loop (the async-context-manager form makes that straightforward).
+        """
+
+        loop = asyncio.get_running_loop()
+        with self._loop_caches_lock:
+            cache = self._loop_caches.pop(loop, None)
+        if cache is None:
+            return
+        instances = list(cache.instances.values())
+        cache.instances.clear()
+        cache.locks.clear()
         for _, adapter in instances:
-            await _close_adapter(adapter)
+            await close_adapter(adapter)
+
+    async def __aenter__(self) -> "ConnectionResolver":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        await self.close()
+
+    def _cache_for_current_loop(self) -> _LoopCache:
+        loop = asyncio.get_running_loop()
+        with self._loop_caches_lock:
+            cache = self._loop_caches.get(loop)
+            if cache is None:
+                cache = _LoopCache(instances={}, locks={})
+                self._loop_caches[loop] = cache
+            return cache
 
 
-async def _close_adapter(adapter: Any) -> None:
+async def close_adapter(adapter: Any) -> None:
+    """Close any adapter exposing an async or sync close method."""
     close = getattr(adapter, "aclose", None) or getattr(adapter, "close", None)
     if close is None:
         return
@@ -373,16 +517,50 @@ async def _close_adapter(adapter: Any) -> None:
         await result
 
 
+def _validate_internal_connection_binding(
+    kind: PortKind,
+    *,
+    provider: str,
+    internal_project_id: str | None,
+    requested_project_id: str | None,
+) -> None:
+    """Bind real tracker connections by APEX ownership, not external project name."""
+    if kind is not PortKind.WORK_TRACKING or requested_project_id is None:
+        return
+    if provider in {"stub", "fake"}:
+        return
+    if (
+        internal_project_id is None
+        or internal_project_id.casefold() != requested_project_id.casefold()
+    ):
+        raise ValueError(
+            "real work-tracking connection is not internally bound to the requested "
+            f"APEX project: bound={internal_project_id!r}, requested={requested_project_id!r}"
+        )
+
+
+def _expose_internal_connection_binding(adapter: Any, internal_project_id: str | None) -> None:
+    """Expose persisted APEX ownership for router defense-in-depth checks."""
+
+    try:
+        setattr(adapter, INTERNAL_PROJECT_BINDING_ATTR, internal_project_id)
+    except (AttributeError, TypeError) as exc:
+        raise TypeError("resolved adapter cannot expose its internal APEX project binding") from exc
+
+
+def internal_project_binding(adapter: Any) -> str | None:
+    value = getattr(adapter, INTERNAL_PROJECT_BINDING_ATTR, None)
+    return str(value) if value is not None else None
+
+
+def _ensure_builtin_adapters_registered() -> None:
+    """Import adapter factories lazily to avoid services/adapters import cycles."""
+    from apex.adapters import register_builtin_adapters
+
+    register_builtin_adapters()
+
+
 @lru_cache
 def get_connection_resolver() -> ConnectionResolver:
     """Process-wide resolver: DB rows first, DEV_CONNECTIONS static fallback."""
     return ConnectionResolver(store=DbConnectionStore())
-
-
-# Importing adapter packages registers their factories with the AdapterRegistry.
-# Keep registration after ConnectionResolver/get_connection_resolver are defined:
-# real work-tracking adapters import apex.services.work_tracking, whose router
-# dependency providers import this module.
-from apex.adapters import register_builtin_adapters  # noqa: E402
-
-register_builtin_adapters()

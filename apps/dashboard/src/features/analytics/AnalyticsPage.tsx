@@ -256,11 +256,20 @@ function agentQuery(filters: AnalyticsFilters, group: GroupBy, measure: Measure,
 }
 
 function seriesRows(data: AgentAnalytics, measure: Measure) {
-  const top = data.breakdown
-    .slice()
-    .sort((a, b) => metricValue(b, measure) - metricValue(a, measure))
-  const keys = top.slice(0, 5).map((row) => row.key)
-  const rest = top.slice(5).map((row) => row.key)
+  // `breakdown` is the currently requested table page, while `series` is the
+  // server-selected chart population. Deriving legend keys from breakdown
+  // makes every page after offset 0 render empty/mislabeled series. Rank the
+  // keys from the series payload itself so chart identity is independent of
+  // table pagination.
+  const totalsByKey = new Map<string, number>()
+  for (const row of data.series) {
+    totalsByKey.set(row.key, (totalsByKey.get(row.key) ?? 0) + metricValue(row, measure))
+  }
+  const rankedKeys = Array.from(totalsByKey, ([key, value]) => ({ key, value }))
+    .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
+    .map(({ key }) => key)
+  const keys = rankedKeys.slice(0, 5)
+  const rest = rankedKeys.slice(5)
   const buckets = new Map<string, Record<string, number | string>>()
   for (const row of data.series) {
     const bucket = row.bucket_start

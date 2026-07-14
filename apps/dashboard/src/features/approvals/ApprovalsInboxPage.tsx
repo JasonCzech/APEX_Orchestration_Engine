@@ -67,7 +67,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['a', 'Approve (open gate)'],
   ['m', 'Modify — focus the prompt editor'],
   ['s', 'Skip phase (prompt gates)'],
-  ['x', 'Abort the run'],
+  ['x', 'Arm abort confirmation'],
   ['?', 'Toggle this overlay'],
 ]
 
@@ -92,8 +92,8 @@ export function ApprovalsInboxPage() {
   const rows: QueueRow[] = [
     ...inbox.items.map((item): QueueRow => {
       const entry = actioned.get(item.thread_id)
-      // A different interrupt_id is a NEW gate instance (discuss/revise
-      // re-interrupts mint fresh ids) — the row goes live again.
+      // A different interrupt_id is a NEW gate instance — the row goes live
+      // again. Same-id re-reviews never become actioned in the first place.
       return entry && entry.interruptIds.has(item.pending_gate.interrupt_id ?? null)
         ? { ...item, removed: entry.reason }
         : item
@@ -325,13 +325,12 @@ export function ApprovalsInboxPage() {
 /**
  * Right pane: snapshot the selected thread and mount the shared GateModule on
  * its pending interrupt. Keyed by threadId from the parent so nothing leaks
- * across runs; the module itself is keyed by interrupt_id, so a discuss/
- * revise re-interrupt (new id) mounts a fresh instance with a re-armed
- * onOutcome.
+ * across runs; changed interrupt ids remount, while refreshed same-id
+ * re-reviews reopen inside the shared machine.
  *
  * Outcome mapping for the queue (see gateModuleContract.ts):
- *   resumed approve/modify/skip_phase/abort -> 'local' (gray 'actioned', advance)
- *   resumed discuss/revise                  -> not terminal (gate reopens) — no-op
+ *   resumed approve/skip_phase/abort        -> 'local' (gray 'actioned', advance)
+ *   resumed modify/discuss/revise           -> not terminal (gate reopens) — no-op
  *   superseded                              -> 'elsewhere' (gray, advance)
  */
 function GatePreview({
@@ -376,10 +375,14 @@ function GatePreview({
   const handleOutcome = (outcome: GateOutcome) => {
     if (outcome.type === 'superseded') {
       onResolved('elsewhere', gateId)
-    } else if (outcome.action !== 'discuss' && outcome.action !== 'revise') {
+    } else if (
+      outcome.action !== 'modify' &&
+      outcome.action !== 'discuss' &&
+      outcome.action !== 'revise'
+    ) {
       onResolved('local', gateId)
     }
-    // discuss/revise: the gate reopens (new interrupt) — keep the selection.
+    // modify/discuss/revise: the gate reopens — keep the selection.
   }
 
   return (

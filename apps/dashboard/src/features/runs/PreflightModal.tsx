@@ -67,7 +67,12 @@ export function PreflightModal({ threadId, initialSelection, onClose }: Prefligh
   function start() {
     if (!canStart) return
     rerun.mutate(
-      { threadId, phases: selection, gatesMode },
+      {
+        threadId,
+        phases: selection,
+        gatesMode,
+        baseConfigurable: state?.run_config,
+      },
       {
         onSuccess: () => {
           onClose()

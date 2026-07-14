@@ -1,9 +1,11 @@
 /**
  * prompt_review flow through the REAL machine (useGate + GateModuleView wired
- * the way RunDetailPage mounts them): edit -> dirty chip -> Execute Edited
- * Prompt sends {action:'modify', prompt:{...}}; abort is gated by
+ * the way RunDetailPage mounts them): edit -> dirty chip -> Save Edit &
+ * Re-review sends {action:'modify', prompt:{...}}; abort is gated by
  * type-to-confirm.
  */
+import { useRef } from 'react'
+
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router'
@@ -11,7 +13,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
-import { GateModuleView } from '@/hitl/GateModule'
+import { GateModule, GateModuleView, type GateModuleHandle } from '@/hitl/GateModule'
 import { useGate } from '@/hitl/useGate'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
@@ -72,10 +74,31 @@ function renderHarness(threadId: string) {
   )
 }
 
+function HandleHarness({
+  threadId,
+  interrupt,
+}: {
+  threadId: string
+  interrupt: ReturnType<typeof promptInterrupt>
+}) {
+  const handle = useRef<GateModuleHandle | null>(null)
+  return (
+    <>
+      <button type="button" onClick={() => handle.current?.invoke('abort')}>
+        Invoke abort shortcut
+      </button>
+      <GateModule threadId={threadId} interrupt={interrupt} handleRef={handle} />
+    </>
+  )
+}
+
 describe('GateModule prompt_review', () => {
-  it('edit -> dirty chip -> Execute Edited Prompt posts {action:"modify", prompt:{...}}', async () => {
+  it('edit -> dirty chip -> Save Edit & Re-review posts {action:"modify", prompt:{...}}', async () => {
     const threadId = 'th-prompt'
-    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-p')]))
+    const { handler, ref } = mutableDetailHandler(
+      threadId,
+      gatedDetail(threadId, [promptInterrupt('int-p')]),
+    )
     const resume = resumeHandler(202)
     server.use(handler, resume.handler)
     const user = userEvent.setup()
@@ -106,9 +129,16 @@ describe('GateModule prompt_review', () => {
       target: { value: 'Checkout must preserve carts and payment retry telemetry.' },
     })
     expect(await screen.findByTestId('gate-dirty-chip')).toHaveTextContent('edited')
-    const modify = screen.getByRole('button', { name: /Execute Edited Prompt/i })
+    const modify = screen.getByRole('button', { name: /Save Edit & Re-review/i })
     expect(modify).toBeEnabled()
 
+    const reviewed = promptInterrupt('int-p')
+    if (reviewed.payload && typeof reviewed.payload === 'object') {
+      const prompt = reviewed.payload['prompt'] as Record<string, unknown>
+      prompt['system'] = 'You are the EDITED planning agent.'
+      prompt['application'] = 'Checkout must preserve carts and payment retry telemetry.'
+    }
+    ref.current = gatedDetail(threadId, [reviewed])
     await user.click(modify)
     await waitFor(() =>
       expect(resume.captured.last()).toEqual({
@@ -124,8 +154,15 @@ describe('GateModule prompt_review', () => {
         },
       }),
     )
-    // 202 settles the gate: the module unmounts (stream/poll narrative next).
-    await waitFor(() => expect(screen.getByTestId('no-gate')).toBeInTheDocument())
+    // Modify saves the draft and intentionally re-opens review after the
+    // agent processes it. LangGraph reuses the interrupt id for this node.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Execute Phase/i })).toBeEnabled(),
+    )
+    await user.click(screen.getByRole('tab', { name: 'System Prompt' }))
+    expect(screen.getByLabelText('System Prompt')).toHaveValue(
+      'You are the EDITED planning agent.',
+    )
   })
 
   it('renders context packets + tool chips, and abort requires typing ABORT', async () => {
@@ -157,5 +194,28 @@ describe('GateModule prompt_review', () => {
     await waitFor(() =>
       expect(resume.captured.last()).toMatchObject({ body: { action: 'abort' } }),
     )
+  })
+
+  it('arms the typed confirmation instead of aborting through the imperative shortcut', async () => {
+    const threadId = 'th-shortcut-abort'
+    const interrupt = promptInterrupt('int-shortcut')
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [interrupt]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const user = userEvent.setup()
+
+    render(
+      <QueryClientProvider client={createTestQueryClient()}>
+        <MemoryRouter>
+          <HandleHarness threadId={threadId} interrupt={interrupt} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await screen.findByTestId('gate-module')
+    await user.click(screen.getByRole('button', { name: 'Invoke abort shortcut' }))
+
+    expect(screen.getByLabelText('Type ABORT to confirm')).toHaveFocus()
+    expect(screen.getByRole('button', { name: 'Confirm abort' })).toBeDisabled()
+    expect(resume.captured.calls).toHaveLength(0)
   })
 })

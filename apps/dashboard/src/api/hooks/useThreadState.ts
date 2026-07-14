@@ -9,15 +9,7 @@ import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 
 export type GateInterrupt = components['schemas']['GateInterrupt']
 
-/**
- * Local extension: the generated @apex/api-client schema predates the `engine`
- * field on PipelineDetail (present in docs/api/apex-v1.openapi.json and the
- * live backend — same drift the runs-grid ROUTES.md documents). Delete the
- * extension once the client is regenerated.
- */
-export type PipelineDetail = components['schemas']['PipelineDetail'] & {
-  engine?: { engine?: string | null; external_run_id?: string | null } | null
-}
+export type PipelineDetail = components['schemas']['PipelineDetail']
 
 /**
  * One snapshot read for the run-detail surfaces: the /v1/pipelines/{thread_id}

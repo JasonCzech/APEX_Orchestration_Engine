@@ -15,9 +15,8 @@ pattern the runs grid documented in D1) — **wiring is already done**:
 - `/approvals` — no params; the oldest open gate auto-selects.
 - `/approvals/:threadId/:interruptId` — deep link that pre-selects the queue
   item. `:interruptId` picks the matching interrupt on the thread when it is
-  still pending; if a discuss/revise loop has re-interrupted (new id), the
-  thread's CURRENT pending interrupt renders instead (a gate instance is
-  identified by `interrupt_id`, and stale links must not dead-end). Selection
+  still pending; after a modify/discuss/revise loop the thread's CURRENT
+  pending interrupt renders, including when LangGraph reuses the id. Selection
   changes from clicks/keys are LOCAL state only — they do not rewrite the URL
   (the two routes mount different route objects, so navigating per keystroke
   would remount the page and drop focus).
@@ -51,11 +50,11 @@ thread-state cache entry). Types are canonical in `src/hitl/GateModule.tsx`;
 semantics:
 
 - `<GateModule threadId interrupt compact onOutcome handleRef />`, keyed by
-  `interrupt.interrupt_id` (a re-interrupt mints a new id → fresh module +
-  re-armed `onOutcome`).
+  `interrupt.interrupt_id` when it changes; refreshed same-id re-reviews reopen
+  inside `useGate`.
 - `onOutcome` (once per gate instance):
-  `{type:'resumed', action}` for approve/modify/skip_phase/abort → row grays
-  as **actioned**, selection auto-advances; discuss/revise → NOT terminal
+  `{type:'resumed', action}` for approve/skip_phase/abort → row grays
+  as **actioned**, selection auto-advances; modify/discuss/revise → NOT terminal
   (gate reopens in place); `{type:'superseded'}` → row grays as **actioned
   elsewhere**, selection auto-advances.
 - `handleRef: Ref<GateModuleHandle>` → `isActionable()` / `invoke(action)` /
@@ -67,8 +66,9 @@ semantics:
 
 `j/k` or `↓/↑` navigate · `Enter` focus preview · `o` open run ·
 `a/m/s/x` → `invoke('approve'|'modify'|'skip_phase'|'abort')` gated on
-`isActionable()` (`m` is modify-FOCUS — the handle moves focus into the
-prompt editor, no submit) · `?` shortcuts overlay · `Escape` closes it.
+`isActionable()` (`m` moves focus into the prompt editor without submitting;
+`x` arms and focuses typed abort confirmation) · `?` shortcuts overlay ·
+`Escape` closes it.
 Shortcuts yield while typing (input/textarea/select/contenteditable/
 `.cm-editor`).
 

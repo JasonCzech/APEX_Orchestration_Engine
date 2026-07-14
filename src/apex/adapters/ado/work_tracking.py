@@ -19,12 +19,14 @@ Wire-format decisions (documented deviations / mappings):
 - create_item: POST {project}/_apis/wit/workitems/${Type}?api-version=7.1 with
   an application/json-patch+json body (System.Title, System.Description, then
   draft.fields: dotted keys verbatim as /fields/<key>, bare keys must be
-  title/description — anything else raises ValueError).
+  title/description — anything else raises ValueError). Project fields and
+  area/iteration paths outside the configured project are rejected.
 - enrich_item: enrichment.fields -> PATCH _apis/wit/workitems/{id} JSON-patch
   ("add" ops — ADO treats add as upsert). Bare keys map title -> System.Title,
   description -> System.Description, status -> System.State (the raw value is
   sent; callers supply a real ADO state name); dotted keys are used verbatim;
-  other bare keys raise ValueError. enrichment.comment -> POST
+  other bare keys raise ValueError. The organization-wide item id is fetched
+  and its System.TeamProject checked before any mutation. enrichment.comment -> POST
   {project}/_apis/wit/workItems/{id}/comments?api-version=7.1-preview.3 — the
   comments API has no GA release at 7.1, so the preview version is a deliberate
   choice (documented here). The item is re-fetched afterwards.
@@ -49,6 +51,7 @@ from typing import Any
 import httpx
 
 from apex.adapters.http_resilience import resilient_request
+from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     Enrichment,
@@ -80,6 +83,7 @@ _ITEM_FIELDS = [
     "System.Title",
     "System.State",
     "System.WorkItemType",
+    "System.TeamProject",
     "System.Description",
 ]
 
@@ -189,6 +193,8 @@ def _patch_path(name: str) -> str:
 
 @AdapterRegistry.register(PortKind.WORK_TRACKING, PROVIDER)
 class AdoWorkTrackingAdapter:
+    provider = PROVIDER
+
     def __init__(self, conn: ConnectionConfig, secret: SecretValue | None) -> None:
         options = dict(conn.options)
         base_url = str(options.get("base_url") or "").rstrip("/")
@@ -203,22 +209,32 @@ class AdoWorkTrackingAdapter:
         if secret is None:
             raise ValueError(
                 f"ado connection {conn.id!r} requires a Personal Access Token; set "
-                'secret_ref on the connection (e.g. "env:APEX_ADO_PAT")'
+                'secret_ref on the connection (e.g. "env:APEX_INTEGRATION_ADO_PAT")'
             )
         self._base_url = base_url
         self._project = project
+        self._allow_private_hosts = private_hosts_allowed(options)
         token = base64.b64encode(f":{secret.value}".encode()).decode()
         self._headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
         self._http: httpx.AsyncClient | None = None
         self._http_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def project_id(self) -> str:
+        """Configured project boundary used by scoped direct-item routes."""
+
+        return self._project
 
     # ── http plumbing ─────────────────────────────────────────────────────────
 
     def _client(self) -> httpx.AsyncClient:
         loop = asyncio.get_running_loop()
         if self._http is None or self._http.is_closed or self._http_loop is not loop:
-            self._http = httpx.AsyncClient(
-                base_url=self._base_url, headers=self._headers, timeout=_TIMEOUT_S
+            self._http = safe_async_http_client(
+                base_url=self._base_url,
+                headers=self._headers,
+                timeout=_TIMEOUT_S,
+                allow_private_hosts=self._allow_private_hosts,
             )
             self._http_loop = loop
         return self._http
@@ -283,6 +299,8 @@ class AdoWorkTrackingAdapter:
     async def execute_query(self, query: TranslatedQuery, *, page: Page) -> WorkItemPage:
         """WIQL returns every matching id; offset/limit slice that id list
         client-side, then one batch GET hydrates the visible window."""
+        if query.provider.casefold() != PROVIDER:
+            raise ValueError("translated query provider does not match azure devops")
         response = await self._request(
             "POST",
             f"/{self._project}/_apis/wit/wiql",
@@ -307,6 +325,8 @@ class AdoWorkTrackingAdapter:
         return WorkItemPage(items=items, total=len(ids), page=page)
 
     async def get_item(self, key: str) -> WorkItem:
+        if not key.isdigit():
+            raise KeyError(f"work item {key!r} is not a valid azure devops work item id")
         response = await self._request(
             "GET",
             f"/_apis/wit/workitems/{key}",
@@ -326,6 +346,7 @@ class AdoWorkTrackingAdapter:
         return await self.execute_query(query, page=page)
 
     async def create_item(self, draft: WorkItemDraft) -> WorkItem:
+        self._reject_project_mutations(draft.fields)
         work_item_type = _KIND_TO_TYPE.get(draft.kind, draft.kind.capitalize())
         patch: list[dict[str, Any]] = [
             {"op": "add", "path": "/fields/System.Title", "value": draft.title}
@@ -347,6 +368,10 @@ class AdoWorkTrackingAdapter:
 
     async def enrich_item(self, key: str, enrichment: Enrichment) -> WorkItem:
         """fields -> JSON-patch PATCH; comment -> comments preview API; re-fetch."""
+        self._reject_project_mutations(enrichment.fields)
+        # The item endpoint is organization-wide. Validate TeamProject before any
+        # PATCH/comment so a numeric id from another project cannot be mutated.
+        await self.get_item(key)
         not_found = f"work item {key!r} not found in azure devops"
         if enrichment.fields:
             patch = [
@@ -371,6 +396,20 @@ class AdoWorkTrackingAdapter:
             )
         return await self.get_item(key)
 
+    def _reject_project_mutations(self, fields: dict[str, Any]) -> None:
+        for name, value in fields.items():
+            normalized = name.casefold()
+            if normalized in {"project", "teamproject", "system.teamproject"}:
+                raise ValueError(
+                    "azure devops project is fixed by the connection and cannot be changed"
+                )
+            if normalized in {"system.areapath", "system.iterationpath"}:
+                root = str(value).split("\\", 1)[0]
+                if root.casefold() != self._project.casefold():
+                    raise ValueError(
+                        f"azure devops {name} must remain inside the configured project"
+                    )
+
     # ── mapping ───────────────────────────────────────────────────────────────
 
     def _work_item_from_row(self, row: dict[str, Any]) -> WorkItem:
@@ -379,7 +418,9 @@ class AdoWorkTrackingAdapter:
         state = str(fields.get("System.State") or "").lower()
         work_item_type = str(fields.get("System.WorkItemType") or "story")
         kind = "story" if work_item_type.lower() == "user story" else work_item_type.lower()
-        project = str(fields.get("System.TeamProject") or self._project)
+        project = str(fields.get("System.TeamProject") or "")
+        if project.casefold() != self._project.casefold():
+            raise KeyError(f"work item {item_id!r} not found in configured azure devops project")
         return WorkItem(
             key=item_id,
             title=str(fields.get("System.Title") or ""),

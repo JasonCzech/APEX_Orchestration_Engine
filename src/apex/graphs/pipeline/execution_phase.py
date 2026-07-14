@@ -1,4 +1,4 @@
-"""Execution-phase engine spine: engine_reserve -> engine_start -> engine_poll ⟲ -> engine_collect.
+"""Execution-phase engine spine with checkpointed external side-effect boundaries.
 
 Replaces the stub `agent` node between the prompt and output gates for
 Phase.EXECUTION (wired by make_phase_subgraph; the gate nodes are untouched and
@@ -9,13 +9,18 @@ engine_reserve). Durability rules (plan "Durability & the execution phase"):
   ``{thread_id}-execution-a{attempt}`` — into graph state and returns, so the
   checkpoint commits BEFORE any engine side effect. A crash after the checkpoint
   can only re-issue the same get-or-create call.
-- engine_start resolves the adapter per call (throwaway resolver: sync nodes run
-  on worker threads with short-lived event loops, like the prompts service) and
-  provisions by key: re-execution after a crash yields the same external_run_id.
+- engine_provision resolves and provisions by key, then returns the durable
+  EngineHandle before engine_start can issue the remote start side effect.
+- engine_start and engine_status are separate supersteps. A status failure after
+  start therefore still has a checkpointed handle available to abort/recover.
 - engine_poll is a self-loop (Command goto back to itself): one superstep — one
   checkpoint plus one ``engine_poll`` custom event — per cycle, with the
   inter-cycle sleep inside the node. A server restart resumes polling from the
   durable EngineHandle, losing at most one cycle.
+- engine_cleanup is a durable self-loop: once a started run needs aborting, the
+  cleanup intent is checkpointed before the kill is attempted. Provider failures
+  remain non-terminal and retry from the same handle; only a successful abort may
+  project ABORTED and finalize the phase.
 - engine_collect persists artifacts + summary and ALWAYS tears the run down.
 
 recursion_limit sizing: every poll cycle consumes one superstep inside the
@@ -30,21 +35,25 @@ recommended_recursion_limit().
 
 import asyncio
 import math
-import time
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 
-from apex.adapters.registry import ConnectionConfig, PortKind
+from apex.adapters.registry import PortKind
 from apex.domain.integrations import LoadTestSpec, TestResultSummary
 from apex.domain.pipeline import EngineHandle, Phase, PhaseStatus, utcnow_iso
-from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
+from apex.graphs.pipeline.configurable import (
+    MAX_RECOMMENDED_RECURSION_LIMIT,
+    Limits,
+    PipelineConfigurable,
+)
 from apex.graphs.pipeline.phase_subgraph import EVENT_SCHEMA_VERSION, emit_event
 from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.ports.artifact_store import engine_artifact_namespace
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
     EngineRunPhase,
@@ -52,7 +61,7 @@ from apex.ports.execution_engine import (
     LiveStats,
 )
 from apex.services import engine_runs
-from apex.services.connections import ConnectionResolver, DbConnectionStore
+from apex.services.connections import ConnectionResolver, DbConnectionStore, close_adapter
 
 logger = structlog.get_logger(__name__)
 
@@ -60,11 +69,17 @@ _PHASE = Phase.EXECUTION
 
 # Supersteps the execution subgraph consumes outside the poll loop (prepare, gate
 # nodes, agent alias, reserve/start/collect, finalize) plus parent-spine slack.
-SPINE_SUPERSTEPS = 16
+SPINE_SUPERSTEPS = 19
+MAX_CONSECUTIVE_POLL_ERRORS = 3
 
 # LoadTestSpec fields a per-run "load_test" configurable dict may override; any
 # other key (e.g. the sim engine's fail_at_pct) is treated as an engine option.
-_SPEC_OVERRIDE_FIELDS = frozenset(LoadTestSpec.model_fields) - {"idempotency_key"}
+_SPEC_OVERRIDE_FIELDS = frozenset(LoadTestSpec.model_fields) - {
+    "idempotency_key",
+    # Targets are server-resolved from configurable.environment_id. Accepting
+    # this through load_test would turn the engine into a caller-controlled SSRF proxy.
+    "target_environment",
+}
 _ENGINE_OPTION_FIELDS = {
     "apex_load": frozenset[str](),
     "loadrunner": frozenset({"abortive_stop", "test_id", "test_instance_id"}),
@@ -74,8 +89,10 @@ _ENGINE_OPTION_FIELDS = {
 
 def recommended_recursion_limit(limits: Limits) -> int:
     """Recursion-limit hint for runs that include the execution phase."""
-    cycles = math.ceil(limits.poll_timeout_s / max(limits.poll_interval_s, 1e-9))
-    return cycles + SPINE_SUPERSTEPS + 25
+    # Revalidate even if a caller manufactured a model with model_construct().
+    checked = Limits.model_validate(limits.model_dump(mode="python"))
+    cycles = math.ceil(checked.poll_timeout_s / checked.poll_interval_s)
+    return min(cycles + SPINE_SUPERSTEPS + 25, MAX_RECOMMENDED_RECURSION_LIMIT)
 
 
 def execution_idempotency_key(thread_id: str, attempt: int) -> str:
@@ -101,7 +118,12 @@ def _update(attempt: int, **fields: Any) -> JsonDict:
 
 def _thread_id(config: RunnableConfig | None) -> str:
     configurable = dict((config or {}).get("configurable") or {})
-    return str(configurable.get("thread_id") or "no-thread")
+    thread_id = str(configurable.get("thread_id") or "").strip()
+    if not thread_id:
+        raise ValueError(
+            "execution phase requires a durable thread_id; stateless execution is not allowed"
+        )
+    return thread_id
 
 
 def _engine_options(entry: JsonDict) -> JsonDict:
@@ -140,36 +162,89 @@ def _make_resolver() -> ConnectionResolver:
 async def _resolve_engine(cfg: PipelineConfigurable, engine_options: JsonDict) -> Any:
     """Resolve the execution-engine adapter.
 
-    Per-run engine options (extra keys in the "load_test" configurable, e.g. the
-    sim engine's fail_at_pct) build an ephemeral connection for cfg.engine —
-    options are run state, not connection state. Otherwise normal connection
-    resolution applies: cfg.connections["execution_engine"] > project default >
-    global default > DEV_CONNECTIONS sim fallback.
+    Resolve the selected stored connection and overlay only the validated per-run
+    options. The base URL/domain/project/secret and durable connection id remain
+    those of the stored connection, so a later kill switch can resolve it.
     """
-    if engine_options:
-        conn = ConnectionConfig(
-            id=f"run-engine-{cfg.engine}",
-            kind=PortKind.EXECUTION_ENGINE,
-            provider=cfg.engine,
-            name=f"Per-run {cfg.engine} engine",
-            options=engine_options,
-        )
-        return await ConnectionResolver(connections=[conn]).resolve(
-            PortKind.EXECUTION_ENGINE, connection_id=conn.id
-        )
-    return await _make_resolver().resolve(
+    adapter, _connection_id = await _make_resolver().resolve_with_connection_id(
         PortKind.EXECUTION_ENGINE,
         connection_id=cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
         project_id=cfg.project_id,
+        expected_provider=cfg.engine,
+        options_overlay=engine_options,
     )
+    return adapter
 
 
-async def _resolve_artifact_store(cfg: PipelineConfigurable) -> Any:
-    return await _make_resolver().resolve(
+async def _resolve_artifact_store(cfg: PipelineConfigurable) -> tuple[Any, str]:
+    return await _make_resolver().resolve_with_connection_id(
         PortKind.ARTIFACT_STORE,
         connection_id=cfg.connections.get(PortKind.ARTIFACT_STORE.value),
         project_id=cfg.project_id,
     )
+
+
+async def _resolve_catalog_target(cfg: PipelineConfigurable) -> str | None:
+    """Revalidate the stamped target without allowing gated-run target drift."""
+
+    if not cfg.environment_id:
+        return None
+    from apex.persistence.db import get_sessionmaker
+    from apex.persistence.repositories.catalog import CatalogRepository
+    from apex.services.environments import resolve_environment_target
+
+    async with get_sessionmaker()() as session:
+        target = await resolve_environment_target(
+            CatalogRepository(session),
+            cfg.environment_id,
+            project_id=cfg.project_id,
+            app_id=cfg.app_id,
+        )
+    return _verified_stamped_target(cfg, target.base_url, target.version)
+
+
+def _verified_stamped_target(
+    cfg: PipelineConfigurable,
+    current_target: str,
+    current_version: int,
+) -> str:
+    if cfg.environment_target is None or cfg.environment_target_version is None:
+        raise ValueError(
+            "environment target was not authorized and stamped at run creation; "
+            "select environment_id in the run configuration"
+        )
+    if (
+        current_target != cfg.environment_target
+        or current_version != cfg.environment_target_version
+    ):
+        raise ValueError("approved environment target changed after run creation; create a new run")
+    return cfg.environment_target
+
+
+async def _close_resource(resource: Any) -> None:
+    """Close a throwaway adapter/client without masking the node outcome."""
+    try:
+        await close_adapter(resource)
+    except Exception:  # noqa: BLE001 - resource cleanup is best-effort
+        logger.warning("execution.adapter_close_failed", exc_info=True)
+
+
+async def _teardown_after_confirmed_abort(adapter: Any, handle: EngineHandle) -> None:
+    """Release provider resources after a successful, idempotent abort call.
+
+    Teardown failure can leak a temporary provider resource, but it cannot leave
+    load running once ``abort`` has returned successfully. It therefore remains
+    best-effort while the abort itself is retried durably by ``engine_cleanup``.
+    """
+
+    try:
+        await adapter.teardown(handle)
+    except Exception:  # noqa: BLE001 - abort success is the safety boundary
+        logger.warning(
+            "execution.teardown_failed",
+            external_run_id=handle.external_run_id,
+            exc_info=True,
+        )
 
 
 # ── event/sample shapes ────────────────────────────────────────────────────────
@@ -213,7 +288,12 @@ def _poll_sample(status: EngineRunStatus) -> JsonDict:
 
 
 def _build_spec(
-    state: PipelineState, config: RunnableConfig, attempt: int, engine: str
+    state: PipelineState,
+    config: RunnableConfig,
+    attempt: int,
+    engine: str,
+    *,
+    target_environment: str | None = None,
 ) -> tuple[LoadTestSpec, JsonDict]:
     """Spec for this run: script_scenario output (or a default for standalone
     execution runs) + per-run "load_test" overrides + the authoritative key."""
@@ -228,14 +308,23 @@ def _build_spec(
             "vusers": 10,
             "ramp_s": 1.0,
         }
-    overrides = dict((config or {}).get("configurable") or {}).get("load_test")
-    overrides = dict(overrides) if isinstance(overrides, dict) else {}
+    cfg = PipelineConfigurable.from_config(config)
+    overrides = cfg.load_test
     spec_overrides = {k: v for k, v in overrides.items() if k in _SPEC_OVERRIDE_FIELDS}
     engine_options = {k: v for k, v in overrides.items() if k not in _SPEC_OVERRIDE_FIELDS}
     _validate_engine_options(engine, engine_options)
     base.update(spec_overrides)
+    # Ignore any caller-seeded upstream target; only the auth-resolved immutable
+    # run target may reach an execution adapter.
+    base["target_environment"] = target_environment
     base["idempotency_key"] = execution_idempotency_key(_thread_id(config), attempt)
-    return LoadTestSpec.model_validate(base), engine_options
+    spec = LoadTestSpec.model_validate(base)
+    if engine == "apex_load" and any(ref.lstrip().startswith("{") for ref in spec.script_refs):
+        raise ValueError(
+            "inline Apex Load script_refs are not allowed for pipeline runs; "
+            "use the catalog-resolved default target or a provider-owned named script"
+        )
+    return spec, engine_options
 
 
 def _validate_engine_options(engine: str, engine_options: JsonDict) -> None:
@@ -252,14 +341,21 @@ def _validate_engine_options(engine: str, engine_options: JsonDict) -> None:
 def engine_reserve(state: PipelineState, config: RunnableConfig) -> Command[str]:
     """Write-ahead idempotency: persist spec + engine choice, then RETURN.
 
-    The superstep checkpoint commits this update before engine_start runs, so
+    The superstep checkpoint commits this update before engine_provision runs, so
     any later crash/re-execution provisions with the same idempotency key.
     """
     cfg = PipelineConfigurable.from_config(config)
     attempt = _attempt(_entry(state))
     try:
-        spec, engine_options = _build_spec(state, config, attempt, cfg.engine)
-    except ValueError as exc:
+        target_environment = asyncio.run(_resolve_catalog_target(cfg))
+        spec, engine_options = _build_spec(
+            state,
+            config,
+            attempt,
+            cfg.engine,
+            target_environment=target_environment,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed on catalog/config errors
         return Command(
             goto="finalize",
             update=_update(
@@ -269,16 +365,8 @@ def engine_reserve(state: PipelineState, config: RunnableConfig) -> Command[str]
                 errors=[f"load_test validation failed: {exc}"],
             ),
         )
-    engine_runs.record_engine_run_sync(
-        _thread_id(config),
-        attempt,
-        cfg.engine,
-        {},
-        EngineRunPhase.PROVISIONING.value,
-        project_id=cfg.project_id,
-    )
     return Command(
-        goto="engine_start",
+        goto="engine_provision",
         update=_update(
             attempt,
             load_test_spec=spec.model_dump(mode="json"),
@@ -289,8 +377,8 @@ def engine_reserve(state: PipelineState, config: RunnableConfig) -> Command[str]
     )
 
 
-def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
-    """validate -> provision (get-or-create by key) -> start; all idempotent."""
+def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Validate and provision idempotently; checkpoint the handle before start."""
     cfg = PipelineConfigurable.from_config(config)
     entry = _entry(state)
     attempt = _attempt(entry)
@@ -298,17 +386,21 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
     spec = LoadTestSpec.model_validate(entry.get("load_test_spec") or {})
     engine_options = _engine_options(entry)
 
-    async def _start() -> tuple[list[str], EngineHandle | None, EngineRunStatus | None]:
+    async def _provision() -> tuple[list[str], EngineHandle | None]:
         adapter = await _resolve_engine(cfg, engine_options)
-        report = await adapter.validate(spec)
-        if not report.ok:
-            return list(report.issues), None, None
-        handle = await adapter.provision(spec)
-        await adapter.start(handle)
-        return [], handle, await adapter.get_status(handle)
+        try:
+            report = await adapter.validate(spec)
+            if not report.ok:
+                return list(report.issues), None
+            return [], await adapter.provision(spec)
+        finally:
+            await _close_resource(adapter)
 
-    issues, handle, status = asyncio.run(_start())
-    if handle is None or status is None:
+    try:
+        issues, handle = asyncio.run(_provision())
+    except Exception as exc:  # noqa: BLE001 - settle the phase instead of crashing the graph
+        issues, handle = [f"engine provisioning failed: {exc}"], None
+    if handle is None:
         errors = [f"engine spec validation failed: {issue}" for issue in issues]
         engine_runs.record_engine_run_sync(
             thread_id,
@@ -317,6 +409,8 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
             {},
             EngineRunPhase.FAILED.value,
             project_id=cfg.project_id,
+            app_id=cfg.app_id,
+            artifact_namespace=engine_artifact_namespace(spec.idempotency_key),
         )
         update = _update(attempt, status=PhaseStatus.FAILED.value, errors=errors)
         return Command(goto="finalize", update=update)
@@ -327,10 +421,127 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
         attempt,
         handle.engine,
         handle_json,
+        EngineRunPhase.PROVISIONING.value,
+        project_id=cfg.project_id,
+        app_id=cfg.app_id,
+        external_run_id=handle.external_run_id,
+        artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
+    )
+    update = _update(
+        attempt,
+        engine=handle.engine,
+        engine_connection_id=handle.connection_id,
+        engine_handle=handle_json,
+    )
+    update["engine_handle"] = handle_json
+    return Command(goto="engine_start", update=update)
+
+
+def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Start a previously checkpointed handle, then checkpoint before status IO."""
+    cfg = PipelineConfigurable.from_config(config)
+    entry = _entry(state)
+    attempt = _attempt(entry)
+    handle = _handle_from(state, entry)
+    engine_options = _engine_options(entry)
+
+    async def _start() -> tuple[str | None, JsonDict]:
+        adapter = await _resolve_engine(cfg, engine_options)
+        try:
+            try:
+                await adapter.start(handle)
+            except Exception as exc:  # noqa: BLE001
+                return str(exc), handle.model_dump(mode="json")
+            return None, handle.model_dump(mode="json")
+        finally:
+            await _close_resource(adapter)
+
+    try:
+        error, handle_json = asyncio.run(_start())
+    except Exception as exc:  # resolver/build failures are also terminal
+        error, handle_json = str(exc), handle.model_dump(mode="json")
+    handle = EngineHandle.model_validate(handle_json)
+    if error is not None:
+        reason = f"start failed: {error}"
+        update = _update(
+            attempt,
+            engine_handle=handle_json,
+            engine_cleanup_required=True,
+            engine_cleanup_reason=reason,
+            engine_cleanup_final_error=f"execution engine start failed: {error}",
+            engine_cleanup_failures=0,
+        )
+        update["engine_handle"] = handle_json
+        return Command(
+            goto="engine_cleanup",
+            update=update,
+        )
+
+    engine_runs.record_engine_run_sync(
+        _thread_id(config),
+        attempt,
+        handle.engine,
+        handle.model_dump(mode="json"),
         EngineRunPhase.RUNNING.value,
         project_id=cfg.project_id,
+        app_id=cfg.app_id,
         external_run_id=handle.external_run_id,
+        artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
     )
+    update = _update(
+        attempt,
+        engine_handle=handle_json,
+        engine_started_at=utcnow_iso(),
+    )
+    update["engine_handle"] = handle_json
+    return Command(goto="engine_status", update=update)
+
+
+def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Fetch initial status, checkpointing transient errors for the poll loop."""
+    cfg = PipelineConfigurable.from_config(config)
+    entry = _entry(state)
+    attempt = _attempt(entry)
+    handle = _handle_from(state, entry)
+    engine_options = _engine_options(entry)
+
+    async def _status() -> EngineRunStatus:
+        adapter = await _resolve_engine(cfg, engine_options)
+        try:
+            return await adapter.get_status(handle)
+        finally:
+            await _close_resource(adapter)
+
+    try:
+        status = asyncio.run(_status())
+    except Exception as exc:  # noqa: BLE001 - poll loop owns bounded recovery
+        failures = int(entry.get("engine_poll_errors") or 0) + 1
+        message = (
+            "execution engine initial status failed "
+            f"({failures}/{MAX_CONSECUTIVE_POLL_ERRORS}): {exc}"
+        )
+        emit_event(
+            {
+                "schema_version": EVENT_SCHEMA_VERSION,
+                "type": "engine_poll_error",
+                "phase": _PHASE.value,
+                "attempt": attempt,
+                "error": str(exc),
+                "consecutive_errors": failures,
+            }
+        )
+        # The checkpointed handle proves the external run was started. A single
+        # status transport failure must not kill it; the normal poll node resumes
+        # from this error count and performs cleanup only after the bounded cap.
+        return Command(
+            goto="engine_poll",
+            update=_update(
+                attempt,
+                engine_poll_errors=failures,
+                engine_poll_error_last=message,
+            ),
+        )
+
     emit_event(
         {
             "schema_version": EVENT_SCHEMA_VERSION,
@@ -340,19 +551,17 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
             "attempt": attempt,
         }
     )
-    emit_event(_poll_event(handle, status, attempt))  # initial tick
+    emit_event(_poll_event(handle, status, attempt))
     update = _update(
         attempt,
-        engine=handle.engine,
-        engine_handle=handle_json,
-        engine_started_at=utcnow_iso(),
         engine_poll_last=_poll_sample(status),
+        engine_poll_errors=0,
     )
-    update["engine_handle"] = handle_json
-    return Command(goto="engine_poll", update=update)
+    goto = "engine_collect" if status.phase in TERMINAL_ENGINE_PHASES else "engine_poll"
+    return Command(goto=goto, update=update)
 
 
-def engine_poll(state: PipelineState, config: RunnableConfig) -> Command[str]:
+async def _engine_poll_async(state: PipelineState, config: RunnableConfig) -> Command[str]:
     """One poll cycle per superstep; self-loops until the engine is terminal.
 
     The poll count rides the phase entry and is derived from the checkpointed
@@ -366,59 +575,187 @@ def engine_poll(state: PipelineState, config: RunnableConfig) -> Command[str]:
 
     async def _poll() -> EngineRunStatus:
         adapter = await _resolve_engine(cfg, engine_options)
-        return await adapter.get_status(handle)
+        try:
+            return await adapter.get_status(handle)
+        finally:
+            await _close_resource(adapter)
 
-    status = asyncio.run(_poll())
+    try:
+        status = await _poll()
+    except Exception as exc:  # noqa: BLE001 - bounded retry before remote cleanup
+        failures = int(entry.get("engine_poll_errors") or 0) + 1
+        message = f"execution engine poll failed ({failures}/{MAX_CONSECUTIVE_POLL_ERRORS}): {exc}"
+        emit_event(
+            {
+                "schema_version": EVENT_SCHEMA_VERSION,
+                "type": "engine_poll_error",
+                "phase": _PHASE.value,
+                "attempt": attempt,
+                "error": str(exc),
+                "consecutive_errors": failures,
+            }
+        )
+        if failures < MAX_CONSECUTIVE_POLL_ERRORS:
+            await asyncio.sleep(cfg.limits.poll_interval_s)
+            return Command(
+                goto="engine_poll",
+                update=_update(
+                    attempt,
+                    engine_poll_errors=failures,
+                    engine_poll_error_last=message,
+                ),
+            )
+
+        return Command(
+            goto="engine_cleanup",
+            update=_update(
+                attempt,
+                engine_poll_errors=failures,
+                engine_cleanup_required=True,
+                engine_cleanup_reason=message,
+                engine_cleanup_final_error=message,
+                engine_cleanup_failures=0,
+            ),
+        )
+
     poll_count = int(entry.get("engine_poll_count") or 0) + 1
     emit_event(_poll_event(handle, status, attempt))
     sample = _poll_sample(status)
 
     if status.phase in TERMINAL_ENGINE_PHASES:
-        update = _update(attempt, engine_poll_last=sample, engine_poll_count=poll_count)
+        update = _update(
+            attempt,
+            engine_poll_last=sample,
+            engine_poll_count=poll_count,
+            engine_poll_errors=0,
+        )
         return Command(goto="engine_collect", update=update)
 
     elapsed = _elapsed_s(entry.get("engine_started_at"))
     if elapsed is not None and elapsed > cfg.limits.poll_timeout_s:
         reason = f"poll timeout after {cfg.limits.poll_timeout_s}s"
 
-        async def _abort_and_teardown() -> None:
-            adapter = await _resolve_engine(cfg, engine_options)
-            try:
-                await adapter.abort(handle, reason=reason)
-            finally:
-                await adapter.teardown(handle)
-
-        try:
-            asyncio.run(_abort_and_teardown())
-        except Exception:  # noqa: BLE001 — abort is best-effort; the phase fails anyway
-            logger.warning(
-                "execution.abort_failed", external_run_id=handle.external_run_id, exc_info=True
-            )
-        engine_runs.record_engine_run_sync(
-            _thread_id(config),
-            attempt,
-            handle.engine,
-            handle.model_dump(mode="json"),
-            EngineRunPhase.ABORTED.value,
-            project_id=cfg.project_id,
-            external_run_id=handle.external_run_id,
-        )
         error = (
             f"execution engine run {handle.external_run_id} timed out after "
-            f"{elapsed:.1f}s (limits.poll_timeout_s={cfg.limits.poll_timeout_s}); aborted"
+            f"{elapsed:.1f}s (limits.poll_timeout_s={cfg.limits.poll_timeout_s})"
         )
         update = _update(
             attempt,
-            status=PhaseStatus.FAILED.value,
-            errors=[error],
             engine_poll_last=sample,
             engine_poll_count=poll_count,
+            engine_cleanup_required=True,
+            engine_cleanup_reason=reason,
+            engine_cleanup_final_error=error,
+            engine_cleanup_failures=0,
         )
-        return Command(goto="finalize", update=update)
+        return Command(goto="engine_cleanup", update=update)
 
-    time.sleep(cfg.limits.poll_interval_s)
-    update = _update(attempt, engine_poll_last=sample, engine_poll_count=poll_count)
+    await asyncio.sleep(cfg.limits.poll_interval_s)
+    update = _update(
+        attempt,
+        engine_poll_last=sample,
+        engine_poll_count=poll_count,
+        engine_poll_errors=0,
+    )
     return Command(goto="engine_poll", update=update)
+
+
+def engine_poll(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Synchronous compatibility path for local ``graph.invoke`` callers.
+
+    The LangGraph server drives the Runnable's async path below, where poll waits
+    use ``asyncio.sleep`` and do not occupy worker threads.
+    """
+    return asyncio.run(_engine_poll_async(state, config))
+
+
+async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Retry a checkpointed external abort until the provider accepts it.
+
+    The node never converts an abort transport/provider failure into a terminal
+    graph state. Each failure count and message is checkpointed before the next
+    attempt, so a process restart resumes cleanup instead of losing the handle.
+    """
+
+    cfg = PipelineConfigurable.from_config(config)
+    entry = _entry(state)
+    attempt = _attempt(entry)
+    handle = _handle_from(state, entry)
+    engine_options = _engine_options(entry)
+    reason = str(entry.get("engine_cleanup_reason") or "execution cleanup required")
+
+    async def _cleanup() -> None:
+        adapter = await _resolve_engine(cfg, engine_options)
+        try:
+            await adapter.abort(handle, reason=reason)
+            await _teardown_after_confirmed_abort(adapter, handle)
+        finally:
+            await _close_resource(adapter)
+
+    try:
+        await _cleanup()
+    except Exception as exc:  # noqa: BLE001 - durable retry is the safety contract
+        failures = int(entry.get("engine_cleanup_failures") or 0) + 1
+        logger.warning(
+            "execution.cleanup_retry",
+            external_run_id=handle.external_run_id,
+            failures=failures,
+            error=str(exc),
+        )
+        await asyncio.sleep(cfg.limits.poll_interval_s)
+        return Command(
+            goto="engine_cleanup",
+            update=_update(
+                attempt,
+                status=PhaseStatus.RUNNING.value,
+                engine_cleanup_required=True,
+                engine_cleanup_failures=failures,
+                engine_cleanup_last_error=str(exc),
+            ),
+        )
+
+    engine_runs.record_engine_run_sync(
+        _thread_id(config),
+        attempt,
+        handle.engine,
+        handle.model_dump(mode="json"),
+        EngineRunPhase.ABORTED.value,
+        project_id=cfg.project_id,
+        app_id=cfg.app_id,
+        external_run_id=handle.external_run_id,
+        artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
+    )
+    final_error = str(entry.get("engine_cleanup_final_error") or reason)
+    return Command(
+        goto="finalize",
+        update=_update(
+            attempt,
+            status=PhaseStatus.FAILED.value,
+            errors=[f"{final_error}; external engine abort confirmed"],
+            engine_cleanup_required=False,
+            engine_cleanup_completed_at=utcnow_iso(),
+            engine_cleanup_last_error=None,
+        ),
+    )
+
+
+def engine_cleanup(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Synchronous compatibility wrapper for local ``graph.invoke`` callers."""
+
+    return asyncio.run(_engine_cleanup_async(state, config))
+
+
+def route_execution_entry(state: PipelineState) -> str:
+    """Resume an unfinished kill before any gate or engine side effect.
+
+    A cleanup self-loop can exhaust a run's recursion budget while the provider
+    is unavailable. A later run on the same checkpoint must continue that kill,
+    not pass through prompt gates or reserve/start another remote execution.
+    """
+
+    if _entry(state).get("engine_cleanup_required"):
+        return "engine_cleanup"
+    return "prepare"
 
 
 def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]:
@@ -433,31 +770,77 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     handle = _handle_from(state, entry)
     engine_options = _engine_options(entry)
     last = dict(entry.get("engine_poll_last") or {})
+    state_errors: list[str] = []
+    raw_engine_phase = last.get("status")
     try:
-        engine_phase = EngineRunPhase(str(last.get("status")))
+        engine_phase = EngineRunPhase(str(raw_engine_phase))
     except ValueError:
-        engine_phase = EngineRunPhase.COMPLETED
+        engine_phase = EngineRunPhase.FAILED
+        state_errors.append(
+            "execution collection state is invalid: a terminal engine status is missing "
+            f"or malformed (got {raw_engine_phase!r})"
+        )
     if engine_phase not in TERMINAL_ENGINE_PHASES:
-        engine_phase = EngineRunPhase.COMPLETED
+        state_errors.append(
+            "execution collection requires a confirmed terminal engine status; "
+            f"got {engine_phase.value!r}"
+        )
+        engine_phase = EngineRunPhase.FAILED
 
-    async def _collect() -> tuple[list[JsonDict], TestResultSummary]:
-        adapter = await _resolve_engine(cfg, engine_options)
-        store = await _resolve_artifact_store(cfg)
+    async def _collect() -> tuple[
+        list[JsonDict], TestResultSummary | None, str | None, list[str], list[str]
+    ]:
+        refs: list[JsonDict] = []
+        summary: TestResultSummary | None = None
+        artifact_connection_id: str | None = None
+        warnings: list[str] = []
+        errors: list[str] = []
+        adapter: Any | None = None
+        store: Any | None = None
         try:
-            refs = await adapter.collect_artifacts(handle, store)
-            return refs, await adapter.fetch_summary(handle)
+            resolved_adapter = await _resolve_engine(cfg, engine_options)
+            adapter = resolved_adapter
+            try:
+                store, artifact_connection_id = await _resolve_artifact_store(cfg)
+                refs = await resolved_adapter.collect_artifacts(handle, store)
+            except Exception as exc:  # noqa: BLE001 - artifacts are best-effort
+                warnings.append(f"engine artifact collection failed: {exc}")
+            try:
+                summary = await resolved_adapter.fetch_summary(handle)
+            except Exception as exc:  # noqa: BLE001 - settle terminal state below
+                errors.append(f"engine summary collection failed: {exc}")
+        except Exception as exc:  # noqa: BLE001 - resolution itself may fail
+            errors.append(f"engine collection setup failed: {exc}")
         finally:
-            await adapter.teardown(handle)
+            if adapter is not None:
+                try:
+                    await adapter.teardown(handle)
+                except Exception as exc:  # noqa: BLE001 - phase must still settle
+                    warnings.append(f"engine teardown failed: {exc}")
+                await _close_resource(adapter)
+            if store is not None:
+                await _close_resource(store)
+        return refs, summary, artifact_connection_id, warnings, errors
 
-    refs, summary = asyncio.run(_collect())
+    refs, summary, artifact_connection_id, collection_warnings, collection_errors = asyncio.run(
+        _collect()
+    )
     artifacts: list[JsonDict] = []
     for index, raw_ref in enumerate(refs):
         ref = dict(raw_ref)
         # Deterministic ids: re-execution after a crash must not duplicate refs
         # under the append-unique-by-id artifacts reducer.
         ref["id"] = f"{_PHASE.value}-a{attempt}-engine-artifact-{index}"
+        ref["artifact_connection_id"] = artifact_connection_id
         artifacts.append(ref)
 
+    collection_errors = [*state_errors, *collection_errors]
+    if summary is None:
+        summary = TestResultSummary(
+            engine=handle.engine,
+            passed=False,
+            notes="; ".join(collection_errors) or "engine summary unavailable",
+        )
     summary_json = summary.model_dump(mode="json")
     kpi_text = ", ".join(
         f"{key}={value:g}" if isinstance(value, int | float) else f"{key}={value}"
@@ -473,28 +856,46 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         "summary": summary_text,
         "test_summary": summary_json,
         "artifact_ids": [artifact["id"] for artifact in artifacts],
+        "artifact_namespace": engine_artifact_namespace(handle.idempotency_key),
+        "artifact_store_connection_id": artifact_connection_id,
     }
+    if collection_warnings:
+        fields["warnings"] = collection_warnings
     goto = "open_output_gate"
     if engine_phase is EngineRunPhase.ABORTED:
         fields["status"] = PhaseStatus.ABORTED.value
-        fields["errors"] = [f"engine run {handle.external_run_id} was aborted"]
+        fields["errors"] = [
+            f"engine run {handle.external_run_id} was aborted",
+            *collection_errors,
+        ]
         goto = "finalize"
     elif engine_phase is EngineRunPhase.FAILED or not summary.passed:
         fields["status"] = PhaseStatus.FAILED.value
-        fields["errors"] = list(summary.sla_breaches) or [
-            str(last.get("message") or "engine run failed")
-        ]
+        phase_errors = list(summary.sla_breaches)
+        if not phase_errors and not state_errors:
+            phase_errors = [str(last.get("message") or "engine run failed")]
+        fields["errors"] = [*phase_errors, *collection_errors]
+        goto = "finalize"
+    elif collection_errors:
+        fields["status"] = PhaseStatus.FAILED.value
+        fields["errors"] = collection_errors
         goto = "finalize"
 
+    projected_phase = (
+        EngineRunPhase.FAILED if fields.get("status") == PhaseStatus.FAILED.value else engine_phase
+    )
     engine_runs.record_engine_run_sync(
         _thread_id(config),
         attempt,
         handle.engine,
         handle.model_dump(mode="json"),
-        engine_phase.value,
+        projected_phase.value,
         project_id=cfg.project_id,
+        app_id=cfg.app_id,
         external_run_id=handle.external_run_id,
         summary=summary_json,
+        artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
+        artifact_connection_id=artifact_connection_id,
     )
     update = _update(attempt, **fields)
     update["artifacts"] = artifacts
@@ -517,10 +918,25 @@ def add_execution_engine_nodes(builder: StateGraph[PipelineState, Any, Any, Any]
     finalize -> END etc.); this only contributes the agent-alias + engine nodes.
     """
     builder.add_node("agent", _enter_engine_spine)
-    builder.add_node("engine_reserve", engine_reserve, destinations=("engine_start", "finalize"))
-    builder.add_node("engine_start", engine_start, destinations=("engine_poll", "finalize"))
     builder.add_node(
-        "engine_poll", engine_poll, destinations=("engine_poll", "engine_collect", "finalize")
+        "engine_reserve", engine_reserve, destinations=("engine_provision", "finalize")
+    )
+    builder.add_node(
+        "engine_provision", engine_provision, destinations=("engine_start", "finalize")
+    )
+    builder.add_node("engine_start", engine_start, destinations=("engine_status", "engine_cleanup"))
+    builder.add_node(
+        "engine_status", engine_status, destinations=("engine_poll", "engine_collect", "finalize")
+    )
+    builder.add_node(
+        "engine_poll",
+        RunnableLambda(engine_poll, afunc=_engine_poll_async, name="engine_poll"),
+        destinations=("engine_poll", "engine_collect", "engine_cleanup"),
+    )
+    builder.add_node(
+        "engine_cleanup",
+        RunnableLambda(engine_cleanup, afunc=_engine_cleanup_async, name="engine_cleanup"),
+        destinations=("engine_cleanup", "finalize"),
     )
     builder.add_node(
         "engine_collect", engine_collect, destinations=("open_output_gate", "finalize")
@@ -531,10 +947,14 @@ def add_execution_engine_nodes(builder: StateGraph[PipelineState, Any, Any, Any]
 __all__ = [
     "SPINE_SUPERSTEPS",
     "add_execution_engine_nodes",
+    "engine_cleanup",
     "engine_collect",
     "engine_poll",
+    "engine_provision",
     "engine_reserve",
     "engine_start",
+    "engine_status",
     "execution_idempotency_key",
     "recommended_recursion_limit",
+    "route_execution_entry",
 ]

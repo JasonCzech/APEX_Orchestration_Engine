@@ -13,22 +13,23 @@
  *     onOutcome={...}                // terminal notification, once per instance
  *     handleRef={gateHandleRef}      // keyboard layer (a/m/s/x + Enter)
  *   />
- *   keyed by interrupt.interrupt_id — a discuss/revise re-interrupt mints a
- *   new id, remounting a fresh module (and re-arming onOutcome).
+ *   keyed by interrupt.interrupt_id — a changed id remounts a fresh module;
+ *   LangGraph may reuse the id, in which case useGate reopens on the refreshed
+ *   post-resume snapshot.
  *
  * Inbox semantics on onOutcome:
- *   {type:'resumed', action} with action approve/modify/skip_phase/abort
+ *   {type:'resumed', action} with action approve/skip_phase/abort
  *     -> the gate is settled HERE: gray the queue row ('actioned'),
  *        auto-advance the selection to the next open gate.
- *   {type:'resumed', action} with action discuss/revise
- *     -> NOT terminal for the queue: the gate reopens (awaiting_agent ->
- *        new interrupt) — selection stays put.
+ *   modify/discuss/revise emit no terminal outcome for the queue: the gate
+ *     reopens (awaiting_agent -> refreshed interrupt) — selection stays put.
  *   {type:'superseded'}
  *     -> actioned elsewhere (409 CAS loss or interrupt vanished): gray the
  *        row ('actioned elsewhere'), auto-advance.
  *
  * Keyboard delegation (handleRef):
- *   a/s/x -> invoke('approve' | 'skip_phase' | 'abort')  — submit decisions
+ *   a/s   -> invoke('approve' | 'skip_phase')            — submit decisions
+ *   x     -> invoke('abort')                             — arm typed confirmation
  *   m     -> invoke('modify')                            — modify-FOCUS only
  *   Enter -> focus()
  *   All gated on isActionable() (machine 'open'); invoke() additionally

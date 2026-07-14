@@ -8,15 +8,30 @@ router never re-filters threads client-side.
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from langgraph_sdk import Auth
 from langgraph_sdk.errors import NotFoundError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.app.errors import problem
+from apex.auth.handlers import ensure_thread_scope
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
+from apex.domain.pipeline import PHASE_ORDER, ContextPacket, ExternalResults
+from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.services.documents import get_documents_repository
+from apex.routers.catalog import get_catalog_repository
+from apex.routers.engines import AbortService
+from apex.services.documents import (
+    DocumentContextNotFoundError,
+    get_documents_repository,
+    uploaded_document_context_packets,
+)
+from apex.services.engine_abort import EngineRunNotFoundError
+from apex.services.environments import (
+    EnvironmentTargetNotFoundError,
+    resolve_environment_target,
+)
 from apex.services.langgraph_client import loopback_client
 from apex.services.pipeline_read import (
     GateSupersededError,
@@ -24,7 +39,10 @@ from apex.services.pipeline_read import (
     NoActiveRunError,
     PipelineReadService,
 )
-from apex.settings import get_settings
+from apex.services.run_validation import (
+    MAX_GATE_STRING_CHARS_HARD,
+    MAX_PROMPT_PART_CHARS_HARD,
+)
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
@@ -32,8 +50,13 @@ ThreadStatusFilter = Literal["idle", "busy", "interrupted", "error"]
 
 
 def get_pipeline_read_service(request: Request) -> PipelineReadService:
-    """Per-request service over the loopback client, forwarding the caller's key."""
-    return PipelineReadService(loopback_client(extract_api_key(request.headers)))
+    """Scoped loopback service allowed to perform facade-owned run cancellation."""
+    return PipelineReadService(
+        loopback_client(
+            extract_api_key(request.headers),
+            authorize_destructive=True,
+        )
+    )
 
 
 def _pipeline_read_service_after_scope(request: Request) -> PipelineReadService:
@@ -46,39 +69,45 @@ def _pipeline_read_service_after_scope(request: Request) -> PipelineReadService:
 
 PipelineService = Annotated[PipelineReadService, Depends(get_pipeline_read_service)]
 DocumentsRepo = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+CatalogRepo = Annotated[CatalogRepository, Depends(get_catalog_repository)]
 
 
 async def _documents_to_packets(
     repository: DocumentsRepository, identity: ConsumerIdentity, document_ids: list[str]
 ) -> list[dict[str, Any]]:
-    """Resolve uploaded documents into context packets the agent can read.
+    """HTTP mapping wrapper around the shared uploaded-document evidence service."""
 
-    Scoped like GET /v1/documents/{id}: a document outside the caller's scope is 404,
-    not leaked. The artifact key is exposed as a /v1/artifacts URL the agent (or a
-    human) can dereference.
+    try:
+        return await uploaded_document_context_packets(repository, identity, document_ids)
+    except DocumentContextNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _resolve_pipeline_scope(
+    identity: ConsumerIdentity,
+    *,
+    project_id: str | None,
+    app_id: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the same project/app ownership LangGraph stamps on a thread.
+
+    Doing this before thread creation also puts the effective ownership into the
+    graph configurable, so connection selection and projections cannot silently
+    fall back to global scope.
     """
-    per_doc_cap = get_settings().documents.max_context_chars_per_doc
-    packets: list[dict[str, Any]] = []
-    for document_id in document_ids:
-        document = await repository.get(document_id)
-        if document is None or not (
-            document.project_id is None or identity.allows_project(document.project_id)
-        ):
-            raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
-        text = document.extracted_text or None
-        if text and len(text) > per_doc_cap:
-            text = text[:per_doc_cap].rstrip() + "\n\n…[truncated]"
-        packets.append(
-            {
-                "id": f"document-{document.id}",
-                "source": "document",
-                "title": document.name,
-                "summary": document.summary,
-                "ref": f"/v1/artifacts/{document.artifact_key}",
-                "text": text,
-            }
-        )
-    return packets
+
+    if app_id is not None and project_id is None:
+        raise HTTPException(status_code=422, detail="project_id is required when app_id is set")
+    metadata = {
+        key: value
+        for key, value in (("project_id", project_id), ("app_id", app_id))
+        if value is not None
+    }
+    try:
+        ensure_thread_scope(identity, metadata, action="pipelines.create")
+    except Auth.exceptions.HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return metadata.get("project_id"), metadata.get("app_id")
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -127,15 +156,37 @@ class StartPipelineRequest(BaseModel):
 
     title: str = Field(min_length=1, max_length=500)
     request: str = Field(default="", max_length=20000)
+    assistant_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Golden assistant id; defaults to the base pipeline graph.",
+    )
     project_id: str | None = None
     app_id: str | None = None
-    phases: list[str] | None = None
-    gates: dict[str, Any] | None = None
-    agent_backend: str | None = None
-    model_by_phase: dict[str, str] | None = None
-    external_results: dict[str, Any] | None = None
-    context_packets: list[dict[str, Any]] | None = None
-    document_ids: list[str] | None = None
+    configurable: dict[str, Any] | None = Field(
+        default=None,
+        max_length=64,
+        description="Full per-run PipelineConfigurable layer retained by the selected assistant.",
+    )
+    phases: list[str] | None = Field(default=None, max_length=len(PHASE_ORDER))
+    gates: dict[str, Any] | None = Field(default=None, max_length=len(PHASE_ORDER))
+    agent_backend: str | None = Field(default=None, max_length=32)
+    model_by_phase: dict[str, str] | None = Field(default=None, max_length=len(PHASE_ORDER))
+    external_results: ExternalResults | None = None
+    context_packets: list[ContextPacket] | None = Field(default=None, max_length=64)
+    document_ids: list[str] | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_document_ids(self) -> "StartPipelineRequest":
+        if self.document_ids:
+            if any(
+                not document_id.strip() or len(document_id) > 256
+                for document_id in self.document_ids
+            ):
+                raise ValueError("document_ids entries must be 1-256 characters")
+            if len(set(self.document_ids)) != len(self.document_ids):
+                raise ValueError("document_ids must not contain duplicates")
+        return self
 
 
 class StartPipelineResponse(BaseModel):
@@ -159,12 +210,20 @@ class PipelineDetail(PipelineSummary):
     interrupts: list[GateInterrupt] = Field(default_factory=list)
 
 
+class GatePromptEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    system: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    user: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    application: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+
+
 class ResumeGateRequest(BaseModel):
-    action: str
-    prompt: dict[str, Any] | None = None
-    instructions: str | None = None
-    message: str | None = None
-    note: str | None = None
+    action: str = Field(min_length=1, max_length=32)
+    prompt: GatePromptEdit | None = None
+    instructions: str | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
+    message: str | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
+    note: str | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
 
 
 class ResumeGateResponse(BaseModel):
@@ -186,10 +245,10 @@ class PhasePromptReview(BaseModel):
 
 
 class PhasePromptReviewUpdate(BaseModel):
-    system: str
-    phase_prompt: str
-    application: str | None = None
-    additional_context: str = ""
+    system: str = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
+    phase_prompt: str = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
+    application: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    additional_context: str = Field(default="", max_length=MAX_GATE_STRING_CHARS_HARD)
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -206,6 +265,7 @@ async def create_pipeline_run(
     body: StartPipelineRequest,
     identity: CurrentIdentity,
     documents: DocumentsRepo,
+    catalog: CatalogRepo,
     request: Request,
 ) -> Any:
     """Create a thread and launch a pipeline run; returns the run id + SSE stream URL.
@@ -215,22 +275,81 @@ async def create_pipeline_run(
     raw LangGraph /threads + /runs API. `document_ids` are resolved into context packets
     (scoped per consumer) and merged with any inline `context_packets`.
     """
-    ensure_scope(identity, project_id=body.project_id, app_id=body.app_id)
+    run_configurable = dict(body.configurable or {})
+    configured_project = run_configurable.get("project_id")
+    configured_app = run_configurable.get("app_id")
+    if configured_project is not None and not isinstance(configured_project, str):
+        raise HTTPException(status_code=422, detail="configurable.project_id must be a string")
+    if configured_app is not None and not isinstance(configured_app, str):
+        raise HTTPException(status_code=422, detail="configurable.app_id must be a string")
+    if body.project_id and configured_project and body.project_id != configured_project:
+        raise HTTPException(
+            status_code=422,
+            detail="project_id conflicts with configurable.project_id",
+        )
+    if body.app_id and configured_app and body.app_id != configured_app:
+        raise HTTPException(status_code=422, detail="app_id conflicts with configurable.app_id")
+    project_id, app_id = _resolve_pipeline_scope(
+        identity,
+        project_id=body.project_id or configured_project,
+        app_id=body.app_id or configured_app,
+    )
+    load_test = run_configurable.get("load_test")
+    if isinstance(load_test, dict) and "target_environment" in load_test:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "load_test.target_environment cannot be supplied directly; select environment_id"
+            ),
+        )
+    if isinstance(load_test, dict):
+        script_refs = load_test.get("script_refs")
+        if isinstance(script_refs, list) and any(
+            isinstance(ref, str) and ref.lstrip().startswith("{") for ref in script_refs
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "inline load_test.script_refs are not allowed; select an approved environment"
+                ),
+            )
+    environment_id = run_configurable.get("environment_id")
+    if environment_id is not None:
+        if not isinstance(environment_id, str) or not environment_id.strip():
+            raise HTTPException(
+                status_code=422, detail="configurable.environment_id must be a non-empty string"
+            )
+        try:
+            target = await resolve_environment_target(
+                catalog,
+                environment_id.strip(),
+                project_id=project_id,
+                app_id=app_id,
+            )
+        except EnvironmentTargetNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        run_configurable["environment_id"] = environment_id.strip()
+        run_configurable["environment_target"] = target.base_url
+        run_configurable["environment_target_version"] = target.version
     service = _pipeline_read_service_after_scope(request)
-    context_packets = list(body.context_packets or [])
+    context_packets = [packet.model_dump(mode="json") for packet in (body.context_packets or [])]
     if body.document_ids:
         context_packets += await _documents_to_packets(documents, identity, body.document_ids)
     try:
         result = await service.start_run(
             title=body.title,
             request=body.request,
-            project_id=body.project_id,
-            app_id=body.app_id,
+            assistant_id=body.assistant_id,
+            project_id=project_id,
+            app_id=app_id,
+            configurable=run_configurable,
             phases=body.phases,
             gates=body.gates,
             agent_backend=body.agent_backend,
             model_by_phase=body.model_by_phase,
-            external_results=body.external_results,
+            external_results=(
+                body.external_results.model_dump(mode="json") if body.external_results else None
+            ),
             context_packets=context_packets or None,
         )
     except ValueError as exc:
@@ -335,7 +454,7 @@ async def resume_gate(
             interrupt_id,
             body.action,
             {
-                "prompt": body.prompt,
+                "prompt": body.prompt.model_dump(mode="json") if body.prompt else None,
                 "instructions": body.instructions,
                 "message": body.message,
                 "note": body.note,
@@ -371,10 +490,23 @@ async def resume_gate(
     response_model=AbortPipelineResponse,
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
-async def abort_pipeline(thread_id: str, service: PipelineService) -> Any:
-    """Cancel the thread's active run(s) via the loopback API (engine abort lands M3)."""
+async def abort_pipeline(
+    thread_id: str,
+    service: PipelineService,
+    engine_abort: AbortService,
+) -> Any:
+    """Stop an external engine first, then cancel the thread's active runs.
+
+    Threads that have not entered execution have no engine handle and fall back
+    to graph-only cancellation. Engine abort failures propagate so the API never
+    reports success while production load is still running.
+    """
     try:
-        cancelled = await service.abort_pipeline(thread_id)
+        try:
+            result = await engine_abort.abort(thread_id)
+            cancelled = result.cancelled_runs
+        except EngineRunNotFoundError:
+            cancelled = await service.abort_pipeline(thread_id)
     except NotFoundError:
         raise HTTPException(
             status_code=404, detail=f"pipeline thread {thread_id!r} not found"

@@ -1,7 +1,7 @@
 /**
  * Step 6 — Review: summary cards with edit-links back to each step,
- * outstanding validation issues, and the collapsible JSON of the EXACT launch
- * payload (same buildLaunchPreview the launch path sends).
+ * outstanding validation issues, and the collapsible launch plan. Work-item
+ * keys and document ids are resolved into context packets at launch time.
  */
 import type { ReactNode } from 'react'
 
@@ -162,7 +162,7 @@ export function ReviewStep({
       </div>
 
       <details className="glass-panel wizard-accordion">
-        <summary className="wizard-accordion-summary">Launch payload (exact)</summary>
+        <summary className="wizard-accordion-summary">Launch plan</summary>
         <pre className="wizard-json" data-testid="launch-payload-json">
           {JSON.stringify(preview, null, 2)}
         </pre>

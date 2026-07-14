@@ -91,6 +91,36 @@ function toolCall(id: string, phase: PhaseName = 'story_analysis') {
   return { schema_version: 1, type: 'tool_call', phase, id, tool: 'jira_search', status: 'ok' }
 }
 
+function agentMessage(phase: PhaseName = 'story_analysis') {
+  return {
+    schema_version: 1,
+    type: 'agent_message',
+    phase,
+    model: 'claude-sonnet-4-5',
+    chars: 842,
+  }
+}
+
+function agentError(phase: PhaseName = 'story_analysis') {
+  return {
+    schema_version: 1,
+    type: 'agent_error',
+    phase,
+    error: 'provider request timed out',
+  }
+}
+
+function enginePollError() {
+  return {
+    schema_version: 1,
+    type: 'engine_poll_error',
+    phase: 'execution',
+    attempt: 1,
+    error: 'provider status request timed out',
+    consecutive_errors: 2,
+  }
+}
+
 function gateOpened(gate: 'prompt_review' | 'phase_review', phase: PhaseName, attempt = 1) {
   return { schema_version: 1, type: 'gate_opened', gate, phase, attempt }
 }
@@ -176,11 +206,26 @@ describe('usePipelineStream', () => {
 
     await act(async () => {
       stream.pushCustom(toolCall('tc-1'), 'ev-3')
+      stream.pushCustom(agentMessage(), 'ev-3a')
+      stream.pushCustom(agentError(), 'ev-3b')
+      stream.pushCustom(enginePollError(), 'ev-3c')
       stream.pushCustom(phaseStatus('story_analysis', 'succeeded'), 'ev-4')
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(result.current.toolCalls).toHaveLength(1)
     expect(result.current.toolCalls[0]?.id).toBe('tc-1')
+    expect(result.current.agentEvents).toEqual([
+      expect.objectContaining({ type: 'agent_message', model: 'claude-sonnet-4-5' }),
+      expect.objectContaining({ type: 'agent_error', error: 'provider request timed out' }),
+    ])
+    expect(result.current.engineErrors).toEqual([
+      expect.objectContaining({
+        type: 'engine_poll_error',
+        error: 'provider status request timed out',
+        consecutive_errors: 2,
+      }),
+    ])
+    expect(result.current.driftCount).toBe(0)
     expect(result.current.phaseProgress.story_analysis).toEqual({
       status: 'succeeded',
       attempt: 1,
@@ -357,6 +402,29 @@ describe('usePipelineStream', () => {
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(result.current.status).toBe('live')
+  })
+
+  it('preserves the newest cursor when a resumed stream later disconnects', async () => {
+    const { queryClient, wrapper } = setup()
+    resumeStore.set('t1', 'r1', 'ev-old')
+    const first = fake.scriptStream()
+    fake.scriptStream()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+    expect(fake.joinStreamCalls[0]?.options?.lastEventId).toBe('ev-old')
+
+    await act(async () => {
+      first.pushCustom(phaseStatus('story_analysis', 'running'), 'ev-new')
+      await vi.advanceTimersByTimeAsync(0)
+      first.fail(new TypeError('network dropped'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-new')
+    expect(invalidate).not.toHaveBeenCalled()
+    await pump(1_500)
+    expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-new')
   })
 
   it('gate_opened sets the pending hint and patches cached rows', async () => {

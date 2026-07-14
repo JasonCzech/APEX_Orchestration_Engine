@@ -178,22 +178,33 @@ async def test_source_control_returns_fixture_content() -> None:
 
 
 async def test_env_secrets_resolves_from_environ(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APEX_TEST_SECRET", "hunter2")
-    secret = await EnvSecretsAdapter().resolve("env:APEX_TEST_SECRET")
+    monkeypatch.setenv("APEX_INTEGRATION_TEST_SECRET", "hunter2")
+    secret = await EnvSecretsAdapter().resolve("env:APEX_INTEGRATION_TEST_SECRET")
     assert secret.value == "hunter2"
     assert "hunter2" not in repr(secret)
 
 
 async def test_env_secrets_missing_var_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("APEX_TEST_MISSING", raising=False)
-    with pytest.raises(KeyError, match="APEX_TEST_MISSING"):
-        await EnvSecretsAdapter().resolve("env:APEX_TEST_MISSING")
+    monkeypatch.delenv("APEX_INTEGRATION_TEST_MISSING", raising=False)
+    with pytest.raises(KeyError, match="APEX_INTEGRATION_TEST_MISSING"):
+        await EnvSecretsAdapter().resolve("env:APEX_INTEGRATION_TEST_MISSING")
 
 
 async def test_env_secrets_rejects_disallowed_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", "/bin")
     with pytest.raises(ValueError, match="env_secret_prefixes"):
         await EnvSecretsAdapter().resolve("env:PATH")
+
+
+async def test_env_secrets_cannot_resolve_platform_apex_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "platform-secret")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql://platform-secret")
+
+    for name in ("APEX_AUTH__API_KEY_HASH_PEPPER", "APEX_DATABASE__URI"):
+        with pytest.raises(ValueError, match="env_secret_prefixes"):
+            await EnvSecretsAdapter().resolve(f"env:{name}")
 
 
 async def test_env_secrets_rejects_unknown_scheme() -> None:

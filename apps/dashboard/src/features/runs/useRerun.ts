@@ -31,22 +31,26 @@ export const ALL_GATED_GATES: Record<PhaseName, UniformGatePolicy> = Object.from
   PHASE_NAMES.map((phase) => [phase, { prompt_review: 'gated', output_review: 'gated' }]),
 ) as Record<PhaseName, UniformGatePolicy>
 
-export interface RerunConfigurable {
+export interface RerunConfigurable extends Record<string, unknown> {
   phases: PhaseName[]
   gates?: Record<PhaseName, UniformGatePolicy>
+  limits?: { poll_interval_s?: number; poll_timeout_s?: number }
 }
 
 /**
- * configurable for a phase-subset re-run. `inherit` OMITS gates entirely so
- * the assistant/backend defaults apply (configurable.py GatePolicy = GATED).
+ * Configurable for a phase-subset re-run. The previous run's persisted
+ * effective config is the base; `inherit` retains its gate matrix while the
+ * two explicit modes replace only that matrix.
  */
 export function buildRerunConfigurable(
   phases: PhaseName[],
   gatesMode: GatesMode,
+  baseConfigurable: Record<string, unknown> = {},
 ): RerunConfigurable {
-  if (gatesMode === 'gated') return { phases, gates: ALL_GATED_GATES }
-  if (gatesMode === 'auto') return { phases, gates: ALL_AUTO_GATES }
-  return { phases }
+  const configurable: RerunConfigurable = { ...baseConfigurable, phases }
+  if (gatesMode === 'gated') configurable.gates = ALL_GATED_GATES
+  if (gatesMode === 'auto') configurable.gates = ALL_AUTO_GATES
+  return configurable
 }
 
 export interface RerunInput {
@@ -54,6 +58,8 @@ export interface RerunInput {
   /** Canonical-order phase subset (configurable.phases). */
   phases: PhaseName[]
   gatesMode: GatesMode
+  /** Effective config persisted by plan_resolver on the previous run. */
+  baseConfigurable?: Record<string, unknown>
 }
 
 export interface RerunResult {
@@ -61,12 +67,21 @@ export interface RerunResult {
   runId: string
 }
 
-async function rerunPhases({ threadId, phases, gatesMode }: RerunInput): Promise<RerunResult> {
+async function rerunPhases({
+  threadId,
+  phases,
+  gatesMode,
+  baseConfigurable,
+}: RerunInput): Promise<RerunResult> {
   const client = await getLangGraphClient()
-  const configurable = { ...buildRerunConfigurable(phases, gatesMode) }
-  const run = await client.runs.create(threadId, 'pipeline', {
+  const configurable = buildRerunConfigurable(phases, gatesMode, baseConfigurable)
+  const assistantId =
+    typeof baseConfigurable?.['assistant_id'] === 'string'
+      ? baseConfigurable['assistant_id']
+      : 'pipeline'
+  const run = await client.runs.create(threadId, assistantId, {
     input: {},
-    config: { recursion_limit: recommendedRecursionLimit(), configurable },
+    config: { recursion_limit: recommendedRecursionLimit(configurable), configurable },
     streamMode: ['updates', 'messages-tuple', 'custom'],
     streamSubgraphs: true,
     streamResumable: true,

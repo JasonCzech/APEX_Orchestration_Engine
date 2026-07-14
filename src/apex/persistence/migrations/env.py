@@ -44,6 +44,9 @@ def _configure(connection: Connection | None = None, url: str | None = None) -> 
 
 def run_migrations_offline() -> None:
     _configure(url=_database_uri())
+    # Offline output is often applied to an empty database; emit the same schema
+    # precondition as the online runner before Alembic addresses its version table.
+    context.execute(text(f"CREATE SCHEMA IF NOT EXISTS {APEX_SCHEMA}"))
     with context.begin_transaction():
         context.run_migrations()
 

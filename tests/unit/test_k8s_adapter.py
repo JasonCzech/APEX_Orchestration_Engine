@@ -166,7 +166,7 @@ def make_adapter(**options: Any) -> KubernetesClusterInventoryAdapter:
         provider="kubernetes",
         name="Staging cluster",
         options={"base_url": BASE_URL, **options},
-        secret_ref="env:APEX_K8S_TOKEN",
+        secret_ref="env:APEX_INTEGRATION_K8S_TOKEN",
     )
     return KubernetesClusterInventoryAdapter(conn, SecretValue(value=TOKEN))
 
@@ -251,9 +251,9 @@ async def test_scan_aggregates_multiple_namespaces() -> None:
 
 
 @respx.mock
-async def test_namespace_falls_back_to_env_ref_name() -> None:
+async def test_namespace_binding_uses_immutable_environment_id() -> None:
     mock_namespace("perf-lab", deployments=EMPTY_DEPLOYMENTS, services=EMPTY_SERVICES)
-    adapter = make_adapter()  # no namespace/namespaces in connection options
+    adapter = make_adapter(environment_namespaces={"env-9": "perf-lab"})
 
     snapshot = await adapter.scan_environment(EnvRef(id="env-9", name="perf-lab"))
 
@@ -263,7 +263,14 @@ async def test_namespace_falls_back_to_env_ref_name() -> None:
 async def test_no_namespace_anywhere_is_value_error() -> None:
     adapter = make_adapter()
     with pytest.raises(ValueError, match="no namespace configured"):
-        await adapter.scan_environment(EnvRef(id="env-9", name=None))
+        await adapter.scan_environment(EnvRef(id="env-9", name="victim-namespace"))
+
+
+async def test_environment_display_name_never_selects_namespace() -> None:
+    adapter = make_adapter(environment_namespaces={"different-env": "victim-namespace"})
+
+    with pytest.raises(ValueError, match="no namespace configured"):
+        await adapter.scan_environment(EnvRef(id="env-9", name="victim-namespace"))
 
 
 # ── error mapping ────────────────────────────────────────────────────────────

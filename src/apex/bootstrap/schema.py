@@ -15,7 +15,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from apex.adapters.registry import PortKind
 from apex.auth.identity import ConsumerType, Role
 
-# A secret reference is "<scheme>:<name>" (e.g. env:APEX_MINIO_SECRET_KEY), never a
+# A secret reference is "<scheme>:<name>" (for example,
+# env:APEX_INTEGRATION_MINIO_SECRET_KEY), never a
 # literal secret. Schemes are resolved by the secrets adapters at runtime.
 _SECRET_REF_RE = re.compile(r"^[a-z][a-z0-9+.\-]*:.+$")
 

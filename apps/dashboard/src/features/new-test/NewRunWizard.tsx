@@ -90,7 +90,8 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   },
   review: {
     title: 'Launch Preview',
-    description: 'Review the exact launch payload that will be sent when you start the pipeline.',
+    description:
+      'Review the launch plan. Selected work items and documents are resolved into agent context when the pipeline starts.',
   },
 }
 

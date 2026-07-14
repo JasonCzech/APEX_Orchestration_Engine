@@ -122,8 +122,8 @@ Pass criteria:
 - the thread never disappears from `/v1/pipelines` and ends `succeeded`;
 - `/v1/engines/runs/$TID` shows **exactly one attempt with one
   `external_run_id`** across all restarts — the checkpointed idempotency key
-  plus the engine's get-or-create provision contract make a restart unable to
-  double-start load;
+  plus the engine's get-or-create provision contract and PostgreSQL advisory
+  creation lock make concurrent replicas unable to double-start load;
 - an SSE consumer (`GET /threads/$TID/runs/<run_id>/stream` through nginx) can
   rejoin after a disconnect and keep receiving events (Redis-backed resumable
   streams).

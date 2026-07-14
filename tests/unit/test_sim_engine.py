@@ -11,6 +11,7 @@ from apex.adapters.sim_engine import SimExecutionEngine
 from apex.adapters.stubs import MemoryArtifactStore
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import EngineHandle
+from apex.ports.artifact_store import engine_artifact_key
 from apex.ports.execution_engine import EngineRunPhase
 
 FAST_DURATION_S = 0.05
@@ -43,7 +44,12 @@ async def test_validate_flags_bad_spec() -> None:
     ok = await engine.validate(_spec())
     assert ok.ok and ok.issues == []
 
-    bad = await engine.validate(LoadTestSpec(title="bad", vusers=0, duration_s=0, ramp_s=-1))
+    # Domain admission rejects this shape; retain the adapter check as defense in
+    # depth for legacy/deserialized objects that bypass normal model validation.
+    bad_spec = _spec().model_copy(
+        update={"title": "bad", "vusers": 0, "duration_s": 0, "ramp_s": -1}
+    )
+    bad = await engine.validate(bad_spec)
     assert not bad.ok
     assert len(bad.issues) == 3
 
@@ -112,9 +118,11 @@ async def test_collect_artifacts_stores_results_json() -> None:
     assert ref["kind"] == "engine_results"
     assert ref["name"] == "results.json"
     assert ref["media_type"] == "application/json"
-    assert ref["uri"] == f"memory://engine-runs/{handle.external_run_id}/results.json"
+    key = engine_artifact_key(handle.idempotency_key, "results.json")
+    assert ref["uri"] == f"memory://{key}"
+    assert ref["key"] == key
 
-    payload = json.loads(await store.get(f"engine-runs/{handle.external_run_id}/results.json"))
+    payload = json.loads(await store.get(key))
     assert payload["engine"] == "sim"
     assert payload["passed"] is True
     assert set(payload["kpis"]) == {"tps_avg", "p95_ms", "error_rate", "vusers_peak"}

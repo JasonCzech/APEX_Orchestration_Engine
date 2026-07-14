@@ -15,17 +15,19 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
 
+from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 from apex.persistence.models import Document
 from apex.persistence.repositories.documents import DocumentsRepository
+from apex.services.connections import ConnectionResolver, get_connection_resolver
 from apex.services.documents import (
+    MAX_DOCUMENT_BYTES,
     MAX_UPLOAD_BODY_BYTES,
     DocumentsService,
     DocumentTooLargeError,
     MultipartParseError,
     extract_boundary,
-    get_artifact_store,
     get_documents_repository,
     parse_multipart,
     read_body_capped,
@@ -34,7 +36,7 @@ from apex.services.documents import (
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 RepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
-ArtifactStoreDep = Annotated[Any, Depends(get_artifact_store)]
+ConnectionResolverDep = Annotated[ConnectionResolver, Depends(get_connection_resolver)]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -75,6 +77,62 @@ def _visible(identity: ConsumerIdentity, document: Document) -> bool:
     )
 
 
+def _writable(identity: ConsumerIdentity, document: Document) -> bool:
+    if document.project_id is None:
+        return identity.is_unscoped and identity.role.at_least(Role.ADMIN)
+    return identity.contains_scope(ScopeRef(project_id=document.project_id, app_id=document.app_id))
+
+
+def _resolve_upload_scope(
+    identity: ConsumerIdentity,
+    *,
+    project_id: str | None,
+    app_id: str | None,
+) -> tuple[str | None, str | None]:
+    """Prevent a scoped writer from creating a broader document than it owns."""
+
+    if app_id is not None and project_id is None:
+        raise HTTPException(status_code=422, detail="app_id requires project_id")
+    if identity.is_unscoped:
+        return project_id, app_id
+
+    if project_id is None:
+        projects = identity.scoped_project_ids()
+        if len(projects) != 1:
+            raise HTTPException(
+                status_code=422,
+                detail="project_id is required when the consumer has multiple project scopes",
+            )
+        project_id = projects[0]
+
+    if app_id is not None:
+        if not identity.contains_scope(ScopeRef(project_id=project_id, app_id=app_id)):
+            raise HTTPException(
+                status_code=403,
+                detail=f"consumer is not scoped to project {project_id!r}, app {app_id!r}",
+            )
+        return project_id, app_id
+
+    project_scope = ScopeRef(project_id=project_id)
+    if identity.contains_scope(project_scope):
+        return project_id, None
+    apps = tuple(
+        dict.fromkeys(
+            scope.app_id
+            for scope in identity.scopes
+            if scope.project_id == project_id and scope.app_id is not None
+        )
+    )
+    if len(apps) == 1:
+        return project_id, apps[0]
+    if not apps:
+        raise HTTPException(status_code=403, detail=f"consumer is not scoped to {project_id!r}")
+    raise HTTPException(
+        status_code=422,
+        detail="app_id is required when the consumer has multiple app scopes",
+    )
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
@@ -107,7 +165,7 @@ async def upload_document(
     request: Request,
     identity: Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))],
     repository: RepositoryDep,
-    store: ArtifactStoreDep,
+    resolver: ConnectionResolverDep,
 ) -> Any:
     boundary = extract_boundary(request.headers.get("content-type"))
     if boundary is None:
@@ -123,15 +181,29 @@ async def upload_document(
         raise HTTPException(status_code=422, detail=f"malformed multipart body: {exc}") from exc
     if upload.file is None:
         raise HTTPException(status_code=422, detail="multipart body is missing a 'file' part")
-
-    project_id = upload.fields.get("project_id") or None
-    app_id = upload.fields.get("app_id") or None
-    if app_id is not None and project_id is None:
-        raise HTTPException(status_code=422, detail="app_id requires project_id")
-    if project_id is not None and not identity.allows_scope(project_id=project_id, app_id=app_id):
+    # Multipart framing has a small allowance beyond the document cap. Reject
+    # an oversized file before tenant inference or artifact-store resolution.
+    if len(upload.file.data) > MAX_DOCUMENT_BYTES:
         raise HTTPException(
-            status_code=403, detail=f"consumer is not scoped to project {project_id!r}"
+            status_code=413,
+            detail=f"document exceeds the {MAX_DOCUMENT_BYTES} byte limit",
         )
+
+    project_id = (upload.fields.get("project_id") or "").strip() or None
+    app_id = (upload.fields.get("app_id") or "").strip() or None
+    project_id, app_id = _resolve_upload_scope(
+        identity,
+        project_id=project_id,
+        app_id=app_id,
+    )
+
+    try:
+        store, artifact_connection_id = await resolver.resolve_with_connection_id(
+            PortKind.ARTIFACT_STORE,
+            project_id=project_id,
+        )
+    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
 
     service = DocumentsService(repository, store)
     try:
@@ -139,6 +211,7 @@ async def upload_document(
             filename=upload.file.filename,
             content_type=upload.file.content_type,
             data=upload.file.data,
+            artifact_connection_id=artifact_connection_id,
             project_id=project_id,
             app_id=app_id,
             summary=upload.fields.get("summary") or None,
@@ -161,9 +234,9 @@ async def list_documents(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> Any:
     ensure_scope(identity, project_id=project)
-    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
+    allowed = None if identity.is_unscoped else identity.scopes
     documents = await repository.list(
-        project=project, q=q, allowed_project_ids=allowed, limit=limit, offset=offset
+        project=project, q=q, allowed_scopes=allowed, limit=limit, offset=offset
     )
     return {"items": documents, "limit": limit, "offset": offset}
 
@@ -188,7 +261,7 @@ async def delete_document(
     document_id: str, identity: CurrentIdentity, repository: RepositoryDep
 ) -> None:
     document = await repository.get(document_id)
-    if document is None or not _visible(identity, document):
+    if document is None or not _writable(identity, document):
         raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
     # Metadata row only; artifact bytes are left for a future GC pass (out of scope).
     await repository.delete(document)

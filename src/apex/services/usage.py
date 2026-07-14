@@ -25,6 +25,8 @@ buckets) on a request-scoped session for GET /v1/analytics/usage.
 """
 
 import asyncio
+import hashlib
+import json
 import time
 from collections.abc import Mapping
 from datetime import datetime
@@ -33,13 +35,18 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import structlog
-from sqlalchemy import ColumnElement, case, func, or_, select
+from sqlalchemy import ColumnElement, case, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from apex.auth.identity import ConsumerIdentity, ScopeRef
 from apex.auth.service import extract_api_key, get_default_resolver, hash_api_key
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.models import AgentEvent, UsageEvent
+from apex.services.analytics_scope import analytics_scope_filter
 from apex.services.pricing import compute_cost
 from apex.settings import database_ssl_connect_args, get_settings
 
@@ -55,6 +62,53 @@ _OK_PHASE_STATUSES = ("succeeded", "skipped")
 _PENDING: set[asyncio.Task[None]] = set()
 
 
+def _replay_event_key(kind: str, **identity: Any) -> str:
+    """Compact deterministic key for one checkpoint-replayable graph event."""
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return f"{kind}:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
+def _idempotent_insert(model: Any, values: dict[str, Any], dialect: str) -> Any | None:
+    """Build the native duplicate-safe insert supported by runtime/test dialects."""
+    if values.get("event_key") is None:
+        return None
+    if dialect == "postgresql":
+        return (
+            pg_insert(model)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=[model.event_key])
+        )
+    if dialect == "sqlite":
+        return (
+            sqlite_insert(model)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=[model.event_key])
+        )
+    return None
+
+
+async def _commit_event(session: AsyncSession, row: Any, values: dict[str, Any]) -> None:
+    statement = _idempotent_insert(row.__class__, values, session.get_bind().dialect.name)
+    if statement is not None:
+        await session.execute(statement)
+    else:
+        session.add(row)
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Native upserts cover PostgreSQL and SQLite. This fallback makes another
+        # SQLAlchemy dialect replay-safe while preserving non-duplicate failures.
+        await session.rollback()
+        event_key = values.get("event_key")
+        if event_key is None:
+            raise
+        existing = await session.scalar(
+            select(row.__class__.id).where(row.__class__.event_key == event_key)
+        )
+        if existing is None:
+            raise
+
+
 # ── Best-effort writers ──────────────────────────────────────────────────────
 
 
@@ -65,8 +119,10 @@ async def record_usage_event(
     action: str,
     status: str = "ok",
     project_id: str | None = None,
+    app_id: str | None = None,
     thread_id: str | None = None,
     duration_ms: int | None = None,
+    event_key: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
     """Insert one usage event; never raises (mirrors services.engine_runs)."""
@@ -88,8 +144,10 @@ async def record_usage_event(
                 action=action,
                 status=status,
                 project_id=project_id,
+                app_id=app_id,
                 thread_id=thread_id,
                 duration_ms=duration_ms,
+                event_key=event_key,
                 extra=extra,
             )
         finally:
@@ -106,24 +164,26 @@ async def _insert_usage_event(
     action: str,
     status: str = "ok",
     project_id: str | None = None,
+    app_id: str | None = None,
     thread_id: str | None = None,
     duration_ms: int | None = None,
+    event_key: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
     async with session_factory() as session:
-        session.add(
-            UsageEvent(
-                consumer_name=consumer_name,
-                project_id=project_id,
-                surface=surface,
-                action=action,
-                thread_id=thread_id,
-                duration_ms=duration_ms,
-                status=status,
-                extra=extra or {},
-            )
-        )
-        await session.commit()
+        values = {
+            "event_key": event_key,
+            "consumer_name": consumer_name,
+            "project_id": project_id,
+            "app_id": app_id,
+            "surface": surface,
+            "action": action,
+            "thread_id": thread_id,
+            "duration_ms": duration_ms,
+            "status": status,
+            "extra": extra or {},
+        }
+        await _commit_event(session, UsageEvent(**values), values)
 
 
 def record_usage_event_sync(**kwargs: Any) -> None:
@@ -134,7 +194,13 @@ def record_usage_event_sync(**kwargs: Any) -> None:
         logger.warning("usage.record_failed", error=str(exc))
 
 
-def record_phase_usage_sync(phase: str, status: str, config: Any) -> None:
+def record_phase_usage_sync(
+    phase: str,
+    status: str,
+    config: Any,
+    *,
+    attempt: int | None = None,
+) -> None:
     """One graph-surface event per phase terminal status; never raises.
 
     Called from the phase finalize node. Consumer attribution comes from the
@@ -149,14 +215,31 @@ def record_phase_usage_sync(phase: str, status: str, config: Any) -> None:
         )
         thread_id = configurable.get("thread_id")
         project_id = configurable.get("project_id")
-        record_usage_event_sync(
-            consumer_name=str(identity) if identity else "graph",
-            surface=SURFACE_GRAPH,
-            action=f"phase:{phase}:{status}",
-            status="ok" if status in _OK_PHASE_STATUSES else "error",
-            project_id=str(project_id) if project_id else None,
-            thread_id=str(thread_id) if thread_id else None,
+        app_id = configurable.get("app_id")
+        event_key = (
+            _replay_event_key(
+                "phase",
+                thread_id=str(thread_id),
+                phase=phase,
+                attempt=attempt,
+                project_id=str(project_id) if project_id else None,
+                app_id=str(app_id) if app_id else None,
+            )
+            if thread_id and attempt is not None
+            else None
         )
+        event: dict[str, Any] = {
+            "consumer_name": str(identity) if identity else "graph",
+            "surface": SURFACE_GRAPH,
+            "action": f"phase:{phase}:{status}",
+            "status": "ok" if status in _OK_PHASE_STATUSES else "error",
+            "project_id": str(project_id) if project_id else None,
+            "app_id": str(app_id) if app_id else None,
+            "thread_id": str(thread_id) if thread_id else None,
+        }
+        if event_key is not None:
+            event["event_key"] = event_key
+        record_usage_event_sync(**event)
     except Exception as exc:  # noqa: BLE001
         logger.warning("usage.phase_record_failed", phase=phase, error=str(exc))
 
@@ -227,6 +310,7 @@ async def _insert_agent_event(
     *,
     thread_id: str | None,
     project_id: str | None,
+    app_id: str | None,
     phase: str,
     agent_name: str,
     model: str | None,
@@ -241,37 +325,39 @@ async def _insert_agent_event(
     reasoning_tokens: int,
     cost_usd: Decimal | None,
     latency_ms: int | None,
+    event_key: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
     async with session_factory() as session:
-        session.add(
-            AgentEvent(
-                thread_id=thread_id,
-                project_id=project_id,
-                phase=phase,
-                agent_name=agent_name,
-                model=model,
-                provider=provider,
-                attempt=attempt,
-                status=status,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_creation_tokens=cache_creation_tokens,
-                reasoning_tokens=reasoning_tokens,
-                cost_usd=cost_usd,
-                latency_ms=latency_ms,
-                extra=extra or {},
-            )
-        )
-        await session.commit()
+        values = {
+            "event_key": event_key,
+            "thread_id": thread_id,
+            "project_id": project_id,
+            "app_id": app_id,
+            "phase": phase,
+            "agent_name": agent_name,
+            "model": model,
+            "provider": provider,
+            "attempt": attempt,
+            "status": status,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_creation_tokens": cache_creation_tokens,
+            "reasoning_tokens": reasoning_tokens,
+            "cost_usd": cost_usd,
+            "latency_ms": latency_ms,
+            "extra": extra or {},
+        }
+        await _commit_event(session, AgentEvent(**values), values)
 
 
 async def record_agent_event(
     *,
     thread_id: str | None,
     project_id: str | None,
+    app_id: str | None,
     phase: str,
     agent_name: str,
     model: str | None,
@@ -291,6 +377,19 @@ async def record_agent_event(
         finish_reason = usage.get("finish_reason") or usage.get("stop_reason")
         if finish_reason:
             extra["finish_reason"] = finish_reason
+    event_key = (
+        _replay_event_key(
+            "agent",
+            thread_id=thread_id,
+            phase=phase,
+            attempt=attempt,
+            agent_name=agent_name,
+            project_id=project_id,
+            app_id=app_id,
+        )
+        if thread_id and attempt is not None
+        else None
+    )
     try:
         database = get_settings().database
         engine_db = create_async_engine(
@@ -304,6 +403,7 @@ async def record_agent_event(
                 session_factory,
                 thread_id=thread_id,
                 project_id=project_id,
+                app_id=app_id,
                 phase=phase,
                 agent_name=agent_name,
                 model=model,
@@ -312,6 +412,7 @@ async def record_agent_event(
                 status=status,
                 latency_ms=latency_ms,
                 cost_usd=cost_usd,
+                event_key=event_key,
                 extra=extra,
                 **token_usage,
             )
@@ -354,6 +455,7 @@ def record_agent_event_sync(
                 project_id=str(configurable.get("project_id"))
                 if configurable.get("project_id")
                 else None,
+                app_id=str(configurable.get("app_id")) if configurable.get("app_id") else None,
                 phase=phase,
                 agent_name=agent_name or f"{phase}.worker",
                 model=model,
@@ -391,6 +493,7 @@ async def _record_request_event(
     status: str,
     duration_ms: int,
     project_id: str | None,
+    app_id: str | None,
     extra: dict[str, Any],
 ) -> None:
     consumer_name = await _resolve_consumer_name(api_key)
@@ -405,20 +508,71 @@ async def _record_request_event(
             status=status,
             duration_ms=duration_ms,
             project_id=project_id,
+            app_id=app_id,
             extra=extra,
         )
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request
         logger.warning("usage.record_failed", action=action, error=str(exc))
 
 
-def _request_project_id(scope: Mapping[str, Any]) -> str | None:
-    """Best-effort project attribution: `project_id` path param, else `project` query."""
-    value = (scope.get("path_params") or {}).get("project_id")
-    if value:
-        return str(value)
+def _first_value(values: Mapping[str, list[str]], *keys: str) -> str | None:
+    for key in keys:
+        candidates = values.get(key)
+        if candidates and candidates[0]:
+            return candidates[0]
+    return None
+
+
+def _request_scope(scope: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """Return a safely attributable project/app pair for one HTTP request.
+
+    Explicit scope values are accepted only when the route-resolved identity may
+    access that exact scope. Without explicit values, a single identity scope is
+    unambiguous. An app-only identity with one app in an explicit project is also
+    unambiguous; multiple app scopes are deliberately left unattributed instead
+    of widening the event to project scope.
+    """
+    state = scope.get("state") or {}
+    identity = state.get("identity") if isinstance(state, Mapping) else None
+    if not isinstance(identity, ConsumerIdentity):
+        return None, None
+
+    path_params = scope.get("path_params") or {}
     query = parse_qs((scope.get("query_string") or b"").decode("latin-1"))
-    values = query.get("project")
-    return values[0] if values else None
+    project_id = path_params.get("project_id") or _first_value(query, "project", "project_id")
+    app_id = path_params.get("app_id") or _first_value(query, "app", "app_id")
+    project_id = str(project_id) if project_id else None
+    app_id = str(app_id) if app_id else None
+
+    if app_id is not None and project_id is None:
+        return None, None
+    if project_id is not None:
+        if app_id is not None:
+            return (
+                (project_id, app_id)
+                if identity.allows_scope(project_id=project_id, app_id=app_id)
+                else (None, None)
+            )
+        if not identity.allows_project(project_id):
+            return None, None
+        if identity.is_unscoped or identity.contains_scope(ScopeRef(project_id=project_id)):
+            return project_id, None
+        app_ids = {
+            item.app_id
+            for item in identity.scopes
+            if item.project_id == project_id and item.app_id is not None
+        }
+        return (project_id, next(iter(app_ids))) if len(app_ids) == 1 else (None, None)
+
+    if identity.is_unscoped:
+        return None, None
+    distinct_scopes = {(item.project_id, item.app_id) for item in identity.scopes}
+    return next(iter(distinct_scopes)) if len(distinct_scopes) == 1 else (None, None)
+
+
+def _request_project_id(scope: Mapping[str, Any]) -> str | None:
+    """Compatibility wrapper for callers that need only project attribution."""
+    return _request_scope(scope)[0]
 
 
 class UsageTrackingMiddleware:
@@ -463,13 +617,15 @@ class UsageTrackingMiddleware:
                 return  # docs/openapi/unmatched paths carry no contract operation
             duration_ms = int((time.perf_counter() - started) * 1000)
             api_key = extract_api_key(dict(scope.get("headers") or []))
+            project_id, app_id = _request_scope(scope)
             task = asyncio.get_running_loop().create_task(
                 _record_request_event(
                     api_key=api_key,
                     action=str(operation_id),
                     status="ok" if status_code < 400 else "error",
                     duration_ms=duration_ms,
-                    project_id=_request_project_id(scope),
+                    project_id=project_id,
+                    app_id=app_id,
                     extra={"status_code": status_code, "path": str(scope.get("path") or "")},
                 )
             )
@@ -485,9 +641,8 @@ class UsageTrackingMiddleware:
 class UsageAnalyticsRepository:
     """Postgres aggregation over usage_events (date_trunc buckets; request session).
 
-    `visible_project_ids`: None means unscoped (no visibility filter); a tuple
-    means "rows in these projects, plus project-less rows" — scoped consumers
-    see their scoped projects and null-project events.
+    ``visible_scopes=None`` means an unscoped platform administrator. Any tuple,
+    including an empty one, is translated to an exact project/app predicate.
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -500,7 +655,7 @@ class UsageAnalyticsRepository:
         window_to: datetime,
         bucket: str,
         project_id: str | None = None,
-        visible_project_ids: tuple[str, ...] | None = None,
+        visible_scopes: tuple[ScopeRef, ...] | None = None,
     ) -> dict[str, Any]:
         filters: list[ColumnElement[bool]] = [
             UsageEvent.at >= window_from,
@@ -508,13 +663,9 @@ class UsageAnalyticsRepository:
         ]
         if project_id is not None:
             filters.append(UsageEvent.project_id == project_id)
-        elif visible_project_ids is not None:
-            filters.append(
-                or_(
-                    UsageEvent.project_id.is_(None),
-                    UsageEvent.project_id.in_(visible_project_ids),
-                )
-            )
+        scope_filter = analytics_scope_filter(UsageEvent, visible_scopes)
+        if scope_filter is not None:
+            filters.append(scope_filter)
         error_count = func.sum(case((UsageEvent.status == "error", 1), else_=0))
 
         surface_rows = (

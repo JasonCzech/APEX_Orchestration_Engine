@@ -86,12 +86,19 @@ class DictUser:
 
 
 def make_ctx(
-    identity: ConsumerIdentity, resource: str = "threads", action: str = "create"
+    identity: ConsumerIdentity,
+    resource: str = "threads",
+    action: str = "create",
+    *,
+    trusted_loopback: bool = False,
 ) -> Auth.types.AuthContext:
     return Auth.types.AuthContext(
         permissions=[],
         # cast: BaseUser's unannotated dunders defeat structural matching in pyright
-        user=cast("Auth.types.BaseUser", DictUser(user_payload(identity))),
+        user=cast(
+            "Auth.types.BaseUser",
+            DictUser(user_payload(identity, trusted_loopback=trusted_loopback)),
+        ),
         resource=resource,  # type: ignore[arg-type]
         action=action,  # type: ignore[arg-type]
     )
@@ -297,11 +304,12 @@ async def test_threads_create_requires_operator() -> None:
 async def test_threads_create_stamps_scope_and_creator() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Auth.types.ThreadsCreate = {}
-    await on_threads_create(ctx=make_ctx(identity), value=value)
+    result = await on_threads_create(ctx=make_ctx(identity), value=value)
     metadata = value.get("metadata")
     assert metadata is not None
     assert metadata["project_id"] == "p1"
     assert metadata["created_by"] == "c1"
+    assert result == {"project_id": {"$eq": "p1"}}
 
 
 async def test_threads_create_stamps_single_app_scope() -> None:
@@ -363,7 +371,11 @@ async def test_threads_create_run_rejects_out_of_scope_configurable_project() ->
 
 async def test_threads_create_run_stamps_single_scope_stateless_context() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
-    value: Any = {"assistant_id": "context", "thread_id": None, "input": {}}
+    value: Any = {
+        "assistant_id": "context",
+        "thread_id": None,
+        "input": {"subject": "bounded context"},
+    }
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
     assert result == {"project_id": {"$eq": "p1"}}
     assert value["input"]["project_id"] == "p1"
@@ -371,12 +383,69 @@ async def test_threads_create_run_stamps_single_scope_stateless_context() -> Non
     assert value["metadata"]["project_id"] == "p1"
 
 
+async def test_threads_create_run_stamps_single_scope_on_existing_thread() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert result == {"project_id": {"$eq": "p1"}}
+    assert value["input"]["project_id"] == "p1"
+    assert value["config"]["configurable"]["project_id"] == "p1"
+    assert value["metadata"]["project_id"] == "p1"
+
+
+async def test_threads_create_run_stamps_single_app_scope_on_existing_thread() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert result == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "a1"}}
+    assert value["config"]["configurable"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["metadata"] == {"project_id": "p1", "app_id": "a1"}
+
+
+async def test_threads_create_run_rejects_ambiguous_existing_thread_scope() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    value: Any = {"assistant_id": "pipeline", "thread_id": "thread-1"}
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 403
+    assert "project_id is required for scoped runs" in str(excinfo.value.detail)
+
+
+async def test_threads_create_run_returns_exact_selected_thread_filter() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-2",
+        "config": {"configurable": {"project_id": "p2"}},
+    }
+
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert result == {"project_id": {"$eq": "p2"}}
+    assert value["input"]["project_id"] == "p2"
+    assert value["metadata"]["project_id"] == "p2"
+
+
 async def test_threads_create_run_stamps_single_app_scope_stateless() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
-    value: Any = {"assistant_id": "context", "thread_id": None, "input": {}}
+    value: Any = {
+        "assistant_id": "context",
+        "thread_id": None,
+        "input": {"subject": "bounded context"},
+    }
     result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
     assert result == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "a1"}}
-    assert value["input"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["input"] == {
+        "subject": "bounded context",
+        "project_id": "p1",
+        "app_id": "a1",
+    }
     assert value["config"]["configurable"] == {"project_id": "p1", "app_id": "a1"}
     assert value["metadata"] == {"project_id": "p1", "app_id": "a1"}
 
@@ -430,6 +499,38 @@ async def test_threads_create_run_requires_project_for_ambiguous_stateless_playg
     assert excinfo.value.status_code == 403
 
 
+async def test_threads_create_run_rejects_context_provider_fanout() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "context",
+        "thread_id": None,
+        "input": {
+            "subject": "incident",
+            "work_item_keys": [f"ITEM-{index}" for index in range(51)],
+        },
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 422
+    assert "work_item_keys exceeds" in str(excinfo.value.detail)
+
+
+async def test_threads_create_run_rejects_deep_playground_sample() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    nested: Any = "value"
+    for _ in range(13):
+        nested = {"nested": nested}
+    value: Any = {
+        "assistant_id": "playground",
+        "thread_id": None,
+        "input": {"sample_input": {"value": nested}},
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert excinfo.value.status_code == 422
+    assert "nesting exceeds" in str(excinfo.value.detail)
+
+
 async def test_threads_create_run_stamps_single_scope_stateless_uuid_assistant() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {"assistant_id": "018faea9-8b68-7df5-94b7-1d5a0d771620", "thread_id": None}
@@ -452,6 +553,215 @@ async def test_threads_create_run_rejects_conflicting_project_ids() -> None:
     assert excinfo.value.status_code == 403
 
 
+async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    config: dict[str, Any] = {
+        "configurable": {
+            "connections": {"execution_engine": "engine-a"},
+        },
+        "metadata": {},
+    }
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "metadata": {},
+        "kwargs": {"input": {}, "config": config},
+    }
+
+    result = await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert result == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "a1"}}
+    assert value["kwargs"]["input"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["metadata"] == {"project_id": "p1", "app_id": "a1"}
+    assert config["metadata"] == {"project_id": "p1", "app_id": "a1"}
+    assert config["configurable"] == {
+        "connections": {"execution_engine": "engine-a"},
+        "project_id": "p1",
+        "app_id": "a1",
+    }
+
+
+async def test_threads_create_run_rejects_nested_forged_scope() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {},
+            "config": {
+                "configurable": {
+                    "project_id": "p2",
+                    "app_id": "a2",
+                    "connections": {"execution_engine": "engine-sibling"},
+                }
+            },
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 403
+
+
+async def test_threads_create_run_resolves_nested_environment_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    async def resolve(
+        environment_id: str, project_id: str | None, app_id: str | None
+    ) -> tuple[str, int]:
+        seen.append((environment_id, project_id, app_id))
+        return "https://approved.example.test", 7
+
+    monkeypatch.setattr("apex.auth.handlers._load_run_environment_target", resolve)
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {
+            "config": {"configurable": {"environment_id": "env-1"}},
+        },
+    }
+
+    await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert seen == [("env-1", "p1", "a1")]
+    assert value["kwargs"]["config"]["configurable"]["environment_target"] == (
+        "https://approved.example.test"
+    )
+    assert value["kwargs"]["config"]["configurable"]["environment_target_version"] == 7
+
+
+async def test_threads_create_run_rejects_nested_direct_environment_url() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {
+            "config": {
+                "configurable": {
+                    "load_test": {"target_environment": "http://169.254.169.254/latest/meta-data"}
+                }
+            }
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 403
+
+
+async def test_threads_create_run_rejects_disallowed_model_at_auth_boundary() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {
+            "input": {},
+            "config": {
+                "configurable": {"model_by_phase": {"reporting": "unapproved-expensive-model"}}
+            },
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "APEX_LLM__ALLOWED_MODELS" in str(excinfo.value.detail)
+
+
+async def test_threads_create_run_rejects_oversized_direct_context_input() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {
+            "input": {
+                "context_packets": [
+                    {"id": f"p-{index}", "source": "sdk", "title": "packet"} for index in range(33)
+                ]
+            }
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "context_packets exceeds" in str(excinfo.value.detail)
+
+
+async def test_threads_create_run_rejects_forged_internal_pipeline_state() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {
+                "phase_results": {
+                    "execution": {
+                        "status": "succeeded",
+                        "test_summary": {"passed": True},
+                    }
+                },
+                "prompt_reviews": {"execution": {"action": "approve"}},
+            }
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "phase_results" in str(excinfo.value.detail)
+    assert "prompt_reviews" in str(excinfo.value.detail)
+
+
+async def test_threads_create_run_rejects_caller_owned_stateless_thread_id() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": None,
+        "config": {"configurable": {"thread_id": "forged-thread"}},
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "thread_id is server-owned" in str(excinfo.value.detail)
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        {"action": "interrupt"},
+        {"action": "rollback"},
+        {"multitask_strategy": "interrupt"},
+        {"multitask_strategy": "rollback"},
+    ],
+)
+async def test_direct_run_create_rejects_destructive_inflight_controls(
+    control: dict[str, str],
+) -> None:
+    identity = make_identity(Role.ADMIN)
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-with-live-engine",
+        "kwargs": {
+            "input": {"title": "unsafe replacement", "request": "replace it"},
+            "config": {"configurable": {}},
+        },
+        **control,
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "interrupt or roll back" in str(excinfo.value.detail)
+
+
 async def test_threads_read_and_search_return_scope_filter() -> None:
     identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
     expected = {"project_id": {"$eq": "p1"}}
@@ -469,20 +779,126 @@ async def test_thread_mutations_require_operator(handler: Any) -> None:
     assert excinfo.value.status_code == 403
 
 
-@pytest.mark.parametrize("handler", [on_threads_update, on_threads_delete])
-async def test_thread_mutations_return_scope_filter(handler: Any) -> None:
+async def test_thread_update_returns_scope_filter() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
-    assert await handler(ctx=make_ctx(identity, action="update"), value={}) == {
-        "project_id": {"$eq": "p1"}
-    }
+    assert await on_threads_update(
+        ctx=make_ctx(identity, action="update"), value={"metadata": {}}
+    ) == {"project_id": {"$eq": "p1"}}
 
 
-async def test_anything_else_fallback_is_scoped() -> None:
-    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
-    result = await on_anything_else(
-        ctx=make_ctx(identity, resource="store", action="get"), value={}
+@pytest.mark.parametrize("run_action", ["interrupt", "rollback"])
+async def test_native_run_cancel_is_denied_without_facade_capability(run_action: str) -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_update(
+            ctx=make_ctx(identity, action="update"),
+            value=cast(
+                "Auth.types.ThreadsUpdate",
+                {
+                    "thread_id": "thread-with-live-engine",
+                    "action": run_action,
+                    "metadata": {"run_ids": ["run-1"]},
+                },
+            ),
+        )
+    assert excinfo.value.status_code == 403
+    assert "/v1/pipelines/{thread_id}/abort" in str(excinfo.value.detail)
+
+
+async def test_facade_capability_allows_scoped_run_cancel_after_cleanup() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    result = await on_threads_update(
+        ctx=make_ctx(identity, action="update", trusted_loopback=True),
+        value=cast(
+            "Auth.types.ThreadsUpdate",
+            {
+                "thread_id": "thread-with-killed-engine",
+                "action": "interrupt",
+                "metadata": {"run_ids": ["run-1"]},
+            },
+        ),
     )
     assert result == {"project_id": {"$eq": "p1"}}
+
+
+@pytest.mark.parametrize("role", [Role.OPERATOR, Role.ADMIN])
+async def test_native_update_state_bare_auth_shape_is_denied(role: Role) -> None:
+    identity = make_identity(role, [ScopeRef(project_id="p1")])
+    # LangGraph update_state(values, as_node=...) and update_state(values) both
+    # reach auth with this exact bare payload; neither values nor as_node is
+    # available to the handler for field-level validation.
+    value = Auth.types.ThreadsUpdate(thread_id=cast(Any, "thread-with-checkpoint"))
+    assert set(value) == {"thread_id"}
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_update(ctx=make_ctx(identity, action="update"), value=value)
+
+    assert excinfo.value.status_code == 403
+    assert "Native thread state updates are disabled" in str(excinfo.value.detail)
+
+
+async def test_facade_capability_allows_validated_update_state() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    value = Auth.types.ThreadsUpdate(thread_id=cast(Any, "thread-with-checkpoint"))
+
+    assert await on_threads_update(
+        ctx=make_ctx(identity, action="update", trusted_loopback=True),
+        value=value,
+    ) == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "a1"}}
+
+
+async def test_native_thread_delete_is_denied() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_delete(ctx=make_ctx(identity, action="delete"), value={})
+    assert excinfo.value.status_code == 403
+    assert "external engine cleanup handle" in str(excinfo.value.detail)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"project_id": "p2"},
+        {"project_id": "p1", "app_id": "a2"},
+        {"project_id": "p1", "app_id": None},
+    ],
+)
+async def test_thread_update_rejects_scoped_ownership_mutation(
+    metadata: dict[str, Any],
+) -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_update(
+            ctx=make_ctx(identity, action="update"), value={"metadata": metadata}
+        )
+    assert excinfo.value.status_code == 403
+
+
+async def test_thread_update_allows_scoped_non_ownership_metadata() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+    assert await on_threads_update(
+        ctx=make_ctx(identity, action="update"), value={"metadata": {"title": "renamed"}}
+    ) == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "a1"}}
+
+
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.OPERATOR, Role.ADMIN])
+async def test_anything_else_fallback_denies_non_global_admin(role: Role) -> None:
+    identity = make_identity(role, [ScopeRef(project_id="p1")])
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_anything_else(
+            ctx=make_ctx(identity, resource="future-resource", action="future-action"), value={}
+        )
+    assert excinfo.value.status_code == 403
+
+
+async def test_anything_else_fallback_allows_unscoped_admin() -> None:
+    identity = make_identity(Role.ADMIN)
+    assert (
+        await on_anything_else(
+            ctx=make_ctx(identity, resource="future-resource", action="future-action"), value={}
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("role", [Role.VIEWER, Role.OPERATOR])
@@ -498,24 +914,34 @@ async def test_assistants_write_allows_admin() -> None:
     assert await on_assistants_write(ctx=ctx, value={}) is None
 
 
-async def test_assistants_write_stamps_scoped_admin_metadata() -> None:
+async def test_assistants_write_rejects_scoped_admin() -> None:
     identity = make_identity(Role.ADMIN, [ScopeRef(project_id="p1")])
     value: dict[str, Any] = {}
     ctx = make_ctx(identity, resource="assistants", action="create")
 
-    assert await on_assistants_write(ctx=ctx, value=value) is None
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_assistants_write(ctx=ctx, value=value)
+    assert excinfo.value.status_code == 403
 
-    assert value["metadata"]["project_id"] == "p1"
 
-
-async def test_assistants_write_stamps_scoped_admin_app_metadata() -> None:
+async def test_assistants_write_rejects_app_scoped_admin() -> None:
     identity = make_identity(Role.ADMIN, [ScopeRef(project_id="p1", app_id="a1")])
     value: dict[str, Any] = {}
     ctx = make_ctx(identity, resource="assistants", action="create")
 
-    assert await on_assistants_write(ctx=ctx, value=value) is None
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_assistants_write(ctx=ctx, value=value)
+    assert excinfo.value.status_code == 403
 
-    assert value["metadata"] == {"project_id": "p1", "app_id": "a1"}
+
+async def test_assistants_update_rejects_scoped_admin() -> None:
+    identity = make_identity(Role.ADMIN, [ScopeRef(project_id="p1", app_id="a1")])
+    value: dict[str, Any] = {"assistant_id": "sibling-id", "metadata": {}}
+    ctx = make_ctx(identity, resource="assistants", action="update")
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_assistants_write(ctx=ctx, value=value)
+    assert excinfo.value.status_code == 403
 
 
 async def test_assistants_delete_requires_unscoped_admin() -> None:
@@ -534,7 +960,18 @@ async def test_assistants_read_is_viewer_scoped() -> None:
     assert await on_assistants_read(
         ctx=make_ctx(identity, resource="assistants", action="search"), value=value
     ) == {"project_id": {"$eq": "p1"}}
-    assert value["metadata"]["project_id"] == "p1"
+    assert "metadata" not in value
+
+
+async def test_assistants_read_supports_multi_project_identity_without_selector() -> None:
+    identity = make_identity(
+        Role.VIEWER,
+        [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")],
+    )
+
+    assert await on_assistants_read(
+        ctx=make_ctx(identity, resource="assistants", action="search"), value={}
+    ) == {"$or": [{"project_id": {"$eq": "p1"}}, {"project_id": {"$eq": "p2"}}]}
 
 
 async def test_assistants_read_rejects_out_of_scope_metadata() -> None:
@@ -589,6 +1026,22 @@ async def test_store_read_prefixes_single_project_namespace() -> None:
     assert value["namespace"] == ("apex", "project", "p1", "memories")
 
 
+async def test_store_read_prefixes_single_app_namespace() -> None:
+    identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1", app_id="a1")])
+    value: dict[str, Any] = {"namespace": ("memories",), "key": "k1"}
+
+    await on_store_read(ctx=make_ctx(identity, resource="store", action="get"), value=value)
+
+    assert value["namespace"] == (
+        "apex",
+        "project",
+        "p1",
+        "app",
+        "a1",
+        "memories",
+    )
+
+
 async def test_store_write_accepts_allowed_project_prefixed_namespace() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
     value: dict[str, Any] = {"namespace": ("apex", "project", "p2", "memories"), "key": "k1"}
@@ -606,6 +1059,51 @@ async def test_store_write_rejects_out_of_scope_project_namespace() -> None:
             ctx=make_ctx(identity, resource="store", action="put"),
             value={"namespace": ("apex", "project", "p9", "memories"), "key": "k1"},
         )
+    assert excinfo.value.status_code == 403
+
+
+async def test_store_write_rejects_sibling_app_and_project_wide_namespaces() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
+
+    for namespace in [
+        ("apex", "project", "p1", "memories"),
+        ("apex", "project", "p1", "app", "a2", "memories"),
+    ]:
+        with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+            await on_store_write(
+                ctx=make_ctx(identity, resource="store", action="put"),
+                value={"namespace": namespace, "key": "k1"},
+            )
+        assert excinfo.value.status_code == 403
+
+
+async def test_store_write_accepts_selected_app_for_multi_app_identity() -> None:
+    identity = make_identity(
+        Role.OPERATOR,
+        [ScopeRef(project_id="p1", app_id="a1"), ScopeRef(project_id="p1", app_id="a2")],
+    )
+    value: dict[str, Any] = {
+        "namespace": ("apex", "project", "p1", "app", "a2", "memories"),
+        "key": "k1",
+    }
+
+    await on_store_write(ctx=make_ctx(identity, resource="store", action="put"), value=value)
+
+    assert value["namespace"] == ("apex", "project", "p1", "app", "a2", "memories")
+
+
+async def test_store_write_requires_app_prefix_for_multi_app_identity() -> None:
+    identity = make_identity(
+        Role.OPERATOR,
+        [ScopeRef(project_id="p1", app_id="a1"), ScopeRef(project_id="p1", app_id="a2")],
+    )
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_store_write(
+            ctx=make_ctx(identity, resource="store", action="put"),
+            value={"namespace": ("memories",), "key": "k1"},
+        )
+
     assert excinfo.value.status_code == 403
 
 

@@ -20,6 +20,7 @@ from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import PortKind
+from apex.auth.identity import ConsumerIdentity
 from apex.persistence.db import get_session
 from apex.persistence.models import Document
 from apex.persistence.repositories.documents import DocumentsRepository
@@ -45,6 +46,14 @@ class DocumentTooLargeError(Exception):
 
 class MultipartParseError(Exception):
     pass
+
+
+class DocumentContextNotFoundError(LookupError):
+    """An uploaded document is missing or outside the caller's exact scope."""
+
+    def __init__(self, document_id: str) -> None:
+        self.document_id = document_id
+        super().__init__(f"document {document_id!r} not found")
 
 
 @dataclass
@@ -128,6 +137,40 @@ def document_artifact_key(document_id: str, filename: str) -> str:
     return f"documents/{document_id}/{filename}"
 
 
+async def uploaded_document_context_packets(
+    repository: DocumentsRepository,
+    identity: ConsumerIdentity,
+    document_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Authorize uploaded metadata and convert extracted text to bounded evidence."""
+
+    per_doc_cap = get_settings().documents.max_context_chars_per_doc
+    packets: list[dict[str, Any]] = []
+    for document_id in document_ids:
+        document = await repository.get(document_id)
+        if document is None or not (
+            document.project_id is None
+            or identity.allows_scope(project_id=document.project_id, app_id=document.app_id)
+        ):
+            # Deliberately indistinguishable: sibling scope must not learn that the
+            # document exists.
+            raise DocumentContextNotFoundError(document_id)
+        text = document.extracted_text or None
+        if text and len(text) > per_doc_cap:
+            text = text[:per_doc_cap].rstrip() + "\n\n…[truncated]"
+        packets.append(
+            {
+                "id": f"document-{document.id}",
+                "source": "document",
+                "title": document.name,
+                "summary": document.summary,
+                "ref": f"/v1/artifacts/{document.artifact_key}",
+                "text": text,
+            }
+        )
+    return packets
+
+
 class DocumentsService:
     """Streams bytes into the artifact store and records Document metadata."""
 
@@ -142,6 +185,7 @@ class DocumentsService:
         filename: str,
         content_type: str,
         data: bytes,
+        artifact_connection_id: str,
         project_id: str | None,
         app_id: str | None,
         summary: str | None,
@@ -173,6 +217,7 @@ class DocumentsService:
             media_type=content_type,
             size_bytes=len(data),  # actual bytes read, not the client's claim
             artifact_key=key,
+            artifact_connection_id=artifact_connection_id,
             project_id=project_id,
             app_id=app_id,
             summary=summary,

@@ -5,9 +5,14 @@
  * the detail fetch keys on the item key alone. When the provider is unknown
  * (e.g. an item created before any query ran), fall back to 'tracker'.
  */
-export function workItemPath(provider: string | null | undefined, key: string): string {
+export function workItemPath(
+  provider: string | null | undefined,
+  key: string,
+  project?: string,
+): string {
   const segment = provider?.trim() ? provider.trim() : 'tracker'
-  return `/work-items/${encodeURIComponent(segment)}/${encodeURIComponent(key)}`
+  const path = `/work-items/${encodeURIComponent(segment)}/${encodeURIComponent(key)}`
+  return project ? `${path}?${new URLSearchParams({ project }).toString()}` : path
 }
 
 /**
@@ -15,8 +20,9 @@ export function workItemPath(provider: string | null | undefined, key: string): 
  * (not location state) on purpose: the link survives refresh and can be
  * copied, and the lazy-loaded console reads it on mount.
  */
-export function consolePath(provider: string, query: string): string {
+export function consolePath(provider: string, query: string, project?: string | null): string {
   const params = new URLSearchParams({ provider, query })
+  if (project) params.set('project', project)
   return `/work-items?${params.toString()}`
 }
 

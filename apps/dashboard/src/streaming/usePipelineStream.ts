@@ -5,7 +5,8 @@
  * resumable join surface. Custom events are demuxed:
  *   plan_resolved / phase_status / gate_opened → reducer dispatch + query
  *     cache patch (applyStreamEvent);
- *   tool_call → reducer dispatch only (capped feed, low frequency);
+ *   tool_call / agent_* / engine_poll_error → reducer dispatch only (capped
+ *     feeds, low frequency);
  *   engine_poll → ring buffer ref ONLY, coalesced into state via a 50ms-floor
  *     rAF flush gate — never per-event renders, never the query cache.
  *
@@ -19,9 +20,9 @@
  *   path via a `location` header; all other failures surface to this hook's
  *   own backoff loop (1s..15s, jittered), which rejoins with the stored
  *   lastEventId (resumeStore, sessionStorage).
- * - Resume-window failure policy: an attempt that USED a stored id and failed
- *   clears the cursor, triggers one snapshot refetch (snapshot+tail is the
- *   correctness layer), then rejoins live.
+ * - Resume-window failure policy: only an explicit pre-delivery cursor
+ *   rejection clears the cursor and heals from a snapshot; generic transport
+ *   failures retain the last event id for lossless rejoin.
  * - Visibility: hidden > 60s closes the stream; on visible → snapshot refetch
  *   + rejoin.
  * - Stream end/error → exactly one healing invalidate of threads.state
@@ -61,6 +62,25 @@ export type { ToolCallEvent } from '@apex/pipeline-events'
 
 /** engine_poll ring size (plan: 300-pt buffer behind the live-stats strip). */
 export const ENGINE_SAMPLE_CAP = 300
+
+/** Only discard a resume cursor when the server explicitly rejects that cursor. */
+function isResumeCursorRejected(error: Error): boolean {
+  const candidate = error as Error & { status?: unknown; response?: { status?: unknown } }
+  const explicitStatus =
+    typeof candidate.status === 'number'
+      ? candidate.status
+      : typeof candidate.response?.status === 'number'
+        ? candidate.response.status
+        : null
+  const message = error.message.toLowerCase()
+  const status = explicitStatus ?? Number(/\b(400|404|409|410|422)\b/.exec(message)?.[1] ?? NaN)
+  if (status === 410) return true
+  return (
+    [400, 404, 409, 422].includes(status) &&
+    /(last[-_ ]?event|event id|resume|cursor)/.test(message) &&
+    /(expired|invalid|unknown|missing|not found|outside)/.test(message)
+  )
+}
 /** Close the stream after the document has been hidden this long. */
 export const HIDDEN_DISCONNECT_MS = 60_000
 export const BACKOFF_BASE_MS = 1_000
@@ -170,7 +190,14 @@ export function usePipelineStream(
         return null
       }
       dispatch({ type: 'pipeline_event', event: parsed })
-      if (parsed.type !== 'tool_call') applyStreamEvent(queryClient, tid, parsed)
+      if (
+        parsed.type !== 'tool_call' &&
+        parsed.type !== 'agent_message' &&
+        parsed.type !== 'agent_error' &&
+        parsed.type !== 'engine_poll_error'
+      ) {
+        applyStreamEvent(queryClient, tid, parsed)
+      }
       return null
     }
 
@@ -178,6 +205,7 @@ export function usePipelineStream(
       let attempt = 0
       while (!signal.aborted && !disposed) {
         const resumeId = resumeStore.get(tid, rid)
+        let receivedPart = false
         try {
           const client = await getLangGraphClient()
           const parts = client.runs.joinStream(tid, rid, {
@@ -188,6 +216,7 @@ export function usePipelineStream(
           let runError: Error | null = null
           for await (const part of parts) {
             if (signal.aborted || disposed) return
+            receivedPart = true
             attempt = 0
             dispatch({ type: 'live' }) // no-op (same state ref) while already live
             if (part.id) resumeStore.set(tid, rid, part.id)
@@ -205,9 +234,9 @@ export function usePipelineStream(
         } catch (err) {
           if (signal.aborted || disposed) return
           const error = err instanceof Error ? err : new Error(String(err))
-          if (resumeId) {
-            // The resume window may have expired: drop the cursor and heal
-            // from the snapshot, then rejoin live.
+          if (resumeId && !receivedPart && isResumeCursorRejected(error)) {
+            // Only an explicit pre-delivery cursor rejection proves the resume
+            // window expired. Generic network failures retain the newest ID.
             resumeStore.clear(tid, rid)
             invalidateSnapshot()
           }

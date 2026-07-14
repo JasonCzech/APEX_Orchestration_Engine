@@ -35,7 +35,20 @@ from apex.services.work_tracking import (
 class FakeWorkTrackingAdapter:
     """WorkTrackingPort fake with a recordable canned backlog."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        provider: str = "fake",
+        project_id: str | None = None,
+        *,
+        internal_project_id: str | None = None,
+    ) -> None:
+        self.provider = provider
+        # project_id models the external Jira key / ADO TeamProject. The APEX
+        # owner is a separate resolver-supplied marker.
+        self.project_id = project_id
+        self.apex_project_id = (
+            internal_project_id if internal_project_id is not None else project_id
+        )
         self.items: dict[str, WorkItem] = {
             "PHX-1": WorkItem(key="PHX-1", title="First", kind="bug", status="open"),
             "PHX-2": WorkItem(key="PHX-2", title="Second", kind="story", status="closed"),
@@ -50,7 +63,7 @@ class FakeWorkTrackingAdapter:
     ) -> TranslatedQuery:
         self.translate_calls.append((natural_language, context))
         return TranslatedQuery(
-            provider="fake", query=f'text ~ "{natural_language}"', confidence=0.45
+            provider=self.provider, query=f'text ~ "{natural_language}"', confidence=0.45
         )
 
     async def execute_query(self, query: TranslatedQuery, *, page: Page) -> WorkItemPage:
@@ -80,8 +93,11 @@ class FakeWorkTrackingAdapter:
 class BoomAdapter:
     """Simulates upstream-tracker failures already mapped by a real adapter."""
 
-    def __init__(self, exc: Exception) -> None:
+    def __init__(self, exc: Exception, provider: str = "jira") -> None:
         self._exc = exc
+        self.provider = provider
+        self.project_id = "p1"
+        self.apex_project_id = "p1"
 
     def _raise(self, *args: Any, **kwargs: Any) -> Any:
         raise self._exc
@@ -230,6 +246,28 @@ def test_translate_resolves_with_scoped_project() -> None:
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, "p1")]
     adapter = resolver.adapter
     assert adapter.translate_calls[0][1].project_id == "p1"  # QueryContext carries the scope
+    assert adapter.translate_calls[0][1].hints == {"project": "p1"}
+
+
+def test_translate_uses_external_project_hint_after_internal_binding() -> None:
+    resolver = FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="jira",
+            project_id="PHX",
+            internal_project_id="internal-project-1",
+        )
+    )
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="internal-project-1")]), resolver=resolver
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/v1/work-tracking/query/translate", json={"text": "open bugs"})
+
+    assert response.status_code == 200
+    _, context = resolver.adapter.translate_calls[0]
+    assert context.project_id == "internal-project-1"
+    assert context.hints == {"project": "PHX"}
 
 
 def test_translate_body_connection_id_wins_over_query_param() -> None:
@@ -304,7 +342,8 @@ def test_execute_query_pages_through_adapter() -> None:
 
 
 def test_execute_query_injects_jira_project_scope() -> None:
-    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira", project_id="PHX"))
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]), resolver=resolver)
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/query/execute",
@@ -315,8 +354,33 @@ def test_execute_query_injects_jira_project_scope() -> None:
     assert query.query == "project in (PHX) AND (status = Open) ORDER BY updated DESC"
 
 
+def test_execute_query_constrains_to_external_project_after_internal_binding() -> None:
+    resolver = FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="jira",
+            project_id="PHX",
+            internal_project_id="internal-project-1",
+        )
+    )
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="internal-project-1")]), resolver=resolver
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "jira", "query": "status = Open"}},
+        )
+
+    assert response.status_code == 200
+    query, _ = resolver.adapter.execute_calls[0]
+    assert query.query == "project in (PHX) AND (status = Open)"
+    assert "internal-project-1" not in query.query
+
+
 def test_execute_query_rejects_conflicting_jira_project_scope() -> None:
-    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]))
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira", project_id="PHX"))
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]), resolver=resolver)
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/query/execute",
@@ -327,8 +391,10 @@ def test_execute_query_rejects_conflicting_jira_project_scope() -> None:
 
 
 def test_execute_query_injects_ado_multi_project_scope() -> None:
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="ado", project_id="CAT"))
     app, resolver, _ = make_app(
-        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")])
+        identity(scopes=[ScopeRef(project_id="PHX"), ScopeRef(project_id="CAT")]),
+        resolver=resolver,
     )
     with TestClient(app) as client:
         response = client.post(
@@ -375,6 +441,18 @@ def test_execute_query_unknown_provider_requires_unscoped_admin() -> None:
         response = client.post(
             "/v1/work-tracking/query/execute",
             json={"query": {"provider": "unknown", "query": "project = PHX"}},
+        )
+    assert response.status_code == 403
+    assert resolver.adapter.execute_calls == []
+
+
+def test_execute_query_rejects_provider_spoof_before_adapter_call() -> None:
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira", project_id="PHX"))
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]), resolver=resolver)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "stub", "query": "status = Open"}},
         )
     assert response.status_code == 403
     assert resolver.adapter.execute_calls == []
@@ -457,6 +535,35 @@ def test_list_work_items_multi_project_uses_selected_project() -> None:
         response = client.get("/v1/work-tracking/items", params={"project": "PHX"})
     assert response.status_code == 200
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, "PHX")]
+
+
+def test_direct_item_allows_internal_project_to_different_external_jira_key() -> None:
+    resolver = FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="jira",
+            project_id="PHX",
+            internal_project_id="internal-p1",
+        )
+    )
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="internal-p1")]), resolver=resolver
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/items/PHX-1")
+
+    assert response.status_code == 200
+    assert resolver.calls == [(PortKind.WORK_TRACKING, None, "internal-p1")]
+    assert resolver.adapter.project_id == "PHX"
+    assert resolver.adapter.apex_project_id == "internal-p1"
+
+
+def test_direct_item_route_rejects_adapter_bound_to_another_project() -> None:
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira", project_id="CAT"))
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]), resolver=resolver)
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/items/PHX-1")
+    assert response.status_code == 403
 
 
 def test_create_work_item_requires_operator() -> None:
@@ -586,6 +693,62 @@ def test_create_saved_query_viewer_is_403() -> None:
     assert response.status_code == 403
 
 
+def test_global_saved_query_mutations_require_unscoped_admin() -> None:
+    repo = seeded_repo()
+    scoped_app, _, _ = make_app(identity(), repo=repo)
+    with TestClient(scoped_app) as client:
+        created = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={"name": "global", "provider": "jira", "query": "q"},
+        )
+        updated = client.patch(
+            "/v1/work-tracking/saved-queries/s3", json={"description": "changed"}
+        )
+        deleted = client.delete("/v1/work-tracking/saved-queries/s3")
+    assert created.status_code == 403
+    assert updated.status_code == 403
+    assert deleted.status_code == 403
+    assert "s3" in repo.rows
+
+    admin_app, _, _ = make_app(identity(role=Role.ADMIN, scopes=[]), repo=repo)
+    with TestClient(admin_app) as client:
+        created = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={"name": "global", "provider": "jira", "query": "q"},
+        )
+        updated = client.patch(
+            "/v1/work-tracking/saved-queries/s3", json={"description": "changed"}
+        )
+        deleted = client.delete("/v1/work-tracking/saved-queries/s3")
+    assert created.status_code == 201
+    assert updated.status_code == 200
+    assert deleted.status_code == 204
+
+
+def test_app_only_scope_cannot_mutate_project_wide_saved_queries() -> None:
+    repo = seeded_repo()
+    app, _, _ = make_app(identity(scopes=[ScopeRef(project_id="p1", app_id="app-a")]), repo=repo)
+    with TestClient(app) as client:
+        assert client.get("/v1/work-tracking/saved-queries/s1").status_code == 200
+        created = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={
+                "name": "app cannot own this",
+                "provider": "jira",
+                "query": "q",
+                "project_id": "p1",
+            },
+        )
+        updated = client.patch(
+            "/v1/work-tracking/saved-queries/s1", json={"description": "changed"}
+        )
+        deleted = client.delete("/v1/work-tracking/saved-queries/s1")
+    assert created.status_code == 403
+    assert updated.status_code == 403
+    assert deleted.status_code == 403
+    assert "s1" in repo.rows
+
+
 def test_get_saved_query_scoped_404() -> None:
     app, _, _ = make_app(identity(), repo=seeded_repo())
     with TestClient(app) as client:
@@ -602,16 +765,14 @@ def test_update_saved_query_patches_fields_and_conflicts() -> None:
             "/v1/work-tracking/saved-queries/s1",
             json={"query": "status = Done", "description": "now done"},
         )
-        collision = client.patch(
+        global_update = client.patch(
             "/v1/work-tracking/saved-queries/s3", json={"name": "alpha p1", "project_id": "p1"}
         )
     assert updated.status_code == 200
     assert updated.json()["query"] == "status = Done"
     assert updated.json()["description"] == "now done"
     assert repo.rows["s1"].query == "status = Done"
-    # s3 is global; renaming alone cannot collide with ("p1", "alpha p1") since
-    # project_id is not updatable through the PATCH body.
-    assert collision.status_code == 200
+    assert global_update.status_code == 403
     assert repo.rows["s3"].project_id is None
 
 

@@ -42,7 +42,7 @@ from langgraph.graph.state import CompiledStateGraph
 from apex.adapters.stubs import MemoryArtifactStore
 from apex.domain import integrations
 from apex.domain.integrations import LoadTestSpec, ValidationReport
-from apex.domain.pipeline import ArtifactRef, EngineHandle, Phase, PhaseResult, PhaseStatus
+from apex.domain.pipeline import ArtifactRef, EngineHandle
 from apex.graphs.pipeline import execution_phase
 from apex.graphs.pipeline.graph import builder
 from apex.ports.execution_engine import (
@@ -392,17 +392,24 @@ def test_sim_graph_smoke_execution_spine_consumes_the_port(
     monkeypatch.setattr(engine_runs, "record_engine_run_sync", _record_noop)
 
     graph: CompiledStateGraph[Any, Any, Any, Any] = builder.compile(checkpointer=InMemorySaver())
-    scenario = PhaseResult(phase=Phase.SCRIPT_SCENARIO, status=PhaseStatus.SUCCEEDED).as_state()
     inputs = {
         "title": "Conformance",
         "request": "smoke the engine spine",
-        "phase_results": {"script_scenario": scenario},
     }
+    phases = [
+        "story_analysis",
+        "test_planning",
+        "env_triage",
+        "script_scenario",
+        "execution",
+    ]
     cfg: RunnableConfig = {
         "configurable": {
             "thread_id": "conformance-smoke",
-            "phases": ["execution"],
-            "gates": {"execution": {"prompt_review": "auto", "output_review": "auto"}},
+            "phases": phases,
+            "gates": {
+                phase: {"prompt_review": "auto", "output_review": "auto"} for phase in phases
+            },
             "limits": {"poll_interval_s": 0.02, "poll_timeout_s": 30.0},
             "load_test": {"duration_s": 0.2, "vusers": 4},
         },

@@ -7,7 +7,7 @@ engine-neutral; provider quirks belong inside adapters.
 
 from typing import Any
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, FiniteFloat, field_serializer, field_validator
 
 from apex.domain.pipeline import new_id, utcnow_iso
 
@@ -206,14 +206,36 @@ class SecretValue(BaseModel):
 class LoadTestSpec(BaseModel):
     """Engine-neutral output of script_scenario; input to every engine adapter."""
 
-    idempotency_key: str = Field(default_factory=new_id)
-    title: str
-    script_refs: list[str] = Field(default_factory=list)
-    vusers: int = 10
-    ramp_s: float = 5
-    duration_s: float = 2
-    slas: dict[str, float] = Field(default_factory=dict)
-    target_environment: str | None = None
+    idempotency_key: str = Field(default_factory=new_id, min_length=1, max_length=256)
+    title: str = Field(min_length=1, max_length=1_000)
+    script_refs: list[str] = Field(default_factory=list, max_length=100)
+    vusers: int = Field(default=10, ge=1, le=10_000)
+    ramp_s: FiniteFloat = Field(default=5, ge=0, le=86_400)
+    duration_s: FiniteFloat = Field(default=2, gt=0, le=86_400)
+    slas: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=32)
+    target_environment: str | None = Field(default=None, max_length=2_048)
+
+    @field_validator("script_refs")
+    @classmethod
+    def validate_script_refs(cls, values: list[str]) -> list[str]:
+        for ref in values:
+            if not isinstance(ref, str) or not ref.strip():
+                raise ValueError("script_refs entries must be non-empty strings")
+            if len(ref) > 2_048:
+                raise ValueError("script_refs entries must not exceed 2048 characters")
+        return values
+
+    @field_validator("slas")
+    @classmethod
+    def validate_slas(cls, values: dict[str, float]) -> dict[str, float]:
+        for name, value in values.items():
+            if not name.strip() or len(name) > 64:
+                raise ValueError("SLA names must be 1-64 characters")
+            if value < 0 or value > 1_000_000_000_000:
+                raise ValueError("SLA values must be between 0 and 1e12")
+            if name == "error_rate" and value > 1:
+                raise ValueError("error_rate SLA must be a fraction between 0 and 1")
+        return values
 
 
 class ValidationReport(BaseModel):

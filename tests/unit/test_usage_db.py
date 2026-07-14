@@ -40,6 +40,7 @@ def test_usage_emission_and_aggregation_round_trip(monkeypatch: pytest.MonkeyPat
     get_settings.cache_clear()
 
     marker = f"proj-usage-{uuid4().hex[:8]}"
+    app_marker = f"app-usage-{uuid4().hex[:8]}"
     headers = {"x-api-key": DEV_KEY}
     # NullPool: connections never outlive one operation, so the engine can be
     # shared across asyncio.run calls and the TestClient's portal loop.
@@ -62,6 +63,13 @@ def test_usage_emission_and_aggregation_round_trip(monkeypatch: pytest.MonkeyPat
             )
             return int(value or 0)
 
+    async def marker_app_ids() -> set[str | None]:
+        async with maker() as session:
+            values = await session.scalars(
+                select(UsageEvent.app_id).where(UsageEvent.project_id == marker)
+            )
+            return set(values)
+
     async def cleanup() -> None:
         try:
             async with maker() as session:
@@ -83,19 +91,32 @@ def test_usage_emission_and_aggregation_round_trip(monkeypatch: pytest.MonkeyPat
     try:
         with TestClient(app) as client:
             # 1) /v1 middleware emission (project attributed via ?project=).
-            response = client.get("/v1/system/info", params={"project": marker}, headers=headers)
+            response = client.get(
+                "/v1/system/info",
+                params={"project": marker, "app": app_marker},
+                headers=headers,
+            )
             assert response.status_code == 200
 
             # 2) Graph-side events through the real sync bridge.
-            config = {"configurable": {"thread_id": "t-usage-it", "project_id": marker}}
-            usage.record_phase_usage_sync("execution", "succeeded", config)
-            usage.record_phase_usage_sync("execution", "failed", config)
+            config = {
+                "configurable": {
+                    "thread_id": "t-usage-it",
+                    "project_id": marker,
+                    "app_id": app_marker,
+                }
+            }
+            usage.record_phase_usage_sync("execution", "succeeded", config, attempt=1)
+            usage.record_phase_usage_sync("execution", "succeeded", config, attempt=1)
+            usage.record_phase_usage_sync("execution", "failed", config, attempt=2)
+            usage.record_phase_usage_sync("execution", "failed", config, attempt=2)
 
             # The middleware write is fire-and-forget on the portal loop: poll.
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and asyncio.run(count_marker_rows()) < 3:
                 time.sleep(0.05)
             assert asyncio.run(count_marker_rows()) == 3
+            assert asyncio.run(marker_app_ids()) == {app_marker}
 
             # 3) Real SQL aggregation through the live router.
             response = client.get(

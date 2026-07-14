@@ -243,6 +243,8 @@ export const PipelineStateSchema = z
     phases_plan: z.array(PhaseNameSchema).optional(),
     current_phase: PhaseNameSchema.nullish(),
     run_aborted: z.boolean().optional(),
+    /** Effective PipelineConfigurable snapshot persisted for resumes/reruns. */
+    run_config: z.record(z.unknown()).optional(),
     prompt_reviews: z.record(PhaseNameSchema, PromptReviewDraftSchema).optional(),
     application_reviews: z.record(z.string(), ApplicationReviewSchema).optional(),
     phase_results: z.record(PhaseResultEntrySchema).optional(),

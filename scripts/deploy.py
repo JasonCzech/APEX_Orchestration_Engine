@@ -157,6 +157,7 @@ def aks_up(_: list[str]) -> None:
             "-auto-approve",
             "-input=false",
             f"-var-file=env/{env}.tfvars",
+            f"-var=workload_namespace={namespace}",
         ]
     )
 
@@ -166,6 +167,8 @@ def aks_up(_: list[str]) -> None:
     kv = _tf_output("key_vault_name")
     tenant = _tf_output("tenant_id")
     client_id = _tf_output("workload_identity_client_id")
+    service_account = _tf_output("workload_service_account")
+    hook_service_account = _tf_output("workload_hook_service_account")
 
     # 2) Build + push images to ACR (langgraph build has no Dockerfile -> can't use `az acr build`).
     image_build([tag])
@@ -186,10 +189,34 @@ def aks_up(_: list[str]) -> None:
         ]
     )
 
-    # 4) MinIO artifact store (after the chart's SecretProviderClass syncs apex-minio).
+    # 4) Prepare a fresh namespace and wait for the Terraform-enabled CSI API.
+    # The chart's ordered pre-install hooks mount Key Vault and synthesize Secrets
+    # before migration/bootstrap consume them.
+    namespace_manifest = capture(
+        ["kubectl", "create", "namespace", namespace, "--dry-run=client", "-o", "json"]
+    )
+    print("+ kubectl apply -f - <namespace-manifest>", flush=True)
+    subprocess.run(
+        ["kubectl", "apply", "-f", "-"],
+        cwd=REPO_ROOT,
+        check=True,
+        input=namespace_manifest,
+        text=True,
+    )
+    run(
+        [
+            "kubectl",
+            "wait",
+            "--for=condition=Established",
+            "crd/secretproviderclasses.secrets-store.csi.x-k8s.io",
+            "--timeout=5m",
+        ]
+    )
+
+    # 5) MinIO may remain Pending until the chart's CSI sync hook creates its Secret.
     run(["kubectl", "apply", "-n", namespace, "-f", "deploy/azure/k8s/minio/minio.yaml"])
 
-    # 5) Deploy. Migration + bootstrap run as pre-upgrade hooks (migrate-then-roll).
+    # 6) Deploy. Migration + bootstrap run as pre-upgrade hooks (migrate-then-roll).
     run(
         [
             "helm",
@@ -216,7 +243,13 @@ def aks_up(_: list[str]) -> None:
             f"secretBackend.csi.tenantId={tenant}",
             "--set",
             f"workloadIdentity.clientId={client_id}",
+            "--set",
+            f"serviceAccount.name={service_account}",
+            "--set",
+            f"hookServiceAccountName={hook_service_account}",
             "--wait",
+            "--timeout",
+            "15m",
         ]
     )
     run(

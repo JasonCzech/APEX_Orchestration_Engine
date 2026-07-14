@@ -55,13 +55,13 @@ async def test_resolve_kind_mismatch_raises() -> None:
 
 async def test_resolver_builds_secretful_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """A connection with secret_ref gets it resolved through the secrets connection."""
-    monkeypatch.setenv("APEX_TEST_WT_TOKEN", "tok-123")
+    monkeypatch.setenv("APEX_INTEGRATION_TEST_WT_TOKEN", "tok-123")
     custom = ConnectionConfig(
         id="wt-with-secret",
         kind=PortKind.WORK_TRACKING,
         provider="stub",
         name="Stub with secret",
-        secret_ref="env:APEX_TEST_WT_TOKEN",
+        secret_ref="env:APEX_INTEGRATION_TEST_WT_TOKEN",
     )
     resolver = ConnectionResolver([custom, DEV_CONNECTIONS[PortKind.SECRETS]])
     adapter = await resolver.resolve(PortKind.WORK_TRACKING, "wt-with-secret")

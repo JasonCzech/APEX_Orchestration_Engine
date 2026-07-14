@@ -1,9 +1,10 @@
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from ipaddress import ip_network
 from urllib.parse import parse_qs, urlsplit
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_DATABASE_URI = "postgresql+asyncpg://apex:apex@localhost:5432/apex"
@@ -44,6 +45,9 @@ class RateLimitSettings(BaseModel):
     auth_failures: int = 10
     auth_failure_window_s: int = 300
     auth_lockout_s: int = 300
+    # X-Forwarded-For is used only when the immediate ASGI peer is in one of
+    # these networks. Empty by default so direct clients cannot spoof source IPs.
+    trusted_proxy_cidrs: list[str] = []
     protected_path_prefixes: list[str] = [
         "/v1/",
         "/threads",
@@ -52,6 +56,16 @@ class RateLimitSettings(BaseModel):
         "/crons",
         "/store",
     ]
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def validate_trusted_proxy_cidrs(cls, values: list[str]) -> list[str]:
+        for value in values:
+            try:
+                ip_network(value, strict=False)
+            except ValueError as exc:
+                raise ValueError(f"invalid trusted proxy CIDR {value!r}") from exc
+        return values
 
 
 class SecurityHeadersSettings(BaseModel):
@@ -72,9 +86,17 @@ class LLMSettings(BaseModel):
     """
 
     anthropic_api_key: str | None = None
-    default_model: str = "claude-opus-4-8"
-    max_tokens: int = 8000
-    timeout_s: float = 120.0
+    default_model: str = Field(default="claude-opus-4-8", min_length=1, max_length=200)
+    # Per-run model overrides are deny-by-default outside this deployment-owned
+    # allow-list. Configure with APEX_LLM__ALLOWED_MODELS as a JSON array.
+    allowed_models: list[str] = [
+        "claude-opus-4-8",
+        "claude-sonnet-4-5",
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-haiku-latest",
+    ]
+    max_tokens: int = Field(default=8000, ge=1, le=64_000)
+    timeout_s: float = Field(default=120.0, gt=0, le=600.0, allow_inf_nan=False)
     # Adaptive thinking is the recommended mode for Opus 4.8 (budget_tokens is
     # rejected); disable only if a pinned model/library combo can't accept it.
     adaptive_thinking: bool = True
@@ -85,9 +107,44 @@ class LLMSettings(BaseModel):
     fetch_tool_enabled: bool = False
     fetch_allowed_hosts: list[str] = []
     fetch_allow_private_hosts: bool = False
-    fetch_max_bytes: int = 1_000_000
-    fetch_timeout_s: float = 20.0
-    fetch_max_tool_iters: int = 4
+    fetch_max_bytes: int = Field(default=1_000_000, ge=1, le=10_000_000)
+    fetch_timeout_s: float = Field(default=20.0, gt=0, le=120.0, allow_inf_nan=False)
+    fetch_max_tool_iters: int = Field(default=4, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def validate_model_allowlist(self) -> "LLMSettings":
+        normalized = [model.strip() for model in self.allowed_models]
+        if not normalized or any(not model or len(model) > 200 for model in normalized):
+            raise ValueError("llm.allowed_models must contain 1-200 character model names")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("llm.allowed_models must not contain duplicates")
+        self.allowed_models = normalized
+        self.default_model = self.default_model.strip()
+        if self.default_model not in normalized:
+            raise ValueError("llm.default_model must be present in llm.allowed_models")
+        return self
+
+
+class RunControlSettings(BaseModel):
+    """Deployment-owned request and prompt budgets (env: APEX_RUNS__*)."""
+
+    max_context_packets: int = Field(default=32, ge=1, le=64)
+    # Counts the complete serialized packet payload: ids, source, title, summary,
+    # refs, text, keys, and separators. Rendering applies a second cap below.
+    max_context_chars_total: int = Field(default=160_000, ge=1_000, le=500_000)
+    max_gate_payload_chars: int = Field(default=100_000, ge=1_000, le=250_000)
+    max_gate_payload_nodes: int = Field(default=512, ge=16, le=2_000)
+    max_gate_string_chars: int = Field(default=20_000, ge=100, le=50_000)
+    max_prompt_part_chars: int = Field(default=50_000, ge=1_000, le=100_000)
+    # Final system + user prompt after evidence and revision text are rendered.
+    max_model_input_chars: int = Field(default=220_000, ge=10_000, le=500_000)
+    # Stateless context/playground runs can be created directly through the
+    # LangGraph SDK, bypassing FastAPI request models.  These limits therefore
+    # bound their complete JSON tree as well as the provider calls it can fan out.
+    max_work_item_keys: int = Field(default=50, ge=1, le=100)
+    max_stateless_payload_bytes: int = Field(default=200_000, ge=10_000, le=1_000_000)
+    max_stateless_payload_nodes: int = Field(default=512, ge=16, le=2_000)
+    max_stateless_payload_depth: int = Field(default=12, ge=2, le=32)
 
 
 class DocumentIngestionSettings(BaseModel):
@@ -121,13 +178,20 @@ class ApexSettings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     allow_private_adapter_hosts: bool = False
     analytics_cost_visible: bool = False
-    env_secret_prefixes: list[str] = ["APEX_"]
+    # Serializes costly remote run creation across API/worker replicas through
+    # PostgreSQL advisory locks. Local single-process development may leave it off.
+    distributed_remote_creation_lock: bool = False
+    # Only this dedicated namespace is readable through the env SecretsPort.
+    # Keeping it separate from the APEX_ settings namespace prevents a
+    # connection secret_ref from resolving database/auth/platform credentials.
+    env_secret_prefixes: list[str] = ["APEX_INTEGRATION_"]
     database: DatabaseSettings = DatabaseSettings()
     auth: AuthSettings = AuthSettings()
     rate_limit: RateLimitSettings = RateLimitSettings()
     security_headers: SecurityHeadersSettings = SecurityHeadersSettings()
     llm: LLMSettings = LLMSettings()
     documents: DocumentIngestionSettings = DocumentIngestionSettings()
+    runs: RunControlSettings = RunControlSettings()
 
     @property
     def is_locked_down(self) -> bool:
@@ -141,6 +205,13 @@ class ApexSettings(BaseSettings):
         normalized_origins = [origin.strip() for origin in self.cors_origins]
         if "*" in normalized_origins:
             errors.append("cors_origins must not contain '*' when credentials are allowed")
+        if self.distributed_remote_creation_lock:
+            try:
+                database_scheme = urlsplit(self.database.uri).scheme.lower()
+            except ValueError:
+                database_scheme = ""
+            if not database_scheme.startswith("postgresql"):
+                errors.append("distributed_remote_creation_lock requires a PostgreSQL database URI")
         if env not in LOCKED_DOWN_ENVIRONMENTS:
             if errors:
                 raise ValueError(f"Unsafe configuration: {'; '.join(errors)}")
@@ -162,6 +233,22 @@ class ApexSettings(BaseSettings):
             )
         if self.security_headers.hsts_max_age_s <= 0:
             errors.append("security_headers.hsts_max_age_s must be > 0 in locked environments")
+        if self.allow_private_adapter_hosts:
+            errors.append(
+                "allow_private_adapter_hosts=true is allowed only in local/test environments; "
+                "approve individual bootstrap connections instead"
+            )
+        if not self.distributed_remote_creation_lock:
+            errors.append(
+                "distributed_remote_creation_lock=true is required in locked environments"
+            )
+        if not self.env_secret_prefixes or any(
+            not prefix.startswith("APEX_INTEGRATION_") for prefix in self.env_secret_prefixes
+        ):
+            errors.append(
+                "env_secret_prefixes must be restricted to APEX_INTEGRATION_ namespaces "
+                "in locked environments"
+            )
         insecure_origins = [
             origin for origin in normalized_origins if origin and not origin.startswith("https://")
         ]
@@ -223,7 +310,18 @@ def _database_ssl_mode(uri: str, ssl_mode: str | None) -> str:
         return ""
     if parsed.scheme.startswith("sqlite"):
         return ""
-    return (parse_qs(parsed.query).get("sslmode") or [""])[0]
+    query = parse_qs(parsed.query)
+    mode = (query.get("sslmode") or [""])[0]
+    if mode:
+        return mode
+    # asyncpg-style URLs use ``ssl=true`` rather than libpq's ``sslmode``.
+    # Normalize booleans into the same policy vocabulary used by validation.
+    asyncpg_ssl = (query.get("ssl") or [""])[0].strip().lower()
+    if asyncpg_ssl in {"1", "true", "yes", "on"}:
+        return "require"
+    if asyncpg_ssl in {"0", "false", "no", "off", "disable"}:
+        return "disable"
+    return asyncpg_ssl
 
 
 @lru_cache

@@ -60,7 +60,7 @@ def extract_api_key(headers: HeaderInput) -> str | None:
     try:
         api_key = _get_unique_header(headers, "x-api-key")
         authorization = _get_unique_header(headers, "authorization")
-    except ValueError:
+    except (UnicodeError, ValueError):
         return None
     if api_key:
         return api_key

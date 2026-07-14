@@ -4,7 +4,7 @@
  * prompt pins, limits) + collapsible raw JSON.
  *
  * Editing: SDK assistants.update IS browser-exposed (verified against
- * @langchain/langgraph-sdk client typings), so operators+ get an [Edit JSON]
+ * @langchain/langgraph-sdk client typings), so admins get an [Edit JSON]
  * mode — parse-validated textarea, saved via useUpdateGoldenConfig; the server
  * bumps the assistant version on every update.
  *
@@ -225,7 +225,8 @@ export function GoldenConfigDetailPage() {
   const { assistantId = '' } = useParams()
   const navigate = useNavigate()
   const consumer = useConsumer()
-  const canEdit = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const canEdit = consumer ? roleAtLeast(consumer.role, 'admin') : false
+  const canStartRun = consumer ? roleAtLeast(consumer.role, 'operator') : false
   const query = useGoldenConfig(assistantId)
   const [editing, setEditing] = useState(false)
 
@@ -274,15 +275,17 @@ export function GoldenConfigDetailPage() {
               Edit JSON
             </button>
           )}
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() =>
-              void navigate(`/runs/new?step=config&golden=${encodeURIComponent(entry.assistantId)}`)
-            }
-          >
-            Start run with this config
-          </button>
+          {canStartRun && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={() =>
+                void navigate(`/runs/new?step=config&golden=${encodeURIComponent(entry.assistantId)}`)
+              }
+            >
+              Start run with this config
+            </button>
+          )}
         </div>
       </header>
 

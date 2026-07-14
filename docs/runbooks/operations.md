@@ -80,7 +80,7 @@ When a phase fails with adapter/connection errors:
 1. Probe: `POST /v1/admin/connections/{connection_id}/test` (`testConnection`).
 2. Triage by failure shape:
    - **auth/secret errors** — the row's `secret_ref` names an env var on the
-     server (e.g. `env:APEX_MINIO_SECRET_KEY`); fix the deployment env (Helm
+     server (e.g. `env:APEX_INTEGRATION_MINIO_SECRET_KEY`); fix the deployment env (Helm
      `extraEnv` / compose environment), roll pods, re-probe.
    - **connect/DNS/timeout** — `base_url` is wrong for the network the *server*
      runs in (a classic: `localhost` instead of the in-cluster service name).

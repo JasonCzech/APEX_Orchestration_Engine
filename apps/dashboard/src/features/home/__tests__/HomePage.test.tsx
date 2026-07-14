@@ -56,9 +56,10 @@ describe('HomePage', () => {
     expect(
       screen.queryByRole('heading', { level: 2, name: /Pipeline Operations? Dashboard/ }),
     ).not.toBeInTheDocument()
-    const totalCard = (await screen.findByText('Total Runs')).closest('article')
+    const totalCard = (await screen.findByText('Runs Loaded')).closest('article')
     expect(totalCard).not.toBeNull()
     expect(within(totalCard as HTMLElement).getByText('5')).toBeInTheDocument()
+    expect(within(totalCard as HTMLElement).getByText('loaded fleet snapshot')).toBeInTheDocument()
     const activeCard = screen.getByText('Active').closest('article')
     expect(activeCard).not.toBeNull()
     expect(within(activeCard as HTMLElement).getByText('3')).toBeInTheDocument()
@@ -68,7 +69,9 @@ describe('HomePage', () => {
     const goCard = screen.getByText('GO Verdicts').closest('article')
     expect(goCard).not.toBeNull()
     expect(within(goCard as HTMLElement).getByText('1')).toBeInTheDocument()
-    expect(within(goCard as HTMLElement).getByText('idle run proxy')).toBeInTheDocument()
+    expect(
+      within(goCard as HTMLElement).getByText('successful outcomes loaded'),
+    ).toBeInTheDocument()
 
     const release = screen.getByRole('heading', { name: 'Release Signal' }).closest('article')
     expect(release).not.toBeNull()
@@ -175,7 +178,9 @@ describe('HomePage', () => {
     const panel = await screen.findByRole('heading', { name: 'Execution Health' })
     const card = panel.closest('article')
     expect(card).not.toBeNull()
-    const activeBlock = within(card as HTMLElement).getByText('Active pipelines').closest('div')
+    const activeBlock = within(card as HTMLElement)
+      .getByText('Active pipelines loaded')
+      .closest('div')
     expect(activeBlock).not.toBeNull()
     expect(within(activeBlock as HTMLElement).getByText('3')).toBeInTheDocument()
     const approvalsBlock = within(card as HTMLElement).getByText('Pending approvals').closest('div')

@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
-from apex.settings import ApexSettings, database_ssl_connect_args
+from apex.settings import ApexSettings, RateLimitSettings, database_ssl_connect_args
 
 
 class CleanEnvSettings(ApexSettings):
@@ -21,6 +21,16 @@ def test_defaults() -> None:
     assert settings.app_name == "APEX Orchestration Engine"
     assert settings.database.schema_name == "apex"
     assert settings.database.uri.startswith("postgresql+asyncpg://")
+    assert settings.distributed_remote_creation_lock is False
+    assert settings.env_secret_prefixes == ["APEX_INTEGRATION_"]
+
+
+def test_rate_limit_trusted_proxy_cidrs_are_validated() -> None:
+    assert RateLimitSettings(trusted_proxy_cidrs=["10.40.0.0/20"]).trusted_proxy_cidrs == [
+        "10.40.0.0/20"
+    ]
+    with pytest.raises(ValidationError, match="invalid trusted proxy CIDR"):
+        RateLimitSettings(trusted_proxy_cidrs=["not-a-network"])
 
 
 def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,9 +38,21 @@ def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
     monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
     settings = CleanEnvSettings()
     assert settings.environment == "staging"
+    assert settings.distributed_remote_creation_lock is True
     assert settings.database.uri == "postgresql+asyncpg://u:p@db:5432/x?sslmode=require"
+
+
+def test_distributed_remote_creation_lock_requires_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_DATABASE__URI", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
+
+    with pytest.raises(ValidationError, match="requires a PostgreSQL database URI"):
+        CleanEnvSettings()
 
 
 @pytest.mark.parametrize("environment", ["staging", "production"])
@@ -91,10 +113,38 @@ def test_locked_down_env_accepts_database_ssl_mode(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("APEX_DATABASE__SSL_MODE", "require")
     monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
     monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
 
     settings = CleanEnvSettings()
 
     assert settings.database.ssl_mode == "require"
+
+
+def test_locked_down_env_accepts_asyncpg_ssl_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?ssl=true")
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
+
+    settings = CleanEnvSettings()
+
+    assert settings.database.uri.endswith("?ssl=true")
+    assert database_ssl_connect_args(settings.database.uri, settings.database.ssl_mode) == {
+        "ssl": True
+    }
+
+
+def test_locked_down_env_requires_distributed_remote_creation_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+
+    with pytest.raises(ValidationError, match="distributed_remote_creation_lock"):
+        CleanEnvSettings()
 
 
 def test_locked_down_env_rejects_database_without_ssl(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -141,6 +191,32 @@ def test_locked_down_env_rejects_disabled_hsts(
     monkeypatch.setenv("APEX_SECURITY_HEADERS__HSTS_MAX_AGE_S", "0")
 
     with pytest.raises(ValidationError, match="hsts_max_age_s"):
+        CleanEnvSettings()
+
+
+def test_locked_down_env_rejects_broad_secret_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_ENV_SECRET_PREFIXES", '["APEX_"]')
+
+    with pytest.raises(ValidationError, match="env_secret_prefixes"):
+        CleanEnvSettings()
+
+
+def test_locked_down_env_rejects_global_private_adapter_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_ENVIRONMENT", "production")
+    monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://u:p@db:5432/x?sslmode=require")
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "pepper")
+    monkeypatch.setenv("APEX_CORS_ORIGINS", '["https://dashboard.example.com"]')
+    monkeypatch.setenv("APEX_ALLOW_PRIVATE_ADAPTER_HOSTS", "true")
+
+    with pytest.raises(ValidationError, match="allow_private_adapter_hosts"):
         CleanEnvSettings()
 
 

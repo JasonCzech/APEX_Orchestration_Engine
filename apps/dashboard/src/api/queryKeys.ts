@@ -7,6 +7,7 @@ export const queryKeys = {
   system: {
     all: ['system'] as const,
     info: () => [...queryKeys.system.all, 'info'] as const,
+    principal: () => [...queryKeys.system.all, 'principal'] as const,
   },
   pipelines: {
     all: ['pipelines'] as const,
@@ -75,7 +76,8 @@ export const queryKeys = {
     item: (provider: string, itemId: string) =>
       [...queryKeys.workItems.all, provider, itemId] as const,
     /** D4 append: provider-less lookup by key (GET /v1/work-tracking/items/{key}). */
-    key: (key: string) => [...queryKeys.workItems.all, 'key', key] as const,
+    key: (key: string, project?: string) =>
+      [...queryKeys.workItems.all, 'key', key, { project: project ?? null }] as const,
   },
   context: {
     all: ['context'] as const,

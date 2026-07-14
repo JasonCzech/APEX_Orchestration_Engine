@@ -2,7 +2,7 @@ import createClient, { type Middleware } from 'openapi-fetch'
 
 import type { components, paths } from '@apex/api-client'
 
-import { getApiKey } from '@/auth/keyStorage'
+import { getApiKey, getApiKeyRevision } from '@/auth/keyStorage'
 import { resolveApexBaseUrl } from '@/config/runtimeConfig'
 import { getDevApexFetch, subscribeDevDataMode } from '@/dev-data'
 
@@ -16,6 +16,7 @@ export type Role = components['schemas']['Role']
 type UnauthorizedHandler = () => void
 
 const unauthorizedHandlers = new Set<UnauthorizedHandler>()
+const requestAuthRevisions = new WeakMap<Request, number>()
 
 /** Registered by AuthProvider so any 401 anywhere drops the session. */
 export function onUnauthorized(handler: UnauthorizedHandler): () => void {
@@ -29,10 +30,16 @@ const authMiddleware: Middleware = {
   onRequest({ request }) {
     const key = getApiKey()
     if (key) request.headers.set('x-api-key', key)
+    requestAuthRevisions.set(request, getApiKeyRevision())
     return request
   },
-  onResponse({ response }) {
-    if (response.status === 401) {
+  onResponse({ request, response }) {
+    const requestKey = request.headers.get('x-api-key')
+    const belongsToCurrentSession =
+      requestKey !== null &&
+      requestKey === getApiKey() &&
+      requestAuthRevisions.get(request) === getApiKeyRevision()
+    if (response.status === 401 && belongsToCurrentSession) {
       for (const handler of unauthorizedHandlers) handler()
     }
     return response

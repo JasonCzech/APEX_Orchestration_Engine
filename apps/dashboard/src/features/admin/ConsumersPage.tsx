@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router'
 
 import {
   CONSUMER_TYPES,
+  useCurrentPrincipal,
   useConsumersIndex,
   useCreateConsumer,
   useDeleteConsumer,
@@ -24,6 +25,7 @@ import {
 } from '@/api/hooks/useConsumers'
 import type { Role } from '@/api/apexClient'
 import { isApiError } from '@/api/errors'
+import { setApiKey } from '@/auth/keyStorage'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
@@ -121,10 +123,12 @@ function ScopesEditor({
 function KeyRevealModal({
   title,
   created,
+  isCurrentConsumer = false,
   onClose,
 }: {
   title: string
   created: ConsumerCreated
+  isCurrentConsumer?: boolean
   onClose: () => void
 }) {
   const [stored, setStored] = useState(false)
@@ -150,6 +154,11 @@ function KeyRevealModal({
       <p className="adm-modal-caption">
         API key for <strong>{created.name}</strong>. Store it now — it will never be shown again.
       </p>
+      {title === 'API key rotated' && (
+        <p className="adm-modal-caption">
+          The previous key remains valid for five minutes so clients can switch safely.
+        </p>
+      )}
       <div className="adm-key-row">
         <code className="adm-key" data-testid="revealed-api-key">
           {created.api_key}
@@ -168,6 +177,15 @@ function KeyRevealModal({
         <span>I have stored this key somewhere safe</span>
       </label>
       <div className="adm-panel-actions">
+        {title === 'API key rotated' && isCurrentConsumer && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setApiKey(created.api_key)}
+          >
+            Use this key for this dashboard (recommended)
+          </button>
+        )}
         <button
           type="button"
           className="btn btn-primary btn-sm"
@@ -378,12 +396,14 @@ function EditConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose:
 /** Rotate confirm — success hands the one-time payload up for the reveal modal. */
 function RotateConsumerModal({
   consumer,
+  isCurrentConsumer,
   onClose,
   onRotated,
 }: {
   consumer: Consumer
+  isCurrentConsumer: boolean
   onClose: () => void
-  onRotated: (rotated: ConsumerCreated) => void
+  onRotated: (rotated: ConsumerCreated, isCurrentConsumer: boolean) => void
 }) {
   const rotate = useRotateConsumerKey()
 
@@ -401,8 +421,8 @@ function RotateConsumerModal({
     >
       <h2 className="adm-panel-title">Rotate API key</h2>
       <p className="adm-modal-caption">
-        Rotating issues a new key for <strong>{consumer.name}</strong> and revokes the current one
-        immediately. Anything still using the old key will start failing.
+        Rotating issues a new key for <strong>{consumer.name}</strong>. The current key remains
+        valid for five minutes so clients can switch without interruption.
       </p>
       {rotate.isError && (
         <div className="adm-inline-error" role="alert">
@@ -423,10 +443,10 @@ function RotateConsumerModal({
           className="btn btn-primary btn-sm"
           disabled={rotate.isPending}
           onClick={() =>
-            rotate.mutate(consumer.id, {
+            rotate.mutate({ consumerId: consumer.id }, {
               onSuccess: (rotated) => {
                 onClose()
-                onRotated(rotated)
+                onRotated(rotated, isCurrentConsumer)
               },
             })
           }
@@ -538,8 +558,13 @@ function ConsumerRow({
 
 function ConsumersContent() {
   const consumers = useConsumersIndex()
+  const principal = useCurrentPrincipal()
   const [creating, setCreating] = useState(false)
-  const [reveal, setReveal] = useState<{ title: string; created: ConsumerCreated } | null>(null)
+  const [reveal, setReveal] = useState<{
+    title: string
+    created: ConsumerCreated
+    isCurrentConsumer?: boolean
+  } | null>(null)
   const [editing, setEditing] = useState<Consumer | null>(null)
   const [rotating, setRotating] = useState<Consumer | null>(null)
   const [deleting, setDeleting] = useState<Consumer | null>(null)
@@ -622,8 +647,11 @@ function ConsumersContent() {
       {rotating && (
         <RotateConsumerModal
           consumer={rotating}
+          isCurrentConsumer={principal.data?.principal_id === rotating.id}
           onClose={() => setRotating(null)}
-          onRotated={(rotated) => setReveal({ title: 'API key rotated', created: rotated })}
+          onRotated={(rotated, isCurrentConsumer) =>
+            setReveal({ title: 'API key rotated', created: rotated, isCurrentConsumer })
+          }
         />
       )}
       {deleting && <DeleteConsumerModal consumer={deleting} onClose={() => setDeleting(null)} />}
@@ -631,6 +659,7 @@ function ConsumersContent() {
         <KeyRevealModal
           title={reveal.title}
           created={reveal.created}
+          isCurrentConsumer={reveal.isCurrentConsumer}
           onClose={() => setReveal(null)}
         />
       )}

@@ -56,6 +56,8 @@ describe('EnvironmentsPage', () => {
       name: 'perf',
       kind: 'k8s',
       base_url: 'https://perf.checkout.example.com',
+      target_approved: true,
+      target_version: 1,
       hosts: [{ id: 'host-new-0', hostname: 'perf-node-1', role: 'worker' }],
       options: { namespace: 'checkout-perf' },
       created_at: '2026-06-12T12:00:00Z',

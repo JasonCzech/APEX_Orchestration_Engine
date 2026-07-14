@@ -6,24 +6,31 @@ asyncio.to_thread so the async port surface never blocks the event loop.
 Connection options: {"endpoint": "localhost:9000", "bucket": "apex-artifacts",
 "secure": false, "access_key": "apex"}; the secret key arrives as the
 SecretValue that AdapterRegistry.build resolves from the connection's
-secret_ref (e.g. "env:APEX_MINIO_SECRET_KEY" via the env secrets adapter).
+secret_ref (e.g. "env:APEX_INTEGRATION_MINIO_SECRET_KEY" via the env secrets adapter).
 """
 
 import asyncio
+import os
 import threading
+from collections.abc import AsyncIterable, AsyncIterator
 from datetime import timedelta
 from io import BytesIO
+from tempfile import SpooledTemporaryFile
 from typing import Any
 
+import certifi
 from minio import Minio
 from minio.error import S3Error
+from urllib3 import Retry, Timeout
 
+from apex.adapters.network_safety import SafePoolManager, private_hosts_allowed
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import SecretValue
 from apex.ports.artifact_store import StoredArtifact
 
 DEFAULT_ENDPOINT = "localhost:9000"
 DEFAULT_BUCKET = "apex-artifacts"
+STREAM_SPOOL_BYTES = 8 * 1024 * 1024
 
 # make_bucket races between concurrent writers are benign — first writer wins.
 _BUCKET_RACE_CODES = frozenset({"BucketAlreadyOwnedByYou", "BucketAlreadyExists"})
@@ -53,13 +60,28 @@ class S3ArtifactStore:
                 conn_id = conn.id if conn is not None else "<none>"
                 raise ValueError(
                     f"s3 artifact store connection {conn_id!r} requires a secret key; "
-                    'set secret_ref on the connection (e.g. "env:APEX_MINIO_SECRET_KEY")'
+                    "set secret_ref on the connection "
+                    '(e.g. "env:APEX_INTEGRATION_MINIO_SECRET_KEY")'
                 )
+            timeout = 5 * 60
+            http_client = SafePoolManager(
+                allow_private_hosts=private_hosts_allowed(options),
+                timeout=Timeout(connect=timeout, read=timeout),
+                maxsize=10,
+                cert_reqs="CERT_REQUIRED",
+                ca_certs=os.environ.get("SSL_CERT_FILE") or certifi.where(),
+                retries=Retry(
+                    total=5,
+                    backoff_factor=0.2,
+                    status_forcelist=[500, 502, 503, 504],
+                ),
+            )
             client = Minio(
                 str(options.get("endpoint", DEFAULT_ENDPOINT)),
                 access_key=str(options.get("access_key", "")),
                 secret_key=secret.value,
                 secure=bool(options.get("secure", False)),
+                http_client=http_client,
             )
         self._client = client
         self._bucket_ensured = False
@@ -85,6 +107,37 @@ class S3ArtifactStore:
         await asyncio.to_thread(_put)
         return StoredArtifact(key=key, uri=f"s3://{self._bucket}/{key}", size=len(payload))
 
+    async def put_stream(
+        self,
+        key: str,
+        data: AsyncIterable[bytes],
+        *,
+        content_type: str,
+        max_bytes: int,
+    ) -> StoredArtifact:
+        """Bounded streaming upload, spilling larger payloads to a temporary file."""
+        await self._ensure_bucket()
+        size = 0
+        with SpooledTemporaryFile(max_size=STREAM_SPOOL_BYTES, mode="w+b") as payload:
+            async for chunk in data:
+                size += len(chunk)
+                if size > max_bytes:
+                    raise ValueError(f"artifact exceeds maximum size of {max_bytes} bytes")
+                payload.write(chunk)
+            payload.seek(0)
+
+            def _put() -> None:
+                self._client.put_object(
+                    self._bucket,
+                    key,
+                    payload,
+                    length=size,
+                    content_type=content_type,
+                )
+
+            await asyncio.to_thread(_put)
+        return StoredArtifact(key=key, uri=f"s3://{self._bucket}/{key}", size=size)
+
     async def get(self, key: str) -> bytes:
         await self._ensure_bucket()
 
@@ -102,6 +155,23 @@ class S3ArtifactStore:
             if exc.code == "NoSuchKey":
                 raise KeyError(f"artifact {key!r} not found in bucket {self._bucket!r}") from None
             raise
+
+    async def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be >= 1")
+        await self._ensure_bucket()
+        try:
+            response = await asyncio.to_thread(self._client.get_object, self._bucket, key)
+        except S3Error as exc:
+            if exc.code == "NoSuchKey":
+                raise KeyError(f"artifact {key!r} not found in bucket {self._bucket!r}") from None
+            raise
+        try:
+            while chunk := await asyncio.to_thread(response.read, chunk_size):
+                yield chunk
+        finally:
+            response.close()
+            response.release_conn()
 
     async def get_url(self, key: str, *, ttl_s: int = 3600) -> str:
         """Presigned GET URL. Signing is local — no existence check, no network."""

@@ -129,9 +129,13 @@ jobs:
           done
           docker logs apex-minio
           exit 1
+      - name: Apply integration database migrations
+        env:
+          APEX_DATABASE__URI: postgresql+asyncpg://apex:apex@localhost:5432/apex
+        run: uv run alembic upgrade head
       - name: Postgres and MinIO backed tests
         env:
-          APEX_TEST_DATABASE_URI: postgresql://apex:apex@localhost:5432/apex
+          APEX_TEST_DATABASE_URI: postgresql+asyncpg://apex:apex@localhost:5432/apex
           APEX_TEST_MINIO: "1"
           APEX_MINIO_SECRET_KEY: apex-minio
         run: uv run pytest tests/unit tests/integration -v

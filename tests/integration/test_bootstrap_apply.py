@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete, select, text
@@ -25,6 +26,7 @@ from apex.persistence.models import (
     Base,
     Connection,
     Environment,
+    Prompt,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -52,8 +54,11 @@ DOC = {
             "name": CONNECTION_NAME,
             "kind": "artifact_store",
             "provider": "s3",
-            "options": {"endpoint": "minio:9000"},
-            "secret_ref": "env:APEX_MINIO_SECRET_KEY",
+            "options": {
+                "endpoint": "minio:9000",
+                "_apex_trusted_private_host": True,
+            },
+            "secret_ref": "env:APEX_INTEGRATION_MINIO_SECRET_KEY",
         }
     ],
     "admin": {"name": ADMIN_NAME, "key_env": "APEX_BOOTSTRAP_ADMIN_KEY"},
@@ -136,3 +141,39 @@ async def test_admin_without_key_env_raises(
     async with sessionmaker() as session:
         with pytest.raises(BootstrapError, match="is unset/empty"):
             await apply_document(doc, session, env=os.environ)
+
+
+async def test_prompt_seeding_rolls_back_when_later_bootstrap_step_fails(
+    sessionmaker: async_sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apex.services import prompts as prompt_service
+
+    key = f"atomic-{uuid4().hex}/system"
+    monkeypatch.setattr(prompt_service, "DEFAULT_PHASE_PROMPTS", {key: "transaction probe"})
+    doc = BootstrapDocument.model_validate(
+        {
+            "seed_default_prompts": True,
+            "environments": [
+                {
+                    "project_id": TEST_PROJECT,
+                    "application": "Missing",
+                    "name": "must-fail",
+                }
+            ],
+        }
+    )
+
+    async with sessionmaker() as session:
+        with pytest.raises(BootstrapError, match="does not exist"):
+            await apply_document(doc, session, env=os.environ)
+        await session.rollback()
+
+    async with sessionmaker() as session:
+        persisted = await session.scalar(
+            select(Prompt).where(Prompt.namespace == "phase", Prompt.key == key)
+        )
+        if persisted is not None:  # Cleanup also makes a regression failure rerunnable.
+            await session.execute(delete(Prompt).where(Prompt.id == persisted.id))
+            await session.commit()
+
+    assert persisted is None

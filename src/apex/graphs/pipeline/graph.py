@@ -28,8 +28,9 @@ from apex.graphs.pipeline.phase_subgraph import (
     emit_event,
     make_phase_subgraph,
 )
-from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.graphs.pipeline.state import JsonDict, PipelineInput, PipelineState
 from apex.services.prompts import prompt_review_from_resolved, resolve_phase_prompts_sync
+from apex.services.run_validation import validate_context_packets, validate_pipeline_input
 
 
 def _prompt_variables(state: PipelineState) -> dict[str, str]:
@@ -78,10 +79,18 @@ def _external_seed(external: JsonDict) -> tuple[JsonDict, JsonDict]:
 
 def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     """Resolve the run plan from config, validate prerequisites, seed phase entries."""
+    # Direct LangGraph calls and assistant/checkpoint merges bypass the REST model,
+    # so validate the final state immediately before any phase can spend resources.
+    validate_pipeline_input(state)
     cfg = PipelineConfigurable.from_config(config)
     selected = cfg.selected_phases()
     if not selected:
         raise ValueError("Pipeline phase plan is empty")
+    configurable = config.get("configurable") or {}
+    if not str(configurable.get("thread_id") or "").strip():
+        raise ValueError(
+            "pipeline runs require a durable thread_id; stateless runs are not allowed"
+        )
     selected_set = set(selected)  # canonical order => membership implies "runs earlier"
     existing = dict(state.get("phase_results") or {})
 
@@ -145,13 +154,19 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         "current_phase": None,
         "run_aborted": False,
         "phase_results": seeded,
-        # Checkpoint the resolved limits so a later gate-resume can recover them (the run
-        # configurable is not retrievable via get_state). See pipeline_read._limits_from_state.
+        # RunnableConfig is not recoverable from a checkpoint. Persist every
+        # user-controlled run setting so a later human-gate resume cannot silently
+        # fall back to another project, engine, connection, model, or gate policy.
+        "run_config": cfg.snapshot(),
+        # Legacy/read-model convenience; run_config is authoritative for new runs.
         "limits": cfg.limits.model_dump(mode="json"),
     }
     if seeded_reviews:
         update["prompt_reviews"] = seeded_reviews
     if external_packet is not None:
+        current_packets = list(state.get("context_packets") or [])
+        if not any(packet.get("id") == external_packet["id"] for packet in current_packets):
+            validate_context_packets([*current_packets, external_packet])
         update["context_packets"] = [external_packet]
     return update
 
@@ -168,7 +183,7 @@ def route_next_phase(state: PipelineState) -> str:
     return END
 
 
-builder = StateGraph(PipelineState)
+builder = StateGraph(PipelineState, input_schema=PipelineInput)
 builder.add_node("plan_resolver", plan_resolver)
 builder.add_edge(START, "plan_resolver")
 

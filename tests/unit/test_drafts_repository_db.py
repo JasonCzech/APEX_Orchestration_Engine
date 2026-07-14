@@ -25,14 +25,20 @@ async def test_draft_crud_roundtrip() -> None:
                 project_id=project_id,
                 payload={"step": 1},
                 created_by="it-bot",
+                created_by_consumer_id="consumer-it-bot",
             )
             try:
                 listed = await repo.list_all(project_id=project_id)
                 assert [d.id for d in listed] == [draft.id]
+                assert draft.created_by == "it-bot"
+                assert draft.created_by_consumer_id == "consumer-it-bot"
 
                 first_updated_at = draft.updated_at
                 replaced = await repo.replace(
-                    draft.id, title="wizard draft v2", payload={"step": 2}
+                    draft.id,
+                    title="wizard draft v2",
+                    project_id=project_id,
+                    payload={"step": 2},
                 )
                 assert replaced is not None
                 assert replaced.title == "wizard draft v2"

@@ -30,6 +30,13 @@ VIEWER = ConsumerIdentity(
     role=Role.VIEWER,
     scopes=[ScopeRef(project_id="proj-a")],
 )
+APP_ONLY_ALICE = ConsumerIdentity(
+    consumer_id="op-app-alice",
+    name="alice",
+    consumer_type=ConsumerType.DASHBOARD,
+    role=Role.OPERATOR,
+    scopes=[ScopeRef(project_id="proj-a", app_id="app-a")],
+)
 
 
 class FakeDraftsRepository:
@@ -37,6 +44,7 @@ class FakeDraftsRepository:
 
     def __init__(self) -> None:
         self.rows: dict[str, Draft] = {}
+        self.for_update_calls: list[str] = []
 
     def seed(
         self,
@@ -45,6 +53,7 @@ class FakeDraftsRepository:
         title: str,
         project_id: str | None,
         created_by: str,
+        created_by_consumer_id: str | None = None,
         payload: dict[str, Any] | None = None,
     ) -> Draft:
         now = datetime.now(UTC) - timedelta(hours=1)
@@ -54,6 +63,7 @@ class FakeDraftsRepository:
             project_id=project_id,
             payload=payload or {},
             created_by=created_by,
+            created_by_consumer_id=created_by_consumer_id,
             created_at=now,
             updated_at=now,
         )
@@ -69,6 +79,10 @@ class FakeDraftsRepository:
     async def get(self, draft_id: str) -> Draft | None:
         return self.rows.get(draft_id)
 
+    async def get_for_update(self, draft_id: str) -> Draft | None:
+        self.for_update_calls.append(draft_id)
+        return self.rows.get(draft_id)
+
     async def create(
         self,
         *,
@@ -76,6 +90,7 @@ class FakeDraftsRepository:
         project_id: str | None,
         payload: dict[str, Any],
         created_by: str | None,
+        created_by_consumer_id: str | None = None,
     ) -> Draft:
         now = datetime.now(UTC)
         draft = Draft(
@@ -84,23 +99,47 @@ class FakeDraftsRepository:
             project_id=project_id,
             payload=payload,
             created_by=created_by,
+            created_by_consumer_id=created_by_consumer_id,
             created_at=now,
             updated_at=now,
         )
         self.rows[draft.id] = draft
         return draft
 
-    async def replace(self, draft_id: str, *, title: str, payload: dict[str, Any]) -> Draft | None:
+    async def replace(
+        self,
+        draft_id: str,
+        *,
+        title: str,
+        project_id: str | None,
+        payload: dict[str, Any],
+    ) -> Draft | None:
         draft = self.rows.get(draft_id)
         if draft is None:
             return None
+        return await self.replace_existing(
+            draft, title=title, project_id=project_id, payload=payload
+        )
+
+    async def replace_existing(
+        self,
+        draft: Draft,
+        *,
+        title: str,
+        project_id: str | None,
+        payload: dict[str, Any],
+    ) -> Draft:
         draft.title = title
+        draft.project_id = project_id
         draft.payload = payload
         draft.updated_at = datetime.now(UTC)
         return draft
 
     async def delete(self, draft_id: str) -> bool:
         return self.rows.pop(draft_id, None) is not None
+
+    async def delete_existing(self, draft: Draft) -> bool:
+        return self.rows.pop(draft.id, None) is not None
 
 
 def make_client(repo: FakeDraftsRepository, identity: ConsumerIdentity) -> TestClient:
@@ -117,16 +156,22 @@ def seeded_repo() -> FakeDraftsRepository:
     repo.seed(draft_id="d-proj-a", title="A", project_id="proj-a", created_by="bob")
     repo.seed(draft_id="d-proj-b", title="B", project_id="proj-b", created_by="bob")
     repo.seed(draft_id="d-global", title="G", project_id=None, created_by="bob")
-    repo.seed(draft_id="d-own-b", title="Mine", project_id="proj-b", created_by="alice")
+    repo.seed(
+        draft_id="d-own-b",
+        title="Mine",
+        project_id="proj-b",
+        created_by="alice",
+        created_by_consumer_id="op-alice",
+    )
     return repo
 
 
-def test_scoped_consumer_sees_scoped_global_and_own_drafts() -> None:
+def test_scoped_consumer_sees_only_current_scope_and_global_drafts() -> None:
     with make_client(seeded_repo(), ALICE) as client:
         response = client.get("/v1/drafts")
     assert response.status_code == 200
     ids = {row["id"] for row in response.json()}
-    assert ids == {"d-proj-a", "d-global", "d-own-b"}  # d-proj-b filtered out
+    assert ids == {"d-proj-a", "d-global"}  # creator status cannot bypass revoked scope
 
 
 def test_unscoped_admin_sees_all_drafts() -> None:
@@ -153,12 +198,77 @@ def test_create_sets_created_by_from_identity() -> None:
     assert body["created_by"] == "alice"
     assert body["payload"] == {"step": 2}
     assert repo.rows[body["id"]].project_id == "proj-a"
+    assert repo.rows[body["id"]].created_by_consumer_id == "op-alice"
 
 
 def test_create_outside_scope_403() -> None:
     with make_client(FakeDraftsRepository(), ALICE) as client:
         response = client.post("/v1/drafts", json={"title": "x", "project_id": "proj-b"})
     assert response.status_code == 403
+
+
+def test_scoped_operator_cannot_create_global_draft() -> None:
+    with make_client(FakeDraftsRepository(), ALICE) as client:
+        response = client.post("/v1/drafts", json={"title": "global"})
+    assert response.status_code == 403
+
+
+def test_app_only_operator_cannot_create_or_mutate_project_wide_draft() -> None:
+    repo = seeded_repo()
+    with make_client(repo, APP_ONLY_ALICE) as client:
+        assert (
+            client.post(
+                "/v1/drafts", json={"title": "app draft", "project_id": "proj-a"}
+            ).status_code
+            == 403
+        )
+        assert client.get("/v1/drafts/d-proj-a").status_code == 200
+        assert (
+            client.put("/v1/drafts/d-proj-a", json={"title": "taken", "payload": {}}).status_code
+            == 404
+        )
+        assert client.delete("/v1/drafts/d-proj-a").status_code == 404
+
+
+def test_global_draft_mutation_requires_unscoped_admin() -> None:
+    repo = seeded_repo()
+    with make_client(repo, ALICE) as client:
+        assert (
+            client.put("/v1/drafts/d-global", json={"title": "taken", "payload": {}}).status_code
+            == 404
+        )
+        assert client.delete("/v1/drafts/d-global").status_code == 404
+
+    with make_client(repo, ADMIN) as client:
+        assert (
+            client.put("/v1/drafts/d-global", json={"title": "admin", "payload": {}}).status_code
+            == 200
+        )
+        assert client.delete("/v1/drafts/d-global").status_code == 204
+
+
+def test_draft_creator_visibility_uses_consumer_id_not_display_name() -> None:
+    same_name = ConsumerIdentity(
+        consumer_id="someone-else",
+        name="alice",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.OPERATOR,
+        scopes=[ScopeRef(project_id="proj-a")],
+    )
+    with make_client(seeded_repo(), same_name) as client:
+        assert client.get("/v1/drafts/d-own-b").status_code == 404
+
+
+def test_draft_creator_loses_read_access_when_project_scope_is_revoked() -> None:
+    revoked = ConsumerIdentity(
+        consumer_id="op-alice",
+        name="alice",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.OPERATOR,
+        scopes=[ScopeRef(project_id="proj-a")],
+    )
+    with make_client(seeded_repo(), revoked) as client:
+        assert client.get("/v1/drafts/d-own-b").status_code == 404
 
 
 def test_get_out_of_scope_draft_is_404() -> None:
@@ -179,7 +289,28 @@ def test_update_replaces_title_payload_and_bumps_updated_at() -> None:
     body = response.json()
     assert body["title"] == "A2"
     assert body["payload"] == {"fresh": True}
+    assert body["project_id"] == "proj-a"
     assert repo.rows["d-proj-a"].updated_at > before
+    assert repo.for_update_calls == ["d-proj-a"]
+
+
+def test_update_project_requires_scope_on_both_old_and_new_project() -> None:
+    repo = seeded_repo()
+    with make_client(repo, ALICE) as client:
+        response = client.put(
+            "/v1/drafts/d-proj-a",
+            json={"title": "moved", "project_id": "proj-b", "payload": {}},
+        )
+    assert response.status_code == 403
+    assert repo.rows["d-proj-a"].project_id == "proj-a"
+
+    with make_client(repo, ADMIN) as client:
+        response = client.put(
+            "/v1/drafts/d-proj-a",
+            json={"title": "moved", "project_id": "proj-b", "payload": {}},
+        )
+    assert response.status_code == 200
+    assert repo.rows["d-proj-a"].project_id == "proj-b"
 
 
 def test_update_out_of_scope_draft_is_404() -> None:
@@ -195,6 +326,7 @@ def test_delete_draft() -> None:
         assert "d-proj-a" not in repo.rows
         assert client.delete("/v1/drafts/d-proj-a").status_code == 404
         assert client.delete("/v1/drafts/d-proj-b").status_code == 404  # out of scope
+    assert repo.for_update_calls == ["d-proj-a", "d-proj-a", "d-proj-b"]
 
 
 def test_mutations_require_operator_role() -> None:

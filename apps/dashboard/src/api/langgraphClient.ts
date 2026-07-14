@@ -15,7 +15,16 @@ let clientPromise: Promise<Client> | null = null
 export function getLangGraphClient(): Promise<Client> {
   const devClient = createDevLangGraphClient()
   if (devClient) return Promise.resolve(devClient as Client)
-  clientPromise ??= buildClient()
+  if (!clientPromise) {
+    const pending = buildClient()
+    clientPromise = pending
+    // A failed dynamic import or constructor must not poison the singleton for
+    // the rest of the page lifetime. Only clear the promise we started, so a
+    // concurrent reset/new build cannot be overwritten by this rejection.
+    void pending.catch(() => {
+      if (clientPromise === pending) clientPromise = null
+    })
+  }
   return clientPromise
 }
 

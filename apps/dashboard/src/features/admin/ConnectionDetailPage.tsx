@@ -8,7 +8,7 @@
  * Config tab PATCHes the mutable fields (kind shown immutable); host-mappings
  * tab PUTs the FULL mapping list on save.
  */
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import {
@@ -211,8 +211,19 @@ function HostMappingsEditor({
   const [rows, setRows] = useState<MappingDraft[]>(() =>
     initial.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })),
   )
+  const [isDirty, setIsDirty] = useState(false)
+
+  useEffect(() => {
+    // Connection lifecycle mutations invalidate the broad connections cache.
+    // Accept a refreshed server snapshot only while the editor is pristine;
+    // otherwise an unrelated enable/disable refetch would erase local edits.
+    if (!isDirty) {
+      setRows(initial.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })))
+    }
+  }, [initial, isDirty])
 
   function patchRow(index: number, patch: Partial<MappingDraft>) {
+    setIsDirty(true)
     setRows((current) => current.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
 
@@ -268,8 +279,11 @@ function HostMappingsEditor({
                     <button
                       type="button"
                       className="btn btn-ghost btn-sm"
-                      aria-label={`Remove mapping ${index + 1}`}
-                      onClick={() => setRows((current) => current.filter((_, i) => i !== index))}
+                    aria-label={`Remove mapping ${index + 1}`}
+                      onClick={() => {
+                        setIsDirty(true)
+                        setRows((current) => current.filter((_, i) => i !== index))
+                      }}
                     >
                       Remove
                     </button>
@@ -289,9 +303,10 @@ function HostMappingsEditor({
         <button
           type="button"
           className="btn btn-secondary btn-sm"
-          onClick={() =>
+          onClick={() => {
+            setIsDirty(true)
             setRows((current) => [...current, { pattern: '', target: '', enabled: true }])
-          }
+          }}
         >
           Add mapping
         </button>
@@ -307,6 +322,13 @@ function HostMappingsEditor({
                 target: row.target.trim(),
                 enabled: row.enabled,
               })),
+            }, {
+              onSuccess: (saved) => {
+                setRows(
+                  saved.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })),
+                )
+                setIsDirty(false)
+              },
             })
           }
         >
@@ -336,14 +358,7 @@ function HostMappingsTab({ connectionId }: { connectionId: string }) {
       />
     )
   }
-  // Key on the fetch timestamp so a refetch reseeds the draft rows.
-  return (
-    <HostMappingsEditor
-      key={mappings.dataUpdatedAt}
-      connectionId={connectionId}
-      initial={mappings.data}
-    />
-  )
+  return <HostMappingsEditor connectionId={connectionId} initial={mappings.data} />
 }
 
 /** Type-to-confirm delete modal (mirrors the environments pattern). */

@@ -6,7 +6,6 @@ Create Date: 2026-06-24
 """
 
 from collections.abc import Sequence
-from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -18,26 +17,28 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-def _is_postgres() -> bool:
-    return op.get_bind().dialect.name == "postgresql"
-
-
 def _create_index(name: str, columns: list[str]) -> None:
-    kwargs: dict[str, Any] = {"schema": "apex"}
-    if _is_postgres():
-        kwargs["postgresql_concurrently"] = True
-        with op.get_context().autocommit_block():
-            op.create_index(name, "agent_events", columns, **kwargs)
-        return
-    op.create_index(name, "agent_events", columns, **kwargs)
+    op.drop_index(
+        name,
+        table_name="agent_events",
+        schema="apex",
+        if_exists=True,
+    )
+    op.create_index(
+        name,
+        "agent_events",
+        columns,
+        schema="apex",
+    )
 
 
 def _drop_index(name: str) -> None:
-    if _is_postgres():
-        with op.get_context().autocommit_block():
-            op.get_bind().exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS apex.{name}")
-        return
-    op.drop_index(name, table_name="agent_events", schema="apex")
+    op.drop_index(
+        name,
+        table_name="agent_events",
+        schema="apex",
+        if_exists=True,
+    )
 
 
 def upgrade() -> None:
@@ -73,6 +74,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_agent_events")),
         schema="apex",
+        if_not_exists=True,
     )
     _create_index(op.f("ix_agent_events_at"), ["at"])
     _create_index("ix_agent_events_project_id_at", ["project_id", "at"])
@@ -87,4 +89,4 @@ def downgrade() -> None:
     _drop_index("ix_agent_events_phase_at")
     _drop_index("ix_agent_events_project_id_at")
     _drop_index(op.f("ix_agent_events_at"))
-    op.drop_table("agent_events", schema="apex")
+    op.drop_table("agent_events", schema="apex", if_exists=True)

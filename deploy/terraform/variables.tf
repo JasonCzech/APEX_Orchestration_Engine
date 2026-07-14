@@ -130,9 +130,33 @@ variable "langgraph_license_key" {
 
 variable "artifact_store_secret" {
   type        = string
-  description = "Secret for the in-cluster MinIO artifact store (APEX_MINIO_SECRET_KEY)."
+  description = "Secret for the in-cluster MinIO artifact store (APEX_INTEGRATION_MINIO_SECRET_KEY)."
   sensitive   = true
   default     = ""
+}
+
+variable "bootstrap_admin_key" {
+  type        = string
+  description = "Initial admin API key. Empty generates a random value stored only in state/Key Vault."
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = var.bootstrap_admin_key == "" || length(var.bootstrap_admin_key) >= 24
+    error_message = "bootstrap_admin_key must be empty (generate) or at least 24 characters."
+  }
+}
+
+variable "api_key_hash_pepper" {
+  type        = string
+  description = "HMAC pepper for API-key hashes. Empty generates a random value stored only in state/Key Vault."
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = var.api_key_hash_pepper == "" || length(var.api_key_hash_pepper) >= 32
+    error_message = "api_key_hash_pepper must be empty (generate) or at least 32 characters."
+  }
 }
 
 variable "deployer_object_id" {
@@ -152,6 +176,12 @@ variable "workload_service_account" {
   type        = string
   description = "Kubernetes ServiceAccount name federated to the workload identity."
   default     = "apex-orchestration-engine"
+}
+
+variable "workload_hook_service_account" {
+  type        = string
+  description = "Pre-install CSI hook ServiceAccount federated to the workload identity."
+  default     = "apex-orchestration-engine-hooks"
 }
 
 # ── Monitoring ────────────────────────────────────────────────────────────────

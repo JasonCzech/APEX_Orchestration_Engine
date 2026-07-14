@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { server } from '@/test/server'
 
 import {
+  PIPELINE_DETAIL,
   PIPELINE_DETAIL_INTERRUPTED,
   pipelineDetailHandler,
   renderRunRoutes,
@@ -144,5 +145,63 @@ describe('RunDetailPage', () => {
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('thread not visible')
     expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('uses the engine kill switch even when the compact summary lacks engine metadata', async () => {
+    const calls: string[] = []
+    server.use(
+      pipelineDetailHandler({
+        ...PIPELINE_DETAIL,
+        engine: null,
+      }),
+      http.post(`*/v1/engines/runs/${THREAD_ID}/abort`, async ({ request }) => {
+        calls.push(request.url)
+        return HttpResponse.json(
+          {
+            thread_id: THREAD_ID,
+            engine: 'apex_load',
+            external_run_id: 'load-42',
+            cancelled_runs: ['run-1'],
+          },
+          { status: 202 },
+        )
+      }),
+      http.post(`*/v1/pipelines/${THREAD_ID}/abort`, () => {
+        calls.push('graph-only')
+        return HttpResponse.json({ cancelled_run_ids: ['run-1'] }, { status: 202 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
+
+    await user.click(await screen.findByRole('button', { name: 'Abort' }))
+    await user.type(screen.getByLabelText('Type ABORT to confirm'), 'ABORT')
+    await user.click(screen.getByRole('button', { name: 'Confirm abort' }))
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]).toContain(`/v1/engines/runs/${THREAD_ID}/abort`)
+    expect(calls).not.toContain('graph-only')
+  })
+
+  it('renders engine abort failures instead of claiming the run stopped', async () => {
+    server.use(
+      pipelineDetailHandler({
+        ...PIPELINE_DETAIL,
+        engine: { engine: 'loadrunner', external_run_id: 'lr-9' },
+      }),
+      http.post(`*/v1/engines/runs/${THREAD_ID}/abort`, () =>
+        HttpResponse.json({ detail: 'provider refused stop' }, { status: 502 }),
+      ),
+    )
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
+
+    await user.click(await screen.findByRole('button', { name: 'Abort' }))
+    await user.type(screen.getByLabelText('Type ABORT to confirm'), 'ABORT')
+    await user.click(screen.getByRole('button', { name: 'Confirm abort' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Abort failed: provider refused stop',
+    )
   })
 })

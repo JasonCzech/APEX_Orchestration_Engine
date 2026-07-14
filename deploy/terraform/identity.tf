@@ -16,3 +16,12 @@ resource "azurerm_federated_identity_credential" "workload" {
   issuer              = azurerm_kubernetes_cluster.main.oidc_issuer_url
   subject             = "system:serviceaccount:${var.workload_namespace}:${var.workload_service_account}"
 }
+
+resource "azurerm_federated_identity_credential" "workload_hooks" {
+  name                = "apex-workload-hooks"
+  resource_group_name = azurerm_resource_group.main.name
+  parent_id           = azurerm_user_assigned_identity.workload.id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = azurerm_kubernetes_cluster.main.oidc_issuer_url
+  subject             = "system:serviceaccount:${var.workload_namespace}:${var.workload_hook_service_account}"
+}

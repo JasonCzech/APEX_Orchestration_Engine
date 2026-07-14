@@ -1,9 +1,10 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
+import { queryKeys } from '@/api/queryKeys'
 
 import {
   connectionsReadHandlers,
@@ -84,6 +85,24 @@ describe('ConnectionDetailPage', () => {
           { pattern: 'db.example.com', target: '10.0.0.5', enabled: false },
         ],
       ]),
+    )
+  })
+
+  it('preserves unsaved host mappings across an unrelated connections refetch', async () => {
+    server.use(...connectionsReadHandlers())
+    const user = userEvent.setup()
+    const { queryClient } = renderDetail('/admin/connections/conn-jira?tab=host-mappings')
+
+    const pattern = await screen.findByRole('textbox', { name: 'Mapping 1 pattern' })
+    await user.clear(pattern)
+    await user.type(pattern, '*.edited.example.com')
+
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.admin.connections() })
+    })
+
+    expect(screen.getByRole('textbox', { name: 'Mapping 1 pattern' })).toHaveValue(
+      '*.edited.example.com',
     )
   })
 

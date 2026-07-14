@@ -2,9 +2,11 @@
 
 GET /analytics/usage (any authenticated role) aggregates the events emitted by the
 /v1 usage middleware and the graph phase-finalize hook (apex.services.usage).
-Scoping: unscoped admins see everything; scoped consumers see events in their
-scoped projects plus project-less events (most /v1 requests carry no project).
-An explicit ?project outside the consumer's scopes answers 403.
+Scoping: unscoped admins see everything. Scoped consumers see only exact
+project/application scopes; project-wide scopes include every application in
+that project. Project-less rows are platform-only, and legacy rows without an
+application id are hidden from app-only identities. An explicit ?project outside
+the consumer's scopes answers 403.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -15,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, SettingsDep
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 from apex.persistence.db import get_session
 from apex.services.agent_analytics import (
     AgentAnalyticsRepository,
@@ -40,7 +42,7 @@ class UsageAnalyticsReader(Protocol):
         window_to: datetime,
         bucket: str,
         project_id: str | None = None,
-        visible_project_ids: tuple[str, ...] | None = None,
+        visible_scopes: tuple[ScopeRef, ...] | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -55,7 +57,7 @@ class AgentAnalyticsReader(Protocol):
         bucket: AgentBucket,
         group_by: AgentGroupBy,
         project_id: str | None = None,
-        visible_project_ids: tuple[str, ...] | None = None,
+        visible_scopes: tuple[ScopeRef, ...] | None = None,
         models: tuple[str, ...] = (),
         stages: tuple[str, ...] = (),
         agents: tuple[str, ...] = (),
@@ -270,13 +272,13 @@ async def get_usage_analytics(
         raise HTTPException(
             status_code=403, detail=f"Project '{project}' is outside this consumer's scopes"
         )
-    visible = None if identity.is_unscoped else identity.scoped_project_ids()
+    visible = None if identity.is_unscoped else tuple(identity.scopes)
     data = await repo.aggregate(
         window_from=window_from,
         window_to=window_to,
         bucket=bucket,
         project_id=project,
-        visible_project_ids=visible,
+        visible_scopes=visible,
     )
     return UsageAnalyticsResponse(
         window=UsageWindow.model_validate({"from": window_from, "to": window_to, "bucket": bucket}),
@@ -316,14 +318,14 @@ async def get_agent_analytics(
         raise HTTPException(
             status_code=403, detail=f"Project '{project}' is outside this consumer's scopes"
         )
-    visible = None if identity.is_unscoped else identity.scoped_project_ids()
+    visible = None if identity.is_unscoped else tuple(identity.scopes)
     data = await repo.aggregate(
         window_from=window_from,
         window_to=window_to,
         bucket=bucket,
         group_by=group_by,
         project_id=project,
-        visible_project_ids=visible,
+        visible_scopes=visible,
         models=_multi(model),
         stages=_multi(stage),
         agents=_multi(agent),

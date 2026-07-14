@@ -109,16 +109,22 @@ export function LogsPage() {
 
   // Pending form state (URL-prefilled, e.g. ?thread= deep links).
   const [form, setForm] = useState<LogsFilters>(committed)
-  useEffect(() => {
-    // Back/forward (or submit) changed the URL: resync the form.
-    setForm(parseLogsFilters(new URLSearchParams(committedKey)))
-  }, [committedKey])
-
   // The submitted search; null until the user submits (or a deep link mounts).
   const [submitted, setSubmitted] = useState(() =>
     hasLogsFilters(committed) ? buildLogSearchInput(committed) : null,
   )
   const [offset, setOffset] = useState(0)
+
+  useEffect(() => {
+    // The URL is the committed-search source of truth. In particular, browser
+    // Back/Forward must update both the visible controls and the query that
+    // produced the results; updating only the form leaves stale results under
+    // a different URL.
+    const next = parseLogsFilters(new URLSearchParams(committedKey))
+    setForm(next)
+    setSubmitted(hasLogsFilters(next) ? buildLogSearchInput(next) : null)
+    setOffset(0)
+  }, [committedKey])
 
   const { data, error, isPending, isError, refetch } = useLogSearch(
     submitted ? { ...submitted, offset } : null,

@@ -123,6 +123,8 @@ export function PhaseWorkspace({
             streamStatus={stream?.status}
             progress={stream?.phaseProgress?.[phase]}
             toolCalls={stream?.toolCalls}
+            agentEvents={stream?.agentEvents}
+            engineErrors={stream?.engineErrors}
             engineSamples={phase === 'execution' ? stream?.engineStats?.samples : undefined}
           />
         </div>

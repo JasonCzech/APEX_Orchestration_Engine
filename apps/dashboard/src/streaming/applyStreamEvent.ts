@@ -3,8 +3,9 @@
  * stream events patch the cached `threads.state` snapshot (canonical) and the
  * `pipelines.list` rows so every mounted surface moves together.
  *
- * Strict rule: tool_call and engine_poll NEVER write the query cache — they
- * stay in the stream view / ring buffers. Monotonicity stays simple per plan:
+ * Strict rule: telemetry-only events (tool/agent/engine poll/error) NEVER
+ * write the query cache — they stay in the stream view / ring buffers.
+ * Monotonicity stays simple per plan:
  * patches are merges, and the one healing refetch at stream end/error wins.
  */
 import type { QueryClient } from '@tanstack/react-query'
@@ -41,7 +42,7 @@ export function applyStreamEvent(
       applyGateOpened(queryClient, threadId, event)
       return
     default:
-      // tool_call / engine_poll: high-frequency feeds, never cache writes.
+      // Telemetry-only events: live feeds, never cache writes.
       return
   }
 }

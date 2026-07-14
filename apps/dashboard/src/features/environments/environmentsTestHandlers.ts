@@ -41,6 +41,8 @@ export const ENV_STAGING: Environment = {
   name: 'staging',
   kind: 'k8s',
   base_url: 'https://staging.checkout.example.com',
+  target_approved: true,
+  target_version: 1,
   hosts: [{ id: 'host-1', hostname: 'stg-node-1', role: 'worker' }],
   options: { namespace: 'checkout-stg' },
   created_at: NOW,
@@ -53,6 +55,8 @@ export const ENV_PROD: Environment = {
   name: 'production',
   kind: 'k8s',
   base_url: 'https://checkout.example.com',
+  target_approved: true,
+  target_version: 1,
   hosts: [
     { id: 'host-2', hostname: 'prod-node-1', role: 'worker' },
     { id: 'host-3', hostname: 'prod-node-2', role: null },
@@ -68,6 +72,8 @@ export const ENV_SEARCH_DEV: Environment = {
   name: 'dev',
   kind: 'vm',
   base_url: null,
+  target_approved: false,
+  target_version: 0,
   hosts: [],
   options: {},
   created_at: NOW,
@@ -132,6 +138,8 @@ export function createEnvironmentHandler(id = 'env-new') {
       name: body.name,
       kind: body.kind ?? null,
       base_url: body.base_url ?? null,
+      target_approved: body.base_url != null,
+      target_version: body.base_url == null ? 0 : 1,
       hosts: (body.hosts ?? []).map((host, index) => ({
         id: `host-new-${index}`,
         hostname: host.hostname,
@@ -155,6 +163,12 @@ export function updateEnvironmentHandler(base: Environment) {
     const updated: Environment = {
       ...base,
       base_url: body.base_url !== undefined ? body.base_url : base.base_url,
+      target_approved:
+        body.base_url !== undefined ? body.base_url !== null : base.target_approved,
+      target_version:
+        body.base_url !== undefined && body.base_url !== base.base_url
+          ? base.target_version + 1
+          : base.target_version,
       kind: body.kind !== undefined ? body.kind : base.kind,
       hosts:
         body.hosts != null

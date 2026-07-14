@@ -75,13 +75,28 @@ def identity(role: Role, *projects: str) -> ConsumerIdentity:
     )
 
 
+def app_identity(role: Role, project_id: str, app_id: str) -> ConsumerIdentity:
+    return ConsumerIdentity(
+        consumer_id="c-app-test",
+        name="app-test",
+        consumer_type=ConsumerType.INTERNAL,
+        role=role,
+        scopes=[ScopeRef(project_id=project_id, app_id=app_id)],
+    )
+
+
 ADMIN = identity(Role.ADMIN)
 OPERATOR_DEMO = identity(Role.OPERATOR, "demo")
 VIEWER_DEMO = identity(Role.VIEWER, "demo")
 
 
-def make_environment(project_id: str = "demo", name: str = "staging-2") -> Environment:
-    app = Application(id=uuid4().hex, project_id=project_id, name="Checkout")
+def make_environment(
+    project_id: str = "demo",
+    name: str = "staging-2",
+    *,
+    application_id: str | None = None,
+) -> Environment:
+    app = Application(id=application_id or uuid4().hex, project_id=project_id, name="Checkout")
     env = Environment(id=uuid4().hex, application_id=app.id, name=name, kind="k8s", options={})
     env.application = app
     return env
@@ -199,6 +214,16 @@ def test_get_cross_project_environment_is_404_for_scoped_consumer(
     assert client.get(f"/inventory/environments/{env.id}").status_code == 404
 
 
+def test_get_sibling_app_environment_is_404_for_app_scoped_consumer(
+    repo: FakeSnapshotsRepository,
+) -> None:
+    env = make_environment(application_id="app-b")
+    repo.environments[env.id] = env
+
+    client, _ = make_client(repo, app_identity(Role.VIEWER, "demo", "app-a"))
+    assert client.get(f"/inventory/environments/{env.id}").status_code == 404
+
+
 # ── POST /inventory/environments/{id}/rescan ─────────────────────────────────
 
 
@@ -280,6 +305,16 @@ def test_rescan_cross_project_environment_is_404(repo: FakeSnapshotsRepository) 
         repo, OPERATOR_DEMO, adapter=FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot())
     )
     assert client.post(f"/inventory/environments/{env.id}/rescan").status_code == 404
+
+
+def test_rescan_sibling_app_environment_is_404(repo: FakeSnapshotsRepository) -> None:
+    env = make_environment(application_id="app-b")
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot())
+
+    client, _ = make_client(repo, app_identity(Role.OPERATOR, "demo", "app-a"), adapter=adapter)
+    assert client.post(f"/inventory/environments/{env.id}/rescan").status_code == 404
+    assert adapter.calls == []
 
 
 def test_rescan_adapter_failure_is_502_with_adapter_message(

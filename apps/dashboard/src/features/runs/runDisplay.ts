@@ -10,6 +10,7 @@ import {
 } from '@apex/pipeline-events'
 
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
+import type { PipelineSummary } from '@/api/hooks/usePipelines'
 
 export const PHASE_LABELS: Record<PhaseName, string> = {
   story_analysis: 'Story Analysis',
@@ -120,6 +121,38 @@ export function pipelineStatusLabel(status: string | null | undefined): string {
 
 export function isPipelinePhaseComplete(status: string | null | undefined): boolean {
   return ['succeeded', 'failed', 'aborted', 'skipped'].includes(status ?? '')
+}
+
+export type PipelineVerdict = 'GO' | 'Conditional' | 'NO-GO' | '—'
+
+/**
+ * Conservative fleet verdict derived from the outcomes the list facade
+ * actually exposes. Thread `idle` only means execution stopped; it is GO only
+ * when at least one selected phase completed successfully (or was skipped)
+ * and no phase failed, aborted, or remained in flight.
+ */
+export function pipelineVerdict(
+  run: Pick<PipelineSummary, 'phase_strip' | 'thread_status'>,
+): PipelineVerdict {
+  const statuses = run.phase_strip.map((entry) => entry.status)
+  if (statuses.some((status) => status === 'failed' || status === 'aborted')) return 'NO-GO'
+  switch (run.thread_status) {
+    case 'interrupted':
+      return 'Conditional'
+    case 'error':
+      return 'NO-GO'
+    case 'idle':
+      if (
+        statuses.some((status) =>
+          ['running', 'awaiting_prompt_review', 'awaiting_output_review'].includes(status),
+        )
+      ) {
+        return 'NO-GO'
+      }
+      return statuses.some((status) => status === 'succeeded' || status === 'skipped') ? 'GO' : '—'
+    default:
+      return '—'
+  }
 }
 
 /** CSS color custom property per tone (status dots use currentColor). */

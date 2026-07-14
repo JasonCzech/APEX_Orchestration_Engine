@@ -11,6 +11,8 @@ from typing import Any
 
 import structlog
 
+from apex.services.run_validation import validate_context_run_input
+
 logger = structlog.get_logger(__name__)
 
 # Evidence aggregation scans at most this many threads per request (newest first
@@ -25,7 +27,7 @@ async def start_context_summary(
     *,
     subject: str,
     work_item_keys: list[str] | None = None,
-    document_ids: list[str] | None = None,
+    document_packets: list[dict[str, Any]] | None = None,
     project_id: str | None = None,
 ) -> dict[str, str]:
     """Launch a stateless background run on the `context` assistant.
@@ -33,14 +35,25 @@ async def start_context_summary(
     Returns {run_id, stream_url}; callers join the SSE stream by GETting
     `stream_url` on the LangGraph surface (same host) with their API key.
     """
+    validated = validate_context_run_input(
+        {
+            "subject": subject,
+            "work_item_keys": list(work_item_keys or []),
+            "document_packets": list(document_packets or []),
+            "project_id": project_id,
+        }
+    )
     run = await client.runs.create(
         None,
         "context",
         input={
-            "subject": subject,
-            "work_item_keys": list(work_item_keys or []),
-            "document_ids": list(document_ids or []),
-            "project_id": project_id,
+            "subject": validated.subject,
+            "work_item_keys": validated.work_item_keys,
+            "document_packets": [
+                packet.model_dump(mode="json", exclude_none=True)
+                for packet in validated.document_packets
+            ],
+            "project_id": validated.project_id,
         },
     )
     run_id = run["run_id"]

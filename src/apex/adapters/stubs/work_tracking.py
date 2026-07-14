@@ -69,6 +69,8 @@ def _paginate(items: list[WorkItem], page: Page) -> WorkItemPage:
 
 @AdapterRegistry.register(PortKind.WORK_TRACKING, "stub")
 class StubWorkTrackingAdapter:
+    provider = "stub"
+
     def __init__(
         self, conn: ConnectionConfig | None = None, secret: SecretValue | None = None
     ) -> None:

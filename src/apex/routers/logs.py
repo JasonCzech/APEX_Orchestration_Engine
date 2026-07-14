@@ -212,22 +212,57 @@ async def search_logs(
 
 
 def _effective_project_filter(identity: Any, filters: dict[str, str]) -> str | None:
-    """Inject or verify the mandatory project filter for scoped consumers."""
+    """Inject/verify the exact project and app boundary for scoped consumers."""
 
     if identity.is_unscoped:
         return filters.get("project_id")
-    allowed = identity.scoped_project_ids()
-    requested = filters.get("project_id")
-    if requested is not None:
-        if requested not in allowed:
+    allowed_projects = identity.scoped_project_ids()
+    requested_project = filters.get("project_id")
+    if requested_project is not None:
+        if requested_project not in allowed_projects:
             raise HTTPException(
-                status_code=403, detail=f"Project '{requested}' is outside this consumer's scopes"
+                status_code=403,
+                detail=f"Project '{requested_project}' is outside this consumer's scopes",
             )
-        return requested
-    if len(allowed) == 1:
-        filters["project_id"] = allowed[0]
-        return allowed[0]
+        project_id = requested_project
+    elif len(allowed_projects) == 1:
+        project_id = allowed_projects[0]
+        filters["project_id"] = project_id
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="project_id filter is required for consumers scoped to multiple projects",
+        )
+
+    requested_app = filters.get("app_id")
+    if requested_app is not None:
+        if not identity.allows_scope(project_id=project_id, app_id=requested_app):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"App '{requested_app}' in project '{project_id}' is outside "
+                    "this consumer's scopes"
+                ),
+            )
+        return project_id
+
+    project_wide = any(
+        scope.project_id == project_id and scope.app_id is None for scope in identity.scopes
+    )
+    if project_wide:
+        return project_id
+
+    app_ids = tuple(
+        dict.fromkeys(
+            scope.app_id
+            for scope in identity.scopes
+            if scope.project_id == project_id and scope.app_id is not None
+        )
+    )
+    if len(app_ids) == 1:
+        filters["app_id"] = app_ids[0]
+        return project_id
     raise HTTPException(
         status_code=403,
-        detail="project_id filter is required for consumers scoped to multiple projects",
+        detail="app_id filter is required for consumers scoped to multiple apps",
     )

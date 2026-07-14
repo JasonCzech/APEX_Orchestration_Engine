@@ -7,7 +7,12 @@ import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
 import type { WizardDraft } from '../wizardState'
-import { draftRead, installWizardHandlers, renderWizard } from './wizardTestUtils'
+import {
+  draftRead,
+  flushAndUnmountWizard,
+  installWizardHandlers,
+  renderWizard,
+} from './wizardTestUtils'
 
 const STORED: Partial<WizardDraft> = {
   title: 'Resumed soak',
@@ -28,7 +33,7 @@ describe('wizard draft resume', () => {
     installWizardHandlers([
       draftRead({ id: 'draft-7', title: 'Resumed soak', payload: STORED as Record<string, unknown> }),
     ])
-    renderWizard('/runs/new?draft=draft-7')
+    const rendered = renderWizard('/runs/new?draft=draft-7')
 
     expect(await screen.findByLabelText('Title')).toHaveValue('Resumed soak')
     expect(screen.getByLabelText('Request')).toHaveValue('Pick up where we left off')
@@ -38,6 +43,7 @@ describe('wizard draft resume', () => {
     await waitFor(() => expect(screen.getByLabelText('Environment')).toHaveValue('env-staging'))
     // No resume picker when the URL already names a draft.
     expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 
   it('offers Resume draft on first visit and loads the picked draft + URL', async () => {
@@ -45,7 +51,8 @@ describe('wizard draft resume', () => {
       draftRead({ id: 'draft-9', title: 'Black Friday soak', payload: STORED as Record<string, unknown> }),
     ])
     const user = userEvent.setup()
-    const { router } = renderWizard()
+    const rendered = renderWizard()
+    const { router } = rendered
 
     const select = await screen.findByLabelText('Resume draft')
     await user.selectOptions(select, 'draft-9')
@@ -54,5 +61,6 @@ describe('wizard draft resume', () => {
     await waitFor(() => expect(router.state.location.search).toContain('draft=draft-9'))
     // Picker disappears once a draft is active.
     expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 })

@@ -40,7 +40,9 @@ RunComment carrying the key so any later lookup — including provision() from a
 fresh process — finds it. start() re-runs the same lookup before POSTing, so a
 crash between run creation and the spine's checkpoint cannot double-start
 load; if several runs ever carry the same comment, the lowest RunID (the
-first created) wins deterministically.
+first created) wins deterministically. The final lookup + POST is serialized by
+a cross-event-loop process guard and, in locked multi-replica deployments, a
+PostgreSQL advisory lock; LRE itself has no atomic idempotency-key API.
 
 LRE RunState -> EngineRunPhase mapping (case-insensitive):
 
@@ -91,8 +93,17 @@ from typing import Any
 import httpx
 import structlog
 
-from apex.adapters.http_resilience import CircuitBreaker, CircuitOpenError, resilient_request
+from apex.adapters.http_resilience import (
+    CircuitBreaker,
+    CircuitOpenError,
+    read_stream_error_preview,
+    resilient_request,
+    resilient_stream_request,
+    retry_policy,
+)
+from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
+from apex.adapters.remote_idempotency import remote_create_guard
 from apex.domain.integrations import (
     LoadTestSpec,
     SecretValue,
@@ -100,7 +111,7 @@ from apex.domain.integrations import (
     ValidationReport,
 )
 from apex.domain.pipeline import ArtifactRef, EngineHandle
-from apex.ports.artifact_store import ArtifactStorePort
+from apex.ports.artifact_store import ArtifactStorePort, engine_artifact_key
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
     EngineRunPhase,
@@ -116,9 +127,12 @@ AUTH_PATH = "/LoadTest/rest/authentication-point/authenticate"
 _SCRIPT_REF_PREFIX = "lre-test:"
 _TIMEOUT_S = 15.0
 _DOWNLOAD_TIMEOUT_S = 60.0  # results zips can be large
+_DEFAULT_MAX_REPORT_BYTES = 512 * 1024 * 1024
 _MIN_TIMESLOT_MINUTES = 30  # LRE's floor for a timeslot reservation
 _TIMESLOT_HEADROOM_MINUTES = 15  # init + collation slack on top of the test window
 _POST_RUN_ACTION = "Collate And Analyze"
+_CREATE_RECHECK_ATTEMPTS = 6
+_CREATE_RECHECK_DELAY_S = 0.05
 
 # LRE RunState -> EngineRunPhase (lowercased lookup; table in module docstring).
 RUN_STATE_PHASES: dict[str, EngineRunPhase] = {
@@ -212,7 +226,7 @@ class LoadRunnerExecutionEngine:
         if secret is None:
             raise ValueError(
                 f"loadrunner connection {conn.id!r} requires a 'user:password' secret; set "
-                'secret_ref on the connection (e.g. "env:APEX_LRE_CREDENTIALS")'
+                'secret_ref on the connection (e.g. "env:APEX_INTEGRATION_LRE_CREDENTIALS")'
             )
         user, sep, password = secret.value.partition(":")
         if not sep or not user:
@@ -222,6 +236,7 @@ class LoadRunnerExecutionEngine:
             )
         self._conn_id = conn.id
         self._base_url = base_url
+        self._allow_private_hosts = private_hosts_allowed(options)
         self._project = project
         self._project_base = f"/LoadTest/rest/domains/{domain}/projects/{project}"
         raw_test_id = options.get("test_id")
@@ -230,6 +245,9 @@ class LoadRunnerExecutionEngine:
         # -1 asks LRE to auto-assign/create the test instance for the test set.
         self._test_instance_id = int(raw_instance) if raw_instance is not None else -1
         self._abortive_stop = bool(options.get("abortive_stop"))
+        self._max_report_bytes = int(options.get("max_report_bytes", _DEFAULT_MAX_REPORT_BYTES))
+        if self._max_report_bytes < 1:
+            raise ValueError("loadrunner max_report_bytes must be >= 1")
         token = base64.b64encode(f"{user}:{password}".encode()).decode()
         self._basic_auth = f"Basic {token}"
         self._http: httpx.AsyncClient | None = None
@@ -245,10 +263,11 @@ class LoadRunnerExecutionEngine:
         an empty cookie jar, so the LWSSO session is re-established lazily."""
         loop = asyncio.get_running_loop()
         if self._http is None or self._http.is_closed or self._http_loop is not loop:
-            self._http = httpx.AsyncClient(
+            self._http = safe_async_http_client(
                 base_url=self._base_url,
                 headers={"Accept": "application/json"},
                 timeout=_TIMEOUT_S,
+                allow_private_hosts=self._allow_private_hosts,
             )
             self._http_loop = loop
             self._session_ok = False
@@ -353,6 +372,53 @@ class LoadRunnerExecutionEngine:
             )
         return response
 
+    async def _stream_download(self, path: str, *, not_found: str) -> httpx.Response:
+        """Open an authenticated streaming response; caller must ``aclose`` it."""
+        client = self._client()
+        if not self._session_ok:
+            await self._authenticate(client)
+
+        async def _send() -> httpx.Response:
+            try:
+                return await resilient_stream_request(
+                    client,
+                    "GET",
+                    path,
+                    timeout=_DOWNLOAD_TIMEOUT_S,
+                    retry=retry_policy(total_timeout_s=None),
+                    breaker=self._breaker,
+                )
+            except CircuitOpenError as exc:
+                raise RuntimeError(f"loadrunner request circuit is open for GET {path}") from exc
+            except httpx.HTTPError as exc:
+                raise RuntimeError(
+                    f"loadrunner request GET {path} failed before a response arrived: {exc}"
+                ) from exc
+
+        response = await _send()
+        if response.status_code == 401:
+            await response.aclose()
+            self._session_ok = False
+            await self._authenticate(client)
+            response = await _send()
+        if response.status_code < 400:
+            return response
+        preview = await read_stream_error_preview(response)
+        preview_response = httpx.Response(response.status_code, content=preview)
+        try:
+            if response.status_code == 404:
+                raise KeyError(not_found)
+            if response.status_code in (401, 403):
+                raise RuntimeError(
+                    f"loadrunner rejected credentials for GET {path} (HTTP {response.status_code})"
+                )
+            raise RuntimeError(
+                f"loadrunner GET {path} failed with HTTP {response.status_code}: "
+                f"{_error_text(preview_response)}"
+            )
+        finally:
+            await response.aclose()
+
     # ── handle / run helpers ──────────────────────────────────────────────────
 
     def _test_id_from(self, handle: EngineHandle) -> int:
@@ -393,6 +459,22 @@ class LoadRunnerExecutionEngine:
         if not matches:
             return None
         return min(matches, key=lambda run: int(run.get("ID") or 0))
+
+    async def _find_run_after_ambiguous_create(
+        self, test_id: int, key: str
+    ) -> dict[str, Any] | None:
+        """Boundedly reconcile a POST whose response may have been lost."""
+
+        for attempt in range(_CREATE_RECHECK_ATTEMPTS):
+            try:
+                run = await self._find_run_by_comment(test_id, key)
+            except RuntimeError:
+                run = None
+            if run is not None:
+                return run
+            if attempt + 1 < _CREATE_RECHECK_ATTEMPTS:
+                await asyncio.sleep(_CREATE_RECHECK_DELAY_S * (attempt + 1))
+        return None
 
     async def _get_run(self, run_id: str) -> dict[str, Any]:
         response = await self._request(
@@ -485,32 +567,60 @@ class LoadRunnerExecutionEngine:
     async def start(self, handle: EngineHandle) -> None:
         """Get-or-create the LRE run; POST Runs creates AND starts it.
 
-        Idempotent: a handle that already carries run_id is a no-op, and the
-        comment lookup re-runs before POSTing so a crash between run creation
-        and the spine's checkpoint cannot double-start load.
+        Idempotent: a handle that already carries run_id is a no-op.  The
+        comment lookup re-runs inside a local/distributed creation guard before
+        POSTing, so concurrent workers and crash recovery cannot double-start
+        load.
         """
         if handle.extras.get("run_id"):
             return  # run already exists; LRE runs start at creation
         test_id = self._test_id_from(handle)
-        run = await self._find_run_by_comment(test_id, handle.idempotency_key)
-        if run is None:
-            body = {
-                "TestID": test_id,
-                "TestInstanceID": self._test_instance_id,
-                "PostRunAction": _POST_RUN_ACTION,
-                "TimeslotDuration": int(
-                    handle.extras.get("timeslot_minutes") or _MIN_TIMESLOT_MINUTES
-                ),
-                "VudsMode": False,
-                "RunComment": COMMENT_PREFIX + handle.idempotency_key,
-            }
-            response = await self._request(
-                "POST",
-                f"{self._project_base}/Runs",
-                json_body=body,
-                not_found=f"LRE test {test_id} not found in project {self._project!r}",
+        guard_key = ":".join(
+            (
+                PROVIDER,
+                self._base_url,
+                self._project_base,
+                str(test_id),
+                handle.idempotency_key,
             )
-            run = response.json()
+        )
+        async with remote_create_guard(guard_key):
+            # A concurrent call may share this handle, and a distinct adapter may
+            # have created the remote run.  Repeat both checks under the guard.
+            if handle.extras.get("run_id"):
+                return
+            run = await self._find_run_by_comment(test_id, handle.idempotency_key)
+            if run is None:
+                body = {
+                    "TestID": test_id,
+                    "TestInstanceID": self._test_instance_id,
+                    "PostRunAction": _POST_RUN_ACTION,
+                    "TimeslotDuration": int(
+                        handle.extras.get("timeslot_minutes") or _MIN_TIMESLOT_MINUTES
+                    ),
+                    "VudsMode": False,
+                    "RunComment": COMMENT_PREFIX + handle.idempotency_key,
+                }
+                try:
+                    response = await self._request(
+                        "POST",
+                        f"{self._project_base}/Runs",
+                        json_body=body,
+                        not_found=f"LRE test {test_id} not found in project {self._project!r}",
+                    )
+                    run = response.json()
+                except (RuntimeError, ValueError) as exc:
+                    run = await self._find_run_after_ambiguous_create(
+                        test_id, handle.idempotency_key
+                    )
+                    if run is None:
+                        raise
+                    logger.warning(
+                        "loadrunner.run_create_reconciled",
+                        test_id=test_id,
+                        run_id=run.get("ID"),
+                        error=str(exc),
+                    )
         run_id = str(run["ID"])
         handle.extras["run_id"] = run_id
         handle.external_run_id = f"lre-{run_id}"
@@ -541,18 +651,29 @@ class LoadRunnerExecutionEngine:
     async def abort(self, handle: EngineHandle, *, reason: str) -> None:
         """Graceful POST Runs/{id}/stop (or /abort when extras flag it).
 
-        Idempotent: no run, an already-terminal/stopping run, or a run that
-        vanished mid-call are all quiet no-ops. The reason is logged locally —
-        LRE's stop endpoints take no reason field.
+        Idempotent: an already-terminal/stopping run or a run that vanished
+        mid-call is a quiet no-op. A handle without ``run_id`` is reconciled by
+        its durable comment marker first: start() may have committed remotely
+        before losing its response, and cleanup must not mistake that ambiguity
+        for proof that no load is running.
         """
         run_id = handle.extras.get("run_id")
+        run: dict[str, Any]
         if not run_id:
-            logger.info("loadrunner.abort_noop", reason=reason, detail="no run created yet")
-            return
-        try:
-            run = await self._get_run(run_id)
-        except KeyError:
-            return  # run is gone — nothing to stop
+            test_id = self._test_id_from(handle)
+            found = await self._find_run_by_comment(test_id, handle.idempotency_key)
+            if found is None:
+                logger.info("loadrunner.abort_noop", reason=reason, detail="no remote run found")
+                return
+            run = found
+            run_id = str(run["ID"])
+            handle.extras["run_id"] = run_id
+            handle.external_run_id = f"lre-{run_id}"
+        else:
+            try:
+                run = await self._get_run(run_id)
+            except KeyError:
+                return  # run is gone — nothing to stop
         phase, _ = self._phase_for(run)
         if phase in TERMINAL_ENGINE_PHASES or phase is EngineRunPhase.STOPPING:
             logger.info(
@@ -593,21 +714,32 @@ class LoadRunnerExecutionEngine:
         results = payload if isinstance(payload, list) else list(payload.get("Results") or [])
         chosen = [result for result in results if _is_report(result)] or results
         refs: list[dict[str, Any]] = []
-        for result in chosen:
+        for ordinal, result in enumerate(chosen):
             result_id = result.get("ID")
             name = str(result.get("Name") or f"result-{result_id}.zip")
-            data_response = await self._request(
-                "GET",
+            data_response = await self._stream_download(
                 f"{self._project_base}/Runs/{run_id}/Results/{result_id}/data",
-                timeout_s=_DOWNLOAD_TIMEOUT_S,
                 not_found=f"LRE result {result_id} data not found for run {run_id}",
             )
-            key = f"engine-runs/lre-{run_id}/{name}"
-            stored = await store.put(key, data_response.content, content_type="application/zip")
+            result_token = str(result_id) if result_id is not None else "unknown"
+            key = engine_artifact_key(
+                handle.idempotency_key,
+                f"{ordinal:04d}-result-{result_token}-{name}",
+            )
+            try:
+                stored = await store.put_stream(
+                    key,
+                    data_response.aiter_bytes(),
+                    content_type="application/zip",
+                    max_bytes=self._max_report_bytes,
+                )
+            finally:
+                await data_response.aclose()
             ref = ArtifactRef(
                 kind="engine_report",
                 name=name,
                 uri=stored.uri,
+                key=stored.key,
                 media_type="application/zip",
                 summary=f"LRE {result.get('Type') or 'result'} for run {run_id}",
             )

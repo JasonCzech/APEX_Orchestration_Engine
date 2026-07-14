@@ -1,7 +1,7 @@
 # MinIO-on-AKS artifact store (Deployment-Safeguards-compliant: non-root, probes,
 # resource limits). PVC on Azure managed disks. Root password comes from the
 # apex-minio Secret (synthesized from Key Vault by the chart's SecretProviderClass,
-# key APEX_MINIO_SECRET_KEY) so MinIO and the app share one credential.
+# key APEX_INTEGRATION_MINIO_SECRET_KEY) so MinIO and the app share one credential.
 #
 # Apply into the release namespace AFTER the SecretProviderClass has synced apex-minio
 # (the server/bootstrap pods mount it). The app reaches this via the bootstrap
@@ -58,7 +58,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: apex-minio
-                  key: APEX_MINIO_SECRET_KEY
+                  key: APEX_INTEGRATION_MINIO_SECRET_KEY
           ports:
             - { name: s3, containerPort: 9000 }
             - { name: console, containerPort: 9001 }

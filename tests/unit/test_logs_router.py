@@ -258,6 +258,52 @@ def test_project_filter_outside_scope_is_403_before_adapter_resolution() -> None
     assert resolver.calls == []
 
 
+def test_single_app_scope_injects_app_filter() -> None:
+    adapter = FakeLogSearchAdapter()
+    resolver = FakeResolver(adapter)
+    who = identity(scopes=[ScopeRef(project_id="p1", app_id="app-a")])
+
+    response = post_search(make_app(resolver, who), {})
+
+    assert response.status_code == 200
+    assert resolver.calls == [(None, "p1")]
+    assert adapter.calls[0][0].filters == {"project_id": "p1", "app_id": "app-a"}
+
+
+def test_app_scope_rejects_sibling_app_before_adapter_resolution() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    who = identity(scopes=[ScopeRef(project_id="p1", app_id="app-a")])
+
+    response = post_search(
+        make_app(resolver, who),
+        {"query": {"filters": {"project_id": "p1", "app_id": "app-b"}}},
+    )
+
+    assert response.status_code == 403
+    assert resolver.calls == []
+
+
+def test_multi_app_scope_requires_and_accepts_explicit_app_filter() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    who = identity(
+        scopes=[
+            ScopeRef(project_id="p1", app_id="app-a"),
+            ScopeRef(project_id="p1", app_id="app-b"),
+        ]
+    )
+    app = make_app(resolver, who)
+
+    missing = post_search(app, {"query": {"filters": {"project_id": "p1"}}})
+    selected = post_search(
+        app,
+        {"query": {"filters": {"project_id": "p1", "app_id": "app-b"}}},
+    )
+
+    assert missing.status_code == 403
+    assert selected.status_code == 200
+    assert resolver.calls == [(None, "p1")]
+
+
 # ── error translation ─────────────────────────────────────────────────────────
 
 

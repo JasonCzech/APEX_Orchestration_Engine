@@ -2,9 +2,11 @@
 
 from collections.abc import Sequence
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from apex.auth.identity import ScopeRef
 from apex.persistence.models import Document
 
 
@@ -31,23 +33,44 @@ class DocumentsRepository:
         *,
         project: str | None = None,
         q: str | None = None,
-        allowed_project_ids: Sequence[str] | None = None,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Document]:
         """Newest-first metadata listing.
 
-        `allowed_project_ids=None` means unrestricted (admin/unscoped); otherwise rows
-        must be global (project_id NULL) or belong to one of the allowed projects.
+        `allowed_scopes=None` means unrestricted (unscoped admin). Otherwise rows
+        must be global, project-level in a scoped project, in an exact app scope,
+        or in a project carrying a project-wide scope.
         """
         stmt = select(Document).order_by(Document.created_at.desc(), Document.id)
-        if allowed_project_ids is not None:
-            stmt = stmt.where(
-                or_(
-                    Document.project_id.is_(None),
-                    Document.project_id.in_(list(allowed_project_ids)),
-                )
+        if allowed_scopes is not None:
+            project_ids = sorted({scope.project_id for scope in allowed_scopes})
+            project_wide = sorted(
+                {scope.project_id for scope in allowed_scopes if scope.app_id is None}
             )
+            app_scopes = sorted(
+                {
+                    (scope.project_id, scope.app_id)
+                    for scope in allowed_scopes
+                    if scope.app_id is not None
+                }
+            )
+            visibility: list[ColumnElement[bool]] = [Document.project_id.is_(None)]
+            if project_ids:
+                visibility.append(
+                    and_(
+                        Document.project_id.in_(project_ids),
+                        Document.app_id.is_(None),
+                    )
+                )
+            if project_wide:
+                visibility.append(Document.project_id.in_(project_wide))
+            visibility.extend(
+                and_(Document.project_id == project_id, Document.app_id == app_id)
+                for project_id, app_id in app_scopes
+            )
+            stmt = stmt.where(or_(*visibility))
         if project is not None:
             stmt = stmt.where(Document.project_id == project)
         if q:

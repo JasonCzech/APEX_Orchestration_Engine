@@ -20,7 +20,8 @@ Wire-format decisions (documented deviations / mappings):
   reached, otherwise a lower bound (fetched count + 1).
 - enrich_item: enrichment.fields -> PUT /rest/api/3/issue/{key} field update
   ("description" strings are converted to ADF; "status" is rejected — Jira
-  requires the transitions API, out of scope for M4); enrichment.comment ->
+  requires the transitions API, out of scope for M4; "project" is rejected to
+  preserve the configured project boundary); enrichment.comment ->
   POST /rest/api/3/issue/{key}/comment with an ADF body. The item is re-fetched
   afterwards so callers always see the updated row.
 - translate_query is a deterministic ruleset (apex.services.work_tracking);
@@ -39,6 +40,7 @@ from typing import Any
 import httpx
 
 from apex.adapters.http_resilience import resilient_request
+from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
     Enrichment,
@@ -64,7 +66,7 @@ from apex.services.work_tracking import (
 PROVIDER = "jira"
 _TIMEOUT_S = 15.0
 _MAX_RESULTS_PER_REQUEST = 100
-_ISSUE_FIELDS = ["summary", "status", "issuetype", "description"]
+_ISSUE_FIELDS = ["summary", "status", "issuetype", "description", "project"]
 
 _STATUS_BY_CATEGORY = {"new": "open", "indeterminate": "in_progress", "done": "closed"}
 _JQL_STATUS_CLAUSE = {
@@ -186,6 +188,8 @@ def render_jql(spec: WorkQuerySpec) -> str:
 
 @AdapterRegistry.register(PortKind.WORK_TRACKING, PROVIDER)
 class JiraWorkTrackingAdapter:
+    provider = PROVIDER
+
     def __init__(self, conn: ConnectionConfig, secret: SecretValue | None) -> None:
         options = dict(conn.options)
         base_url = str(options.get("base_url") or "").rstrip("/")
@@ -200,14 +204,21 @@ class JiraWorkTrackingAdapter:
         if secret is None:
             raise ValueError(
                 f"jira connection {conn.id!r} requires an API token; set secret_ref "
-                'on the connection (e.g. "env:APEX_JIRA_API_TOKEN")'
+                'on the connection (e.g. "env:APEX_INTEGRATION_JIRA_API_TOKEN")'
             )
         self._base_url = base_url
         self._project_key = str(options.get("project_key") or "") or None
+        self._allow_private_hosts = private_hosts_allowed(options)
         token = base64.b64encode(f"{user_email}:{secret.value}".encode()).decode()
         self._headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
         self._http: httpx.AsyncClient | None = None
         self._http_loop: asyncio.AbstractEventLoop | None = None
+
+    @property
+    def project_id(self) -> str | None:
+        """Configured project boundary used by scoped direct-item routes."""
+
+        return self._project_key
 
     # ── http plumbing ─────────────────────────────────────────────────────────
 
@@ -216,8 +227,11 @@ class JiraWorkTrackingAdapter:
         caches adapter instances across graph-node loops)."""
         loop = asyncio.get_running_loop()
         if self._http is None or self._http.is_closed or self._http_loop is not loop:
-            self._http = httpx.AsyncClient(
-                base_url=self._base_url, headers=self._headers, timeout=_TIMEOUT_S
+            self._http = safe_async_http_client(
+                base_url=self._base_url,
+                headers=self._headers,
+                timeout=_TIMEOUT_S,
+                allow_private_hosts=self._allow_private_hosts,
             )
             self._http_loop = loop
         return self._http
@@ -282,6 +296,8 @@ class JiraWorkTrackingAdapter:
     async def execute_query(self, query: TranslatedQuery, *, page: Page) -> WorkItemPage:
         """Token-paged search mapped onto Page.offset best-effort: fetch
         offset+limit issues from the start, slice the window (see module doc)."""
+        if query.provider.casefold() != PROVIDER:
+            raise ValueError("translated query provider does not match jira")
         target = page.offset + page.limit
         fetched: list[WorkItem] = []
         token: str | None = None
@@ -306,6 +322,7 @@ class JiraWorkTrackingAdapter:
         return WorkItemPage(items=fetched[page.offset : target], total=total, page=page)
 
     async def get_item(self, key: str) -> WorkItem:
+        self._require_item_in_project(key)
         response = await self._request(
             "GET",
             f"/rest/api/3/issue/{key}",
@@ -325,22 +342,23 @@ class JiraWorkTrackingAdapter:
         return await self.execute_query(query, page=page)
 
     async def create_item(self, draft: WorkItemDraft) -> WorkItem:
+        if any(name.casefold() == "project" for name in draft.fields):
+            raise ValueError(
+                "jira project is fixed by the connection; remove project from draft.fields"
+            )
+        if not self._project_key:
+            raise ValueError("jira create_item needs options['project_key'] on the connection")
         fields: dict[str, Any] = {
             "summary": draft.title,
             "issuetype": {"name": _JQL_ISSUE_TYPE.get(draft.kind, draft.kind.capitalize())},
             "description": text_to_adf(draft.description),
         }
-        if self._project_key:
-            fields["project"] = {"key": self._project_key}
         fields.update(draft.fields)
-        if "project" not in fields:
-            raise ValueError(
-                "jira create_item needs a project: set options['project_key'] on the "
-                'connection or pass draft.fields["project"]'
-            )
+        fields["project"] = {"key": self._project_key}
         response = await self._request("POST", "/rest/api/3/issue", json={"fields": fields})
         created = response.json()
         key = str(created.get("key", ""))
+        self._require_item_in_project(key)
         return WorkItem(
             key=key,
             title=draft.title,
@@ -352,13 +370,20 @@ class JiraWorkTrackingAdapter:
 
     async def enrich_item(self, key: str, enrichment: Enrichment) -> WorkItem:
         """fields -> issue edit (PUT); comment -> ADF comment (POST); re-fetch."""
+        self._require_item_in_project(key)
         not_found = f"work item {key!r} not found in jira"
         if enrichment.fields:
+            if any(name.casefold() == "project" for name in enrichment.fields):
+                raise ValueError("jira project cannot be changed through enrichment.fields")
             if "status" in enrichment.fields:
                 raise ValueError(
                     "jira status changes require the transitions API, which this "
                     "adapter does not support yet; remove 'status' from enrichment.fields"
                 )
+        # Jira may preserve an old key as an alias after moving an issue. Resolve
+        # and validate its current project before issuing any mutation.
+        await self.get_item(key)
+        if enrichment.fields:
             fields = {
                 name: text_to_adf(value)
                 if name == "description" and isinstance(value, str)
@@ -377,6 +402,13 @@ class JiraWorkTrackingAdapter:
             )
         return await self.get_item(key)
 
+    def _require_item_in_project(self, key: str) -> None:
+        project, separator, issue_number = key.rpartition("-")
+        if not separator or not issue_number.isdigit() or not project:
+            raise KeyError(f"work item {key!r} is not a valid jira issue key")
+        if self._project_key is not None and project.casefold() != self._project_key.casefold():
+            raise KeyError(f"work item {key!r} not found in configured jira project")
+
     # ── mapping ───────────────────────────────────────────────────────────────
 
     def _work_item_from_issue(self, issue: dict[str, Any]) -> WorkItem:
@@ -388,6 +420,10 @@ class JiraWorkTrackingAdapter:
         )
         issue_type = (fields.get("issuetype") or {}).get("name") or "story"
         key = str(issue.get("key", ""))
+        self._require_item_in_project(key)
+        project_key = str((fields.get("project") or {}).get("key") or "")
+        if self._project_key is not None and project_key.casefold() != self._project_key.casefold():
+            raise KeyError(f"work item {key!r} not found in configured jira project")
         return WorkItem(
             key=key,
             title=str(fields.get("summary") or ""),

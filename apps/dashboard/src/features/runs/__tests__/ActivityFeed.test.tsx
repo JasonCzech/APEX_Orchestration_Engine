@@ -56,6 +56,63 @@ describe('ActivityFeed', () => {
     expect(screen.getAllByTestId('activity-tool-card')).toHaveLength(2)
   })
 
+  it('renders real-agent response and error events for the selected phase', () => {
+    render(
+      <ActivityFeed
+        phase="story_analysis"
+        streamStatus="live"
+        agentEvents={[
+          {
+            type: 'agent_message',
+            phase: 'story_analysis',
+            model: 'claude-sonnet-4-5',
+            chars: 842,
+          },
+          {
+            type: 'agent_error',
+            phase: 'story_analysis',
+            error: 'provider request timed out',
+          },
+          {
+            type: 'agent_error',
+            phase: 'reporting',
+            error: 'other phase',
+          },
+        ]}
+      />,
+    )
+
+    const cards = screen.getAllByTestId('activity-agent-card')
+    expect(cards).toHaveLength(2)
+    expect(cards[0]).toHaveTextContent('claude-sonnet-4-5 produced 842 characters')
+    expect(cards[0]?.querySelector('.status-badge')).toHaveClass('success')
+    expect(cards[1]).toHaveTextContent('provider request timed out')
+    expect(cards[1]?.querySelector('.status-badge')).toHaveClass('danger')
+  })
+
+  it('renders retryable engine poll failures as warning telemetry', () => {
+    render(
+      <ActivityFeed
+        phase="execution"
+        streamStatus="live"
+        engineErrors={[
+          {
+            type: 'engine_poll_error',
+            phase: 'execution',
+            attempt: 2,
+            error: 'provider status request timed out',
+            consecutive_errors: 3,
+          },
+        ]}
+      />,
+    )
+
+    const card = screen.getByTestId('activity-engine-error-card')
+    expect(card).toHaveTextContent('provider status request timed out')
+    expect(card).toHaveTextContent('consecutive failure 3')
+    expect(card.querySelector('.status-badge')).toHaveClass('warning')
+  })
+
   it('summarizes engine_poll ticks one expandable row per 10', () => {
     render(
       <ActivityFeed

@@ -31,6 +31,7 @@ import structlog
 from apex.domain.pipeline import PHASE_ORDER, Phase
 from apex.graphs.pipeline.configurable import PipelineConfigurable, PromptOverride
 from apex.persistence.models import Prompt, PromptVersion
+from apex.persistence.repositories.prompts import DuplicatePromptKeyError
 
 logger = structlog.get_logger(__name__)
 
@@ -73,7 +74,13 @@ class PromptVersionMismatchError(PromptError):
 class ActiveVersionReader(Protocol):
     """The minimal read surface the prompt resolver needs."""
 
-    async def get_active_version(self, namespace: str, key: str) -> PromptVersion | None: ...
+    async def get_active_version(
+        self,
+        namespace: str,
+        key: str,
+        *,
+        allow_application: bool = False,
+    ) -> PromptVersion | None: ...
 
 
 class PromptStore(Protocol):
@@ -90,6 +97,7 @@ class PromptStore(Protocol):
         namespace: str | None = None,
         include_archived: bool = False,
         q: str | None = None,
+        allow_application: bool = False,
     ) -> list[Prompt]: ...
 
     async def get_version(self, version_id: str) -> PromptVersion | None: ...
@@ -100,7 +108,13 @@ class PromptStore(Protocol):
 
     async def max_version(self, prompt_id: str) -> int: ...
 
-    async def get_active_version(self, namespace: str, key: str) -> PromptVersion | None: ...
+    async def get_active_version(
+        self,
+        namespace: str,
+        key: str,
+        *,
+        allow_application: bool = False,
+    ) -> PromptVersion | None: ...
 
     async def add_prompt(self, prompt: Prompt, first_version: PromptVersion) -> None: ...
 
@@ -130,9 +144,13 @@ class PromptCatalogService:
         namespace: str | None = None,
         include_archived: bool = False,
         q: str | None = None,
+        allow_application: bool = False,
     ) -> list[tuple[Prompt, PromptVersion | None]]:
         prompts = await self._store.search(
-            namespace=namespace, include_archived=include_archived, q=q
+            namespace=namespace,
+            include_archived=include_archived,
+            q=q,
+            allow_application=allow_application,
         )
         active_ids = [p.active_version_id for p in prompts if p.active_version_id]
         versions = {v.id: v for v in await self._store.get_versions_by_ids(active_ids)}
@@ -140,8 +158,10 @@ class PromptCatalogService:
             (p, versions.get(p.active_version_id) if p.active_version_id else None) for p in prompts
         ]
 
-    async def get_prompt(self, prompt_id: str) -> tuple[Prompt, PromptVersion | None]:
-        prompt = await self._require(prompt_id)
+    async def get_prompt(
+        self, prompt_id: str, *, allow_application: bool = False
+    ) -> tuple[Prompt, PromptVersion | None]:
+        prompt = await self._require_readable(prompt_id, allow_application=allow_application)
         active = (
             await self._store.get_version(prompt.active_version_id)
             if prompt.active_version_id
@@ -180,7 +200,10 @@ class PromptCatalogService:
             created_by=created_by,
             created_at=now,
         )
-        await self._store.add_prompt(prompt, version)
+        try:
+            await self._store.add_prompt(prompt, version)
+        except DuplicatePromptKeyError as exc:
+            raise DuplicatePromptError(f"prompt {namespace}/{key} already exists") from exc
         return prompt, version
 
     async def save_version(
@@ -206,11 +229,25 @@ class PromptCatalogService:
         await self._store.add_version(prompt, version)
         return prompt, version
 
-    async def list_versions(self, prompt_id: str) -> list[PromptVersion]:
-        await self._require(prompt_id)
+    async def list_versions(
+        self, prompt_id: str, *, allow_application: bool = False
+    ) -> list[PromptVersion]:
+        await self._require_readable(prompt_id, allow_application=allow_application)
         return await self._store.list_versions(prompt_id)
 
-    async def get_version(self, prompt_id: str, version_id: str) -> PromptVersion:
+    async def get_version(
+        self,
+        prompt_id: str,
+        version_id: str,
+        *,
+        allow_application: bool = False,
+    ) -> PromptVersion:
+        try:
+            await self._require_readable(prompt_id, allow_application=allow_application)
+        except PromptNotFoundError as exc:
+            raise PromptVersionNotFoundError(
+                f"version {version_id} not found on prompt {prompt_id}"
+            ) from exc
         version = await self._store.get_version(version_id)
         if version is None or version.prompt_id != prompt_id:
             raise PromptVersionNotFoundError(
@@ -242,6 +279,13 @@ class PromptCatalogService:
     async def _require(self, prompt_id: str) -> Prompt:
         prompt = await self._store.get(prompt_id)
         if prompt is None:
+            raise PromptNotFoundError(f"prompt {prompt_id} not found")
+        return prompt
+
+    async def _require_readable(self, prompt_id: str, *, allow_application: bool) -> Prompt:
+        prompt = await self._require(prompt_id)
+        if prompt.namespace == APPLICATION_NAMESPACE and not allow_application:
+            # Match a genuinely absent id so restricted rows cannot be enumerated.
             raise PromptNotFoundError(f"prompt {prompt_id} not found")
         return prompt
 
@@ -480,7 +524,13 @@ class PromptResolver:
                         await self._store.get_active_version(
                             PHASE_NAMESPACE, f"{phase.value}/user"
                         ),
-                        await self._store.get_active_version(APPLICATION_NAMESPACE, app_id)
+                        await self._store.get_active_version(
+                            APPLICATION_NAMESPACE,
+                            app_id,
+                            # This resolver is an internal pipeline read after
+                            # run auth has stamped/validated cfg.app_id.
+                            allow_application=True,
+                        )
                         if app_id
                         else None,
                     )
@@ -537,7 +587,13 @@ async def _load_prompts_with_fresh_engine(
             return (
                 await repo.get_active_version(PHASE_NAMESPACE, f"{phase.value}/system"),
                 await repo.get_active_version(PHASE_NAMESPACE, f"{phase.value}/user"),
-                await repo.get_active_version(APPLICATION_NAMESPACE, app_id) if app_id else None,
+                await repo.get_active_version(
+                    APPLICATION_NAMESPACE,
+                    app_id,
+                    allow_application=True,
+                )
+                if app_id
+                else None,
             )
     finally:
         await engine.dispose()
@@ -578,7 +634,11 @@ async def resolve_phase_prompt(
     store: ActiveVersionReader | None = None,
 ) -> ResolvedPhasePrompt:
     """Module-level convenience wrapper around PromptResolver."""
-    return await PromptResolver(store=store).resolve_phase_prompt(phase, cfg, variables=variables)
+    return await PromptResolver(store=store).resolve_phase_prompt(
+        phase,
+        cfg,
+        variables=variables,
+    )
 
 
 def resolve_phase_prompt_sync(

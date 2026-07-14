@@ -19,6 +19,10 @@ apexSettings:
   # dashboard origin; with the same-origin dashboard reverse proxy this is the
   # ingress/gateway host.
   APEX_CORS_ORIGINS: '["https://apex.example.com"]'
+  # NetworkPolicy below limits callers to the managed ingress controller and
+  # same-release dashboard, so their private addresses are trusted to supply
+  # X-Forwarded-For for per-client rate limiting.
+  APEX_RATE_LIMIT__TRUSTED_PROXY_CIDRS: '["10.0.0.0/8"]'
 
 # Secrets sourced from Key Vault via the Secrets Store CSI driver + workload identity.
 workloadIdentity:
@@ -27,7 +31,12 @@ workloadIdentity:
 
 serviceAccount:
   create: true
+  # Must match Terraform's workload_service_account federated-credential subject.
+  name: apex-orchestration-engine
   # automountServiceAccountToken stays false; the in_cluster inventory adapter is opt-in.
+
+# Must match Terraform's workload_hook_service_account federated subject.
+hookServiceAccountName: apex-orchestration-engine-hooks
 
 secretBackend:
   mode: secretsStoreCSI
@@ -40,15 +49,23 @@ secretBackend:
       - { objectName: apex-database-uri, secretName: apex-database, key: APEX_DATABASE__URI }
       - { objectName: redis-uri, secretName: apex-redis, key: REDIS_URI }
       - { objectName: langgraph-license, secretName: apex-langgraph-license, key: LANGGRAPH_CLOUD_LICENSE_KEY }
-      - { objectName: artifact-secret-key, secretName: apex-minio, key: APEX_MINIO_SECRET_KEY }
+      - { objectName: artifact-secret-key, secretName: apex-minio, key: APEX_INTEGRATION_MINIO_SECRET_KEY }
+      - { objectName: bootstrap-admin-key, secretName: apex-admin, key: APEX_BOOTSTRAP_ADMIN_KEY }
+      - { objectName: api-key-hash-pepper, secretName: apex-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
 
-# MinIO artifact store secret -> app env (the connection's secret_ref env:APEX_MINIO_SECRET_KEY).
+# MinIO artifact store secret -> app env
+# (the connection's secret_ref env:APEX_INTEGRATION_MINIO_SECRET_KEY).
 extraEnv:
-  - name: APEX_MINIO_SECRET_KEY
+  - name: APEX_AUTH__API_KEY_HASH_PEPPER
+    valueFrom:
+      secretKeyRef:
+        name: apex-auth
+        key: APEX_AUTH__API_KEY_HASH_PEPPER
+  - name: APEX_INTEGRATION_MINIO_SECRET_KEY
     valueFrom:
       secretKeyRef:
         name: apex-minio
-        key: APEX_MINIO_SECRET_KEY
+        key: APEX_INTEGRATION_MINIO_SECRET_KEY
 
 # Run migrations + bootstrap as pre-upgrade hooks.
 migrations:
@@ -70,7 +87,8 @@ bootstrap:
           bucket: apex-artifacts
           secure: false
           access_key: apex
-        secret_ref: env:APEX_MINIO_SECRET_KEY
+          _apex_trusted_private_host: true
+        secret_ref: env:APEX_INTEGRATION_MINIO_SECRET_KEY
     admin:
       name: apex-admin
       consumer_type: internal
@@ -97,3 +115,15 @@ dashboard:
   image:
     repository: REPLACE_ME.azurecr.io/apex-dashboard
   backendUpstream: http://apex-apex-orchestration-engine:80
+
+# AKS app-routing ingress reaches the server from its controller namespace; the
+# chart separately admits its same-release dashboard proxy. Public egress is
+# required for the LangGraph license check and configured model providers.
+networkPolicy:
+  ingress:
+    from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: app-routing-system
+  egress:
+    allowAll: true

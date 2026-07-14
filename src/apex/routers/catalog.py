@@ -20,10 +20,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 from apex.persistence.db import get_session
 from apex.persistence.models import Environment, EnvironmentSnapshot
 from apex.persistence.repositories.catalog import CatalogRepository, DuplicateNameError
+from apex.services.connections import (
+    TRUSTED_PRIVATE_HOST_OPTION,
+    validate_adapter_base_url,
+)
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
@@ -112,6 +116,8 @@ class EnvironmentOut(BaseModel):
     kind: str | None
     base_url: str | None
     options: dict[str, Any]
+    target_approved: bool
+    target_version: int
     hosts: list[HostOut]
     created_at: datetime
     updated_at: datetime
@@ -150,6 +156,40 @@ def _can_access_environment(identity: ConsumerIdentity, env: Environment) -> boo
     return identity.allows_scope(project_id=env.application.project_id, app_id=env.application_id)
 
 
+def _is_platform_admin(identity: ConsumerIdentity) -> bool:
+    return identity.role is Role.ADMIN and identity.is_unscoped
+
+
+def _validate_environment_options(identity: ConsumerIdentity, options: dict[str, Any]) -> None:
+    if not _is_platform_admin(identity) and any(str(key).startswith("_apex_") for key in options):
+        raise HTTPException(
+            status_code=403,
+            detail="Reserved _apex_ environment options require an unscoped platform admin",
+        )
+
+
+def _approve_environment_target(
+    identity: ConsumerIdentity,
+    base_url: str | None,
+    options: dict[str, Any],
+) -> bool:
+    if not _is_platform_admin(identity):
+        raise HTTPException(
+            status_code=403,
+            detail="Execution targets require approval by an unscoped platform admin",
+        )
+    if base_url is None or not base_url.strip():
+        return False
+    try:
+        validate_adapter_base_url(
+            base_url,
+            allow_private_hosts=options.get(TRUSTED_PRIVATE_HOST_OPTION) is True or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return True
+
+
 # ── applications ─────────────────────────────────────────────────────────────
 
 
@@ -175,7 +215,11 @@ async def list_applications(
 async def create_application(
     body: ApplicationCreate, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
-    ensure_scope(identity, project_id=body.project_id)
+    if not identity.contains_scope(ScopeRef(project_id=body.project_id)):
+        raise HTTPException(
+            status_code=403,
+            detail="application creation requires project-wide scope",
+        )
     try:
         app = await repo.create_application(
             project_id=body.project_id, name=body.name, description=body.description
@@ -268,12 +312,20 @@ async def create_environment(
     app = await repo.get_application(body.application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", body.application_id)
+    _validate_environment_options(identity, body.options)
+    target_approved = False
+    target_version = 0
+    if body.base_url is not None:
+        target_approved = _approve_environment_target(identity, body.base_url, body.options)
+        target_version = 1
     try:
         env = await repo.create_environment(
             application_id=body.application_id,
             name=body.name,
             kind=body.kind,
             base_url=body.base_url,
+            target_approved=target_approved,
+            target_version=target_version,
             options=body.options,
             hosts=[host.model_dump() for host in body.hosts],
         )
@@ -307,6 +359,19 @@ async def update_environment(
     application_id = env.application_id  # capture before mutation: rollback expires the instance
     changes = body.model_dump(exclude_unset=True)
     hosts = changes.pop("hosts", None)
+    next_options = changes.get("options", env.options) or {}
+    _validate_environment_options(identity, next_options)
+    target_fields_changed = "base_url" in changes or (
+        "options" in changes
+        and next_options.get(TRUSTED_PRIVATE_HOST_OPTION)
+        != (env.options or {}).get(TRUSTED_PRIVATE_HOST_OPTION)
+    )
+    if target_fields_changed:
+        next_base_url = changes.get("base_url", env.base_url)
+        changes["target_approved"] = _approve_environment_target(
+            identity, next_base_url, next_options
+        )
+        changes["target_version"] = int(env.target_version) + 1
     try:
         env = await repo.update_environment(env, changes, hosts=hosts)
     except DuplicateNameError:

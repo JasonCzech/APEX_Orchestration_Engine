@@ -22,6 +22,14 @@ output "workload_identity_client_id" {
   value = azurerm_user_assigned_identity.workload.client_id
 }
 
+output "workload_service_account" {
+  value = var.workload_service_account
+}
+
+output "workload_hook_service_account" {
+  value = var.workload_hook_service_account
+}
+
 output "tenant_id" {
   value = data.azurerm_client_config.current.tenant_id
 }

@@ -100,6 +100,24 @@ Azure Key Vault SecretProviderClass name.
 {{- end }}
 
 {{/*
+Pre-install CSI hook resource names. These are deliberately distinct from the
+ordinary workload SA/SPC, which Helm creates only after pre-install hooks finish.
+*/}}
+{{- define "apex.hookServiceAccountName" -}}
+{{- if .Values.hookServiceAccountName -}}
+{{- .Values.hookServiceAccountName -}}
+{{- else if eq .Values.secretBackend.mode "secretsStoreCSI" -}}
+{{- printf "%s-hooks" (include "apex.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- else -}}
+default
+{{- end -}}
+{{- end }}
+
+{{- define "apex.hookAkVSecretProviderClassName" -}}
+{{- printf "%s-hooks" (include "apex.akvSecretProviderClassName" .) | trunc 63 | trimSuffix "-" -}}
+{{- end }}
+
+{{/*
 Dashboard names/labels. A distinct app.kubernetes.io/name (-dashboard suffix)
 keeps the server Service selector from matching dashboard pods.
 */}}
@@ -118,6 +136,23 @@ helm.sh/chart: {{ include "apex.chart" . }}
 app.kubernetes.io/version: {{ .Values.dashboard.image.tag | default .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/component: dashboard
+{{- end }}
+
+{{/*
+Helm smoke-test labels. Keep the name distinct from the server selector so the
+server's egress policy does not accidentally isolate the test pod itself.
+*/}}
+{{- define "apex.test.selectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-test" (include "apex.name" .) | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: helm-test
+{{- end }}
+
+{{- define "apex.test.labels" -}}
+helm.sh/chart: {{ include "apex.chart" . }}
+{{ include "apex.test.selectorLabels" . }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*

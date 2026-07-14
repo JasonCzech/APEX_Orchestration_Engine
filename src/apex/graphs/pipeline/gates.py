@@ -11,6 +11,7 @@ from typing import Any, Literal
 from langchain_core.runnables import RunnableConfig
 
 from apex.domain.pipeline import ApprovalRecord, Phase
+from apex.services.run_validation import validate_gate_payload
 
 GATE_SCHEMA_VERSION = 1
 
@@ -116,6 +117,10 @@ def parse_gate_decision(decision: Any, allowed: Sequence[str]) -> JsonDict:
     Unknown/malformed input never raises: action is None and "error" explains why,
     so gate nodes can re-interrupt with the error surfaced in the payload.
     """
+    try:
+        validate_gate_payload(decision)
+    except ValueError as exc:
+        return {"action": None, "error": str(exc)}
     if isinstance(decision, str):
         decision = {"action": decision}
     if not isinstance(decision, dict):

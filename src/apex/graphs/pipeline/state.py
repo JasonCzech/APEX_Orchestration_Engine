@@ -71,6 +71,20 @@ def merge_prompt_reviews(
     return {**dict(left or {}), **dict(right or {})}
 
 
+class PipelineInput(TypedDict, total=False):
+    """Caller-owned input channels accepted when starting a pipeline run.
+
+    Keeping this distinct from ``PipelineState`` prevents LangGraph itself from
+    merging caller-supplied phase results, reviews, artifacts, or engine handles
+    into a new checkpoint, even if an upstream auth hook is misconfigured.
+    """
+
+    title: str
+    request: str
+    external_results: JsonDict
+    context_packets: list[JsonDict]
+
+
 class PipelineState(TypedDict, total=False):
     # Run intent (input)
     title: str
@@ -84,8 +98,11 @@ class PipelineState(TypedDict, total=False):
     phases_plan: list[str]
     current_phase: str | None
     run_aborted: bool
-    # Resolved Limits snapshot, checkpointed so gate-resume can size recursion_limit from
-    # the run's real limits (LangGraph does not surface run configurable via get_state).
+    # Complete run configuration snapshot. LangGraph checkpoints do not retain
+    # arbitrary RunnableConfig values, so every gate resume restores this before
+    # executing another node. ``limits`` remains for backward compatibility with
+    # threads created before run_config was introduced.
+    run_config: JsonDict
     limits: JsonDict
 
     # Accumulated thread state

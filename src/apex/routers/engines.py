@@ -39,9 +39,14 @@ def get_engine_abort_service(
     identity: CurrentIdentity,
 ) -> EngineAbortService:
     """Per-request service over the loopback client, forwarding the caller's key."""
-    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
+    allowed = None if identity.is_unscoped else identity.scopes
     return EngineAbortService(
-        loopback_client(extract_api_key(request.headers)), repo, allowed_project_ids=allowed
+        loopback_client(
+            extract_api_key(request.headers),
+            authorize_destructive=True,
+        ),
+        repo,
+        allowed_scopes=allowed,
     )
 
 
@@ -57,9 +62,12 @@ class EngineRunRead(BaseModel):
     id: str
     thread_id: str
     project_id: str | None = None
+    app_id: str | None = None
     attempt: int
     engine: str
     external_run_id: str | None
+    artifact_namespace: str | None = None
+    artifact_connection_id: str | None = None
     status: str
     handle: dict[str, Any]
     summary: dict[str, Any] | None
@@ -90,9 +98,12 @@ def _read_model(run: EngineRun) -> EngineRunRead:
         id=run.id,
         thread_id=run.thread_id,
         project_id=run.project_id,
+        app_id=run.app_id,
         attempt=run.attempt,
         engine=run.engine,
         external_run_id=run.external_run_id,
+        artifact_namespace=run.artifact_namespace,
+        artifact_connection_id=run.artifact_connection_id,
         status=run.status,
         handle=run.handle or {},
         summary=run.summary,
@@ -114,11 +125,11 @@ async def list_engine_runs(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> EngineRunListResponse:
     """Engine-run history, newest started first, scoped by project ownership."""
-    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
+    allowed = None if identity.is_unscoped else identity.scopes
     rows, total = await repo.list_runs(
         engine=engine,
         status=status.value if status is not None else None,
-        allowed_project_ids=allowed,
+        allowed_scopes=allowed,
         limit=limit,
         offset=offset,
     )
@@ -132,10 +143,9 @@ async def get_engine_runs(
     thread_id: ThreadId, identity: CurrentIdentity, repo: EngineRunsRepo
 ) -> list[EngineRunRead]:
     """All engine-run attempts for one thread, newest attempt first ([] when none)."""
-    allowed = None if identity.is_unscoped else identity.scoped_project_ids()
+    allowed = None if identity.is_unscoped else identity.scopes
     return [
-        _read_model(run)
-        for run in await repo.list_for_thread(thread_id, allowed_project_ids=allowed)
+        _read_model(run) for run in await repo.list_for_thread(thread_id, allowed_scopes=allowed)
     ]
 
 

@@ -3,7 +3,9 @@
 from typing import Any
 
 import pytest
+from sqlalchemy import create_engine, func, select
 
+from apex.persistence.models import AgentEvent, Base, UsageEvent
 from apex.services import usage
 
 # ── Swallow-and-log writers (hermetic settings point at an unreachable DB) ───
@@ -47,6 +49,7 @@ def test_phase_usage_succeeded_maps_to_ok(monkeypatch: pytest.MonkeyPatch) -> No
         "configurable": {
             "thread_id": "t-123",
             "project_id": "proj-a",
+            "app_id": "app-a",
             "langgraph_auth_user": {"identity": "alice"},
         }
     }
@@ -58,6 +61,7 @@ def test_phase_usage_succeeded_maps_to_ok(monkeypatch: pytest.MonkeyPatch) -> No
             "action": "phase:story_analysis:succeeded",
             "status": "ok",
             "project_id": "proj-a",
+            "app_id": "app-a",
             "thread_id": "t-123",
         }
     ]
@@ -81,6 +85,63 @@ def test_phase_usage_defaults_consumer_to_graph(monkeypatch: pytest.MonkeyPatch)
     usage.record_phase_usage_sync("execution", "succeeded", {"configurable": {"thread_id": "t"}})
     assert captured[0]["consumer_name"] == "graph"
     assert captured[0]["project_id"] is None
+    assert captured[0]["app_id"] is None
+
+
+def test_phase_usage_replay_key_is_stable_per_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_sync_writer(monkeypatch)
+    config = {"configurable": {"thread_id": "t-1", "project_id": "p1"}}
+
+    usage.record_phase_usage_sync("execution", "succeeded", config, attempt=2)
+    usage.record_phase_usage_sync("execution", "succeeded", config, attempt=2)
+    usage.record_phase_usage_sync("execution", "succeeded", config, attempt=3)
+
+    assert captured[0]["event_key"] == captured[1]["event_key"]
+    assert captured[0]["event_key"] != captured[2]["event_key"]
+
+
+@pytest.mark.parametrize(
+    ("model", "values"),
+    [
+        (
+            UsageEvent,
+            {
+                "event_key": "phase:stable",
+                "consumer_name": "graph",
+                "surface": "graph",
+                "action": "phase:execution:succeeded",
+                "status": "ok",
+                "extra": {},
+            },
+        ),
+        (
+            AgentEvent,
+            {
+                "event_key": "agent:stable",
+                "phase": "execution",
+                "agent_name": "execution.worker",
+                "status": "ok",
+                "extra": {},
+            },
+        ),
+    ],
+)
+def test_sqlite_native_insert_ignores_replayed_event_key(
+    model: type[UsageEvent] | type[AgentEvent], values: dict[str, Any]
+) -> None:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
+        table_name = "usage_events" if model is UsageEvent else "agent_events"
+        Base.metadata.tables[f"apex.{table_name}"].create(connection)
+        statement = usage._idempotent_insert(model, values, "sqlite")
+        assert statement is not None
+        connection.execute(statement)
+        connection.execute(statement)
+        count = connection.scalar(select(func.count()).select_from(model))
+    engine.dispose()
+
+    assert count == 1
 
 
 # ── Lazy consumer attribution for the middleware path ────────────────────────

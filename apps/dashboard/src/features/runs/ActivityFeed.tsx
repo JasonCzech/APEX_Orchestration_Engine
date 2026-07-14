@@ -2,7 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { PhaseName } from '@apex/pipeline-events'
 
-import type { LiveEngineSample, LivePhaseProgress, LiveToolCall } from './liveTypes'
+import type {
+  LiveAgentEvent,
+  LiveEngineError,
+  LiveEngineSample,
+  LivePhaseProgress,
+  LiveToolCall,
+} from './liveTypes'
 import { formatTimestamp, PHASE_LABELS, statusLabel, statusVisual, TONE_COLOR_VAR } from './runDisplay'
 
 /**
@@ -11,10 +17,8 @@ import { formatTimestamp, PHASE_LABELS, statusLabel, statusVisual, TONE_COLOR_VA
  * - tool_call events render as compact cards;
  * - engine_poll ticks are summarized 1 row / 10 ticks (expandable) so the
  *   high-frequency channel never floods the DOM;
- * - reasoning tokens are deliberately OMITTED: the backend's M-era stub agents
- *   do not stream messages-tuple content meaningfully yet, and the durable
- *   record is the phase transcript_ref artifact. Token rendering (rAF-coalesced
- *   buffer) lands when real agents stream.
+ * - real-agent and retryable engine-error telemetry render as compact cards; reasoning
+ *   tokens remain omitted because the durable record is the transcript artifact.
  *
  * The feed derives entries from the streaming layer's flushed view (≤20fps);
  * nothing here touches the react-query cache. Rendered entries are capped at
@@ -45,6 +49,21 @@ interface ToolEntry {
   at?: string
 }
 
+interface AgentEntry {
+  kind: 'agent'
+  key: number
+  type: LiveAgentEvent['type']
+  detail: string
+  at?: string
+}
+
+interface EngineErrorEntry {
+  kind: 'engine_error'
+  key: number
+  detail: string
+  at?: string
+}
+
 /** tool_call `at` arrives via zod passthrough (typed unknown) — guard it. */
 function toolCallAt(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
@@ -58,7 +77,7 @@ interface EngineRowEntry {
   samples: LiveEngineSample[]
 }
 
-type FeedEntry = DividerEntry | ToolEntry | EngineRowEntry
+type FeedEntry = DividerEntry | ToolEntry | AgentEntry | EngineErrorEntry | EngineRowEntry
 
 interface FeedState {
   entries: FeedEntry[]
@@ -92,6 +111,8 @@ export function ActivityFeed({
   streamStatus,
   progress,
   toolCalls,
+  agentEvents,
+  engineErrors,
   engineSamples,
 }: {
   phase: PhaseName
@@ -101,6 +122,10 @@ export function ActivityFeed({
   progress?: LivePhaseProgress | null
   /** Run-wide accumulated tool calls; filtered to this phase here. */
   toolCalls?: readonly LiveToolCall[] | null
+  /** Run-wide real-agent telemetry; filtered to this phase here. */
+  agentEvents?: readonly LiveAgentEvent[] | null
+  /** Run-wide retryable engine poll failures; filtered to this phase here. */
+  engineErrors?: readonly LiveEngineError[] | null
   /** Engine poll ring buffer; only meaningful for the execution phase. */
   engineSamples?: readonly LiveEngineSample[] | null
 }) {
@@ -109,6 +134,8 @@ export function ActivityFeed({
   // Per-phase bookkeeping (component is keyed by phase, so refs reset with it).
   const seq = useRef(0)
   const seenTools = useRef(new Set<string>())
+  const seenAgentEvents = useRef(new Set<LiveAgentEvent>())
+  const seenEngineErrors = useRef(new Set<LiveEngineError>())
   const lastDividerSig = useRef<string | null>(null)
   const prevSampleLen = useRef(0)
   const pendingSamples = useRef<LiveEngineSample[]>([])
@@ -149,7 +176,37 @@ export function ActivityFeed({
       })
     }
 
-    // 3. engine_poll ticks -> one expandable row per ENGINE_TICKS_PER_ROW.
+    // 3. Real-agent response/error telemetry. Object identity is stable in the
+    // reducer's capped array, so replayed renders do not duplicate cards.
+    for (const event of agentEvents ?? []) {
+      if (event.phase !== phase || seenAgentEvents.current.has(event)) continue
+      seenAgentEvents.current.add(event)
+      additions.push({
+        kind: 'agent',
+        key: seq.current++,
+        type: event.type,
+        detail:
+          event.type === 'agent_error'
+            ? event.error
+            : `${event.model} produced ${event.chars.toLocaleString()} characters`,
+        at: toolCallAt(event.at),
+      })
+    }
+
+    // 4. Retryable engine poll failures stay visible without being mistaken
+    // for schema drift or a terminal phase failure.
+    for (const event of engineErrors ?? []) {
+      if (event.phase !== phase || seenEngineErrors.current.has(event)) continue
+      seenEngineErrors.current.add(event)
+      additions.push({
+        kind: 'engine_error',
+        key: seq.current++,
+        detail: `${event.error} · consecutive failure ${event.consecutive_errors} · attempt ${event.attempt}`,
+        at: toolCallAt(event.at),
+      })
+    }
+
+    // 5. engine_poll ticks -> one expandable row per ENGINE_TICKS_PER_ROW.
     if (phase === 'execution' && engineSamples && engineSamples.length > 0) {
       let appended: LiveEngineSample[]
       if (engineSamples.length > prevSampleLen.current) {
@@ -189,7 +246,15 @@ export function ActivityFeed({
       }
       return { entries, dropped: prev.dropped }
     })
-  }, [phase, progressStatus, progressAttempt, toolCalls, engineSamples])
+  }, [
+    phase,
+    progressStatus,
+    progressAttempt,
+    toolCalls,
+    agentEvents,
+    engineErrors,
+    engineSamples,
+  ])
 
   // Stick-to-bottom: follow new entries unless the operator scrolled up, then
   // offer a "jump to live" pill (APEX Load live-update indicator pattern).
@@ -271,6 +336,33 @@ export function ActivityFeed({
                 <span className="kind-chip">tool</span>
                 <span className="activity-tool-name">{entry.tool}</span>
                 <span className={`status-badge ${tone}`}>{entry.status}</span>
+                <span className="activity-at">{entry.at ? formatTimestamp(entry.at) : ''}</span>
+              </div>
+            )
+          }
+          if (entry.kind === 'agent') {
+            const failed = entry.type === 'agent_error'
+            return (
+              <div className="activity-tool-card" key={entry.key} data-testid="activity-agent-card">
+                <span className="kind-chip">agent</span>
+                <span className="activity-tool-name">{entry.detail}</span>
+                <span className={`status-badge ${failed ? 'danger' : 'success'}`}>
+                  {failed ? 'error' : 'response'}
+                </span>
+                <span className="activity-at">{entry.at ? formatTimestamp(entry.at) : ''}</span>
+              </div>
+            )
+          }
+          if (entry.kind === 'engine_error') {
+            return (
+              <div
+                className="activity-tool-card"
+                key={entry.key}
+                data-testid="activity-engine-error-card"
+              >
+                <span className="kind-chip">engine</span>
+                <span className="activity-tool-name">{entry.detail}</span>
+                <span className="status-badge warning">retrying</span>
                 <span className="activity-at">{entry.at ? formatTimestamp(entry.at) : ''}</span>
               </div>
             )

@@ -63,6 +63,7 @@ def issue_json(key: str, summary: str = "Issue summary") -> dict[str, object]:
                 "statusCategory": {"id": 4, "key": "indeterminate", "name": "In Progress"},
             },
             "issuetype": {"name": "Bug", "subtask": False},
+            "project": {"key": key.rpartition("-")[0]},
             "description": {
                 "type": "doc",
                 "version": 1,
@@ -116,6 +117,7 @@ def search_issue(key: str) -> dict[str, object]:
             "summary": f"Summary for {key}",
             "status": {"name": "To Do", "statusCategory": {"key": "new", "name": "To Do"}},
             "issuetype": {"name": "Story"},
+            "project": {"key": key.rpartition("-")[0]},
             "description": None,
         },
     }
@@ -195,6 +197,30 @@ async def test_get_item_404_raises_key_error() -> None:
 
 
 @respx.mock
+async def test_get_item_rejects_key_from_another_configured_project_without_http() -> None:
+    with pytest.raises(KeyError, match="configured jira project"):
+        await make_adapter().get_item("CAT-42")
+    assert respx.calls == []
+
+
+@respx.mock
+async def test_get_item_rejects_malformed_key_without_http() -> None:
+    with pytest.raises(KeyError, match="valid jira issue key"):
+        await make_adapter(project_key="").get_item("../search")
+    assert respx.calls == []
+
+
+@respx.mock
+async def test_get_item_rejects_issue_moved_to_another_project() -> None:
+    moved = issue_json("PHX-241")
+    moved["fields"]["project"] = {"key": "CAT"}  # type: ignore[index]
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(return_value=httpx.Response(200, json=moved))
+
+    with pytest.raises(KeyError, match="configured jira project"):
+        await make_adapter().get_item("PHX-241")
+
+
+@respx.mock
 async def test_unauthorized_is_actionable_runtime_error() -> None:
     respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(return_value=httpx.Response(401))
     with pytest.raises(RuntimeError, match="user_email"):
@@ -227,7 +253,7 @@ async def test_execute_query_follows_next_page_token() -> None:
     assert first_body == {
         "jql": "project = PHX ORDER BY updated DESC",
         "maxResults": 3,
-        "fields": ["summary", "status", "issuetype", "description"],
+        "fields": ["summary", "status", "issuetype", "description", "project"],
     }
     second_body = json.loads(route.calls[1].request.content)
     assert second_body["nextPageToken"] == "tok-2"
@@ -284,6 +310,12 @@ async def test_execute_query_invalid_jql_raises_value_error() -> None:
     )
     query = TranslatedQuery(provider="jira", query="project zz PHX")
     with pytest.raises(ValueError, match="Expecting operator"):
+        await make_adapter().execute_query(query, page=Page())
+
+
+async def test_execute_query_rejects_provider_mismatch() -> None:
+    query = TranslatedQuery(provider="stub", query="status = Open")
+    with pytest.raises(ValueError, match="provider"):
         await make_adapter().execute_query(query, page=Page())
 
 
@@ -346,6 +378,22 @@ async def test_create_item_without_project_is_value_error() -> None:
         await adapter.create_item(WorkItemDraft(title="No home"))
 
 
+async def test_create_item_rejects_project_override() -> None:
+    with pytest.raises(ValueError, match="fixed by the connection"):
+        await make_adapter().create_item(
+            WorkItemDraft(title="Wrong home", fields={"project": {"key": "CAT"}})
+        )
+
+
+@respx.mock
+async def test_create_item_rejects_response_key_from_another_project() -> None:
+    respx.post(f"{BASE}/rest/api/3/issue").mock(
+        return_value=httpx.Response(201, json={"id": "1", "key": "CAT-1"})
+    )
+    with pytest.raises(KeyError, match="configured jira project"):
+        await make_adapter().create_item(WorkItemDraft(title="Wrong response"))
+
+
 @respx.mock
 async def test_enrich_item_comments_then_refetches() -> None:
     comment_route = respx.post(f"{BASE}/rest/api/3/issue/PHX-241/comment").mock(
@@ -359,6 +407,20 @@ async def test_enrich_item_comments_then_refetches() -> None:
     body = json.loads(comment_route.calls[0].request.content)
     assert body["body"]["content"][0]["content"][0]["text"] == "repro attached"
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_enrich_item_validates_current_project_before_mutation() -> None:
+    moved = issue_json("PHX-241")
+    moved["fields"]["project"] = {"key": "CAT"}  # type: ignore[index]
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(return_value=httpx.Response(200, json=moved))
+    put_route = respx.put(f"{BASE}/rest/api/3/issue/PHX-241").mock(return_value=httpx.Response(204))
+
+    with pytest.raises(KeyError, match="configured jira project"):
+        await make_adapter().enrich_item(
+            "PHX-241", Enrichment(fields={"description": "must not write"})
+        )
+    assert not put_route.called
 
 
 @respx.mock
@@ -379,6 +441,11 @@ async def test_enrich_item_field_update_converts_description_to_adf() -> None:
 async def test_enrich_item_rejects_status_field() -> None:
     with pytest.raises(ValueError, match="transitions"):
         await make_adapter().enrich_item("PHX-241", Enrichment(fields={"status": "Done"}))
+
+
+async def test_enrich_item_rejects_project_change() -> None:
+    with pytest.raises(ValueError, match="project cannot be changed"):
+        await make_adapter().enrich_item("PHX-241", Enrichment(fields={"project": {"key": "CAT"}}))
 
 
 # ── translate_query (deterministic ruleset) ───────────────────────────────────

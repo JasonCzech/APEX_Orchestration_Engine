@@ -1250,6 +1250,8 @@ export class DevDataStore {
       name,
       kind,
       base_url: baseUrl,
+      target_approved: baseUrl !== null,
+      target_version: baseUrl === null ? 0 : 1,
       hosts: [
         { id: `${id}-host-1`, hostname: `${name}-node-1`, role: 'worker' },
         { id: `${id}-host-2`, hostname: `${name}-node-2`, role: name === 'production' ? 'api' : null },
@@ -1283,7 +1285,7 @@ export class DevDataStore {
   }
 
   private consumer(id: string, name: string, role: Consumer['role'], consumerType: Consumer['consumer_type'], enabled: boolean, fingerprint: string): Consumer {
-    return { id, name, role, consumer_type: consumerType, enabled, scopes: [{ project_id: 'proj-alpha', app_id: null }], created_at: isoMinutesAgo(9_000), last_used_at: enabled ? isoMinutesAgo(12) : null, key_fingerprint: fingerprint }
+    return { id, name, role, consumer_type: consumerType, enabled, scopes: [{ project_id: 'proj-alpha', app_id: null }], created_at: isoMinutesAgo(9_000), last_used_at: enabled ? isoMinutesAgo(12) : null, key_fingerprint: fingerprint, rotation_count: 0 }
   }
 
   private consumerCreated(id: string, name: string, role: Consumer['role'], consumerType: Consumer['consumer_type'], enabled: boolean, fingerprint: string): ConsumerCreated {

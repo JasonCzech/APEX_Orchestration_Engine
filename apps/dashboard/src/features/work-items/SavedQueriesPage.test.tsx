@@ -49,6 +49,7 @@ describe('SavedQueriesPage', () => {
     const params = new URLSearchParams(router.state.location.search)
     expect(params.get('provider')).toBe('jira')
     expect(params.get('query')).toBe(SAVED_OPEN.query)
+    expect(params.get('project')).toBe('proj-alpha')
 
     await screen.findByTestId('wi-row-PHX-101')
     expect(execute.captured).toEqual([
@@ -58,6 +59,7 @@ describe('SavedQueriesPage', () => {
         offset: 0,
       },
     ])
+    expect(execute.projects).toEqual(['proj-alpha'])
     expect(screen.getByRole('textbox', { name: 'Provider query' })).toHaveValue(SAVED_OPEN.query)
   })
 

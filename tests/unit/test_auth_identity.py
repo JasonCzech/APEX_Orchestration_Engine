@@ -79,3 +79,18 @@ def test_project_scope_allows_all_apps_in_project() -> None:
 
     assert identity.allows_scope(project_id="p1", app_id="app-a")
     assert identity.allows_scope(project_id="p1", app_id="app-b")
+
+
+def test_scope_containment_does_not_promote_app_scope_to_project_wide() -> None:
+    app_admin = make_identity(Role.ADMIN, [ScopeRef(project_id="p1", app_id="app-a")])
+
+    assert app_admin.contains_scope(ScopeRef(project_id="p1", app_id="app-a"))
+    assert not app_admin.contains_scope(ScopeRef(project_id="p1", app_id="app-b"))
+    assert not app_admin.contains_scope(ScopeRef(project_id="p1"))
+
+
+def test_project_wide_scope_contains_app_and_project_targets() -> None:
+    project_admin = make_identity(Role.ADMIN, [ScopeRef(project_id="p1")])
+
+    assert project_admin.contains_scope(ScopeRef(project_id="p1"))
+    assert project_admin.contains_scope(ScopeRef(project_id="p1", app_id="app-a"))

@@ -73,7 +73,9 @@ source = { editable = "." }
 dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
+    { name = "certifi" },
     { name = "fastapi" },
+    { name = "httpcore" },
     { name = "httpx" },
     { name = "langchain-anthropic" },
     { name = "langgraph" },
@@ -84,6 +86,7 @@ dependencies = [
     { name = "python-docx" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "structlog" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -102,9 +105,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", specifier = ">=1.13" },
+    { name = "alembic", specifier = ">=1.16" },
     { name = "asyncpg", specifier = ">=0.29" },
+    { name = "certifi", specifier = ">=2024.7.4" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpcore", specifier = ">=1.0,<2" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-anthropic", specifier = ">=0.3" },
     { name = "langgraph", specifier = ">=1.0" },
@@ -115,6 +120,7 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.1" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.30" },
     { name = "structlog", specifier = ">=24.1" },
+    { name = "urllib3", specifier = ">=2,<3" },
 ]
 
 [package.metadata.requires-dev]
@@ -1627,11 +1633,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-version = "82.0.1"
+version = "83.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4f/db/cfac1baf10650ab4d1c111714410d2fbb77ac5a616db26775db562c8fab2/setuptools-82.0.1.tar.gz", hash = "sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9", size = 1152316, upload-time = "2026-03-09T12:47:17.221Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/26/f5d29e25ffdb535afef2d35cdb55b325298f96debd670da4c325e08d70f4/setuptools-83.0.0.tar.gz", hash = "sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef", size = 1154254, upload-time = "2026-07-04T15:31:22.699Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9d/76/f789f7a86709c6b087c5a2f52f911838cad707cc613162401badc665acfe/setuptools-82.0.1-py3-none-any.whl", hash = "sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb", size = 1006223, upload-time = "2026-03-09T12:47:15.026Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl", hash = "sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3", size = 1008090, upload-time = "2026-07-04T15:31:20.885Z" },
 ]
 
 [[package]]

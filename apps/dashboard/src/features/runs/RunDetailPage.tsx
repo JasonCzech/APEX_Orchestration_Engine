@@ -54,7 +54,8 @@ export function RunDetailPage() {
   // D4: header Re-run split button — non-null opens the pre-flight modal
   // with this preselection.
   const [preflight, setPreflight] = useState<PhaseName[] | null>(null)
-  // D8 parity: abort a busy run (no gate open) via POST /v1/pipelines/{id}/abort.
+  // Busy-run abort always probes the engine kill switch first; the backend can
+  // recover handles that are absent from the compact pipeline summary.
   const abortRun = useAbortRun(threadId)
 
   if (query.isPending) return <RunDetailSkeleton />
@@ -170,6 +171,11 @@ export function RunDetailPage() {
           Logs
         </Link>
       </header>
+      {abortRun.isError && (
+        <div className="tonal-card danger" role="alert">
+          Abort failed: {abortRun.error.message}
+        </div>
+      )}
       {preflight && (
         <PreflightModal
           threadId={threadId}

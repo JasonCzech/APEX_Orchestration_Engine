@@ -23,7 +23,15 @@ class FakeStore:
     def __init__(self, rows: dict[tuple[str, str], PromptVersion] | None = None) -> None:
         self.rows = rows or {}
 
-    async def get_active_version(self, namespace: str, key: str) -> PromptVersion | None:
+    async def get_active_version(
+        self,
+        namespace: str,
+        key: str,
+        *,
+        allow_application: bool = False,
+    ) -> PromptVersion | None:
+        if namespace == "application" and not allow_application:
+            return None
         return self.rows.get((namespace, key))
 
 

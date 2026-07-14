@@ -68,6 +68,7 @@ describe('wizard draft autosave', () => {
     )
 
     // A later change UPDATES the same draft — no second create.
+    setField('Project', 'proj-b')
     setField('Title', 'Soak test v2')
     await advanceDebounce()
     await vi.waitFor(() => expect(captured.updates).toHaveLength(1))
@@ -75,7 +76,12 @@ describe('wizard draft autosave', () => {
     expect(captured.updates[0]).toMatchObject({
       id: 'draft-1',
       title: 'Soak test v2',
-      payload: { title: 'Soak test v2', request: 'Hammer checkout' },
+      project_id: 'proj-b',
+      payload: {
+        title: 'Soak test v2',
+        request: 'Hammer checkout',
+        scope: { project_id: 'proj-b' },
+      },
     })
   })
 
@@ -87,5 +93,22 @@ describe('wizard draft autosave', () => {
     await advanceDebounce()
     await vi.waitFor(() => expect(captured.creates).toHaveLength(1))
     expect(captured.creates[0]?.title).toBe('Untitled run')
+  })
+
+  it('flushes dirty state on unmount without creating an untouched draft', async () => {
+    const { captured } = installWizardHandlers()
+    const untouched = renderWizard()
+    untouched.unmount()
+    await act(async () => Promise.resolve())
+    expect(captured.creates).toHaveLength(0)
+
+    const dirty = renderWizard()
+    setField('Title', 'Leave this page')
+    dirty.unmount()
+    await vi.waitFor(() => expect(captured.creates).toHaveLength(1))
+    expect(captured.creates[0]).toMatchObject({
+      title: 'Leave this page',
+      payload: { title: 'Leave this page' },
+    })
   })
 })

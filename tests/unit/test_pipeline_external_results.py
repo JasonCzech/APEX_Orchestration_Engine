@@ -157,7 +157,7 @@ def test_context_packets_block_truncates_to_total_budget(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         ps,
         "get_settings",
-        lambda: SimpleNamespace(documents=SimpleNamespace(max_context_chars_total=30)),
+        lambda: SimpleNamespace(documents=SimpleNamespace(max_context_chars_total=90)),
     )
     state: PipelineState = {
         "context_packets": [
@@ -166,11 +166,13 @@ def test_context_packets_block_truncates_to_total_budget(monkeypatch: pytest.Mon
         ]
     }
     block = ps._context_packets_block(state)
-    # First packet consumes 25 of 30; the second is truncated to the remaining 5.
+    # The complete rendered block (headers, fences, metadata, and text) shares one
+    # budget; the second packet is truncated after the first consumes its share.
+    assert len(block) <= 90
     assert "X" * 25 in block
     assert "…[truncated]" in block
-    assert "Y" * 5 in block
-    assert "Y" * 6 not in block
+    assert "Y" in block
+    assert "Y" * 2 not in block
 
 
 def test_compose_user_injects_document_text_for_story_analysis() -> None:

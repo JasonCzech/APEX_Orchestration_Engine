@@ -13,6 +13,7 @@ import { formatRelative } from '@/utils/time'
 import {
   ATTENTION_GATES_LIMIT,
   HOME_FLEET_FILTER,
+  HOME_FLEET_LIMIT,
   activeRuns,
   avgDurationLabel,
   failedRuns,
@@ -128,7 +129,7 @@ export function HomePage() {
 
   const items = fleet.data?.items ?? []
   const gates = inbox.items.slice(0, ATTENTION_GATES_LIMIT)
-  const failures = failedRuns(items)
+  const failures = failedRuns(items, items.length)
   const active = activeRuns(items)
   const recent = recentRuns(items)
   const draftItems = drafts.data ?? []
@@ -170,18 +171,32 @@ export function HomePage() {
   }
 
   const usageRuns = usage.data?.runs
-  const total = totalRuns(items)
+  const loaded = totalRuns(items)
   const goCount = goVerdicts(items)
   const conditionalCount = interruptedRuns(items)
+  const fleetScopeHint =
+    loaded >= HOME_FLEET_LIMIT
+      ? `latest ${HOME_FLEET_LIMIT}; fleet total unavailable`
+      : 'loaded fleet snapshot'
 
   return (
     <section className="home-page animate-enter">
       <section className="home-metrics" aria-label="Key metrics">
-        <MetricCard label="Total Runs" value={total} />
-        <MetricCard label="Active" value={active.length} tone="warning" />
-        <MetricCard label="Failures" value={failures.length} tone="danger" />
-        <MetricCard label="GO Verdicts" value={goCount} tone="success" hint="idle run proxy" />
-        <MetricCard label="Avg Duration" value={avgDurationLabel(items)} tone="results" />
+        <MetricCard label="Runs Loaded" value={loaded} hint={fleetScopeHint} />
+        <MetricCard label="Active" value={active.length} tone="warning" hint="in loaded runs" />
+        <MetricCard label="Failures" value={failures.length} tone="danger" hint="in loaded runs" />
+        <MetricCard
+          label="GO Verdicts"
+          value={goCount}
+          tone="success"
+          hint="successful outcomes loaded"
+        />
+        <MetricCard
+          label="Avg Duration"
+          value={avgDurationLabel(items)}
+          tone="results"
+          hint="loaded runs"
+        />
         <MetricCard label="Tickets" value="—" hint="tracker count not exposed yet" />
       </section>
 
@@ -195,12 +210,12 @@ export function HomePage() {
           </div>
           <div className="home-health-grid">
             <div>
-              <span className="home-health-stat-label">Active pipelines</span>
+              <span className="home-health-stat-label">Active pipelines loaded</span>
               <strong className="home-health-stat-value">{active.length}</strong>
             </div>
             <div>
               <span className="home-health-stat-label">Pending approvals</span>
-              <strong className="home-health-stat-value">{gates.length}</strong>
+              <strong className="home-health-stat-value">{inbox.count}</strong>
             </div>
             <div>
               <span className="home-health-stat-label">Phases succeeded</span>
@@ -216,7 +231,7 @@ export function HomePage() {
         <article className="glass-panel home-signal-card">
           <div className="home-section-head">
             <h3 className="home-section-title">Release Signal</h3>
-            <span className="home-signal-caption">best available fleet proxy</span>
+            <span className="home-signal-caption">loaded fleet snapshot proxy</span>
           </div>
           <div className="home-release-badges">
             <span className="topbar-meta-chip success">GO · {goCount}</span>
@@ -224,7 +239,9 @@ export function HomePage() {
             <span className="topbar-meta-chip danger">NO-GO · {failures.length}</span>
           </div>
           <p className="home-release-note">
-            Verdict API fields are not exposed in the current list endpoint, so this panel uses settled idle, interrupted, and error runs as a release-readiness signal.
+            Verdict API fields and fleet totals are not exposed in the current list endpoint, so
+            this panel derives a conservative signal from phase outcomes in up to the latest{' '}
+            {HOME_FLEET_LIMIT} loaded runs.
           </p>
         </article>
       </section>

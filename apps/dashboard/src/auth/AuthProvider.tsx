@@ -9,6 +9,8 @@ import {
   type ReactNode,
 } from 'react'
 
+import { useQueryClient } from '@tanstack/react-query'
+
 import {
   fetchSystemInfo,
   onUnauthorized,
@@ -62,6 +64,15 @@ export function AuthProvider({
         : { status: 'no-key' }),
   )
   const attemptRef = useRef(0)
+  const queryClient = useQueryClient()
+
+  const clearSessionCache = useCallback(() => {
+    // Cancellation prevents old-session responses from repopulating query
+    // observers; clear() removes both query data and mutation state, including
+    // artifact blobs with an infinite stale time.
+    void queryClient.cancelQueries()
+    queryClient.clear()
+  }, [queryClient])
 
   const validate = useCallback(async () => {
     const attempt = ++attemptRef.current
@@ -91,6 +102,7 @@ export function AuthProvider({
     }
 
     const unsubscribeKey = subscribeApiKey((key) => {
+      clearSessionCache()
       if (key) {
         void validate()
       } else {
@@ -102,13 +114,16 @@ export function AuthProvider({
       clearApiKey()
     })
 
-    if (getApiKey()) void validate()
+    if (getApiKey()) {
+      clearSessionCache()
+      void validate()
+    }
 
     return () => {
       unsubscribeKey()
       unsubscribeUnauthorized()
     }
-  }, [staticState, validate])
+  }, [clearSessionCache, staticState, validate])
 
   const submitKey = useCallback((key: string) => {
     setApiKey(key)
@@ -116,9 +131,12 @@ export function AuthProvider({
 
   const signOut = useCallback(() => {
     attemptRef.current += 1
+    // Dev auth deliberately has no key subscription, so clear explicitly in
+    // that mode. Production sessions clear synchronously via subscribeApiKey.
+    if (isDevAuthEnabled()) clearSessionCache()
     clearApiKey()
     setState(isDevAuthEnabled() ? createDevAuthState() : { status: 'no-key' })
-  }, [])
+  }, [clearSessionCache])
 
   const value = useMemo<AuthContextValue>(
     () => ({ state: staticState ?? state, submitKey, signOut }),

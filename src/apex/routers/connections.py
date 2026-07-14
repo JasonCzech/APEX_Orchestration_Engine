@@ -1,9 +1,10 @@
 """Admin connections CRUD (`/admin/connections`) — runtime adapter configuration.
 
-Every route is admin-only (router-level require_role). The `secret_ref` column
-is a REFERENCE string ("env:NAME", "vault:path#key", ...) resolved through the
-secrets port at adapter-build time — raw secret values never enter the table,
-so returning secret_ref to admin clients is safe by design.
+Every route is admin-only (router-level require_role). Secret-bearing and
+SecretsPort connections are platform-admin-only: a project-scoped admin could
+otherwise point a project adapter at an attacker-controlled endpoint and make
+the server resolve and transmit a platform-held secret during a probe/runtime
+call. The `secret_ref` column stores references only, never raw secret values.
 
 `POST /{id}/test` builds the adapter exactly as the runtime resolver would and
 runs one cheap, read-only, stub-safe probe call per port kind; failures are
@@ -19,9 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apex.adapters import register_builtin_adapters
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.app.dependencies import require_role
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 from apex.domain.integrations import (
     DocScope,
     EnvRef,
@@ -39,11 +41,18 @@ from apex.persistence.repositories.connections import (
 )
 from apex.ports.secrets import SecretsPort
 from apex.services.connections import (
+    TRUSTED_PRIVATE_HOST_OPTION,
+    close_adapter,
     connection_config_from_row,
     get_connection_resolver,
     validate_adapter_base_url,
     validate_connection_config,
 )
+
+# This router validates provider names directly against the registry, so it
+# must establish the same built-in registry state as the runtime resolver even
+# when imported in isolation (tests, scripts, or OpenAPI generation).
+register_builtin_adapters()
 
 router = APIRouter(
     prefix="/admin/connections",
@@ -186,6 +195,10 @@ PROBE_CALLS: dict[PortKind, Callable[[Any], Awaitable[str]]] = {
     PortKind.SECRETS: _probe_secrets,
 }
 
+_ARTIFACT_STORE_IDENTITY_FIELDS = frozenset(
+    {"provider", "project_id", "base_url", "options", "secret_ref"}
+)
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -204,9 +217,24 @@ def _validate_provider(kind: PortKind, provider: str) -> None:
 
 
 def _validate_connection_target(base_url: str | None, options: dict[str, Any] | None) -> None:
-    for raw_url in (base_url, (options or {}).get("base_url")):
+    connection_options = options or {}
+    allow_private = connection_options.get(TRUSTED_PRIVATE_HOST_OPTION) is True
+    for raw_url in (base_url, connection_options.get("base_url")):
         try:
-            validate_adapter_base_url(raw_url)
+            validate_adapter_base_url(raw_url, allow_private_hosts=allow_private or None)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    endpoint = connection_options.get("endpoint")
+    if endpoint is not None:
+        raw_endpoint = str(endpoint).strip()
+        if "://" not in raw_endpoint:
+            scheme = "https" if connection_options.get("secure") is True else "http"
+            raw_endpoint = f"{scheme}://{raw_endpoint}"
+        try:
+            validate_adapter_base_url(
+                raw_endpoint,
+                allow_private_hosts=allow_private or None,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -218,17 +246,64 @@ async def _get_or_404(repo: ConnectionsRepository, connection_id: str) -> Connec
     return conn
 
 
-def _can_manage_connection(identity: ConsumerIdentity, project_id: str | None) -> bool:
+def _can_manage_connection(
+    identity: ConsumerIdentity,
+    project_id: str | None,
+    *,
+    kind: PortKind | str | None = None,
+    secret_ref: str | None = None,
+    options: dict[str, Any] | None = None,
+) -> bool:
     if identity.is_unscoped:
         return True
-    return project_id is not None and identity.allows_project(project_id)
+    if (
+        secret_ref is not None
+        or (kind is not None and PortKind(kind) is PortKind.SECRETS)
+        or (options or {}).get(TRUSTED_PRIVATE_HOST_OPTION) is True
+    ):
+        return False
+    return project_id is not None and identity.contains_scope(ScopeRef(project_id=project_id))
 
 
-def _ensure_can_manage_connection(identity: ConsumerIdentity, project_id: str | None) -> None:
-    if not _can_manage_connection(identity, project_id):
+def _ensure_can_manage_connection(
+    identity: ConsumerIdentity,
+    project_id: str | None,
+    *,
+    kind: PortKind | str | None = None,
+    secret_ref: str | None = None,
+    options: dict[str, Any] | None = None,
+) -> None:
+    if not _can_manage_connection(
+        identity,
+        project_id,
+        kind=kind,
+        secret_ref=secret_ref,
+        options=options,
+    ):
         raise HTTPException(
             status_code=403,
-            detail="Scoped admins cannot manage global or out-of-scope connections",
+            detail=(
+                "Secret-bearing, secrets-port, global, and out-of-scope connections "
+                "require an unscoped platform admin"
+            ),
+        )
+
+
+def _ensure_can_manage_row(identity: ConsumerIdentity, conn: Connection) -> None:
+    _ensure_can_manage_connection(
+        identity,
+        conn.project_id,
+        kind=conn.kind,
+        secret_ref=conn.secret_ref,
+        options=conn.options,
+    )
+
+
+def _ensure_options_are_mutable_by(identity: ConsumerIdentity, options: dict[str, Any]) -> None:
+    if not identity.is_unscoped and any(str(key).startswith("_apex_") for key in options):
+        raise HTTPException(
+            status_code=403,
+            detail="Reserved _apex_ connection options require an unscoped platform admin",
         )
 
 
@@ -236,6 +311,26 @@ def _validate_probe_target(config: ConnectionConfig) -> None:
     """Block admin probes from reaching private hosts unless local dev opts in."""
 
     validate_connection_config(config)
+
+
+def _protect_artifact_store_identity(conn: Connection, changes: dict[str, Any]) -> None:
+    """Keep historical artifact references bound to one immutable store location."""
+
+    if PortKind(conn.kind) is not PortKind.ARTIFACT_STORE:
+        return
+    changed = sorted(
+        field
+        for field in _ARTIFACT_STORE_IDENTITY_FIELDS.intersection(changes)
+        if changes[field] != getattr(conn, field)
+    )
+    if changed:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "artifact-store location fields are immutable once a connection id is "
+                f"created ({', '.join(changed)}); create a new connection id instead"
+            ),
+        )
 
 
 def _probe_failure_detail(exc: Exception) -> str:
@@ -257,7 +352,17 @@ async def list_connections(
     rows = await repo.list_connections(
         kind=kind.value if kind is not None else None, project=project
     )
-    rows = [row for row in rows if _can_manage_connection(identity, row.project_id)]
+    rows = [
+        row
+        for row in rows
+        if _can_manage_connection(
+            identity,
+            row.project_id,
+            kind=row.kind,
+            secret_ref=row.secret_ref,
+            options=row.options,
+        )
+    ]
     return [ConnectionOut.model_validate(row) for row in rows]
 
 
@@ -265,7 +370,14 @@ async def list_connections(
 async def create_connection(
     body: ConnectionCreate, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
-    _ensure_can_manage_connection(identity, body.project_id)
+    _ensure_can_manage_connection(
+        identity,
+        body.project_id,
+        kind=body.kind,
+        secret_ref=body.secret_ref,
+        options=body.options,
+    )
+    _ensure_options_are_mutable_by(identity, body.options)
     _validate_provider(body.kind, body.provider)
     _validate_connection_target(body.base_url, body.options)
     try:
@@ -290,7 +402,7 @@ async def get_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     return ConnectionOut.model_validate(conn)
 
 
@@ -299,10 +411,24 @@ async def update_connection(
     connection_id: str, body: ConnectionUpdate, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     changes = body.model_dump(exclude_unset=True)
+    if not identity.is_unscoped and changes.get("secret_ref") is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an unscoped platform admin can attach a connection secret",
+        )
+    if "options" in changes:
+        _ensure_options_are_mutable_by(identity, changes["options"] or {})
+    _protect_artifact_store_identity(conn, changes)
     if "project_id" in changes:
-        _ensure_can_manage_connection(identity, changes["project_id"])
+        _ensure_can_manage_connection(
+            identity,
+            changes["project_id"],
+            kind=conn.kind,
+            secret_ref=conn.secret_ref,
+            options=conn.options,
+        )
     if "provider" in changes:
         _validate_provider(PortKind(conn.kind), changes["provider"])
     _validate_connection_target(
@@ -324,7 +450,7 @@ async def delete_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> None:
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     await repo.delete(conn)
 
 
@@ -333,7 +459,7 @@ async def enable_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, True))
 
 
@@ -342,7 +468,7 @@ async def disable_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, False))
 
 
@@ -351,7 +477,7 @@ async def get_host_mappings(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> list[HostMappingOut]:
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     return [HostMappingOut.model_validate(m) for m in conn.host_mappings]
 
 
@@ -361,7 +487,7 @@ async def put_host_mappings(
 ) -> list[HostMappingOut]:
     """Replaces the FULL mapping list (PUT semantics)."""
     conn = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, conn.project_id)
+    _ensure_can_manage_row(identity, conn)
     conn = await repo.replace_host_mappings(conn, [m.model_dump() for m in body])
     return [HostMappingOut.model_validate(m) for m in conn.host_mappings]
 
@@ -376,8 +502,9 @@ async def test_connection(
     options) come back inline as ok=false so the admin UI can show them.
     """
     row = await _get_or_404(repo, connection_id)
-    _ensure_can_manage_connection(identity, row.project_id)
+    _ensure_can_manage_row(identity, row)
     started = time.perf_counter()
+    adapter: Any | None = None
     try:
         config = connection_config_from_row(row)
         _validate_probe_target(config)
@@ -390,5 +517,12 @@ async def test_connection(
     except Exception as exc:  # probe must report failures inline, never raise
         detail = _probe_failure_detail(exc)
         ok = False
+    finally:
+        if adapter is not None:
+            try:
+                await close_adapter(adapter)
+            except Exception as exc:
+                detail = _probe_failure_detail(exc)
+                ok = False
     latency_ms = round((time.perf_counter() - started) * 1000, 2)
     return ProbeResult(ok=ok, latency_ms=latency_ms, detail=detail)

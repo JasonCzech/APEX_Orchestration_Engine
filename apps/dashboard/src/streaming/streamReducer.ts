@@ -6,6 +6,8 @@
  * (≤ ~20/s, see tokenBuffer.ts).
  */
 import type {
+  AgentEvent,
+  EnginePollErrorEvent,
   EnginePollSample,
   GateName,
   PhaseName,
@@ -39,6 +41,10 @@ export interface PipelineStreamView {
   phaseProgress: Partial<Record<PhaseName, PhaseProgress>>
   /** Live tool-call feed, capped at TOOL_CALL_CAP (oldest dropped). */
   toolCalls: ToolCallEvent[]
+  /** Real-agent completion/error telemetry, capped independently. */
+  agentEvents: AgentEvent[]
+  /** Retryable external-engine poll failures, capped independently. */
+  engineErrors: EnginePollErrorEvent[]
   engineStats: EngineStatsView
   /** Set by gate_opened; D3's gate machine consumes it. Cleared when the phase moves on. */
   pendingGateHint: PendingGateHint | null
@@ -48,6 +54,8 @@ export interface PipelineStreamView {
 }
 
 export const TOOL_CALL_CAP = 200
+export const AGENT_EVENT_CAP = 200
+export const ENGINE_ERROR_CAP = 200
 
 /** Low-frequency pipeline events the reducer projects (engine_poll excluded by design). */
 export type ReducedPipelineEvent = Exclude<PipelineEvent, { type: 'engine_poll' }>
@@ -68,6 +76,8 @@ export const initialStreamView: PipelineStreamView = {
   plan: null,
   phaseProgress: {},
   toolCalls: [],
+  agentEvents: [],
+  engineErrors: [],
   engineStats: { samples: [], latest: null },
   pendingGateHint: null,
   driftCount: 0,
@@ -119,6 +129,21 @@ function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): Pip
           ? [...state.toolCalls.slice(state.toolCalls.length - TOOL_CALL_CAP + 1), event]
           : [...state.toolCalls, event]
       return { ...state, toolCalls }
+    }
+    case 'agent_message':
+    case 'agent_error': {
+      const agentEvents =
+        state.agentEvents.length >= AGENT_EVENT_CAP
+          ? [...state.agentEvents.slice(state.agentEvents.length - AGENT_EVENT_CAP + 1), event]
+          : [...state.agentEvents, event]
+      return { ...state, agentEvents }
+    }
+    case 'engine_poll_error': {
+      const engineErrors =
+        state.engineErrors.length >= ENGINE_ERROR_CAP
+          ? [...state.engineErrors.slice(state.engineErrors.length - ENGINE_ERROR_CAP + 1), event]
+          : [...state.engineErrors, event]
+      return { ...state, engineErrors }
     }
   }
 }

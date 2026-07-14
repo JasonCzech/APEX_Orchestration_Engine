@@ -21,7 +21,8 @@ def phase_events(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     """Capture (phase, status) pairs from the finalize hook (no DB)."""
     captured: list[tuple[str, str]] = []
 
-    def fake(phase: str, status: str, config: Any) -> None:
+    def fake(phase: str, status: str, config: Any, *, attempt: int | None = None) -> None:
+        assert attempt is not None
         captured.append((phase, status))
 
     monkeypatch.setattr(usage, "record_phase_usage_sync", fake)
@@ -91,6 +92,7 @@ def test_record_agent_event_sync_resolves_model_and_maps_status(
         "configurable": {
             "thread_id": "t-77",
             "project_id": "proj-x",
+            "app_id": "app-x",
             "model_by_phase": {"reporting": "claude-3-5-haiku-latest"},
         }
     }
@@ -102,6 +104,7 @@ def test_record_agent_event_sync_resolves_model_and_maps_status(
     assert captured["status"] == "error"  # failed -> error
     assert captured["thread_id"] == "t-77"
     assert captured["project_id"] == "proj-x"
+    assert captured["app_id"] == "app-x"
     assert captured["agent_name"] == "reporting.worker"
 
     captured.clear()

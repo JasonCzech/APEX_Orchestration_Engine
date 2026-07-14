@@ -18,30 +18,27 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
-def _is_postgres() -> bool:
-    return op.get_bind().dialect.name == "postgresql"
-
-
 def _json_type() -> sa.types.TypeEngine[Any]:
     return sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")
 
 
 def _create_index(name: str, table_name: str, columns: list[str]) -> None:
-    kwargs: dict[str, Any] = {"schema": "apex"}
-    if _is_postgres():
-        kwargs["postgresql_concurrently"] = True
-        with op.get_context().autocommit_block():
-            op.create_index(name, table_name, columns, **kwargs)
-        return
-    op.create_index(name, table_name, columns, **kwargs)
+    op.drop_index(name, table_name=table_name, schema="apex", if_exists=True)
+    op.create_index(
+        name,
+        table_name,
+        columns,
+        schema="apex",
+    )
 
 
 def _drop_index(name: str, table_name: str) -> None:
-    if _is_postgres():
-        with op.get_context().autocommit_block():
-            op.get_bind().exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS apex.{name}")
-        return
-    op.drop_index(name, table_name=table_name, schema="apex")
+    op.drop_index(
+        name,
+        table_name=table_name,
+        schema="apex",
+        if_exists=True,
+    )
 
 
 def upgrade() -> None:
@@ -49,36 +46,43 @@ def upgrade() -> None:
         "api_consumers",
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         schema="apex",
+        if_not_exists=True,
     )
     op.add_column(
         "api_consumers",
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         schema="apex",
+        if_not_exists=True,
     )
     op.add_column(
         "api_consumers",
         sa.Column("created_by", sa.String(length=255), nullable=True),
         schema="apex",
+        if_not_exists=True,
     )
     op.add_column(
         "api_consumers",
         sa.Column("updated_by", sa.String(length=255), nullable=True),
         schema="apex",
+        if_not_exists=True,
     )
     op.add_column(
         "api_consumers",
         sa.Column("rotated_at", sa.DateTime(timezone=True), nullable=True),
         schema="apex",
+        if_not_exists=True,
     )
     op.add_column(
         "api_consumers",
         sa.Column("rotation_count", sa.Integer(), server_default="0", nullable=False),
         schema="apex",
+        if_not_exists=True,
     )
     op.add_column(
         "api_consumers",
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         schema="apex",
+        if_not_exists=True,
     )
 
     op.create_table(
@@ -106,6 +110,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_consumer_keys")),
         sa.UniqueConstraint("key_hash", name=op.f("uq_consumer_keys_key_hash")),
         schema="apex",
+        if_not_exists=True,
     )
     _create_index("ix_consumer_keys_consumer_id", "consumer_keys", ["consumer_id"])
     _create_index("ix_consumer_keys_expires_at", "consumer_keys", ["expires_at"])
@@ -141,6 +146,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_log")),
         sa.UniqueConstraint("event_hash", name=op.f("uq_audit_log_event_hash")),
         schema="apex",
+        if_not_exists=True,
     )
     _create_index("ix_audit_log_at", "audit_log", ["at"])
     _create_index("ix_audit_log_principal_at", "audit_log", ["principal_id", "at"])
@@ -163,6 +169,7 @@ def upgrade() -> None:
         sa.Column("scopes", _json_type(), nullable=False, server_default=sa.text("'{}'")),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_consumer_deletion_records")),
         schema="apex",
+        if_not_exists=True,
     )
     _create_index(
         "ix_consumer_deletion_records_consumer_id",

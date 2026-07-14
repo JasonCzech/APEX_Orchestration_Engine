@@ -10,8 +10,8 @@
  *    integration contract (features/approvals/gateModuleContract.ts):
  *    <GateModule threadId interrupt compact onOutcome handleRef />. It mounts
  *    its OWN useGate over the same thread-state cache entry, notifies terminal
- *    outcomes exactly once per gate instance ('resumed' on 202, 'superseded'
- *    on 409-conflict/actioned-elsewhere), and exposes the imperative handle
+ *    terminal outcomes exactly once per gate instance ('resumed' for terminal
+ *    202 decisions, 'superseded' on 409-conflict/actioned-elsewhere), and exposes the imperative handle
  *    for the inbox keyboard layer (a/m/s/x + Enter).
  *
  * Render by machine state:
@@ -96,7 +96,11 @@ export function GateModuleView({
           <span className="gate-spinner" aria-hidden="true" />
           <span>
             Agent working on your{' '}
-            {machineState.action === 'discuss' ? 'message' : 'revision instructions'} — the gate
+            {machineState.action === 'discuss'
+              ? 'message'
+              : machineState.action === 'modify'
+                ? 'prompt edits'
+                : 'revision instructions'} — the gate
             will reopen.
           </span>
         </div>
@@ -246,7 +250,13 @@ export function GateModule({
   const supersededGateId = hitl.state.tag === 'superseded' ? hitl.state.gate.interrupt_id : null
   useEffect(() => {
     if (firedRef.current) return
-    if (accepted && (!expectedId || accepted.interruptId === expectedId)) {
+    if (
+      accepted &&
+      accepted.action !== 'modify' &&
+      accepted.action !== 'discuss' &&
+      accepted.action !== 'revise' &&
+      (!expectedId || accepted.interruptId === expectedId)
+    ) {
       firedRef.current = true
       onOutcome?.({ type: 'resumed', action: accepted.action, runId: accepted.runId })
       return
@@ -275,10 +285,16 @@ export function GateModule({
         switch (action) {
           case 'approve':
           case 'skip_phase':
-          case 'abort':
-            // Keyboard submits are the explicit decision (the inbox's own
-            // shortcut layer is the confirm step for abort).
             hitl.submit(action)
+            return true
+          case 'abort':
+            // Keyboard access must use the same typed confirmation as the
+            // visible danger button. `x` arms and focuses it; it never sends
+            // the destructive resume directly.
+            rootRef.current
+              ?.querySelector<HTMLButtonElement>('[data-gate-action="abort"]')
+              ?.click()
+            requestAnimationFrame(() => focusIn('.abort-confirm-input'))
             return true
           case 'modify':
             // Edit state: focus the system prompt editor ("modify-focus").

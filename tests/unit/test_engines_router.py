@@ -1,9 +1,12 @@
 """/engines history + abort against fake repo / loopback client / engine adapter."""
 
+import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langgraph_sdk.errors import NotFoundError
@@ -39,6 +42,16 @@ VIEWER = ConsumerIdentity(
     role=Role.VIEWER,
     scopes=[ScopeRef(project_id="p1")],
 )
+APP_VIEWER = ConsumerIdentity(
+    consumer_id="app-view-1",
+    name="app-viewer",
+    consumer_type=ConsumerType.DASHBOARD,
+    role=Role.VIEWER,
+    scopes=[ScopeRef(project_id="p1", app_id="app-a")],
+)
+APP_OPERATOR = APP_VIEWER.model_copy(
+    update={"consumer_id": "app-op-1", "name": "app-operator", "role": Role.OPERATOR}
+)
 
 T0 = datetime(2026, 6, 10, 12, 0, 0, tzinfo=UTC)
 
@@ -69,15 +82,23 @@ class FakeEngineRunsRepository:
         external_run_id: str | None = None,
         handle: JsonDict | None = None,
         project_id: str | None = "p1",
+        app_id: str | None = None,
+        ownership_known: bool = True,
+        artifact_namespace: str | None = None,
+        artifact_connection_id: str | None = None,
         started_at: datetime | None = None,
     ) -> EngineRun:
         run = EngineRun(
             id=f"{thread_id}-{attempt}",
             thread_id=thread_id,
             project_id=project_id,
+            app_id=app_id,
+            ownership_known=ownership_known,
             attempt=attempt,
             engine=engine,
             external_run_id=external_run_id,
+            artifact_namespace=artifact_namespace,
+            artifact_connection_id=artifact_connection_id,
             handle=handle if handle is not None else {},
             status=status,
             started_at=started_at or T0,
@@ -87,11 +108,32 @@ class FakeEngineRunsRepository:
         self.rows.append(run)
         return run
 
+    @staticmethod
+    def _visible(run: EngineRun, allowed_scopes: Sequence[ScopeRef]) -> bool:
+        return any(
+            run.project_id == scope.project_id
+            and (
+                scope.app_id is None
+                or run.app_id == scope.app_id
+                or (run.app_id is None and run.ownership_known)
+            )
+            for scope in allowed_scopes
+        )
+
+    @staticmethod
+    def _mutable(run: EngineRun, allowed_scopes: Sequence[ScopeRef]) -> bool:
+        return any(
+            run.project_id == scope.project_id
+            and (scope.app_id is None or run.app_id == scope.app_id)
+            for scope in allowed_scopes
+        )
+
     async def list_runs(
         self,
         *,
         engine: str | None = None,
         status: str | None = None,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
         allowed_project_ids: tuple[str, ...] | None = None,
         limit: int = 50,
         offset: int = 0,
@@ -101,40 +143,78 @@ class FakeEngineRunsRepository:
             for r in self.rows
             if (engine is None or r.engine == engine) and (status is None or r.status == status)
         ]
-        if allowed_project_ids is not None:
+        if allowed_scopes is not None:
+            rows = [r for r in rows if self._visible(r, allowed_scopes)]
+        elif allowed_project_ids is not None:
             rows = [r for r in rows if r.project_id in allowed_project_ids]
         rows.sort(key=lambda r: (r.started_at, r.id), reverse=True)
         return rows[offset : offset + limit], len(rows)
 
     async def list_for_thread(
-        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+        self,
+        thread_id: str,
+        *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
     ) -> list[EngineRun]:
         rows = [r for r in self.rows if r.thread_id == thread_id]
-        if allowed_project_ids is not None:
+        if allowed_scopes is not None:
+            rows = [r for r in rows if self._visible(r, allowed_scopes)]
+        elif allowed_project_ids is not None:
             rows = [r for r in rows if r.project_id in allowed_project_ids]
         rows.sort(key=lambda r: r.attempt, reverse=True)
         return rows
 
     async def get_latest_for_thread(
-        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+        self,
+        thread_id: str,
+        *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
     ) -> EngineRun | None:
-        rows = await self.list_for_thread(thread_id, allowed_project_ids=allowed_project_ids)
+        rows = await self.list_for_thread(
+            thread_id,
+            allowed_scopes=allowed_scopes,
+            allowed_project_ids=allowed_project_ids,
+        )
+        return rows[0] if rows else None
+
+    async def get_latest_abortable_for_thread(
+        self,
+        thread_id: str,
+        *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
+    ) -> EngineRun | None:
+        rows = [r for r in self.rows if r.thread_id == thread_id]
+        if allowed_scopes is not None:
+            rows = [r for r in rows if self._mutable(r, allowed_scopes)]
+        elif allowed_project_ids is not None:
+            rows = [r for r in rows if r.project_id in allowed_project_ids]
+        rows.sort(key=lambda r: r.attempt, reverse=True)
         return rows[0] if rows else None
 
     async def get_by_external_run_id(
         self,
         external_run_id: str,
         *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
         allowed_project_ids: tuple[str, ...] | None = None,
     ) -> EngineRun | None:
         rows = [r for r in self.rows if r.external_run_id == external_run_id]
-        if allowed_project_ids is not None:
+        if allowed_scopes is not None:
+            rows = [r for r in rows if self._visible(r, allowed_scopes)]
+        elif allowed_project_ids is not None:
             rows = [r for r in rows if r.project_id in allowed_project_ids]
         rows.sort(key=lambda r: (r.started_at, r.id), reverse=True)
         return rows[0] if rows else None
 
     async def mark_aborted(
-        self, thread_id: str, *, allowed_project_ids: tuple[str, ...] | None = None
+        self,
+        thread_id: str,
+        *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
     ) -> int:
         if self.mark_aborted_error is not None:
             raise self.mark_aborted_error
@@ -143,6 +223,7 @@ class FakeEngineRunsRepository:
         for run in self.rows:
             if (
                 run.thread_id == thread_id
+                and (allowed_scopes is None or self._mutable(run, allowed_scopes))
                 and (allowed_project_ids is None or run.project_id in allowed_project_ids)
                 and run.status not in ("completed", "failed", "aborted")
             ):
@@ -185,13 +266,20 @@ class FakeClient:
 
 
 class FakeEngineAdapter:
-    def __init__(self, teardown_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        teardown_error: Exception | None = None,
+        abort_error: Exception | None = None,
+    ) -> None:
         self.aborts: list[tuple[EngineHandle, str]] = []
         self.teardowns: list[EngineHandle] = []
         self.teardown_error = teardown_error
+        self.abort_error = abort_error
 
     async def abort(self, handle: EngineHandle, *, reason: str) -> None:
         self.aborts.append((handle, reason))
+        if self.abort_error is not None:
+            raise self.abort_error
 
     async def teardown(self, handle: EngineHandle) -> None:
         if self.teardown_error is not None:
@@ -200,15 +288,26 @@ class FakeEngineAdapter:
 
 
 class FakeResolver:
-    def __init__(self, adapter: FakeEngineAdapter) -> None:
+    def __init__(self, adapter: FakeEngineAdapter, *, provider: str = "sim") -> None:
         self.adapter = adapter
-        self.calls: list[tuple[PortKind, str | None]] = []
+        self.provider = provider
+        self.calls: list[tuple[PortKind, str | None, str | None, str | None]] = []
 
-    async def resolve(
-        self, kind: PortKind, connection_id: str | None = None, project_id: str | None = None
-    ) -> Any:
-        self.calls.append((kind, connection_id))
-        return self.adapter
+    async def resolve_with_connection_id(
+        self,
+        kind: PortKind,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+        *,
+        expected_provider: str | None = None,
+        options_overlay: dict[str, Any] | None = None,
+    ) -> tuple[Any, str]:
+        self.calls.append((kind, connection_id, project_id, expected_provider))
+        if expected_provider is not None and expected_provider != self.provider:
+            raise ValueError(
+                f"connection provider {self.provider!r} does not match {expected_provider!r}"
+            )
+        return self.adapter, connection_id or "default-engine"
 
 
 # ── App wiring ───────────────────────────────────────────────────────────────
@@ -235,10 +334,11 @@ def abort_fixture(
     states: dict[str, JsonDict] | None = None,
     runs: FakeRuns | None = None,
     teardown_error: Exception | None = None,
+    abort_error: Exception | None = None,
 ) -> tuple[FakeEngineRunsRepository, FakeRuns, FakeEngineAdapter, FakeResolver, TestClient]:
     repo = repo if repo is not None else FakeEngineRunsRepository()
     runs = runs if runs is not None else FakeRuns()
-    adapter = FakeEngineAdapter(teardown_error=teardown_error)
+    adapter = FakeEngineAdapter(teardown_error=teardown_error, abort_error=abort_error)
     resolver = FakeResolver(adapter)
     client = FakeClient(FakeThreads(states), runs)
     service = EngineAbortService(client, repo, resolver=resolver)  # type: ignore[arg-type]
@@ -304,6 +404,31 @@ def test_engine_runs_are_scoped_by_project() -> None:
     assert hidden == []
 
 
+def test_engine_runs_are_scoped_by_app_and_expose_artifact_ownership() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(
+        thread_id="t-app-a",
+        project_id="p1",
+        app_id="app-a",
+        artifact_namespace="engine-runs/a",
+        artifact_connection_id="artifacts-a",
+    )
+    repo.seed(thread_id="t-app-b", project_id="p1", app_id="app-b")
+    repo.seed(thread_id="t-project-level", project_id="p1", app_id=None, ownership_known=True)
+    repo.seed(thread_id="t-legacy", project_id="p1", app_id=None, ownership_known=False)
+
+    with make_client(repo, APP_VIEWER) as client:
+        listed = client.get("/v1/engines/runs").json()
+        hidden = client.get("/v1/engines/runs/t-app-b").json()
+
+    assert {item["thread_id"] for item in listed["items"]} == {"t-app-a", "t-project-level"}
+    app_row = next(item for item in listed["items"] if item["thread_id"] == "t-app-a")
+    assert app_row["app_id"] == "app-a"
+    assert app_row["artifact_namespace"] == "engine-runs/a"
+    assert app_row["artifact_connection_id"] == "artifacts-a"
+    assert hidden == []
+
+
 # ── Abort flow ───────────────────────────────────────────────────────────────
 
 STATE_HANDLE = {
@@ -339,7 +464,9 @@ def test_abort_uses_handle_from_state_and_cancels_runs() -> None:
     assert reason == "smoke went up"
     assert adapter.teardowns == [handle]
     # adapter resolved through the handle's connection id
-    assert resolver.calls == [(PortKind.EXECUTION_ENGINE, "dev-engine-sim")]
+    # This old-style state has no run_config; projection ownership is merged
+    # without replacing the more current state handle.
+    assert resolver.calls == [(PortKind.EXECUTION_ENGINE, "dev-engine-sim", "p1", "sim")]
     # both active graph runs were cancelled and the projection row flipped
     assert fake_runs.cancelled == [("t-1", "r-run"), ("t-1", "r-pend")]
     assert repo.aborted_threads == ["t-1"]
@@ -369,8 +496,37 @@ def test_abort_falls_back_to_projection_handle() -> None:
     (handle, reason), *_ = adapter.aborts
     assert handle.connection_id == "conn-from-row"
     assert reason == "operator abort"  # default reason
-    assert resolver.calls == [(PortKind.EXECUTION_ENGINE, "conn-from-row")]
+    assert resolver.calls == [(PortKind.EXECUTION_ENGINE, "conn-from-row", "p1", "sim")]
     assert repo.rows[1].status == "aborted"
+
+
+def test_app_only_operator_cannot_fallback_abort_project_level_projection() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(
+        thread_id="t-project-wide",
+        project_id="p1",
+        app_id=None,
+        ownership_known=True,
+        handle=STATE_HANDLE,
+        status="running",
+    )
+    adapter = FakeEngineAdapter()
+    resolver = FakeResolver(adapter)
+    service = EngineAbortService(
+        FakeClient(FakeThreads({}), FakeRuns(known_threads=set())),
+        repo,
+        resolver=resolver,  # type: ignore[arg-type]
+        allowed_scopes=APP_OPERATOR.scopes,
+    )
+
+    with make_client(repo, APP_OPERATOR, service) as client:
+        response = client.post("/v1/engines/runs/t-project-wide/abort", json={})
+
+    assert response.status_code == 404
+    assert adapter.aborts == []
+    assert resolver.calls == []
+    assert repo.aborted_threads == []
+    assert repo.rows[0].status == "running"
 
 
 def test_abort_state_without_handle_falls_back_then_404() -> None:
@@ -408,6 +564,80 @@ def test_abort_survives_teardown_and_projection_failures() -> None:
     assert response.status_code == 202  # teardown + projection are best-effort
     assert adapter.aborts[0][1] == "kill it"
     assert adapter.teardowns == []
+
+
+def test_abort_failure_does_not_cancel_graph_or_mark_projection() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(thread_id="t-1", status="running", handle=STATE_HANDLE)
+    runs = FakeRuns(runs=[{"run_id": "r-run", "status": "running"}])
+    repo, fake_runs, adapter, _, client = abort_fixture(
+        repo=repo,
+        states={
+            "t-1": {
+                "values": {
+                    "engine_handle": STATE_HANDLE,
+                    "run_config": {"project_id": "p1", "app_id": "app-a"},
+                }
+            }
+        },
+        runs=runs,
+        abort_error=RuntimeError("provider unavailable"),
+    )
+    with pytest.raises(RuntimeError, match="provider unavailable"), client:
+        client.post("/v1/engines/runs/t-1/abort", json={})
+
+    assert adapter.aborts
+    assert fake_runs.cancelled == []
+    assert repo.aborted_threads == []
+    assert repo.rows[0].status == "running"
+
+
+def test_abort_uses_project_from_nested_state_handle() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(thread_id="t-1", status="running")
+    nested = {
+        "values": {"run_config": {"project_id": "project-a", "app_id": "app-a"}},
+        "tasks": [{"state": {"values": {"engine_handle": STATE_HANDLE}}}],
+    }
+    repo, _, _, resolver, client = abort_fixture(repo=repo, states={"t-1": nested})
+    with client:
+        response = client.post("/v1/engines/runs/t-1/abort", json={})
+
+    assert response.status_code == 202
+    assert resolver.calls == [(PortKind.EXECUTION_ENGINE, "dev-engine-sim", "project-a", "sim")]
+
+
+def test_abort_rejects_connection_provider_mismatch_before_external_kill() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(thread_id="t-1", status="running", handle=STATE_HANDLE)
+    runs = FakeRuns(runs=[{"run_id": "r-run", "status": "running"}])
+    adapter = FakeEngineAdapter()
+    resolver = FakeResolver(adapter, provider="loadrunner")
+    service = EngineAbortService(
+        FakeClient(
+            FakeThreads(
+                {
+                    "t-1": {
+                        "values": {
+                            "engine_handle": STATE_HANDLE,
+                            "run_config": {"project_id": "p1"},
+                        }
+                    }
+                }
+            ),
+            runs,
+        ),
+        repo,
+        resolver=resolver,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        asyncio.run(service.abort("t-1"))
+
+    assert resolver.calls == [(PortKind.EXECUTION_ENGINE, "dev-engine-sim", "p1", "sim")]
+    assert adapter.aborts == []
+    assert runs.cancelled == []
+    assert repo.aborted_threads == []
 
 
 def test_abort_logs_empty_projection_update() -> None:

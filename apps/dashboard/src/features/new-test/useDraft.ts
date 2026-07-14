@@ -65,8 +65,9 @@ export function useDraft({
   const draftRef = useRef(draft)
   const idRef = useRef<string | null>(initialDraftId)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const savingRef = useRef(false)
-  const dirtyWhileSavingRef = useRef(false)
+  const dirtyRef = useRef(false)
+  const saveQueueRef = useRef<Promise<void> | null>(null)
+  const mountedRef = useRef(true)
   const onCreatedRef = useRef(onDraftCreated)
   onCreatedRef.current = onDraftCreated
 
@@ -75,40 +76,43 @@ export function useDraft({
       clearTimeout(timerRef.current)
       timerRef.current = null
     }
-    if (savingRef.current) {
-      // A save is mid-flight; remember to run another one with the newer state.
-      dirtyWhileSavingRef.current = true
-      return
-    }
-    savingRef.current = true
-    setSaveState('saving')
-    try {
+    const saveLatest = async () => {
+      // A queued save ahead of us may already have persisted the same state.
+      if (!dirtyRef.current) return
       const snapshot = draftRef.current
-      const body = {
-        title: snapshot.title.trim() || UNTITLED_DRAFT_TITLE,
-        payload: snapshot as unknown as Record<string, unknown>,
-      }
-      if (idRef.current === null) {
-        const created = await createDraftRequest({
-          ...body,
+      dirtyRef.current = false
+      if (mountedRef.current) setSaveState('saving')
+      try {
+        const body = {
+          title: snapshot.title.trim() || UNTITLED_DRAFT_TITLE,
           project_id: snapshot.scope.project_id.trim() || null,
-        })
-        idRef.current = created.id
-        setDraftId(created.id)
-        onCreatedRef.current?.(created.id)
-      } else {
-        await updateDraftRequest(idRef.current, body)
-      }
-      setSaveState('saved')
-    } catch {
-      setSaveState('error')
-    } finally {
-      savingRef.current = false
-      if (dirtyWhileSavingRef.current) {
-        dirtyWhileSavingRef.current = false
-        void flush()
+          payload: snapshot as unknown as Record<string, unknown>,
+        }
+        if (idRef.current === null) {
+          const created = await createDraftRequest(body)
+          idRef.current = created.id
+          if (mountedRef.current) {
+            setDraftId(created.id)
+            onCreatedRef.current?.(created.id)
+          }
+        } else {
+          await updateDraftRequest(idRef.current, body)
+        }
+        if (mountedRef.current) setSaveState('saved')
+      } catch {
+        // Keep the dirty bit so Save Draft (or a later edit) can retry.
+        dirtyRef.current = true
+        if (mountedRef.current) setSaveState('error')
       }
     }
+    // Start immediately when idle (important during page unmount); otherwise
+    // serialize behind the active create/update.
+    const queued = saveQueueRef.current ? saveQueueRef.current.then(saveLatest) : saveLatest()
+    // Keep the queue usable even if an unexpected exception escapes the task.
+    const stable = queued.catch(() => undefined)
+    saveQueueRef.current = stable
+    await queued
+    if (saveQueueRef.current === stable) saveQueueRef.current = null
   }, [])
 
   const scheduleSave = useCallback(() => {
@@ -125,6 +129,7 @@ export function useDraft({
       setDraftState((previous) => {
         const next = typeof updater === 'function' ? updater(previous) : updater
         draftRef.current = next
+        dirtyRef.current = true
         return next
       })
       scheduleSave()
@@ -139,6 +144,7 @@ export function useDraft({
       const stored = await getDraftRequest(id)
       const parsed = parseDraftPayload(stored.payload)
       draftRef.current = parsed
+      dirtyRef.current = false
       idRef.current = stored.id
       setDraftState(parsed)
       setDraftId(stored.id)
@@ -156,27 +162,39 @@ export function useDraft({
     if (initialIdRef.current !== null) void loadDraft(initialIdRef.current)
   }, [loadDraft])
 
-  // Clear any pending timer on unmount (the in-flight fetch may still settle).
-  useEffect(
-    () => () => {
-      if (timerRef.current !== null) clearTimeout(timerRef.current)
-    },
-    [],
-  )
+  // Flush a pending debounce on unmount. The request is deliberately allowed
+  // to settle after React unmounts, but UI callbacks are suppressed.
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current)
+        timerRef.current = null
+        void flush()
+      }
+    }
+  }, [flush])
 
   const saveNow = useCallback(async () => {
     await flush()
   }, [flush])
 
   const deleteCurrentDraft = useCallback(async () => {
+    // Wait behind any create/update before reading idRef. This prevents a slow
+    // first autosave from creating an orphan after a successful launch.
+    await flush()
     const id = idRef.current
     if (id === null) return
     try {
       await deleteDraftRequest(id)
+      idRef.current = null
+      dirtyRef.current = false
+      if (mountedRef.current) setDraftId(null)
     } catch {
       // Best-effort: an orphaned draft is harmless; the run is already launched.
     }
-  }, [])
+  }, [flush])
 
   return {
     draft,

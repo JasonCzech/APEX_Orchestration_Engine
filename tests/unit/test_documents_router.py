@@ -13,14 +13,25 @@ from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.models import Document
 from apex.routers.documents import router
+from apex.services.connections import get_connection_resolver
 from apex.services.documents import (
     MAX_DOCUMENT_BYTES,
     extract_boundary,
-    get_artifact_store,
     get_documents_repository,
     parse_multipart,
     safe_filename,
 )
+
+
+class FakeArtifactResolver:
+    async def resolve_with_connection_id(
+        self,
+        _kind: object,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+        **_kwargs: object,
+    ) -> tuple[MemoryArtifactStore, str]:
+        return MemoryArtifactStore(), connection_id or f"artifacts-{project_id or 'global'}"
 
 
 class FakeDocumentsRepository:
@@ -49,13 +60,22 @@ class FakeDocumentsRepository:
         *,
         project: str | None = None,
         q: str | None = None,
-        allowed_project_ids: Sequence[str] | None = None,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Document]:
         rows = list(self.rows.values())
-        if allowed_project_ids is not None:
-            rows = [r for r in rows if r.project_id is None or r.project_id in allowed_project_ids]
+        if allowed_scopes is not None:
+            rows = [
+                row
+                for row in rows
+                if row.project_id is None
+                or any(
+                    scope.project_id == row.project_id
+                    and (row.app_id is None or scope.app_id is None or scope.app_id == row.app_id)
+                    for scope in allowed_scopes
+                )
+            ]
         if project is not None:
             rows = [r for r in rows if r.project_id == project]
         if q:
@@ -91,12 +111,18 @@ def make_app(repo: FakeDocumentsRepository, who: ConsumerIdentity) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(router, prefix="/v1")
     app.dependency_overrides[get_documents_repository] = lambda: repo
-    app.dependency_overrides[get_artifact_store] = lambda: MemoryArtifactStore()
+    app.dependency_overrides[get_connection_resolver] = lambda: FakeArtifactResolver()
     app.dependency_overrides[get_current_identity] = lambda: who
     return app
 
 
-def make_document(doc_id: str, project_id: str | None, name: str = "doc.txt") -> Document:
+def make_document(
+    doc_id: str,
+    project_id: str | None,
+    name: str = "doc.txt",
+    *,
+    app_id: str | None = None,
+) -> Document:
     return Document(
         id=doc_id,
         name=name,
@@ -104,6 +130,7 @@ def make_document(doc_id: str, project_id: str | None, name: str = "doc.txt") ->
         size_bytes=3,
         artifact_key=f"documents/{doc_id}/{name}",
         project_id=project_id,
+        app_id=app_id,
         created_at=datetime.now(UTC),
     )
 
@@ -168,6 +195,7 @@ def test_upload_document_stores_bytes_and_metadata() -> None:
     # Bytes actually landed in the artifact store under the documented key.
     assert MemoryArtifactStore._objects[body["artifact_key"]][0] == b"# Spec\nbody"
     assert body["id"] in repo.rows
+    assert repo.rows[body["id"]].artifact_connection_id == "artifacts-p1"
 
 
 def test_upload_parses_text_and_populates_fields() -> None:
@@ -270,6 +298,62 @@ def test_upload_document_out_of_scope_project_is_403() -> None:
     assert response.status_code == 403
 
 
+def test_upload_document_app_scope_is_inferred_without_widening() -> None:
+    repo = FakeDocumentsRepository()
+    who = identity(scopes=[ScopeRef(project_id="p1", app_id="app-a")])
+    app = make_app(repo, who)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("a.txt", b"a", "text/plain")},
+            data={"project_id": "p1"},
+        )
+
+    assert response.status_code == 201
+    row = repo.rows[response.json()["id"]]
+    assert (row.project_id, row.app_id) == ("p1", "app-a")
+
+
+def test_upload_document_single_scoped_project_is_inferred_not_global() -> None:
+    repo = FakeDocumentsRepository()
+    who = identity(scopes=[ScopeRef(project_id="p1")])
+    app = make_app(repo, who)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("a.txt", b"a", "text/plain")},
+        )
+
+    assert response.status_code == 201
+    row = repo.rows[response.json()["id"]]
+    assert (row.project_id, row.app_id) == ("p1", None)
+
+
+def test_upload_document_requires_explicit_ambiguous_scope() -> None:
+    who = identity(
+        scopes=[
+            ScopeRef(project_id="p1", app_id="app-a"),
+            ScopeRef(project_id="p1", app_id="app-b"),
+        ]
+    )
+    app = make_app(FakeDocumentsRepository(), who)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("a.txt", b"a", "text/plain")},
+            data={"project_id": "p1"},
+        )
+    assert response.status_code == 422
+
+    multi_project = identity(scopes=[ScopeRef(project_id="p1"), ScopeRef(project_id="p2")])
+    with TestClient(make_app(FakeDocumentsRepository(), multi_project)) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("a.txt", b"a", "text/plain")},
+        )
+    assert response.status_code == 422
+
+
 # ── List / get / delete + scoping ───────────────────────────────────────────
 
 
@@ -288,6 +372,19 @@ def test_list_documents_scoped_consumer_sees_own_and_global() -> None:
         response = client.get("/v1/documents")
     ids = [item["id"] for item in response.json()["items"]]
     assert sorted(ids) == ["d1", "d3"]
+
+
+def test_list_documents_app_scope_excludes_sibling_app_preview() -> None:
+    repo = seeded_repo()
+    repo.rows["app-a"] = make_document("app-a", "p1", "a.txt", app_id="a1")
+    repo.rows["app-b"] = make_document("app-b", "p1", "b.txt", app_id="a2")
+    who = identity(scopes=[ScopeRef(project_id="p1", app_id="a1")])
+
+    with TestClient(make_app(repo, who)) as client:
+        response = client.get("/v1/documents")
+
+    assert response.status_code == 200
+    assert {item["id"] for item in response.json()["items"]} == {"d1", "d3", "app-a"}
 
 
 def test_list_documents_unscoped_admin_sees_all() -> None:
@@ -320,6 +417,28 @@ def test_delete_document_removes_row_only() -> None:
         response = client.delete("/v1/documents/d1")
     assert response.status_code == 204
     assert "d1" not in repo.rows
+
+
+def test_delete_document_requires_write_scope_not_read_visibility() -> None:
+    repo = seeded_repo()
+    repo.rows["app-a"] = make_document("app-a", "p1", "a.txt", app_id="a1")
+    app_only = identity(scopes=[ScopeRef(project_id="p1", app_id="a1")])
+    with TestClient(make_app(repo, app_only)) as client:
+        assert client.delete("/v1/documents/app-a").status_code == 204
+        assert client.delete("/v1/documents/d1").status_code == 404
+        assert client.delete("/v1/documents/d3").status_code == 404
+
+    project_operator = identity(scopes=[ScopeRef(project_id="p1")])
+    with TestClient(make_app(repo, project_operator)) as client:
+        assert client.delete("/v1/documents/d1").status_code == 204
+
+
+def test_delete_global_document_requires_unscoped_admin() -> None:
+    repo = seeded_repo()
+    with TestClient(make_app(repo, identity(role=Role.OPERATOR))) as client:
+        assert client.delete("/v1/documents/d3").status_code == 404
+    with TestClient(make_app(repo, identity(role=Role.ADMIN))) as client:
+        assert client.delete("/v1/documents/d3").status_code == 204
 
 
 def test_delete_document_viewer_is_403() -> None:

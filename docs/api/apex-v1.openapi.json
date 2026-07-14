@@ -1383,6 +1383,70 @@
         "title": "ConsumerUpdateRequest",
         "type": "object"
       },
+      "ContextPacket": {
+        "properties": {
+          "id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "source": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 150000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "title"
+        ],
+        "title": "ContextPacket",
+        "type": "object"
+      },
       "ContextSummaryAccepted": {
         "properties": {
           "run_id": {
@@ -1406,14 +1470,19 @@
         "properties": {
           "document_ids": {
             "items": {
+              "maxLength": 128,
+              "minLength": 1,
               "type": "string"
             },
+            "maxItems": 64,
             "title": "Document Ids",
             "type": "array"
           },
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 256,
+                "minLength": 1,
                 "type": "string"
               },
               {
@@ -1430,8 +1499,11 @@
           },
           "work_item_keys": {
             "items": {
+              "maxLength": 256,
+              "minLength": 1,
               "type": "string"
             },
+            "maxItems": 100,
             "title": "Work Item Keys",
             "type": "array"
           }
@@ -1843,12 +1915,23 @@
         "type": "object"
       },
       "DraftUpdateRequest": {
-        "description": "Full replace of the editable fields (title + payload); project_id is fixed.",
+        "description": "Full replace of editable fields; omitted project_id keeps legacy ownership.",
         "properties": {
           "payload": {
             "additionalProperties": true,
             "title": "Payload",
             "type": "object"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           },
           "title": {
             "maxLength": 1024,
@@ -1910,6 +1993,39 @@
       },
       "EngineRunRead": {
         "properties": {
+          "app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
+          "artifact_connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Connection Id"
+          },
+          "artifact_namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Namespace"
+          },
           "attempt": {
             "title": "Attempt",
             "type": "integer"
@@ -2148,6 +2264,14 @@
             "title": "Options",
             "type": "object"
           },
+          "target_approved": {
+            "title": "Target Approved",
+            "type": "boolean"
+          },
+          "target_version": {
+            "title": "Target Version",
+            "type": "integer"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -2161,6 +2285,8 @@
           "kind",
           "base_url",
           "options",
+          "target_approved",
+          "target_version",
           "hosts",
           "created_at",
           "updated_at"
@@ -2337,6 +2463,89 @@
         "title": "ExecuteQueryRequest",
         "type": "object"
       },
+      "ExternalResults": {
+        "description": "Results produced outside APEX (e.g. by a standalone analysis dashboard).\n\nSupplied as run input so an analysis-only run (reporting/postmortem) can report\non them honestly \u2014 plan_resolver seeds a succeeded execution result from this\ninstead of the caller forging internal phase state. Maps onto TestResultSummary\nso the reporting phase reads it the same way it reads a real engine run.",
+        "properties": {
+          "engine": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "kpis": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "maxProperties": 32,
+            "title": "Kpis",
+            "type": "object"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "passed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Passed"
+          },
+          "source": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          }
+        },
+        "required": [
+          "source"
+        ],
+        "title": "ExternalResults",
+        "type": "object"
+      },
       "GateInterrupt": {
         "properties": {
           "interrupt_id": {
@@ -2379,6 +2588,49 @@
           }
         },
         "title": "GateInterrupt",
+        "type": "object"
+      },
+      "GatePromptEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "application": {
+            "anyOf": [
+              {
+                "maxLength": 100000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application"
+          },
+          "system": {
+            "anyOf": [
+              {
+                "maxLength": 100000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "maxLength": 100000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User"
+          }
+        },
+        "title": "GatePromptEdit",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -2528,6 +2780,7 @@
         "title": "InventoryView",
         "type": "object"
       },
+      "JsonValue": {},
       "LogEntryOut": {
         "properties": {
           "at": {
@@ -2776,12 +3029,14 @@
         "properties": {
           "additional_context": {
             "default": "",
+            "maxLength": 50000,
             "title": "Additional Context",
             "type": "string"
           },
           "application": {
             "anyOf": [
               {
+                "maxLength": 100000,
                 "type": "string"
               },
               {
@@ -2791,10 +3046,12 @@
             "title": "Application"
           },
           "phase_prompt": {
+            "maxLength": 100000,
             "title": "Phase Prompt",
             "type": "string"
           },
           "system": {
+            "maxLength": 100000,
             "title": "System",
             "type": "string"
           }
@@ -3467,12 +3724,15 @@
       "ResumeGateRequest": {
         "properties": {
           "action": {
+            "maxLength": 32,
+            "minLength": 1,
             "title": "Action",
             "type": "string"
           },
           "instructions": {
             "anyOf": [
               {
+                "maxLength": 50000,
                 "type": "string"
               },
               {
@@ -3484,6 +3744,7 @@
           "message": {
             "anyOf": [
               {
+                "maxLength": 50000,
                 "type": "string"
               },
               {
@@ -3495,6 +3756,7 @@
           "note": {
             "anyOf": [
               {
+                "maxLength": 50000,
                 "type": "string"
               },
               {
@@ -3506,14 +3768,12 @@
           "prompt": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/GatePromptEdit"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Prompt"
+            ]
           }
         },
         "required": [
@@ -3924,6 +4184,7 @@
           "agent_backend": {
             "anyOf": [
               {
+                "maxLength": 32,
                 "type": "string"
               },
               {
@@ -3943,13 +4204,40 @@
             ],
             "title": "App Id"
           },
+          "assistant_id": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Golden assistant id; defaults to the base pipeline graph.",
+            "title": "Assistant Id"
+          },
+          "configurable": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "maxProperties": 64,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Full per-run PipelineConfigurable layer retained by the selected assistant.",
+            "title": "Configurable"
+          },
           "context_packets": {
             "anyOf": [
               {
                 "items": {
-                  "additionalProperties": true,
-                  "type": "object"
+                  "$ref": "#/components/schemas/ContextPacket"
                 },
+                "maxItems": 64,
                 "type": "array"
               },
               {
@@ -3964,6 +4252,7 @@
                 "items": {
                   "type": "string"
                 },
+                "maxItems": 64,
                 "type": "array"
               },
               {
@@ -3975,19 +4264,18 @@
           "external_results": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/ExternalResults"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "External Results"
+            ]
           },
           "gates": {
             "anyOf": [
               {
                 "additionalProperties": true,
+                "maxProperties": 7,
                 "type": "object"
               },
               {
@@ -4002,6 +4290,7 @@
                 "additionalProperties": {
                   "type": "string"
                 },
+                "maxProperties": 7,
                 "type": "object"
               },
               {
@@ -4016,6 +4305,7 @@
                 "items": {
                   "type": "string"
                 },
+                "maxItems": 7,
                 "type": "array"
               },
               {
@@ -4118,6 +4408,7 @@
           "content": {
             "anyOf": [
               {
+                "maxLength": 100000,
                 "type": "string"
               },
               {
@@ -4129,7 +4420,9 @@
           "sample_input": {
             "anyOf": [
               {
-                "additionalProperties": true,
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/JsonValue"
+                },
                 "type": "object"
               },
               {
@@ -7594,7 +7887,7 @@
     },
     "/v1/pipelines/{thread_id}/abort": {
       "post": {
-        "description": "Cancel the thread's active run(s) via the loopback API (engine abort lands M3).",
+        "description": "Stop an external engine first, then cancel the thread's active runs.\n\nThreads that have not entered execution have no engine handle and fall back\nto graph-only cancellation. Engine abort failures propagate so the API never\nreports success while production load is still running.",
         "operationId": "abortPipeline",
         "parameters": [
           {

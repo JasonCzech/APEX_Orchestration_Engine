@@ -23,6 +23,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AgentErrorEventSchema,
+  AgentMessageEventSchema,
+  EnginePollErrorEventSchema,
   EnginePollEventSchema,
   GateDecisionSchema,
   GateInterruptPayloadSchema,
@@ -85,6 +88,30 @@ const toolCall = {
   status: "ok",
 };
 
+const agentMessage = {
+  schema_version: 1,
+  type: "agent_message",
+  phase: "story_analysis",
+  model: "claude-sonnet-4-5",
+  chars: 842,
+};
+
+const agentError = {
+  schema_version: 1,
+  type: "agent_error",
+  phase: "story_analysis",
+  error: "provider request timed out",
+};
+
+const enginePollError = {
+  schema_version: 1,
+  type: "engine_poll_error",
+  phase: "execution",
+  attempt: 1,
+  error: "provider status request timed out",
+  consecutive_errors: 2,
+};
+
 // Field set from execution_phase._poll_event; live_stats keys asserted exactly
 // in test_engine_poll_custom_events_streamed.
 const enginePollRunning = {
@@ -113,6 +140,9 @@ describe("custom event schemas", () => {
     ["phase_status succeeded", PhaseStatusEventSchema, phaseStatusSucceeded],
     ["gate_opened", GateOpenedEventSchema, gateOpened],
     ["tool_call", ToolCallEventSchema, toolCall],
+    ["agent_message", AgentMessageEventSchema, agentMessage],
+    ["agent_error", AgentErrorEventSchema, agentError],
+    ["engine_poll_error", EnginePollErrorEventSchema, enginePollError],
     ["engine_poll running", EnginePollEventSchema, enginePollRunning],
     ["engine_poll completed", EnginePollEventSchema, enginePollCompleted],
   ] as const)("parses the backend fixture: %s", (_name, schema, fixture) => {
@@ -417,6 +447,12 @@ const pipelineState = {
   phases_plan: ["script_scenario", "execution"],
   current_phase: "execution",
   run_aborted: false,
+  run_config: {
+    project_id: "proj-alpha",
+    engine: "sim",
+    connections: { work_tracking: "conn-work" },
+    limits: { max_revise_loops: 3 },
+  },
   phase_results: { execution: executionEntry },
   artifacts: [
     {
@@ -460,6 +496,7 @@ describe("thread-state mirror schemas", () => {
     const parsed = PipelineStateSchema.parse(pipelineState);
     expect(parsed.engine_handle?.external_run_id).toBe("sim-0f3a9c1e2b7d4e61");
     expect(parsed.phase_results?.["execution"]?.status).toBe("succeeded");
+    expect(parsed.run_config?.["connections"]).toEqual({ work_tracking: "conn-work" });
   });
 
   it("stays lenient: partial mid-run entries and unknown keys still parse", () => {

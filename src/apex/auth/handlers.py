@@ -11,10 +11,19 @@ from typing import Any, cast
 
 from langgraph_sdk import Auth
 from langgraph_sdk.auth import is_studio_user
+from pydantic import ValidationError
 
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import AuthStoreUnavailableError, extract_api_key, get_default_resolver
+from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.services.audit import append_audit_event_best_effort, event_from_identity
+from apex.services.langgraph_client import TRUSTED_LOOPBACK_CLAIM, is_trusted_loopback
+from apex.services.run_validation import (
+    validate_context_run_input,
+    validate_gate_payload,
+    validate_playground_run_input,
+    validate_public_run_input,
+)
 from apex.settings import get_settings
 
 auth = Auth()
@@ -29,7 +38,7 @@ _STUDIO_IDENTITY = ConsumerIdentity(
 _PROJECT_NAMESPACE_PREFIX = ("apex", "project")
 
 
-def user_payload(identity: ConsumerIdentity) -> dict[str, Any]:
+def user_payload(identity: ConsumerIdentity, *, trusted_loopback: bool = False) -> dict[str, Any]:
     """Authenticate return shape; surfaces in `configurable.langgraph_auth_user`."""
     return {
         "identity": identity.consumer_id,
@@ -38,7 +47,15 @@ def user_payload(identity: ConsumerIdentity) -> dict[str, Any]:
         "role": identity.role.value,
         "consumer_type": identity.consumer_type.value,
         "scopes": [scope.model_dump(mode="json") for scope in identity.scopes],
+        TRUSTED_LOOPBACK_CLAIM: trusted_loopback,
     }
+
+
+def _is_trusted_loopback_user(user: Any) -> bool:
+    getter = getattr(user, "get", None)
+    if callable(getter):
+        return getter(TRUSTED_LOOPBACK_CLAIM, False) is True
+    return getattr(user, TRUSTED_LOOPBACK_CLAIM, False) is True
 
 
 def identity_from_user(user: Any) -> ConsumerIdentity:
@@ -258,10 +275,12 @@ def _require_langgraph_scope(
 
 def _stamp_run_scope(
     payload: dict[str, Any],
+    run_args: dict[str, Any],
     input_payload: dict[str, Any],
     config_payload: dict[str, Any],
     configurable: dict[str, Any],
     metadata: dict[str, Any],
+    config_metadata: dict[str, Any],
     *,
     project_id: str,
     app_id: str | None,
@@ -269,13 +288,21 @@ def _stamp_run_scope(
     input_payload["project_id"] = project_id
     configurable["project_id"] = project_id
     metadata["project_id"] = project_id
+    config_metadata["project_id"] = project_id
     if app_id is not None:
         input_payload["app_id"] = app_id
         configurable["app_id"] = app_id
         metadata["app_id"] = app_id
-    payload["input"] = input_payload
+        config_metadata["app_id"] = app_id
+    else:
+        input_payload.pop("app_id", None)
+        configurable.pop("app_id", None)
+        metadata.pop("app_id", None)
+        config_metadata.pop("app_id", None)
+    run_args["input"] = input_payload
     config_payload["configurable"] = configurable
-    payload["config"] = config_payload
+    config_payload["metadata"] = config_metadata
+    run_args["config"] = config_payload
     payload["metadata"] = metadata
 
 
@@ -319,6 +346,18 @@ def _nested_mapping(root: dict[str, Any], *keys: str) -> dict[str, Any]:
     return _mapping(current)
 
 
+def _run_arguments(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return RunsCreate.kwargs, with a top-level fallback for older SDK tests.
+
+    The server runtime captures kwargs.config before invoking auth, so callers of
+    this helper must mutate the returned nested mappings in place.
+    """
+
+    if "kwargs" in payload:
+        return _mapping(payload.get("kwargs"))
+    return payload
+
+
 def _project_id(value: Any) -> str | None:
     if value is None:
         return None
@@ -331,33 +370,42 @@ def ensure_run_scope(
     value: Auth.types.RunsCreate,
     *,
     action: str = "runs.create",
-) -> None:
+) -> Auth.types.HandlerResult:
     """Validate project/app-bearing run input/config before the graph can execute.
 
-    Thread-scoped run creates still rely on LangGraph's metadata filter for the
-    target thread. Stateless runs have no thread metadata to protect and may
-    target built-in graph ids, UUID-backed assistants, or future project-bearing
-    graphs, so scoped consumers must always carry or receive an allowed
-    project_id and, for app-scoped keys, an allowed app_id before execution starts.
+    Every scoped run, including one targeting an existing thread, receives an
+    effective project/app in its input, configurable, and run metadata. The
+    returned exact metadata filter simultaneously constrains the target thread,
+    preventing a run configured for one tenant from executing on another
+    tenant's thread.
     """
     if identity.is_unscoped:
-        return
+        return None
 
     payload = _mapping(value)
-    input_payload = _mapping(payload.get("input"))
-    config_payload = _mapping(payload.get("config"))
-    configurable = _nested_mapping(payload, "config", "configurable")
+    run_args = _run_arguments(payload)
+    raw_input = run_args.get("input")
+    if raw_input is not None and not isinstance(raw_input, Mapping):
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail="Invalid run controls: run input must be a JSON object"
+        )
+    input_payload = _mapping(run_args.get("input"))
+    config_payload = _mapping(run_args.get("config"))
+    configurable = _mapping(config_payload.get("configurable"))
     metadata = _mapping(payload.get("metadata"))
+    config_metadata = _mapping(config_payload.get("metadata"))
 
     explicit = [
         _project_id(input_payload.get("project_id")),
         _project_id(configurable.get("project_id")),
         _project_id(metadata.get("project_id")),
+        _project_id(config_metadata.get("project_id")),
     ]
     explicit_apps = [
         _project_id(input_payload.get("app_id")),
         _project_id(configurable.get("app_id")),
         _project_id(metadata.get("app_id")),
+        _project_id(config_metadata.get("app_id")),
     ]
     explicit_projects = [project for project in explicit if project is not None]
     for project_id in explicit_projects:
@@ -368,8 +416,6 @@ def ensure_run_scope(
                 detail=f"Project '{project_id}' is outside this consumer's scopes",
             )
 
-    thread_id = payload.get("thread_id")
-    stateless = thread_id is None
     unique_projects = sorted(set(explicit_projects))
     if len(unique_projects) > 1:
         _deny_authz(
@@ -388,48 +434,178 @@ def ensure_run_scope(
         )
     effective_app = unique_apps[0] if unique_apps else None
 
-    if effective_project is None and stateless:
+    if effective_project is None:
         projects = identity.scoped_project_ids()
-        if len(projects) != 1:
-            _deny_authz(
-                identity,
-                action=action,
-                detail="project_id is required for scoped stateless runs",
-            )
-        effective_project = projects[0]
-
-    if effective_project is None and effective_app is not None:
-        projects = identity.scoped_project_ids()
-        if len(projects) == 1:
-            effective_project = projects[0]
-        else:
+        if effective_app is not None and len(projects) != 1:
             _deny_authz(
                 identity,
                 action=action,
                 detail="project_id is required when app_id is provided for scoped runs",
             )
-
-    if effective_project is not None:
-        effective_app = _require_langgraph_scope(
-            identity,
-            project_id=effective_project,
-            app_id=effective_app,
-            action=action,
-        )
-        if stateless or effective_app is not None:
-            _stamp_run_scope(
-                payload,
-                input_payload,
-                config_payload,
-                configurable,
-                metadata,
-                project_id=effective_project,
-                app_id=effective_app,
+        if len(projects) != 1:
+            _deny_authz(
+                identity,
+                action=action,
+                detail="project_id is required for scoped runs",
             )
+        effective_project = projects[0]
+
+    effective_app = _require_langgraph_scope(
+        identity,
+        project_id=effective_project,
+        app_id=effective_app,
+        action=action,
+    )
+    _stamp_run_scope(
+        payload,
+        run_args,
+        input_payload,
+        config_payload,
+        configurable,
+        metadata,
+        config_metadata,
+        project_id=effective_project,
+        app_id=effective_app,
+    )
+    return cast("Auth.types.FilterType", _metadata_filter(effective_project, effective_app))
 
 
-def _scoped_project_prefix(project_id: str) -> tuple[str, str, str]:
-    return (*_PROJECT_NAMESPACE_PREFIX, project_id)
+async def _load_run_environment_target(
+    environment_id: str, project_id: str | None, app_id: str | None
+) -> tuple[str, int]:
+    """Resolve through the catalog at the authorization boundary (injectable in tests)."""
+
+    from apex.persistence.db import get_sessionmaker
+    from apex.persistence.repositories.catalog import CatalogRepository
+    from apex.services.environments import resolve_environment_target
+
+    async with get_sessionmaker()() as session:
+        target = await resolve_environment_target(
+            CatalogRepository(session),
+            environment_id,
+            project_id=project_id,
+            app_id=app_id,
+        )
+    return target.base_url, target.version
+
+
+async def ensure_run_environment(
+    identity: ConsumerIdentity,
+    value: Auth.types.RunsCreate,
+    *,
+    action: str = "runs.create",
+) -> None:
+    """Replace caller target data with an authorized, catalog-resolved immutable target."""
+
+    payload = _mapping(value)
+    run_args = _run_arguments(payload)
+    config_payload = _mapping(run_args.get("config"))
+    configurable = _mapping(config_payload.get("configurable"))
+    load_test = _mapping(configurable.get("load_test"))
+    if "target_environment" in load_test:
+        _deny_authz(
+            identity,
+            action=action,
+            detail=(
+                "load_test.target_environment cannot be supplied directly; select environment_id"
+            ),
+        )
+    script_refs = load_test.get("script_refs")
+    if isinstance(script_refs, list) and any(
+        isinstance(ref, str) and ref.lstrip().startswith("{") for ref in script_refs
+    ):
+        _deny_authz(
+            identity,
+            action=action,
+            detail="inline load_test.script_refs are not allowed; select an approved environment",
+        )
+
+    # This field is server-owned. Always discard a caller value before resolving.
+    configurable.pop("environment_target", None)
+    configurable.pop("environment_target_version", None)
+    environment_id = _project_id(configurable.get("environment_id"))
+    if environment_id is not None:
+        project_id = _project_id(configurable.get("project_id"))
+        app_id = _project_id(configurable.get("app_id"))
+        try:
+            target, version = await _load_run_environment_target(environment_id, project_id, app_id)
+            configurable["environment_target"] = target
+            configurable["environment_target_version"] = version
+        except LookupError as exc:
+            raise Auth.exceptions.HTTPException(status_code=404, detail=str(exc)) from exc
+
+    config_payload["configurable"] = configurable
+    run_args["config"] = config_payload
+
+
+def ensure_run_controls(
+    identity: ConsumerIdentity,
+    value: Auth.types.RunsCreate,
+    *,
+    action: str = "runs.create",
+    trusted_loopback: bool = False,
+) -> None:
+    """Enforce cost and payload budgets for direct LangGraph SDK run creation."""
+
+    payload = _mapping(value)
+    run_args = _run_arguments(payload)
+    raw_input = run_args.get("input")
+    input_payload = _mapping(run_args.get("input"))
+    config_payload = _mapping(run_args.get("config"))
+    configurable = _mapping(config_payload.get("configurable"))
+    try:
+        requested_action = payload.get("action") or run_args.get("action")
+        multitask_strategy = payload.get("multitask_strategy") or run_args.get("multitask_strategy")
+        if not trusted_loopback and requested_action in {"interrupt", "rollback"}:
+            raise ValueError(
+                "run action cannot interrupt or roll back an existing run; use "
+                "/v1/pipelines/{thread_id}/abort"
+            )
+        if not trusted_loopback and multitask_strategy in {"interrupt", "rollback"}:
+            raise ValueError(
+                "multitask_strategy cannot interrupt or roll back an existing run; "
+                "use 'reject' or /v1/pipelines/{thread_id}/abort"
+            )
+        if raw_input is not None and not isinstance(raw_input, Mapping):
+            raise ValueError("run input must be a JSON object")
+        requested_thread_id = _project_id(payload.get("thread_id"))
+        configured_thread_id = _project_id(configurable.get("thread_id"))
+        if configured_thread_id is not None and configured_thread_id != requested_thread_id:
+            raise ValueError(
+                "config.configurable.thread_id is server-owned and must match the target thread"
+            )
+        PipelineConfigurable.model_validate(configurable)
+        validate_public_run_input(input_payload)
+        assistant_id = str(payload.get("assistant_id") or run_args.get("assistant_id") or "")
+        if assistant_id == "context":
+            validate_context_run_input(input_payload)
+        elif assistant_id == "playground":
+            validate_playground_run_input(input_payload)
+        command = run_args.get("command")
+        if command is not None:
+            validate_gate_payload(command)
+    except (ValidationError, ValueError) as exc:
+        _schedule_auth_decision(
+            identity,
+            action=action,
+            decision="denied",
+            status_code=422,
+            reason="run resource or payload limits rejected the request",
+        )
+        if isinstance(exc, ValidationError):
+            error = exc.errors(include_url=False, include_context=False, include_input=False)[0]
+            location = ".".join(str(part) for part in error.get("loc") or ())
+            detail = f"{location}: {error['msg']}" if location else str(error["msg"])
+        else:
+            detail = str(exc)
+        raise Auth.exceptions.HTTPException(
+            status_code=422, detail=f"Invalid run controls: {detail}"
+        ) from exc
+
+
+def _scoped_store_prefix(project_id: str, app_id: str | None) -> tuple[str, ...]:
+    prefix: tuple[str, ...] = (*_PROJECT_NAMESPACE_PREFIX, project_id)
+    return (*prefix, "app", app_id) if app_id is not None else prefix
 
 
 def ensure_store_namespace_scope(
@@ -438,12 +614,12 @@ def ensure_store_namespace_scope(
     *,
     action: str = "store.scope",
 ) -> None:
-    """Project-prefix LangGraph store namespaces for scoped consumers.
+    """Project/app-prefix LangGraph store namespaces for scoped consumers.
 
     The SDK documents store namespace mutation as the intended auth mechanism.
-    A scoped single-project consumer may use legacy unprefixed namespaces; the
-    handler transparently prefixes them. Multi-project consumers must select a
-    project-prefixed namespace so the target project is unambiguous.
+    A consumer with one unambiguous scope may use an unprefixed namespace; the
+    handler transparently adds ``apex/project/<project>`` and, for app-only
+    grants, ``app/<app>``. Ambiguous identities must select a canonical prefix.
     """
 
     if identity.is_unscoped:
@@ -460,8 +636,15 @@ def ensure_store_namespace_scope(
 
     raw_namespace = value.get("namespace")
     namespace = tuple(raw_namespace or ())
-    selected_project = _project_from_namespace(namespace)
-    if selected_project is not None:
+    if tuple(namespace[:2]) == _PROJECT_NAMESPACE_PREFIX:
+        selected_project = _project_id(namespace[2]) if len(namespace) >= 3 else None
+        if selected_project is None:
+            _deny_authz(
+                identity,
+                action=action,
+                detail="project-prefixed store namespace must include a project_id",
+            )
+        assert selected_project is not None
         if selected_project not in projects:
             _deny_authz(
                 identity,
@@ -471,14 +654,33 @@ def ensure_store_namespace_scope(
                     "this consumer's scopes"
                 ),
             )
+        selected_app: str | None = None
+        if len(namespace) > 3 and namespace[3] == "app":
+            if len(namespace) < 5 or (selected_app := _project_id(namespace[4])) is None:
+                _deny_authz(
+                    identity,
+                    action=action,
+                    detail="app-prefixed store namespace must include an app_id",
+                )
+        if selected_app is None and not _has_project_wide_scope(identity, selected_project):
+            _deny_authz(
+                identity,
+                action=action,
+                detail="project-wide store namespace requires project-wide scope",
+            )
+        if selected_app is not None and not _allows_langgraph_scope(
+            identity, project_id=selected_project, app_id=selected_app
+        ):
+            _deny_authz(
+                identity,
+                action=action,
+                detail=(
+                    f"Store namespace app '{selected_app}' in project "
+                    f"'{selected_project}' is outside this consumer's scopes"
+                ),
+            )
         value["namespace"] = namespace
         return
-    if tuple(namespace[:2]) == _PROJECT_NAMESPACE_PREFIX:
-        _deny_authz(
-            identity,
-            action=action,
-            detail="project-prefixed store namespace must include a project_id",
-        )
 
     if len(projects) != 1:
         _deny_authz(
@@ -486,7 +688,15 @@ def ensure_store_namespace_scope(
             action=action,
             detail="project-prefixed store namespace is required for multi-project consumers",
         )
-    value["namespace"] = (*_scoped_project_prefix(projects[0]), *namespace)
+
+    selected_project = projects[0]
+    selected_app = _require_langgraph_scope(
+        identity,
+        project_id=selected_project,
+        app_id=None,
+        action=action,
+    )
+    value["namespace"] = (*_scoped_store_prefix(selected_project, selected_app), *namespace)
 
 
 def ensure_metadata_scope(
@@ -521,15 +731,6 @@ def ensure_unscoped_admin(identity: ConsumerIdentity, *, action: str, resource: 
         action=action,
         detail=f"{resource} requires an unscoped admin until project ownership can be verified",
     )
-
-
-def _project_from_namespace(namespace: tuple[Any, ...]) -> str | None:
-    if len(namespace) < 3 or tuple(namespace[:2]) != _PROJECT_NAMESPACE_PREFIX:
-        return None
-    project_id = _project_id(namespace[2])
-    if project_id is None:
-        return None
-    return project_id
 
 
 def scope_filter(identity: ConsumerIdentity) -> Auth.types.FilterType | bool | None:
@@ -570,17 +771,20 @@ async def authenticate(headers: dict[bytes, bytes]) -> dict[str, Any]:
             reason=detail,
         )
         raise Auth.exceptions.HTTPException(status_code=401, detail=detail)
-    return user_payload(identity)
+    return user_payload(identity, trusted_loopback=is_trusted_loopback(headers))
 
 
 @auth.on.threads.create
-async def on_threads_create(ctx: Auth.types.AuthContext, value: Auth.types.ThreadsCreate) -> None:
+async def on_threads_create(
+    ctx: Auth.types.AuthContext, value: Auth.types.ThreadsCreate
+) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
     metadata = value.setdefault("metadata", {})
     metadata.setdefault("created_by", identity.consumer_id)
     ensure_thread_scope(identity, metadata, action=action)
+    return scope_filter(identity)
 
 
 @auth.on.threads.create_run
@@ -590,8 +794,15 @@ async def on_threads_create_run(
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
-    ensure_run_scope(identity, value, action=action)
-    return scope_filter(identity)
+    result = ensure_run_scope(identity, value, action=action)
+    await ensure_run_environment(identity, value, action=action)
+    ensure_run_controls(
+        identity,
+        value,
+        action=action,
+        trusted_loopback=_is_trusted_loopback_user(ctx.user),
+    )
+    return result
 
 
 @auth.on.threads.read
@@ -613,7 +824,46 @@ async def on_threads_update(
     ctx: Auth.types.AuthContext, value: Auth.types.ThreadsUpdate
 ) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
-    ensure_role(identity, Role.OPERATOR, action=_authz_action(ctx))
+    action = _authz_action(ctx)
+    ensure_role(identity, Role.OPERATOR, action=action)
+    payload = _mapping(value)
+    if payload.get("action") in {"interrupt", "rollback"} and not _is_trusted_loopback_user(
+        ctx.user
+    ):
+        _deny_authz(
+            identity,
+            action=action,
+            detail=(
+                "Native run cancellation is disabled; use "
+                "/v1/pipelines/{thread_id}/abort so external engine cleanup runs first"
+            ),
+        )
+    # The installed LangGraph runtime authorizes both update_state variants
+    # (single values, with or without as_node) and bulk state updates as a bare
+    # ThreadsUpdate(thread_id=...) -- values/as_node are not exposed to auth.
+    # Metadata PATCH always carries the metadata key, while run cancellation
+    # carries action + metadata and was handled above. Fail closed on the only
+    # remaining bare shape so callers cannot forge phase_results, reviews,
+    # handles, or graph cursors around PipelineInput.
+    if (
+        "metadata" not in payload
+        and payload.get("action") is None
+        and not _is_trusted_loopback_user(ctx.user)
+    ):
+        _deny_authz(
+            identity,
+            action=action,
+            detail=(
+                "Native thread state updates are disabled; use the validated /v1 pipeline APIs"
+            ),
+        )
+    metadata = _mapping(payload.get("metadata"))
+    if not identity.is_unscoped and ({"project_id", "app_id"} & metadata.keys()):
+        _deny_authz(
+            identity,
+            action=action,
+            detail="Scoped consumers cannot mutate thread ownership metadata",
+        )
     return scope_filter(identity)
 
 
@@ -622,19 +872,33 @@ async def on_threads_delete(
     ctx: Auth.types.AuthContext, value: Auth.types.ThreadsDelete
 ) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
-    ensure_role(identity, Role.OPERATOR, action=_authz_action(ctx))
-    return scope_filter(identity)
+    action = _authz_action(ctx)
+    ensure_role(identity, Role.OPERATOR, action=action)
+    _deny_authz(
+        identity,
+        action=action,
+        detail=(
+            "Native thread/run deletion is disabled because it can discard the "
+            "external engine cleanup handle"
+        ),
+    )
 
 
 @auth.on(resources="assistants", actions=["create", "update", "delete"])
-async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> None:
+async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.ADMIN, action=action)
+    # Assistant static config is merged after run authorization. Keep that
+    # deployment-wide policy surface platform-admin-only; tenant admins can use
+    # ordinary run configuration, which is validated and target-stamped.
+    ensure_unscoped_admin(identity, action=action, resource="assistant mutation")
     if ctx.action == "delete":
-        ensure_unscoped_admin(identity, action=action, resource="assistant deletion")
         return
     ensure_metadata_scope(identity, value, action=action)
+    # On update, constrain the existing resource as well as stamping the new
+    # metadata; otherwise a scoped admin could take over a sibling assistant by id.
+    return scope_filter(identity)
 
 
 @auth.on(resources="assistants", actions=["read", "search"])
@@ -642,7 +906,12 @@ async def on_assistants_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.ty
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.VIEWER, action=action)
-    ensure_metadata_scope(identity, value, action=action)
+    # Read/search payloads commonly carry no metadata. In that case the
+    # returned server-side filter is sufficient and must support identities
+    # spanning multiple projects. If metadata was explicitly supplied, still
+    # reject an out-of-scope selector.
+    if _mapping(_mapping(value).get("metadata")):
+        ensure_metadata_scope(identity, value, action=action)
     return scope_filter(identity)
 
 
@@ -684,5 +953,10 @@ async def on_store_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.
 
 @auth.on
 async def on_anything_else(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
-    """Fallback: authenticated but still project-filtered; scoped consumers fail closed."""
-    return scope_filter(identity_from_user(ctx.user))
+    """Fail closed for every future resource/action not classified above."""
+
+    identity = identity_from_user(ctx.user)
+    action = _authz_action(ctx)
+    ensure_role(identity, Role.ADMIN, action=action)
+    ensure_unscoped_admin(identity, action=action, resource="unclassified LangGraph operation")
+    return None

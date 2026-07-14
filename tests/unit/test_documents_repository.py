@@ -17,6 +17,7 @@ pytestmark = pytest.mark.skipif(
 async def test_documents_repository_crud_roundtrip() -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from apex.auth.identity import ScopeRef
     from apex.persistence.models import Document
     from apex.persistence.repositories.documents import DocumentsRepository
 
@@ -48,7 +49,7 @@ async def test_documents_repository_crud_roundtrip() -> None:
             listed = await repo.list(project="it-project", q="probe")
             assert doc_id in [d.id for d in listed]
 
-            scoped = await repo.list(allowed_project_ids=["other-project"])
+            scoped = await repo.list(allowed_scopes=[ScopeRef(project_id="other-project")])
             assert doc_id not in [d.id for d in scoped]
 
             await repo.delete(fetched)

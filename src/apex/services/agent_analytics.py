@@ -4,10 +4,12 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from sqlalchemy import ColumnElement, Select, case, func, or_, select
+from sqlalchemy import ColumnElement, Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apex.auth.identity import ScopeRef
 from apex.persistence.models import AgentEvent
+from apex.services.analytics_scope import analytics_scope_filter
 
 AgentGroupBy = Literal["model", "stage", "agent", "date", "test"]
 AgentSort = Literal[
@@ -97,7 +99,7 @@ class AgentAnalyticsRepository:
         bucket: AgentBucket,
         group_by: AgentGroupBy,
         project_id: str | None = None,
-        visible_project_ids: tuple[str, ...] | None = None,
+        visible_scopes: tuple[ScopeRef, ...] | None = None,
         models: tuple[str, ...] = (),
         stages: tuple[str, ...] = (),
         agents: tuple[str, ...] = (),
@@ -112,7 +114,7 @@ class AgentAnalyticsRepository:
             window_from=window_from,
             window_to=window_to,
             project_id=project_id,
-            visible_project_ids=visible_project_ids,
+            visible_scopes=visible_scopes,
             models=models,
             stages=stages,
             agents=agents,
@@ -200,7 +202,7 @@ class AgentAnalyticsRepository:
         window_from: datetime,
         window_to: datetime,
         project_id: str | None,
-        visible_project_ids: tuple[str, ...] | None,
+        visible_scopes: tuple[ScopeRef, ...] | None,
         models: tuple[str, ...],
         stages: tuple[str, ...],
         agents: tuple[str, ...],
@@ -213,13 +215,9 @@ class AgentAnalyticsRepository:
         ]
         if project_id is not None:
             filters.append(AgentEvent.project_id == project_id)
-        elif visible_project_ids is not None:
-            filters.append(
-                or_(
-                    AgentEvent.project_id.is_(None),
-                    AgentEvent.project_id.in_(visible_project_ids),
-                )
-            )
+        scope_filter = analytics_scope_filter(AgentEvent, visible_scopes)
+        if scope_filter is not None:
+            filters.append(scope_filter)
         if models:
             filters.append(AgentEvent.model.in_(models))
         if stages:

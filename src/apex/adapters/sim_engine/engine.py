@@ -30,7 +30,7 @@ from apex.domain.integrations import (
     ValidationReport,
 )
 from apex.domain.pipeline import ArtifactRef, EngineHandle
-from apex.ports.artifact_store import ArtifactStorePort
+from apex.ports.artifact_store import ArtifactStorePort, engine_artifact_key
 from apex.ports.execution_engine import EngineRunPhase, EngineRunStatus, LiveStats
 
 logger = structlog.get_logger(__name__)
@@ -157,12 +157,13 @@ class SimExecutionEngine:
             "sla_breaches": summary.sla_breaches,
         }
         data = json.dumps(payload, sort_keys=True).encode()
-        key = f"engine-runs/{handle.external_run_id}/results.json"
+        key = engine_artifact_key(handle.idempotency_key, "results.json")
         stored = await store.put(key, data, content_type="application/json")
         ref = ArtifactRef(
             kind="engine_results",
             name="results.json",
             uri=stored.uri,
+            key=stored.key,
             media_type="application/json",
             summary=f"Simulated engine results for {handle.external_run_id}",
         )

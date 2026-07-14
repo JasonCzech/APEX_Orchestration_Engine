@@ -45,7 +45,9 @@ def assert_all_calls_authed() -> None:
         assert call.request.headers["Authorization"] == EXPECTED_AUTH
 
 
-def work_item_row(item_id: int, state: str = "Active") -> dict[str, object]:
+def work_item_row(
+    item_id: int, state: str = "Active", project: str = "Phoenix"
+) -> dict[str, object]:
     return {
         "id": item_id,
         "rev": 5,
@@ -55,7 +57,7 @@ def work_item_row(item_id: int, state: str = "Active") -> dict[str, object]:
             "System.Title": f"Work item {item_id}",
             "System.State": state,
             "System.WorkItemType": "User Story",
-            "System.TeamProject": "Phoenix",
+            "System.TeamProject": project,
             "System.Description": "<div>Watch <b>RSS</b> growth &amp; restarts</div>",
         },
     }
@@ -149,6 +151,12 @@ async def test_execute_query_empty_window_skips_batch_call() -> None:
     assert len(respx.calls) == 1  # no workitems batch GET
 
 
+async def test_execute_query_rejects_provider_mismatch() -> None:
+    query = TranslatedQuery(provider="stub", query="SELECT [System.Id] FROM WorkItems")
+    with pytest.raises(ValueError, match="provider"):
+        await make_adapter().execute_query(query, page=Page())
+
+
 @respx.mock
 async def test_execute_query_invalid_wiql_raises_value_error() -> None:
     respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
@@ -199,6 +207,22 @@ async def test_get_item_404_raises_key_error() -> None:
     )
     with pytest.raises(KeyError, match="999"):
         await make_adapter().get_item("999")
+
+
+@respx.mock
+async def test_get_item_hides_item_from_another_project() -> None:
+    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42, project="Apollo"))
+    )
+    with pytest.raises(KeyError, match="configured azure devops project"):
+        await make_adapter().get_item("42")
+
+
+@respx.mock
+async def test_get_item_rejects_malformed_id_without_http() -> None:
+    with pytest.raises(KeyError, match="valid azure devops work item id"):
+        await make_adapter().get_item("../wiql")
+    assert respx.calls == []
 
 
 @respx.mock
@@ -261,6 +285,19 @@ async def test_create_item_rejects_unknown_bare_field() -> None:
         await make_adapter().create_item(draft)
 
 
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"System.TeamProject": "Apollo"},
+        {"System.AreaPath": "Apollo\\Payments"},
+        {"System.IterationPath": "Apollo\\Sprint 1"},
+    ],
+)
+async def test_create_item_rejects_project_override(fields: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="project|configured"):
+        await make_adapter().create_item(WorkItemDraft(title="Wrong home", fields=fields))
+
+
 @respx.mock
 async def test_enrich_item_patches_fields_and_posts_comment() -> None:
     patch_route = respx.patch(f"{BASE}/_apis/wit/workitems/42").mock(
@@ -288,6 +325,21 @@ async def test_enrich_item_patches_fields_and_posts_comment() -> None:
     assert comment_request.url.params["api-version"] == "7.1-preview.3"
     assert json.loads(comment_request.content) == {"text": "load profile attached"}
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_enrich_item_checks_project_before_mutation() -> None:
+    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42, project="Apollo"))
+    )
+    patch_route = respx.patch(f"{BASE}/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+
+    with pytest.raises(KeyError, match="configured azure devops project"):
+        await make_adapter().enrich_item("42", Enrichment(fields={"status": "Active"}))
+
+    assert not patch_route.called
 
 
 # ── translate_query (deterministic ruleset, WIQL rendering) ───────────────────

@@ -16,13 +16,18 @@ from typing import Any, Protocol
 
 from langgraph_sdk.errors import ConflictError
 
-from apex.domain.pipeline import PHASE_ORDER, Phase, utcnow_iso
+from apex.domain.pipeline import PHASE_ORDER, ExternalResults, Phase, utcnow_iso
 from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_no_catalog,
     resolve_phase_prompt_sync,
+)
+from apex.services.run_validation import (
+    validate_context_packets,
+    validate_gate_payload,
+    validate_prompt_parts,
 )
 
 JsonDict = dict[str, Any]
@@ -196,8 +201,10 @@ class PipelineReadService:
         *,
         title: str,
         request: str = "",
+        assistant_id: str | None = None,
         project_id: str | None = None,
         app_id: str | None = None,
+        configurable: JsonDict | None = None,
         phases: list[str] | None = None,
         gates: JsonDict | None = None,
         agent_backend: str | None = None,
@@ -213,11 +220,52 @@ class PipelineReadService:
         unattended analysis run completes without an operator resuming gates; pass an
         explicit `gates` map for interactive runs. Raises ValueError on unknown phases.
         """
-        if phases:
+        run_configurable: JsonDict = dict(configurable or {})
+        selected_assistant_id = assistant_id or PIPELINE_GRAPH_ID
+        run_configurable["assistant_id"] = selected_assistant_id
+        configured_phases = run_configurable.get("phases")
+        requested_phases = phases
+        if requested_phases is None and isinstance(configured_phases, list):
+            requested_phases = [str(name) for name in configured_phases]
+        if requested_phases:
             known = {phase.value for phase in PHASE_ORDER}
-            unknown = sorted(name for name in phases if name not in known)
+            unknown = sorted(name for name in requested_phases if name not in known)
             if unknown:
                 raise ValueError(f"unknown phase(s): {unknown}")
+
+        if project_id:
+            run_configurable["project_id"] = project_id
+        if app_id:
+            run_configurable["app_id"] = app_id
+        if phases:
+            run_configurable["phases"] = phases
+        if agent_backend:
+            run_configurable["agent_backend"] = agent_backend
+        if model_by_phase:
+            run_configurable["model_by_phase"] = model_by_phase
+        inherited_gates = run_configurable.get("gates")
+        resolved_gates = (
+            gates
+            if gates is not None
+            else inherited_gates
+            if isinstance(inherited_gates, dict)
+            else _auto_gates(requested_phases)
+        )
+        if resolved_gates:
+            run_configurable["gates"] = resolved_gates
+
+        # Validate the sparse layer without replacing it with model defaults: the
+        # selected assistant's pinned configuration must remain able to fill fields
+        # the caller omitted. Graph execution validates the final merged layer again.
+        validated_config = PipelineConfigurable.model_validate(run_configurable)
+
+        run_input: JsonDict = {"title": title, "request": request}
+        if external_results:
+            run_input["external_results"] = ExternalResults.model_validate(
+                external_results
+            ).model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        if context_packets:
+            run_input["context_packets"] = validate_context_packets(context_packets)
 
         metadata: JsonDict = {"title": title}
         if project_id:
@@ -227,35 +275,19 @@ class PipelineReadService:
         thread = await self._client.threads.create(metadata=metadata)
         thread_id = thread["thread_id"]
 
-        configurable: JsonDict = {}
-        if project_id:
-            configurable["project_id"] = project_id
-        if app_id:
-            configurable["app_id"] = app_id
-        if phases:
-            configurable["phases"] = phases
-        if agent_backend:
-            configurable["agent_backend"] = agent_backend
-        if model_by_phase:
-            configurable["model_by_phase"] = model_by_phase
-        resolved_gates = gates if gates is not None else _auto_gates(phases)
-        if resolved_gates:
-            configurable["gates"] = resolved_gates
-
-        run_input: JsonDict = {"title": title, "request": request}
-        if external_results:
-            run_input["external_results"] = external_results
-        if context_packets:
-            run_input["context_packets"] = context_packets
-
         run = await self._client.runs.create(
             thread_id,
-            PIPELINE_GRAPH_ID,
+            selected_assistant_id,
             input=run_input,
             config={
-                "configurable": configurable,
-                "recursion_limit": recommended_recursion_limit(Limits()),
+                "configurable": run_configurable,
+                "recursion_limit": recommended_recursion_limit(validated_config.limits),
             },
+            stream_mode=("updates", "messages-tuple", "custom"),
+            stream_subgraphs=True,
+            stream_resumable=True,
+            durability="sync",
+            multitask_strategy="reject",
         )
         return {
             "thread_id": thread_id,
@@ -377,6 +409,12 @@ class PipelineReadService:
         changes it is written once under application_reviews[app_id] so the edit
         propagates to every phase of the run.
         """
+        validate_prompt_parts(
+            system=str(body.get("system") or ""),
+            user=str(body.get("phase_prompt") or ""),
+            application=(str(body["application"]) if body.get("application") is not None else None),
+            additional_context=str(body.get("additional_context") or ""),
+        )
         phase = phase_by_name(phase_name)
         thread = await self._client.threads.get(thread_id)
         metadata = thread.get("metadata") or {}
@@ -430,7 +468,14 @@ class PipelineReadService:
             "updated_by": actor,
         }
         update_values["prompt_reviews"] = {phase.value: draft}
-        await self._client.threads.update_state(thread_id, update_values)
+        # LangGraph ignores these internal channels when update_state has no
+        # writer identity. Pin the validated facade write to a stable graph node;
+        # direct native state writes remain blocked by the auth handler.
+        await self._client.threads.update_state(
+            thread_id,
+            update_values,
+            as_node="plan_resolver",
+        )
         return draft
 
     async def resume_gate(
@@ -445,6 +490,7 @@ class PipelineReadService:
         3. Resume run uses multitask_strategy="reject"; a server 409 (lost race)
            maps to GateSupersededError too.
         """
+        validate_gate_payload({"action": action, **extras})
         state = await self._client.threads.get_state(thread_id)
         gates = pending_gates_from_state(state)
         match = next((g for g in gates if g["interrupt_id"] == interrupt_id), None)
@@ -457,12 +503,20 @@ class PipelineReadService:
 
         resume: JsonDict = {"action": action}
         resume.update({k: v for k, v in extras.items() if v is not None})
+        run_config = _run_config_from_state(state)
+        assistant_id = PipelineConfigurable.model_validate(run_config).assistant_id
         try:
             run = await self._client.runs.create(
                 thread_id,
-                PIPELINE_GRAPH_ID,
-                config={"recursion_limit": recommended_recursion_limit(_limits_from_state(state))},
-                command={"resume": resume},
+                assistant_id,
+                config={
+                    "configurable": run_config,
+                    "recursion_limit": recommended_recursion_limit(_limits_from_state(state)),
+                },
+                # Bind the decision to the exact interrupt observed above. A scalar
+                # resume is consumed by whichever interrupt is current when the run
+                # starts, allowing a stale request to decide a newly-opened gate.
+                command={"resume": {interrupt_id: resume}},
                 multitask_strategy="reject",
             )
         except ConflictError as exc:
@@ -490,7 +544,23 @@ def _limits_from_state(state: JsonDict) -> Limits:
     to defaults only when no run has seeded the snapshot yet.
     """
     values = state.get("values") if isinstance(state.get("values"), dict) else {}
+    run_config = (values or {}).get("run_config")
+    if isinstance(run_config, dict) and isinstance(run_config.get("limits"), dict):
+        return Limits.model_validate(run_config["limits"])
     snapshot = (values or {}).get("limits")
     if isinstance(snapshot, dict):
         return Limits.model_validate(snapshot)
     return Limits()
+
+
+def _run_config_from_state(state: JsonDict) -> JsonDict:
+    """Return the validated durable configurable for a gate-resume run.
+
+    Old threads have only the limits snapshot. They retain their historical
+    behavior, while every newly-created run checkpoints the complete contract.
+    """
+    values = state.get("values") if isinstance(state.get("values"), dict) else {}
+    snapshot = (values or {}).get("run_config")
+    if not isinstance(snapshot, dict):
+        return {}
+    return PipelineConfigurable.model_validate(snapshot).snapshot()

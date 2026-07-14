@@ -133,7 +133,7 @@ describe('useGate discovery', () => {
 })
 
 describe('useGate resume wiring', () => {
-  it('202 -> submitting then settles to no_gate without re-opening the stale echo', async () => {
+  it('terminal 202 suppresses a stale same-id snapshot echo', async () => {
     const threadId = 'th-202'
     const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-a')]))
     const resume = resumeHandler(202)
@@ -142,28 +142,66 @@ describe('useGate resume wiring', () => {
     const { result } = renderHook(() => useGate(threadId), { wrapper })
 
     await waitFor(() => expect(result.current.state.tag).toBe('open'))
-    act(() => result.current.edit({ prompt: { system: 'EDITED SYSTEM' } }))
-    act(() => result.current.submit('modify'))
+    act(() => result.current.submit('approve'))
     expect(result.current.state.tag).toBe('submitting')
 
     await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
-    // Exact CAS body shape: {action:'modify', prompt:{system, user, application}}.
     expect(resume.captured.last()).toEqual({
       threadId,
       interruptId: 'int-a',
-      body: {
-        action: 'modify',
-        prompt: {
-          system: 'EDITED SYSTEM',
-          user: 'Plan load coverage for APEX-101.',
-          application: 'Checkout must preserve carts during payment retries.',
-        },
-      },
+      body: { action: 'approve' },
     })
     // The invalidated refetch still echoes int-a; the settled-gate suppression
     // must NOT re-open it.
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(result.current.state.tag).toBe('no_gate')
+  })
+
+  it('modify reopens review from a refreshed snapshot even when LangGraph reuses the id', async () => {
+    const threadId = 'th-modify-same-id'
+    const initial = promptInterrupt('int-same')
+    const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, [initial]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    act(() => result.current.edit({ prompt: { system: 'EDITED SYSTEM' } }))
+
+    const reviewed = promptInterrupt('int-same')
+    if (reviewed.payload && typeof reviewed.payload === 'object') {
+      const prompt = reviewed.payload['prompt'] as Record<string, unknown>
+      prompt['system'] = 'EDITED SYSTEM'
+    }
+    ref.current = gatedDetail(threadId, [reviewed])
+    act(() => result.current.submit('modify'))
+
+    await waitFor(() => expect(ref.requests).toBeGreaterThanOrEqual(2))
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    expect(result.current.gate?.interrupt_id).toBe('int-same')
+    const reopened = result.current.state
+    if (reopened.tag !== 'open') throw new Error('expected same-id gate to reopen')
+    expect(reopened.draft.prompt?.system).toBe('EDITED SYSTEM')
+    expect(reopened.dirty).toBe(false)
+  })
+
+  it('leaves awaiting_agent when a refreshed run settles without reopening a gate', async () => {
+    const threadId = 'th-modify-terminal'
+    const { handler, ref } = mutableDetailHandler(
+      threadId,
+      gatedDetail(threadId, [promptInterrupt('int-terminal')]),
+    )
+    server.use(handler, resumeHandler(202).handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    ref.current = gatedDetail(threadId, [])
+    act(() => result.current.submit('modify'))
+
+    await waitFor(() => expect(ref.requests).toBeGreaterThanOrEqual(2))
+    await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
   })
 
   it('409 gate_superseded -> superseded(by conflict)', async () => {
@@ -181,7 +219,10 @@ describe('useGate resume wiring', () => {
 
   it('5xx -> failed with the draft preserved; retry resubmits the same action+draft', async () => {
     const threadId = 'th-500'
-    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-c')]))
+    const { handler, ref } = mutableDetailHandler(
+      threadId,
+      gatedDetail(threadId, [promptInterrupt('int-c')]),
+    )
     const failing = resumeHandler(500)
     server.use(handler, failing.handler)
     const { wrapper } = harness()
@@ -199,8 +240,14 @@ describe('useGate resume wiring', () => {
     // Retry goes back through submitting with the identical body.
     const ok = resumeHandler(202)
     server.use(ok.handler)
+    const reviewed = promptInterrupt('int-c')
+    if (reviewed.payload && typeof reviewed.payload === 'object') {
+      const prompt = reviewed.payload['prompt'] as Record<string, unknown>
+      prompt['user'] = 'EDITED USER'
+    }
+    ref.current = gatedDetail(threadId, [reviewed])
     act(() => result.current.submit('modify'))
-    await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
     expect(ok.captured.last()?.body).toEqual({
       action: 'modify',
       prompt: {

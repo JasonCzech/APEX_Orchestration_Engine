@@ -7,7 +7,7 @@
  * here — test files that mount the Config/Review steps must vi.mock
  * '@/api/langgraphClient' themselves (vi.mock is per-module and hoisted).
  */
-import { render } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 
@@ -62,7 +62,12 @@ export function draftRead(overrides: Partial<DraftRead> = {}): DraftRead {
 
 export interface DraftCapture {
   creates: { title: string; project_id?: string | null; payload: Record<string, unknown> }[]
-  updates: { id: string; title: string; payload: Record<string, unknown> }[]
+  updates: {
+    id: string
+    title: string
+    project_id?: string | null
+    payload: Record<string, unknown>
+  }[]
   deletes: string[]
 }
 
@@ -96,9 +101,18 @@ export function draftHandlers(existing: DraftRead[] = []) {
     }),
     http.put('*/v1/drafts/:id', async ({ params, request }) => {
       const id = params['id'] as string
-      const body = (await request.json()) as { title: string; payload: Record<string, unknown> }
+      const body = (await request.json()) as {
+        title: string
+        project_id?: string | null
+        payload: Record<string, unknown>
+      }
       captured.updates.push({ id, ...body })
-      const updated = draftRead({ id, title: body.title, payload: body.payload })
+      const updated = draftRead({
+        id,
+        title: body.title,
+        project_id: body.project_id ?? null,
+        payload: body.payload,
+      })
       store.set(id, updated)
       return HttpResponse.json(updated)
     }),
@@ -148,6 +162,21 @@ export function renderWizard(initialEntry = '/runs/new') {
     </QueryClientProvider>,
   )
   return { ...result, router, queryClient }
+}
+
+/** Finish pending autosave before a test removes the wizard's MSW handlers. */
+export async function flushAndUnmountWizard(result: ReturnType<typeof render>): Promise<void> {
+  const saveState = result.queryByTestId('draft-save-state')?.textContent ?? ''
+  if (/Unsaved changes|Saving|Draft save failed/.test(saveState)) {
+    const save = result.queryByRole('button', { name: 'Save Draft' })
+    if (save) {
+      fireEvent.click(save)
+      await waitFor(() => {
+        if (!result.queryByText('Draft saved')) throw new Error('draft flush still pending')
+      })
+    }
+  }
+  result.unmount()
 }
 
 /** Fills the three required Scope fields (makes the scope step valid). */

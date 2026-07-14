@@ -8,14 +8,25 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import require_role
-from apex.auth.identity import Role
+from apex.auth.identity import ConsumerIdentity, Role
 from apex.persistence.db import get_session
 from apex.services.audit import AuditService
+
+AdminIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.ADMIN))]
+
+
+async def require_unscoped_admin(identity: AdminIdentity) -> ConsumerIdentity:
+    """Compliance exports and retention are global until audit rows carry ownership."""
+
+    if not identity.is_unscoped:
+        raise HTTPException(status_code=403, detail="Compliance access requires platform admin")
+    return identity
+
 
 router = APIRouter(
     prefix="/admin/compliance",
     tags=["admin-compliance"],
-    dependencies=[Depends(require_role(Role.ADMIN))],
+    dependencies=[Depends(require_unscoped_admin)],
 )
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]

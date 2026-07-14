@@ -17,11 +17,15 @@ x-apex-server: &apex-server
     LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY:?Enterprise license required (ADR-0001) - see deploy/compose-ha/README.md}
     APEX_ENVIRONMENT: compose-ha
     APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+    APEX_DISTRIBUTED_REMOTE_CREATION_LOCK: "true"
+    # The isolated Compose bridge is the only path to the server containers;
+    # trust nginx there so lockouts use the forwarded host client address.
+    APEX_RATE_LIMIT__TRUSTED_PROXY_CIDRS: '["172.16.0.0/12"]'
     # Rig-only synthetic admin key. Supply it via environment or .env.local; do
     # not commit a working admin key.
     APEX_AUTH__DEV_API_KEY: ${APEX_AUTH__DEV_API_KEY:?Set a rig-only admin key outside git}
     # Secret for the seeded "minio-artifacts" connection (matches MinIO below).
-    APEX_MINIO_SECRET_KEY: ${APEX_MINIO_SECRET_KEY:-apex-minio}
+    APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
   depends_on:
     postgres:
       condition: service_healthy
@@ -58,7 +62,7 @@ services:
     command: server /data
     environment:
       MINIO_ROOT_USER: apex
-      MINIO_ROOT_PASSWORD: ${APEX_MINIO_SECRET_KEY:-apex-minio}
+      MINIO_ROOT_PASSWORD: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
     volumes:
       - miniodata-ha:/data
 

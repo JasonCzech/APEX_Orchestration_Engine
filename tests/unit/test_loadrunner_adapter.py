@@ -7,9 +7,10 @@ RunState mapping table, stop/abort idempotency, results listing + zip download
 into a fake store, summary derivation, and error mapping.
 """
 
+import asyncio
 import base64
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import httpx
@@ -26,6 +27,7 @@ from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.stubs import MemoryArtifactStore
 from apex.domain.integrations import LoadTestSpec, SecretValue
 from apex.domain.pipeline import EngineHandle
+from apex.ports.artifact_store import engine_artifact_key
 from apex.ports.execution_engine import EngineRunPhase
 
 BASE = "https://lre.internal"
@@ -164,7 +166,12 @@ async def test_validate_flags_bad_spec_and_missing_test_id() -> None:
     good = await adapter.validate(make_spec())
     assert good.ok and good.issues == []
 
-    bad = await adapter.validate(LoadTestSpec(title="bad", vusers=0, duration_s=0, ramp_s=-1))
+    # Public construction rejects these values; bypass validation to retain the
+    # adapter's defense-in-depth checks for old/checkpointed model instances.
+    bad_spec = LoadTestSpec(title="bad").model_copy(
+        update={"vusers": 0, "duration_s": 0, "ramp_s": -1}
+    )
+    bad = await adapter.validate(bad_spec)
     assert not bad.ok
     assert len(bad.issues) == 4  # vusers, duration, ramp, no resolvable LRE test id
     assert any("test_id" in issue for issue in bad.issues)
@@ -362,6 +369,84 @@ async def test_start_adopts_run_created_before_a_crash() -> None:
     assert_all_calls_authed()
 
 
+async def test_concurrent_start_calls_create_one_remote_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh adapters serialize the last lookup and costly POST Runs call."""
+
+    remote_run: dict[str, Any] | None = None
+    create_count = 0
+
+    async def find_run(
+        _adapter: LoadRunnerExecutionEngine, _test_id: int, _key: str
+    ) -> dict[str, Any] | None:
+        # Snapshot before yielding so this reproduces the old check/create race.
+        snapshot = remote_run
+        await asyncio.sleep(0.02)
+        return snapshot
+
+    async def request(
+        _adapter: LoadRunnerExecutionEngine,
+        method: str,
+        path: str,
+        **_kwargs: Any,
+    ) -> httpx.Response:
+        nonlocal create_count, remote_run
+        assert method == "POST"
+        assert path == "/LoadTest/rest/domains/DEFAULT/projects/Phoenix/Runs"
+        create_count += 1
+        await asyncio.sleep(0.01)
+        remote_run = run_json(state="Initializing")
+        return httpx.Response(201, json=remote_run)
+
+    monkeypatch.setattr(LoadRunnerExecutionEngine, "_find_run_by_comment", find_run)
+    monkeypatch.setattr(LoadRunnerExecutionEngine, "_request", request)
+    first = provisioned_handle()
+    second = provisioned_handle()
+
+    await asyncio.gather(make_adapter().start(first), make_adapter().start(second))
+
+    assert create_count == 1
+    assert first.external_run_id == second.external_run_id == "lre-1042"
+
+
+async def test_start_adopts_run_when_create_response_is_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A committed POST followed by a transport failure is reconciled by marker."""
+
+    remote_run: dict[str, Any] | None = None
+    create_count = 0
+
+    async def find_run(
+        _adapter: LoadRunnerExecutionEngine, _test_id: int, _key: str
+    ) -> dict[str, Any] | None:
+        return remote_run
+
+    async def request(
+        _adapter: LoadRunnerExecutionEngine,
+        method: str,
+        path: str,
+        **_kwargs: Any,
+    ) -> httpx.Response:
+        nonlocal create_count, remote_run
+        assert method == "POST"
+        assert path == "/LoadTest/rest/domains/DEFAULT/projects/Phoenix/Runs"
+        create_count += 1
+        remote_run = run_json(state="Initializing")
+        raise RuntimeError("response lost after remote commit")
+
+    monkeypatch.setattr(LoadRunnerExecutionEngine, "_find_run_by_comment", find_run)
+    monkeypatch.setattr(LoadRunnerExecutionEngine, "_request", request)
+    handle = provisioned_handle()
+
+    await make_adapter().start(handle)
+
+    assert create_count == 1
+    assert handle.extras["run_id"] == "1042"
+    assert handle.external_run_id == "lre-1042"
+
+
 # ── get_status (state mapping table) ──────────────────────────────────────────
 
 STATE_TABLE = [
@@ -530,8 +615,30 @@ async def test_abort_tolerates_run_vanishing_between_check_and_stop() -> None:
 
 @respx.mock
 async def test_abort_before_any_run_exists_is_a_noop() -> None:
+    mock_authenticate()
+    lookup = respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(200, json=[])
+    )
     await make_adapter().abort(provisioned_handle(), reason="never started")
-    assert not respx.calls
+    assert lookup.call_count == 1
+
+
+@respx.mock
+async def test_abort_recovers_ambiguous_started_run_before_stopping_it() -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(200, json=[run_json(state="Running")])
+    )
+    stop = respx.post(f"{PROJECT_BASE}/Runs/1042/stop").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    handle = provisioned_handle()
+
+    await make_adapter().abort(handle, reason="start response was ambiguous")
+
+    assert handle.extras["run_id"] == "1042"
+    assert handle.external_run_id == "lre-1042"
+    assert stop.call_count == 1
 
 
 async def test_teardown_never_raises_and_makes_no_calls() -> None:
@@ -570,11 +677,114 @@ async def test_collect_artifacts_streams_report_zips_into_the_store() -> None:
         assert ref["kind"] == "engine_report"
         assert ref["media_type"] == "application/zip"
         assert ref["id"] and ref["created_at"]  # ArtifactRef-shaped dicts
-    assert refs[0]["uri"] == "memory://engine-runs/lre-1042/Reports.zip"
+    reports_key = engine_artifact_key("key-1", "0000-result-2001-Reports.zip")
+    analyzed_key = engine_artifact_key("key-1", "0001-result-2002-AnalyzedResult.zip")
+    assert refs[0]["uri"] == f"memory://{reports_key}"
+    assert refs[0]["key"] == reports_key
     assert refs[0]["summary"] == "LRE HTML Report for run 1042"
-    assert await store.get("engine-runs/lre-1042/Reports.zip") == b"PK\x03\x04html-report-bytes"
-    assert await store.get("engine-runs/lre-1042/AnalyzedResult.zip") == b"PK\x03\x04analyzed-bytes"
+    assert await store.get(reports_key) == b"PK\x03\x04html-report-bytes"
+    assert await store.get(analyzed_key) == b"PK\x03\x04analyzed-bytes"
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_collect_artifacts_retries_transient_stream_status() -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=[RESULTS[0]])
+    )
+    route = respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        side_effect=[
+            httpx.Response(503, json={"Message": "busy"}),
+            httpx.Response(200, content=b"PK\x03\x04retried"),
+        ]
+    )
+
+    store = MemoryArtifactStore()
+    refs = await make_adapter().collect_artifacts(started_handle(), store)
+
+    assert route.call_count == 2
+    assert [ref["name"] for ref in refs] == ["Reports.zip"]
+    assert (
+        await store.get(engine_artifact_key("key-1", "0000-result-2001-Reports.zip"))
+        == b"PK\x03\x04retried"
+    )
+
+
+@respx.mock
+async def test_collect_artifacts_keeps_duplicate_result_names_distinct() -> None:
+    mock_authenticate()
+    duplicates = [
+        {"ID": 2001, "Name": "Report.zip", "Type": "HTML Report", "RunID": 1042},
+        {"ID": 2002, "Name": "Report.zip", "Type": "HTML Report", "RunID": 1042},
+    ]
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=duplicates)
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"first")
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2002/data").mock(
+        return_value=httpx.Response(200, content=b"second")
+    )
+
+    store = MemoryArtifactStore()
+    refs = await make_adapter().collect_artifacts(started_handle(), store)
+
+    first_key = engine_artifact_key("key-1", "0000-result-2001-Report.zip")
+    second_key = engine_artifact_key("key-1", "0001-result-2002-Report.zip")
+    assert [ref["name"] for ref in refs] == ["Report.zip", "Report.zip"]
+    assert [ref["key"] for ref in refs] == [first_key, second_key]
+    assert first_key != second_key
+    assert await store.get(first_key) == b"first"
+    assert await store.get(second_key) == b"second"
+
+
+@respx.mock
+async def test_collect_artifacts_caps_large_stream_error_preview() -> None:
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.yielded = 0
+            self.closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            for _ in range(100):
+                self.yielded += 1
+                yield b"x" * 4096
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=[RESULTS[0]])
+    )
+    stream = CountingStream()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(418, stream=stream)
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 418"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+    assert 0 < stream.yielded < 100
+    assert stream.closed is True
+
+
+@respx.mock
+async def test_collect_artifacts_enforces_configured_stream_limit() -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=[RESULTS[0]])
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"too-large")
+    )
+
+    with pytest.raises(ValueError, match="maximum size of 4 bytes"):
+        await make_adapter(max_report_bytes=4).collect_artifacts(
+            started_handle(), MemoryArtifactStore()
+        )
 
 
 @respx.mock

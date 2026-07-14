@@ -22,7 +22,13 @@ import {
   isThreadStatus,
   type RunsFilters,
 } from './runsFilters'
-import { isPipelinePhaseComplete, pipelineStatusLabel, pipelinePhaseVisual, targetPhaseFor } from './runDisplay'
+import {
+  isPipelinePhaseComplete,
+  pipelineStatusLabel,
+  pipelinePhaseVisual,
+  pipelineVerdict,
+  targetPhaseFor,
+} from './runDisplay'
 import './RunsListPage.css'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -51,21 +57,8 @@ function errorMessage(error: unknown): string {
   return 'The runs list could not be loaded.'
 }
 
-function verdictLabel(run: PipelineSummary): 'GO' | 'Conditional' | 'NO-GO' | '—' {
-  switch (run.thread_status) {
-    case 'idle':
-      return 'GO'
-    case 'interrupted':
-      return 'Conditional'
-    case 'error':
-      return 'NO-GO'
-    default:
-      return '—'
-  }
-}
-
 function verdictTone(run: PipelineSummary): string {
-  switch (verdictLabel(run)) {
+  switch (pipelineVerdict(run)) {
     case 'GO':
       return 'success'
     case 'Conditional':
@@ -154,7 +147,7 @@ function RunRow({
       </td>
       <td className="runs-time">{durationLabel(run)}</td>
       <td>
-        <span className={`status-badge ${verdictTone(run)}`}>{verdictLabel(run)}</span>
+        <span className={`status-badge ${verdictTone(run)}`}>{pipelineVerdict(run)}</span>
       </td>
       <td>
         <div className="runs-status-cell">

@@ -51,7 +51,10 @@ Mid-run restarts are safe by design, not by luck:
   resumes from the last committed checkpoint after a restart.
 - A write-ahead idempotency key in graph state plus the engines'
   **get-or-create provision contract** make a restart unable to double-start
-  external load.
+  external load. Multi-replica deployments enable
+  `APEX_DISTRIBUTED_REMOTE_CREATION_LOCK=true`, which serializes each provider
+  key through PostgreSQL; APEX Load also receives its native
+  `Idempotency-Key` header.
 - Proof: `tests/integration/test_restart_survival.py` SIGKILLs a server
   process mid-poll and asserts the run completes with **exactly one
   `external_run_id`** across the crash boundary (run it with
@@ -142,7 +145,7 @@ no CORS). Built/published as a separate image track in `release.yaml`.
 | `APEX_DATABASE__URI` (asyncpg, `ssl=true`) | interp | `apex-database` / `APEX_DATABASE__URI` | `apex-database-uri` |
 | `REDIS_URI` | static (`redis:6379`) | `apex-redis` / `REDIS_URI` | `redis-uri` |
 | `LANGGRAPH_CLOUD_LICENSE_KEY` | `${LANGGRAPH_CLOUD_LICENSE_KEY}` | `apex-langgraph-license` | `langgraph-license` |
-| `APEX_MINIO_SECRET_KEY` | `${APEX_MINIO_SECRET_KEY}` | `apex-minio` (via `extraEnv`) | `artifact-secret-key` |
+| `APEX_INTEGRATION_MINIO_SECRET_KEY` | `${APEX_INTEGRATION_MINIO_SECRET_KEY}` | `apex-minio` (via `extraEnv`) | `artifact-secret-key` |
 | initial admin key | n/a | `apex-admin` (`bootstrap.adminKeySecret`) | (operator-supplied) |
 
 Azure is the only place the psycopg/asyncpg SSL forms differ on the wire — see

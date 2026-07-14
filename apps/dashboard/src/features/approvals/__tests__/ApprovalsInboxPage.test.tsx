@@ -105,6 +105,38 @@ describe('ApprovalsInboxPage', () => {
     expect(screen.getByTestId('approvals-count-chip')).toHaveTextContent('2 pending')
   })
 
+  it('walks every backend page so queues larger than 100 stay complete', async () => {
+    const runs = Array.from({ length: 101 }, (_, index) =>
+      gatedRun(`run-page-${String(index).padStart(3, '0')}`, {
+        kind: 'prompt_review',
+        phase: 'test_planning',
+        interruptId: `int-page-${index}`,
+        updatedAt: new Date(Date.now() - (101 - index) * 60_000).toISOString(),
+      }),
+    )
+    const offsets: number[] = []
+    server.use(
+      http.get('*/v1/pipelines', ({ request }) => {
+        const params = new URL(request.url).searchParams
+        const offset = Number(params.get('offset') ?? '0')
+        const limit = Number(params.get('limit') ?? '100')
+        offsets.push(offset)
+        return HttpResponse.json({ items: runs.slice(offset, offset + limit), limit, offset })
+      }),
+      http.get('*/v1/pipelines/:threadId', ({ params }) => {
+        const row = runs.find((candidate) => candidate.thread_id === params.threadId)
+        return row
+          ? HttpResponse.json(gatedDetail(row))
+          : HttpResponse.json({ detail: 'unknown thread' }, { status: 404 })
+      }),
+    )
+    renderInbox()
+
+    expect(await screen.findByTestId('approvals-count-chip')).toHaveTextContent('101 pending')
+    expect(await findRow('run-page-100')).toBeInTheDocument()
+    expect(offsets).toEqual([0, 100])
+  })
+
   it('auto-selects the oldest gate and previews it through the shared GateModule', async () => {
     useInboxHandlers()
     renderInbox()

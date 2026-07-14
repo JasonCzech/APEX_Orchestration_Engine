@@ -11,15 +11,34 @@ from typing import Any
 
 import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from apex.persistence.models import EngineRun
+from apex.ports.artifact_store import engine_artifact_namespace
 from apex.settings import database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
 
 _TERMINAL = {"completed", "failed", "aborted"}
+
+
+def _upsert_statement(values: dict[str, Any], dialect: str) -> Any:
+    """Build a replay-safe upsert for the supported runtime/test databases."""
+    if dialect == "postgresql":
+        statement = pg_insert(EngineRun).values(**values)
+    elif dialect == "sqlite":
+        statement = sqlite_insert(EngineRun).values(**values)
+    else:
+        raise RuntimeError(f"engine-run upsert is unsupported for database dialect {dialect!r}")
+    update_cols = {
+        key: value for key, value in values.items() if key not in {"thread_id", "attempt"}
+    }
+    return statement.on_conflict_do_update(
+        index_elements=[EngineRun.thread_id, EngineRun.attempt],
+        set_=update_cols,
+    )
 
 
 async def record_engine_run(
@@ -30,7 +49,10 @@ async def record_engine_run(
     status: str,
     *,
     project_id: str | None = None,
+    app_id: str | None = None,
     external_run_id: str | None = None,
+    artifact_namespace: str | None = None,
+    artifact_connection_id: str | None = None,
     summary: dict[str, Any] | None = None,
 ) -> None:
     """Upsert one engine-run row; terminal statuses stamp ended_at. Never raises."""
@@ -48,22 +70,30 @@ async def record_engine_run(
             async with session_factory() as session:
                 values: dict[str, Any] = {
                     "thread_id": thread_id,
-                    "project_id": project_id,
                     "attempt": attempt,
                     "engine": engine,
                     "handle": handle,
                     "status": status,
-                    "external_run_id": external_run_id,
+                    "ownership_known": True,
                 }
+                if project_id is not None:
+                    values["project_id"] = project_id
+                if app_id is not None:
+                    values["app_id"] = app_id
+                if external_run_id is not None:
+                    values["external_run_id"] = external_run_id
+                handle_idempotency_key = handle.get("idempotency_key")
+                if artifact_namespace is None and handle_idempotency_key:
+                    artifact_namespace = engine_artifact_namespace(str(handle_idempotency_key))
+                if artifact_namespace is not None:
+                    values["artifact_namespace"] = artifact_namespace.rstrip("/")
+                if artifact_connection_id is not None:
+                    values["artifact_connection_id"] = artifact_connection_id
                 if summary is not None:
                     values["summary"] = summary
                 if status in _TERMINAL:
                     values["ended_at"] = datetime.now(UTC)
-                stmt = pg_insert(EngineRun).values(**values)
-                update_cols = {k: v for k, v in values.items() if k not in ("thread_id", "attempt")}
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uq_engine_runs_thread_id", set_=update_cols
-                )
+                stmt = _upsert_statement(values, session.get_bind().dialect.name)
                 await session.execute(stmt)
                 await session.commit()
         finally:

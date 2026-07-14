@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from apex.app.http import app
+from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.services import usage
 
 DEV_KEY = "usage-mw-dev-key"
@@ -28,6 +29,7 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         status: str,
         duration_ms: int,
         project_id: str | None,
+        app_id: str | None,
         extra: dict[str, Any],
     ) -> None:
         if api_key == DEV_KEY:
@@ -44,6 +46,7 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
                 "status": status,
                 "duration_ms": duration_ms,
                 "project_id": project_id,
+                "app_id": app_id,
                 "extra": extra,
             }
         )
@@ -74,6 +77,7 @@ def test_records_operation_id_status_and_duration(events: list[dict[str, Any]]) 
     assert event["extra"]["status_code"] == 200
     assert event["extra"]["path"] == "/v1/system/info"
     assert event["project_id"] is None
+    assert event["app_id"] is None
 
 
 def test_no_event_for_openapi_docs_or_unmatched_paths(events: list[dict[str, Any]]) -> None:
@@ -117,3 +121,66 @@ def test_project_query_param_attributes_event(events: list[dict[str, Any]]) -> N
         client.get("/v1/system/info", params={"project": "proj-a"}, headers={"x-api-key": DEV_KEY})
         wait_for_events(events, 1)
     assert events[0]["project_id"] == "proj-a"
+    assert events[0]["app_id"] is None
+
+
+def test_project_and_app_query_params_attribute_exact_scope(
+    events: list[dict[str, Any]],
+) -> None:
+    with TestClient(app) as client:
+        client.get(
+            "/v1/system/info",
+            params={"project": "proj-a", "app": "app-a"},
+            headers={"x-api-key": DEV_KEY},
+        )
+        wait_for_events(events, 1)
+    assert (events[0]["project_id"], events[0]["app_id"]) == ("proj-a", "app-a")
+
+
+def test_project_attribution_rejects_unresolved_or_out_of_scope_values() -> None:
+    identity = ConsumerIdentity(
+        consumer_id="viewer-1",
+        name="viewer",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.VIEWER,
+        scopes=[ScopeRef(project_id="allowed")],
+    )
+    base: dict[str, Any] = {"path_params": {}, "state": {"identity": identity}}
+
+    assert usage._request_project_id({**base, "query_string": b"project=allowed"}) == "allowed"
+    assert usage._request_project_id({**base, "query_string": b"project=forbidden"}) is None
+    assert usage._request_project_id({"query_string": b"project=allowed", "state": {}}) is None
+
+
+def test_request_scope_never_widens_an_ambiguous_app_identity() -> None:
+    identity = ConsumerIdentity(
+        consumer_id="viewer-2",
+        name="viewer",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.VIEWER,
+        scopes=[
+            ScopeRef(project_id="proj", app_id="app-a"),
+            ScopeRef(project_id="proj", app_id="app-b"),
+        ],
+    )
+    base: dict[str, Any] = {"path_params": {}, "state": {"identity": identity}}
+
+    assert usage._request_scope({**base, "query_string": b"project=proj"}) == (None, None)
+    assert usage._request_scope({**base, "query_string": b"project=proj&app=app-b"}) == (
+        "proj",
+        "app-b",
+    )
+    assert usage._request_scope({**base, "query_string": b"project=proj&app=app-c"}) == (None, None)
+
+
+def test_request_scope_infers_one_exact_app_scope() -> None:
+    identity = ConsumerIdentity(
+        consumer_id="viewer-3",
+        name="viewer",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.VIEWER,
+        scopes=[ScopeRef(project_id="proj", app_id="app-a")],
+    )
+    scope = {"path_params": {}, "query_string": b"", "state": {"identity": identity}}
+
+    assert usage._request_scope(scope) == ("proj", "app-a")

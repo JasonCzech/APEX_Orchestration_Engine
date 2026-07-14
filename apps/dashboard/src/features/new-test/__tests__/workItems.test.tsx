@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 
 import { server } from '@/test/server'
 
-import { installWizardHandlers, renderWizard } from './wizardTestUtils'
+import { flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 const TRANSLATED = { provider: 'jira', query: 'project = PHX AND status = Open', confidence: 0.82 }
 
@@ -22,14 +22,19 @@ const ITEMS = [
 describe('WorkItemsStep', () => {
   it('translate -> execute -> select flows into removable chips', async () => {
     installWizardHandlers()
+    const projects: string[] = []
     server.use(
-      http.post('*/v1/work-tracking/query/translate', () => HttpResponse.json(TRANSLATED)),
-      http.post('*/v1/work-tracking/query/execute', () =>
-        HttpResponse.json({ items: ITEMS, total: 2 }),
-      ),
+      http.post('*/v1/work-tracking/query/translate', ({ request }) => {
+        projects.push(new URL(request.url).searchParams.get('project') ?? '')
+        return HttpResponse.json(TRANSLATED)
+      }),
+      http.post('*/v1/work-tracking/query/execute', ({ request }) => {
+        projects.push(new URL(request.url).searchParams.get('project') ?? '')
+        return HttpResponse.json({ items: ITEMS, total: 2 })
+      }),
     )
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard('/runs/new?step=work-items')
 
     await user.type(
       await screen.findByLabelText('Find by description'),
@@ -47,6 +52,7 @@ describe('WorkItemsStep', () => {
 
     await user.click(screen.getByRole('button', { name: 'Run query' }))
     expect(await screen.findByText('Slow checkout')).toBeInTheDocument()
+    expect(projects).toEqual(['demo', 'demo'])
 
     await user.click(screen.getByLabelText('Select PHX-101'))
     await user.click(screen.getByLabelText('Select PHX-102'))
@@ -58,19 +64,22 @@ describe('WorkItemsStep', () => {
     await user.click(screen.getByRole('button', { name: 'Remove PHX-102' }))
     expect(within(chips).queryByText('PHX-102')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Select PHX-102')).not.toBeChecked()
+    await flushAndUnmountWizard(rendered)
   })
 
   it('direct key add validates via getWorkItem and surfaces failures inline', async () => {
     installWizardHandlers()
+    const projects: string[] = []
     server.use(
-      http.get('*/v1/work-tracking/items/:key', ({ params }) =>
-        params['key'] === 'PHX-241'
+      http.get('*/v1/work-tracking/items/:key', ({ params, request }) => {
+        projects.push(new URL(request.url).searchParams.get('project') ?? '')
+        return params['key'] === 'PHX-241'
           ? HttpResponse.json({ key: 'PHX-241', title: 'Found', kind: 'story', status: 'open', description: '' })
-          : HttpResponse.json({ detail: 'unknown work item' }, { status: 404 }),
-      ),
+          : HttpResponse.json({ detail: 'unknown work item' }, { status: 404 })
+      }),
     )
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard('/runs/new?step=work-items')
 
     const keyInput = await screen.findByLabelText('Add by key')
     await user.type(keyInput, 'PHX-241')
@@ -83,5 +92,7 @@ describe('WorkItemsStep', () => {
     await user.click(screen.getByRole('button', { name: 'Add' }))
     await waitFor(() => expect(screen.getByText('unknown work item')).toBeInTheDocument())
     expect(within(chips).queryByText('PHX-999')).not.toBeInTheDocument()
+    expect(projects).toEqual(['demo', 'demo'])
+    await flushAndUnmountWizard(rendered)
   })
 })

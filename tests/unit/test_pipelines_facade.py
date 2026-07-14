@@ -63,7 +63,7 @@ class FakeThreads:
         except KeyError:
             raise _not_found() from None
 
-    async def update_state(self, thread_id: str, values: JsonDict, **_: Any) -> JsonDict:
+    async def update_state(self, thread_id: str, values: JsonDict, **kwargs: Any) -> JsonDict:
         state = await self.get_state(thread_id)
         current = state.setdefault("values", {})
         for key, value in values.items():
@@ -73,7 +73,7 @@ class FakeThreads:
                 current[key] = merged
             else:
                 current[key] = value
-        self.update_calls.append({"thread_id": thread_id, "values": values})
+        self.update_calls.append({"thread_id": thread_id, "values": values, **kwargs})
         return {"checkpoint": {"thread_id": thread_id}}
 
 
@@ -363,6 +363,7 @@ def test_patch_phase_prompt_review_updates_state_without_run() -> None:
     assert body["source"]["origin"] == "run_override"
     assert body["updated_by"] == "op"
     assert fake.update_calls[0]["values"]["prompt_reviews"]["story_analysis"]["phase_prompt"] == "P"
+    assert fake.update_calls[0]["as_node"] == "plan_resolver"
     assert client_obj.runs.create_calls == []
 
 

@@ -1,5 +1,5 @@
 /**
- * Config section: phase-subset toggles with warn-only dependency hints, the
+ * Config section: phase-subset toggles with blocking dependency errors, the
  * gates segmented control + custom matrix, and the golden-config picker
  * pre-filling engine/gates from the assistant's configurable.
  */
@@ -37,13 +37,20 @@ const GOLDEN = {
 }
 
 const SYSTEM_DEFAULT = { ...GOLDEN, assistant_id: 'asst-sys', name: 'pipeline', metadata: { created_by: 'system' } }
+const DEFAULTED = {
+  ...GOLDEN,
+  assistant_id: 'asst-defaulted',
+  name: 'Baseline defaults',
+  description: 'Uses PipelineConfigurable defaults',
+  config: { configurable: {} },
+}
 
 describe('ConfigStep', () => {
-  it('toggling a phase off shows the warn-only dependency hint and keeps Launch enabled', async () => {
+  it('blocks launch when the new-thread phase plan omits a hard prerequisite', async () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard()
+    const rendered = renderWizard()
 
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Config' }))
@@ -63,23 +70,26 @@ describe('ConfigStep', () => {
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
     const hints = await screen.findByTestId('phase-dependency-hints')
     expect(hints).toHaveTextContent(
-      'reporting needs execution earlier in plan or succeeded on thread',
+      'reporting requires execution earlier in this new run',
     )
-    // Warn, never block: the footer CTA stays valid once scope is valid.
-    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeDisabled()
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
     await waitFor(() =>
       expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument(),
     )
+    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await screen.findByText('Draft saved')
+    rendered.unmount()
   })
 
   it('gates segmented control reveals the 7x2 custom matrix (checked = gated)', async () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=config')
+    const rendered = renderWizard('/runs/new?step=config')
 
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(await screen.findByRole('button', { name: 'Custom' }))
@@ -92,13 +102,16 @@ describe('ConfigStep', () => {
     await user.click(within(matrix).getByLabelText('execution prompt review gated'))
     expect(within(matrix).getByLabelText('execution prompt review gated')).not.toBeChecked()
     expect(within(matrix).getByLabelText('execution output review gated')).toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await screen.findByText('Draft saved')
+    rendered.unmount()
   })
 
   it('golden-config pick shows the inherited chip and pre-fills engine + gates', async () => {
-    assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
+    assistantsSearch.mockResolvedValue([GOLDEN, DEFAULTED, SYSTEM_DEFAULT])
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=config')
+    const rendered = renderWizard('/runs/new?step=config')
 
     // The dev server's system-created default assistant is filtered out.
     expect(await screen.findByRole('button', { name: /Nightly checkout soak/ })).toBeInTheDocument()
@@ -116,5 +129,21 @@ describe('ConfigStep', () => {
     const matrix = screen.getByTestId('gates-matrix')
     expect(within(matrix).getByLabelText('execution prompt review gated')).not.toBeChecked()
     expect(within(matrix).getByLabelText('story analysis prompt review gated')).toBeChecked()
+
+    // Switching to an assistant that omits engine/gates must restore backend
+    // defaults instead of leaking the previous assistant's pinned values.
+    await user.click(screen.getByRole('button', { name: /Baseline defaults/ }))
+    expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    expect(screen.getByRole('button', { name: 'All gated' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await screen.findByText('Draft saved')
+    rendered.unmount()
   })
 })

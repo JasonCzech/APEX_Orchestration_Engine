@@ -10,7 +10,15 @@ from enum import StrEnum
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat, field_validator
+
+MAX_CONTEXT_ID_CHARS = 128
+MAX_CONTEXT_SOURCE_CHARS = 128
+MAX_CONTEXT_TITLE_CHARS = 500
+MAX_CONTEXT_SUMMARY_CHARS = 4_000
+MAX_CONTEXT_REF_CHARS = 2_048
+MAX_CONTEXT_TEXT_CHARS = 150_000
+MAX_GATE_TEXT_CHARS = 20_000
 
 
 class Phase(StrEnum):
@@ -77,6 +85,13 @@ class ArtifactRef(BaseModel):
     kind: str
     name: str
     uri: str
+    # Canonical object-store key.  Keeping this separate from ``uri`` avoids
+    # reverse-parsing provider-specific URLs when persisting ownership metadata.
+    key: str | None = None
+    # Durable resolver identity for the object store that owns ``key``. Project
+    # defaults can change after a run, so artifact reads must not re-resolve by
+    # today's default and accidentally fetch from a different store.
+    artifact_connection_id: str | None = None
     media_type: str = "application/octet-stream"
     summary: str | None = None
     created_at: str = Field(default_factory=utcnow_iso)
@@ -88,7 +103,7 @@ class ApprovalRecord(BaseModel):
     action: str
     actor: str = "unknown"
     at: str = Field(default_factory=utcnow_iso)
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=MAX_GATE_TEXT_CHARS)
 
 
 class ToolCallRecord(BaseModel):
@@ -105,17 +120,17 @@ class DialogueEntry(BaseModel):
     id: str = Field(default_factory=new_id)
     phase: Phase
     role: Literal["operator", "agent"]
-    content: str
+    content: str = Field(max_length=MAX_GATE_TEXT_CHARS)
     at: str = Field(default_factory=utcnow_iso)
 
 
 class ContextPacket(BaseModel):
-    id: str = Field(default_factory=new_id)
-    source: str
-    title: str
-    summary: str | None = None
-    ref: str | None = None
-    text: str | None = None
+    id: str = Field(default_factory=new_id, min_length=1, max_length=MAX_CONTEXT_ID_CHARS)
+    source: str = Field(min_length=1, max_length=MAX_CONTEXT_SOURCE_CHARS)
+    title: str = Field(min_length=1, max_length=MAX_CONTEXT_TITLE_CHARS)
+    summary: str | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
+    ref: str | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
+    text: str | None = Field(default=None, max_length=MAX_CONTEXT_TEXT_CHARS)
 
 
 class ExternalResults(BaseModel):
@@ -127,13 +142,23 @@ class ExternalResults(BaseModel):
     so the reporting phase reads it the same way it reads a real engine run.
     """
 
-    source: str
-    uri: str | None = None
-    engine: str | None = None
+    source: str = Field(min_length=1, max_length=MAX_CONTEXT_SOURCE_CHARS)
+    uri: str | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
+    engine: str | None = Field(default=None, max_length=128)
     passed: bool | None = None
-    kpis: dict[str, float] = Field(default_factory=dict)
-    summary: str | None = None
-    notes: str | None = None
+    kpis: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=32)
+    summary: str | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
+    notes: str | None = Field(default=None, max_length=MAX_GATE_TEXT_CHARS)
+
+    @field_validator("kpis")
+    @classmethod
+    def validate_kpis(cls, values: dict[str, float]) -> dict[str, float]:
+        for name, value in values.items():
+            if not name.strip() or len(name) > 64:
+                raise ValueError("KPI names must be 1-64 characters")
+            if abs(value) > 1_000_000_000_000:
+                raise ValueError("KPI values must be between -1e12 and 1e12")
+        return values
 
 
 class EngineHandle(BaseModel):

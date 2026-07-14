@@ -8,6 +8,7 @@
  * exactly one pipelines request beyond what the shell already polls.
  */
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
+import { pipelineVerdict } from '@/features/runs/runDisplay'
 
 /** One-page fleet scan — enough headroom for the grid/table/failure slices. */
 export const HOME_FLEET_LIMIT = 50
@@ -43,13 +44,13 @@ export function activeRuns(items: PipelineSummary[]): PipelineSummary[] {
     .sort(byUpdatedDesc)
 }
 
-/** Recent error-status threads for the attention rail. */
+/** Recent conservative NO-GO threads for the attention rail and metrics. */
 export function failedRuns(
   items: PipelineSummary[],
   limit: number = ATTENTION_FAILURES_LIMIT,
 ): PipelineSummary[] {
   return items
-    .filter((run) => run.thread_status === 'error')
+    .filter((run) => pipelineVerdict(run) === 'NO-GO')
     .sort(byUpdatedDesc)
     .slice(0, limit)
 }
@@ -95,12 +96,8 @@ export function totalRuns(items: PipelineSummary[]): number {
   return items.length
 }
 
-/**
- * Best-effort "GO" proxy until the fleet API exposes verdicts directly.
- * Idle runs are the only clearly settled-success state currently available.
- */
 export function goVerdicts(items: PipelineSummary[]): number {
-  return items.filter((run) => run.thread_status === 'idle').length
+  return items.filter((run) => pipelineVerdict(run) === 'GO').length
 }
 
 export function interruptedRuns(items: PipelineSummary[]): number {

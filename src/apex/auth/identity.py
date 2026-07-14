@@ -82,3 +82,23 @@ class ConsumerIdentity(BaseModel):
 
     def allows_scope(self, *, project_id: str, app_id: str | None = None) -> bool:
         return self.allows_app(project_id, app_id)
+
+    def contains_scope(self, scope: ScopeRef) -> bool:
+        """Whether this identity may delegate ``scope`` without widening access.
+
+        Resource access and scope delegation intentionally differ for project-level
+        targets.  An app-only identity may read project-level resources, but it may
+        not mint a project-wide credential that reaches sibling apps.
+        """
+
+        if self.is_unscoped:
+            return True
+        if scope.app_id is None:
+            return any(
+                own.project_id == scope.project_id and own.app_id is None for own in self.scopes
+            )
+        return any(
+            own.project_id == scope.project_id
+            and (own.app_id is None or own.app_id == scope.app_id)
+            for own in self.scopes
+        )

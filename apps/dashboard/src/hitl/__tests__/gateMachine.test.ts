@@ -233,7 +233,17 @@ describe('gateReducer semantics beyond tags', () => {
     })
   })
 
-  it('accepted discuss/revise awaits the agent; accepted approve clears', () => {
+  it('accepted modify/discuss/revise awaits the agent; accepted approve clears', () => {
+    const modify = gateReducer(
+      {
+        tag: 'submitting',
+        gate: promptGate,
+        action: 'modify',
+        draft: initialDraftFor(promptGate),
+      },
+      { type: 'RESUME_ACCEPTED' },
+    )
+    expect(modify).toMatchObject({ tag: 'awaiting_agent', action: 'modify' })
     const discuss = gateReducer(STATES['submitting_discuss'] as GateMachineState, {
       type: 'RESUME_ACCEPTED',
     })
@@ -242,6 +252,14 @@ describe('gateReducer semantics beyond tags', () => {
       type: 'RESUME_ACCEPTED',
     })
     expect(approve.tag).toBe('no_gate')
+  })
+
+  it('clears awaiting_agent only when a refreshed run settled without another gate', () => {
+    const awaiting = STATES['awaiting_agent'] as GateMachineState
+    expect(gateReducer(awaiting, { type: 'GATE_CLEARED' })).toBe(awaiting)
+    expect(gateReducer(awaiting, { type: 'GATE_CLEARED', settled: true })).toEqual({
+      tag: 'no_gate',
+    })
   })
 
   it('isPromptDirty compares against the payload original', () => {

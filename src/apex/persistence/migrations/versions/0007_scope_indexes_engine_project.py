@@ -6,7 +6,6 @@ Create Date: 2026-06-24
 """
 
 from collections.abc import Sequence
-from typing import Any
 
 import sqlalchemy as sa
 from alembic import op
@@ -31,30 +30,37 @@ def _create_index(
 ) -> None:
     if postgresql_where is not None and not _is_postgres():
         return
-    kwargs: dict[str, Any] = {"schema": "apex", "unique": unique}
-    if _is_postgres():
-        kwargs["postgresql_concurrently"] = True
-        if postgresql_where is not None:
-            kwargs["postgresql_where"] = postgresql_where
-        with op.get_context().autocommit_block():
-            op.create_index(name, table_name, columns, **kwargs)
-        return
-    op.create_index(name, table_name, columns, **kwargs)
+    # Repairs invalid indexes left by the old concurrent/autocommit form if an
+    # interrupted revision is retried.
+    op.drop_index(name, table_name=table_name, schema="apex", if_exists=True)
+    op.create_index(
+        name,
+        table_name,
+        columns,
+        schema="apex",
+        unique=unique,
+        postgresql_where=postgresql_where,
+    )
 
 
 def _drop_index(name: str, table_name: str, *, postgresql_where: bool = False) -> None:
     if postgresql_where and not _is_postgres():
         return
-    kwargs: dict[str, Any] = {"schema": "apex"}
-    if _is_postgres():
-        with op.get_context().autocommit_block():
-            op.get_bind().exec_driver_sql(f"DROP INDEX CONCURRENTLY IF EXISTS apex.{name}")
-        return
-    op.drop_index(name, table_name=table_name, **kwargs)
+    op.drop_index(
+        name,
+        table_name=table_name,
+        schema="apex",
+        if_exists=True,
+    )
 
 
 def upgrade() -> None:
-    op.add_column("engine_runs", sa.Column("project_id", sa.String(length=255)), schema="apex")
+    op.add_column(
+        "engine_runs",
+        sa.Column("project_id", sa.String(length=255)),
+        schema="apex",
+        if_not_exists=True,
+    )
 
     _create_index("ix_consumer_scopes_consumer_id", "consumer_scopes", ["consumer_id"])
     _create_index("ix_consumer_scopes_project_app", "consumer_scopes", ["project_id", "app_id"])

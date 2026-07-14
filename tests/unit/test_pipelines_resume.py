@@ -12,7 +12,9 @@ from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
 from apex.graphs.pipeline.configurable import Limits
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
+from apex.routers.engines import get_engine_abort_service
 from apex.routers.pipelines import get_pipeline_read_service, router
+from apex.services.engine_abort import EngineAbortResult, EngineRunNotFoundError
 from apex.services.pipeline_read import PipelineReadService
 
 JsonDict = dict[str, Any]
@@ -72,26 +74,53 @@ class FakeClient:
         self.runs = runs
 
 
+class FakeEngineAbort:
+    def __init__(self, result: EngineAbortResult | None = None) -> None:
+        self.result = result
+        self.calls: list[str] = []
+
+    async def abort(self, thread_id: str, *, reason: str | None = None) -> EngineAbortResult:
+        self.calls.append(thread_id)
+        if self.result is None:
+            raise EngineRunNotFoundError(thread_id)
+        return self.result
+
+
 def identity(role: Role) -> ConsumerIdentity:
     return ConsumerIdentity(
         consumer_id="c1", name="op", consumer_type=ConsumerType.DASHBOARD, role=role
     )
 
 
-def make_app(client: FakeClient, role: Role = Role.OPERATOR) -> FastAPI:
+def make_app(
+    client: FakeClient,
+    role: Role = Role.OPERATOR,
+    engine_abort: FakeEngineAbort | None = None,
+) -> FastAPI:
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(router, prefix="/v1")
     app.dependency_overrides[get_pipeline_read_service] = lambda: PipelineReadService(client)
+    app.dependency_overrides[get_engine_abort_service] = lambda: engine_abort or FakeEngineAbort()
     app.dependency_overrides[get_current_identity] = lambda: identity(role)
     return app
 
 
-def state_with_interrupt(interrupt_id: str, *, limits: dict[str, Any] | None = None) -> JsonDict:
-    # Mirrors the real get_state shape: plan_resolver checkpoints the resolved limits into
-    # values["limits"] (graph.plan_resolver), which is what _limits_from_state reads.
+def state_with_interrupt(
+    interrupt_id: str,
+    *,
+    limits: dict[str, Any] | None = None,
+    run_config: dict[str, Any] | None = None,
+) -> JsonDict:
+    # Mirrors the real get_state shape: plan_resolver checkpoints the complete
+    # run config, with values["limits"] retained for old-thread compatibility.
+    values: JsonDict = {}
+    if limits is not None:
+        values["limits"] = limits
+    if run_config is not None:
+        values["run_config"] = run_config
     return {
-        "values": {"limits": limits} if limits is not None else {},
+        "values": values,
         "tasks": [{"interrupts": [{"id": interrupt_id, "value": GATE_PAYLOAD}]}],
         "interrupts": [],
     }
@@ -111,7 +140,39 @@ def test_resume_gate_accepts_and_creates_reject_run() -> None:
     assert call["assistant_id"] == "pipeline"
     assert call["multitask_strategy"] == "reject"
     assert call["config"]["recursion_limit"] > 25
-    assert call["command"] == {"resume": {"action": "approve", "note": "lgtm"}}
+    assert call["command"] == {"resume": {"int-1": {"action": "approve", "note": "lgtm"}}}
+
+
+def test_resume_gate_restores_complete_checkpointed_run_config() -> None:
+    snapshot = {
+        "assistant_id": "assistant-golden",
+        "project_id": "project-a",
+        "app_id": "app-a",
+        "engine": "loadrunner",
+        "connections": {"execution_engine": "lre-a"},
+        "agent_backend": "anthropic",
+        "load_test": {"test_id": 42},
+        "gates": {"execution": {"prompt_review": "auto", "output_review": "gated"}},
+        "limits": {"poll_interval_s": 7.0, "poll_timeout_s": 70.0},
+    }
+    runs = FakeRuns()
+    client_app = make_app(
+        FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1", run_config=snapshot)}), runs)
+    )
+    with TestClient(client_app) as client:
+        response = client.post("/v1/pipelines/t-1/gates/int-1/resume", json={"action": "approve"})
+
+    assert response.status_code == 202
+    call = runs.create_calls[0]
+    assert call["assistant_id"] == "assistant-golden"
+    restored = call["config"]["configurable"]
+    assert restored["assistant_id"] == "assistant-golden"
+    assert restored["project_id"] == "project-a"
+    assert restored["app_id"] == "app-a"
+    assert restored["engine"] == "loadrunner"
+    assert restored["connections"] == {"execution_engine": "lre-a"}
+    assert restored["agent_backend"] == "anthropic"
+    assert restored["load_test"] == {"test_id": 42}
 
 
 def test_resume_gate_uses_thread_limits_for_recursion_budget() -> None:
@@ -207,6 +268,26 @@ def test_abort_cancels_running_and_pending_runs() -> None:
     assert response.status_code == 202
     assert response.json() == {"cancelled_run_ids": ["r-run", "r-pend"]}
     assert runs.cancelled == ["r-run", "r-pend"]
+
+
+def test_abort_uses_engine_kill_switch_when_execution_handle_exists() -> None:
+    runs = FakeRuns(runs=[{"run_id": "should-not-fallback", "status": "running"}])
+    engine_abort = FakeEngineAbort(
+        EngineAbortResult(
+            thread_id="t-1",
+            engine="loadrunner",
+            external_run_id="42",
+            cancelled_runs=["engine-cancelled-run"],
+        )
+    )
+    client_app = make_app(FakeClient(FakeThreads({}), runs), engine_abort=engine_abort)
+    with TestClient(client_app) as client:
+        response = client.post("/v1/pipelines/t-1/abort")
+
+    assert response.status_code == 202
+    assert response.json() == {"cancelled_run_ids": ["engine-cancelled-run"]}
+    assert engine_abort.calls == ["t-1"]
+    assert runs.cancelled == []
 
 
 def test_abort_with_no_active_run_is_409() -> None:

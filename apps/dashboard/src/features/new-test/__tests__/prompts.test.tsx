@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { server } from '@/test/server'
 
-import { installWizardHandlers, renderWizard } from './wizardTestUtils'
+import { flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 // CodeMirror needs real DOM measurement; mock it as a controlled textarea
 // (same boundary mock the hitl/artifacts suites use).
@@ -101,7 +101,7 @@ describe('PromptsStep', () => {
   it('shows only the focused phase system prompt plus an app-selection placeholder', async () => {
     installWizardHandlers()
     server.use(...promptHandlers())
-    renderWizard('/runs/new?step=prompts')
+    const rendered = renderWizard('/runs/new?step=prompts')
 
     const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
     await waitFor(() =>
@@ -121,13 +121,14 @@ describe('PromptsStep', () => {
     expect(
       within(promptSection).getByText('Select an application in Scope to load its requirements prompt.'),
     ).toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 
   it('changes the displayed system prompt when Config changes focus', async () => {
     installWizardHandlers()
     server.use(...promptHandlers())
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=prompts')
+    const rendered = renderWizard('/runs/new?step=prompts')
 
     const promptSection = screen.getByRole('tabpanel', { name: 'Prompts' })
     await waitFor(() =>
@@ -160,13 +161,14 @@ describe('PromptsStep', () => {
     expect(
       within(focusedSection).getByText('Select an application in Scope to load its requirements prompt.'),
     ).toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 
   it('shows the selected application prompt from the application catalog', async () => {
     installWizardHandlers()
     server.use(...promptHandlers())
     const user = userEvent.setup()
-    renderWizard()
+    const rendered = renderWizard()
 
     await selectCheckoutApplication(user)
     await user.click(screen.getByRole('tab', { name: 'Prompts' }))
@@ -182,13 +184,14 @@ describe('PromptsStep', () => {
     expect(within(appBlock).getByTestId('codemirror')).toHaveValue(
       'Checkout must preserve carts during payment retries.',
     )
+    await flushAndUnmountWizard(rendered)
   })
 
   it('keeps a missing application prompt as an empty overrideable slot', async () => {
     installWizardHandlers()
     server.use(...promptHandlers({ includeApplication: false }))
     const user = userEvent.setup()
-    renderWizard()
+    const rendered = renderWizard()
 
     await selectCheckoutApplication(user)
     await user.click(screen.getByRole('tab', { name: 'Prompts' }))
@@ -211,13 +214,14 @@ describe('PromptsStep', () => {
     expect(payload.configurable.prompt_overrides).toEqual({
       'application/app-checkout': { content: 'Custom application requirements' },
     })
+    await flushAndUnmountWizard(rendered)
   })
 
   it('includes both system and application overrides in the review launch JSON', async () => {
     installWizardHandlers()
     server.use(...promptHandlers())
     const user = userEvent.setup()
-    renderWizard()
+    const rendered = renderWizard()
 
     await selectCheckoutApplication(user)
     await user.click(screen.getByRole('tab', { name: 'Prompts' }))
@@ -246,5 +250,6 @@ describe('PromptsStep', () => {
       'phase/story_analysis': { content: 'Custom story system prompt' },
       'application/app-checkout': { content: 'Custom checkout requirements' },
     })
+    await flushAndUnmountWizard(rendered)
   })
 })

@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { server } from '@/test/server'
 
-import { installWizardHandlers, renderWizard } from './wizardTestUtils'
+import { flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 // Same realm-mismatch problem setup.ts solves for AbortSignal: the fetch stack
 // is Node's undici, which brand-checks FormData/File against Node's classes,
@@ -75,7 +75,7 @@ describe('ContextStep', () => {
       }),
     )
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=context')
+    const rendered = renderWizard('/runs/new?step=context')
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['spec body'], 'spec.txt', { type: 'text/plain' }))
@@ -95,6 +95,7 @@ describe('ContextStep', () => {
     await waitFor(() =>
       expect(within(chips).queryByText('spec.txt · 11.0 KB')).not.toBeInTheDocument(),
     )
+    await flushAndUnmountWizard(rendered)
   })
 
   it('rejects an unsupported dropped file with a friendly error and does not upload', async () => {
@@ -109,7 +110,7 @@ describe('ContextStep', () => {
         return HttpResponse.json({}, { status: 201 })
       }),
     )
-    renderWizard('/runs/new?step=context')
+    const rendered = renderWizard('/runs/new?step=context')
 
     const dropzone = await screen.findByTestId('document-dropzone')
     fireEvent.drop(dropzone, {
@@ -119,6 +120,7 @@ describe('ContextStep', () => {
     const errors = await screen.findByTestId('upload-errors')
     expect(errors).toHaveTextContent(/diagram\.png: unsupported type/i)
     expect(posted).toBe(false)
+    await flushAndUnmountWizard(rendered)
   })
 
   it('shows parse status, char count and an expandable preview for a parsed upload', async () => {
@@ -145,7 +147,7 @@ describe('ContextStep', () => {
       ),
     )
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=context')
+    const rendered = renderWizard('/runs/new?step=context')
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['# Story'], 'story.md', { type: 'text/markdown' }))
@@ -157,6 +159,7 @@ describe('ContextStep', () => {
     // Preview is revealed on demand.
     await user.click(within(attached).getByText('Preview extracted text'))
     expect(within(attached).getByText('Story preview text body')).toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 
   it('surfaces a parse error for a failed upload', async () => {
@@ -182,7 +185,7 @@ describe('ContextStep', () => {
       ),
     )
     const user = userEvent.setup()
-    renderWizard('/runs/new?step=context')
+    const rendered = renderWizard('/runs/new?step=context')
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['%PDF'], 'broken.pdf', { type: 'application/pdf' }))
@@ -190,5 +193,6 @@ describe('ContextStep', () => {
     const attached = await screen.findByTestId('attached-documents')
     expect(within(attached).getByText('Parse failed')).toBeInTheDocument()
     expect(within(attached).getByText(/password-protected/)).toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 })

@@ -13,6 +13,7 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -90,6 +91,7 @@ class ConsumerScope(Base):
             "project_id",
             unique=True,
             postgresql_where=text("app_id IS NULL"),
+            sqlite_where=text("app_id IS NULL"),
         ),
     )
 
@@ -134,6 +136,7 @@ class AuditLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    chain_seq: Mapped[int] = mapped_column(BigInteger, unique=True)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     category: Mapped[str] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(String(128))
@@ -272,6 +275,10 @@ class Environment(Base):
     kind: Mapped[str | None] = mapped_column(String(64))  # e.g. "k8s", "vm"
     base_url: Mapped[str | None] = mapped_column(String(1024))
     options: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    target_approved: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    target_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -376,6 +383,7 @@ class Document(Base):
     media_type: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     artifact_key: Mapped[str] = mapped_column(String(1024))  # key in the artifact store
+    artifact_connection_id: Mapped[str | None] = mapped_column(String(255))
     project_id: Mapped[str | None] = mapped_column(String(255))
     app_id: Mapped[str | None] = mapped_column(String(255))
     summary: Mapped[str | None] = mapped_column(Text)
@@ -403,6 +411,13 @@ class SavedQuery(Base):
     __tablename__ = "saved_queries"
     __table_args__ = (
         UniqueConstraint("project_id", "name"),
+        Index(
+            "uq_saved_queries_global_name",
+            "name",
+            unique=True,
+            postgresql_where=text("project_id IS NULL"),
+            sqlite_where=text("project_id IS NULL"),
+        ),
         Index("ix_saved_queries_project_id", "project_id"),
     )
 
@@ -429,7 +444,9 @@ class EngineRun(Base):
     __tablename__ = "engine_runs"
     __table_args__ = (
         UniqueConstraint("thread_id", "attempt"),
+        UniqueConstraint("artifact_namespace"),
         Index("ix_engine_runs_project_started", "project_id", "started_at"),
+        Index("ix_engine_runs_project_app_started", "project_id", "app_id", "started_at"),
         Index("ix_engine_runs_status_started", "status", "started_at"),
         Index("ix_engine_runs_engine_started", "engine", "started_at"),
         Index("ix_engine_runs_external_run_id", "external_run_id"),
@@ -438,9 +455,15 @@ class EngineRun(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     thread_id: Mapped[str] = mapped_column(String(64))
     project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
+    ownership_known: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true")
+    )
     attempt: Mapped[int] = mapped_column(Integer)
     engine: Mapped[str] = mapped_column(String(64))
     external_run_id: Mapped[str | None] = mapped_column(String(255))
+    artifact_namespace: Mapped[str | None] = mapped_column(String(512))
+    artifact_connection_id: Mapped[str | None] = mapped_column(String(255))
     handle: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     status: Mapped[str] = mapped_column(String(32))  # EngineRunPhase value
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -461,14 +484,20 @@ class UsageEvent(Base):
     """
 
     __tablename__ = "usage_events"
-    __table_args__ = (Index("ix_usage_events_project_id_at", "project_id", "at"),)
+    __table_args__ = (
+        UniqueConstraint("event_key"),
+        Index("ix_usage_events_project_id_at", "project_id", "at"),
+        Index("ix_usage_events_project_app_at", "project_id", "app_id", "at"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    event_key: Mapped[str | None] = mapped_column(String(512))
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     consumer_name: Mapped[str] = mapped_column(String(255))
     project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
     surface: Mapped[str] = mapped_column(String(32))  # "v1" | "graph"
     action: Mapped[str] = mapped_column(String(255))  # operation_id or graph event name
     thread_id: Mapped[str | None] = mapped_column(String(64))
@@ -486,18 +515,22 @@ class AgentEvent(Base):
 
     __tablename__ = "agent_events"
     __table_args__ = (
+        UniqueConstraint("event_key"),
         Index("ix_agent_events_project_id_at", "project_id", "at"),
+        Index("ix_agent_events_project_app_at", "project_id", "app_id", "at"),
         Index("ix_agent_events_phase_at", "phase", "at"),
         Index("ix_agent_events_model_at", "model", "at"),
         Index("ix_agent_events_thread_id", "thread_id"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    event_key: Mapped[str | None] = mapped_column(String(512))
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     thread_id: Mapped[str | None] = mapped_column(String(64))
     project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
     phase: Mapped[str] = mapped_column(String(64))
     agent_name: Mapped[str] = mapped_column(String(255))
     model: Mapped[str | None] = mapped_column(String(255))
@@ -519,13 +552,17 @@ class Draft(Base):
     """Server-side new-test wizard draft (roams across browsers/operators)."""
 
     __tablename__ = "drafts"
-    __table_args__ = (Index("ix_drafts_project_id", "project_id"),)
+    __table_args__ = (
+        Index("ix_drafts_project_id", "project_id"),
+        Index("ix_drafts_created_by_consumer_id", "created_by_consumer_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     title: Mapped[str] = mapped_column(String(1024))
     project_id: Mapped[str | None] = mapped_column(String(255))
     payload: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     created_by: Mapped[str | None] = mapped_column(String(255))
+    created_by_consumer_id: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

@@ -3,8 +3,10 @@
  *
  * AUTHORITATIVE SOURCE — the backend emit_event call sites:
  *   src/apex/graphs/pipeline/graph.py            plan_resolved
- *   src/apex/graphs/pipeline/phase_subgraph.py   phase_status, gate_opened, tool_call
- *   src/apex/graphs/pipeline/execution_phase.py  phase_status, engine_poll
+ *   src/apex/graphs/pipeline/phase_subgraph.py   phase_status, gate_opened, tool_call,
+ *                                               agent_message, agent_error
+ *   src/apex/graphs/pipeline/execution_phase.py  phase_status, engine_poll,
+ *                                               engine_poll_error
  *
  * Forward-compatibility policy (schema_version 1):
  * - Unknown FIELDS on a known event type are tolerated (`.passthrough()`) and
@@ -136,6 +138,43 @@ export const ToolCallEventSchema = z
   .passthrough();
 export type ToolCallEvent = z.infer<typeof ToolCallEventSchema>;
 
+/** Emitted after a real agent produces its phase response. */
+export const AgentMessageEventSchema = z
+  .object({
+    schema_version: schemaVersion,
+    type: z.literal("agent_message"),
+    phase: PhaseNameSchema,
+    model: z.string(),
+    chars: z.number().int().nonnegative(),
+  })
+  .passthrough();
+export type AgentMessageEvent = z.infer<typeof AgentMessageEventSchema>;
+
+/** Emitted when a real agent fails before the terminal phase_status event. */
+export const AgentErrorEventSchema = z
+  .object({
+    schema_version: schemaVersion,
+    type: z.literal("agent_error"),
+    phase: PhaseNameSchema,
+    error: z.string(),
+  })
+  .passthrough();
+export type AgentErrorEvent = z.infer<typeof AgentErrorEventSchema>;
+export type AgentEvent = AgentMessageEvent | AgentErrorEvent;
+
+/** Emitted for each bounded, retryable failure while polling an external engine. */
+export const EnginePollErrorEventSchema = z
+  .object({
+    schema_version: schemaVersion,
+    type: z.literal("engine_poll_error"),
+    phase: PhaseNameSchema,
+    attempt: z.number().int(),
+    error: z.string(),
+    consecutive_errors: z.number().int().positive(),
+  })
+  .passthrough();
+export type EnginePollErrorEvent = z.infer<typeof EnginePollErrorEventSchema>;
+
 /**
  * Emitted once by engine_start (initial tick) then once per poll cycle by
  * engine_poll (execution_phase.py `_poll_event`). `status` is the ENGINE run
@@ -162,6 +201,9 @@ export const PipelineEventSchema = z.discriminatedUnion("type", [
   PhaseStatusEventSchema,
   GateOpenedEventSchema,
   ToolCallEventSchema,
+  AgentMessageEventSchema,
+  AgentErrorEventSchema,
+  EnginePollErrorEventSchema,
   EnginePollEventSchema,
 ]);
 export type PipelineEvent = z.infer<typeof PipelineEventSchema>;

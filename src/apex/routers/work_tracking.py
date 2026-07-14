@@ -17,12 +17,15 @@ Error contract (adapters raise, this router translates to problem details):
 
 Saved queries are project-scoped like M2 documents: global rows (project_id
 NULL) are visible to everyone, scoped rows only to consumers with that project
-scope; mutations require operator+.
+scope. Mutations require operator+ and must not widen an app-only identity:
+global rows require an unscoped admin, while project rows require project-wide
+scope.
 """
 
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 
@@ -32,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
-from apex.auth.identity import ConsumerIdentity, Role
+from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 from apex.domain.integrations import (
     Enrichment,
     Page,
@@ -45,7 +48,7 @@ from apex.domain.integrations import (
 )
 from apex.persistence.models import SavedQuery
 from apex.persistence.repositories.saved_queries import SavedQueriesRepository
-from apex.services.connections import ConnectionResolver
+from apex.services.connections import ConnectionResolver, internal_project_binding
 from apex.services.work_tracking import (
     get_saved_queries_repository,
     get_work_tracking_resolver,
@@ -144,11 +147,10 @@ def _selected_project(identity: ConsumerIdentity, project: str | None) -> str | 
     )
 
 
-def _query_projects(identity: ConsumerIdentity, project: str | None) -> tuple[str, ...] | None:
-    if identity.is_unscoped:
-        return None
-    selected = _selected_project(identity, project)
-    return (selected,) if selected is not None else ()
+def select_work_tracking_project(identity: ConsumerIdentity, project: str | None) -> str | None:
+    """Public project-selection policy shared by direct and context routes."""
+
+    return _selected_project(identity, project)
 
 
 async def _resolve_adapter(
@@ -156,10 +158,10 @@ async def _resolve_adapter(
     identity: ConsumerIdentity,
     connection_id: str | None,
     project: str | None = None,
-) -> Any:
+) -> "ResolvedWorkTrackingAdapter":
     selected_project = _selected_project(identity, project)
     try:
-        return await resolver.resolve(
+        adapter = await resolver.resolve(
             PortKind.WORK_TRACKING,
             connection_id=connection_id,
             project_id=selected_project,
@@ -168,6 +170,79 @@ async def _resolve_adapter(
         raise HTTPException(status_code=404, detail=_exc_detail(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    provider = getattr(adapter, "provider", None)
+    if not isinstance(provider, str) or not provider.strip():
+        raise HTTPException(
+            status_code=409,
+            detail="resolved work-tracking adapter does not declare its provider",
+        )
+    return ResolvedWorkTrackingAdapter(
+        adapter=adapter,
+        provider=provider.casefold(),
+        selected_project=selected_project,
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedWorkTrackingAdapter:
+    adapter: Any
+    provider: str
+    selected_project: str | None
+
+
+def _require_project_bound(binding: ResolvedWorkTrackingAdapter) -> None:
+    """Fail closed for scoped real-provider adapters lacking an APEX binding."""
+
+    if binding.selected_project is None or binding.provider in {"stub", "fake"}:
+        return
+    configured = internal_project_binding(binding.adapter)
+    if (
+        not isinstance(configured, str)
+        or configured.casefold() != binding.selected_project.casefold()
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="resolved work-tracking connection is not bound to the selected project",
+        )
+
+
+def _external_query_project(binding: ResolvedWorkTrackingAdapter) -> str | None:
+    """Provider project/key after internal APEX ownership has been proven."""
+
+    if binding.selected_project is None:
+        return None
+    if binding.provider in {"stub", "fake"}:
+        return binding.selected_project
+    configured = getattr(binding.adapter, "project_id", None)
+    if not isinstance(configured, str) or not configured.strip():
+        raise HTTPException(
+            status_code=409,
+            detail="resolved work-tracking adapter has no external project configured",
+        )
+    return configured
+
+
+def _require_matching_provider(
+    binding: ResolvedWorkTrackingAdapter, query: TranslatedQuery
+) -> None:
+    if query.provider.casefold() != binding.provider:
+        raise HTTPException(
+            status_code=403,
+            detail="work query provider does not match the resolved connection",
+        )
+
+
+async def resolve_scoped_work_tracking_adapter(
+    resolver: ConnectionResolver,
+    identity: ConsumerIdentity,
+    connection_id: str | None = None,
+    project: str | None = None,
+) -> ResolvedWorkTrackingAdapter:
+    """Resolve an adapter and prove its direct-item project boundary."""
+
+    binding = await _resolve_adapter(resolver, identity, connection_id, project)
+    _require_project_bound(binding)
+    return binding
 
 
 async def get_work_tracking_adapter(
@@ -175,11 +250,11 @@ async def get_work_tracking_adapter(
     resolver: ResolverDep,
     connection_id: ConnectionIdParam = None,
     project: ProjectParam = None,
-) -> Any:
-    return await _resolve_adapter(resolver, identity, connection_id, project)
+) -> ResolvedWorkTrackingAdapter:
+    return await resolve_scoped_work_tracking_adapter(resolver, identity, connection_id, project)
 
 
-AdapterDep = Annotated[Any, Depends(get_work_tracking_adapter)]
+AdapterDep = Annotated[ResolvedWorkTrackingAdapter, Depends(get_work_tracking_adapter)]
 
 
 def _exc_detail(exc: BaseException) -> str:
@@ -206,6 +281,22 @@ def _visible(identity: ConsumerIdentity, row: SavedQuery) -> bool:
     return row.project_id is None or identity.allows_project(row.project_id)
 
 
+def _ensure_saved_query_write(identity: ConsumerIdentity, project_id: str | None) -> None:
+    """Require authority matching the full audience of the saved query."""
+
+    allowed = (
+        identity.is_unscoped
+        if project_id is None
+        else identity.contains_scope(ScopeRef(project_id=project_id))
+    )
+    if not allowed:
+        audience = "global" if project_id is None else "project-wide"
+        raise HTTPException(
+            status_code=403,
+            detail=f"{audience} saved-query mutations require matching administrative scope",
+        )
+
+
 _ORDER_BY = re.compile(r"\border\s+by\b", re.IGNORECASE)
 _WIQL_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
 _JQL_PROJECT = re.compile(
@@ -220,9 +311,8 @@ _WIQL_PROJECT = re.compile(
 
 
 def _constrain_translated_query(
-    identity: ConsumerIdentity, query: TranslatedQuery, project: str | None
+    query: TranslatedQuery, allowed: tuple[str, ...] | None
 ) -> TranslatedQuery:
-    allowed = _query_projects(identity, project)
     if allowed is None:
         return query
     if not allowed:
@@ -325,12 +415,23 @@ async def translate_work_query(
     project: ProjectParam = None,
 ) -> Any:
     selected_project = _selected_project(identity, project)
-    adapter = await _resolve_adapter(
+    binding = await _resolve_adapter(
         resolver, identity, body.connection_id or connection_id, selected_project
     )
-    context = QueryContext(project_id=selected_project)
+    _require_project_bound(binding)
+    external_project = _external_query_project(binding)
+    context = QueryContext(
+        project_id=selected_project,
+        hints={"project": external_project} if external_project is not None else {},
+    )
     with adapter_errors():
-        return await adapter.translate_query(body.text, context=context)
+        translated = await binding.adapter.translate_query(body.text, context=context)
+    if translated.provider.casefold() != binding.provider:
+        raise HTTPException(
+            status_code=502,
+            detail="work-tracking adapter returned an inconsistent provider",
+        )
+    return translated
 
 
 @router.post("/query/execute", operation_id="executeWorkQuery", response_model=WorkItemPage)
@@ -342,13 +443,17 @@ async def execute_work_query(
     project: ProjectParam = None,
 ) -> Any:
     selected_project = _selected_project(identity, project)
-    scoped_query = _constrain_translated_query(identity, body.query, selected_project)
-    adapter = await _resolve_adapter(
+    binding = await _resolve_adapter(
         resolver, identity, body.connection_id or connection_id, selected_project
     )
+    _require_project_bound(binding)
+    _require_matching_provider(binding, body.query)
+    external_project = _external_query_project(binding)
+    allowed_projects = (external_project,) if external_project is not None else None
+    scoped_query = _constrain_translated_query(body.query, allowed_projects)
     page = Page(offset=body.offset, limit=body.limit)
     with adapter_errors():
-        return await adapter.execute_query(scoped_query, page=page)
+        return await binding.adapter.execute_query(scoped_query, page=page)
 
 
 # ── Item passthrough ─────────────────────────────────────────────────────────
@@ -356,7 +461,7 @@ async def execute_work_query(
 
 @router.get("/items", operation_id="listWorkItems", response_model=WorkItemPage)
 async def list_work_items(
-    adapter: AdapterDep,
+    binding: AdapterDep,
     status: str | None = None,
     kind: str | None = None,
     q: str | None = None,
@@ -365,13 +470,13 @@ async def list_work_items(
 ) -> Any:
     filters = WorkItemFilters(status=status, kind=kind, text=q)
     with adapter_errors():
-        return await adapter.list_items(filters, page=Page(offset=offset, limit=limit))
+        return await binding.adapter.list_items(filters, page=Page(offset=offset, limit=limit))
 
 
 @router.get("/items/{key}", operation_id="getWorkItem", response_model=WorkItem)
-async def get_work_item(key: str, adapter: AdapterDep) -> Any:
+async def get_work_item(key: str, binding: AdapterDep) -> Any:
     with adapter_errors():
-        return await adapter.get_item(key)
+        return await binding.adapter.get_item(key)
 
 
 @router.post(
@@ -381,9 +486,9 @@ async def get_work_item(key: str, adapter: AdapterDep) -> Any:
     response_model=WorkItem,
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
-async def create_work_item(draft: WorkItemDraft, adapter: AdapterDep) -> Any:
+async def create_work_item(draft: WorkItemDraft, binding: AdapterDep) -> Any:
     with adapter_errors():
-        return await adapter.create_item(draft)
+        return await binding.adapter.create_item(draft)
 
 
 @router.post(
@@ -392,9 +497,9 @@ async def create_work_item(draft: WorkItemDraft, adapter: AdapterDep) -> Any:
     response_model=WorkItem,
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
-async def enrich_work_item(key: str, enrichment: Enrichment, adapter: AdapterDep) -> Any:
+async def enrich_work_item(key: str, enrichment: Enrichment, binding: AdapterDep) -> Any:
     with adapter_errors():
-        return await adapter.enrich_item(key, enrichment)
+        return await binding.adapter.enrich_item(key, enrichment)
 
 
 # ── Saved queries ────────────────────────────────────────────────────────────
@@ -434,7 +539,7 @@ async def create_saved_query(
     identity: Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))],
     repository: RepositoryDep,
 ) -> Any:
-    ensure_scope(identity, project_id=body.project_id)
+    _ensure_saved_query_write(identity, body.project_id)
     row = SavedQuery(
         name=body.name,
         project_id=body.project_id,
@@ -473,6 +578,7 @@ async def update_saved_query(
     row = await repository.get(saved_query_id)
     if row is None or not _visible(identity, row):
         raise HTTPException(status_code=404, detail=f"saved query {saved_query_id!r} not found")
+    _ensure_saved_query_write(identity, row.project_id)
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         return SavedQueryOut.model_validate(row)
@@ -495,4 +601,5 @@ async def delete_saved_query(
     row = await repository.get(saved_query_id)
     if row is None or not _visible(identity, row):
         raise HTTPException(status_code=404, detail=f"saved query {saved_query_id!r} not found")
+    _ensure_saved_query_write(identity, row.project_id)
     await repository.delete(row)

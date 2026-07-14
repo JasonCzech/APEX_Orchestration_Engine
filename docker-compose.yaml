@@ -6,7 +6,7 @@
 # Secrets/credentials are NOT inlined: they come from the shell environment or an
 # auto-loaded `.env` via ${VAR:-default} interpolation (same pattern as the HA rig,
 # deploy/compose-ha/docker-compose.ha.yaml). Override before `docker compose up`:
-#   APEX_POSTGRES_PASSWORD=… APEX_MINIO_SECRET_KEY=… LANGGRAPH_CLOUD_LICENSE_KEY=…
+#   APEX_POSTGRES_PASSWORD=… APEX_INTEGRATION_MINIO_SECRET_KEY=… LANGGRAPH_CLOUD_LICENSE_KEY=…
 # NOTE: do not point apex-server at the dev `.env` URIs (they use localhost); the
 # container reaches its dependencies by compose service name (postgres/redis/minio).
 services:
@@ -50,7 +50,7 @@ services:
     command: server /data
     environment:
       MINIO_ROOT_USER: apex
-      MINIO_ROOT_PASSWORD: ${APEX_MINIO_SECRET_KEY:-apex-minio}
+      MINIO_ROOT_PASSWORD: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
     volumes:
       - miniodata:/data
     healthcheck:
@@ -74,7 +74,7 @@ services:
       REDIS_URI: redis://redis:6379
       APEX_ENVIRONMENT: compose
       APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
-      APEX_MINIO_SECRET_KEY: ${APEX_MINIO_SECRET_KEY:-apex-minio}
+      APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
       # Required for the standalone server to boot (Enterprise). Empty = unset.
       LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY:-}
     healthcheck:

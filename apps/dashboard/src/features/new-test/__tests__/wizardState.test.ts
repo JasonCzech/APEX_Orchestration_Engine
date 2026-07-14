@@ -1,8 +1,8 @@
 /**
  * Pure-logic contract tests for wizardState: per-step validation, the
- * PHASE_PREREQUISITES mirror's warn-only hints, gates_mode -> explicit matrix
+ * PHASE_PREREQUISITES mirror's new-thread validation, gates_mode -> explicit matrix
  * mapping (the shape the backend's PipelineConfigurable.gates expects), and
- * the exact launch payload builder.
+ * the launch-plan builder.
  */
 import { describe, expect, it } from 'vitest'
 
@@ -54,24 +54,24 @@ describe('wizardState validation', () => {
   })
 })
 
-describe('phase prerequisites (warn, never block)', () => {
-  it('warns when a prereq is not earlier in the plan, in backend phrasing', () => {
+describe('phase prerequisites', () => {
+  it('reports when a prerequisite is absent from the new thread plan', () => {
     expect(phaseDependencyHints(['execution', 'reporting'])).toEqual([
-      'execution needs script_scenario earlier in plan or succeeded on thread',
+      'execution requires script_scenario earlier in this new run',
     ])
     expect(phaseDependencyHints(['reporting'])).toEqual([
-      'reporting needs execution earlier in plan or succeeded on thread',
+      'reporting requires execution earlier in this new run',
     ])
     // Full canonical plan satisfies everything; env_triage has no prereqs.
     expect(phaseDependencyHints([...PHASE_NAMES])).toEqual([])
     expect(phaseDependencyHints(['env_triage'])).toEqual([])
   })
 
-  it('normalizePhases keeps canonical order and collapses all/none to null', () => {
+  it('normalizePhases keeps canonical order and preserves an explicit empty plan', () => {
     expect(normalizePhases(['reporting', 'execution'])).toEqual(['execution', 'reporting'])
     expect(normalizePhases([...PHASE_NAMES])).toBeNull()
-    expect(normalizePhases([])).toBeNull()
-    expect(normalizePhases(['bogus'])).toBeNull()
+    expect(normalizePhases([])).toEqual([])
+    expect(normalizePhases(['bogus'])).toEqual([])
   })
 })
 
@@ -100,6 +100,7 @@ describe('buildLaunchPreview', () => {
   it('builds the exact payload: omits empty optionals, includes explicit gates', () => {
     const draft = validDraft()
     expect(buildLaunchPreview(draft)).toEqual({
+      assistant_id: 'pipeline',
       metadata: { project_id: 'demo', title: 'Checkout soak' },
       input: { title: 'Checkout soak', request: 'Soak the checkout flow' },
       configurable: {
@@ -107,10 +108,12 @@ describe('buildLaunchPreview', () => {
         engine: 'sim',
         gates: allGatedMatrix(),
       },
+      document_ids: [],
+      work_item_keys: [],
     })
   })
 
-  it('includes scope ids, phase subset, overrides and prefixed context refs', () => {
+  it('includes scope ids, phase subset, overrides and context selections', () => {
     const draft = validDraft()
     draft.scope.app_id = 'app-checkout'
     draft.scope.environment_id = 'env-staging'
@@ -135,7 +138,37 @@ describe('buildLaunchPreview', () => {
       phases: ['execution', 'reporting'],
       gates: ALL_AUTO_GATES,
       prompt_overrides: { 'phase/execution': { content: 'Custom system prompt' } },
-      pre_execution_context: ['workitem:PHX-241', 'document:doc-9'],
+    })
+    expect(preview.document_ids).toEqual(['doc-9'])
+    expect(preview.work_item_keys).toEqual(['PHX-241'])
+  })
+
+  it('retains unedited golden fields while visible controls override the bundle', () => {
+    const draft = validDraft()
+    draft.config.golden_config_id = 'asst-gold'
+    draft.config.golden_configurable = {
+      engine: 'loadrunner',
+      connections: { execution: 'conn-7' },
+      agent_backend: 'anthropic',
+      model_by_phase: { reporting: 'claude-sonnet' },
+      limits: { max_revise_loops: 6, poll_interval_s: 10 },
+      prompt_overrides: { 'phase/reporting': { version_id: 'ver-9' } },
+    }
+    draft.config.engine = 'apex_load'
+    draft.prompt_overrides['phase/execution'] = { content: 'Run-specific prompt' }
+
+    const preview = buildLaunchPreview(draft)
+    expect(preview.assistant_id).toBe('asst-gold')
+    expect(preview.configurable).toMatchObject({
+      engine: 'apex_load',
+      connections: { execution: 'conn-7' },
+      agent_backend: 'anthropic',
+      model_by_phase: { reporting: 'claude-sonnet' },
+      limits: { max_revise_loops: 6, poll_interval_s: 10 },
+      prompt_overrides: {
+        'phase/reporting': { version_id: 'ver-9' },
+        'phase/execution': { content: 'Run-specific prompt' },
+      },
     })
   })
 })

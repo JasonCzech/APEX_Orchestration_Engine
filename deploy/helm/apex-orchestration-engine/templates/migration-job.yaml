@@ -27,7 +27,7 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
-      serviceAccountName: {{ include "apex.serviceAccountName" . }}
+      serviceAccountName: {{ include "apex.hookServiceAccountName" . | quote }}
       automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
@@ -53,6 +53,9 @@ spec:
               command.upgrade(cfg, "head")
           env:
             {{- include "apex.dbEnv" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.migrations.resources | nindent 12 }}
           volumeMounts:

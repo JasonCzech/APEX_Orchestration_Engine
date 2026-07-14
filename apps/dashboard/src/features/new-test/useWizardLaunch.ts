@@ -1,36 +1,72 @@
 /**
- * useWizardLaunch — the wizard's launch path. Extends D2's minimal launch
- * (features/runs/launchRun.ts): same thread-create + background-run-create
- * SDK calls and identical stream options, but the configurable comes from the
- * full WizardDraft via buildLaunchPreview (the SAME builder the review step
- * renders, so the JSON shown is byte-for-byte what is sent).
+ * useWizardLaunch — the wizard's launch path through the domain facade. The
+ * server resolves selected document ids into full context packets before it
+ * creates the thread, while selected work items are resolved here into inline
+ * packets. The full configurable bundle and selected assistant id are retained.
  */
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { getLangGraphClient } from '@/api/langgraphClient'
+import type { components } from '@apex/api-client'
+
+import { getApexClient } from '@/api/apexClient'
+import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchWorkItem } from '@/api/hooks/useWorkTracking'
 import { queryKeys } from '@/api/queryKeys'
-import { recommendedRecursionLimit, type LaunchedRun } from '@/features/runs/launchRun'
+import type { LaunchedRun } from '@/features/runs/launchRun'
 
 import { buildLaunchPreview, type WizardDraft } from './wizardState'
 
+type ContextPacketInput = NonNullable<
+  components['schemas']['StartPipelineRequest']['context_packets']
+>[number]
+
+async function resolveWorkItemPackets(draft: WizardDraft): Promise<ContextPacketInput[]> {
+  const project = draft.scope.project_id.trim() || undefined
+  const workItems = await Promise.all(
+    draft.work_item_keys.map((key) => fetchWorkItem(key, project)),
+  )
+  const packets: ContextPacketInput[] = workItems.map((item) => ({
+    id: `workitem-${item.key}`,
+    source: 'work_tracking',
+    title: item.title,
+    summary: `${item.kind} · ${item.status}`,
+    ref: item.url ?? item.key,
+    ...(item.description.trim().length > 0 ? { text: item.description } : {}),
+  }))
+  packets.push(
+    ...draft.context_summary_ids.map((id) => ({
+      id: `context-${id}`,
+      source: 'context_summary',
+      title: id,
+      ref: id,
+    })),
+  )
+  return packets
+}
+
 export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> {
   const preview = buildLaunchPreview(draft)
-  const client = await getLangGraphClient()
-  const thread = await client.threads.create({ metadata: preview.metadata })
-  // Stream options mirror D2's launchRun (plan Part 1 "Streaming" launch defaults).
-  const run = await client.runs.create(thread.thread_id, 'pipeline', {
-    input: preview.input,
-    config: {
-      recursion_limit: recommendedRecursionLimit(preview.configurable),
+  const contextPackets = await resolveWorkItemPackets(draft)
+  const { data, error, response } = await getApexClient().POST('/v1/pipelines', {
+    body: {
+      assistant_id: preview.assistant_id,
+      title: preview.input.title,
+      request: preview.input.request,
+      project_id: draft.scope.project_id.trim(),
+      ...(draft.scope.app_id ? { app_id: draft.scope.app_id } : {}),
       configurable: preview.configurable,
+      ...(preview.document_ids.length > 0 ? { document_ids: preview.document_ids } : {}),
+      ...(contextPackets.length > 0 ? { context_packets: contextPackets } : {}),
     },
-    streamMode: ['updates', 'messages-tuple', 'custom'],
-    streamSubgraphs: true,
-    streamResumable: true,
-    durability: 'sync',
-    multitaskStrategy: 'reject',
   })
-  return { threadId: thread.thread_id, runId: run.run_id }
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status,
+      errorMessageOf(error, `Pipeline launch failed (${response.status})`),
+      error,
+    )
+  }
+  return { threadId: data.thread_id, runId: data.run_id }
 }
 
 /**

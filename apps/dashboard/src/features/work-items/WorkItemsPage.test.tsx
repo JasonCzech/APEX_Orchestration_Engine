@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
@@ -51,7 +52,7 @@ describe('WorkItemsPage', () => {
     const row = await screen.findByTestId('wi-row-PHX-101')
     expect(within(row).getByRole('link', { name: 'PHX-101' })).toHaveAttribute(
       'href',
-      '/work-items/jira/PHX-101',
+      '/work-items/jira/PHX-101?project=proj-alpha',
     )
     expect(within(row).getByText('story')).toHaveClass('dash-context-chip')
     expect(within(row).getByText('open')).toHaveClass('status-badge')
@@ -99,6 +100,104 @@ describe('WorkItemsPage', () => {
     ])
   })
 
+  it('requires and sends a project for multi-project consumers', async () => {
+    const translate = translateHandler()
+    const execute = executeHandler([ITEM_PAYMENT], 1)
+    server.use(translate.handler, execute.handler, savedQueriesHandler([SAVED_OPEN]))
+    const user = userEvent.setup()
+    const base = authenticatedState('operator')
+    if (base.status !== 'authenticated') throw new Error('expected authenticated test state')
+    const consumer = {
+      ...base.consumer,
+      scopes: [
+        { project_id: 'proj-alpha', app_id: null },
+        { project_id: 'proj-beta', app_id: null },
+      ],
+    }
+    renderApp({
+      initialEntries: ['/work-items'],
+      authState: { ...base, consumer, systemInfo: { ...base.systemInfo, consumer } },
+    })
+
+    const project = await screen.findByRole('combobox', { name: 'Work tracking project' })
+    const savedQuery = await screen.findByLabelText('Saved queries')
+    const translateButton = screen.getByRole('button', { name: 'Translate' })
+    await user.type(screen.getByLabelText('Find by description'), 'open work')
+    expect(translateButton).toBeDisabled()
+    expect(savedQuery).toBeDisabled()
+    await user.selectOptions(project, 'proj-beta')
+    expect(savedQuery).toBeEnabled()
+    await user.click(translateButton)
+    await screen.findByRole('textbox', { name: 'Provider query' })
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+    await screen.findByTestId('wi-row-PHX-101')
+
+    expect(translate.projects).toEqual(['proj-beta'])
+    expect(execute.projects).toEqual(['proj-beta'])
+  })
+
+  it('defers a preloaded query until a multi-project consumer selects its scope', async () => {
+    const execute = executeHandler([ITEM_PAYMENT], 1)
+    server.use(execute.handler, savedQueriesHandler([]))
+    const user = userEvent.setup()
+    const base = authenticatedState('operator')
+    if (base.status !== 'authenticated') throw new Error('expected authenticated test state')
+    const consumer = {
+      ...base.consumer,
+      scopes: [
+        { project_id: 'proj-alpha', app_id: null },
+        { project_id: 'proj-beta', app_id: null },
+      ],
+    }
+    renderApp({
+      initialEntries: ['/work-items?provider=jira&query=status%20%3D%20Open'],
+      authState: { ...base, consumer, systemInfo: { ...base.systemInfo, consumer } },
+    })
+
+    const project = await screen.findByRole('combobox', { name: 'Work tracking project' })
+    expect(execute.captured).toHaveLength(0)
+    await user.selectOptions(project, 'proj-alpha')
+
+    await screen.findByTestId('wi-row-PHX-101')
+    expect(execute.projects).toEqual(['proj-alpha'])
+    expect(execute.captured).toHaveLength(1)
+  })
+
+  it('paginates the submitted query snapshot rather than edited controls', async () => {
+    const captured: Array<Record<string, unknown>> = []
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/execute', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>
+        captured.push(body)
+        return HttpResponse.json({ items: [ITEM_PAYMENT], total: 60 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.click(await screen.findByRole('button', { name: 'Manual query' }))
+    const provider = screen.getByRole('textbox', { name: 'Provider' })
+    const query = screen.getByRole('textbox', { name: 'Provider query' })
+    await user.type(provider, 'jira')
+    await user.type(query, 'project = ALPHA')
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+    await screen.findByTestId('wi-row-PHX-101')
+
+    await user.clear(provider)
+    await user.type(provider, 'ado')
+    await user.clear(query)
+    await user.type(query, 'SELECT changed')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    await waitFor(() => expect(captured).toHaveLength(2))
+    expect(captured[1]).toMatchObject({
+      query: { provider: 'jira', query: 'project = ALPHA', confidence: 1 },
+      limit: 25,
+      offset: 25,
+    })
+  })
+
   it('runs a saved query on pick and saves the current query via the modal', async () => {
     const execute = executeHandler([ITEM_PAYMENT], 1)
     const create = createSavedQueryHandler()
@@ -135,6 +234,7 @@ describe('WorkItemsPage', () => {
           description: 'Console pick list',
           provider: 'jira',
           query: SAVED_OPEN.query,
+          project_id: 'proj-alpha',
         },
       ]),
     )

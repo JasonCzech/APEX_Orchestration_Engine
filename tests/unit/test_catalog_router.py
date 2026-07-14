@@ -47,6 +47,8 @@ def _make_environment(app: Application, name: str, **kwargs: Any) -> Environment
         kind=kwargs.get("kind"),
         base_url=kwargs.get("base_url"),
         options=dict(kwargs.get("options") or {}),
+        target_approved=kwargs.get("target_approved", False),
+        target_version=kwargs.get("target_version", 0),
     )
     env.application = app
     env.hosts = _make_hosts(kwargs.get("hosts") or [])
@@ -139,6 +141,8 @@ class FakeCatalogRepository:
         name: str,
         kind: str | None = None,
         base_url: str | None = None,
+        target_approved: bool = False,
+        target_version: int = 0,
         options: dict[str, Any] | None = None,
         hosts: Sequence[dict[str, Any]] = (),
     ) -> Environment:
@@ -149,7 +153,14 @@ class FakeCatalogRepository:
             raise DuplicateNameError(name)
         app = self.applications[application_id]
         env = _make_environment(
-            app, name, kind=kind, base_url=base_url, options=options, hosts=list(hosts)
+            app,
+            name,
+            kind=kind,
+            base_url=base_url,
+            target_approved=target_approved,
+            target_version=target_version,
+            options=options,
+            hosts=list(hosts),
         )
         self.environments[env.id] = env
         return env
@@ -302,6 +313,27 @@ def test_project_scoping_on_applications(repo: FakeCatalogRepository) -> None:
     assert len(unscoped.get("/catalog/applications").json()) == 2
 
 
+def test_app_only_operator_cannot_create_project_wide_application(
+    repo: FakeCatalogRepository,
+) -> None:
+    app_only = ConsumerIdentity(
+        consumer_id="app-op",
+        name="app-op",
+        consumer_type=ConsumerType.INTERNAL,
+        role=Role.OPERATOR,
+        scopes=[ScopeRef(project_id="demo", app_id="existing-app")],
+    )
+    client = make_client(repo, app_only)
+
+    response = client.post(
+        "/catalog/applications",
+        json={"project_id": "demo", "name": "Sibling"},
+    )
+
+    assert response.status_code == 403
+    assert repo.applications == {}
+
+
 # ── environments ─────────────────────────────────────────────────────────────
 
 
@@ -327,6 +359,8 @@ def test_environment_crud_with_hosts(repo: FakeCatalogRepository) -> None:
     env = created.json()
     assert [h["hostname"] for h in env["hosts"]] == ["app-01.local", "db-01.local"]
     assert env["last_snapshot"] is None
+    assert env["target_approved"] is False
+    assert env["target_version"] == 0
 
     # hosts replace-on-update: PATCH with hosts swaps the entire list
     patched = client.patch(
@@ -346,6 +380,85 @@ def test_environment_crud_with_hosts(repo: FakeCatalogRepository) -> None:
 
     assert client.delete(f"/catalog/environments/{env['id']}").status_code == 204
     assert client.get(f"/catalog/environments/{env['id']}").status_code == 404
+
+
+def test_scoped_operator_cannot_create_or_change_execution_target(
+    repo: FakeCatalogRepository,
+) -> None:
+    admin = make_client(repo, ADMIN)
+    app_id = admin.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    operator = make_client(repo, OPERATOR_DEMO)
+
+    denied_create = operator.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "unsafe",
+            "base_url": "http://169.254.169.254/latest/meta-data",
+        },
+    )
+    plain = operator.post(
+        "/catalog/environments",
+        json={"application_id": app_id, "name": "plain"},
+    )
+
+    assert denied_create.status_code == 403
+    assert plain.status_code == 201
+    assert (
+        operator.patch(
+            f"/catalog/environments/{plain.json()['id']}",
+            json={"base_url": "https://8.8.8.8/load"},
+        ).status_code
+        == 403
+    )
+
+
+def test_platform_admin_approves_and_versions_execution_target(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    created = client.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "approved",
+            "base_url": "https://8.8.8.8/load",
+        },
+    )
+
+    assert created.status_code == 201
+    assert created.json()["target_approved"] is True
+    assert created.json()["target_version"] == 1
+
+    cleared = client.patch(f"/catalog/environments/{created.json()['id']}", json={"base_url": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["target_approved"] is False
+    assert cleared.json()["target_version"] == 2
+
+
+def test_private_execution_target_requires_platform_approval_marker(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    payload: dict[str, Any] = {
+        "application_id": app_id,
+        "name": "private",
+        "base_url": "http://10.0.0.8/load",
+    }
+
+    assert client.post("/catalog/environments", json=payload).status_code == 422
+    payload["options"] = {"_apex_trusted_private_host": True}
+    approved = client.post("/catalog/environments", json=payload)
+    assert approved.status_code == 201
+    assert approved.json()["target_approved"] is True
 
 
 def test_environment_snapshot_summary(repo: FakeCatalogRepository) -> None:

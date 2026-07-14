@@ -31,6 +31,32 @@ export interface LiveToolCall {
   at?: unknown
 }
 
+/** Real-agent telemetry emitted immediately before the durable phase update. */
+export type LiveAgentEvent =
+  | {
+      type: 'agent_message'
+      phase: string
+      model: string
+      chars: number
+      at?: unknown
+    }
+  | {
+      type: 'agent_error'
+      phase: string
+      error: string
+      at?: unknown
+    }
+
+/** Retryable engine status failure; the backend keeps polling up to its bounded cap. */
+export interface LiveEngineError {
+  type: 'engine_poll_error'
+  phase: string
+  attempt: number
+  error: string
+  consecutive_errors: number
+  at?: unknown
+}
+
 /** One `engine_poll` ring-buffer sample (live_stats null when the engine has no fidelity yet). */
 export interface LiveEngineSample {
   status?: string
@@ -65,6 +91,8 @@ export interface LiveStreamViewLike {
   status: string
   phaseProgress?: Partial<Record<string, LivePhaseProgress>> | null
   toolCalls?: readonly LiveToolCall[] | null
+  agentEvents?: readonly LiveAgentEvent[] | null
+  engineErrors?: readonly LiveEngineError[] | null
   engineStats?: {
     samples?: readonly LiveEngineSample[] | null
     latest?: LiveEngineSample | null

@@ -66,11 +66,18 @@ redis:
 apexSettings:
   APEX_ENVIRONMENT: production
   APEX_AUTH__ENABLED: "true"
+  # PostgreSQL advisory locks prevent two replicas from creating the same
+  # costly provider run after concurrent retries.
+  APEX_DISTRIBUTED_REMOTE_CREATION_LOCK: "true"
+  # JSON list of networks allowed to supply X-Forwarded-For. Keep empty for
+  # direct exposure; set to the ingress/gateway source networks when proxied so
+  # authentication lockouts remain per client instead of per proxy pod.
+  APEX_RATE_LIMIT__TRUSTED_PROXY_CIDRS: "[]"
 
 # Extra env vars appended verbatim to the container (e.g. adapter secret_refs
-# such as APEX_MINIO_SECRET_KEY via secretKeyRef, or LANGSMITH_API_KEY).
+# such as APEX_INTEGRATION_MINIO_SECRET_KEY via secretKeyRef, or LANGSMITH_API_KEY).
 extraEnv: []
-# - name: APEX_MINIO_SECRET_KEY
+# - name: APEX_INTEGRATION_MINIO_SECRET_KEY
 #   valueFrom:
 #     secretKeyRef:
 #       name: apex-minio
@@ -199,6 +206,11 @@ serviceAccount:
   automountServiceAccountToken: false
   annotations: {}                   # e.g. azure.workload.identity/client-id: <id>
 
+# Pre-install hooks run before Helm creates ordinary resources. In CSI mode the
+# chart creates this dedicated workload-identity SA as an earlier hook; outside
+# CSI mode an empty value resolves to the namespace's default SA.
+hookServiceAccountName: ""
+
 rbac:
   # Namespaced read of deployments/services/ingresses for the in_cluster
   # inventory adapter. OFF by default (the bearer-token mode needs no pod RBAC).
@@ -268,6 +280,12 @@ secretBackend:
     tenantId: ""
     clientId: ""                    # workload-identity client id (defaults to workloadIdentity.clientId)
     cloudName: AzurePublicCloud
+    syncJob:
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      # Keep the completed pod mounted until ordinary workload pods take over;
+      # the CSI driver removes synced K8s Secrets when the final mount disappears.
+      hookDeletePolicy: before-hook-creation
     # KV object name -> the K8s secret + key the deployment expects.
     objects:
       - { objectName: database-uri, secretName: apex-database, key: DATABASE_URI }

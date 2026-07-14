@@ -21,14 +21,24 @@ export type SavedQuery = components['schemas']['SavedQueryOut']
 export type SavedQueryCreate = components['schemas']['SavedQueryCreate']
 export type SavedQueryUpdate = components['schemas']['SavedQueryUpdate']
 
+export interface WorkTrackingScope {
+  connectionId?: string
+  project?: string
+}
+
 /** NL -> provider query (POST /v1/work-tracking/query/translate). */
 export function useTranslateQuery() {
-  return useMutation<TranslatedQuery, Error, { text: string; connectionId?: string }>({
-    mutationFn: async ({ text, connectionId }) => {
+  return useMutation<TranslatedQuery, Error, { text: string } & WorkTrackingScope>({
+    mutationFn: async ({ text, connectionId, project }) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/work-tracking/query/translate',
         {
-          params: { query: connectionId ? { connection_id: connectionId } : {} },
+          params: {
+            query: {
+              ...(connectionId ? { connection_id: connectionId } : {}),
+              ...(project ? { project } : {}),
+            },
+          },
           body: { text },
         },
       )
@@ -48,11 +58,23 @@ export function useTranslateQuery() {
 export function useExecuteQuery() {
   // D6 extension: optional offset so the console can paginate (default 0
   // preserves the wizard's call shape).
-  return useMutation<WorkItemPage, Error, { query: TranslatedQuery; limit?: number; offset?: number }>({
-    mutationFn: async ({ query, limit = 25, offset = 0 }) => {
+  return useMutation<
+    WorkItemPage,
+    Error,
+    { query: TranslatedQuery; limit?: number; offset?: number } & WorkTrackingScope
+  >({
+    mutationFn: async ({ query, limit = 25, offset = 0, connectionId, project }) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/work-tracking/query/execute',
-        { body: { query, limit, offset } },
+        {
+          params: {
+            query: {
+              ...(connectionId ? { connection_id: connectionId } : {}),
+              ...(project ? { project } : {}),
+            },
+          },
+          body: { query, limit, offset },
+        },
       )
       if (!response.ok || !data) {
         throw new ApiError(
@@ -67,9 +89,9 @@ export function useExecuteQuery() {
 }
 
 /** Validate-on-add lookup for direct key entry (GET /v1/work-tracking/items/{key}). */
-export async function fetchWorkItem(key: string): Promise<WorkItem> {
+export async function fetchWorkItem(key: string, project?: string): Promise<WorkItem> {
   const { data, error, response } = await getApexClient().GET('/v1/work-tracking/items/{key}', {
-    params: { path: { key } },
+    params: { path: { key }, query: project ? { project } : {} },
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -107,21 +129,30 @@ export function useSavedQueries(): UseQueryResult<SavedQuery[], Error> {
 /* ── D6 appends — work-items console + detail (plan Part 2 route table) ──── */
 
 /** One work item by key (detail page; GET /v1/work-tracking/items/{key}). */
-export function useWorkItem(key: string | undefined): UseQueryResult<WorkItem, Error> {
+export function useWorkItem(
+  key: string | undefined,
+  project?: string,
+): UseQueryResult<WorkItem, Error> {
   return useQuery({
-    queryKey: queryKeys.workItems.key(key ?? ''),
-    queryFn: () => fetchWorkItem(key ?? ''),
+    queryKey: queryKeys.workItems.key(key ?? '', project),
+    queryFn: () => fetchWorkItem(key ?? '', project),
     enabled: Boolean(key),
     staleTime: 30_000,
   })
 }
 
 /** Create a tracker item (operator+; POST /v1/work-tracking/items). */
-export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, WorkItemDraft> {
+export interface CreateWorkItemInput {
+  body: WorkItemDraft
+  project?: string
+}
+
+export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, CreateWorkItemInput> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (body: WorkItemDraft) => {
+    mutationFn: async ({ body, project }: CreateWorkItemInput) => {
       const { data, error, response } = await getApexClient().POST('/v1/work-tracking/items', {
+        params: { query: project ? { project } : {} },
         body,
       })
       if (!response.ok || !data) {
@@ -133,9 +164,9 @@ export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, WorkItem
       }
       return data
     },
-    onSuccess: (created) => {
+    onSuccess: (created, { project }) => {
       // Seed the detail cache so the post-create navigation paints instantly.
-      queryClient.setQueryData(queryKeys.workItems.key(created.key), created)
+      queryClient.setQueryData(queryKeys.workItems.key(created.key, project), created)
     },
   })
 }
@@ -143,16 +174,17 @@ export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, WorkItem
 export interface EnrichWorkItemInput {
   key: string
   body: Enrichment
+  project?: string
 }
 
 /** Push fields/comment onto an item (operator+; POST items/{key}/enrich). */
 export function useEnrichWorkItem(): UseMutationResult<WorkItem, Error, EnrichWorkItemInput> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async ({ key, body }: EnrichWorkItemInput) => {
+    mutationFn: async ({ key, body, project }: EnrichWorkItemInput) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/work-tracking/items/{key}/enrich',
-        { params: { path: { key } }, body },
+        { params: { path: { key }, query: project ? { project } : {} }, body },
       )
       if (!response.ok || !data) {
         throw new ApiError(
@@ -163,9 +195,9 @@ export function useEnrichWorkItem(): UseMutationResult<WorkItem, Error, EnrichWo
       }
       return data
     },
-    onSuccess: (updated, { key }) => {
+    onSuccess: (updated, { key, project }) => {
       // The response is the refreshed item — replace the detail cache directly.
-      queryClient.setQueryData(queryKeys.workItems.key(key), updated)
+      queryClient.setQueryData(queryKeys.workItems.key(key, project), updated)
     },
   })
 }

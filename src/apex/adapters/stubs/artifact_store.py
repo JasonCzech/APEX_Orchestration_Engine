@@ -5,6 +5,7 @@ store — mirroring a shared object store so graph nodes and routers see the sam
 artifacts. Process-local by design; the MinIO/S3 adapter lands in M3.
 """
 
+from collections.abc import AsyncIterable, AsyncIterator
 from typing import ClassVar
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
@@ -25,11 +26,33 @@ class MemoryArtifactStore:
         self._objects[key] = (bytes(data), content_type)
         return StoredArtifact(key=key, uri=f"memory://{key}", size=len(data))
 
+    async def put_stream(
+        self,
+        key: str,
+        data: AsyncIterable[bytes],
+        *,
+        content_type: str,
+        max_bytes: int,
+    ) -> StoredArtifact:
+        payload = bytearray()
+        async for chunk in data:
+            if len(payload) + len(chunk) > max_bytes:
+                raise ValueError(f"artifact exceeds maximum size of {max_bytes} bytes")
+            payload.extend(chunk)
+        return await self.put(key, bytes(payload), content_type=content_type)
+
     async def get(self, key: str) -> bytes:
         try:
             return self._objects[key][0]
         except KeyError:
             raise KeyError(f"artifact {key!r} not found in memory store") from None
+
+    async def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        if chunk_size < 1:
+            raise ValueError("chunk_size must be >= 1")
+        data = await self.get(key)
+        for offset in range(0, len(data), chunk_size):
+            yield data[offset : offset + chunk_size]
 
     async def get_url(self, key: str, *, ttl_s: int = 3600) -> str:
         if key not in self._objects:

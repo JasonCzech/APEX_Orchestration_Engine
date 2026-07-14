@@ -6,13 +6,19 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it } from 'vitest'
 
-import { draftRead, fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
+import {
+  draftRead,
+  fillScope,
+  flushAndUnmountWizard,
+  installWizardHandlers,
+  renderWizard,
+} from './wizardTestUtils'
 
 describe('NewRunWizard shell', () => {
   it('renders each group as a horizontal tab and keeps Launch disabled until scope is valid', async () => {
     installWizardHandlers()
     const user = userEvent.setup()
-    renderWizard()
+    const rendered = renderWizard()
 
     const tablist = screen.getByRole('tablist', { name: 'New test groups' })
     expect(within(tablist).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
@@ -44,6 +50,7 @@ describe('NewRunWizard shell', () => {
 
     await fillScope(user, screen)
     expect(launch).toBeEnabled()
+    await flushAndUnmountWizard(rendered)
   })
 
   it('shows the resume panel on first visit and hides it once a draft is chosen', async () => {
@@ -51,7 +58,8 @@ describe('NewRunWizard shell', () => {
       draftRead({ id: 'draft-9', title: 'Black Friday soak', payload: { title: 'Resumed soak' } }),
     ])
     const user = userEvent.setup()
-    const { router } = renderWizard()
+    const rendered = renderWizard()
+    const { router } = rendered
 
     const select = await screen.findByLabelText('Resume draft')
     expect(screen.getByTestId('resume-draft-panel')).toBeInTheDocument()
@@ -61,5 +69,6 @@ describe('NewRunWizard shell', () => {
     expect(await screen.findByLabelText('Title')).toHaveValue('Resumed soak')
     expect(router.state.location.search).toContain('draft=draft-9')
     expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
   })
 })

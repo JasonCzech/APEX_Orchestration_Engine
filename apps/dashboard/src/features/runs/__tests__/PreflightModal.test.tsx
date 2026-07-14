@@ -32,6 +32,19 @@ const FULL_PLAN = [
 ]
 
 const recent = new Date(Date.now() - 60_000).toISOString()
+const EFFECTIVE_CONFIG = {
+  assistant_id: 'asst-gold',
+  project_id: 'proj-alpha',
+  app_id: 'app-checkout',
+  environment_id: 'env-stage',
+  engine: 'loadrunner',
+  connections: { execution: 'conn-loadrunner' },
+  prompt_overrides: { 'phase/reporting': { version_id: 'ver-9' } },
+  model_by_phase: { reporting: 'claude-sonnet' },
+  agent_backend: 'anthropic',
+  limits: { max_revise_loops: 5, poll_interval_s: 10 },
+  gates: ALL_GATED_GATES,
+}
 
 /**
  * Idle thread, full last plan, everything OK while all 7 stay selected:
@@ -45,6 +58,7 @@ const DETAIL_IDLE: PipelineDetail = {
   interrupts: [],
   values: {
     title: 'Re-run fixture',
+    run_config: EFFECTIVE_CONFIG,
     phases_plan: FULL_PLAN,
     phase_results: {
       story_analysis: { phase: 'story_analysis', status: 'succeeded', attempt: 2, ended_at: recent },
@@ -156,13 +170,13 @@ describe('PreflightModal', () => {
       Record<string, unknown>,
     ]
     expect(threadId).toBe(THREAD_ID)
-    expect(assistant).toBe('pipeline')
+    expect(assistant).toBe('asst-gold')
     expect(payload.input).toEqual({})
     expect(payload.input).not.toBeNull()
-    // Inherit defaults: gates OMITTED so assistant/backend policy applies.
+    // Inherit keeps every persisted effective setting; only phases change.
     expect(payload.config).toEqual({
       recursion_limit: expect.any(Number),
-      configurable: { phases: ['script_scenario', 'execution'] },
+      configurable: { ...EFFECTIVE_CONFIG, phases: ['script_scenario', 'execution'] },
     })
     expect(payload).toMatchObject({
       streamResumable: true,
@@ -190,7 +204,7 @@ describe('PreflightModal', () => {
     const payload = runsCreate.mock.calls[0]?.[2] as Record<string, unknown>
     expect(payload.config).toEqual({
       recursion_limit: expect.any(Number),
-      configurable: { phases: ['story_analysis'], gates },
+      configurable: { ...EFFECTIVE_CONFIG, phases: ['story_analysis'], gates },
     })
   })
 

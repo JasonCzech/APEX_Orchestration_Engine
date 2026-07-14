@@ -1,18 +1,20 @@
 """Prompt catalog routes (`/prompts`, mounted under `/v1` by the app).
 
-Role gating per convention: GET = any authenticated consumer, mutations =
-operator+. Prompts are global (no project_id column), so no project scoping
-applies. testPrompt launches a stateless background run on the `playground`
+Role gating per convention: deployment-global prompt GETs are available to any
+authenticated consumer. Application prompt rows and all catalog mutations require
+an unscoped platform admin because application prompts do not yet carry project
+ownership. testPrompt remains operator-accessible for readable prompts and launches
+a stateless background run on the `playground`
 assistant via the loopback client, forwarding the caller's API key so authz
 and attribution apply exactly as for direct LangGraph calls.
 """
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, JsonValue
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, require_role
@@ -29,6 +31,10 @@ from apex.services.prompts import (
     PromptVersionMismatchError,
     PromptVersionNotFoundError,
 )
+from apex.services.run_validation import (
+    MAX_PROMPT_PART_CHARS_HARD,
+    validate_playground_run_input,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -43,6 +49,21 @@ def get_catalog(session: Annotated[AsyncSession, Depends(get_session)]) -> Promp
 
 CatalogDep = Annotated[PromptCatalogService, Depends(get_catalog)]
 OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
+AdminIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.ADMIN))]
+
+
+async def require_global_prompt_admin(identity: AdminIdentity) -> ConsumerIdentity:
+    """Global prompt writes must not be delegated to a tenant-scoped admin."""
+
+    if not identity.is_unscoped:
+        raise HTTPException(
+            status_code=403,
+            detail="Global prompt mutations require an unscoped admin",
+        )
+    return identity
+
+
+GlobalPromptAdmin = Annotated[ConsumerIdentity, Depends(require_global_prompt_admin)]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -100,8 +121,8 @@ class RollbackRequest(BaseModel):
 
 class TestPromptRequest(BaseModel):
     version_id: str | None = None
-    content: str | None = None
-    sample_input: dict[str, Any] | None = None
+    content: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    sample_input: dict[str, JsonValue] | None = None
 
 
 class TestPromptResponse(BaseModel):
@@ -159,13 +180,18 @@ async def list_prompts(
     include_archived: bool = False,
     q: str | None = None,
 ) -> list[PromptSummary]:
-    rows = await catalog.list_prompts(namespace=namespace, include_archived=include_archived, q=q)
+    rows = await catalog.list_prompts(
+        namespace=namespace,
+        include_archived=include_archived,
+        q=q,
+        allow_application=identity.is_unscoped,
+    )
     return [_summary(prompt, active) for prompt, active in rows]
 
 
 @router.post("", operation_id="createPrompt", status_code=201)
 async def create_prompt(
-    body: CreatePromptRequest, identity: OperatorIdentity, catalog: CatalogDep
+    body: CreatePromptRequest, identity: GlobalPromptAdmin, catalog: CatalogDep
 ) -> PromptDetail:
     try:
         prompt, version = await catalog.create_prompt(
@@ -186,7 +212,10 @@ async def get_prompt(
     prompt_id: str, identity: CurrentIdentity, catalog: CatalogDep
 ) -> PromptDetail:
     try:
-        prompt, active = await catalog.get_prompt(prompt_id)
+        prompt, active = await catalog.get_prompt(
+            prompt_id,
+            allow_application=identity.is_unscoped,
+        )
     except PromptNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _detail(prompt, active)
@@ -194,7 +223,7 @@ async def get_prompt(
 
 @router.post("/{prompt_id}/versions", operation_id="savePromptVersion", status_code=201)
 async def save_prompt_version(
-    prompt_id: str, body: SaveVersionRequest, identity: OperatorIdentity, catalog: CatalogDep
+    prompt_id: str, body: SaveVersionRequest, identity: GlobalPromptAdmin, catalog: CatalogDep
 ) -> PromptVersionDetail:
     try:
         _, version = await catalog.save_version(
@@ -210,7 +239,10 @@ async def list_prompt_versions(
     prompt_id: str, identity: CurrentIdentity, catalog: CatalogDep
 ) -> list[PromptVersionInfo]:
     try:
-        versions = await catalog.list_versions(prompt_id)
+        versions = await catalog.list_versions(
+            prompt_id,
+            allow_application=identity.is_unscoped,
+        )
     except PromptNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return [_version_info(version) for version in versions]
@@ -221,7 +253,11 @@ async def get_prompt_version(
     prompt_id: str, version_id: str, identity: CurrentIdentity, catalog: CatalogDep
 ) -> PromptVersionDetail:
     try:
-        version = await catalog.get_version(prompt_id, version_id)
+        version = await catalog.get_version(
+            prompt_id,
+            version_id,
+            allow_application=identity.is_unscoped,
+        )
     except PromptVersionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _version_detail(version)
@@ -229,7 +265,7 @@ async def get_prompt_version(
 
 @router.post("/{prompt_id}/rollback", operation_id="rollbackPrompt")
 async def rollback_prompt(
-    prompt_id: str, body: RollbackRequest, identity: OperatorIdentity, catalog: CatalogDep
+    prompt_id: str, body: RollbackRequest, identity: GlobalPromptAdmin, catalog: CatalogDep
 ) -> PromptDetail:
     try:
         prompt, version = await catalog.rollback(prompt_id, body.version_id)
@@ -242,14 +278,14 @@ async def rollback_prompt(
 
 @router.post("/{prompt_id}/archive", operation_id="archivePrompt")
 async def archive_prompt(
-    prompt_id: str, identity: OperatorIdentity, catalog: CatalogDep
+    prompt_id: str, identity: GlobalPromptAdmin, catalog: CatalogDep
 ) -> PromptSummary:
     return await _set_archived(catalog, prompt_id, archived=True)
 
 
 @router.post("/{prompt_id}/unarchive", operation_id="unarchivePrompt")
 async def unarchive_prompt(
-    prompt_id: str, identity: OperatorIdentity, catalog: CatalogDep
+    prompt_id: str, identity: GlobalPromptAdmin, catalog: CatalogDep
 ) -> PromptSummary:
     return await _set_archived(catalog, prompt_id, archived=False)
 
@@ -259,7 +295,7 @@ async def _set_archived(
 ) -> PromptSummary:
     try:
         await catalog.set_archived(prompt_id, archived)
-        prompt, active = await catalog.get_prompt(prompt_id)
+        prompt, active = await catalog.get_prompt(prompt_id, allow_application=True)
     except PromptNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return _summary(prompt, active)
@@ -278,12 +314,28 @@ async def test_prompt(
     Content precedence: explicit body.content -> body.version_id -> active version.
     Responds 202 with the run/thread ids; results are fetched via the LangGraph API.
     """
+    sample = dict(body.sample_input or {})
     try:
-        _, active = await catalog.get_prompt(prompt_id)
+        # Reject oversized/deep samples before reading the catalog. The complete
+        # prompt is validated again below once its selected content is known.
+        validate_playground_run_input({"sample_input": sample})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        _, active = await catalog.get_prompt(
+            prompt_id,
+            allow_application=identity.is_unscoped,
+        )
         if body.content is not None:
             content = body.content
         elif body.version_id is not None:
-            content = (await catalog.get_version(prompt_id, body.version_id)).content
+            content = (
+                await catalog.get_version(
+                    prompt_id,
+                    body.version_id,
+                    allow_application=identity.is_unscoped,
+                )
+            ).content
         elif active is not None:
             content = active.content
         else:
@@ -294,11 +346,15 @@ async def test_prompt(
     except (PromptNotFoundError, PromptVersionNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    sample = dict(body.sample_input or {})
     run_input = {
         "prompt": {"system": content, "user": str(sample.get("user") or "")},
         "sample_input": sample,
     }
+    try:
+        validated_input = validate_playground_run_input(run_input)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    run_input = validated_input.model_dump(mode="json", exclude_none=True)
     client = loopback_client(extract_api_key(request.headers))
     try:
         # thread_id=None creates a stateless run; keep the scratch thread so the

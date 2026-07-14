@@ -130,6 +130,26 @@ describe('AnalyticsPage', () => {
     })
   })
 
+  it('keeps time-series keys stable when the breakdown table is on a later page', async () => {
+    const pageTwo = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      breakdown: [
+        {
+          ...AGENT_ANALYTICS_FIXTURE.breakdown[0]!,
+          key: 'page-two-only-model',
+        },
+      ],
+      page: { limit: 20, offset: 20, total: 21 },
+    }
+    const analytics = agentAnalyticsHandler(pageTwo)
+    server.use(analytics.handler)
+    renderAnalytics('?offset=20')
+
+    const series = await screen.findByTestId('analytics-agent-series-chart')
+    expect(within(series).getByText('claude-3-5-sonnet-latest')).toBeInTheDocument()
+    expect(within(series).getByText('gpt-4o-mini')).toBeInTheDocument()
+  })
+
   it('hides cost UI when cost_visible is false', async () => {
     const analytics = agentAnalyticsHandler({
       ...AGENT_ANALYTICS_FIXTURE,

@@ -60,11 +60,31 @@ const EMPTY_AGENT_ANALYTICS = {
 
 export const handlers = [
   http.get('*/v1/system/info', () => HttpResponse.json(SYSTEM_INFO)),
+  http.get('*/v1/auth/me', () =>
+    HttpResponse.json({
+      principal_kind: 'api_consumer',
+      principal_id: 'cons-ops',
+      name: SYSTEM_INFO.consumer.name,
+      consumer_type: 'dashboard',
+      role: SYSTEM_INFO.consumer.role,
+      scopes: SYSTEM_INFO.consumer.scopes,
+      is_unscoped: false,
+      mfa_required: false,
+      step_up_required: false,
+      capabilities: {},
+    }),
+  ),
   // The shell's Approvals badge (Sidebar -> useApprovalsInbox, D3) polls the
   // pipelines list on every authenticated mount; default to an empty fleet so
   // shell-level tests stay quiet. Tests that need rows register their own
   // handler via server.use(...), which takes precedence.
   http.get('*/v1/pipelines', () => HttpResponse.json({ items: [], limit: 100, offset: 0 })),
+  http.get('*/v1/pipelines/:threadId', ({ params }) =>
+    HttpResponse.json(
+      { detail: `pipeline ${String(params['threadId'])} is not configured in this test` },
+      { status: 404 },
+    ),
+  ),
   http.get('*/v1/pipelines/:threadId/phases/:phase/prompt-review', ({ params }) =>
     HttpResponse.json({
       system: `Test system prompt for ${String(params['phase'])}.`,

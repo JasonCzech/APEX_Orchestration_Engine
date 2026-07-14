@@ -16,7 +16,9 @@ definitive Go handlers in Project_Stormrunner/pkg/api (cited per fixture):
                  -> scriptValidationResponse {"valid", "issues", ...}
 """
 
+import asyncio
 import json
+from collections.abc import AsyncIterable, AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -32,7 +34,9 @@ from apex.adapters.apex_load.engine import (
 from apex.adapters.registry import ConnectionConfig, PortKind
 from apex.domain.integrations import LoadTestSpec, SecretValue
 from apex.domain.pipeline import EngineHandle
-from apex.ports.artifact_store import StoredArtifact
+from apex.graphs.pipeline import execution_phase, phase_subgraph
+from apex.graphs.pipeline.state import PipelineState
+from apex.ports.artifact_store import StoredArtifact, engine_artifact_key
 from apex.ports.execution_engine import EngineRunPhase
 
 BASE = "https://apexload.acme.test"
@@ -241,8 +245,31 @@ class RecordingStore:
         self.puts.append((key, data, content_type))
         return StoredArtifact(key=key, uri=f"s3://apex-artifacts/{key}", size=len(data))
 
+    async def put_stream(
+        self,
+        key: str,
+        data: AsyncIterable[bytes],
+        *,
+        content_type: str,
+        max_bytes: int,
+    ) -> StoredArtifact:
+        payload = bytearray()
+        async for chunk in data:
+            if len(payload) + len(chunk) > max_bytes:
+                raise ValueError(f"artifact exceeds maximum size of {max_bytes} bytes")
+            payload.extend(chunk)
+        return await self.put(key, bytes(payload), content_type=content_type)
+
     async def get(self, key: str) -> bytes:
         raise KeyError(key)
+
+    def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
+        async def _missing() -> AsyncIterator[bytes]:
+            if False:  # pragma: no cover - preserves the async-generator shape
+                yield b""
+            raise KeyError(key)
+
+        return _missing()
 
     async def get_url(self, key: str, *, ttl_s: int = 3600) -> str:
         return f"{BASE}/{key}?ttl={ttl_s}"
@@ -315,8 +342,41 @@ async def test_validate_default_workload_uses_draft_endpoint() -> None:
     assert_all_calls_authed()
 
 
+@respx.mock
+async def test_generated_graph_spec_uses_apex_default_workload_contract() -> None:
+    generated = phase_subgraph._script_scenario_load_test_spec(
+        {"title": "Checkout"},  # type: ignore[arg-type]
+        {"configurable": {"thread_id": "thread-42"}},
+        1,
+    )
+    state: PipelineState = {
+        "title": "Checkout",
+        "phase_results": {"script_scenario": {"load_test_spec": generated}},
+    }
+    spec, options = execution_phase._build_spec(
+        state,
+        {"configurable": {"thread_id": "thread-42", "engine": "apex_load"}},
+        1,
+        "apex_load",
+        target_environment="https://approved.example.test",
+    )
+    route = respx.post(f"{BASE}/api/v1/scripts/validate").mock(
+        return_value=httpx.Response(200, json=validation_response_json())
+    )
+
+    report = await make_adapter().validate(spec)
+
+    assert options == {}
+    assert spec.script_refs == []
+    assert report.ok
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["script"]["config"]["base_url"] == "https://approved.example.test"
+
+
 async def test_validate_local_structural_issues_skip_remote() -> None:
-    spec = make_spec(vusers=0, duration_s=0, ramp_s=-1)
+    # Public construction rejects these values; bypass validation to retain the
+    # adapter's defense-in-depth contract for callers holding an old/checkpointed model.
+    spec = make_spec().model_copy(update={"vusers": 0, "duration_s": 0, "ramp_s": -1})
     report = await make_adapter().validate(spec)  # no respx mock: must not call out
     assert not report.ok
     assert len(report.issues) == 3
@@ -332,6 +392,12 @@ async def test_validate_default_workload_requires_target_environment() -> None:
     report = await make_adapter().validate(make_spec(target_environment=None))
     assert not report.ok
     assert any("target_environment" in issue for issue in report.issues)
+
+
+async def test_validate_rejects_named_script_ref_path_traversal_without_remote_call() -> None:
+    report = await make_adapter().validate(make_spec(script_refs=["../../tests/private/start"]))
+    assert not report.ok
+    assert any("safe APEX Load script id" in issue for issue in report.issues)
 
 
 @respx.mock
@@ -388,6 +454,7 @@ async def test_provision_creates_script_and_test_when_absent() -> None:
     assert script_payload["script"]["config"]["base_url"] == "https://shop.acme.test"
 
     body = json.loads(create_route.calls.last.request.content)
+    assert create_route.calls.last.request.headers["Idempotency-Key"] == KEY
     assert body["name"] == TEST_NAME  # the remote name carries the idempotency key
     assert body["project_id"] == "proj-123"
     assert body["duration"] == "300s"
@@ -406,6 +473,91 @@ async def test_provision_creates_script_and_test_when_absent() -> None:
     assert handle.external_run_id == TEST_ID
     assert handle.idempotency_key == KEY
     assert handle.extras["test_name"] == TEST_NAME
+    assert_all_calls_authed()
+
+
+async def test_concurrent_provision_calls_create_one_remote_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two fresh adapters cannot both pass the lookup before remote creation."""
+
+    remote_test: dict[str, Any] | None = None
+    create_count = 0
+
+    async def find_test(_adapter: ApexLoadExecutionEngine, _name: str) -> dict[str, Any] | None:
+        # Snapshot before yielding: without the keyed guard both callers observe
+        # absence and each creates an expensive test.
+        snapshot = remote_test
+        await asyncio.sleep(0.02)
+        return snapshot
+
+    async def create_test(
+        _adapter: ApexLoadExecutionEngine, _name: str, _spec: LoadTestSpec
+    ) -> dict[str, Any]:
+        nonlocal create_count, remote_test
+        create_count += 1
+        await asyncio.sleep(0.01)
+        remote_test = managed_test_json()
+        return remote_test
+
+    monkeypatch.setattr(ApexLoadExecutionEngine, "_find_test_by_name", find_test)
+    monkeypatch.setattr(ApexLoadExecutionEngine, "_create_test", create_test)
+
+    first, second = await asyncio.gather(
+        make_adapter().provision(make_spec()),
+        make_adapter().provision(make_spec()),
+    )
+
+    assert create_count == 1
+    assert first.external_run_id == second.external_run_id == TEST_ID
+
+
+@respx.mock
+async def test_provision_adopts_provider_winner_after_idempotency_conflict() -> None:
+    """The provider reservation can win just before its test row is visible."""
+
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        side_effect=[
+            httpx.Response(200, json={"tests": [], "count": 0}),
+            httpx.Response(200, json={"tests": [managed_test_json()], "count": 1}),
+        ]
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(201, json={"id": "script-loser"})
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(409, json={"error": "duplicate idempotency key"})
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    assert create.calls.last.request.headers["Idempotency-Key"] == KEY
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_provision_adopts_test_when_create_response_is_lost() -> None:
+    """A committed test create is recovered by its durable idempotent name."""
+
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        side_effect=[
+            httpx.Response(200, json={"tests": [], "count": 0}),
+            httpx.Response(200, json={"tests": [managed_test_json()], "count": 1}),
+        ]
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(201, json={"id": "script-committed"})
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(
+        side_effect=httpx.ReadTimeout("response lost after remote commit")
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    assert create.call_count == 1
+    assert create.calls.last.request.headers["Idempotency-Key"] == KEY
     assert_all_calls_authed()
 
 
@@ -465,6 +617,24 @@ async def test_provision_inline_and_named_refs_split_vusers() -> None:
     assert [g["script_id"] for g in body["groups"]] == ["script-up-1", "script-existing"]
     assert [g["vusers"] for g in body["groups"]] == [26, 25]  # remainder to the first group
     assert_all_calls_authed()
+
+
+async def test_validate_rejects_more_script_groups_than_requested_vusers() -> None:
+    report = await make_adapter().validate(
+        make_spec(script_refs=["script-a", "script-b"], vusers=1)
+    )
+
+    assert report.ok is False
+    assert "must be >= script_refs count" in report.issues[0]
+
+
+@respx.mock
+async def test_provision_refuses_to_amplify_vusers_even_if_validate_was_skipped() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    with pytest.raises(ValueError, match="refusing to amplify"):
+        await make_adapter().provision(make_spec(script_refs=["script-a", "script-b"], vusers=1))
 
 
 @respx.mock
@@ -705,7 +875,8 @@ async def test_collect_artifacts_streams_archive_report() -> None:
 
     assert len(store.puts) == 1
     key, data, content_type = store.puts[0]
-    assert key == f"engine-runs/{TEST_ID}/apex-load-report.json"
+    expected_key = engine_artifact_key(KEY, "apex-load-report.json")
+    assert key == expected_key
     assert content_type == "application/json"
     assert json.loads(data) == report
 
@@ -713,38 +884,67 @@ async def test_collect_artifacts_streams_archive_report() -> None:
     ref = refs[0]
     assert ref["kind"] == "engine_report"
     assert ref["name"] == "apex-load-report.json"
-    assert ref["uri"] == f"s3://apex-artifacts/engine-runs/{TEST_ID}/apex-load-report.json"
+    assert ref["uri"] == f"s3://apex-artifacts/{expected_key}"
+    assert ref["key"] == expected_key
     assert ref["media_type"] == "application/json"
     assert TEST_ID in (ref["summary"] or "")
     assert_all_calls_authed()
 
 
 @respx.mock
-async def test_download_request_lifts_total_retry_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Regression guard: the 60s archive download must not be capped by the default
-    # RetryPolicy.total_timeout_s (10s). The download path passes an explicit timeout_s,
-    # so _request must hand resilient_request a policy with no total deadline.
-    import apex.adapters.apex_load.engine as engine_mod
-
-    captured: list[Any] = []
-    real = engine_mod.resilient_request
-
-    async def spy(*args: Any, **kwargs: Any) -> Any:
-        captured.append(kwargs.get("retry"))
-        return await real(*args, **kwargs)
-
-    monkeypatch.setattr(engine_mod, "resilient_request", spy)
-    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
-        return_value=httpx.Response(200, json=archive_report_json())
+async def test_collect_artifacts_retries_transient_stream_status() -> None:
+    report = archive_report_json()
+    route = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        side_effect=[
+            httpx.Response(503, json={"error": "temporarily unavailable"}),
+            httpx.Response(200, json=report),
+        ]
     )
-    await make_adapter().collect_artifacts(make_handle(), RecordingStore())
 
-    assert captured, "expected the download to route through resilient_request"
-    download_policy = captured[-1]
-    assert download_policy is not None
-    assert download_policy.total_timeout_s is None
+    store = RecordingStore()
+    refs = await make_adapter().collect_artifacts(make_handle(), store)
+
+    assert route.call_count == 2
+    assert len(refs) == 1
+    assert json.loads(store.puts[0][1]) == report
+
+
+@respx.mock
+async def test_collect_artifacts_caps_large_stream_error_preview() -> None:
+    class CountingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.yielded = 0
+            self.closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            for _ in range(100):
+                self.yielded += 1
+                yield b"x" * 4096
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    stream = CountingStream()
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(418, stream=stream)
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 418"):
+        await make_adapter().collect_artifacts(make_handle(), RecordingStore())
+
+    assert 0 < stream.yielded < 100
+    assert stream.closed is True
+
+
+@respx.mock
+async def test_collect_artifact_enforces_configured_stream_limit() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, content=b"too-large")
+    )
+    store = RecordingStore()
+    with pytest.raises(ValueError, match="maximum size of 4 bytes"):
+        await make_adapter(max_report_bytes=4).collect_artifacts(make_handle(), store)
+    assert store.puts == []
 
 
 @respx.mock
@@ -826,6 +1026,28 @@ async def test_fetch_summary_failed_run_without_archive_uses_live_metrics() -> N
     assert summary.kpis["error_rate"] == pytest.approx(0.025)
     assert summary.kpis["vusers_peak"] == 50.0  # total_vusers
     assert summary.notes is not None and "live metrics" in summary.notes
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_fetch_summary_bounds_oversized_archive_and_uses_live_metrics() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, content=b'{"padding":"' + (b"x" * 1000) + b'"}')
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(
+            200,
+            json=managed_test_json(status="COMPLETE", live_metrics=live_metrics_json()),
+        )
+    )
+
+    summary = await make_adapter(max_report_bytes=64).fetch_summary(make_handle())
+
+    assert summary.kpis["error_rate"] == pytest.approx(0.025)
+    assert summary.notes is not None and "oversized" in summary.notes
     assert_all_calls_authed()
 
 

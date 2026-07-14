@@ -19,7 +19,10 @@ from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import hash_api_key
 from apex.persistence.db import get_session
 from apex.persistence.models import ApiConsumer
-from apex.persistence.repositories.consumers import ConsumersRepository
+from apex.persistence.repositories.consumers import (
+    ConsumersRepository,
+    DuplicateConsumerNameError,
+)
 from apex.services.audit import append_audit_event_best_effort, event_from_identity
 
 router = APIRouter(prefix="/admin/consumers", tags=["consumers"])
@@ -154,10 +157,7 @@ def _scopes_inside_admin(identity: ConsumerIdentity, scopes: list[ScopeRef]) -> 
     return (
         identity.is_unscoped
         or bool(scopes)
-        and all(
-            identity.allows_scope(project_id=scope.project_id, app_id=scope.app_id)
-            for scope in scopes
-        )
+        and all(identity.contains_scope(scope) for scope in scopes)
     )
 
 
@@ -256,15 +256,20 @@ async def create_consumer(
     if await repo.get_by_name(body.name) is not None:
         raise HTTPException(status_code=409, detail=f"Consumer name '{body.name}' already exists")
     api_key = _generate_api_key()
-    consumer = await repo.create(
-        name=body.name,
-        consumer_type=body.consumer_type.value,
-        role=body.role.value,
-        key_hash=hash_api_key(api_key),
-        scopes=body.scopes,
-        expires_at=body.expires_at,
-        created_by=identity.consumer_id,
-    )
+    try:
+        consumer = await repo.create(
+            name=body.name,
+            consumer_type=body.consumer_type.value,
+            role=body.role.value,
+            key_hash=hash_api_key(api_key),
+            scopes=body.scopes,
+            expires_at=body.expires_at,
+            created_by=identity.consumer_id,
+        )
+    except DuplicateConsumerNameError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Consumer name '{body.name}' already exists"
+        ) from exc
     await _audit_consumer_action(identity, "consumer.create", consumer.id)
     return _created_model(consumer, api_key)
 
@@ -323,16 +328,23 @@ async def update_consumer(
         action="consumer.update",
         consumer_id=consumer_id,
     )
-    updated = await repo.update_existing(
-        existing,
-        name=body.name,
-        role=body.role.value if body.role is not None else None,
-        enabled=body.enabled,
-        scopes=body.scopes,
-        expires_at=body.expires_at,
-        revoked_at=body.revoked_at,
-        updated_by=identity.consumer_id,
-    )
+    try:
+        updated = await repo.update_existing(
+            existing,
+            name=body.name,
+            role=body.role.value if body.role is not None else None,
+            enabled=body.enabled,
+            scopes=body.scopes,
+            expires_at=body.expires_at,
+            revoked_at=body.revoked_at,
+            updated_by=identity.consumer_id,
+        )
+    except DuplicateConsumerNameError as exc:
+        conflicting_name = body.name or existing.name
+        raise HTTPException(
+            status_code=409,
+            detail=f"Consumer name '{conflicting_name}' already exists",
+        ) from exc
     await _audit_consumer_action(identity, "consumer.update", consumer_id)
     return _read_model(updated)
 
@@ -350,10 +362,10 @@ async def delete_consumer(
             reason="A consumer cannot delete itself",
         )
         raise HTTPException(status_code=409, detail="A consumer cannot delete itself")
-    consumer = await _get_or_404(repo, consumer_id)
+    consumer = await _get_for_update_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, consumer):
         await _raise_unmanageable_consumer(identity, "consumer.delete", consumer_id)
-    if not await repo.delete(consumer_id, deleted_by=identity.consumer_id):
+    if not await repo.delete_existing(consumer, deleted_by=identity.consumer_id):
         raise HTTPException(status_code=404, detail=f"Consumer '{consumer_id}' not found")
     await _audit_consumer_action(identity, "consumer.delete", consumer_id)
 
@@ -366,7 +378,7 @@ async def rotate_consumer_key(
     body: RotateConsumerKeyRequest | None = None,
 ) -> ConsumerCreated:
     api_key = _generate_api_key()
-    existing = await _get_or_404(repo, consumer_id)
+    existing = await _get_for_update_or_404(repo, consumer_id)
     if not _can_manage_consumer(identity, existing):
         await _raise_unmanageable_consumer(identity, "consumer.rotate_key", consumer_id)
     grace_expires_at = None

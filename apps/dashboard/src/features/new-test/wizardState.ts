@@ -1,17 +1,17 @@
 /**
  * wizardState.ts — the one typed WizardDraft the 6-step wizard edits, plus the
- * pure derivations around it: per-step validation, phase-prerequisite hints,
- * gates-mode -> gate-matrix mapping, and the EXACT launch payload builder.
+ * pure derivations around it: per-step validation, phase prerequisites,
+ * gates-mode -> gate-matrix mapping, and the launch-plan builder.
  *
  * Contracts mirrored here (verify on drift):
  * - configurable shape: src/apex/graphs/pipeline/configurable.py
  *   PipelineConfigurable {project_id, app_id, environment_id, engine, phases?,
  *   gates{phase:{prompt_review,output_review}}, prompt_overrides{"phase/<p>":
- *   {content}, "application/<app_id>": {content}}, pre_execution_context[]}.
+ *   {content}, "application/<app_id>": {content}}.
  * - PHASE_PREREQUISITES semantics: src/apex/domain/pipeline.py — a prereq is
  *   satisfied if it runs EARLIER IN THE PLAN or already SUCCEEDED ON THE
- *   THREAD. New threads have no prior results, so a missing prereq is a
- *   warning (never a block): the backend plan resolver decides at run time.
+ *   THREAD. The wizard always creates a new thread, so every hard prerequisite
+ *   must be present earlier in its initial plan.
  * - All-auto gate matrix: reuses D2's ALL_AUTO_GATES (features/runs/launchRun).
  */
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -71,6 +71,8 @@ export interface WizardConfig {
   gates_mode: GatesMode
   gates_custom?: GateMatrix
   golden_config_id?: string | null
+  /** Full pinned assistant bundle; fields the compact UI does not edit stay intact. */
+  golden_configurable?: Record<string, unknown> | null
 }
 
 export interface WizardDraft {
@@ -98,6 +100,7 @@ export function emptyDraft(): WizardDraft {
       prompt_focus_phase: PHASE_NAMES[0]!,
       gates_mode: 'all_gated',
       golden_config_id: null,
+      golden_configurable: null,
     },
     prompt_overrides: {},
   }
@@ -146,11 +149,11 @@ export function normalizeGateMatrix(value: unknown, fallback: GateMode = 'gated'
   ) as GateMatrix
 }
 
-/** Canonical-order phase subset from an unknown list; null when empty/absent/full. */
+/** Canonical-order phase subset from an unknown list; null when absent/full. */
 export function normalizePhases(value: unknown): PhaseName[] | null {
   if (!Array.isArray(value)) return null
   const requested = new Set(value.filter(isPhaseName))
-  if (requested.size === 0 || requested.size === PHASE_NAMES.length) return null
+  if (requested.size === PHASE_NAMES.length) return null
   return PHASE_NAMES.filter((phase) => requested.has(phase))
 }
 
@@ -196,6 +199,9 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
         ? { gates_custom: normalizeGateMatrix(config['gates_custom']) }
         : {}),
       golden_config_id: stringOrNull(config['golden_config_id']),
+      golden_configurable: isRecord(config['golden_configurable'])
+        ? config['golden_configurable']
+        : null,
     },
     prompt_overrides,
   }
@@ -229,9 +235,9 @@ export function focusedPromptPhase(config: WizardConfig): PhaseName | null {
 }
 
 /**
- * Warn-only dependency hints: a selected phase whose prerequisite is NOT
- * earlier in the plan may still run if the prereq already succeeded on the
- * thread — phrasing mirrors the backend semantics on purpose.
+ * Dependency errors for the new thread created by the wizard. A prerequisite
+ * must be selected earlier in this initial plan because no prior phase result
+ * can exist on a brand-new thread.
  */
 export function phaseDependencyHints(selected: readonly PhaseName[]): string[] {
   const inPlan = new Set(selected)
@@ -240,7 +246,7 @@ export function phaseDependencyHints(selected: readonly PhaseName[]): string[] {
     for (const prereq of PHASE_PREREQUISITES[phase]) {
       // Selection is kept in canonical order, so membership implies "earlier in plan".
       if (!inPlan.has(prereq)) {
-        hints.push(`${phase} needs ${prereq} earlier in plan or succeeded on thread`)
+        hints.push(`${phase} requires ${prereq} earlier in this new run`)
       }
     }
   }
@@ -286,6 +292,8 @@ export function stepIssues(draft: WizardDraft, step: WizardStepId): string[] {
     case 'config': {
       if (draft.config.phases !== null && draft.config.phases.length === 0) {
         issues.push('Select at least one phase')
+      } else {
+        issues.push(...phaseDependencyHints(selectedPhases(draft.config)))
       }
       break
     }
@@ -319,46 +327,58 @@ export function allIssues(draft: WizardDraft): StepIssue[] {
   )
 }
 
-// ── Launch payload (the EXACT payload review shows and launch sends) ─────────
+// ── Launch plan ───────────────────────────────────────────────────────────────────────
 
 export interface LaunchPreview {
+  assistant_id: string
   metadata: Record<string, unknown>
   input: { title: string; request: string }
   configurable: Record<string, unknown>
-}
-
-/**
- * Wizard context refs -> configurable.pre_execution_context (list[str]):
- * prefixed refs so the backend can tell sources apart.
- */
-function preExecutionContext(draft: WizardDraft): string[] {
-  return [
-    ...draft.work_item_keys.map((key) => `workitem:${key}`),
-    ...draft.document_ids.map((id) => `document:${id}`),
-    ...draft.context_summary_ids.map((id) => `context:${id}`),
-  ]
+  document_ids: string[]
+  work_item_keys: string[]
 }
 
 export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
   const { scope, config } = draft
-  const context = preExecutionContext(draft)
   const overrides = Object.entries(draft.prompt_overrides)
-  return {
+  const inherited = config.golden_configurable ?? {}
+  const inheritedOverrides = isRecord(inherited['prompt_overrides'])
+    ? inherited['prompt_overrides']
+    : {}
+  const configurable: Record<string, unknown> = {
+    ...inherited,
     project_id: scope.project_id.trim(),
-    ...(scope.app_id ? { app_id: scope.app_id } : {}),
-    ...(scope.environment_id ? { environment_id: scope.environment_id } : {}),
     engine: config.engine,
-    ...(config.phases ? { phases: config.phases } : {}),
     gates: gateMatrixOf(config),
     ...(overrides.length > 0
-      ? { prompt_overrides: Object.fromEntries(overrides.map(([k, v]) => [k, { content: v.content }])) }
+      ? {
+          prompt_overrides: {
+            ...inheritedOverrides,
+            ...Object.fromEntries(overrides.map(([k, v]) => [k, { content: v.content }])),
+          },
+        }
       : {}),
-    ...(context.length > 0 ? { pre_execution_context: context } : {}),
   }
+
+  // The compact scope/phase controls are authoritative even when they clear a
+  // value inherited from an assistant bundle.
+  if (scope.app_id) configurable['app_id'] = scope.app_id
+  else delete configurable['app_id']
+  if (scope.environment_id) configurable['environment_id'] = scope.environment_id
+  else delete configurable['environment_id']
+  delete configurable['start_phase']
+  delete configurable['stop_after']
+  if (config.phases !== null) configurable['phases'] = config.phases
+  else delete configurable['phases']
+  // This field was never consumed by the graph. Context is now resolved into
+  // input.context_packets by the domain launch endpoint.
+  delete configurable['pre_execution_context']
+  return configurable
 }
 
 export function buildLaunchPreview(draft: WizardDraft): LaunchPreview {
   return {
+    assistant_id: draft.config.golden_config_id ?? 'pipeline',
     metadata: {
       project_id: draft.scope.project_id.trim(),
       ...(draft.scope.app_id ? { app_id: draft.scope.app_id } : {}),
@@ -366,5 +386,7 @@ export function buildLaunchPreview(draft: WizardDraft): LaunchPreview {
     },
     input: { title: draft.title.trim(), request: draft.request.trim() },
     configurable: buildConfigurable(draft),
+    document_ids: [...draft.document_ids],
+    work_item_keys: [...draft.work_item_keys],
   }
 }

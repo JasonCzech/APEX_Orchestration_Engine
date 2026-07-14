@@ -214,7 +214,8 @@ function SavedQueryRow({
           items={[
             {
               label: 'Run',
-              onSelect: () => void navigate(consolePath(saved.provider, saved.query)),
+              onSelect: () =>
+                void navigate(consolePath(saved.provider, saved.query, saved.project_id)),
             },
             ...(canMutate
               ? [

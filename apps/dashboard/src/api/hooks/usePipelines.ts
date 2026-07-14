@@ -9,23 +9,10 @@ import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 /** Poll cadence for fleet liveness (plan Part 2: pipelines list 15s, visibility-aware). */
 export const PIPELINES_POLL_INTERVAL_MS = 15_000
 
-/**
- * The live backend (src/apex/routers/pipelines.py `PipelineSummary.engine`)
- * returns an engine summary that the currently generated @apex/api-client
- * schema predates. Extend the generated type locally until the client is
- * regenerated from docs/api/apex-v1.openapi.json (which already includes it).
- */
-export interface PipelineEngineInfo {
-  engine?: string | null
-  external_run_id?: string | null
-}
-
 export type PendingGate = components['schemas']['PendingGate']
 export type PhaseStripEntry = components['schemas']['PhaseStripEntry']
 
-export type PipelineSummary = components['schemas']['PipelineSummary'] & {
-  engine?: PipelineEngineInfo | null
-}
+export type PipelineSummary = components['schemas']['PipelineSummary']
 
 export type PipelineListResponse = Omit<components['schemas']['PipelineListResponse'], 'items'> & {
   items: PipelineSummary[]

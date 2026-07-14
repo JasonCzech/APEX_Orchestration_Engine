@@ -77,7 +77,7 @@ export function selectedPhasesView(configurable: Record<string, unknown>): Phase
   const phases = configurable['phases']
   if (Array.isArray(phases)) {
     const requested = new Set(phases.filter(isPhaseName))
-    if (requested.size > 0) return PHASE_NAMES.filter((phase) => requested.has(phase))
+    return PHASE_NAMES.filter((phase) => requested.has(phase))
   }
   const start = isPhaseName(configurable['start_phase'])
     ? PHASE_NAMES.indexOf(configurable['start_phase'])

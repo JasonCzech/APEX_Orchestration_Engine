@@ -8,11 +8,16 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apex.auth.identity import ScopeRef
 from apex.persistence.models import ApiConsumer, ConsumerDeletionRecord, ConsumerKey, ConsumerScope
+
+
+class DuplicateConsumerNameError(Exception):
+    """The database rejected a duplicate API-consumer name."""
 
 
 class ConsumersRepository:
@@ -38,6 +43,7 @@ class ConsumersRepository:
             select(ApiConsumer)
             .where(ApiConsumer.id == consumer_id)
             .options(selectinload(ApiConsumer.scopes), selectinload(ApiConsumer.keys))
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         consumer = result.first()
@@ -80,8 +86,7 @@ class ConsumersRepository:
             ],
         )
         self._session.add(consumer)
-        await self._session.commit()
-        await self._session.refresh(consumer)
+        await self._commit_name_write(consumer)
         return consumer
 
     async def update(
@@ -97,7 +102,7 @@ class ConsumersRepository:
         updated_by: str | None = None,
     ) -> ApiConsumer | None:
         """Partial update; `None` means "leave unchanged" for every field."""
-        consumer = await self.get(consumer_id)
+        consumer = await self.get_for_update(consumer_id)
         if consumer is None:
             return None
         return await self.update_existing(
@@ -140,9 +145,18 @@ class ConsumersRepository:
             consumer.revoked_at = revoked_at
         if updated_by is not None:
             consumer.updated_by = updated_by
-        await self._session.commit()
-        await self._session.refresh(consumer)
+        await self._commit_name_write(consumer)
         return consumer
+
+    async def _commit_name_write(self, consumer: ApiConsumer) -> None:
+        try:
+            await self._session.commit()
+        except IntegrityError as exc:
+            await self._session.rollback()
+            if _is_duplicate_consumer_name(exc):
+                raise DuplicateConsumerNameError(str(exc.orig)) from exc
+            raise
+        await self._session.refresh(consumer)
 
     async def replace_key_hash(
         self,
@@ -154,7 +168,7 @@ class ConsumersRepository:
         expires_at: datetime | None = None,
     ) -> ApiConsumer | None:
         """Rotate: issue a new key; old active keys may survive until grace_expires_at."""
-        consumer = await self.get(consumer_id)
+        consumer = await self.get_for_update(consumer_id)
         if consumer is None:
             return None
         now = datetime.now(UTC)
@@ -187,8 +201,17 @@ class ConsumersRepository:
         return consumer
 
     async def delete(self, consumer_id: str, *, deleted_by: str | None = None) -> bool:
-        consumer = await self.get(consumer_id)
+        consumer = await self.get_for_update(consumer_id)
         if consumer is None:
+            return False
+        return await self.delete_existing(consumer, deleted_by=deleted_by)
+
+    async def delete_existing(
+        self, consumer: ApiConsumer, *, deleted_by: str | None = None
+    ) -> bool:
+        """Soft-delete an already locked aggregate and its active keys."""
+
+        if consumer.deleted_at is not None:
             return False
         deleted_at = datetime.now(UTC)
         consumer.deleted_at = deleted_at
@@ -215,3 +238,12 @@ class ConsumersRepository:
         )
         await self._session.commit()
         return True
+
+
+def _is_duplicate_consumer_name(exc: IntegrityError) -> bool:
+    constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+    message = str(exc.orig).lower()
+    return constraint_name == "uq_api_consumers_name" or (
+        "uq_api_consumers_name" in message
+        or ("unique constraint failed" in message and "api_consumers.name" in message)
+    )

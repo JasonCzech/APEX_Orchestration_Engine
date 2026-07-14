@@ -33,6 +33,7 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
   const savedQueries = useSavedQueries()
 
   const selected = draft.work_item_keys
+  const project = draft.scope.project_id.trim() || undefined
 
   function addKey(key: string) {
     onChange((prev) =>
@@ -51,7 +52,7 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
 
   function runQuery(query: TranslatedQuery) {
     execute.mutate(
-      { query },
+      { query, ...(project ? { project } : {}) },
       { onSuccess: (page) => setResults(page.items ?? []) },
     )
   }
@@ -61,7 +62,7 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
     if (!key) return
     setAddState({ busy: true, error: null })
     try {
-      const item = await fetchWorkItem(key)
+      const item = await fetchWorkItem(key, project)
       addKey(item.key)
       setDirectKey('')
       setAddState({ busy: false, error: null })
@@ -96,7 +97,10 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
             className="btn btn-secondary"
             disabled={text.trim().length === 0 || translate.isPending}
             onClick={() =>
-              translate.mutate({ text }, { onSuccess: (query) => setTranslated(query) })
+              translate.mutate(
+                { text, ...(project ? { project } : {}) },
+                { onSuccess: (query) => setTranslated(query) },
+              )
             }
           >
             {translate.isPending ? 'Translating…' : 'Translate'}

@@ -24,6 +24,10 @@ from apex.persistence.models import (
     Environment,
     EnvironmentHost,
 )
+from apex.services.connections import (
+    TRUSTED_PRIVATE_HOST_OPTION,
+    validate_adapter_base_url,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,7 +84,9 @@ async def _seed_default_prompts(
     from apex.persistence.repositories.prompts import PromptRepository
     from apex.services.prompts import DEFAULT_PHASE_PROMPTS, PHASE_NAMESPACE, PromptCatalogService
 
-    repo = PromptRepository(session)
+    # Bootstrap's caller owns the transaction. Prompt writes therefore flush into
+    # that transaction instead of committing the prompt subset independently.
+    repo = PromptRepository(session, commit_on_write=False)
     catalog = PromptCatalogService(repo)
     for key in sorted(DEFAULT_PHASE_PROMPTS):
         if await repo.get_by_key(PHASE_NAMESPACE, key) is not None:
@@ -140,13 +146,41 @@ async def _apply_environments(
                 f"{spec.project_id}/{spec.application!r}, which does not exist; declare it "
                 "under `applications` (or in a prior run)"
             )
+        if spec.base_url:
+            try:
+                validate_adapter_base_url(
+                    spec.base_url,
+                    allow_private_hosts=spec.options.get(TRUSTED_PRIVATE_HOST_OPTION) is True
+                    or None,
+                )
+            except ValueError as exc:
+                raise BootstrapError(
+                    f"environment {spec.application}/{spec.name} has an invalid target: {exc}"
+                ) from exc
         existing = await session.scalar(
             select(Environment).where(
                 Environment.application_id == app.id, Environment.name == spec.name
             )
         )
         if existing is not None:
-            log(f"environment {spec.application}/{spec.name}: exists (id={existing.id})")
+            # Migration 0013 deliberately revokes legacy executable targets.
+            # A trusted bootstrap document may re-approve an unchanged target,
+            # but never silently rewrites a row that drifted from the document.
+            if (
+                spec.base_url
+                and existing.base_url == spec.base_url
+                and dict(existing.options or {}) == dict(spec.options)
+                and not existing.target_approved
+            ):
+                existing.target_approved = True
+                existing.target_version = int(existing.target_version or 0) + 1
+                await session.flush()
+                log(
+                    f"environment {spec.application}/{spec.name}: approved existing target "
+                    f"(id={existing.id})"
+                )
+            else:
+                log(f"environment {spec.application}/{spec.name}: exists (id={existing.id})")
             continue
         env_row = Environment(
             application_id=app.id,
@@ -154,6 +188,8 @@ async def _apply_environments(
             kind=spec.kind,
             base_url=spec.base_url,
             options=dict(spec.options),
+            target_approved=bool(spec.base_url),
+            target_version=1 if spec.base_url else 0,
         )
         env_row.hosts = [EnvironmentHost(hostname=h.hostname, role=h.role) for h in spec.hosts]
         session.add(env_row)

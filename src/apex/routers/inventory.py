@@ -38,7 +38,9 @@ async def _load_visible_environment(
     repository: SnapshotsRepository, environment_id: str, identity: ConsumerIdentity
 ) -> Environment:
     env = await repository.get_environment(environment_id)
-    if env is None or not identity.allows_project(env.application.project_id):
+    if env is None or not identity.allows_scope(
+        project_id=env.application.project_id, app_id=env.application_id
+    ):
         raise HTTPException(status_code=404, detail=f"environment {environment_id!r} not found")
     return env
 

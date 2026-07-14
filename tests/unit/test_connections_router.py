@@ -199,6 +199,52 @@ def test_patch_validates_provider_against_existing_kind(admin: TestClient) -> No
     assert patched.json()["options"] == {"duration_s": 1.0}
 
 
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"provider": "s3"},
+        {"project_id": "other"},
+        {"base_url": "https://new-store.example"},
+        {"options": {"bucket": "replacement"}},
+        {"secret_ref": "env:OTHER_STORE_SECRET"},
+    ],
+)
+def test_artifact_store_connection_location_is_immutable(
+    admin: TestClient, patch: dict[str, Any]
+) -> None:
+    conn_id = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "artifact_store",
+            "provider": "stub",
+            "name": "artifacts-original",
+            "project_id": "demo",
+            "options": {"bucket": "original"},
+            "secret_ref": "env:STORE_SECRET",
+        },
+    ).json()["id"]
+
+    response = admin.patch(f"/admin/connections/{conn_id}", json=patch)
+
+    assert response.status_code == 409
+    assert "create a new connection id" in response.json()["detail"]
+
+
+def test_artifact_store_connection_can_be_renamed_or_disabled(admin: TestClient) -> None:
+    conn_id = admin.post(
+        "/admin/connections",
+        json={"kind": "artifact_store", "provider": "stub", "name": "old-name"},
+    ).json()["id"]
+
+    renamed = admin.patch(f"/admin/connections/{conn_id}", json={"name": "new-name"})
+    disabled = admin.post(f"/admin/connections/{conn_id}/disable")
+
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "new-name"
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+
+
 def test_duplicate_connection_name_is_409(admin: TestClient) -> None:
     payload = {"kind": "work_tracking", "provider": "stub", "name": "dupe"}
     assert admin.post("/admin/connections", json=payload).status_code == 201
@@ -250,6 +296,115 @@ def test_scoped_admin_lists_only_in_scope_connections(repo: FakeConnectionsRepos
     assert client.get("/admin/connections/other").status_code == 403
 
 
+def test_scoped_admin_cannot_manage_secret_bearing_connections(
+    repo: FakeConnectionsRepository,
+) -> None:
+    client = make_client(repo, identity(Role.ADMIN, [ScopeRef(project_id="demo")]))
+    repo.connections["secret"] = _make_connection(
+        id="secret",
+        kind="work_tracking",
+        provider="stub",
+        name="secret",
+        project_id="demo",
+        secret_ref="env:APEX_INTEGRATION_TRACKER_TOKEN",
+    )
+    repo.connections["secrets-port"] = _make_connection(
+        id="secrets-port",
+        kind="secrets",
+        provider="env",
+        name="secrets-port",
+        project_id="demo",
+    )
+
+    assert client.get("/admin/connections").json() == []
+    for connection_id in ("secret", "secrets-port"):
+        assert client.get(f"/admin/connections/{connection_id}").status_code == 403
+        assert (
+            client.patch(
+                f"/admin/connections/{connection_id}", json={"name": "changed"}
+            ).status_code
+            == 403
+        )
+        assert client.post(f"/admin/connections/{connection_id}/test").status_code == 403
+        assert client.post(f"/admin/connections/{connection_id}/disable").status_code == 403
+        assert client.delete(f"/admin/connections/{connection_id}").status_code == 403
+
+
+def test_scoped_admin_cannot_attach_or_create_secret_connections(
+    repo: FakeConnectionsRepository,
+) -> None:
+    client = make_client(repo, identity(Role.ADMIN, [ScopeRef(project_id="demo")]))
+    secret_create = client.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "secret",
+            "project_id": "demo",
+            "secret_ref": "env:APEX_INTEGRATION_TRACKER_TOKEN",
+        },
+    )
+    secrets_port_create = client.post(
+        "/admin/connections",
+        json={
+            "kind": "secrets",
+            "provider": "env",
+            "name": "secrets-port",
+            "project_id": "demo",
+        },
+    )
+    plain_id = client.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "plain",
+            "project_id": "demo",
+        },
+    ).json()["id"]
+
+    assert secret_create.status_code == 403
+    assert secrets_port_create.status_code == 403
+    assert (
+        client.patch(
+            f"/admin/connections/{plain_id}",
+            json={"secret_ref": "env:APEX_INTEGRATION_TRACKER_TOKEN"},
+        ).status_code
+        == 403
+    )
+
+
+def test_app_only_admin_cannot_manage_project_wide_connections(
+    repo: FakeConnectionsRepository,
+) -> None:
+    repo.connections["demo"] = _make_connection(
+        id="demo", kind="work_tracking", provider="stub", name="demo", project_id="demo"
+    )
+    client = make_client(
+        repo,
+        identity(Role.ADMIN, [ScopeRef(project_id="demo", app_id="app-a")]),
+    )
+
+    assert client.get("/admin/connections").json() == []
+    assert client.get("/admin/connections/demo").status_code == 403
+    assert (
+        client.post(
+            "/admin/connections",
+            json={
+                "kind": "work_tracking",
+                "provider": "stub",
+                "name": "app-wide",
+                "project_id": "demo",
+            },
+        ).status_code
+        == 403
+    )
+    assert client.patch("/admin/connections/demo", json={"name": "taken"}).status_code == 403
+    assert client.post("/admin/connections/demo/disable").status_code == 403
+    assert client.post("/admin/connections/demo/test").status_code == 403
+    assert client.delete("/admin/connections/demo").status_code == 403
+
+
 def test_create_rejects_private_base_url(admin: TestClient) -> None:
     response = admin.post(
         "/admin/connections",
@@ -278,6 +433,80 @@ def test_create_rejects_metadata_hostname(admin: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
+def test_create_rejects_private_s3_endpoint(admin: TestClient) -> None:
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "artifact_store",
+            "provider": "s3",
+            "name": "private-s3",
+            "options": {"endpoint": "http://169.254.169.254/latest/meta-data"},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
+def test_platform_admin_can_explicitly_approve_private_s3_endpoint(admin: TestClient) -> None:
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "artifact_store",
+            "provider": "s3",
+            "name": "approved-private-s3",
+            "options": {
+                "endpoint": "minio.apex.svc.cluster.local:9000",
+                "_apex_trusted_private_host": True,
+            },
+        },
+    )
+
+    assert response.status_code == 201
+
+
+def test_scoped_admin_cannot_set_reserved_private_host_approval(
+    repo: FakeConnectionsRepository,
+) -> None:
+    client = make_client(repo, identity(Role.ADMIN, [ScopeRef(project_id="demo")]))
+    response = client.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "stub",
+            "name": "approved-private",
+            "project_id": "demo",
+            "options": {"_apex_trusted_private_host": True},
+        },
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["ftp://artifacts.example.com", "https://user:password@artifacts.example.com", "not-a-url"],
+)
+def test_create_rejects_malformed_or_credentialed_adapter_urls(
+    admin: TestClient, target: str
+) -> None:
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "artifact_store",
+            "provider": "s3",
+            "name": f"invalid-{len(target)}",
+            "options": {"endpoint": target},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] in {
+        "adapter URL must be an http(s) URL without embedded credentials",
+        "adapter host could not be resolved",
+    }
 
 
 def test_create_rejects_hostname_resolving_private(
@@ -410,6 +639,42 @@ def test_probe_failure_reports_ok_false_not_5xx(admin: TestClient, broken_provid
     assert body["ok"] is False
     assert body["detail"] == "connection probe failed; check server logs for details"
     assert "backend exploded" not in body["detail"]
+
+
+@pytest.mark.parametrize("probe_fails", [False, True])
+def test_probe_closes_temporary_adapter(admin: TestClient, probe_fails: bool) -> None:
+    provider = f"test-closable-{'failure' if probe_fails else 'success'}"
+    instances: list[Any] = []
+
+    class ClosableAdapter:
+        def __init__(
+            self, conn: ConnectionConfig | None = None, secret: SecretValue | None = None
+        ) -> None:
+            self.closed = False
+            instances.append(self)
+
+        async def get_item(self, key: str) -> Any:
+            if probe_fails:
+                raise RuntimeError("probe failed")
+            return type("Item", (), {"key": key})()
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(ClosableAdapter)
+    try:
+        conn_id = admin.post(
+            "/admin/connections",
+            json={"kind": "work_tracking", "provider": provider, "name": provider},
+        ).json()["id"]
+        response = admin.post(f"/admin/connections/{conn_id}/test")
+    finally:
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is (not probe_fails)
+    assert len(instances) == 1
+    assert instances[0].closed is True
 
 
 def test_probe_rejects_private_base_url(admin: TestClient, repo: FakeConnectionsRepository) -> None:

@@ -197,7 +197,7 @@ describe('GoldenConfigDetailPage', () => {
     assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
     server.use(...wizardDraftHandlers())
     const user = userEvent.setup()
-    const { router } = renderApp({
+    const { router, unmount } = renderApp({
       initialEntries: ['/golden-configs/asst-gold'],
       authState: authenticatedState(),
     })
@@ -212,13 +212,28 @@ describe('GoldenConfigDetailPage', () => {
     expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute('aria-checked', 'true')
     // …and the one-shot param is stripped so Clear sticks.
     await waitFor(() => expect(router.state.location.search).not.toContain('golden='))
+    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await screen.findByText('Draft saved')
+    unmount()
   })
 
-  it('hides Edit JSON from viewers (read-only surface)', async () => {
+  it('hides mutation and launch controls from viewers', async () => {
     assistantsGet.mockResolvedValue(GOLDEN)
     renderApp({
       initialEntries: ['/golden-configs/asst-gold'],
       authState: authenticatedState('viewer'),
+    })
+
+    expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Edit JSON' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start run with this config' })).not.toBeInTheDocument()
+  })
+
+  it('lets operators start runs but reserves assistant edits for admins', async () => {
+    assistantsGet.mockResolvedValue(GOLDEN)
+    renderApp({
+      initialEntries: ['/golden-configs/asst-gold'],
+      authState: authenticatedState('operator'),
     })
 
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()

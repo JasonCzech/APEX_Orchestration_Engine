@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+
 import httpx
 import pytest
 
@@ -6,6 +8,7 @@ from apex.adapters.http_resilience import (
     CircuitOpenError,
     RetryPolicy,
     resilient_request,
+    resilient_stream_request,
     retry_policy,
 )
 
@@ -156,6 +159,79 @@ async def test_resilient_request_enforces_total_timeout() -> None:
             )
 
     assert calls == 0
+
+
+async def test_resilient_stream_request_retries_transport_error_without_buffering() -> None:
+    calls = 0
+
+    class TrackingStream(httpx.AsyncByteStream):
+        def __init__(self) -> None:
+            self.iterated = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            self.iterated = True
+            yield b"streamed"
+
+    stream = TrackingStream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ConnectError("temporary disconnect", request=request)
+        return httpx.Response(200, stream=stream, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        response = await resilient_stream_request(
+            client, "GET", "/report", sleep_fn=_noop_sleep, random_fn=lambda: 0.0
+        )
+        assert stream.iterated is False
+        assert await response.aread() == b"streamed"
+        await response.aclose()
+
+    assert calls == 2
+
+
+async def test_resilient_stream_request_closes_transient_response_before_retry() -> None:
+    class TrackingStream(httpx.AsyncByteStream):
+        def __init__(self, data: bytes) -> None:
+            self.data = data
+            self.iterated = False
+            self.closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            self.iterated = True
+            yield self.data
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    calls = 0
+    first_stream = TrackingStream(b"retry body must not be buffered")
+    final_stream = TrackingStream(b"ok")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(599, stream=first_stream, request=request)
+        return httpx.Response(200, stream=final_stream, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        response = await resilient_stream_request(
+            client, "GET", "/report", sleep_fn=_noop_sleep, random_fn=lambda: 0.0
+        )
+        assert first_stream.closed is True
+        assert first_stream.iterated is False
+        assert final_stream.iterated is False
+        assert await response.aread() == b"ok"
+        await response.aclose()
+
+    assert calls == 2
 
 
 async def test_circuit_breaker_opens_after_failures_and_resets(

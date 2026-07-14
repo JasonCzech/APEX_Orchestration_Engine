@@ -7,7 +7,7 @@ Creates:
   DEV_CONNECTIONS (stub everywhere, "env" for secrets), plus "sim-engine" for
   the execution engine (provider "sim")
 - global connection "minio-artifacts" (artifact_store/s3) pointing at the dev
-  MinIO from docker-compose.dev.yaml — requires APEX_MINIO_SECRET_KEY at runtime
+  MinIO from docker-compose.dev.yaml — requires APEX_INTEGRATION_MINIO_SECRET_KEY at runtime
 
 Graceful if the database is unreachable. Run: uv run python scripts/seed_catalog.py
 """
@@ -39,8 +39,9 @@ MINIO_OPTIONS: dict[str, object] = {
     "bucket": "apex-artifacts",
     "secure": False,
     "access_key": "apex",
+    "_apex_trusted_private_host": True,
 }
-MINIO_SECRET_REF = "env:APEX_MINIO_SECRET_KEY"
+MINIO_SECRET_REF = "env:APEX_INTEGRATION_MINIO_SECRET_KEY"
 
 
 def _seed_connections() -> list[Connection]:
@@ -137,7 +138,7 @@ async def _seed_minio_connection(session: AsyncSession) -> None:
         "NOTE: the DB-backed connection resolver prefers DB rows over the static "
         "DEV_CONNECTIONS map, so transcripts/documents/engine artifacts now go to "
         f"MinIO at {MINIO_OPTIONS['endpoint']} (bucket {MINIO_OPTIONS['bucket']!r}) in dev. "
-        f"Ensure APEX_MINIO_SECRET_KEY is set (see .env.example) and MinIO is up "
+        f"Ensure APEX_INTEGRATION_MINIO_SECRET_KEY is set (see .env.example) and MinIO is up "
         "(docker-compose.dev.yaml)."
     )
 

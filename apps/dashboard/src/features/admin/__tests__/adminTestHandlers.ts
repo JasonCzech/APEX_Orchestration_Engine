@@ -75,6 +75,7 @@ export const CONSUMER_OPS: Consumer = {
   created_at: NOW,
   last_used_at: NOW,
   key_fingerprint: 'a1b2c3d4',
+  rotation_count: 0,
 }
 
 export const CONSUMER_CI: Consumer = {
@@ -91,6 +92,7 @@ export const CONSUMER_CI: Consumer = {
   created_at: NOW,
   last_used_at: null,
   key_fingerprint: 'deadbeef',
+  rotation_count: 0,
 }
 
 export const CONSUMERS_FIXTURE = [CONSUMER_OPS, CONSUMER_CI]
@@ -243,6 +245,7 @@ export function createConsumerHandler(apiKey = 'apex_key_only_shown_once_123') {
       created_at: NOW,
       last_used_at: null,
       key_fingerprint: 'feedf00d',
+      rotation_count: 0,
       api_key: apiKey,
     }
     return HttpResponse.json(created, { status: 201 })
@@ -253,12 +256,14 @@ export function createConsumerHandler(apiKey = 'apex_key_only_shown_once_123') {
 /** POST rotate — answers with a fresh one-time api_key for the consumer. */
 export function rotateConsumerHandler(base: Consumer, apiKey = 'apex_key_rotated_456') {
   let calls = 0
-  const handler = http.post('*/v1/admin/consumers/:id/rotate', () => {
+  const captured: unknown[] = []
+  const handler = http.post('*/v1/admin/consumers/:id/rotate', async ({ request }) => {
     calls += 1
+    captured.push(await request.json())
     const rotated: ConsumerCreated = { ...base, key_fingerprint: 'r0t4t3d0', api_key: apiKey }
     return HttpResponse.json(rotated)
   })
-  return { handler, callCount: () => calls }
+  return { handler, callCount: () => calls, captured }
 }
 
 /** PATCH update — captures bodies and answers with the merged record. */

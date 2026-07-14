@@ -1,12 +1,17 @@
 """DB-backed ConnectionResolver: precedence, scope checks, caching, fallbacks."""
 
+import asyncio
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
+from apex.services import connections as connections_service
 from apex.services.connections import ConnectionResolver, StoredConnection
 
 
@@ -91,6 +96,131 @@ async def test_db_error_falls_back_to_static_stub() -> None:
     assert _conn_id(adapter) == "dev-work-tracking-stub"
 
 
+async def test_db_error_fails_closed_in_locked_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeStore([stored("global-wt")])
+    store.error = SQLAlchemyError("connection refused")
+    monkeypatch.setattr(
+        connections_service, "get_settings", lambda: SimpleNamespace(is_locked_down=True)
+    )
+    resolver = ConnectionResolver(store=store)
+
+    with pytest.raises(RuntimeError, match="connection store unavailable"):
+        await resolver.resolve(PortKind.WORK_TRACKING)
+
+
+async def test_empty_store_does_not_fall_back_in_locked_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        connections_service, "get_settings", lambda: SimpleNamespace(is_locked_down=True)
+    )
+    resolver = ConnectionResolver(store=FakeStore())
+
+    with pytest.raises(RuntimeError, match="static development fallbacks are disabled"):
+        await resolver.resolve(PortKind.WORK_TRACKING)
+
+    # An explicitly constructed non-DB resolver remains available to tests and
+    # local embedded use even when settings are patched to a locked environment.
+    assert _conn_id(await ConnectionResolver().resolve(PortKind.WORK_TRACKING)) == (
+        "dev-work-tracking-stub"
+    )
+
+
+async def test_resolve_with_connection_id_merges_options_and_checks_provider() -> None:
+    row = stored("engine-a", kind=PortKind.EXECUTION_ENGINE, provider="sim")
+    row = StoredConnection(
+        config=row.config.model_copy(update={"options": {"base": "kept"}}),
+        project_id=row.project_id,
+        enabled=row.enabled,
+        updated_at=row.updated_at,
+    )
+    resolver = ConnectionResolver(store=FakeStore([row]))
+
+    base = await resolver.resolve(PortKind.EXECUTION_ENGINE)
+    adapter, resolved_id = await resolver.resolve_with_connection_id(
+        PortKind.EXECUTION_ENGINE,
+        expected_provider="sim",
+        options_overlay={"fail_at_pct": 50.0},
+    )
+    second_overlay, _ = await resolver.resolve_with_connection_id(
+        PortKind.EXECUTION_ENGINE,
+        expected_provider="sim",
+        options_overlay={"fail_at_pct": 75.0},
+    )
+    assert resolved_id == "engine-a"
+    assert base._conn.options == {"base": "kept"}
+    assert adapter._conn.options == {"base": "kept", "fail_at_pct": 50.0}
+    assert second_overlay._conn.options == {"base": "kept", "fail_at_pct": 75.0}
+    assert len({id(base), id(adapter), id(second_overlay)}) == 3
+
+    with pytest.raises(ValueError, match="not requested provider"):
+        await resolver.resolve_with_connection_id(
+            PortKind.EXECUTION_ENGINE, expected_provider="loadrunner"
+        )
+
+
+@pytest.mark.parametrize("key", ["base_url", "endpoint", "_apex_trusted_private_host"])
+async def test_options_overlay_cannot_change_target_or_trust_policy(key: str) -> None:
+    row = stored("engine-a", kind=PortKind.EXECUTION_ENGINE, provider="sim")
+    resolver = ConnectionResolver(store=FakeStore([row]))
+
+    with pytest.raises(ValueError, match="cannot change network target or trust policy"):
+        await resolver.resolve_with_connection_id(
+            PortKind.EXECUTION_ENGINE,
+            options_overlay={key: "https://attacker.example"},
+        )
+
+
+async def test_work_tracking_uses_internal_binding_not_external_project_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ConnectionResolver(
+        store=FakeStore([stored("jira-p1", provider="jira", project_id="internal-project-1")])
+    )
+
+    async def jira(*args: object, **kwargs: object) -> object:
+        # External Jira key intentionally differs from the owning APEX project.
+        return SimpleNamespace(provider="jira", project_id="PHX")
+
+    monkeypatch.setattr(resolver, "_build_cached", jira)
+    adapter = await resolver.resolve(PortKind.WORK_TRACKING, project_id="internal-project-1")
+
+    assert adapter.project_id == "PHX"
+    assert adapter.apex_project_id == "internal-project-1"
+
+
+async def test_global_real_work_tracking_connection_rejected_for_scoped_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ConnectionResolver(store=FakeStore([stored("global-jira", provider="jira")]))
+    built = False
+
+    async def jira(*args: object, **kwargs: object) -> object:
+        nonlocal built
+        built = True
+        return SimpleNamespace(provider="jira", project_id="PHX")
+
+    monkeypatch.setattr(resolver, "_build_cached", jira)
+    with pytest.raises(ValueError, match="not internally bound"):
+        await resolver.resolve(PortKind.WORK_TRACKING, project_id="internal-project-1")
+
+    assert built is False
+
+
+async def test_global_stub_work_tracking_connection_allowed_for_scoped_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ConnectionResolver(store=FakeStore([stored("global-wt")]))
+
+    async def stub(*args: object, **kwargs: object) -> object:
+        return SimpleNamespace(provider="stub")
+
+    monkeypatch.setattr(resolver, "_build_cached", stub)
+    assert await resolver.resolve(PortKind.WORK_TRACKING, project_id="project-a")
+
+
 # ── scope / state checks on explicit connection_id ───────────────────────────
 
 
@@ -126,6 +256,20 @@ async def test_unknown_id_still_raises_keyerror() -> None:
     resolver = ConnectionResolver(store=FakeStore())
     with pytest.raises(KeyError, match="no-such-conn"):
         await resolver.resolve(PortKind.WORK_TRACKING, connection_id="no-such-conn")
+
+
+async def test_runtime_rejects_private_s3_endpoint_before_adapter_build() -> None:
+    config = ConnectionConfig(
+        id="private-store",
+        kind=PortKind.ARTIFACT_STORE,
+        provider="s3",
+        name="private-store",
+        options={"endpoint": "http://169.254.169.254/latest/meta-data"},
+    )
+    resolver = ConnectionResolver(connections=[config])
+
+    with pytest.raises(ValueError, match="private adapter hosts are disabled"):
+        await resolver.resolve(PortKind.ARTIFACT_STORE)
 
 
 async def test_static_dev_id_resolves_even_with_store() -> None:
@@ -215,3 +359,47 @@ async def test_resolver_close_closes_cached_adapters(
     await resolver.close()
 
     assert closed == ["global-wt"]
+
+
+def test_shared_resolver_isolates_and_closes_adapters_per_event_loop() -> None:
+    provider = "test-multiloop"
+    rendezvous = threading.Barrier(2)
+    resolver = ConnectionResolver(
+        connections=[
+            ConnectionConfig(
+                id="multi-loop",
+                kind=PortKind.WORK_TRACKING,
+                provider=provider,
+                name="multi-loop",
+            )
+        ]
+    )
+
+    class LoopOwnedAdapter:
+        def __init__(self, conn: ConnectionConfig, secret: object | None = None) -> None:
+            self.created_on = id(asyncio.get_running_loop())
+            self.closed_on: int | None = None
+
+        async def aclose(self) -> None:
+            self.closed_on = id(asyncio.get_running_loop())
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(LoopOwnedAdapter)
+
+    async def use_from_one_loop() -> LoopOwnedAdapter:
+        rendezvous.wait(timeout=5)
+        first = await resolver.resolve(PortKind.WORK_TRACKING)
+        second = await resolver.resolve(PortKind.WORK_TRACKING)
+        assert first is second
+        await resolver.close()
+        return first
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(asyncio.run, use_from_one_loop()) for _ in range(2)]
+            adapters = [future.result(timeout=10) for future in futures]
+    finally:
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+    assert adapters[0] is not adapters[1]
+    assert len({adapter.created_on for adapter in adapters}) == 2
+    assert all(adapter.closed_on == adapter.created_on for adapter in adapters)

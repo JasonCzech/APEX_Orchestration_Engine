@@ -27,7 +27,7 @@ export { NewRunWizardPage } from '../new-test/NewRunWizard'
 | Steps 1–6 | `steps/{ScopeStep,WorkItemsStep,ContextStep,ConfigStep,PromptsStep,ReviewStep}.tsx` |
 | `WizardDraft` + validation + prereq hints + gates mapping + `buildLaunchPreview` | `wizardState.ts` |
 | Debounced autosave (1.5s, create-then-update serialized) | `useDraft.ts` |
-| Launch mutation (extends D2 `launchRun` semantics) | `useWizardLaunch.ts` |
+| Launch mutation (`POST /v1/pipelines`, including resolved context) | `useWizardLaunch.ts` |
 
 New shared hooks (this agent's files): `src/api/hooks/{useCatalog,useDrafts,
 useWorkTracking,useDocuments,useAssistants}.ts`. `queryKeys.ts` got append-only
@@ -36,24 +36,25 @@ keys (`prompts.listNamespace/byId`, `catalog.applicationsBy/environmentsBy`,
 
 ## Launch contract (verify against backend on drift)
 
-`buildLaunchPreview(draft)` is the single source for BOTH the review step's
-"Launch payload (exact)" JSON and the SDK calls in `useWizardLaunch`:
+`buildLaunchPreview(draft)` drives the review step's launch plan and the domain
+request assembled in `useWizardLaunch`:
 
-- `threads.create({metadata: {project_id, app_id?, title}})`
-- `runs.create(threadId, 'pipeline', {input: {title, request},
-  config: {configurable}, ...D2 stream options})` (durability sync, resumable,
-  multitask reject, updates+messages-tuple+custom with subgraphs)
+- `POST /v1/pipelines` receives the selected assistant id, full configurable,
+  document ids, and inline work-item context packets. The server resolves full
+  document text before creating the thread and run.
 - `configurable` mirrors `src/apex/graphs/pipeline/configurable.py`:
   - `gates` is ALWAYS the explicit 7-phase matrix (all_gated -> all `gated`,
     all_auto -> D2's `ALL_AUTO_GATES` import, custom -> the wizard matrix).
   - `phases` omitted when all 7 (backend default), else the canonical-order
-    subset. Phase-prereq gaps WARN (plan 4: "earlier in plan or succeeded on
-    thread") — the backend plan resolver is authoritative.
+    subset. Phase-prerequisite gaps BLOCK launch because this path creates a new
+    thread with no prior results to reuse.
   - `prompt_overrides["phase/<p>"] = {content}` — replaces the SYSTEM prompt
     only (src/apex/services/prompts.py resolution order).
-  - Wizard context refs map to `pre_execution_context` as prefixed strings:
-    `workitem:<key>`, `document:<id>`, `context:<id>`. The backend field is
-    declared but not yet consumed by any phase node — revisit when it is.
+  - Work-item keys resolve into input `context_packets`; document ids are
+    resolved server-side into packets containing the stored extracted text.
+  - Golden configs retain their full assistant bundle (connections, models,
+    limits, prompt pins, backend, load settings), with visible wizard edits
+    layered on top.
 
 ## Drafts
 

@@ -3,15 +3,15 @@
  *
  * Pure discriminated-union reducer — no React, no IO. Gate identity is the
  * `interrupt_id`: a GATE_DISCOVERED carrying a DIFFERENT id while a gate is on
- * screen means a NEW gate instance (discuss/revise re-interrupts mint fresh
- * ids), so the machine re-opens with a fresh draft; the SAME id is a no-op
- * (poll echoes must never clobber operator edits).
+ * screen normally means a NEW gate instance. The SAME id is a no-op unless
+ * useGate marks a post-resume refreshed snapshot (poll echoes must never
+ * clobber operator edits).
  *
  * Resume semantics are PESSIMISTIC: SUBMIT only parks the machine in
  * 'submitting' — the cache is never optimistically written. The mutation's
  * outcome events drive the next state:
- *   accepted + discuss/revise  -> awaiting_agent (the gate WILL reopen)
- *   accepted + approve/modify/skip_phase/abort -> no_gate (stream/poll
+ *   accepted + modify/discuss/revise -> awaiting_agent (the gate WILL reopen)
+ *   accepted + approve/skip_phase/abort -> no_gate (stream/poll
  *     narrative takes over)
  *   rejected(conflict)         -> superseded(by 'conflict')  [409 CAS loss]
  *   rejected(!conflict)        -> failed, DRAFT PRESERVED for [Retry]
@@ -59,7 +59,7 @@ export interface GateDraftPatch {
 export type GateAction = 'approve' | 'modify' | 'skip_phase' | 'abort' | 'revise' | 'discuss'
 
 /** Actions whose 202 means "the agent is working and the gate will reopen". */
-export type ReopeningAction = Extract<GateAction, 'discuss' | 'revise'>
+export type ReopeningAction = Extract<GateAction, 'modify' | 'discuss' | 'revise'>
 
 export type GateMachineState =
   | { tag: 'no_gate' }
@@ -72,8 +72,8 @@ export type GateMachineState =
   | { tag: 'failed'; gate: GateInstance; action: GateAction; draft: GateDraft; error: Error }
 
 export type GateEvent =
-  | { type: 'GATE_DISCOVERED'; gate: GateInstance }
-  | { type: 'GATE_CLEARED' }
+  | { type: 'GATE_DISCOVERED'; gate: GateInstance; reopenSameId?: boolean }
+  | { type: 'GATE_CLEARED'; settled?: boolean }
   | { type: 'EDIT'; patch: GateDraftPatch }
   | { type: 'SUBMIT'; action: GateAction }
   | { type: 'RESUME_ACCEPTED' }
@@ -159,8 +159,12 @@ function openFor(gate: GateInstance): GateMachineState {
  * Shared GATE_DISCOVERED handling for every state that already holds a gate:
  * same interrupt_id -> no-op (same reference), different id -> fresh 'open'.
  */
-function rediscover(state: GateMachineState & { gate: GateInstance }, gate: GateInstance): GateMachineState {
-  return gate.interrupt_id === state.gate.interrupt_id ? state : openFor(gate)
+function rediscover(
+  state: GateMachineState & { gate: GateInstance },
+  gate: GateInstance,
+  reopenSameId = false,
+): GateMachineState {
+  return gate.interrupt_id === state.gate.interrupt_id && !reopenSameId ? state : openFor(gate)
 }
 
 export function gateReducer(state: GateMachineState, event: GateEvent): GateMachineState {
@@ -177,7 +181,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
     case 'open':
       switch (event.type) {
         case 'GATE_DISCOVERED':
-          return rediscover(state, event.gate)
+          return rediscover(state, event.gate, event.reopenSameId)
         case 'GATE_CLEARED':
           // The pending interrupt vanished without us resuming it: another
           // operator (or surface) actioned the gate.
@@ -196,7 +200,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
     case 'submitting':
       switch (event.type) {
         case 'RESUME_ACCEPTED':
-          return state.action === 'discuss' || state.action === 'revise'
+          return state.action === 'modify' || state.action === 'discuss' || state.action === 'revise'
             ? { tag: 'awaiting_agent', gate: state.gate, action: state.action }
             : GATE_MACHINE_INITIAL
         case 'RESUME_REJECTED':
@@ -219,11 +223,15 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
     case 'awaiting_agent':
       switch (event.type) {
         case 'GATE_DISCOVERED':
-          // New interrupt_id = the discuss/revise loop re-interrupted: a NEW
-          // gate instance with a fresh draft. Same id = stale snapshot echo.
-          return rediscover(state, event.gate)
+          // A changed id, or a refreshed same-id snapshot explicitly marked
+          // by useGate, is the next review with a fresh draft.
+          return rediscover(state, event.gate, event.reopenSameId)
+        case 'GATE_CLEARED':
+          // The consumed interrupt normally disappears while the agent works.
+          // Once a refreshed snapshot also says the run settled, however, a
+          // loop cap or terminal failure ended without opening another gate.
+          return event.settled ? GATE_MACHINE_INITIAL : state
         default:
-          // GATE_CLEARED is expected here (the resume consumed the interrupt).
           return state
       }
 
@@ -233,7 +241,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
           // A different gate replacing the superseded one opens directly; the
           // SAME id re-echoed by a stale cache must not clear the banner —
           // [View current state] (refetch + RESET) is the recovery path.
-          return rediscover(state, event.gate)
+          return rediscover(state, event.gate, event.reopenSameId)
         default:
           return state
       }
@@ -249,7 +257,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
           return { ...state, draft }
         }
         case 'GATE_DISCOVERED':
-          return rediscover(state, event.gate)
+          return rediscover(state, event.gate, event.reopenSameId)
         case 'GATE_CLEARED':
           return { tag: 'superseded', gate: state.gate, by: 'cleared' }
         default:

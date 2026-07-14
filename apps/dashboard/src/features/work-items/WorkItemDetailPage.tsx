@@ -6,7 +6,7 @@
  * A 404 renders the dash-empty 'Item not found' state, not a problem card.
  */
 import { useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router'
+import { Link, useParams, useSearchParams } from 'react-router'
 
 import { useEnrichWorkItem, useWorkItem, type WorkItem } from '@/api/hooks/useWorkTracking'
 import { isApiError } from '@/api/errors'
@@ -20,7 +20,15 @@ import { descriptionParagraphs, parseJsonObject } from './workItemsLogic'
 import './work-items.css'
 
 /** Fields JSON editor + comment textarea -> POST items/{key}/enrich (operator+). */
-function EnrichModal({ item, onClose }: { item: WorkItem; onClose: () => void }) {
+function EnrichModal({
+  item,
+  project,
+  onClose,
+}: {
+  item: WorkItem
+  project?: string
+  onClose: () => void
+}) {
   const enrich = useEnrichWorkItem()
   const [fieldsText, setFieldsText] = useState('{}')
   const [comment, setComment] = useState('')
@@ -35,6 +43,7 @@ function EnrichModal({ item, onClose }: { item: WorkItem; onClose: () => void })
       {
         key: item.key,
         body: { fields: fieldsParse.value, comment: comment.trim() || null },
+        ...(project ? { project } : {}),
       },
       { onSuccess: onClose },
     )
@@ -107,8 +116,10 @@ export function WorkItemDetailPage() {
   const params = useParams<{ provider: string; itemId: string }>()
   const provider = params.provider ?? 'tracker'
   const key = params.itemId ? decodeURIComponent(params.itemId) : undefined
+  const [searchParams] = useSearchParams()
+  const project = searchParams.get('project') || undefined
 
-  const itemQuery = useWorkItem(key)
+  const itemQuery = useWorkItem(key, project)
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
   const [enriching, setEnriching] = useState(false)
@@ -202,7 +213,13 @@ export function WorkItemDetailPage() {
         )}
       </div>
 
-      {enriching && <EnrichModal item={item} onClose={() => setEnriching(false)} />}
+      {enriching && (
+        <EnrichModal
+          item={item}
+          {...(project ? { project } : {})}
+          onClose={() => setEnriching(false)}
+        />
+      )}
     </section>
   )
 }

@@ -10,18 +10,20 @@ Wire-format decisions (documented mappings / deviations):
 
 - Get-or-create (contract req. 1): provision() names the remote test
   "apex-orch:<idempotency_key>" and looks that name up via GET /api/v1/tests
-  (project-scoped when project_id is set) BEFORE creating anything, so
-  re-provisioning after a crash — even from a fresh process — finds the
-  existing run instead of double-creating. The remote test name is the durable
-  key registry; nothing is kept client-side.
+  (project-scoped when project_id is set) inside a keyed creation guard before
+  creating anything. POST /api/v1/tests also carries Idempotency-Key, so the
+  provider atomically rejects concurrent creates from separate callers; the
+  loser adopts the winning named test after 409. Re-provisioning after a crash
+  — even from a fresh process — finds the existing run. The remote test name is
+  the durable key registry; nothing is kept client-side.
 - spec.script_refs convention: an entry starting with "{" is inline APEX Load
   JSON DSL (uploaded via POST /api/v1/scripts at provision time, wrapper shape
   {"project_id"?, "script": {...}} per pkg/api/handlers.go handleCreateScript);
   any other entry is an EXISTING APEX Load script id used as-is. An empty list
   generates a default single-GET HTTP workload against spec.target_environment.
 - spec.vusers splits evenly across one group per script (remainder to the
-  earliest groups, minimum 1 vuser per group — so the effective total can
-  exceed spec.vusers when spec.vusers < len(script_refs)); ramp_s/duration_s
+  earliest groups). More scripts than users is rejected so effective load can
+  never exceed the requested total; ramp_s/duration_s
   become Go duration strings ("30s").
 - spec.slas: tps_avg -> goal_config.target_average_tps, p95_ms ->
   goal_config.p95_latency_ms, error_rate (0..1 fraction) ->
@@ -65,10 +67,14 @@ import structlog
 from apex.adapters.http_resilience import (
     CircuitBreaker,
     CircuitOpenError,
+    read_stream_error_preview,
     resilient_request,
+    resilient_stream_request,
     retry_policy,
 )
+from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
+from apex.adapters.remote_idempotency import remote_create_guard
 from apex.domain.integrations import (
     LoadTestSpec,
     SecretValue,
@@ -76,7 +82,7 @@ from apex.domain.integrations import (
     ValidationReport,
 )
 from apex.domain.pipeline import ArtifactRef, EngineHandle
-from apex.ports.artifact_store import ArtifactStorePort
+from apex.ports.artifact_store import ArtifactStorePort, engine_artifact_key
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
     EngineRunPhase,
@@ -90,6 +96,9 @@ PROVIDER = "apex_load"
 TEST_NAME_PREFIX = "apex-orch:"
 _TIMEOUT_S = 15.0
 _DOWNLOAD_TIMEOUT_S = 60.0
+_DEFAULT_MAX_REPORT_BYTES = 256 * 1024 * 1024
+_CONFLICT_RECHECK_ATTEMPTS = 6
+_CONFLICT_RECHECK_DELAY_S = 0.05
 
 # ManagedTest.Status values -> EngineRunPhase (see module docstring).
 _PHASE_BY_STATUS: dict[str, EngineRunPhase] = {
@@ -112,10 +121,16 @@ _PHASE_BY_STATUS: dict[str, EngineRunPhase] = {
 # startableTestStatusError (pkg/api/runner.go): the already-started rejection.
 _ALREADY_STARTED_MARKER = "must be QUEUED"
 
+
+class _RemoteConflictError(RuntimeError):
+    """A provider-side 409 that may have an observable winning resource."""
+
+
 # ── Go duration helpers ───────────────────────────────────────────────────────
 
 _GO_UNIT_S = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1.0, "m": 60.0, "h": 3600.0}
 _GO_DURATION_TOKEN = re.compile(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)")
+_NAMED_SCRIPT_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,254}$")
 
 
 def parse_go_duration_s(value: Any) -> float | None:
@@ -143,6 +158,30 @@ def test_name_for(idempotency_key: str) -> str:
 
 def _is_inline_ref(ref: str) -> bool:
     return ref.lstrip().startswith("{")
+
+
+def _is_safe_named_ref(ref: str) -> bool:
+    return _NAMED_SCRIPT_REF.fullmatch(ref) is not None
+
+
+async def _read_bounded_json_object(
+    response: httpx.Response, context: str, *, max_bytes: int
+) -> dict[str, Any]:
+    payload = bytearray()
+    try:
+        async for chunk in response.aiter_bytes():
+            if len(payload) + len(chunk) > max_bytes:
+                raise ValueError(f"{context} exceeds maximum size of {max_bytes} bytes")
+            payload.extend(chunk)
+    finally:
+        await response.aclose()
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{context} returned invalid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{context} returned a non-object JSON payload")
+    return data
 
 
 def _default_script(spec: LoadTestSpec) -> dict[str, Any]:
@@ -173,9 +212,16 @@ def _prepare_inline_script(
 
 
 def _split_vusers(total: int, group_count: int) -> list[int]:
-    """Even split, remainder to the earliest groups, minimum 1 per group."""
+    """Even split without ever exceeding the caller's requested total."""
+    if group_count < 1:
+        raise ValueError("APEX Load requires at least one script group")
+    if total < group_count:
+        raise ValueError(
+            f"vusers ({total}) must be >= script group count ({group_count}); "
+            "refusing to amplify the requested load"
+        )
     base, remainder = divmod(total, group_count)
-    return [max(1, base + (1 if index < remainder else 0)) for index in range(group_count)]
+    return [base + (1 if index < remainder else 0) for index in range(group_count)]
 
 
 def _goal_config_from_slas(slas: dict[str, float]) -> dict[str, float]:
@@ -317,11 +363,15 @@ class ApexLoadExecutionEngine:
         if secret is None:
             raise ValueError(
                 f"apex_load connection {conn.id!r} requires a service-account API key; "
-                'set secret_ref on the connection (e.g. "env:APEX_APEXLOAD_API_KEY")'
+                'set secret_ref on the connection (e.g. "env:APEX_INTEGRATION_APEXLOAD_API_KEY")'
             )
         self._conn = conn
         self._base_url = base_url
+        self._allow_private_hosts = private_hosts_allowed(options)
         self._project_id = str(options.get("project_id") or "") or None
+        self._max_report_bytes = int(options.get("max_report_bytes", _DEFAULT_MAX_REPORT_BYTES))
+        if self._max_report_bytes < 1:
+            raise ValueError("apex_load max_report_bytes must be >= 1")
         self._headers = {"X-APEXLoad-API-Key": secret.value, "Accept": "application/json"}
         self._http: httpx.AsyncClient | None = None
         self._http_loop: asyncio.AbstractEventLoop | None = None
@@ -333,8 +383,11 @@ class ApexLoadExecutionEngine:
         """Lazy client, rebuilt when the running event loop changes."""
         loop = asyncio.get_running_loop()
         if self._http is None or self._http.is_closed or self._http_loop is not loop:
-            self._http = httpx.AsyncClient(
-                base_url=self._base_url, headers=self._headers, timeout=_TIMEOUT_S
+            self._http = safe_async_http_client(
+                base_url=self._base_url,
+                headers=self._headers,
+                timeout=_TIMEOUT_S,
+                allow_private_hosts=self._allow_private_hosts,
             )
             self._http_loop = loop
         return self._http
@@ -352,6 +405,7 @@ class ApexLoadExecutionEngine:
         *,
         json: Any | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
         timeout_s: float | None = None,
         not_found: str | None = None,
     ) -> httpx.Response:
@@ -371,6 +425,7 @@ class ApexLoadExecutionEngine:
                 path,
                 json=json,
                 params=params,
+                headers=headers,
                 timeout=request_timeout,
                 retry=retry,
                 breaker=breaker,
@@ -392,7 +447,7 @@ class ApexLoadExecutionEngine:
         if response.status_code in (400, 422):
             raise ValueError(f"apex load rejected the request: {_error_text(response)}")
         if response.status_code == 409:
-            raise RuntimeError(
+            raise _RemoteConflictError(
                 f"apex load refused {method} {path} (HTTP 409): {_error_text(response)}"
             )
         if response.status_code >= 400:
@@ -401,6 +456,41 @@ class ApexLoadExecutionEngine:
                 f"{_error_text(response)}"
             )
         return response
+
+    async def _stream_download(self, path: str, *, not_found: str) -> httpx.Response:
+        """Open a bounded-consumer streaming response; caller must ``aclose`` it."""
+        try:
+            response = await resilient_stream_request(
+                self._client(),
+                "GET",
+                path,
+                timeout=_DOWNLOAD_TIMEOUT_S,
+                retry=retry_policy(total_timeout_s=None),
+                breaker=self._breaker,
+            )
+        except CircuitOpenError as exc:
+            raise RuntimeError(f"apex load request circuit is open for GET {path}") from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"apex load request GET {path} failed before a response arrived: {exc}"
+            ) from exc
+        if response.status_code < 400:
+            return response
+        preview = await read_stream_error_preview(response)
+        preview_response = httpx.Response(response.status_code, content=preview)
+        try:
+            if response.status_code == 404:
+                raise KeyError(not_found)
+            if response.status_code in (401, 403):
+                raise RuntimeError(
+                    f"apex load rejected credentials for GET {path} (HTTP {response.status_code})"
+                )
+            raise RuntimeError(
+                f"apex load GET {path} failed with HTTP {response.status_code}: "
+                f"{_error_text(preview_response)}"
+            )
+        finally:
+            await response.aclose()
 
     def _run_id(self, handle: EngineHandle) -> str:
         if not handle.external_run_id:
@@ -420,6 +510,11 @@ class ApexLoadExecutionEngine:
             issues.append("duration_s must be > 0")
         if spec.ramp_s < 0:
             issues.append("ramp_s must be >= 0")
+        if spec.script_refs and len(spec.script_refs) > spec.vusers:
+            issues.append(
+                f"vusers ({spec.vusers}) must be >= script_refs count "
+                f"({len(spec.script_refs)}); one group requires at least one vuser"
+            )
 
         inline_scripts: list[dict[str, Any]] = []
         named_refs: list[str] = []
@@ -456,6 +551,9 @@ class ApexLoadExecutionEngine:
             if not data.get("valid", False):
                 issues.extend(str(issue) for issue in data.get("issues") or [])
         for ref in named_refs:
+            if not _is_safe_named_ref(ref):
+                issues.append(f"script ref {ref!r} is not a safe APEX Load script id")
+                continue
             try:
                 response = await self._request(
                     "POST",
@@ -472,14 +570,39 @@ class ApexLoadExecutionEngine:
 
     async def provision(self, spec: LoadTestSpec) -> EngineHandle:
         """Get-or-create by spec.idempotency_key via the remote test NAME
-        "apex-orch:<key>" (list first, create only when absent)."""
+        "apex-orch:<key>".
+
+        The guarded lookup closes the local check-then-create race.  The
+        provider's Idempotency-Key reservation closes it across callers that do
+        not share this process; a 409 is followed by a bounded lookup for the
+        winning test because the reservation can become visible just before
+        the test record does.
+        """
         name = test_name_for(spec.idempotency_key)
-        test = await self._find_test_by_name(name)
-        if test is None:
-            test = await self._create_test(name, spec)
-            logger.info("apex_load.test_created", test_id=test.get("id"), test_name=name)
-        else:
-            logger.info("apex_load.test_reused", test_id=test.get("id"), test_name=name)
+        guard_key = ":".join(
+            (PROVIDER, self._base_url, self._project_id or "", spec.idempotency_key)
+        )
+        async with remote_create_guard(guard_key):
+            test = await self._find_test_by_name(name)
+            if test is None:
+                try:
+                    test = await self._create_test(name, spec)
+                except _RemoteConflictError as exc:
+                    test = await self._find_test_after_conflict(name)
+                    if test is None:
+                        raise RuntimeError(
+                            "apex load reserved the idempotency key but the winning test "
+                            f"{name!r} did not become visible"
+                        ) from exc
+                    logger.info(
+                        "apex_load.test_conflict_adopted",
+                        test_id=test.get("id"),
+                        test_name=name,
+                    )
+                else:
+                    logger.info("apex_load.test_created", test_id=test.get("id"), test_name=name)
+            else:
+                logger.info("apex_load.test_reused", test_id=test.get("id"), test_name=name)
         extras = {"test_name": name}
         if self._project_id:
             extras["project_id"] = self._project_id
@@ -555,21 +678,28 @@ class ApexLoadExecutionEngine:
         before start never archive: a 404 yields zero artifacts, not an error."""
         run_id = self._run_id(handle)
         try:
-            response = await self._request(
-                "GET",
+            response = await self._stream_download(
                 f"/api/v1/tests/{run_id}/archive/report",
-                timeout_s=_DOWNLOAD_TIMEOUT_S,
                 not_found=f"apex load archive for test {run_id!r} not found",
             )
         except KeyError:
             logger.warning("apex_load.archive_missing", external_run_id=run_id)
             return []
-        key = f"engine-runs/{run_id}/apex-load-report.json"
-        stored = await store.put(key, response.content, content_type="application/json")
+        key = engine_artifact_key(handle.idempotency_key, "apex-load-report.json")
+        try:
+            stored = await store.put_stream(
+                key,
+                response.aiter_bytes(),
+                content_type="application/json",
+                max_bytes=self._max_report_bytes,
+            )
+        finally:
+            await response.aclose()
         ref = ArtifactRef(
             kind="engine_report",
             name="apex-load-report.json",
             uri=stored.uri,
+            key=stored.key,
             media_type="application/json",
             summary=f"APEX Load archive report for test {run_id}",
         )
@@ -592,19 +722,31 @@ class ApexLoadExecutionEngine:
         kpis: dict[str, float] = {}
         notes = f"APEX Load test {run_id} status {status or 'UNKNOWN'}"
         try:
-            report_response = await self._request(
-                "GET",
+            report_response = await self._stream_download(
                 f"/api/v1/tests/{run_id}/archive/report",
-                timeout_s=_DOWNLOAD_TIMEOUT_S,
                 not_found=f"apex load archive for test {run_id!r} not found",
             )
         except KeyError:
             kpis = await self._live_kpis(run_id)
             notes += "; archive report unavailable, KPIs from live metrics"
         else:
-            report = _json_object(report_response, f"GET /api/v1/tests/{run_id}/archive/report")
-            kpis = _kpis_from_report(report)
-            notes += "; KPIs from archive report"
+            try:
+                report = await _read_bounded_json_object(
+                    report_response,
+                    f"GET /api/v1/tests/{run_id}/archive/report",
+                    max_bytes=self._max_report_bytes,
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "apex_load.archive_summary_unavailable",
+                    external_run_id=run_id,
+                    detail=str(exc),
+                )
+                kpis = await self._live_kpis(run_id)
+                notes += "; archive report invalid or oversized, KPIs from live metrics"
+            else:
+                kpis = _kpis_from_report(report)
+                notes += "; KPIs from archive report"
 
         passed = status == "COMPLETE" and not breached
         return TestResultSummary(
@@ -643,6 +785,15 @@ class ApexLoadExecutionEngine:
                 return test
         return None
 
+    async def _find_test_after_conflict(self, name: str) -> dict[str, Any] | None:
+        for attempt in range(_CONFLICT_RECHECK_ATTEMPTS):
+            test = await self._find_test_by_name(name)
+            if test is not None:
+                return test
+            if attempt + 1 < _CONFLICT_RECHECK_ATTEMPTS:
+                await asyncio.sleep(_CONFLICT_RECHECK_DELAY_S * (attempt + 1))
+        return None
+
     async def _upload_script(self, script: dict[str, Any]) -> str:
         payload: dict[str, Any] = {"script": script}
         if self._project_id:
@@ -674,6 +825,8 @@ class ApexLoadExecutionEngine:
                     await self._upload_script(_prepare_inline_script(parsed, spec, index))
                 )
             else:
+                if not _is_safe_named_ref(ref):
+                    raise ValueError(f"script ref {ref!r} is not a safe APEX Load script id")
                 script_ids.append(ref)
         if not script_ids:
             if not spec.target_environment:
@@ -705,5 +858,27 @@ class ApexLoadExecutionEngine:
         goal = _goal_config_from_slas(spec.slas)
         if goal:
             body["goal_config"] = goal
-        response = await self._request("POST", "/api/v1/tests", json=body)
-        return _json_object(response, "POST /api/v1/tests")
+        try:
+            response = await self._request(
+                "POST",
+                "/api/v1/tests",
+                json=body,
+                headers={"Idempotency-Key": spec.idempotency_key},
+            )
+            return _json_object(response, "POST /api/v1/tests")
+        except _RemoteConflictError:
+            raise
+        except (RuntimeError, ValueError) as exc:
+            # The provider may have committed the idempotent create before the
+            # response was lost or truncated. Adopt the named resource instead
+            # of reporting failure and leaving an untracked remote test.
+            test = await self._find_test_after_conflict(name)
+            if test is None:
+                raise
+            logger.warning(
+                "apex_load.test_create_reconciled",
+                test_id=test.get("id"),
+                test_name=name,
+                error=str(exc),
+            )
+            return test

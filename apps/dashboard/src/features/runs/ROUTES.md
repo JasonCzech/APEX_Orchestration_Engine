@@ -45,15 +45,6 @@ screen.
   `queryKeys.pipelines.list`, keepPreviousData, 15s visibility-aware poll.
 - `formatRelative(iso, now?)` (`src/utils/time.ts`).
 
-## Known drift (integrator follow-up)
-
-The generated `@apex/api-client` schema predates `PipelineSummary.engine`
-(present in both `docs/api/apex-v1.openapi.json` and the live backend).
-`usePipelines.ts` extends the type locally (`PipelineEngineInfo`); once the
-client is regenerated, that local extension can be deleted.
-
----
-
 # Run detail / timeline / artifact viewer — route wiring (D1, detail agent)
 
 This feature does NOT touch `src/routes/router.tsx`. The integrator wires the
@@ -201,12 +192,12 @@ wired pages (`RunDetailPage`) or the approvals inbox (its own agent's wiring).
 
 ## Semantics (plan "HITL gate machine")
 
-Pessimistic resumes: no cache writes before the 202. Gate identity =
-interrupt_id (new id -> NEW open instance with a fresh draft; same id ->
-no-op). 202 on approve/modify/skip_phase/abort -> `no_gate` (snapshot/stream
+Pessimistic resumes: no cache writes before the 202. Gate identity normally =
+interrupt_id (new id -> NEW open instance; same-id poll echoes -> no-op), with
+an explicit refreshed-snapshot transition for same-id re-reviews. 202 on approve/skip_phase/abort -> `no_gate` (snapshot/stream
 narrative takes over; a settled-id guard suppresses the stale cache echo
-until the refetch lands); 202 on discuss/revise -> `awaiting_agent` until the
-re-interrupt mints a new id. 409 `gate_superseded` -> `superseded(conflict)`;
+until the refetch lands); 202 on modify/discuss/revise -> `awaiting_agent` until a
+refreshed interrupt arrives. 409 `gate_superseded` -> `superseded(conflict)`;
 other failures -> `failed` with the draft preserved for [Retry].
 
 ---
@@ -223,7 +214,7 @@ pages (`RunDetailPage`, `RunsListPage`).
 | `assessPlan`, `runFromHereSelection`, `lastPlanSelection`, `PHASE_ORDER`, `PHASE_PREREQUISITES`, `STALE_AFTER_MS` | `preflight.ts` | pure logic — mirrors `src/apex/domain/pipeline.py` + `graph.py` plan_resolver semantics |
 | `PreflightModal {threadId, initialSelection?, onClose}` | `PreflightModal.tsx` | the single pre-flight checkpoint every entry point funnels through |
 | `OverflowMenu {label, items, trigger?, className?}` | `PreflightModal.tsx` | shared glass dropdown (menu role, Escape/outside-click close, arrow keys, focus-first-item); stops click propagation so it is row-click safe |
-| `useRerun` / `buildRerunConfigurable` / `ALL_GATED_GATES` | `useRerun.ts` | `runs.create(threadId, 'pipeline', {input: {}, config:{configurable:{phases, gates?}}})` on the EXISTING thread |
+| `useRerun` / `buildRerunConfigurable` / `ALL_GATED_GATES` | `useRerun.ts` | `runs.create(threadId, state.run_config.assistant_id ?? 'pipeline', {input: {}, config:{configurable:{...state.run_config, phases, gates?}}})` on the EXISTING thread; the previous assistant, effective scope, engine, connections, prompts, models, backend, load settings, and limits are retained |
 | styles | `preflight.css` | modal, overflow menu, actions cell, split button, `.sr-only` |
 
 ## Entry points (surgical edits)

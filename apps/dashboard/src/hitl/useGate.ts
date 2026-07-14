@@ -10,21 +10,21 @@
  * - The stream's pendingGateHint as an ACCELERATOR only: a hint object with no
  *   hydrated interrupt triggers one snapshot refetch per hint identity (the
  *   gate_opened event fires seconds before the 10s poll would land). Identity
- *   is the OBJECT reference — discuss/revise re-gates carry the same
+ *   is the OBJECT reference — modify/discuss/revise re-gates carry the same
  *   gate/phase values but the stream reducer mints a fresh hint object per
  *   gate_opened event.
  *
- * Settled-gate suppression: after a 202 (and after "View current state" on a
- * superseded gate) the consumed interrupt_id is remembered so a stale cache
- * echo cannot re-open a gate the server already resolved; the suppression
- * lifts as soon as the refetched snapshot drops (or replaces) the interrupt.
+ * Settled-gate suppression: after a terminal 202 (and after "View current
+ * state" on a superseded gate) the consumed interrupt_id is remembered so a
+ * stale cache echo cannot re-open a gate the server already resolved. Reopening
+ * actions instead wait for a refreshed snapshot generation.
  *
  * Resume wiring is PESSIMISTIC: submit() -> SUBMIT (machine shows in-flight)
  * -> POST; 202 -> RESUME_ACCEPTED (+ invalidations inside useResumeGate);
  * 409 gate_superseded -> RESUME_REJECTED{conflict} -> 'superseded'; other
- * failures -> 'failed' with the draft preserved. Discuss/revise loops
- * re-interrupt via the stream (gate_opened hint) -> detail refetch -> new
- * interrupt_id -> GATE_DISCOVERED opens the NEW gate instance.
+ * failures -> 'failed' with the draft preserved. Reopening actions re-interrupt
+ * via the stream/poll; a refreshed snapshot opens the next review even when
+ * LangGraph derives the same interrupt_id for the repeated node.
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
@@ -115,6 +115,14 @@ export interface UseGateResult {
   viewCurrent: () => void
 }
 
+function reopensGate(action: GateAction): boolean {
+  return action === 'modify' || action === 'discuss' || action === 'revise'
+}
+
+function gatePayloadSignature(gate: GateInstance | null): string {
+  return JSON.stringify(gate?.payload ?? null)
+}
+
 export function useGate(threadId: string, options: UseGateOptions = {}): UseGateResult {
   const queryClient = useQueryClient()
   const thread = useThreadState(threadId)
@@ -128,11 +136,29 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   // interrupt_id the server already resolved (202 / superseded + viewCurrent):
   // suppresses stale cache echoes until the refetched snapshot moves on.
   const settledGateIdRef = useRef<string | null>(null)
+  const reopeningRef = useRef<{
+    interruptId: string
+    baselineUpdatedAt: number
+    baselinePayload: string
+    observedClear: boolean
+  } | null>(null)
   const [lastAccepted, setLastAccepted] = useState<GateResolution | null>(null)
 
   const resume = useResumeGate({
     onAccepted: (runId, variables) => {
-      settledGateIdRef.current = variables.interruptId
+      if (reopensGate(variables.body.action)) {
+        // LangGraph can reuse the same interrupt id when the same node calls
+        // interrupt() again. Wait for a post-resume snapshot generation, then
+        // explicitly reopen even when the id is unchanged.
+        reopeningRef.current = {
+          interruptId: variables.interruptId,
+          baselineUpdatedAt: thread.dataUpdatedAt,
+          baselinePayload: gatePayloadSignature(gateOf(stateRef.current)),
+          observedClear: false,
+        }
+      } else {
+        settledGateIdRef.current = variables.interruptId
+      }
       setLastAccepted({ interruptId: variables.interruptId, action: variables.body.action, runId })
       dispatch({ type: 'RESUME_ACCEPTED' })
     },
@@ -145,6 +171,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   useEffect(() => {
     return () => {
       settledGateIdRef.current = null
+      reopeningRef.current = null
       setLastAccepted(null)
       dispatch({ type: 'RESET' })
     }
@@ -157,18 +184,52 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   // accepted resume that landed on no_gate) re-evaluate the cached snapshot.
   useEffect(() => {
     if (!interrupts) return
-    if (snapshotGate && snapshotGate.interrupt_id !== settledGateIdRef.current) {
-      dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate })
-      return
+    if (snapshotGate) {
+      const reopening = reopeningRef.current
+      if (reopening && snapshotGate.interrupt_id === reopening.interruptId) {
+        const refreshed = thread.dataUpdatedAt > reopening.baselineUpdatedAt
+        const payloadChanged = gatePayloadSignature(snapshotGate) !== reopening.baselinePayload
+        if (refreshed && (reopening.observedClear || payloadChanged)) {
+          reopeningRef.current = null
+          dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: true })
+        } else {
+          // Pre-resume cache echo: leave awaiting_agent intact.
+          dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate })
+        }
+        return
+      }
+      if (reopening) reopeningRef.current = null
+      if (snapshotGate.interrupt_id !== settledGateIdRef.current) {
+        dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate })
+        return
+      }
     }
     // No usable gate, or only the echo of one the server already resolved.
-    if (!snapshotGate) settledGateIdRef.current = null
-    dispatch({ type: 'GATE_CLEARED' })
-  }, [interrupts, snapshotGate, state.tag])
+    let reopeningSettled = false
+    if (!snapshotGate) {
+      settledGateIdRef.current = null
+      const reopening = reopeningRef.current
+      if (reopening) {
+        reopening.observedClear = true
+        const refreshed = thread.dataUpdatedAt > reopening.baselineUpdatedAt
+        const threadStatus = thread.data?.detail.thread_status
+        reopeningSettled =
+          refreshed && (threadStatus === 'idle' || threadStatus === 'error')
+        if (reopeningSettled) reopeningRef.current = null
+      }
+    }
+    dispatch({ type: 'GATE_CLEARED', settled: reopeningSettled })
+  }, [
+    interrupts,
+    snapshotGate,
+    state.tag,
+    thread.data?.detail.thread_status,
+    thread.dataUpdatedAt,
+  ])
 
   // Hint accelerator: handled once per hint object identity; only fires when
   // nothing hydrated is on screen (no_gate) or a re-gate is expected
-  // (awaiting_agent after discuss/revise).
+  // (awaiting_agent after modify/discuss/revise).
   const hint = options.gateHint ?? null
   const handledHintRef = useRef<GateHintLike>(null)
   useEffect(() => {

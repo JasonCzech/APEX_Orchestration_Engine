@@ -4,6 +4,75 @@
  */
 
 export interface paths {
+    "/v1/admin/compliance/audit/chain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Verify Audit Chain */
+        get: operations["verifyAuditChain"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/compliance/audit/export.cef": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Audit Cef */
+        get: operations["exportAuditCef"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/compliance/audit/export.jsonl": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Audit Jsonl */
+        get: operations["exportAuditJsonl"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/compliance/audit/retention": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Audit Retention */
+        get: operations["getAuditRetention"];
+        put?: never;
+        post?: never;
+        /** Prune Audit Retention */
+        delete: operations["pruneAuditRetention"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/connections": {
         parameters: {
             query?: never;
@@ -222,6 +291,23 @@ export interface paths {
         };
         /** Get Artifact */
         get: operations["getArtifact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Auth Me */
+        get: operations["getAuthMe"];
         put?: never;
         post?: never;
         delete?: never;
@@ -573,7 +659,16 @@ export interface paths {
         /** List Pipelines */
         get: operations["listPipelines"];
         put?: never;
-        post?: never;
+        /**
+         * Create Pipeline Run
+         * @description Create a thread and launch a pipeline run; returns the run id + SSE stream URL.
+         *
+         *     Convenience entrypoint for external dashboard clients: drive the existing pipeline
+         *     (e.g. an analysis-only run over externally-supplied results) without touching the
+         *     raw LangGraph /threads + /runs API. `document_ids` are resolved into context packets
+         *     (scoped per consumer) and merged with any inline `context_packets`.
+         */
+        post: operations["createPipelineRun"];
         delete?: never;
         options?: never;
         head?: never;
@@ -608,7 +703,11 @@ export interface paths {
         put?: never;
         /**
          * Abort Pipeline
-         * @description Cancel the thread's active run(s) via the loopback API (engine abort lands M3).
+         * @description Stop an external engine first, then cancel the thread's active runs.
+         *
+         *     Threads that have not entered execution have no engine handle and fall back
+         *     to graph-only cancellation. Engine abort failures propagate so the API never
+         *     reports success while production load is still running.
          */
         post: operations["abortPipeline"];
         delete?: never;
@@ -1156,6 +1255,36 @@ export interface components {
             /** Name */
             name?: string | null;
         };
+        /** AuditChainVerificationOut */
+        AuditChainVerificationOut: {
+            /** Checked */
+            checked: number;
+            /** First Error */
+            first_error?: string | null;
+            /** Last Hash */
+            last_hash?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** AuditPruneOut */
+        AuditPruneOut: {
+            /** Deleted */
+            deleted: number;
+            /** Retained Anchor */
+            retained_anchor: boolean;
+        };
+        /** AuditRetentionOut */
+        AuditRetentionOut: {
+            /**
+             * Before
+             * Format: date-time
+             */
+            before: string;
+            /** Candidates */
+            candidates: number;
+            /** Preserved Anchor Id */
+            preserved_anchor_id?: string | null;
+        };
         /** ConnectionCreate */
         ConnectionCreate: {
             /** Base Url */
@@ -1229,6 +1358,8 @@ export interface components {
         /** ConsumerCreateRequest */
         ConsumerCreateRequest: {
             consumer_type: components["schemas"]["ConsumerType"];
+            /** Expires At */
+            expires_at?: string | null;
             /** Name */
             name: string;
             role: components["schemas"]["Role"];
@@ -1239,28 +1370,45 @@ export interface components {
         ConsumerCreated: {
             /**
              * Api Key
-             * @description The raw API key. Shown exactly once — it is stored only as a sha256 hash and can never be retrieved again.
+             * @description The raw API key. Shown exactly once — it is stored only as a configured hash and can never be retrieved again.
              */
             api_key: string;
             consumer_type: components["schemas"]["ConsumerType"];
             /** Created At */
             created_at: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Deleted At */
+            deleted_at?: string | null;
             /** Enabled */
             enabled: boolean;
+            /** Expires At */
+            expires_at?: string | null;
             /** Id */
             id: string;
             /**
              * Key Fingerprint
-             * @description First 8 hex chars of the stored sha256 key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.
+             * @description First 8 hex chars of the stored key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.
              */
             key_fingerprint: string;
             /** Last Used At */
             last_used_at: string | null;
             /** Name */
             name: string;
+            /** Revoked At */
+            revoked_at?: string | null;
             role: components["schemas"]["Role"];
+            /** Rotated At */
+            rotated_at?: string | null;
+            /**
+             * Rotation Count
+             * @default 0
+             */
+            rotation_count: number;
             /** Scopes */
             scopes: components["schemas"]["ScopeRef"][];
+            /** Updated By */
+            updated_by?: string | null;
         };
         /** ConsumerInfo */
         ConsumerInfo: {
@@ -1275,22 +1423,39 @@ export interface components {
             consumer_type: components["schemas"]["ConsumerType"];
             /** Created At */
             created_at: string | null;
+            /** Created By */
+            created_by?: string | null;
+            /** Deleted At */
+            deleted_at?: string | null;
             /** Enabled */
             enabled: boolean;
+            /** Expires At */
+            expires_at?: string | null;
             /** Id */
             id: string;
             /**
              * Key Fingerprint
-             * @description First 8 hex chars of the stored sha256 key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.
+             * @description First 8 hex chars of the stored key hash (NOT of the raw key, which is never persisted). Stable identifier for a credential.
              */
             key_fingerprint: string;
             /** Last Used At */
             last_used_at: string | null;
             /** Name */
             name: string;
+            /** Revoked At */
+            revoked_at?: string | null;
             role: components["schemas"]["Role"];
+            /** Rotated At */
+            rotated_at?: string | null;
+            /**
+             * Rotation Count
+             * @default 0
+             */
+            rotation_count: number;
             /** Scopes */
             scopes: components["schemas"]["ScopeRef"][];
+            /** Updated By */
+            updated_by?: string | null;
         };
         /**
          * ConsumerType
@@ -1304,11 +1469,30 @@ export interface components {
         ConsumerUpdateRequest: {
             /** Enabled */
             enabled?: boolean | null;
+            /** Expires At */
+            expires_at?: string | null;
             /** Name */
             name?: string | null;
+            /** Revoked At */
+            revoked_at?: string | null;
             role?: components["schemas"]["Role"] | null;
             /** Scopes */
             scopes?: components["schemas"]["ScopeRef"][] | null;
+        };
+        /** ContextPacket */
+        ContextPacket: {
+            /** Id */
+            id?: string;
+            /** Ref */
+            ref?: string | null;
+            /** Source */
+            source: string;
+            /** Summary */
+            summary?: string | null;
+            /** Text */
+            text?: string | null;
+            /** Title */
+            title: string;
         };
         /** ContextSummaryAccepted */
         ContextSummaryAccepted: {
@@ -1343,6 +1527,44 @@ export interface components {
             namespace: string;
             /** Note */
             note?: string | null;
+        };
+        /** CurrentPrincipalResponse */
+        CurrentPrincipalResponse: {
+            /** Capabilities */
+            capabilities?: {
+                [key: string]: unknown;
+            };
+            consumer_type: components["schemas"]["ConsumerType"];
+            /** Is Unscoped */
+            is_unscoped: boolean;
+            /**
+             * Mfa Required
+             * @default false
+             */
+            mfa_required: boolean;
+            /** Name */
+            name: string;
+            /** Org Id */
+            org_id?: string | null;
+            /** Principal Id */
+            principal_id: string;
+            /**
+             * Principal Kind
+             * @default api_consumer
+             */
+            principal_kind: string;
+            role: components["schemas"]["Role"];
+            /** Scopes */
+            scopes?: components["schemas"]["ScopeRef"][];
+            /** Session Expires At */
+            session_expires_at?: string | null;
+            /**
+             * Step Up Required
+             * @default false
+             */
+            step_up_required: boolean;
+            /** Workspace Id */
+            workspace_id?: string | null;
         };
         /** DocumentListResponse */
         DocumentListResponse: {
@@ -1416,13 +1638,15 @@ export interface components {
         };
         /**
          * DraftUpdateRequest
-         * @description Full replace of the editable fields (title + payload); project_id is fixed.
+         * @description Full replace of editable fields; omitted project_id keeps legacy ownership.
          */
         DraftUpdateRequest: {
             /** Payload */
             payload?: {
                 [key: string]: unknown;
             };
+            /** Project Id */
+            project_id?: string | null;
             /** Title */
             title: string;
         };
@@ -1444,6 +1668,12 @@ export interface components {
         EngineRunPhase: "provisioning" | "ready" | "running" | "stopping" | "collecting" | "completed" | "failed" | "aborted";
         /** EngineRunRead */
         EngineRunRead: {
+            /** App Id */
+            app_id?: string | null;
+            /** Artifact Connection Id */
+            artifact_connection_id?: string | null;
+            /** Artifact Namespace */
+            artifact_namespace?: string | null;
             /** Attempt */
             attempt: number;
             /** Ended At */
@@ -1521,6 +1751,10 @@ export interface components {
             options: {
                 [key: string]: unknown;
             };
+            /** Target Approved */
+            target_approved: boolean;
+            /** Target Version */
+            target_version: number;
             /**
              * Updated At
              * Format: date-time
@@ -1573,6 +1807,33 @@ export interface components {
             offset: number;
             query: components["schemas"]["TranslatedQuery"];
         };
+        /**
+         * ExternalResults
+         * @description Results produced outside APEX (e.g. by a standalone analysis dashboard).
+         *
+         *     Supplied as run input so an analysis-only run (reporting/postmortem) can report
+         *     on them honestly — plan_resolver seeds a succeeded execution result from this
+         *     instead of the caller forging internal phase state. Maps onto TestResultSummary
+         *     so the reporting phase reads it the same way it reads a real engine run.
+         */
+        ExternalResults: {
+            /** Engine */
+            engine?: string | null;
+            /** Kpis */
+            kpis?: {
+                [key: string]: number;
+            };
+            /** Notes */
+            notes?: string | null;
+            /** Passed */
+            passed?: boolean | null;
+            /** Source */
+            source: string;
+            /** Summary */
+            summary?: string | null;
+            /** Uri */
+            uri?: string | null;
+        };
         /** GateInterrupt */
         GateInterrupt: {
             /** Interrupt Id */
@@ -1585,6 +1846,15 @@ export interface components {
             };
             /** Phase */
             phase?: string | null;
+        };
+        /** GatePromptEdit */
+        GatePromptEdit: {
+            /** Application */
+            application?: string | null;
+            /** System */
+            system?: string | null;
+            /** User */
+            user?: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1636,6 +1906,7 @@ export interface components {
             environment_id: string;
             snapshot?: components["schemas"]["SnapshotView"] | null;
         };
+        JsonValue: unknown;
         /** LogEntryOut */
         LogEntryOut: {
             /** At */
@@ -1926,10 +2197,7 @@ export interface components {
             message?: string | null;
             /** Note */
             note?: string | null;
-            /** Prompt */
-            prompt?: {
-                [key: string]: unknown;
-            } | null;
+            prompt?: components["schemas"]["GatePromptEdit"] | null;
         };
         /** ResumeGateResponse */
         ResumeGateResponse: {
@@ -1946,6 +2214,16 @@ export interface components {
         RollbackRequest: {
             /** Version Id */
             version_id: string;
+        };
+        /** RotateConsumerKeyRequest */
+        RotateConsumerKeyRequest: {
+            /** Expires At */
+            expires_at?: string | null;
+            /**
+             * Grace Period Seconds
+             * @default 0
+             */
+            grace_period_seconds: number;
         };
         /** SaveVersionRequest */
         SaveVersionRequest: {
@@ -2058,6 +2336,65 @@ export interface components {
             /** Stale */
             stale: boolean;
         };
+        /**
+         * StartPipelineRequest
+         * @description Start a pipeline run. For results analysis, select the analysis phases (e.g.
+         *     ["reporting", "postmortem"]) and supply `external_results`; gates default to auto.
+         */
+        StartPipelineRequest: {
+            /** Agent Backend */
+            agent_backend?: string | null;
+            /** App Id */
+            app_id?: string | null;
+            /**
+             * Assistant Id
+             * @description Golden assistant id; defaults to the base pipeline graph.
+             */
+            assistant_id?: string | null;
+            /**
+             * Configurable
+             * @description Full per-run PipelineConfigurable layer retained by the selected assistant.
+             */
+            configurable?: {
+                [key: string]: unknown;
+            } | null;
+            /** Context Packets */
+            context_packets?: components["schemas"]["ContextPacket"][] | null;
+            /** Document Ids */
+            document_ids?: string[] | null;
+            external_results?: components["schemas"]["ExternalResults"] | null;
+            /** Gates */
+            gates?: {
+                [key: string]: unknown;
+            } | null;
+            /** Model By Phase */
+            model_by_phase?: {
+                [key: string]: string;
+            } | null;
+            /** Phases */
+            phases?: string[] | null;
+            /** Project Id */
+            project_id?: string | null;
+            /**
+             * Request
+             * @default
+             */
+            request: string;
+            /** Title */
+            title: string;
+        };
+        /** StartPipelineResponse */
+        StartPipelineResponse: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Stream Url
+             * @description Join the run's SSE stream: GET this path on the LangGraph surface (same host) with your API key.
+             */
+            stream_url: string;
+            /** Thread Id */
+            thread_id: string;
+        };
         /** SystemInfo */
         SystemInfo: {
             consumer: components["schemas"]["ConsumerInfo"];
@@ -2078,7 +2415,7 @@ export interface components {
             content?: string | null;
             /** Sample Input */
             sample_input?: {
-                [key: string]: unknown;
+                [key: string]: components["schemas"]["JsonValue"];
             } | null;
             /** Version Id */
             version_id?: string | null;
@@ -2276,6 +2613,142 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    verifyAuditChain: {
+        parameters: {
+            query?: {
+                /** @description Allow the first retained row to reference an archived prior hash */
+                allow_truncated?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditChainVerificationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    exportAuditCef: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportAuditJsonl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAuditRetention: {
+        parameters: {
+            query?: {
+                /** @description Delete or inspect audit rows before this timestamp */
+                before?: string | null;
+                /** @description Keep the newest pruned-window row as a truncated-chain anchor */
+                retain_anchor?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRetentionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pruneAuditRetention: {
+        parameters: {
+            query?: {
+                /** @description Delete or inspect audit rows before this timestamp */
+                before?: string | null;
+                /** @description Keep the newest pruned-window row as a truncated-chain anchor */
+                retain_anchor?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditPruneOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listConnections: {
         parameters: {
             query?: {
@@ -2756,7 +3229,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RotateConsumerKeyRequest"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -2899,6 +3376,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAuthMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CurrentPrincipalResponse"];
                 };
             };
         };
@@ -3877,6 +4374,39 @@ export interface operations {
             };
         };
     };
+    createPipelineRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartPipelineRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StartPipelineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getPipeline: {
         parameters: {
             query?: never;
@@ -4400,6 +4930,8 @@ export interface operations {
                 offset?: number;
                 /** @description Explicit work-tracking connection id (default: resolved) */
                 connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
             };
             header?: never;
             path?: never;
@@ -4432,6 +4964,8 @@ export interface operations {
             query?: {
                 /** @description Explicit work-tracking connection id (default: resolved) */
                 connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
             };
             header?: never;
             path?: never;
@@ -4468,6 +5002,8 @@ export interface operations {
             query?: {
                 /** @description Explicit work-tracking connection id (default: resolved) */
                 connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
             };
             header?: never;
             path: {
@@ -4502,6 +5038,8 @@ export interface operations {
             query?: {
                 /** @description Explicit work-tracking connection id (default: resolved) */
                 connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
             };
             header?: never;
             path: {
@@ -4540,6 +5078,8 @@ export interface operations {
             query?: {
                 /** @description Explicit work-tracking connection id (default: resolved) */
                 connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
             };
             header?: never;
             path?: never;
@@ -4576,6 +5116,8 @@ export interface operations {
             query?: {
                 /** @description Explicit work-tracking connection id (default: resolved) */
                 connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
             };
             header?: never;
             path?: never;

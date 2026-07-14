@@ -42,6 +42,7 @@ import httpx
 from pydantic import Field
 
 from apex.adapters.http_resilience import resilient_request, retry_policy
+from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.options import coerce_bool
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import (
@@ -233,6 +234,7 @@ class ElasticsearchLogSearchAdapter:
         self._base_url = base_url
         self._index = str(options.get("index") or DEFAULT_INDEX)
         self._verify_tls = coerce_bool(options.get("verify_tls"), default=True)
+        self._allow_private_hosts = private_hosts_allowed(options)
         self._secret = secret
         self._client = client
         self._client_loop: asyncio.AbstractEventLoop | None = None
@@ -312,10 +314,11 @@ class ElasticsearchLogSearchAdapter:
                 auth = httpx.BasicAuth(username, password)
             else:
                 headers["Authorization"] = f"ApiKey {self._secret.value}"
-        return httpx.AsyncClient(
+        return safe_async_http_client(
             base_url=self._base_url,
             headers=headers,
             auth=auth,
             verify=self._verify_tls,
             timeout=httpx.Timeout(REQUEST_TIMEOUT_S),
+            allow_private_hosts=self._allow_private_hosts,
         )

@@ -117,6 +117,8 @@ class CatalogRepository:
         name: str,
         kind: str | None = None,
         base_url: str | None = None,
+        target_approved: bool = False,
+        target_version: int = 0,
         options: dict[str, Any] | None = None,
         hosts: Sequence[dict[str, Any]] = (),
     ) -> Environment:
@@ -125,6 +127,8 @@ class CatalogRepository:
             name=name,
             kind=kind,
             base_url=base_url,
+            target_approved=target_approved,
+            target_version=target_version,
             options=dict(options or {}),
         )
         env.hosts = _build_hosts(hosts)

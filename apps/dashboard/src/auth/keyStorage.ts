@@ -5,6 +5,8 @@ export const API_KEY_STORAGE_KEY = 'apex.apiKey'
 type KeyListener = (key: string | null) => void
 
 const listeners = new Set<KeyListener>()
+let keyRevision = 0
+let storageListenerAttached = false
 
 function safeStorage(): Storage | null {
   try {
@@ -23,19 +25,54 @@ export function getApiKey(): string | null {
 
 export function setApiKey(key: string): void {
   safeStorage()?.setItem(API_KEY_STORAGE_KEY, key)
+  keyRevision += 1
   notify(key)
 }
 
 export function clearApiKey(): void {
   safeStorage()?.removeItem(API_KEY_STORAGE_KEY)
+  keyRevision += 1
   notify(null)
+}
+
+/**
+ * Monotonic credential generation for rejecting responses that were sent with
+ * an older session. Comparing only the key value is insufficient when a user
+ * rotates away from a key and later rotates back to it.
+ */
+export function getApiKeyRevision(): number {
+  return keyRevision
 }
 
 export function subscribeApiKey(listener: KeyListener): () => void {
   listeners.add(listener)
+  if (!storageListenerAttached && typeof window !== 'undefined') {
+    window.addEventListener('storage', handleStorageChange)
+    storageListenerAttached = true
+  }
   return () => {
     listeners.delete(listener)
+    if (listeners.size === 0 && storageListenerAttached && typeof window !== 'undefined') {
+      window.removeEventListener('storage', handleStorageChange)
+      storageListenerAttached = false
+    }
   }
+}
+
+/** Browser storage events fire only in the other tabs sharing this origin. */
+function handleStorageChange(event: StorageEvent): void {
+  if (isDevAuthEnabled()) return
+  if (event.key !== null && event.key !== API_KEY_STORAGE_KEY) return
+  const storage = safeStorage()
+  if (event.storageArea !== null && storage !== null && event.storageArea !== storage) return
+  const key =
+    event.key === API_KEY_STORAGE_KEY
+      ? event.newValue && event.newValue.length > 0
+        ? event.newValue
+        : null
+      : getApiKey()
+  keyRevision += 1
+  notify(key)
 }
 
 function notify(key: string | null): void {

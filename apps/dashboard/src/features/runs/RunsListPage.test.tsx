@@ -13,6 +13,7 @@ import { server } from '@/test/server'
 import { RunsListPage } from './RunsListPage'
 import {
   makeSummaries,
+  makeStrip,
   PIPELINES_FIXTURE,
   pipelinesHandler,
   pipelinesNeverResolves,
@@ -117,6 +118,35 @@ describe('RunsListPage', () => {
     expect(gatedRow.getByText('Conditional')).toHaveClass('status-badge', 'warning')
     expect(gatedRow.getByText('interrupted')).toHaveClass('status-badge', 'warning')
     expect(gatedRow.getByText('—')).toBeInTheDocument()
+  })
+
+  it('does not label idle failed, aborted, or inconsistent runs as GO', async () => {
+    const failed = {
+      ...makeSummaries(1)[0]!,
+      thread_id: 'run-failed',
+      title: 'Failed run',
+      phase_strip: makeStrip({ execution: { status: 'failed', attempt: 1 } }),
+    }
+    const aborted = {
+      ...makeSummaries(1)[0]!,
+      thread_id: 'run-aborted',
+      title: 'Aborted run',
+      phase_strip: makeStrip({ execution: { status: 'aborted', attempt: 1 } }),
+    }
+    const inconsistent = {
+      ...makeSummaries(1)[0]!,
+      thread_id: 'run-inconsistent',
+      title: 'Stopped while running',
+      phase_strip: makeStrip({ execution: { status: 'running', attempt: 1 } }),
+    }
+    server.use(pipelinesHandler([failed, aborted, inconsistent]).handler)
+    renderRunsPage()
+
+    for (const id of ['run-failed', 'run-aborted', 'run-inconsistent']) {
+      expect(within(await screen.findByTestId(`runs-row-${id}`)).getByText('NO-GO')).toHaveClass(
+        'danger',
+      )
+    }
   })
 
   it('renders a warning gate chip linking to the run for pending gates', async () => {

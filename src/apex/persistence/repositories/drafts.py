@@ -25,6 +25,14 @@ class DraftsRepository:
     async def get(self, draft_id: str) -> Draft | None:
         return await self._session.get(Draft, draft_id)
 
+    async def get_for_update(self, draft_id: str) -> Draft | None:
+        return await self._session.scalar(
+            select(Draft)
+            .where(Draft.id == draft_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+
     async def create(
         self,
         *,
@@ -32,19 +40,51 @@ class DraftsRepository:
         project_id: str | None,
         payload: dict[str, Any],
         created_by: str | None,
+        created_by_consumer_id: str | None = None,
     ) -> Draft:
-        draft = Draft(title=title, project_id=project_id, payload=payload, created_by=created_by)
+        draft = Draft(
+            title=title,
+            project_id=project_id,
+            payload=payload,
+            created_by=created_by,
+            created_by_consumer_id=created_by_consumer_id,
+        )
         self._session.add(draft)
         await self._session.commit()
         await self._session.refresh(draft)
         return draft
 
-    async def replace(self, draft_id: str, *, title: str, payload: dict[str, Any]) -> Draft | None:
+    async def replace(
+        self,
+        draft_id: str,
+        *,
+        title: str,
+        project_id: str | None,
+        payload: dict[str, Any],
+    ) -> Draft | None:
         """Full replace of the editable fields; bumps updated_at explicitly."""
-        draft = await self.get(draft_id)
+        draft = await self.get_for_update(draft_id)
         if draft is None:
             return None
+        return await self.replace_existing(
+            draft,
+            title=title,
+            project_id=project_id,
+            payload=payload,
+        )
+
+    async def replace_existing(
+        self,
+        draft: Draft,
+        *,
+        title: str,
+        project_id: str | None,
+        payload: dict[str, Any],
+    ) -> Draft:
+        """Replace editable fields on an already locked draft row."""
+
         draft.title = title
+        draft.project_id = project_id
         draft.payload = payload
         draft.updated_at = datetime.now(UTC)
         await self._session.commit()
@@ -52,9 +92,14 @@ class DraftsRepository:
         return draft
 
     async def delete(self, draft_id: str) -> bool:
-        draft = await self.get(draft_id)
+        draft = await self.get_for_update(draft_id)
         if draft is None:
             return False
+        return await self.delete_existing(draft)
+
+    async def delete_existing(self, draft: Draft) -> bool:
+        """Delete an already locked draft row."""
+
         await self._session.delete(draft)
         await self._session.commit()
         return True

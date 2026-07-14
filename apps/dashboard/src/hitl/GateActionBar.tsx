@@ -32,6 +32,7 @@ export function AbortConfirm({
       <button
         type="button"
         className="btn btn-danger btn-sm"
+        data-gate-action="abort"
         disabled={disabled}
         onClick={() => setArming(true)}
       >
@@ -51,6 +52,7 @@ export function AbortConfirm({
       <input
         id={inputId}
         className="field-input abort-confirm-input"
+        autoFocus
         placeholder="Type ABORT"
         aria-label="Type ABORT to confirm"
         value={text}
@@ -126,7 +128,13 @@ export function GateActionBar({
             disabled={disabled}
             onClick={() => onSubmit(dirty && has('modify') ? 'modify' : 'approve')}
           >
-            {submitting ? 'Executing…' : dirty && has('modify') ? '▶ Execute Edited Prompt' : '▶ Execute Phase'}
+            {submitting
+              ? dirty && has('modify')
+                ? 'Saving…'
+                : 'Executing…'
+              : dirty && has('modify')
+                ? 'Save Edit & Re-review'
+                : '▶ Execute Phase'}
           </button>
         )}
         {kind === 'phase_review' && has('approve') && (

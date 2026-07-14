@@ -88,7 +88,7 @@ class MatrixResolver(IdentityResolver):
         return self._by_key.get(api_key)
 
 
-def _exploding_loopback(api_key: str | None = None) -> Any:
+def _exploding_loopback(api_key: str | None = None, **_: Any) -> Any:
     """Stand-in for loopback_client: any loopback-bound route fails fast post-authz."""
     raise RuntimeError("authz matrix: loopback LangGraph API is unavailable in unit tests")
 
@@ -105,7 +105,13 @@ def authz_world(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(auth_service, "default_resolver", MatrixResolver())
     for module in _LOOPBACK_MODULES:
         monkeypatch.setattr(module, "loopback_client", _exploding_loopback)
+    # The matrix intentionally sends hundreds of requests from TestClient's one
+    # synthetic source address. Rebuild the middleware stack per case so the
+    # production source-aggregate limiter cannot make role/scope assertions
+    # order-dependent or inherit traffic from earlier app-level tests.
+    app.middleware_stack = None
     yield
+    app.middleware_stack = None
     get_settings.cache_clear()
 
 

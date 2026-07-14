@@ -7,6 +7,7 @@ tests reuse it via import.
 import pytest
 
 from apex.persistence.models import Prompt, PromptVersion
+from apex.persistence.repositories.prompts import DuplicatePromptKeyError
 from apex.services.prompts import (
     DuplicatePromptError,
     PromptCatalogService,
@@ -39,10 +40,13 @@ class FakePromptRepository:
         namespace: str | None = None,
         include_archived: bool = False,
         q: str | None = None,
+        allow_application: bool = False,
     ) -> list[Prompt]:
         rows = list(self.prompts.values())
         if namespace is not None:
             rows = [p for p in rows if p.namespace == namespace]
+        if not allow_application:
+            rows = [p for p in rows if p.namespace != "application"]
         if not include_archived:
             rows = [p for p in rows if p.archived_at is None]
         if q:
@@ -71,7 +75,15 @@ class FakePromptRepository:
             (v.version for v in self.versions.values() if v.prompt_id == prompt_id), default=0
         )
 
-    async def get_active_version(self, namespace: str, key: str) -> PromptVersion | None:
+    async def get_active_version(
+        self,
+        namespace: str,
+        key: str,
+        *,
+        allow_application: bool = False,
+    ) -> PromptVersion | None:
+        if namespace == "application" and not allow_application:
+            return None
         prompt = await self.get_by_key(namespace, key)
         if prompt is None or prompt.archived_at is not None or not prompt.active_version_id:
             return None
@@ -88,6 +100,11 @@ class FakePromptRepository:
 
     async def save(self, prompt: Prompt) -> None:
         self.prompts[prompt.id] = prompt
+
+
+class RacingPromptRepository(FakePromptRepository):
+    async def add_prompt(self, prompt: Prompt, first_version: PromptVersion) -> None:
+        raise DuplicatePromptKeyError("concurrent duplicate")
 
 
 @pytest.fixture
@@ -117,6 +134,13 @@ async def test_create_duplicate_key_raises(catalog: PromptCatalogService) -> Non
     await catalog.create_prompt(namespace="phase", key="k", content="a")
     with pytest.raises(DuplicatePromptError):
         await catalog.create_prompt(namespace="phase", key="k", content="b")
+
+
+async def test_create_concurrent_duplicate_is_translated_to_domain_error() -> None:
+    catalog = PromptCatalogService(RacingPromptRepository())
+
+    with pytest.raises(DuplicatePromptError, match="prompt phase/k already exists"):
+        await catalog.create_prompt(namespace="phase", key="k", content="content")
 
 
 async def test_save_version_is_monotonic_and_moves_pointer(
@@ -197,6 +221,45 @@ async def test_list_prompts_filters_namespace_and_q(catalog: PromptCatalogServic
     assert {p.namespace for p, _ in rows} == {"phase", "observability"}
     for _, active in rows:
         assert active is not None and active.version == 1
+
+
+async def test_application_catalog_reads_fail_closed_without_explicit_access(
+    catalog: PromptCatalogService,
+    repo: FakePromptRepository,
+) -> None:
+    phase, _ = await catalog.create_prompt(namespace="phase", key="story/system", content="phase")
+    application, application_v1 = await catalog.create_prompt(
+        namespace="application", key="app-1", content="tenant requirements"
+    )
+
+    assert [prompt.id for prompt, _ in await catalog.list_prompts()] == [phase.id]
+    assert await catalog.list_prompts(namespace="application") == []
+    with pytest.raises(PromptNotFoundError):
+        await catalog.get_prompt(application.id)
+    with pytest.raises(PromptNotFoundError):
+        await catalog.list_versions(application.id)
+    with pytest.raises(PromptVersionNotFoundError):
+        await catalog.get_version(application.id, application_v1.id)
+    assert await repo.get_active_version("application", "app-1") is None
+
+    visible = await catalog.list_prompts(allow_application=True)
+    assert {prompt.id for prompt, _ in visible} == {phase.id, application.id}
+    prompt, active = await catalog.get_prompt(application.id, allow_application=True)
+    assert prompt.id == application.id
+    assert active is not None and active.content == "tenant requirements"
+    assert [
+        version.id
+        for version in await catalog.list_versions(application.id, allow_application=True)
+    ] == [application_v1.id]
+    assert (
+        await catalog.get_version(
+            application.id,
+            application_v1.id,
+            allow_application=True,
+        )
+    ).content == "tenant requirements"
+    active_by_key = await repo.get_active_version("application", "app-1", allow_application=True)
+    assert active_by_key is not None and active_by_key.id == application_v1.id
 
 
 async def test_unknown_prompt_raises_not_found(catalog: PromptCatalogService) -> None:

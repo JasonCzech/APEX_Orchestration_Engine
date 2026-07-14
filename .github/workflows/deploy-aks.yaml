@@ -46,6 +46,8 @@ jobs:
       kv: ${{ steps.tf.outputs.kv }}
       tenant: ${{ steps.tf.outputs.tenant }}
       client_id: ${{ steps.tf.outputs.client_id }}
+      service_account: ${{ steps.tf.outputs.service_account }}
+      hook_service_account: ${{ steps.tf.outputs.hook_service_account }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: azure/login@v2 # TODO: pin to a SHA per repo policy
@@ -76,6 +78,9 @@ jobs:
           TF_VAR_postgres_admin_password: ${{ secrets.PG_ADMIN_PASSWORD }}
           TF_VAR_langgraph_license_key: ${{ secrets.LANGGRAPH_CLOUD_LICENSE_KEY }}
           TF_VAR_artifact_store_secret: ${{ secrets.APEX_MINIO_SECRET_KEY }}
+          TF_VAR_bootstrap_admin_key: ${{ secrets.APEX_BOOTSTRAP_ADMIN_KEY }}
+          TF_VAR_api_key_hash_pepper: ${{ secrets.APEX_API_KEY_HASH_PEPPER }}
+          TF_VAR_workload_namespace: ${{ env.NAMESPACE }}
         run: |
           terraform plan -input=false -out=tfplan -var-file="env/${{ inputs.environment }}.tfvars"
           terraform apply -input=false -auto-approve tfplan
@@ -86,6 +91,8 @@ jobs:
             echo "kv=$(terraform output -raw key_vault_name)"
             echo "tenant=$(terraform output -raw tenant_id)"
             echo "client_id=$(terraform output -raw workload_identity_client_id)"
+            echo "service_account=$(terraform output -raw workload_service_account)"
+            echo "hook_service_account=$(terraform output -raw workload_hook_service_account)"
           } >> "$GITHUB_OUTPUT"
 
   build-push:
@@ -130,6 +137,11 @@ jobs:
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
       - name: Cluster credentials
         run: az aks get-credentials --resource-group "${{ needs.provision.outputs.rg }}" --name "${{ needs.provision.outputs.aks }}" --overwrite-existing
+      - name: Prepare namespace and CSI API
+        run: |
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl wait --for=condition=Established \
+            crd/secretproviderclasses.secrets-store.csi.x-k8s.io --timeout=5m
       - name: MinIO artifact store
         run: kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
       - name: Helm upgrade (migrate + bootstrap hooks run first)
@@ -147,6 +159,8 @@ jobs:
             --set secretBackend.csi.keyvaultName="${{ needs.provision.outputs.kv }}" \
             --set secretBackend.csi.tenantId="${{ needs.provision.outputs.tenant }}" \
             --set workloadIdentity.clientId="${{ needs.provision.outputs.client_id }}" \
+            --set serviceAccount.name="${{ needs.provision.outputs.service_account }}" \
+            --set hookServiceAccountName="${{ needs.provision.outputs.hook_service_account }}" \
             --wait --timeout 15m
           kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE-apex-orchestration-engine"
       - name: Smoke test

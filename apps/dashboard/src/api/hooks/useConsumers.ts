@@ -27,6 +27,7 @@ export type ConsumerCreateRequest = components['schemas']['ConsumerCreateRequest
 export type ConsumerUpdateRequest = components['schemas']['ConsumerUpdateRequest']
 export type ConsumerType = components['schemas']['ConsumerType']
 export type ScopeRef = components['schemas']['ScopeRef']
+export type CurrentPrincipal = components['schemas']['CurrentPrincipalResponse']
 
 export const CONSUMER_TYPES: readonly ConsumerType[] = ['dashboard', 'headless', 'internal']
 
@@ -64,6 +65,21 @@ export function useConsumersIndex(): UseQueryResult<Consumer[], Error> {
   return useQuery({
     queryKey: queryKeys.admin.consumers(),
     queryFn: fetchConsumers,
+    staleTime: STALE_TIMES.admin,
+  })
+}
+
+/** Authenticated principal id is needed to make self-key rotation safe. */
+export function useCurrentPrincipal(): UseQueryResult<CurrentPrincipal, Error> {
+  return useQuery({
+    queryKey: queryKeys.system.principal(),
+    queryFn: async () => {
+      const { data, response } = await getApexClient().GET('/v1/auth/me')
+      if (!response.ok || !data) {
+        throw new ApiError(response.status, `Current principal request failed (${response.status})`)
+      }
+      return data
+    },
     staleTime: STALE_TIMES.admin,
   })
 }
@@ -158,14 +174,25 @@ export function useDeleteConsumer(): UseMutationResult<void, Error, string> {
   })
 }
 
-/** Same one-time api_key contract as create — old key stops working immediately. */
-export function useRotateConsumerKey(): UseMutationResult<ConsumerCreated, Error, string> {
+export interface RotateConsumerKeyInput {
+  consumerId: string
+}
+
+/** Same one-time api_key contract as create, with time to safely hand off clients. */
+export function useRotateConsumerKey(): UseMutationResult<
+  ConsumerCreated,
+  Error,
+  RotateConsumerKeyInput
+> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (consumerId: string) => {
+    mutationFn: async ({ consumerId }: RotateConsumerKeyInput) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/admin/consumers/{consumer_id}/rotate',
-        { params: { path: { consumer_id: consumerId } } },
+        {
+          params: { path: { consumer_id: consumerId } },
+          body: { grace_period_seconds: 5 * 60 },
+        },
       )
       if (!response.ok || !data) {
         throw new ApiError(
