@@ -21,6 +21,7 @@ import {
   getDraftRequest,
   updateDraftRequest,
 } from '@/api/hooks/useDrafts'
+import { getApiKeyRevision } from '@/auth/keyStorage'
 
 import { emptyDraft, parseDraftPayload, type WizardDraft } from './wizardState'
 
@@ -70,6 +71,7 @@ export function useDraft({
   const dirtyRef = useRef(false)
   const saveQueueRef = useRef<Promise<void> | null>(null)
   const mountedRef = useRef(true)
+  const authRevisionRef = useRef(getApiKeyRevision())
   const onCreatedRef = useRef(onDraftCreated)
   onCreatedRef.current = onDraftCreated
 
@@ -79,6 +81,7 @@ export function useDraft({
       timerRef.current = null
     }
     const saveLatest = async () => {
+      if (authRevisionRef.current !== getApiKeyRevision()) return
       // A queued save ahead of us may already have persisted the same state.
       if (!dirtyRef.current) return
       const snapshot = draftRef.current
@@ -89,6 +92,10 @@ export function useDraft({
           title: snapshot.title.trim() || UNTITLED_DRAFT_TITLE,
           project_id: snapshot.scope.project_id.trim() || null,
           payload: snapshot as unknown as Record<string, unknown>,
+        }
+        if (authRevisionRef.current !== getApiKeyRevision()) {
+          dirtyRef.current = true
+          return
         }
         if (idRef.current === null) {
           const created = await createDraftRequest(body)
@@ -174,13 +181,14 @@ export function useDraft({
   // Flush a pending debounce on unmount. The request is deliberately allowed
   // to settle after React unmounts, but UI callbacks are suppressed.
   useEffect(() => {
+    const mountRevision = authRevisionRef.current
     mountedRef.current = true
     return () => {
       mountedRef.current = false
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current)
         timerRef.current = null
-        void flush()
+        if (mountRevision === getApiKeyRevision()) void flush()
       }
     }
   }, [flush])

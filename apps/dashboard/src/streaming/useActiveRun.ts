@@ -13,7 +13,8 @@
  * while a live run is actually in hand. Cross-run liveness stays poll-based
  * per the plan; this hook only feeds the per-run stream.
  */
-import { useQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { getLangGraphClient } from '@/api/langgraphClient'
 import { queryKeys } from '@/api/queryKeys'
@@ -47,6 +48,7 @@ export function useActiveRun(
   threadId: string | undefined,
   options: UseActiveRunOptions = {},
 ): string | null {
+  const queryClient = useQueryClient()
   const statusKnown = options.threadStatus !== undefined
   const busy = options.threadStatus === 'busy'
   const enabled = Boolean(threadId) && (!statusKnown || busy)
@@ -64,6 +66,12 @@ export function useActiveRun(
     },
     refetchIntervalInBackground: false,
   })
+
+  useEffect(() => {
+    if (!enabled && threadId) {
+      queryClient.setQueryData(queryKeys.threads.activeRun(threadId), null)
+    }
+  }, [enabled, threadId, queryClient])
 
   if (!enabled) return null
   return query.data ?? null

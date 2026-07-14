@@ -1,4 +1,4 @@
-import { useCallback, type KeyboardEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { useDraftsList } from '@/api/hooks/useDrafts'
@@ -160,18 +160,31 @@ export function NewRunWizardPage() {
   } = useDraft({ initialDraftId: urlDraftId, onDraftCreated })
 
   const launch = useWizardLaunch()
+  const [finalizing, setFinalizing] = useState(false)
   const draftsList = useDraftsList(undefined, { enabled: urlDraftId === null && draftId === null })
   const showResume =
     draftId === null && saveState === 'idle' && (draftsList.data?.length ?? 0) > 0
   const issues = allIssues(draft)
 
+  useEffect(() => {
+    if (!loadError || !urlDraftId) return
+    setSearchParams((previous) => {
+      const next = new URLSearchParams(previous)
+      next.delete('draft')
+      return next
+    }, { replace: true })
+  }, [loadError, urlDraftId, setSearchParams])
+
   async function handleLaunch() {
+    if (finalizing) return
+    setFinalizing(true)
     try {
       const result = await launch.mutateAsync(draft)
       await deleteCurrentDraft()
       navigate(`/runs/${result.threadId}?tab=log`)
     } catch {
       // launch.error renders inline below.
+      setFinalizing(false)
     }
   }
 
@@ -367,10 +380,10 @@ export function NewRunWizardPage() {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={issues.length > 0 || launch.isPending || loading}
+              disabled={issues.length > 0 || launch.isPending || loading || finalizing}
               onClick={() => void handleLaunch()}
             >
-              {launch.isPending ? 'Launching…' : 'Launch Pipeline'}
+              {launch.isPending || finalizing ? 'Launching…' : 'Launch Pipeline'}
             </button>
           </RequireRole>
         </div>

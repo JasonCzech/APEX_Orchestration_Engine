@@ -5,6 +5,8 @@ import { PHASE_NAMES } from '@apex/pipeline-events'
 
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
 import { useThreadState } from '@/api/hooks/useThreadState'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { roleAtLeast } from '@/auth/RequireRole'
 import { isApiError } from '@/api/errors'
 import { ProblemCard } from '@/components/ProblemCard'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
@@ -99,12 +101,14 @@ function RunRow({
   onInspect,
   inspected,
   selection,
+  canRerun,
 }: {
   run: PipelineSummary
   onRerun: (threadId: string) => void
   onInspect: (threadId: string) => void
   inspected: boolean
   selection?: RowSelection
+  canRerun: boolean
 }) {
   const navigate = useNavigate()
   const runPath = `/runs/${run.thread_id}`
@@ -179,7 +183,7 @@ function RunRow({
           <OverflowMenu
             label={`Run actions: ${run.title || run.thread_id}`}
             items={[
-              { label: 'Re-run…', onSelect: () => onRerun(run.thread_id) },
+              ...(canRerun ? [{ label: 'Re-run…', onSelect: () => onRerun(run.thread_id) }] : []),
               { label: 'Open', onSelect: () => void navigate(runPath) },
             ]}
           />
@@ -205,6 +209,8 @@ function RunsSkeleton() {
  * keeps the previous page rendered during transitions.
  */
 export function RunsListPage() {
+  const consumer = useOptionalConsumer()
+  const canRerun = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = useMemo(() => parseRunsFilters(searchParams), [searchParams])
   // D4: row overflow "Re-run…" opens the pre-flight modal for that thread
@@ -383,6 +389,7 @@ export function RunsListPage() {
                     key={run.thread_id}
                     run={run}
                     onRerun={setRerunThreadId}
+                    canRerun={canRerun}
                     onInspect={(threadId) => {
                       setSelectedRunId(threadId)
                       setSelectedInspectorPhase(null)

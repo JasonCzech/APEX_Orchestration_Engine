@@ -14,6 +14,7 @@ import { formatRelative } from '@/utils/time'
 interface SummaryRun {
   runId: string
   threadId: string | null
+  streamUrl: string
   at: string
   subject: string
 }
@@ -54,6 +55,7 @@ export function SummariesTab() {
             {
               runId: accepted.run_id,
               threadId: threadIdFromStreamUrl(accepted.stream_url),
+              streamUrl: accepted.stream_url,
               at: new Date().toISOString(),
               subject: trimmed,
             },
@@ -173,7 +175,9 @@ export function SummariesTab() {
                 Open run
               </Link>
             ) : (
-              <span className="ctx-caption">No thread link for this run.</span>
+              <a className="btn btn-secondary btn-sm" href={latest.streamUrl} target="_blank" rel="noreferrer">
+                Open live stream
+              </a>
             )}
           </div>
         ) : (
@@ -192,7 +196,12 @@ export function SummariesTab() {
             <ul className="ctx-history" data-testid="summary-history">
               {history.map((entry) => (
                 <li key={entry.runId} className="ctx-history-item">
-                  <span className="ctx-run-id">{entry.runId}</span>
+                    <span className="ctx-run-id">{entry.runId}</span>
+                    {!entry.threadId && (
+                      <a className="ctx-run-link" href={entry.streamUrl} target="_blank" rel="noreferrer">
+                        stream
+                      </a>
+                    )}
                   <span className="ctx-caption">
                     {entry.subject} · {formatRelative(entry.at)}
                   </span>

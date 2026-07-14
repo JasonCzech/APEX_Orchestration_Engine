@@ -6,7 +6,7 @@
  * accepted card with a /runs/{thread_id} link plus a session-local history of
  * prior runs. Live playground streaming is a noted follow-up — no polling.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
 import {
@@ -66,6 +66,18 @@ export function PromptPlaygroundPage() {
   const [sampleInput, setSampleInput] = useState('{}')
   const [inputError, setInputError] = useState<string | null>(null)
   const [history, setHistory] = useState<PlaygroundRun[]>([])
+  const identityRef = useRef(`${ns}:${name}`)
+  useEffect(() => {
+    const identity = `${ns}:${name}`
+    if (identityRef.current === identity) return
+    identityRef.current = identity
+    setMode('version')
+    setVersionId('')
+    setAdhoc(null)
+    setSampleInput('{}')
+    setInputError(null)
+    setHistory([])
+  }, [ns, name])
 
   const versions = useMemo(
     () => [...(versionsQuery.data ?? [])].sort((a, b) => b.version - a.version),

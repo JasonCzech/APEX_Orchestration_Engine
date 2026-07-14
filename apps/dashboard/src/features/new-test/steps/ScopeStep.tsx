@@ -82,14 +82,19 @@ export function ScopeStep({ draft, onChange }: StepProps) {
           className="field-select"
           value={draft.scope.app_id ?? ''}
           onChange={(event) =>
-            onChange((prev) => ({
-              ...prev,
-              scope: {
-                ...prev.scope,
-                app_id: event.target.value || null,
-                environment_id: null,
-              },
-            }))
+            onChange((prev) => {
+              const nextApp = event.target.value || null
+              const prompt_overrides = Object.fromEntries(
+                Object.entries(prev.prompt_overrides).filter(
+                  ([key]) => !key.startsWith('application/') || key === `application/${nextApp}`,
+                ),
+              )
+              return {
+                ...prev,
+                prompt_overrides,
+                scope: { ...prev.scope, app_id: nextApp, environment_id: null },
+              }
+            })
           }
         >
           <option value="">— none —</option>

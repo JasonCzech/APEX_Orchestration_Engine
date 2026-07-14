@@ -33,6 +33,7 @@ export interface AuthContextValue {
   state: AuthState
   submitKey: (key: string) => void
   signOut: () => void
+  reconcileSystemInfo: (info: SystemInfo) => void
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -64,7 +65,10 @@ export function AuthProvider({
         ? { status: 'validating' }
         : { status: 'no-key' }),
   )
+  const stateRef = useRef(state)
+  stateRef.current = state
   const attemptRef = useRef(0)
+  const suppressNextKeyEventRef = useRef(false)
   const [authEpoch, setAuthEpoch] = useState(0)
   const queryClient = useQueryClient()
 
@@ -86,8 +90,11 @@ export function AuthProvider({
     } catch (error) {
       if (attempt !== attemptRef.current) return
       if (isApiError(error) && error.status === 401) {
-        clearApiKey()
+        // Set the visible failure before clearing storage; the storage listener
+        // intentionally preserves an existing error state.
+        suppressNextKeyEventRef.current = true
         setState({ status: 'error', message: 'API key was rejected. Check the key and try again.' })
+        clearApiKey()
       } else if (isApiError(error)) {
         setState({ status: 'error', message: error.message })
       } else {
@@ -104,6 +111,10 @@ export function AuthProvider({
     }
 
     const unsubscribeKey = subscribeApiKey((key) => {
+      if (suppressNextKeyEventRef.current) {
+        suppressNextKeyEventRef.current = false
+        return
+      }
       // Invalidate every in-flight validation before reacting to a storage
       // event.  Storage events are asynchronous, so a request started under
       // the previous key may otherwise authenticate after sign-out.
@@ -118,6 +129,10 @@ export function AuthProvider({
       }
     })
     const unsubscribeUnauthorized = onUnauthorized(() => {
+      if (stateRef.current.status === 'validating') {
+        suppressNextKeyEventRef.current = true
+        setState({ status: 'error', message: 'API key was rejected. Check the key and try again.' })
+      }
       clearApiKey()
     })
 
@@ -145,9 +160,30 @@ export function AuthProvider({
     setState(isDevAuthEnabled() ? createDevAuthState() : { status: 'no-key' })
   }, [clearSessionCache])
 
+  const reconcileSystemInfo = useCallback(
+    (info: SystemInfo) => {
+      setState((previous) => {
+        if (previous.status !== 'authenticated') return previous
+        const before = previous.consumer
+        const after = info.consumer
+        if (
+          before.name === after.name &&
+          before.role === after.role &&
+          JSON.stringify(before.scopes) === JSON.stringify(after.scopes)
+        ) {
+          return previous
+        }
+        clearSessionCache()
+        setAuthEpoch((epoch) => epoch + 1)
+        return { status: 'authenticated', consumer: after, systemInfo: info }
+      })
+    },
+    [clearSessionCache],
+  )
+
   const value = useMemo<AuthContextValue>(
-    () => ({ state: staticState ?? state, submitKey, signOut }),
-    [staticState, state, submitKey, signOut],
+    () => ({ state: staticState ?? state, submitKey, signOut, reconcileSystemInfo }),
+    [staticState, state, submitKey, signOut, reconcileSystemInfo],
   )
 
   const consumer = value.state.status === 'authenticated' ? value.state.consumer : null

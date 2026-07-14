@@ -16,6 +16,7 @@ import {
   useEnvironment,
   useUpdateEnvironment,
   type Environment,
+  type EnvironmentUpdate,
 } from '@/api/hooks/useEnvironments'
 import {
   useEnvironmentInventory,
@@ -111,12 +112,15 @@ function EditEnvironmentForm({
     update.mutate(
       {
         environmentId: environment.id,
-        body: {
-          base_url: baseUrl.trim() || null,
-          kind,
-          hosts: hostsToPayload(hosts),
-          options: optionsParse.value,
-        },
+        body: (() => {
+          const body: EnvironmentUpdate = {}
+          if ((baseUrl.trim() || null) !== (environment.base_url ?? null)) body.base_url = baseUrl.trim() || null
+          if (kind !== environment.kind) body.kind = kind
+          const nextHosts = hostsToPayload(hosts)
+          if (JSON.stringify(nextHosts) !== JSON.stringify(environment.hosts ?? [])) body.hosts = nextHosts
+          if (optionsText !== JSON.stringify(environment.options, null, 2)) body.options = optionsParse.value
+          return body
+        })(),
       },
       { onSuccess: onDone },
     )

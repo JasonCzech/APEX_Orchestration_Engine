@@ -44,6 +44,7 @@ export function PhaseWorkspace({
   phase,
   state,
   stream,
+  runId,
   threadBusy = false,
   gateSlot,
   appId,
@@ -55,6 +56,7 @@ export function PhaseWorkspace({
   state: PipelineState
   /** Live stream view from useRunLiveness (RunDetailPage); optional for snapshot-only mounts. */
   stream?: LiveStreamViewLike
+  runId?: string | null
   threadBusy?: boolean
   /** D3 HITL: GateModule (gate on this phase) or slim banner, pinned above the tabs. */
   gateSlot?: ReactNode
@@ -118,7 +120,7 @@ export function PhaseWorkspace({
       {tab === 'log' && (
         <div className="pipeline-log-panel" role="tabpanel" aria-label="Pipeline log">
           <ActivityFeed
-            key={`${threadId}:${phase}`}
+            key={`${threadId}:${phase}:${runId ?? 'snapshot'}`}
             phase={phase}
             streamStatus={stream?.status}
             progress={stream?.phaseProgress?.[phase]}

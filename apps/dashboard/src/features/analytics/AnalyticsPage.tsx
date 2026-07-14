@@ -264,8 +264,9 @@ function seriesRows(data: AgentAnalytics, measure: Measure) {
   const totalsByKey = new Map<string, number>()
   const countsByKey = new Map<string, number>()
   for (const row of data.series) {
-    totalsByKey.set(row.key, (totalsByKey.get(row.key) ?? 0) + metricValue(row, measure))
-    countsByKey.set(row.key, (countsByKey.get(row.key) ?? 0) + 1)
+    const weight = measure === 'latency' ? Math.max(1, row.events) : 1
+    totalsByKey.set(row.key, (totalsByKey.get(row.key) ?? 0) + metricValue(row, measure) * weight)
+    countsByKey.set(row.key, (countsByKey.get(row.key) ?? 0) + weight)
   }
   if (measure === 'latency') {
     for (const [key, total] of totalsByKey) totalsByKey.set(key, total / (countsByKey.get(key) ?? 1))
@@ -281,13 +282,15 @@ function seriesRows(data: AgentAnalytics, measure: Measure) {
     const target = buckets.get(bucket) ?? { bucket_start: bucket }
     if (keys.includes(row.key)) {
       const field = `series_${keys.indexOf(row.key)}`
-      target[field] = measure === 'latency'
+        target[field] = measure === 'latency'
         ? metricValue(row, measure)
         : Number(target[field] ?? 0) + metricValue(row, measure)
     } else if (rest.includes(row.key)) {
       target.other = measure === 'latency'
-        ? metricValue(row, measure)
+        ? (Number(target.other ?? 0) * Number(target.other_events ?? 0) + metricValue(row, measure) * Math.max(1, row.events)) /
+          (Number(target.other_events ?? 0) + Math.max(1, row.events))
         : Number(target.other ?? 0) + metricValue(row, measure)
+      if (measure === 'latency') target.other_events = Number(target.other_events ?? 0) + Math.max(1, row.events)
     }
     buckets.set(bucket, target)
   }
@@ -355,18 +358,20 @@ function AgentUsageCharts({
 }) {
   const stacked = useMemo(() => seriesRows(data, measure), [data, measure])
   const bars = useMemo(() => {
-    const grouped = new Map<string, number[]>()
+    const grouped = new Map<string, { sum: number; events: number }>()
     for (const row of data.series) {
-      const values = grouped.get(row.key) ?? []
-      values.push(metricValue(row, measure))
-      grouped.set(row.key, values)
+      const current = grouped.get(row.key) ?? { sum: 0, events: 0 }
+      const weight = measure === 'latency' ? Math.max(1, row.events) : 1
+      current.sum += metricValue(row, measure) * weight
+      current.events += weight
+      grouped.set(row.key, current)
     }
     return Array.from(grouped, ([key, values]) => ({
       key,
       label: truncate(key),
       value: measure === 'latency'
-        ? values.reduce((sum, value) => sum + value, 0) / values.length
-        : values.reduce((sum, value) => sum + value, 0),
+        ? values.sum / Math.max(1, values.events)
+        : values.sum,
     }))
       .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
       .slice(0, TOP_N_BARS)

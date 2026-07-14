@@ -526,11 +526,13 @@ function ConsumerRow({
   onEdit,
   onRotate,
   onDelete,
+  identityReady,
 }: {
   consumer: Consumer
   onEdit: (consumer: Consumer) => void
   onRotate: (consumer: Consumer) => void
   onDelete: (consumer: Consumer) => void
+  identityReady: boolean
 }) {
   const navigate = useNavigate()
   return (
@@ -561,9 +563,11 @@ function ConsumerRow({
           label={`Consumer actions: ${consumer.name}`}
           items={[
             { label: 'Open', onSelect: () => void navigate(`/admin/consumers/${consumer.id}`) },
-            { label: 'Edit', onSelect: () => onEdit(consumer) },
-            { label: 'Rotate key…', onSelect: () => onRotate(consumer) },
-            { label: 'Delete…', onSelect: () => onDelete(consumer) },
+            ...(identityReady ? [
+              { label: 'Edit', onSelect: () => onEdit(consumer) },
+              { label: 'Rotate key…', onSelect: () => onRotate(consumer) },
+              { label: 'Delete…', onSelect: () => onDelete(consumer) },
+            ] : []),
           ]}
         />
       </td>
@@ -650,7 +654,8 @@ function ConsumersContent() {
                   consumer={consumer}
                   onEdit={setEditing}
                   onRotate={setRotating}
-                  onDelete={setDeleting}
+                    onDelete={setDeleting}
+                    identityReady={principal.isSuccess}
                 />
               ))}
             </tbody>

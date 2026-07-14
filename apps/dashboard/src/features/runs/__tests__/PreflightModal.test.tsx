@@ -156,7 +156,7 @@ describe('PreflightModal', () => {
     expect(screen.getByRole('button', { name: 'Start phases' })).toBeDisabled()
   })
 
-  it('Start sends input {} (NOT null) + exact configurable, then navigates to ?tab=activity', async () => {
+  it('Start sends input {} (NOT null) + exact configurable, then navigates to ?tab=log', async () => {
     const user = userEvent.setup()
     const { router, onClose } = renderModal(['script_scenario', 'execution'])
 
@@ -185,7 +185,7 @@ describe('PreflightModal', () => {
     })
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`))
-    expect(router.state.location.search).toBe('?tab=activity')
+    expect(router.state.location.search).toBe('?tab=log')
     expect(onClose).toHaveBeenCalled()
   })
 

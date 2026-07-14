@@ -134,13 +134,15 @@ export function GateModuleView({
       {machineState.tag === 'failed' && (
         <div className="tonal-card danger gate-failed" data-testid="gate-failed">
           <span>Resume failed: {machineState.error.message} — your draft is intact below.</span>
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            onClick={() => onSubmit(machineState.action)}
-          >
-            Retry {machineState.action.replace('_', ' ')}
-          </button>
+          <RequireRole role="operator">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => onSubmit(machineState.action)}
+            >
+              Retry {machineState.action.replace('_', ' ')}
+            </button>
+          </RequireRole>
         </div>
       )}
 

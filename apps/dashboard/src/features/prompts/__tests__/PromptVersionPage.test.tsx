@@ -31,7 +31,7 @@ beforeAll(() => {
 describe('PromptVersionPage', () => {
   it('renders the version content, meta and rollback affordance', async () => {
     server.use(...promptCatalog().handlers)
-    renderApp({ initialEntries: [V1_URL], authState: authenticatedState() })
+    renderApp({ initialEntries: [V1_URL], authState: authenticatedState('admin', 'Dash Ops', []) })
 
     const breadcrumb = await screen.findByRole('navigation', { name: 'Breadcrumb' })
     expect(within(breadcrumb).getByText('v1')).toBeInTheDocument()
@@ -49,7 +49,7 @@ describe('PromptVersionPage', () => {
     server.use(...promptCatalog().handlers)
     const { container, router } = renderApp({
       initialEntries: [V2_URL],
-      authState: authenticatedState(),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     // pick the comparison version from the history dropdown -> writes ?diff=

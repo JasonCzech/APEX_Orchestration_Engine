@@ -14,7 +14,7 @@ import {
   type PromptSummary,
 } from '@/api/hooks/usePrompts'
 import { isApiError } from '@/api/errors'
-import { RequireRole } from '@/auth/RequireRole'
+import { RequireGlobalAdmin } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
@@ -290,7 +290,7 @@ export function PromptsPage() {
           />
           Include archived
         </label>
-        <RequireRole role="operator">
+        <RequireGlobalAdmin>
           <button
             type="button"
             className="btn btn-primary prompts-new-btn"
@@ -298,7 +298,7 @@ export function PromptsPage() {
           >
             New prompt
           </button>
-        </RequireRole>
+        </RequireGlobalAdmin>
       </header>
 
       <div className="prompts-layout">

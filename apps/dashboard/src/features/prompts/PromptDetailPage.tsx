@@ -21,7 +21,7 @@ import {
   type PromptVersionInfo,
 } from '@/api/hooks/usePrompts'
 import { isApiError } from '@/api/errors'
-import { RequireRole } from '@/auth/RequireRole'
+import { RequireGlobalAdmin } from '@/auth/RequireRole'
 import { ProblemCard } from '@/components/ProblemCard'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { formatRelative } from '@/utils/time'
@@ -180,7 +180,7 @@ function VersionsTimeline({
                     View
                   </Link>
                   {!isActive && (
-                    <RequireRole role="operator">
+                    <RequireGlobalAdmin>
                       <button
                         type="button"
                         className="btn btn-secondary btn-sm"
@@ -191,7 +191,7 @@ function VersionsTimeline({
                       >
                         Set active
                       </button>
-                    </RequireRole>
+                    </RequireGlobalAdmin>
                   )}
                 </div>
               </div>
@@ -280,7 +280,7 @@ export function PromptDetailPage() {
           <Link className="btn btn-secondary" to={promptPlaygroundPath(ns, name)}>
             Test in playground
           </Link>
-          <RequireRole role="operator">
+          <RequireGlobalAdmin>
             <button
               type="button"
               className="btn btn-ghost"
@@ -300,7 +300,7 @@ export function PromptDetailPage() {
             >
               New version
             </button>
-          </RequireRole>
+          </RequireGlobalAdmin>
         </div>
       </header>
       {setArchived.isError && (

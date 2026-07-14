@@ -11,6 +11,8 @@ import {
 } from '@/api/hooks/usePromptReview'
 
 import { promptPath } from '../prompts/promptPaths'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { roleAtLeast } from '@/auth/RequireRole'
 import { PHASE_LABELS } from './runDisplay'
 import { PromptTabsEditor, type PromptTabField, type PromptTabValues } from './PromptTabsEditor'
 
@@ -112,6 +114,8 @@ export function PromptReviewSection({
   const snapshotReview = useMemo(() => reviewFromState(state, phase, appId), [state, phase, appId])
   const query = usePromptReview(threadId, phase)
   const update = useUpdatePromptReview()
+  const consumer = useOptionalConsumer()
+  const canEdit = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const baseline = query.data ?? snapshotReview
   const baselineValues = useMemo(() => (baseline ? valuesOf(baseline) : null), [baseline])
   const [draft, setDraft] = useState<PromptTabValues | null>(baselineValues)
@@ -137,7 +141,7 @@ export function PromptReviewSection({
   const appAvailable = Boolean(appId)
 
   function save() {
-    if (!draft || !dirty || update.isPending) return
+    if (!canEdit || !draft || !dirty || update.isPending) return
     const identity = `${threadId}:${phase}`
     const attempt = ++saveAttemptRef.current
     update.mutate(
@@ -195,22 +199,22 @@ export function PromptReviewSection({
               Catalog
             </Link>
           )}
-          <button
+          {canEdit && <button
             type="button"
             className="btn btn-ghost btn-sm"
             disabled={!dirty || update.isPending}
             onClick={revert}
           >
             Revert
-          </button>
-          <button
+          </button>}
+          {canEdit && <button
             type="button"
             className="btn btn-primary btn-sm"
             disabled={!dirty || update.isPending || !draft}
             onClick={save}
           >
             {update.isPending ? 'Saving…' : 'Save to run'}
-          </button>
+          </button>}
         </div>
       </header>
 
@@ -223,7 +227,7 @@ export function PromptReviewSection({
       {draft ? (
         <PromptTabsEditor
           values={draft}
-          editable={!update.isPending}
+          editable={canEdit && !update.isPending}
           appAvailable={appAvailable}
           active={activeTab}
           onActiveChange={setActiveTab}

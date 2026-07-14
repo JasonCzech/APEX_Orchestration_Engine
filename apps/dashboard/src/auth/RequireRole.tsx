@@ -36,3 +36,19 @@ export function RequireRole({
   if (!consumer || !roleAtLeast(consumer.role, role)) return <>{fallback}</>
   return <>{children}</>
 }
+
+/** Catalog mutations are restricted to unscoped administrators. */
+export function RequireGlobalAdmin({
+  children,
+  fallback = null,
+}: {
+  children: ReactNode
+  fallback?: ReactNode
+}) {
+  const consumer = useOptionalConsumer()
+  if (consumer === undefined) return <>{children}</>
+  if (!consumer || !roleAtLeast(consumer.role, 'admin') || consumer.scopes.length > 0) {
+    return <>{fallback}</>
+  }
+  return <>{children}</>
+}

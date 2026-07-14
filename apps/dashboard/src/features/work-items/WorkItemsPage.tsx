@@ -305,6 +305,8 @@ export function WorkItemsPage() {
   const [creating, setCreating] = useState(false)
   const projectRef = useRef(project)
   projectRef.current = project
+  const projectGenerationRef = useRef(0)
+  const initialProjectRef = useRef(project)
 
   const translate = useTranslateQuery()
   const execute = useExecuteQuery()
@@ -314,6 +316,11 @@ export function WorkItemsPage() {
   // tracker scope. Pending callbacks are guarded by the project captured by
   // runQuery below so they cannot repaint the new project.
   useEffect(() => {
+    if (initialProjectRef.current === project) {
+      initialProjectRef.current = '__initialized__'
+      return
+    }
+    projectGenerationRef.current += 1
     setPage(null)
     setSubmitted(null)
     setOffset(0)
@@ -329,6 +336,7 @@ export function WorkItemsPage() {
     nextProject = project || undefined,
   ) {
     const requestProject = nextProject
+    const requestGeneration = projectGenerationRef.current
     const submittedQuery = {
       provider: next.provider.trim(),
       query: next.query.trim(),
@@ -343,7 +351,7 @@ export function WorkItemsPage() {
       },
       {
         onSuccess: (result) => {
-          if ((requestProject ?? '') !== projectRef.current) return
+          if (requestGeneration !== projectGenerationRef.current || (requestProject ?? '') !== projectRef.current) return
           setPage(result)
           setOffset(nextOffset)
           setSubmitted({
@@ -365,6 +373,7 @@ export function WorkItemsPage() {
     if (requiresProject && !project) return
     autoRan.current = true
     const autoProject = project || undefined
+    const autoGeneration = projectGenerationRef.current
     executeMutate(
       {
         query: { provider: preloadProvider, query: preloadQuery, confidence: 1 },
@@ -374,6 +383,7 @@ export function WorkItemsPage() {
       },
       {
         onSuccess: (result) => {
+          if (autoGeneration !== projectGenerationRef.current || autoProject !== (projectRef.current || undefined)) return
           setPage(result)
           setSubmitted({
             query: { provider: preloadProvider, query: preloadQuery, confidence: 1 },
@@ -386,10 +396,13 @@ export function WorkItemsPage() {
   }, [preloadProvider, preloadQuery, project, requiresProject, executeMutate])
 
   function translateNow() {
+    const requestProject = project || undefined
+    const requestGeneration = projectGenerationRef.current
     translate.mutate(
-      { text: nlText, ...(project ? { project } : {}) },
+      { text: nlText, ...(requestProject ? { project: requestProject } : {}) },
       {
         onSuccess: (result) => {
+          if (requestGeneration !== projectGenerationRef.current || requestProject !== (projectRef.current || undefined)) return
           setProvider(result.provider)
           setQueryText(result.query)
           setConfidence(result.confidence)

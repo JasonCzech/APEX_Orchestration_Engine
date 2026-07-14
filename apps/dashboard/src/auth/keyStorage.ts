@@ -18,19 +18,30 @@ function safeStorage(): Storage | null {
 
 export function getApiKey(): string | null {
   if (isDevAuthEnabled()) return getDevApiKey()
-
-  const stored = safeStorage()?.getItem(API_KEY_STORAGE_KEY) ?? null
-  return stored && stored.length > 0 ? stored : null
+  try {
+    const stored = safeStorage()?.getItem(API_KEY_STORAGE_KEY) ?? null
+    return stored && stored.length > 0 ? stored : null
+  } catch {
+    return null
+  }
 }
 
 export function setApiKey(key: string): void {
-  safeStorage()?.setItem(API_KEY_STORAGE_KEY, key)
+  try {
+    safeStorage()?.setItem(API_KEY_STORAGE_KEY, key)
+  } catch {
+    // Keep the in-memory revision/listener transition usable when persistence is blocked.
+  }
   keyRevision += 1
   notify(key)
 }
 
 export function clearApiKey(): void {
-  safeStorage()?.removeItem(API_KEY_STORAGE_KEY)
+  try {
+    safeStorage()?.removeItem(API_KEY_STORAGE_KEY)
+  } catch {
+    // Sign-out must still invalidate the in-memory session if storage is unavailable.
+  }
   keyRevision += 1
   notify(null)
 }

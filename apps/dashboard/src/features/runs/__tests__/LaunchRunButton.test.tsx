@@ -85,7 +85,7 @@ describe('LaunchRunButton', () => {
     }
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/thread-new'))
-    expect(router.state.location.search).toBe('?tab=activity')
+    expect(router.state.location.search).toBe('?tab=log')
     expect(screen.getByTestId('run-page')).toBeInTheDocument()
   })
 

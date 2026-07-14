@@ -42,7 +42,7 @@ vi.mock('@uiw/react-codemirror', async () => {
 describe('PromptsPage', () => {
   it('renders the namespace tree with counts (phase pinned first) and hides archived rows', async () => {
     server.use(...promptCatalog().handlers)
-    renderApp({ initialEntries: ['/prompts'], authState: authenticatedState() })
+    renderApp({ initialEntries: ['/prompts'], authState: authenticatedState('admin', 'Dash Ops', []) })
 
     // wait for the list to land before reading the tree counts
     await screen.findByTestId('prompt-row-p-story')
@@ -63,7 +63,7 @@ describe('PromptsPage', () => {
 
   it('include-archived toggle reveals archived rows with the archived chip', async () => {
     server.use(...promptCatalog().handlers)
-    renderApp({ initialEntries: ['/prompts'], authState: authenticatedState() })
+    renderApp({ initialEntries: ['/prompts'], authState: authenticatedState('admin', 'Dash Ops', []) })
 
     await screen.findByTestId('prompt-row-p-story')
     await userEvent.click(screen.getByRole('checkbox', { name: /include archived/i }))
@@ -78,7 +78,7 @@ describe('PromptsPage', () => {
     server.use(...catalog.handlers)
     const { router } = renderApp({
       initialEntries: ['/prompts'],
-      authState: authenticatedState(),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     await screen.findByTestId('prompt-row-p-story')
@@ -102,7 +102,7 @@ describe('PromptsPage', () => {
     server.use(...promptCatalog().handlers)
     const { router } = renderApp({
       initialEntries: ['/prompts'],
-      authState: authenticatedState(),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     const row = within(await screen.findByTestId('prompt-row-p-story'))
@@ -120,7 +120,7 @@ describe('PromptsPage', () => {
     server.use(...catalog.handlers)
     const { router } = renderApp({
       initialEntries: ['/prompts'],
-      authState: authenticatedState('operator'),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     await screen.findByTestId('prompt-row-p-story')

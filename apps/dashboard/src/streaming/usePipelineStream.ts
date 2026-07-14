@@ -234,7 +234,7 @@ export function usePipelineStream(
             detail?: { thread_status?: string | null }
           }>(queryKeys.threads.state(tid))
           const status = snapshot?.detail?.thread_status
-          if (runError || !status || (status !== 'busy' && status !== 'interrupted')) {
+          if (runError || (status && status !== 'busy' && status !== 'interrupted')) {
             finished = true
             resumeStore.clear(tid, rid)
             dispatch(runError ? { type: 'failed', error: runError } : { type: 'ended' })

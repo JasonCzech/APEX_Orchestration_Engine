@@ -140,10 +140,10 @@ export function RunDetailPage() {
           {hitl.state.tag === 'open' || hitl.state.tag === 'failed' ? (
             // Header abort drives the SAME machine as the gate action bar
             // (same type-to-confirm arm step, action 'abort').
-            <AbortConfirm onConfirm={() => hitl.submit('abort')} />
+            <AbortConfirm key={`${threadId}:${hitl.gate?.interrupt_id ?? 'gate'}`} onConfirm={() => hitl.submit('abort')} />
           ) : detail.thread_status === 'busy' ? (
             // No gate to resume through — cancel the active run(s) server-side.
-            <AbortConfirm disabled={abortRun.isPending} onConfirm={() => abortRun.mutate()} />
+            <AbortConfirm key={`${threadId}:${live.runId ?? 'busy'}`} disabled={abortRun.isPending} onConfirm={() => abortRun.mutate()} />
           ) : null}
           <span className="split-button">
             <button
@@ -214,6 +214,7 @@ export function RunDetailPage() {
           phase={phaseParam}
           state={state}
           stream={live.stream}
+          runId={live.runId}
           threadBusy={detail.thread_status === 'busy'}
           gateSlot={gateSlot}
           appId={detail.app_id ?? null}

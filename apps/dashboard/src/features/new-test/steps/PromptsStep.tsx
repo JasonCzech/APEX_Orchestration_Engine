@@ -172,7 +172,7 @@ function PromptBlock({
         <p className="wizard-caption">{emptyText}</p>
       )}
 
-      {!override && !loading && !error && (
+      {!override && !loading && (
         <button
           type="button"
           className="btn btn-ghost btn-sm wizard-prompt-override"
@@ -204,7 +204,11 @@ export function PromptsStep({ draft, onChange }: StepProps) {
   })
 
   const system = useCatalogPrompt(phaseList.data, phase ? `${phase}/system` : null)
-  const application = useCatalogPrompt(applicationList.data, appId, Boolean(appId))
+  const application = useCatalogPrompt(
+    applicationList.data,
+    appId,
+    Boolean(appId) && (consumer === undefined || (consumer !== null && consumer.scopes.length === 0)),
+  )
 
   function systemOverrideKey(phaseName: PhaseName): string {
     return `${PHASE_NAMESPACE}/${phaseName}`

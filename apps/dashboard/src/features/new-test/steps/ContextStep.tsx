@@ -4,7 +4,7 @@
  * scoped to the project. Selected ids persist in the draft; names/sizes for
  * chips come from upload results + the documents list.
  */
-import { useRef, useState, type DragEvent } from 'react'
+import { useEffect, useRef, useState, type DragEvent } from 'react'
 
 import { useDocumentsList, useUploadDocument, type DocumentOut } from '@/api/hooks/useDocuments'
 
@@ -35,6 +35,17 @@ export function ContextStep({ draft, onChange }: StepProps) {
   const [uploaded, setUploaded] = useState<DocumentOut[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [uploadErrors, setUploadErrors] = useState<string[]>([])
+  const projectRef = useRef(draft.scope.project_id.trim())
+  const generationRef = useRef(0)
+  useEffect(() => {
+    const nextProject = draft.scope.project_id.trim()
+    if (nextProject !== projectRef.current) {
+      projectRef.current = nextProject
+      generationRef.current += 1
+      setUploaded([])
+      setUploadErrors([])
+    }
+  }, [draft.scope.project_id])
 
   const known = new Map<string, DocumentOut>()
   for (const doc of documents.data ?? []) known.set(doc.id, doc)
@@ -56,6 +67,8 @@ export function ContextStep({ draft, onChange }: StepProps) {
   }
 
   async function uploadFiles(files: FileList | File[]) {
+    const generation = generationRef.current
+    const project = projectRef.current || undefined
     setUploadErrors([])
     const errors: string[] = []
     for (const file of Array.from(files)) {
@@ -67,10 +80,12 @@ export function ContextStep({ draft, onChange }: StepProps) {
       try {
         const doc = await upload.mutateAsync({
           file,
-          projectId: draft.scope.project_id.trim() || undefined,
+          projectId: project,
         })
-        setUploaded((prev) => [...prev, doc])
-        addDocument(doc.id)
+        if (generation === generationRef.current && project === projectRef.current) {
+          setUploaded((prev) => [...prev, doc])
+          addDocument(doc.id)
+        }
       } catch (error) {
         errors.push(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
       }

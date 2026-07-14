@@ -128,6 +128,22 @@ function ApiKeySection() {
         })
         return
       }
+      const contentType = response.headers.get('content-type') ?? ''
+      if (!contentType.includes('application/json')) {
+        setState({ kind: 'error', message: 'Validation returned an invalid system-info response — the stored key is unchanged.' })
+        return
+      }
+      const payload: unknown = await response.json()
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        !('consumer' in payload) ||
+        !payload.consumer ||
+        typeof payload.consumer !== 'object'
+      ) {
+        setState({ kind: 'error', message: 'Validation returned malformed system info — the stored key is unchanged.' })
+        return
+      }
       setApiKey(candidate)
       setDraft('')
       setState({ kind: 'saved' })

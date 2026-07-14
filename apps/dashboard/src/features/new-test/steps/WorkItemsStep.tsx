@@ -5,7 +5,7 @@
  * pick. Only the selected KEYS persist in the draft; query text and results
  * are transient UI state.
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   fetchWorkItem,
@@ -27,13 +27,25 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
     busy: false,
     error: null,
   })
+  const projectRef = useRef(draft.scope.project_id.trim())
+  const generationRef = useRef(0)
+  useEffect(() => {
+    const nextProject = draft.scope.project_id.trim()
+    if (nextProject !== projectRef.current) {
+      projectRef.current = nextProject
+      generationRef.current += 1
+      setTranslated(null)
+      setResults(null)
+      setText('')
+      setDirectKey('')
+    }
+  }, [draft.scope.project_id])
 
   const translate = useTranslateQuery()
   const execute = useExecuteQuery()
   const savedQueries = useSavedQueries()
 
   const selected = draft.work_item_keys
-  const project = draft.scope.project_id.trim() || undefined
 
   function addKey(key: string) {
     onChange((prev) =>
@@ -51,9 +63,17 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
   }
 
   function runQuery(query: TranslatedQuery) {
+    const generation = generationRef.current
+    const requestProject = projectRef.current || undefined
     execute.mutate(
-      { query, ...(project ? { project } : {}) },
-      { onSuccess: (page) => setResults(page.items ?? []) },
+      { query, ...(requestProject ? { project: requestProject } : {}) },
+      {
+        onSuccess: (page) => {
+          if (generation === generationRef.current && requestProject === (projectRef.current || undefined)) {
+            setResults(page.items ?? [])
+          }
+        },
+      },
     )
   }
 
@@ -62,7 +82,10 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
     if (!key) return
     setAddState({ busy: true, error: null })
     try {
-      const item = await fetchWorkItem(key, project)
+      const requestGeneration = generationRef.current
+      const requestProject = projectRef.current || undefined
+      const item = await fetchWorkItem(key, requestProject)
+      if (requestGeneration !== generationRef.current || requestProject !== (projectRef.current || undefined)) return
       addKey(item.key)
       setDirectKey('')
       setAddState({ busy: false, error: null })
@@ -97,10 +120,20 @@ export function WorkItemsStep({ draft, onChange }: StepProps) {
             className="btn btn-secondary"
             disabled={text.trim().length === 0 || translate.isPending}
             onClick={() =>
-              translate.mutate(
-                { text, ...(project ? { project } : {}) },
-                { onSuccess: (query) => setTranslated(query) },
-              )
+              (() => {
+                const generation = generationRef.current
+                const requestProject = projectRef.current || undefined
+                translate.mutate(
+                  { text, ...(requestProject ? { project: requestProject } : {}) },
+                  {
+                    onSuccess: (query) => {
+                      if (generation === generationRef.current && requestProject === (projectRef.current || undefined)) {
+                        setTranslated(query)
+                      }
+                    },
+                  },
+                )
+              })()
             }
           >
             {translate.isPending ? 'Translating…' : 'Translate'}

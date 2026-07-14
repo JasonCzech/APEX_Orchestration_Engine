@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import type { components } from '@apex/api-client'
-import { PipelineStateSchema, type PipelineState } from '@apex/pipeline-events'
+import { PhaseResultEntrySchema, PipelineStateSchema, type PipelineState } from '@apex/pipeline-events'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
@@ -58,8 +58,16 @@ function normalizeDriftedState(raw: unknown): PipelineState {
       Object.entries(source.phase_results)
         .filter(([, entry]) => isRecord(entry))
         .map(([phase, entry]) => {
-          const normalized = { ...(entry as Record<string, unknown>) }
-          if (typeof normalized.summary !== 'string') delete normalized.summary
+          const candidate = entry as Record<string, unknown>
+          const parsed = PhaseResultEntrySchema.safeParse(candidate)
+          if (parsed.success) return [phase, parsed.data]
+          const normalized: Record<string, unknown> = {}
+          for (const field of ['phase', 'status', 'started_at', 'ended_at', 'summary', 'reasoning_digest', 'revise_instructions', 'engine']) {
+            if (typeof candidate[field] === 'string') normalized[field] = candidate[field]
+          }
+          for (const field of ['attempt', 'duration_s', 'revise_count', 'engine_poll_count']) {
+            if (typeof candidate[field] === 'number') normalized[field] = candidate[field]
+          }
           return [phase, normalized]
         }),
     )

@@ -115,7 +115,7 @@ function EnrichModal({
 export function WorkItemDetailPage() {
   const params = useParams<{ provider: string; itemId: string }>()
   const provider = params.provider ?? 'tracker'
-  const key = params.itemId ? decodeURIComponent(params.itemId) : undefined
+  const key = params.itemId
   const [searchParams] = useSearchParams()
   const project = searchParams.get('project') || undefined
 

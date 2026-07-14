@@ -46,7 +46,7 @@ describe('PromptDetailPage', () => {
   it('saves a new version pre-filled from active and bumps the active pointer', async () => {
     const catalog = promptCatalog()
     server.use(...catalog.handlers)
-    renderApp({ initialEntries: [DETAIL_URL], authState: authenticatedState() })
+    renderApp({ initialEntries: [DETAIL_URL], authState: authenticatedState('admin', 'Dash Ops', []) })
 
     expect(await screen.findByText('active v2')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'New version' }))
@@ -78,7 +78,7 @@ describe('PromptDetailPage', () => {
     server.use(...catalog.handlers)
     renderApp({
       initialEntries: [`${DETAIL_URL}?tab=versions`],
-      authState: authenticatedState(),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     // newest-first timeline with the active marker on v2
@@ -111,7 +111,7 @@ describe('PromptDetailPage', () => {
         return HttpResponse.json({ detail: 'catalog write failed' }, { status: 500 })
       }),
     )
-    renderApp({ initialEntries: [DETAIL_URL], authState: authenticatedState() })
+    renderApp({ initialEntries: [DETAIL_URL], authState: authenticatedState('admin', 'Dash Ops', []) })
 
     await screen.findByText('active v2')
     expect(screen.queryByText('archived')).not.toBeInTheDocument()

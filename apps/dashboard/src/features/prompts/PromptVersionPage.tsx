@@ -16,7 +16,7 @@ import {
   useRollbackPrompt,
 } from '@/api/hooks/usePrompts'
 import { isApiError } from '@/api/errors'
-import { RequireRole } from '@/auth/RequireRole'
+import { RequireGlobalAdmin } from '@/auth/RequireRole'
 import { ProblemCard } from '@/components/ProblemCard'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { formatRelative } from '@/utils/time'
@@ -116,7 +116,7 @@ export function PromptVersionPage() {
         </div>
         <div className="prompt-detail-actions">
           {!isActive && (
-            <RequireRole role="operator">
+            <RequireGlobalAdmin>
               <button
                 type="button"
                 className="btn btn-primary"
@@ -127,7 +127,7 @@ export function PromptVersionPage() {
               >
                 Set this version active
               </button>
-            </RequireRole>
+            </RequireGlobalAdmin>
           )}
         </div>
       </header>

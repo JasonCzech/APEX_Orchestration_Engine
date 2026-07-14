@@ -25,8 +25,8 @@ export function createTestQueryClient(): QueryClient {
 }
 
 /** Pre-validated session for tests that start past the ApiKeyGate. */
-export function authenticatedState(role: Role = 'admin', name = 'Dash Ops'): AuthState {
-  const consumer = { name, role, scopes: SYSTEM_INFO.consumer.scopes }
+export function authenticatedState(role: Role = 'admin', name = 'Dash Ops', scopes = SYSTEM_INFO.consumer.scopes): AuthState {
+  const consumer = { name, role, scopes }
   return {
     status: 'authenticated',
     consumer,

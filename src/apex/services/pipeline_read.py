@@ -311,24 +311,44 @@ class PipelineReadService:
         the returned page (title/thread_id substring) because thread search has no
         free-text filter — matches within the page only, documented contract quirk.
         """
-        threads = await self._client.threads.search(
-            metadata={"project_id": project} if project else None,
-            status=status,
-            limit=limit,
-            offset=offset,
-            sort_by="updated_at",
-            sort_order="desc",
-        )
-        items = [map_thread_summary(thread) for thread in threads]
-        if q:
-            needle = q.lower()
-            items = [
+        metadata = {"project_id": project} if project else None
+        if not q:
+            threads = await self._client.threads.search(
+                metadata=metadata,
+                status=status,
+                limit=limit,
+                offset=offset,
+                sort_by="updated_at",
+                sort_order="desc",
+            )
+            return [map_thread_summary(thread) for thread in threads]
+
+        # LangGraph has no free-text search. Scan ordered pages before applying
+        # the dashboard offset so a sparse first page cannot hide older matches.
+        needle = q.lower()
+        matches: list[JsonDict] = []
+        scan_offset = 0
+        scan_limit = 100
+        while scan_offset < 10_000:
+            threads = await self._client.threads.search(
+                metadata=metadata,
+                status=status,
+                limit=scan_limit,
+                offset=scan_offset,
+                sort_by="updated_at",
+                sort_order="desc",
+            )
+            page = [map_thread_summary(thread) for thread in threads]
+            matches.extend(
                 item
-                for item in items
+                for item in page
                 if needle in (item["title"] or "").lower()
                 or needle in (item["thread_id"] or "").lower()
-            ]
-        return items
+            )
+            if len(page) < scan_limit:
+                break
+            scan_offset += scan_limit
+        return matches[offset : offset + limit]
 
     async def get_pipeline(self, thread_id: str) -> JsonDict:
         """Thread + full state values + pending interrupts (gate infos with payloads)."""

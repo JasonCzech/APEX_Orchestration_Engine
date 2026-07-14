@@ -101,6 +101,7 @@ export function useCreateConsumer(): UseMutationResult<
 > {
   const queryClient = useQueryClient()
   return useMutation({
+    gcTime: 0,
     mutationFn: async (body: ConsumerCreateRequest) => {
       const { data, error, response } = await getApexClient().POST('/v1/admin/consumers', {
         body,
@@ -186,6 +187,7 @@ export function useRotateConsumerKey(): UseMutationResult<
 > {
   const queryClient = useQueryClient()
   return useMutation({
+    gcTime: 0,
     mutationFn: async ({ consumerId }: RotateConsumerKeyInput) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/admin/consumers/{consumer_id}/rotate',

@@ -1,9 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import { RouterProvider } from 'react-router'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import { createQueryClient } from '@/api/queryClient'
+import { getApiKeyRevision, subscribeApiKey } from '@/auth/keyStorage'
 import { ApiKeyGate } from '@/auth/ApiKeyGate'
 import { AuthProvider } from '@/auth/AuthProvider'
 import { TopbarContributionProvider } from '@/components/layout/TopbarContributionProvider'
@@ -17,7 +18,12 @@ import { ThemeProvider } from '@/theme/useTheme'
  * back until GET /v1/system/info validates the stored key.
  */
 export default function App() {
-  const [queryClient] = useState(createQueryClient)
+  const authRevision = useSyncExternalStore(
+    (onStoreChange) => subscribeApiKey(() => onStoreChange()),
+    getApiKeyRevision,
+    getApiKeyRevision,
+  )
+  const queryClient = useMemo(createQueryClient, [authRevision])
   const router = useMemo(createAppRouter, [])
 
   return (

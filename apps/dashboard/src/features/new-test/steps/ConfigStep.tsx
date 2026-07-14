@@ -91,13 +91,12 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       const project = bundle['project_id']
       const app = bundle['app_id']
       const environment = bundle['environment_id']
+      const projectId = typeof project === 'string' && project.length > 0 ? project : prev.scope.project_id
+      const projectChanged = projectId !== prev.scope.project_id
       return {
         ...prev,
         scope: {
-          project_id:
-            typeof project === 'string' && project.length > 0
-              ? project
-              : prev.scope.project_id,
+          project_id: projectId,
           app_id: typeof app === 'string' && app.length > 0 ? app : prev.scope.app_id,
           environment_id:
             typeof environment === 'string' && environment.length > 0
@@ -105,6 +104,9 @@ export function ConfigStep({ draft, onChange }: StepProps) {
               : prev.scope.environment_id,
         },
         config: next,
+        ...(projectChanged
+          ? { document_ids: [], work_item_keys: [], context_summary_ids: [], prompt_overrides: {} }
+          : {}),
       }
     })
   }
@@ -131,9 +133,22 @@ export function ConfigStep({ draft, onChange }: StepProps) {
     if (nextFocus !== null && !next.includes(nextFocus)) {
       nextFocus = next[0] ?? null
     }
-    patchConfig({
-      phases: next.length === PHASE_NAMES.length ? null : next,
-      prompt_focus_phase: nextFocus,
+    onChange((prev) => {
+      const allowed = new Set(next.map((name) => `phase/${name}/system`))
+      const prompt_overrides = Object.fromEntries(
+        Object.entries(prev.prompt_overrides).filter(
+          ([key]) => !key.startsWith('phase/') || allowed.has(key),
+        ),
+      )
+      return {
+        ...prev,
+        prompt_overrides,
+        config: {
+          ...prev.config,
+          phases: next.length === PHASE_NAMES.length ? null : next,
+          prompt_focus_phase: nextFocus,
+        },
+      }
     })
   }
 
