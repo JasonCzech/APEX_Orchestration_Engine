@@ -266,7 +266,11 @@ def test_abort_cancels_running_and_pending_runs() -> None:
     with TestClient(client_app) as client:
         response = client.post("/v1/pipelines/t-1/abort")
     assert response.status_code == 202
-    assert response.json() == {"cancelled_run_ids": ["r-run", "r-pend"]}
+    assert response.json() == {
+        "cancelled_run_ids": ["r-run", "r-pend"],
+        "phase": None,
+        "confirmed": False,
+    }
     assert runs.cancelled == ["r-run", "r-pend"]
 
 
@@ -285,7 +289,11 @@ def test_abort_uses_engine_kill_switch_when_execution_handle_exists() -> None:
         response = client.post("/v1/pipelines/t-1/abort")
 
     assert response.status_code == 202
-    assert response.json() == {"cancelled_run_ids": ["engine-cancelled-run"]}
+    assert response.json() == {
+        "cancelled_run_ids": ["engine-cancelled-run"],
+        "phase": None,
+        "confirmed": False,
+    }
     assert engine_abort.calls == ["t-1"]
     assert runs.cancelled == []
 

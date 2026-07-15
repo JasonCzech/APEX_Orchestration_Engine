@@ -383,7 +383,9 @@ class Document(Base):
     media_type: Mapped[str] = mapped_column(String(255))
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     artifact_key: Mapped[str] = mapped_column(String(1024))  # key in the artifact store
-    artifact_connection_id: Mapped[str | None] = mapped_column(String(255))
+    artifact_connection_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("connections.id", ondelete="RESTRICT")
+    )
     project_id: Mapped[str | None] = mapped_column(String(255))
     app_id: Mapped[str | None] = mapped_column(String(255))
     summary: Mapped[str | None] = mapped_column(Text)
@@ -486,7 +488,9 @@ class EngineRun(Base):
     engine: Mapped[str] = mapped_column(String(64))
     external_run_id: Mapped[str | None] = mapped_column(String(255))
     artifact_namespace: Mapped[str | None] = mapped_column(String(512))
-    artifact_connection_id: Mapped[str | None] = mapped_column(String(255))
+    artifact_connection_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("connections.id", ondelete="RESTRICT")
+    )
     connection_id: Mapped[str | None] = mapped_column(
         ForeignKey("connections.id", ondelete="RESTRICT")
     )

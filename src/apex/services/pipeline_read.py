@@ -28,6 +28,7 @@ from apex.graphs.pipeline.configurable import (
     PipelineConfigurable,
 )
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
+from apex.services.launch_locks import LaunchLockManager
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_no_catalog,
@@ -207,8 +208,11 @@ def _auto_gates(phases: list[str] | None) -> JsonDict:
 class PipelineReadService:
     """Facade over the loopback client; constructed per-request with the caller's key."""
 
-    def __init__(self, client: LangGraphClientLike) -> None:
+    def __init__(
+        self, client: LangGraphClientLike, launch_locks: LaunchLockManager | None = None
+    ) -> None:
         self._client = client
+        self._launch_locks = launch_locks or LaunchLockManager()
 
     async def start_run(
         self,
@@ -324,6 +328,42 @@ class PipelineReadService:
             metadata["project_id"] = project_id
         if app_id:
             metadata["app_id"] = app_id
+        if deterministic_thread_id is not None:
+            async with self._launch_locks.hold(deterministic_thread_id):
+                return await self._create_or_get_run(
+                    metadata=metadata,
+                    deterministic_thread_id=deterministic_thread_id,
+                    request_fingerprint=request_fingerprint,
+                    idempotency_key=idempotency_key,
+                    selected_assistant_id=selected_assistant_id,
+                    run_input=run_input,
+                    run_configurable=run_configurable,
+                    recursion_limit=recursion_limit,
+                )
+        return await self._create_or_get_run(
+            metadata=metadata,
+            deterministic_thread_id=None,
+            request_fingerprint=None,
+            idempotency_key=None,
+            selected_assistant_id=selected_assistant_id,
+            run_input=run_input,
+            run_configurable=run_configurable,
+            recursion_limit=recursion_limit,
+        )
+
+    async def _create_or_get_run(
+        self,
+        *,
+        metadata: JsonDict,
+        deterministic_thread_id: str | None,
+        request_fingerprint: str | None,
+        idempotency_key: str | None,
+        selected_assistant_id: str,
+        run_input: JsonDict,
+        run_configurable: JsonDict,
+        recursion_limit: int,
+    ) -> JsonDict:
+        """Create/adopt the run while the idempotency scope lock is held."""
         thread = await self._client.threads.create(
             metadata=metadata,
             **(

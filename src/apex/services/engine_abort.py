@@ -13,6 +13,7 @@ Flow (plan Part 1, "Durability & the execution phase" — the engine kill switch
    abort, mirroring the write side in apex.services.engine_runs).
 """
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -105,6 +106,7 @@ class EngineAbortService:
 
     async def abort(self, thread_id: str, *, reason: str | None = None) -> EngineAbortResult:
         target = await self._target_from_state(thread_id)
+        has_graph_state = target is not None
         projection_target: _AbortTarget | None = None
         if target is None or target.project_id is None:
             projection_target = await self._target_from_projection(thread_id)
@@ -141,6 +143,20 @@ class EngineAbortService:
             if status is not None:
                 observed_phase = status.phase
                 confirmed = status.phase in TERMINAL_ENGINE_PHASES
+            if observed_phase is EngineRunPhase.STOPPING and not has_graph_state:
+                # A projection-only abort has no graph poller. Confirm it here
+                # with bounded retries; never return a false successful STOPPING.
+                for _ in range(10):
+                    await asyncio.sleep(0.1)
+                    status = await adapter.get_status(handle)
+                    observed_phase = status.phase
+                    if observed_phase in TERMINAL_ENGINE_PHASES:
+                        confirmed = True
+                        break
+                if observed_phase is EngineRunPhase.STOPPING:
+                    raise RuntimeError(
+                        "external engine acknowledged abort but did not reach a terminal state"
+                    )
             if status is not None and status.phase not in {
                 *TERMINAL_ENGINE_PHASES,
                 EngineRunPhase.STOPPING,
@@ -163,18 +179,27 @@ class EngineAbortService:
         # alive until it observes a terminal provider phase; otherwise a stalled
         # graceful stop would have no remaining monitor or retry path.
         cancelled = (
-            []
-            if observed_phase is EngineRunPhase.STOPPING
-            else await self._cancel_runs(thread_id)
+            [] if observed_phase is EngineRunPhase.STOPPING else await self._cancel_runs(thread_id)
         )
 
-        if observed_phase is EngineRunPhase.ABORTED:
+        if observed_phase is not None and observed_phase in TERMINAL_ENGINE_PHASES:
             try:
-                projected = await self._repo.mark_aborted(
-                    thread_id,
-                    allowed_scopes=self._allowed_scopes,
-                    allowed_project_ids=self._allowed_project_ids,
-                )
+                marker = getattr(self._repo, "mark_terminal", None)
+                if marker is not None:
+                    projected = await marker(
+                        thread_id,
+                        observed_phase.value,
+                        allowed_scopes=self._allowed_scopes,
+                        allowed_project_ids=self._allowed_project_ids,
+                    )
+                elif observed_phase is EngineRunPhase.ABORTED:
+                    projected = await self._repo.mark_aborted(
+                        thread_id,
+                        allowed_scopes=self._allowed_scopes,
+                        allowed_project_ids=self._allowed_project_ids,
+                    )
+                else:
+                    projected = 0
             except Exception as exc:  # noqa: BLE001 — projection writes never gate an abort
                 logger.warning(
                     "engine_abort.projection_update_failed", thread_id=thread_id, error=str(exc)

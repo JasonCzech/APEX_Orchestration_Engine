@@ -38,6 +38,15 @@ class ConnectionsRepository:
     async def get(self, connection_id: str) -> Connection | None:
         return await self._session.get(Connection, connection_id)
 
+    async def get_for_update(self, connection_id: str) -> Connection | None:
+        """Lock a lifecycle row until the caller commits its mutation."""
+        return await self._session.scalar(
+            select(Connection)
+            .where(Connection.id == connection_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
     async def create(
         self,
         *,

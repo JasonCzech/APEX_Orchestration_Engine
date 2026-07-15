@@ -103,6 +103,7 @@ jobs:
           TF_VAR_artifact_store_secret: ${{ secrets.APEX_MINIO_SECRET_KEY }}
           TF_VAR_bootstrap_admin_key: ${{ secrets.APEX_BOOTSTRAP_ADMIN_KEY }}
           TF_VAR_api_key_hash_pepper: ${{ secrets.APEX_API_KEY_HASH_PEPPER }}
+          TF_VAR_previous_api_key_hash_peppers: ${{ secrets.APEX_PREVIOUS_API_KEY_HASH_PEPPERS || '[]' }}
           TF_VAR_workload_namespace: ${{ env.NAMESPACE }}
         run: |
           terraform plan -input=false -out=tfplan -var-file="env/${{ inputs.environment }}.tfvars"
@@ -139,7 +140,7 @@ jobs:
       - name: Build + push images
         env:
           ACR: ${{ needs.provision.outputs.acr }}
-          TAG: sha-${GITHUB_SHA}
+          TAG: sha-${{ github.sha }}
         run: |
           uv run langgraph build -t "$ACR/apex-orchestration-engine:$TAG"
           docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
@@ -164,8 +165,16 @@ jobs:
         env:
           TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
         run: |
-          if [[ ! "$TLS_SECRET_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-            echo "tls_secret_name must be a Kubernetes DNS label" >&2
+          validate_dns_subdomain() {
+            local value="$1" label
+            [[ ${#value} -le 253 && "$value" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+            IFS='.' read -ra labels <<< "$value"
+            for label in "${labels[@]}"; do
+              [[ ${#label} -le 63 && "$label" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || return 1
+            done
+          }
+          if ! validate_dns_subdomain "$TLS_SECRET_NAME"; then
+            echo "tls_secret_name must be a Kubernetes DNS subdomain" >&2
             exit 2
           fi
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
@@ -175,14 +184,33 @@ jobs:
       - name: Helm upgrade (migrate + bootstrap hooks run first)
         env:
           ACR: ${{ needs.provision.outputs.acr }}
-          TAG: sha-${GITHUB_SHA}
+          TAG: sha-${{ github.sha }}
           APEX_HOSTNAME: ${{ inputs.hostname }}
           TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
         run: |
-          if [[ ! "$APEX_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
-            echo "hostname must be a DNS hostname" >&2
+          validate_dns_hostname() {
+            local value="$1" label
+            [[ ${#value} -le 253 && "$value" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
+            IFS='.' read -ra labels <<< "$value"
+            for label in "${labels[@]}"; do
+              [[ ${#label} -le 63 && "$label" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] || return 1
+            done
+          }
+          if ! validate_dns_hostname "$APEX_HOSTNAME"; then
+            echo "hostname must be a lowercase DNS hostname" >&2
             exit 2
           fi
+          CHART_NAME="apex-orchestration-engine"
+          if [[ "$RELEASE" == *"$CHART_NAME"* ]]; then
+            FULLNAME="$RELEASE"
+          else
+            FULLNAME="$RELEASE-$CHART_NAME"
+          fi
+          FULLNAME="${FULLNAME:0:63}"
+          FULLNAME="${FULLNAME%-}"
+          DASHBOARD_NAME="${FULLNAME}-dashboard"
+          DASHBOARD_NAME="${DASHBOARD_NAME:0:63}"
+          DASHBOARD_NAME="${DASHBOARD_NAME%-}"
           helm upgrade --install "$RELEASE" deploy/helm/apex-orchestration-engine \
             -n "$NAMESPACE" --create-namespace \
             -f deploy/azure/helm/values-azure.yaml \
@@ -190,7 +218,7 @@ jobs:
             --set image.tag="$TAG" \
             --set dashboard.image.repository="$ACR/apex-dashboard" \
             --set dashboard.image.tag="$TAG" \
-            --set-string dashboard.backendUpstream="http://$RELEASE-apex-orchestration-engine:80" \
+            --set-string dashboard.backendUpstream="http://$FULLNAME:80" \
             --set-string bootstrap.document.connections[0].options.endpoint="apex-minio:9000" \
             --set-string "ingress.hosts[0].host=$APEX_HOSTNAME" \
             --set-string "ingress.tls[0].hosts[0]=$APEX_HOSTNAME" \
@@ -202,7 +230,11 @@ jobs:
             --set serviceAccount.name="${{ needs.provision.outputs.service_account }}" \
             --set hookServiceAccountName="${{ needs.provision.outputs.hook_service_account }}" \
             --wait --timeout 15m
-          kubectl -n "$NAMESPACE" rollout status "deployment/$RELEASE-apex-orchestration-engine"
+          kubectl -n "$NAMESPACE" rollout restart \
+            "deployment/$FULLNAME" \
+            "deployment/$DASHBOARD_NAME"
+          kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME"
+          kubectl -n "$NAMESPACE" rollout status "deployment/$DASHBOARD_NAME"
       - name: MinIO artifact store
         run: |
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml

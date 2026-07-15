@@ -2,12 +2,13 @@
 
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from apex.persistence.models import ArtifactReference
+from apex.persistence.models import ArtifactReference, Connection
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 
@@ -33,6 +34,11 @@ async def record_artifact_reference(
     try:
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         async with session_factory() as session:
+            connection = await session.scalar(
+                select(Connection).where(Connection.id == connection_id).with_for_update()
+            )
+            if connection is None or not connection.enabled or connection.kind != "artifact_store":
+                raise RuntimeError("artifact-store connection is missing or disabled")
             values: dict[str, Any] = {
                 "artifact_key": artifact_key,
                 "connection_id": connection_id,

@@ -56,6 +56,7 @@ short-lived loops that graph nodes spin up).
 """
 
 import asyncio
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -124,6 +125,10 @@ _ALREADY_STARTED_MARKER = "must be QUEUED"
 
 class _RemoteConflictError(RuntimeError):
     """A provider-side 409 that may have an observable winning resource."""
+
+
+class _TransportRequestError(RuntimeError):
+    """A request whose response was lost, leaving create outcome ambiguous."""
 
 
 # ── Go duration helpers ───────────────────────────────────────────────────────
@@ -206,9 +211,28 @@ def _prepare_inline_script(
     parsed: dict[str, Any], spec: LoadTestSpec, index: int
 ) -> dict[str, Any]:
     script = dict(parsed)
-    script.setdefault("name", f"{test_name_for(spec.idempotency_key)} script {index + 1}")
+    # Canonical names bind recovery to the idempotency scope instead of trusting
+    # an arbitrary caller-supplied name that may identify unrelated content.
+    script["name"] = f"{test_name_for(spec.idempotency_key)} script {index + 1}"
     script.setdefault("protocol", "http")
     return script
+
+
+def _content_bound_script(script: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+    """Bind reconciliation identity to canonical content and project scope."""
+    canonical = dict(script)
+    content = {key: value for key, value in canonical.items() if key != "name"}
+    digest = hashlib.sha256(
+        json.dumps(
+            {"project_id": project_id, "script": content},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    base = str(canonical.get("name") or "apex-script")
+    canonical["name"] = f"{base[: 255 - len(digest) - 1]}-{digest}"
+    return canonical
 
 
 def _split_vusers(total: int, group_count: int) -> list[int]:
@@ -433,7 +457,7 @@ class ApexLoadExecutionEngine:
         except CircuitOpenError as exc:
             raise RuntimeError(f"apex load request circuit is open for {method} {path}") from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(
+            raise _TransportRequestError(
                 f"apex load request {method} {path} failed before a response arrived: {exc}"
             ) from exc
         if response.status_code == 404 and not_found is not None:
@@ -813,6 +837,7 @@ class ApexLoadExecutionEngine:
         return None
 
     async def _upload_script(self, script: dict[str, Any], *, idempotency_key: str) -> str:
+        script = _content_bound_script(script, self._project_id)
         payload: dict[str, Any] = {"script": script}
         if self._project_id:
             payload["project_id"] = self._project_id
@@ -823,8 +848,7 @@ class ApexLoadExecutionEngine:
                 json=payload,
                 headers={"Idempotency-Key": idempotency_key},
             )
-            stored = _json_object(response, "POST /api/v1/scripts")
-        except (_RemoteConflictError, RuntimeError, ValueError):
+        except (_RemoteConflictError, _TransportRequestError):
             name = str(script.get("name") or "")
             stored = await self._find_script_after_uncertain_create(name) if name else None
             if stored is None:
@@ -834,6 +858,14 @@ class ApexLoadExecutionEngine:
                 script_id=stored.get("id"),
                 script_name=name,
             )
+        else:
+            try:
+                stored = _json_object(response, "POST /api/v1/scripts")
+            except RuntimeError:
+                name = str(script.get("name") or "")
+                stored = await self._find_script_after_uncertain_create(name) if name else None
+                if stored is None:
+                    raise
         script_id = str(stored.get("id") or "")
         if not script_id:
             raise RuntimeError(
@@ -907,10 +939,7 @@ class ApexLoadExecutionEngine:
                 json=body,
                 headers={"Idempotency-Key": spec.idempotency_key},
             )
-            return _json_object(response, "POST /api/v1/tests")
-        except _RemoteConflictError:
-            raise
-        except (RuntimeError, ValueError) as exc:
+        except _TransportRequestError as exc:
             # The provider may have committed the idempotent create before the
             # response was lost or truncated. Adopt the named resource instead
             # of reporting failure and leaving an untracked remote test.
@@ -924,3 +953,4 @@ class ApexLoadExecutionEngine:
                 error=str(exc),
             )
             return test
+        return _json_object(response, "POST /api/v1/tests")

@@ -264,8 +264,34 @@ class EngineRunsRepository:
             allowed_project_ids=allowed_project_ids,
         )
         stmt = (
-            update(EngineRun).where(*filters).values(status="aborted", ended_at=datetime.now(UTC))
+            update(EngineRun)
+            .where(*filters)
+            .values(status="aborted", ended_at=datetime.now(UTC), connection_id=None)
         )
         result = await self._session.execute(stmt)
+        await self._session.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def mark_terminal(
+        self,
+        thread_id: str,
+        status: str,
+        *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        allowed_project_ids: tuple[str, ...] | None = None,
+    ) -> int:
+        if status not in TERMINAL_STATUSES:
+            raise ValueError(f"nonterminal engine status {status!r}")
+        filters = [EngineRun.thread_id == thread_id]
+        _append_mutation_scope(
+            filters,
+            allowed_scopes=allowed_scopes,
+            allowed_project_ids=allowed_project_ids,
+        )
+        result = await self._session.execute(
+            update(EngineRun)
+            .where(*filters)
+            .values(status=status, ended_at=datetime.now(UTC), connection_id=None)
+        )
         await self._session.commit()
         return int(getattr(result, "rowcount", 0) or 0)

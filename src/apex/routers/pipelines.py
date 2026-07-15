@@ -250,6 +250,8 @@ class ResumeGateResponse(BaseModel):
 
 class AbortPipelineResponse(BaseModel):
     cancelled_run_ids: list[str]
+    phase: str | None = None
+    confirmed: bool = False
 
 
 class PhasePromptReview(BaseModel):
@@ -322,9 +324,7 @@ async def create_pipeline_run(
             ),
         )
     if isinstance(load_test, dict):
-        forbidden_selectors = {"script_refs", "test_id", "test_instance_id"}.intersection(
-            load_test
-        )
+        forbidden_selectors = {"script_refs", "test_id", "test_instance_id"}.intersection(load_test)
         if forbidden_selectors:
             raise HTTPException(
                 status_code=422,
@@ -540,9 +540,13 @@ async def abort_pipeline(
     reports success while production load is still running.
     """
     try:
+        phase: str | None = None
+        confirmed = False
         try:
             result = await engine_abort.abort(thread_id)
             cancelled = result.cancelled_runs
+            phase = result.phase
+            confirmed = result.confirmed
         except EngineRunNotFoundError:
             cancelled = await service.abort_pipeline(thread_id)
     except NotFoundError:
@@ -555,4 +559,8 @@ async def abort_pipeline(
             "no_active_run",
             detail=f"thread {thread_id!r} has no pending or running run to abort",
         )
-    return AbortPipelineResponse(cancelled_run_ids=cancelled)
+    return AbortPipelineResponse(
+        cancelled_run_ids=cancelled,
+        phase=phase,
+        confirmed=confirmed,
+    )

@@ -102,11 +102,11 @@ class ConnectionUpdate(BaseModel):
     """`kind` is immutable — create a new connection to change port kinds."""
 
     model_config = ConfigDict(extra="forbid")
-    provider: str | None = Field(default=None, min_length=1, max_length=64)
-    name: str | None = Field(default=None, min_length=1, max_length=255)
+    provider: str = Field(default=None, min_length=1, max_length=64)  # type: ignore[assignment]
+    name: str = Field(default=None, min_length=1, max_length=255)  # type: ignore[assignment]
     project_id: str | None = None
     base_url: str | None = None
-    options: dict[str, Any] | None = None
+    options: dict[str, Any] = Field(default=None)  # type: ignore[assignment]
     secret_ref: str | None = None
 
     @field_validator("provider", "name")
@@ -335,6 +335,14 @@ async def _get_or_404(repo: ConnectionsRepository, connection_id: str) -> Connec
     return conn
 
 
+async def _get_for_update_or_404(repo: ConnectionsRepository, connection_id: str) -> Connection:
+    getter = getattr(repo, "get_for_update", repo.get)
+    conn = await getter(connection_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"connection {connection_id!r} not found")
+    return conn
+
+
 def _can_manage_connection(
     identity: ConsumerIdentity,
     project_id: str | None,
@@ -511,7 +519,7 @@ async def get_connection(
 async def update_connection(
     connection_id: str, body: ConnectionUpdate, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
-    conn = await _get_or_404(repo, connection_id)
+    conn = await _get_for_update_or_404(repo, connection_id)
     _ensure_can_manage_row(identity, conn)
     changes = body.model_dump(exclude_unset=True)
     if not identity.is_unscoped and changes.get("secret_ref") is not None:
@@ -555,7 +563,7 @@ async def update_connection(
 async def delete_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> None:
-    conn = await _get_or_404(repo, connection_id)
+    conn = await _get_for_update_or_404(repo, connection_id)
     _ensure_can_manage_row(identity, conn)
     await _protect_durable_references(repo, conn)
     await repo.delete(conn)
@@ -565,7 +573,7 @@ async def delete_connection(
 async def enable_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
-    conn = await _get_or_404(repo, connection_id)
+    conn = await _get_for_update_or_404(repo, connection_id)
     _ensure_can_manage_row(identity, conn)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, True))
 
@@ -574,7 +582,7 @@ async def enable_connection(
 async def disable_connection(
     connection_id: str, identity: AdminIdentity, repo: ConnectionsRepo
 ) -> ConnectionOut:
-    conn = await _get_or_404(repo, connection_id)
+    conn = await _get_for_update_or_404(repo, connection_id)
     _ensure_can_manage_row(identity, conn)
     await _protect_durable_references(repo, conn)
     return ConnectionOut.model_validate(await repo.set_enabled(conn, False))

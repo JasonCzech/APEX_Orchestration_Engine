@@ -141,6 +141,12 @@ def _tf_output(name: str) -> str:
     return capture(["terraform", f"-chdir={TF}", "output", "-raw", name])
 
 
+def _helm_fullname(release: str, chart: str = "apex-orchestration-engine") -> str:
+    """Mirror the chart's fullname helper, including Kubernetes truncation."""
+    value = release if chart in release else f"{release}-{chart}"
+    return value[:63].rstrip("-")
+
+
 @task("aks-up", "Provision Azure + deploy. Needs APEX_ENV (dev|staging|prod) and `az login`.")
 def aks_up(_: list[str]) -> None:
     env = require_env("APEX_ENV")
@@ -151,22 +157,9 @@ def aks_up(_: list[str]) -> None:
     release = os.environ.get("APEX_RELEASE", "apex")
 
     # 1) Provision (the backend must already be initialized — see deploy/terraform/README.md).
-    backend_deployment = f"deployment/{release}-apex-orchestration-engine"
-    dashboard_deployment = f"deployment/{release}-apex-orchestration-engine-dashboard"
-    # Helm does not roll pods when an explicitly reused tag leaves the pod
-    # template unchanged. Always restart both workloads so mutable registry
-    # content and rotated Secret-backed environment variables are reloaded.
-    run(
-        [
-            "kubectl",
-            "-n",
-            namespace,
-            "rollout",
-            "restart",
-            backend_deployment,
-            dashboard_deployment,
-        ]
-    )
+    fullname = _helm_fullname(release)
+    backend_deployment = f"deployment/{fullname}"
+    dashboard_deployment = f"deployment/{(fullname + '-dashboard')[:63].rstrip('-')}"
     run(
         [
             "terraform",
@@ -256,7 +249,7 @@ def aks_up(_: list[str]) -> None:
             "--set",
             f"dashboard.image.tag={tag}",
             "--set-string",
-            f"dashboard.backendUpstream=http://{release}-apex-orchestration-engine:80",
+            f"dashboard.backendUpstream=http://{fullname}:80",
             "--set-string",
             "bootstrap.document.connections[0].options.endpoint=apex-minio:9000",
             "--set-string",
@@ -280,6 +273,18 @@ def aks_up(_: list[str]) -> None:
             "--wait",
             "--timeout",
             "15m",
+        ]
+    )
+    # A reused image tag or rotated Secret does not change the pod template.
+    run(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "rollout",
+            "restart",
+            backend_deployment,
+            dashboard_deployment,
         ]
     )
     run(

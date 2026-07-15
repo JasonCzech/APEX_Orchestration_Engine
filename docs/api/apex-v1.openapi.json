@@ -80,6 +80,22 @@
             },
             "title": "Cancelled Run Ids",
             "type": "array"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase"
           }
         },
         "required": [
@@ -884,29 +900,15 @@
             "title": "Base Url"
           },
           "name": {
-            "anyOf": [
-              {
-                "maxLength": 255,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Name"
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
           },
           "options": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Options"
+            "additionalProperties": true,
+            "title": "Options",
+            "type": "object"
           },
           "project_id": {
             "anyOf": [
@@ -920,17 +922,10 @@
             "title": "Project Id"
           },
           "provider": {
-            "anyOf": [
-              {
-                "maxLength": 64,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider"
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
           },
           "secret_ref": {
             "anyOf": [

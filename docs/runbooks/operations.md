@@ -22,6 +22,16 @@ To take a consumer out of service entirely, prefer
 `PATCH /v1/admin/consumers/{consumer_id}` with `enabled: false`
 (`updateConsumer`) over deletion — it preserves attribution history.
 
+### Rotate the platform hash pepper
+
+Set the new `APEX_API_KEY_HASH_PEPPER` deployment secret and put the former
+pepper in the JSON array secret `APEX_PREVIOUS_API_KEY_HASH_PEPPERS` (for
+example `["former-pepper..."]`) in the same deployment. The AKS workflow
+stores both in Key Vault and restarts backend/dashboard pods. After every
+active API key has been used and lazily rehashed with the new pepper, remove
+the former value and deploy again. Never remove the former pepper first: keys
+that have not yet been rehashed would immediately stop authenticating.
+
 ## Abort a stuck run (role: operator)
 
 Two kill switches at different layers. Decide by asking: *is external load
@@ -55,8 +65,9 @@ load still ramping). It:
 
 `404` means no engine handle is discoverable — nothing external was started.
 If the adapter abort fails repeatedly, kill the run in the engine's own
-console (LoadRunner/APEX Load) and record the thread id; the projection can
-stay stale (checkpointed graph state is the source of truth).
+console (LoadRunner/APEX Load) and record the thread id. Abort responses expose
+the observed provider `phase` and a `confirmed` flag; a non-terminal graceful
+stop is not reported as confirmed.
 
 ## Prompt rollback (role: operator)
 

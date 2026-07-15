@@ -566,18 +566,23 @@ async def test_provision_adopts_script_when_upload_response_is_lost() -> None:
     respx.get(f"{BASE}/api/v1/tests").mock(
         return_value=httpx.Response(200, json={"tests": [], "count": 0})
     )
-    upload = respx.post(f"{BASE}/api/v1/scripts").mock(
-        side_effect=httpx.ReadTimeout("response lost after script commit")
-    )
-    respx.get(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(
+    committed: dict[str, str] = {}
+
+    def lose_upload_response(request: httpx.Request) -> httpx.Response:
+        committed["name"] = json.loads(request.content)["script"]["name"]
+        raise httpx.ReadTimeout("response lost after script commit")
+
+    def list_committed_script(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
             200,
             json={
-                "scripts": [{"id": "script-committed", "name": f"{TEST_NAME} script"}],
+                "scripts": [{"id": "script-committed", "name": committed["name"]}],
                 "count": 1,
             },
         )
-    )
+
+    upload = respx.post(f"{BASE}/api/v1/scripts").mock(side_effect=lose_upload_response)
+    respx.get(f"{BASE}/api/v1/scripts").mock(side_effect=list_committed_script)
     create_test = respx.post(f"{BASE}/api/v1/tests").mock(
         return_value=httpx.Response(201, json=managed_test_json())
     )

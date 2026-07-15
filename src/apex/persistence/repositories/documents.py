@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from apex.auth.identity import ScopeRef
-from apex.persistence.models import Document
+from apex.persistence.models import Connection, Document
+from apex.settings import get_settings
 
 
 class DocumentsRepository:
@@ -15,10 +16,28 @@ class DocumentsRepository:
         self._session = session
 
     async def add(self, document: Document) -> Document:
+        if document.artifact_connection_id is not None and not (
+            document.artifact_connection_id.startswith("dev-") and not get_settings().is_locked_down
+        ):
+            connection = await self._session.scalar(
+                select(Connection)
+                .where(Connection.id == document.artifact_connection_id)
+                .with_for_update()
+            )
+            if connection is None or not connection.enabled or connection.kind != "artifact_store":
+                raise RuntimeError("artifact-store connection is missing or disabled")
         self._session.add(document)
         await self._session.commit()
         await self._session.refresh(document)
         return document
+
+    async def is_persisted(self, document_id: str) -> bool:
+        """Resolve an ambiguous commit/refresh failure before object compensation."""
+        await self._session.rollback()
+        return (
+            await self._session.scalar(select(Document.id).where(Document.id == document_id))
+            is not None
+        )
 
     async def get(self, document_id: str) -> Document | None:
         return await self._session.get(Document, document_id)

@@ -213,6 +213,7 @@ class DocumentsService:
         name = safe_filename(filename)
         key = document_artifact_key(document_id, name)
         stored = False
+        metadata_write_started = False
         try:
             await self._store.put(key, data, content_type=content_type)
             stored = True
@@ -246,11 +247,25 @@ class DocumentsService:
                 parse_status=extraction.status,
                 parse_error=extraction.error,
             )
+            metadata_write_started = True
             return await self._repository.add(document)
         except BaseException:
+            metadata_persisted = False
+            if metadata_write_started:
+                checker = getattr(self._repository, "is_persisted", None)
+                if checker is None:
+                    # The commit outcome is unknowable; never delete bytes that
+                    # may now be referenced by durable metadata.
+                    metadata_persisted = True
+                else:
+                    try:
+                        metadata_persisted = await checker(document_id)
+                    except BaseException:
+                        metadata_persisted = True
+                        logger.warning("documents.commit_resolution_failed", key=key, exc_info=True)
             try:
                 delete = getattr(self._store, "delete", None)
-                if stored and delete is not None:
+                if stored and not metadata_persisted and delete is not None:
                     await delete(key)
             except BaseException:
                 logger.warning("documents.orphan_cleanup_failed", key=key, exc_info=True)

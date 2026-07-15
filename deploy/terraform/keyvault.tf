@@ -111,3 +111,10 @@ resource "azurerm_key_vault_secret" "api_key_hash_pepper" {
   key_vault_id = azurerm_key_vault.main.id
   depends_on   = [azurerm_role_assignment.kv_deployer]
 }
+
+resource "azurerm_key_vault_secret" "previous_api_key_hash_peppers" {
+  name         = "previous-api-key-hash-peppers"
+  value        = var.previous_api_key_hash_peppers
+  key_vault_id = azurerm_key_vault.main.id
+  depends_on   = [azurerm_role_assignment.kv_deployer]
+}

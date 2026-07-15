@@ -52,6 +52,7 @@ secretBackend:
       - { objectName: artifact-secret-key, secretName: apex-minio, key: APEX_INTEGRATION_MINIO_SECRET_KEY }
       - { objectName: bootstrap-admin-key, secretName: apex-admin, key: APEX_BOOTSTRAP_ADMIN_KEY }
       - { objectName: api-key-hash-pepper, secretName: apex-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
+      - { objectName: previous-api-key-hash-peppers, secretName: apex-auth, key: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS }
       - { objectName: artifact-backup-account, secretName: apex-minio-backup, key: AZURE_STORAGE_ACCOUNT }
       - { objectName: artifact-backup-key, secretName: apex-minio-backup, key: AZURE_STORAGE_KEY }
 
@@ -63,6 +64,11 @@ extraEnv:
       secretKeyRef:
         name: apex-auth
         key: APEX_AUTH__API_KEY_HASH_PEPPER
+  - name: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS
+    valueFrom:
+      secretKeyRef:
+        name: apex-auth
+        key: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS
   - name: APEX_INTEGRATION_MINIO_SECRET_KEY
     valueFrom:
       secretKeyRef:

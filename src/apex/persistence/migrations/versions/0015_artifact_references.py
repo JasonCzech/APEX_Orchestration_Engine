@@ -37,9 +37,7 @@ def upgrade() -> None:
               AND run.handle->>'connection_id' = connection.id
             """
         )
-    op.create_index(
-        "ix_engine_runs_connection_id", "engine_runs", ["connection_id"], schema="apex"
-    )
+    op.create_index("ix_engine_runs_connection_id", "engine_runs", ["connection_id"], schema="apex")
     op.create_table(
         "artifact_references",
         sa.Column("id", sa.String(length=32), nullable=False),
@@ -49,10 +47,10 @@ def upgrade() -> None:
         sa.Column("thread_id", sa.String(length=255), nullable=False),
         sa.Column("project_id", sa.String(length=255), nullable=True),
         sa.Column("app_id", sa.String(length=255), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.ForeignKeyConstraint(
-            ["connection_id"], ["apex.connections.id"], ondelete="RESTRICT"
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
+        sa.ForeignKeyConstraint(["connection_id"], ["apex.connections.id"], ondelete="RESTRICT"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("artifact_key"),
         schema="apex",
@@ -70,6 +68,44 @@ def upgrade() -> None:
         schema="apex",
     )
     if op.get_bind().dialect.name == "postgresql":
+        # Enforce new artifact ownership writes while allowing an upgrade to
+        # retain legacy rows whose store identity could not be reconstructed.
+        op.execute(
+            """
+            ALTER TABLE apex.documents
+            ADD CONSTRAINT fk_documents_connections_artifact_connection_id
+            FOREIGN KEY (artifact_connection_id) REFERENCES apex.connections(id)
+            ON DELETE RESTRICT NOT VALID
+            """
+        )
+        op.execute(
+            """
+            ALTER TABLE apex.engine_runs
+            ADD CONSTRAINT fk_engine_runs_connections_artifact_connection_id
+            FOREIGN KEY (artifact_connection_id) REFERENCES apex.connections(id)
+            ON DELETE RESTRICT NOT VALID
+            """
+        )
+        # Checkpoints created before the durable artifact index cannot be
+        # enumerated safely. Conservatively protect every pre-existing store
+        # until an operator reconciles it and removes this sentinel reference.
+        op.execute(
+            """
+            INSERT INTO apex.artifact_references
+                (id, artifact_key, connection_id, kind, thread_id)
+            SELECT md5('legacy-artifact-store:' || id),
+                   'legacy-connection-protection/' || id,
+                   id,
+                   'legacy_connection_guard',
+                   'legacy'
+            FROM apex.connections
+            WHERE kind = 'artifact_store'
+            ON CONFLICT (artifact_key) DO NOTHING
+            """
+        )
+        # Serialize the chain repair with AuditService writers for the entire
+        # migration transaction ("APEXAUDI" signed 64-bit advisory key).
+        op.execute("SELECT pg_advisory_xact_lock(4706337855957713993)")
         # Some deployments may already have run the earlier form of 0014,
         # which reordered chain_seq by wall-clock time. Recover the original
         # order from the tamper-evident previous_hash links, but only when the
@@ -134,6 +170,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "postgresql":
+        op.drop_constraint(
+            "fk_engine_runs_connections_artifact_connection_id",
+            "engine_runs",
+            schema="apex",
+            type_="foreignkey",
+        )
+        op.drop_constraint(
+            "fk_documents_connections_artifact_connection_id",
+            "documents",
+            schema="apex",
+            type_="foreignkey",
+        )
     op.drop_index(
         "ix_artifact_references_thread_id", table_name="artifact_references", schema="apex"
     )

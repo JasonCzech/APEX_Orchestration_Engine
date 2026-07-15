@@ -67,9 +67,16 @@ async def record_engine_run(
     objects without their authorization record.
     """
     try:
+        settings = get_settings()
+        if not settings.is_locked_down and any(
+            value is not None and value.startswith("dev-")
+            for value in (connection_id, artifact_connection_id)
+        ):
+            # Static development adapters intentionally work without PostgreSQL.
+            return
         # Throwaway engine per call: graph nodes run on worker threads with
         # short-lived event loops, so pooled connections must not outlive them.
-        database = get_settings().database
+        database = settings.database
         engine_db = create_async_engine(
             database_asyncpg_uri(database.uri),
             poolclass=NullPool,
@@ -80,9 +87,7 @@ async def record_engine_run(
             async with session_factory() as session:
                 if required and connection_id is not None and connection_version is not None:
                     connection = await session.scalar(
-                        select(Connection)
-                        .where(Connection.id == connection_id)
-                        .with_for_update()
+                        select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
                     if connection is None or not connection.enabled:
                         raise RuntimeError(
@@ -92,6 +97,18 @@ async def record_engine_run(
                         raise RuntimeError(
                             f"execution connection {connection_id!r} changed during reservation"
                         )
+                if required and artifact_connection_id is not None:
+                    artifact_connection = await session.scalar(
+                        select(Connection)
+                        .where(Connection.id == artifact_connection_id)
+                        .with_for_update()
+                    )
+                    if (
+                        artifact_connection is None
+                        or not artifact_connection.enabled
+                        or artifact_connection.kind != "artifact_store"
+                    ):
+                        raise RuntimeError("artifact-store connection is missing or disabled")
                 values: dict[str, Any] = {
                     "thread_id": thread_id,
                     "attempt": attempt,

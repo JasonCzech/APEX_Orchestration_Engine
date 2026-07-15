@@ -47,6 +47,8 @@ terraform init \
 export TF_VAR_postgres_admin_password='<strong-password>'
 export TF_VAR_langgraph_license_key='<enterprise-license>'   # optional; stored in Key Vault
 export TF_VAR_artifact_store_secret='<minio-secret>'
+export TF_VAR_api_key_hash_pepper='<at-least-32-characters>'
+export TF_VAR_previous_api_key_hash_peppers='[]' # JSON array retained during rotation
 
 terraform apply -var-file=env/dev.tfvars
 ```

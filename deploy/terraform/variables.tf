@@ -159,6 +159,21 @@ variable "api_key_hash_pepper" {
   }
 }
 
+variable "previous_api_key_hash_peppers" {
+  type        = string
+  description = "JSON array of former API-key hash peppers retained during rotation."
+  sensitive   = true
+  default     = "[]"
+
+  validation {
+    condition = can([
+      for pepper in jsondecode(var.previous_api_key_hash_peppers) :
+      pepper if length(pepper) >= 32
+    ])
+    error_message = "previous_api_key_hash_peppers must be a JSON array of strings at least 32 characters long."
+  }
+}
+
 variable "deployer_object_id" {
   type        = string
   description = "AAD object id granted Key Vault Secrets Officer to write secrets (defaults to the caller)."
