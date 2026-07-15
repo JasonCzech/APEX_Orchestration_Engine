@@ -3,8 +3,10 @@
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -23,13 +25,54 @@ from apex.domain.integrations import (
     WorkItemPage,
 )
 from apex.persistence.models import SavedQuery
-from apex.routers.work_tracking import router
+from apex.routers.work_tracking import ExecuteQueryRequest, TranslateQueryRequest, router
+from apex.services import work_item_mutations as mutation_module
+from apex.services.work_item_mutations import (
+    WorkItemMutationOutcomeAmbiguousError,
+    WorkItemMutationService,
+    get_work_item_mutation_service,
+)
 from apex.services.work_tracking import (
     get_saved_queries_repository,
     get_work_tracking_resolver,
 )
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (TranslateQueryRequest, {"text": "open bugs", "connection_id": "conn\x00id"}),
+        (TranslateQueryRequest, {"text": "open\x00bugs"}),
+        (
+            ExecuteQueryRequest,
+            {
+                "query": {"provider": "jira", "query": "project = DEMO"},
+                "connection_id": "conn\x00id",
+            },
+        ),
+        (
+            ExecuteQueryRequest,
+            {"query": {"provider": "jira", "query": "project\x00 = DEMO"}},
+        ),
+    ],
+)
+def test_work_query_body_models_reject_nul_provider_input(
+    model: type[Any], payload: dict[str, Any]
+) -> None:
+    with pytest.raises(ValueError, match="string_pattern_mismatch"):
+        model.model_validate(payload)
+
+
+def test_execute_query_body_rejects_offset_outside_provider_page_before_resolution() -> None:
+    with pytest.raises(ValueError, match="less_than_equal"):
+        ExecuteQueryRequest.model_validate(
+            {
+                "query": {"provider": "jira", "query": "project = DEMO"},
+                "offset": 1_001,
+            }
+        )
 
 
 class FakeWorkTrackingAdapter:
@@ -56,7 +99,10 @@ class FakeWorkTrackingAdapter:
         self.translate_calls: list[tuple[str, QueryContext]] = []
         self.execute_calls: list[tuple[TranslatedQuery, Page]] = []
         self.list_calls: list[tuple[WorkItemFilters, Page]] = []
+        self.create_calls: list[WorkItemDraft] = []
         self.enrich_calls: list[tuple[str, Enrichment]] = []
+        self.created_by_marker: dict[str, WorkItem] = {}
+        self.comment_markers: set[tuple[str, str]] = set()
 
     async def translate_query(
         self, natural_language: str, *, context: QueryContext
@@ -83,11 +129,30 @@ class FakeWorkTrackingAdapter:
         return WorkItemPage(items=rows, total=len(rows), page=page)
 
     async def create_item(self, draft: WorkItemDraft) -> WorkItem:
+        self.create_calls.append(draft)
         return WorkItem(key="PHX-900", title=draft.title, kind=draft.kind, status="open")
 
     async def enrich_item(self, key: str, enrichment: Enrichment) -> WorkItem:
         self.enrich_calls.append((key, enrichment))
         return await self.get_item(key)
+
+    async def find_item_by_idempotency_marker(self, marker: str) -> WorkItem | None:
+        return self.created_by_marker.get(marker)
+
+    async def create_item_idempotent(self, draft: WorkItemDraft, *, marker: str) -> WorkItem:
+        item = WorkItem(key="PHX-900", title=draft.title, kind=draft.kind, status="open")
+        self.created_by_marker[marker] = item
+        return item
+
+    async def update_item_fields_idempotent(self, key: str, fields: dict[str, object]) -> None:
+        self.enrich_calls.append((key, Enrichment(fields=fields)))
+
+    async def has_comment_idempotency_marker(self, key: str, marker: str) -> bool:
+        return (key, marker) in self.comment_markers
+
+    async def add_item_comment_idempotent(self, key: str, comment: str, *, marker: str) -> None:
+        self.enrich_calls.append((key, Enrichment(comment=comment)))
+        self.comment_markers.add((key, marker))
 
 
 class BoomAdapter:
@@ -130,11 +195,40 @@ class FakeResolver:
         return self.adapter
 
 
+class MetadataResolver:
+    """Separates metadata selection from adapter construction for replay tests."""
+
+    def __init__(self, adapter: Any) -> None:
+        self.adapter = adapter
+        self.build_calls = 0
+        self.fail_build = False
+
+    async def resolve_metadata(self, *_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(
+            config=SimpleNamespace(id="dev-work-tracking-fake", provider="fake"),
+            persisted=False,
+            connection_version=None,
+        )
+
+    async def build_from_metadata(self, _metadata: Any) -> Any:
+        self.build_calls += 1
+        if self.fail_build:
+            raise RuntimeError("secret store unavailable")
+        return SimpleNamespace(
+            adapter=self.adapter,
+            connection_id="dev-work-tracking-fake",
+            persisted=False,
+            connection_version=None,
+        )
+
+
 class FakeSavedQueriesRepository:
     """In-memory stand-in matching SavedQueriesRepository's surface."""
 
     def __init__(self) -> None:
         self.rows: dict[str, SavedQuery] = {}
+        self.list_calls = 0
+        self.locked_gets: list[str] = []
 
     def _conflict(self, row: SavedQuery) -> bool:
         return any(
@@ -156,6 +250,10 @@ class FakeSavedQueriesRepository:
     async def get(self, saved_query_id: str) -> SavedQuery | None:
         return self.rows.get(saved_query_id)
 
+    async def get_for_update(self, saved_query_id: str) -> SavedQuery | None:
+        self.locked_gets.append(saved_query_id)
+        return self.rows.get(saved_query_id)
+
     async def list(
         self,
         *,
@@ -165,6 +263,7 @@ class FakeSavedQueriesRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> list[SavedQuery]:
+        self.list_calls += 1
         rows = sorted(self.rows.values(), key=lambda r: r.name)
         if allowed_project_ids is not None:
             rows = [r for r in rows if r.project_id is None or r.project_id in allowed_project_ids]
@@ -326,6 +425,16 @@ def test_translate_blank_text_is_422() -> None:
     assert response.status_code == 422
 
 
+def test_translate_rejects_oversized_text_before_adapter_resolution() -> None:
+    app, resolver, _ = make_app(identity())
+
+    with TestClient(app) as client:
+        response = client.post("/v1/work-tracking/query/translate", json={"text": "x" * 20_001})
+
+    assert response.status_code == 422
+    assert resolver.adapter.translate_calls == []
+
+
 def test_execute_query_pages_through_adapter() -> None:
     app, resolver, _ = make_app(identity(role=Role.ADMIN, scopes=[]))
     with TestClient(app) as client:
@@ -339,6 +448,24 @@ def test_execute_query_pages_through_adapter() -> None:
     assert body["total"] == 2
     assert body["page"] == {"offset": 1, "limit": 1}
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, None)]  # unscoped admin
+
+
+def test_execute_query_rejects_provider_window_before_adapter_resolution() -> None:
+    app, resolver, _ = make_app(identity(role=Role.ADMIN, scopes=[]))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={
+                "query": {"provider": "fake", "query": "project = PHX"},
+                "limit": 200,
+                "offset": 801,
+            },
+        )
+
+    assert response.status_code == 422
+    assert resolver.calls == []
+    assert resolver.adapter.execute_calls == []
 
 
 def test_execute_query_injects_jira_project_scope() -> None:
@@ -378,6 +505,32 @@ def test_execute_query_constrains_to_external_project_after_internal_binding() -
     assert "internal-project-1" not in query.query
 
 
+def test_execute_query_quotes_connection_project_as_jql_data() -> None:
+    external_project = 'PHX") OR project = OTHER OR project in ("PHX'
+    resolver = FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="jira",
+            project_id=external_project,
+            internal_project_id="internal-project-1",
+        )
+    )
+    app, resolver, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="internal-project-1")]), resolver=resolver
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "jira", "query": "status = Open"}},
+        )
+
+    assert response.status_code == 200
+    query, _ = resolver.adapter.execute_calls[0]
+    assert query.query == (
+        'project in ("PHX\\") OR project = OTHER OR project in (\\"PHX") AND (status = Open)'
+    )
+
+
 def test_execute_query_rejects_conflicting_jira_project_scope() -> None:
     resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira", project_id="PHX"))
     app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]), resolver=resolver)
@@ -387,6 +540,29 @@ def test_execute_query_rejects_conflicting_jira_project_scope() -> None:
             json={"query": {"provider": "jira", "query": "project = OTH AND status = Open"}},
         )
     assert response.status_code == 403
+    assert resolver.adapter.execute_calls == []
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "status = Open) OR key = OTH-1 OR (status = Open",
+        "status = Open -- project = OTH",
+        "status = Open; project = OTH",
+        'status = "unterminated',
+    ],
+)
+def test_execute_query_rejects_jira_scope_envelope_escape(query: str) -> None:
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira", project_id="PHX"))
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="PHX")]), resolver=resolver)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "jira", "query": query}},
+        )
+
+    assert response.status_code == 422
     assert resolver.adapter.execute_calls == []
 
 
@@ -406,6 +582,28 @@ def test_execute_query_injects_ado_multi_project_scope() -> None:
     query, _ = resolver.adapter.execute_calls[0]
     assert query.query == "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] IN ('CAT')"
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, "CAT")]
+
+
+def test_execute_query_rejects_wiql_scope_envelope_escape() -> None:
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="ado", project_id="CAT"))
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="CAT")]), resolver=resolver)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={
+                "query": {
+                    "provider": "ado",
+                    "query": (
+                        "SELECT [System.Id] FROM WorkItems WHERE ([System.State] = 'Open')) "
+                        "OR ([System.TeamProject] = 'OTHER'"
+                    ),
+                }
+            },
+        )
+
+    assert response.status_code == 422
+    assert resolver.adapter.execute_calls == []
 
 
 def test_execute_query_multi_project_requires_project() -> None:
@@ -468,7 +666,8 @@ def test_unknown_connection_id_is_404_problem() -> None:
         )
     assert response.status_code == 404
     assert response.headers["content-type"].startswith("application/problem+json")
-    assert "unknown connection_id" in response.json()["title"]
+    assert response.json()["title"] == "work-tracking connection not found"
+    assert "nope" not in response.text
 
 
 def test_misconfigured_connection_is_409() -> None:
@@ -493,7 +692,8 @@ def test_get_work_item_found_and_missing() -> None:
     assert found.status_code == 200
     assert found.json()["title"] == "First"
     assert missing.status_code == 404
-    assert "PHX-404" in missing.json()["title"]
+    assert missing.json()["title"] == "work item not found"
+    assert "PHX-404" not in missing.text
 
 
 def test_list_work_items_passes_filters_and_connection_id() -> None:
@@ -515,6 +715,16 @@ def test_list_work_items_passes_filters_and_connection_id() -> None:
     filters, page = resolver.adapter.list_calls[0]
     assert filters == WorkItemFilters(status="open", kind="bug", text="checkout")
     assert (page.offset, page.limit) == (2, 5)
+
+
+def test_list_work_items_rejects_provider_window_before_list_call() -> None:
+    app, resolver, _ = make_app(identity())
+
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/items", params={"offset": 801, "limit": 200})
+
+    assert response.status_code == 422
+    assert resolver.adapter.list_calls == []
 
 
 def test_list_work_items_multi_project_requires_project() -> None:
@@ -569,7 +779,11 @@ def test_direct_item_route_rejects_adapter_bound_to_another_project() -> None:
 def test_create_work_item_requires_operator() -> None:
     app, _, _ = make_app(identity(role=Role.VIEWER))
     with TestClient(app) as client:
-        response = client.post("/v1/work-tracking/items", json={"title": "New story"})
+        response = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "New story"},
+            headers={"Idempotency-Key": "create-viewer"},
+        )
     assert response.status_code == 403
 
 
@@ -577,10 +791,148 @@ def test_create_work_item_created() -> None:
     app, _, _ = make_app(identity())
     with TestClient(app) as client:
         response = client.post(
-            "/v1/work-tracking/items", json={"title": "New story", "kind": "story"}
+            "/v1/work-tracking/items",
+            json={"title": "New story", "kind": "story"},
+            headers={"Idempotency-Key": "create-new-story"},
         )
     assert response.status_code == 201
     assert response.json()["key"] == "PHX-900"
+
+
+def test_create_work_item_requires_idempotency_key() -> None:
+    app, resolver, _ = make_app(identity())
+    with TestClient(app) as client:
+        response = client.post("/v1/work-tracking/items", json={"title": "No key"})
+
+    assert response.status_code == 422
+    assert resolver.adapter.created_by_marker == {}
+
+
+def test_create_work_item_replays_and_rejects_key_payload_conflict() -> None:
+    app, resolver, _ = make_app(identity())
+    headers = {"Idempotency-Key": "router-replay-conflict"}
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "Stable payload"},
+            headers=headers,
+        )
+        replay = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "Stable payload"},
+            headers=headers,
+        )
+        conflict = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "Different payload"},
+            headers=headers,
+        )
+
+    assert created.status_code == replay.status_code == 201
+    assert created.json() == replay.json()
+    assert conflict.status_code == 409
+    assert len(resolver.adapter.created_by_marker) == 1
+
+
+def test_create_work_item_surfaces_ambiguous_dispatch_for_operator_reconciliation() -> None:
+    class AmbiguousMutationService:
+        async def replay_create(self, **_kwargs: Any) -> None:
+            return None
+
+        async def create(self, **_kwargs: Any) -> WorkItem:
+            row = SimpleNamespace(
+                id="mutation-123",
+                provider_marker="apex-idem-mutation-123",
+            )
+            raise WorkItemMutationOutcomeAmbiguousError(cast(Any, row), operation="create")
+
+    app, _, _ = make_app(identity())
+    app.dependency_overrides[get_work_item_mutation_service] = AmbiguousMutationService
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "Ambiguous"},
+            headers={"Idempotency-Key": "ambiguous-dispatch"},
+        )
+
+    assert response.status_code == 409
+    assert response.headers["retry-after"] == "5"
+    assert response.json()["title"] == "work-item mutation outcome is ambiguous"
+    assert "mutation-123" not in response.text
+    assert "apex-idem-mutation-123" not in response.text
+
+
+def test_completed_create_replays_before_adapter_construction() -> None:
+    resolver = MetadataResolver(FakeWorkTrackingAdapter())
+    app, _, _ = make_app(identity(), resolver=resolver)  # type: ignore[arg-type]
+    repository = mutation_module._EphemeralMutationRepository()
+    mutations = WorkItemMutationService(repository, ephemeral_repository=repository)
+    app.dependency_overrides[get_work_item_mutation_service] = lambda: mutations
+    headers = {"Idempotency-Key": "terminal-before-secrets"}
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "Replay without provider"},
+            headers=headers,
+        )
+        resolver.fail_build = True
+        replay = client.post(
+            "/v1/work-tracking/items",
+            json={"title": "Replay without provider"},
+            headers=headers,
+        )
+
+    assert created.status_code == replay.status_code == 201
+    assert replay.json() == created.json()
+    assert resolver.build_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/v1/work-tracking/items", {"title": "Forbidden"}),
+        ("/v1/work-tracking/items/PHX-1/enrich", {"comment": "Forbidden"}),
+    ],
+)
+def test_app_only_operator_cannot_mutate_project_wide_work_items_before_resolution(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    app, resolver, _ = make_app(identity(scopes=[ScopeRef(project_id="p1", app_id="app-1")]))
+
+    with TestClient(app) as client:
+        response = client.post(
+            path,
+            json=payload,
+            headers={"Idempotency-Key": "app-only-forbidden"},
+        )
+
+    assert response.status_code == 403
+    assert resolver.calls == []
+    assert resolver.adapter.created_by_marker == {}
+    assert resolver.adapter.enrich_calls == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"title": "t" * 501},
+        {"title": "ok", "description": "d" * 20_001},
+        {"title": "ok", "fields": {f"field-{index}": index for index in range(65)}},
+    ],
+)
+def test_create_work_item_rejects_oversized_payload_before_adapter(
+    payload: dict[str, Any],
+) -> None:
+    app, resolver, _ = make_app(identity())
+
+    with TestClient(app) as client:
+        response = client.post("/v1/work-tracking/items", json=payload)
+
+    assert response.status_code == 422
+    assert resolver.adapter.create_calls == []
 
 
 def test_enrich_work_item_roles_and_payload() -> None:
@@ -589,16 +941,23 @@ def test_enrich_work_item_roles_and_payload() -> None:
         ok = client.post(
             "/v1/work-tracking/items/PHX-1/enrich",
             json={"comment": "triaged", "fields": {"System.Tags": "perf"}},
+            headers={"Idempotency-Key": "enrich-phx-1"},
         )
     assert ok.status_code == 200
-    key, enrichment = resolver.adapter.enrich_calls[0]
-    assert key == "PHX-1"
-    assert enrichment.comment == "triaged"
-    assert enrichment.fields == {"System.Tags": "perf"}
+    assert len(resolver.adapter.enrich_calls) == 2
+    fields_key, fields_enrichment = resolver.adapter.enrich_calls[0]
+    comment_key, comment_enrichment = resolver.adapter.enrich_calls[1]
+    assert fields_key == comment_key == "PHX-1"
+    assert fields_enrichment.fields == {"System.Tags": "perf"}
+    assert comment_enrichment.comment == "triaged"
 
     viewer_app, _, _ = make_app(identity(role=Role.VIEWER))
     with TestClient(viewer_app) as client:
-        denied = client.post("/v1/work-tracking/items/PHX-1/enrich", json={"comment": "x"})
+        denied = client.post(
+            "/v1/work-tracking/items/PHX-1/enrich",
+            json={"comment": "x"},
+            headers={"Idempotency-Key": "enrich-viewer"},
+        )
     assert denied.status_code == 403
 
 
@@ -643,6 +1002,17 @@ def test_list_saved_queries_scoped_sees_own_and_global() -> None:
         response = client.get("/v1/work-tracking/saved-queries")
     ids = [row["id"] for row in response.json()["items"]]
     assert sorted(ids) == ["s1", "s3"]
+
+
+def test_list_saved_queries_rejects_huge_offset_before_repository() -> None:
+    repo = seeded_repo()
+    app, _, _ = make_app(identity(), repo=repo)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/saved-queries", params={"offset": 10_001})
+
+    assert response.status_code == 422
+    assert repo.list_calls == 0
 
 
 def test_list_saved_queries_admin_sees_all_and_filters_by_provider() -> None:
@@ -766,14 +1136,30 @@ def test_update_saved_query_patches_fields_and_conflicts() -> None:
             json={"query": "status = Done", "description": "now done"},
         )
         global_update = client.patch(
-            "/v1/work-tracking/saved-queries/s3", json={"name": "alpha p1", "project_id": "p1"}
+            "/v1/work-tracking/saved-queries/s3", json={"name": "alpha p1"}
         )
     assert updated.status_code == 200
     assert updated.json()["query"] == "status = Done"
     assert updated.json()["description"] == "now done"
     assert repo.rows["s1"].query == "status = Done"
+    assert repo.locked_gets == ["s1", "s3"]
     assert global_update.status_code == 403
     assert repo.rows["s3"].project_id is None
+
+
+def test_update_saved_query_rejects_ignored_ownership_fields() -> None:
+    repo = seeded_repo()
+    app, _, _ = make_app(identity(), repo=repo)
+
+    with TestClient(app) as client:
+        response = client.patch(
+            "/v1/work-tracking/saved-queries/s1",
+            json={"project_id": "p2"},
+        )
+
+    assert response.status_code == 422
+    assert repo.rows["s1"].project_id == "p1"
+    assert repo.locked_gets == []
 
 
 def test_update_saved_query_name_collision_is_409() -> None:
@@ -791,6 +1177,7 @@ def test_delete_saved_query_roles_and_scope() -> None:
     with TestClient(app) as client:
         assert client.delete("/v1/work-tracking/saved-queries/s1").status_code == 204
         assert client.delete("/v1/work-tracking/saved-queries/s2").status_code == 404
+    assert repo.locked_gets == ["s1", "s2"]
     assert "s1" not in repo.rows
 
     viewer_app, _, _ = make_app(identity(role=Role.VIEWER), repo=repo)

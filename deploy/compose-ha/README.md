@@ -1,7 +1,10 @@
 # HA soak rig — rolling restarts with zero lost pipelines
 
 Two stateless `apex-server` replicas behind an nginx round-robin (SSE-safe:
-`proxy_buffering off`), sharing one Postgres/Redis/MinIO. This is the M6 GA
+`proxy_buffering off`), sharing one Postgres/Redis/MinIO. Raw MinIO shares the
+security gateway's network namespace and binds only to loopback; all S3 traffic
+passes the advisory-prescribed unsigned-trailer and S3 Select filters in
+`deploy/minio-gateway/nginx.conf`. This is the M6 GA
 demo rig: start a long run, rolling-restart the replicas underneath it, and
 verify nothing is lost — the execution poll loop resumes from the last
 committed Postgres checkpoint without double-starting load (the same property
@@ -24,21 +27,21 @@ All commands from the repo root.
 
 ```bash
 export LANGGRAPH_CLOUD_LICENSE_KEY=...        # Enterprise key
+export APEX_AUTH__DEV_API_KEY=soak-dev-key    # rig-only synthetic admin
 export APEX_IMAGE=apex-orchestration-engine:local
 uv run langgraph build -t "$APEX_IMAGE"
 docker compose -f deploy/compose-ha/docker-compose.ha.yaml up -d --wait
 ```
 
-### 2. Migrate the apex schema (Postgres is mapped to host port 5433)
+### 2. Verify the ordered migration and bootstrap
 
-```bash
-APEX_DATABASE__URI=postgresql+asyncpg://apex:apex@localhost:5433/apex \
-  uv run alembic upgrade head
-```
-
-The LangGraph runtime creates/migrates its own tables on first server boot.
-Auth: the rig sets `APEX_AUTH__DEV_API_KEY=soak-dev-key` (synthetic admin, no
-DB row needed) so every call below just sends `x-api-key: soak-dev-key`.
+Compose waits for the one-shot `migrate` and idempotent `bootstrap` services
+before either server starts; `docker compose ... ps -a migrate bootstrap` must
+show exit code 0 for both. Bootstrap seeds the prompt catalog, demo application,
+MinIO connection, and a durable admin consumer using the same rig-only
+`APEX_AUTH__DEV_API_KEY` accepted by the synthetic development admin. The
+LangGraph runtime creates/migrates its own tables on first server boot, and every
+request below sends `x-api-key: soak-dev-key`.
 
 ### 3. Start a long simulated run
 
@@ -137,8 +140,7 @@ docker compose -f deploy/compose-ha/docker-compose.ha.yaml down -v
 ## Notes
 
 - MinIO is included for artifact-store parity but the soak itself runs on the
-  sim engine and does not need it. If you exercise artifact uploads, point the
-  `minio-artifacts` connection's `base_url` at `http://minio:9000` (in-network
-  name) via `PATCH /v1/admin/connections/{id}`.
+  sim engine and does not need it. The bootstrap already points the
+  `minio-artifacts` connection at the in-network `minio:9000` service.
 - Ports: nginx `:8123` (only API entrypoint), Postgres `:5433` (host-side, for
-  migrations/seeding only).
+  diagnostics only; migration/bootstrap run inside Compose).

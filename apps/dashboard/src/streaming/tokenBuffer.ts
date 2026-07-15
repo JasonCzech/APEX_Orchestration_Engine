@@ -2,8 +2,8 @@
  * rAF-coalesced flush gate with a ~50ms floor (plan Part 2 performance rule:
  * high-frequency stream data flushes to React state at most ~20fps, and ONLY
  * when dirty). usePipelineStream uses one gate per stream for engine_poll ring
- * samples; the same primitive will pace reasoning-token buffers when
- * messages-tuple streaming lands.
+ * samples; the same primitive can pace a future schema-versioned, bounded
+ * custom reasoning event.
  *
  * Sequence per flush: markDirty() → setTimeout(remaining-of-floor) →
  * requestAnimationFrame → onFlush(). Both stages are fake-timer friendly.

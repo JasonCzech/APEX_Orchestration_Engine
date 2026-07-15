@@ -2,7 +2,7 @@
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -17,12 +17,22 @@ from apex.persistence.models import (
     EnvironmentHost,
     EnvironmentSnapshot,
 )
-from apex.persistence.repositories.catalog import DuplicateNameError
-from apex.routers.catalog import get_catalog_repository, router
+from apex.persistence.repositories.catalog import CatalogRepository, DuplicateNameError
+from apex.routers.catalog import (
+    EnvironmentCreate,
+    EnvironmentOut,
+    get_catalog_repository,
+    router,
+)
 
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def test_environment_create_rejects_nul_application_id() -> None:
+    with pytest.raises(ValueError, match="string_pattern_mismatch"):
+        EnvironmentCreate.model_validate({"application_id": "app\x00id", "name": "staging"})
 
 
 def _make_application(project_id: str, name: str, description: str | None = None) -> Application:
@@ -64,6 +74,9 @@ class FakeCatalogRepository:
         self.applications: dict[str, Application] = {}
         self.environments: dict[str, Environment] = {}
         self.snapshots: dict[str, list[EnvironmentSnapshot]] = {}
+        self.environment_for_update_calls: list[str] = []
+        self.application_list_calls = 0
+        self.environment_list_calls = 0
 
     # applications
 
@@ -72,16 +85,28 @@ class FakeCatalogRepository:
         *,
         project: str | None = None,
         visible_projects: Sequence[str] | None = None,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
         include_archived: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[Application]:
+        self.application_list_calls += 1
         apps = list(self.applications.values())
         if project is not None:
             apps = [a for a in apps if a.project_id == project]
         if visible_projects is not None:
             apps = [a for a in apps if a.project_id in visible_projects]
+        if allowed_scopes is not None:
+            project_wide = {scope.project_id for scope in allowed_scopes if scope.app_id is None}
+            exact = {(scope.project_id, scope.app_id) for scope in allowed_scopes}
+            apps = [
+                app
+                for app in apps
+                if app.project_id in project_wide or (app.project_id, app.id) in exact
+            ]
         if not include_archived:
             apps = [a for a in apps if a.archived_at is None]
-        return sorted(apps, key=lambda a: (a.project_id, a.name))
+        return sorted(apps, key=lambda a: (a.project_id, a.name))[offset : offset + limit]
 
     async def get_application(self, application_id: str) -> Application | None:
         return self.applications.get(application_id)
@@ -123,15 +148,34 @@ class FakeCatalogRepository:
         *,
         application_id: str | None = None,
         visible_projects: Sequence[str] | None = None,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[Environment]:
+        self.environment_list_calls += 1
         envs = list(self.environments.values())
         if application_id is not None:
             envs = [e for e in envs if e.application_id == application_id]
         if visible_projects is not None:
             envs = [e for e in envs if e.application.project_id in visible_projects]
-        return sorted(envs, key=lambda e: (e.application.project_id, e.name))
+        if allowed_scopes is not None:
+            project_wide = {scope.project_id for scope in allowed_scopes if scope.app_id is None}
+            exact = {(scope.project_id, scope.app_id) for scope in allowed_scopes}
+            envs = [
+                env
+                for env in envs
+                if env.application.project_id in project_wide
+                or (env.application.project_id, env.application_id) in exact
+            ]
+        return sorted(envs, key=lambda e: (e.application.project_id, e.name))[
+            offset : offset + limit
+        ]
 
     async def get_environment(self, environment_id: str) -> Environment | None:
+        return self.environments.get(environment_id)
+
+    async def get_environment_for_update(self, environment_id: str) -> Environment | None:
+        self.environment_for_update_calls.append(environment_id)
         return self.environments.get(environment_id)
 
     async def create_environment(
@@ -237,11 +281,37 @@ def test_create_get_list_application(repo: FakeCatalogRepository) -> None:
     assert [a["name"] for a in listed.json()] == ["Checkout"]
 
 
+def test_catalog_lists_reject_huge_offset_before_repository(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+
+    applications = client.get("/catalog/applications", params={"offset": 10_001})
+    environments = client.get("/catalog/environments", params={"offset": 10_001})
+
+    assert applications.status_code == 422
+    assert environments.status_code == 422
+    assert repo.application_list_calls == 0
+    assert repo.environment_list_calls == 0
+
+
 def test_duplicate_application_name_is_409(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     payload = {"project_id": "demo", "name": "Checkout"}
     assert client.post("/catalog/applications", json=payload).status_code == 201
     assert client.post("/catalog/applications", json=payload).status_code == 409
+
+
+def test_application_rejects_scope_longer_than_database_column_before_write(
+    repo: FakeCatalogRepository,
+) -> None:
+    response = make_client(repo, ADMIN).post(
+        "/catalog/applications",
+        json={"project_id": "p" * 256, "name": "Checkout"},
+    )
+
+    assert response.status_code == 422
+    assert repo.applications == {}
 
 
 def test_update_application(repo: FakeCatalogRepository) -> None:
@@ -380,6 +450,163 @@ def test_environment_crud_with_hosts(repo: FakeCatalogRepository) -> None:
 
     assert client.delete(f"/catalog/environments/{env['id']}").status_code == 204
     assert client.get(f"/catalog/environments/{env['id']}").status_code == 404
+
+
+def test_environment_rejects_deep_options_and_host_fanout_before_write(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    nested: dict[str, Any] = {}
+    cursor = nested
+    for _ in range(17):
+        child: dict[str, Any] = {}
+        cursor["child"] = child
+        cursor = child
+
+    deep = client.post(
+        "/catalog/environments",
+        json={"application_id": app_id, "name": "deep", "options": nested},
+    )
+    fanout = client.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "many-hosts",
+            "hosts": [{"hostname": f"host-{index}"} for index in range(257)],
+        },
+    )
+
+    assert deep.status_code == 422
+    assert fanout.status_code == 422
+    assert repo.environments == {}
+
+
+def test_environment_writes_reject_raw_credentials_in_options(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+
+    created = client.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "unsafe",
+            "options": {"nested": {"api_token": "raw-secret"}},
+        },
+    )
+
+    assert created.status_code == 422
+    assert "raw-secret" not in created.text
+    assert repo.environments == {}
+
+    environment = _make_environment(app=repo.applications[app_id], name="existing")
+    repo.environments[environment.id] = environment
+    updated = client.patch(
+        f"/catalog/environments/{environment.id}",
+        json={"options": {"password": "raw-secret"}},
+    )
+
+    assert updated.status_code == 422
+    assert "raw-secret" not in updated.text
+    assert environment.options == {}
+
+
+def test_environment_writes_reject_server_owned_repair_marker(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+
+    created = client.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "forged-quarantine",
+            "options": {"_apex_repair_required": True},
+        },
+    )
+
+    assert created.status_code == 422
+    assert repo.environments == {}
+
+
+def test_environment_output_redacts_credential_bearing_legacy_rows() -> None:
+    app = _make_application("demo", "Checkout")
+    environment = _make_environment(
+        app,
+        "legacy",
+        base_url="https://operator:super-secret@example.com/run?token=signed-secret",
+        options={
+            "password": "plain-secret",
+            "safe_sibling": "must-not-create-a-partial-sanitization-bypass",
+        },
+        target_approved=True,
+        target_version=1,
+    )
+
+    projected = EnvironmentOut.model_validate(environment).model_dump(mode="json")
+
+    assert projected["base_url"] == "[REDACTED]"
+    assert projected["options"] == {"_apex_repair_required": True}
+    assert projected["target_approved"] is False
+    assert "super-secret" not in str(projected)
+    assert "signed-secret" not in str(projected)
+    assert "plain-secret" not in str(projected)
+
+
+async def test_catalog_repository_rejects_unsafe_target_metadata_before_session_io() -> None:
+    repository = CatalogRepository(cast(Any, object()))
+
+    with pytest.raises(ValueError, match="credential-bearing"):
+        await repository.create_environment(
+            application_id="app-1",
+            name="unsafe",
+            base_url="https://user:secret@example.test/run",
+            target_approved=True,
+            target_version=1,
+        )
+    with pytest.raises(ValueError, match="managed connection secret_ref"):
+        await repository.create_environment(
+            application_id="app-1",
+            name="unsafe",
+            options={"nested": {"api_token": "raw-secret"}},
+        )
+    with pytest.raises(ValueError, match="credential-bearing"):
+        await repository.create_environment(
+            application_id="app-1",
+            name="forged-quarantine",
+            options={"_apex_repair_required": True},
+        )
+
+
+async def test_catalog_repository_validates_effective_target_before_mutating_row() -> None:
+    repository = CatalogRepository(cast(Any, object()))
+    application = _make_application("demo", "Checkout")
+    environment = _make_environment(
+        application,
+        "safe",
+        base_url="https://8.8.8.8/load",
+        options={},
+        target_approved=True,
+        target_version=1,
+    )
+
+    with pytest.raises(ValueError, match="managed connection secret_ref"):
+        await repository.update_environment(
+            environment,
+            {"options": {"password": "raw-secret"}},
+        )
+
+    assert environment.options == {}
+    assert environment.base_url == "https://8.8.8.8/load"
 
 
 def test_scoped_operator_cannot_create_or_change_execution_target(

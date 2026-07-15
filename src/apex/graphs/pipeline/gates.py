@@ -135,6 +135,6 @@ def parse_gate_decision(decision: Any, allowed: Sequence[str]) -> JsonDict:
         return {
             **{k: v for k, v in decision.items() if k != "action"},
             "action": None,
-            "error": f"unknown action {action!r}; expected one of {sorted(allowed)}",
+            "error": f"unknown action; expected one of {sorted(allowed)}",
         }
     return dict(decision)

@@ -8,36 +8,72 @@ POST multipart with a `file` part and optional `project_id`/`app_id`/`summary` f
 DELETE removes both the metadata row and its stored artifact.
 """
 
+import asyncio
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
-from apex.persistence.db import get_session
+from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.input_limits import (
+    MAX_DB_LIST_OFFSET,
+    MAX_SCOPE_ID_CHARS,
+    NoNulStr,
+    RecordId,
+    ScopeId,
+)
+from apex.domain.pipeline import MAX_CONTEXT_SUMMARY_CHARS
+from apex.persistence.db import get_session, get_sessionmaker, release_read_transactions
 from apex.persistence.models import Document
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.services.connections import ConnectionResolver, close_adapter, get_connection_resolver
+from apex.services.connections import ConnectionResolver, get_connection_resolver
 from apex.services.documents import (
     MAX_DOCUMENT_BYTES,
     MAX_UPLOAD_BODY_BYTES,
     DocumentsService,
     DocumentTooLargeError,
+    InvalidDocumentFilenameError,
     MultipartParseError,
+    acquire_document_upload_slot,
+    await_task_definitively,
     extract_boundary,
     get_documents_repository,
     parse_multipart,
+    purge_document_tombstone,
     read_body_capped,
+    safe_filename,
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 RepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+
+DocumentRepositoryFactory = Callable[[], AbstractAsyncContextManager[DocumentsRepository]]
+
+
+@asynccontextmanager
+async def _open_document_repository() -> AsyncIterator[DocumentsRepository]:
+    async with get_sessionmaker()() as session:
+        yield DocumentsRepository(session)
+
+
+def get_document_repository_factory() -> DocumentRepositoryFactory:
+    return _open_document_repository
+
+
+DocumentRepositoryFactoryDep = Annotated[
+    DocumentRepositoryFactory,
+    Depends(get_document_repository_factory),
+]
 
 
 def get_catalog_repository(
@@ -71,11 +107,34 @@ class DocumentOut(BaseModel):
     parse_error: str | None = None
     text_preview: str | None = None
 
+    @field_validator("parse_error", mode="before")
+    @classmethod
+    def sanitize_legacy_parse_error(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        return bounded_diagnostic(value, max_chars=500)
+
 
 class DocumentListResponse(BaseModel):
     items: list[DocumentOut]
     limit: int
     offset: int
+
+
+class DocumentArtifactAffinityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connection_id: NoNulStr = Field(min_length=1, max_length=32)
+
+
+@dataclass(frozen=True)
+class _LegacyAffinityCandidate:
+    artifact_key: str
+    artifact_connection_id: str | None
+    project_id: str | None
+    app_id: str | None
+    upload_pending_at: datetime | None
+    deletion_pending_at: datetime | None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -120,7 +179,7 @@ def _resolve_upload_scope(
         if not identity.contains_scope(ScopeRef(project_id=project_id, app_id=app_id)):
             raise HTTPException(
                 status_code=403,
-                detail=f"consumer is not scoped to project {project_id!r}, app {app_id!r}",
+                detail="consumer is not scoped to the requested project/application",
             )
         return project_id, app_id
 
@@ -137,11 +196,68 @@ def _resolve_upload_scope(
     if len(apps) == 1:
         return project_id, apps[0]
     if not apps:
-        raise HTTPException(status_code=403, detail=f"consumer is not scoped to {project_id!r}")
+        raise HTTPException(
+            status_code=403, detail="consumer is not scoped to the requested project"
+        )
     raise HTTPException(
         status_code=422,
         detail="app_id is required when the consumer has multiple app scopes",
     )
+
+
+def _upload_text(
+    value: str | None,
+    *,
+    label: str,
+    max_length: int,
+    required: bool = False,
+    forbid_controls: bool = False,
+) -> str | None:
+    normalized = (value or "").strip()
+    if required and not normalized:
+        raise HTTPException(status_code=422, detail=f"{label} must not be empty")
+    if len(normalized) > max_length:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{label} must not exceed {max_length} characters",
+        )
+    if "\x00" in normalized:
+        raise HTTPException(status_code=422, detail=f"{label} contains U+0000")
+    if forbid_controls and any(ord(char) < 32 or ord(char) == 127 for char in normalized):
+        raise HTTPException(status_code=422, detail=f"{label} contains control characters")
+    return normalized or None
+
+
+def _legacy_affinity_candidate(document: Document) -> _LegacyAffinityCandidate:
+    return _LegacyAffinityCandidate(
+        artifact_key=document.artifact_key,
+        artifact_connection_id=document.artifact_connection_id,
+        project_id=document.project_id,
+        app_id=document.app_id,
+        upload_pending_at=document.upload_pending_at,
+        deletion_pending_at=document.deletion_pending_at,
+    )
+
+
+async def _artifact_key_exists(store: Any, key: str) -> bool:
+    """Prove an exact key exists without retaining the full artifact in memory."""
+
+    try:
+        iterator = store.iter_bytes(key).__aiter__()
+    except (KeyError, FileNotFoundError):
+        return False
+    try:
+        await anext(iterator)
+    except StopAsyncIteration:
+        # A successful empty stream still proves the provider found the object.
+        return True
+    except (KeyError, FileNotFoundError):
+        return False
+    finally:
+        close = getattr(iterator, "aclose", None)
+        if close is not None:
+            await close()
+    return True
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -174,6 +290,7 @@ def _resolve_upload_scope(
 )
 async def upload_document(
     request: Request,
+    _upload_slot: Annotated[None, Depends(acquire_document_upload_slot)],
     identity: Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))],
     repository: RepositoryDep,
     resolver: ConnectionResolverDep,
@@ -184,13 +301,24 @@ async def upload_document(
         raise HTTPException(status_code=415, detail="expected a multipart/form-data request")
     try:
         body = await read_body_capped(request.stream(), MAX_UPLOAD_BODY_BYTES)
-        upload = parse_multipart(body, boundary)
+        # Parsing performs delimiter scans and copies the file slice. Keep it off
+        # the event loop; admission above bounds retained bytes and rejects excess.
+        parse_task = asyncio.create_task(
+            asyncio.to_thread(parse_multipart, body, boundary),
+            name="document-multipart-parse",
+        )
+        upload = await await_task_definitively(parse_task)
+        del body
+    except TimeoutError as exc:
+        raise HTTPException(status_code=408, detail="document upload body timed out") from exc
     except DocumentTooLargeError as exc:
         raise HTTPException(
             status_code=413, detail=f"document exceeds the {exc.limit} byte limit"
         ) from exc
     except MultipartParseError as exc:
-        raise HTTPException(status_code=422, detail=f"malformed multipart body: {exc}") from exc
+        # Parser diagnostics can contain caller-controlled field/header names.
+        # Keep the response stable instead of reflecting multipart input.
+        raise HTTPException(status_code=422, detail="malformed multipart body") from exc
     if upload.file is None:
         raise HTTPException(status_code=422, detail="multipart body is missing a 'file' part")
     # Multipart framing has a small allowance beyond the document cap. Reject
@@ -201,8 +329,38 @@ async def upload_document(
             detail=f"document exceeds the {MAX_DOCUMENT_BYTES} byte limit",
         )
 
-    project_id = (upload.fields.get("project_id") or "").strip() or None
-    app_id = (upload.fields.get("app_id") or "").strip() or None
+    # Validate every durable metadata field before catalog lookup or artifact
+    # resolver/store I/O. This also keeps oversized legacy multipart text from
+    # reaching String(255) columns as a database error.
+    project_id = _upload_text(
+        upload.fields.get("project_id"),
+        label="project_id",
+        max_length=MAX_SCOPE_ID_CHARS,
+        forbid_controls=True,
+    )
+    app_id = _upload_text(
+        upload.fields.get("app_id"),
+        label="app_id",
+        max_length=MAX_SCOPE_ID_CHARS,
+        forbid_controls=True,
+    )
+    summary = _upload_text(
+        upload.fields.get("summary"),
+        label="summary",
+        max_length=MAX_CONTEXT_SUMMARY_CHARS,
+    )
+    media_type = _upload_text(
+        upload.file.content_type,
+        label="document media type",
+        max_length=255,
+        required=True,
+        forbid_controls=True,
+    )
+    assert media_type is not None
+    try:
+        filename = safe_filename(upload.file.filename)
+    except InvalidDocumentFilenameError as exc:
+        raise HTTPException(status_code=422, detail="invalid document filename") from exc
     project_id, app_id = _resolve_upload_scope(
         identity,
         project_id=project_id,
@@ -217,6 +375,8 @@ async def upload_document(
         ):
             raise HTTPException(status_code=422, detail="app_id is not valid for project_id")
 
+    await release_read_transactions(catalog, repository)
+
     try:
         store, artifact_connection_id = await resolver.resolve_with_connection_id(
             PortKind.ARTIFACT_STORE,
@@ -228,19 +388,21 @@ async def upload_document(
     service = DocumentsService(repository, store)
     try:
         document = await service.upload(
-            filename=upload.file.filename,
-            content_type=upload.file.content_type,
+            filename=filename,
+            content_type=media_type,
             data=upload.file.data,
             artifact_connection_id=artifact_connection_id,
             project_id=project_id,
             app_id=app_id,
-            summary=upload.fields.get("summary") or None,
+            summary=summary,
             uploaded_by=identity.name,
         )
     except DocumentTooLargeError as exc:
         raise HTTPException(
             status_code=413, detail=f"document exceeds the {exc.limit} byte limit"
         ) from exc
+    except InvalidDocumentFilenameError as exc:
+        raise HTTPException(status_code=422, detail="invalid document filename") from exc
     return document
 
 
@@ -248,10 +410,10 @@ async def upload_document(
 async def list_documents(
     identity: CurrentIdentity,
     repository: RepositoryDep,
-    project: str | None = None,
-    q: str | None = None,
+    project: Annotated[ScopeId | None, Query()] = None,
+    q: Annotated[NoNulStr | None, Query(max_length=500)] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
 ) -> Any:
     ensure_scope(identity, project_id=project)
     allowed = None if identity.is_unscoped else identity.scopes
@@ -263,12 +425,90 @@ async def list_documents(
 
 @router.get("/{document_id}", operation_id="getDocument", response_model=DocumentOut)
 async def get_document(
-    document_id: str, identity: CurrentIdentity, repository: RepositoryDep
+    document_id: Annotated[RecordId, Path()],
+    identity: CurrentIdentity,
+    repository: RepositoryDep,
 ) -> Any:
     document = await repository.get(document_id)
     if document is None or not _visible(identity, document):
-        raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
+        raise HTTPException(status_code=404, detail="document not found")
     return document
+
+
+@router.put(
+    "/{document_id}/artifact-connection",
+    operation_id="assignDocumentArtifactConnection",
+    status_code=204,
+    dependencies=[Depends(require_role(Role.ADMIN))],
+)
+async def assign_document_artifact_connection(
+    document_id: Annotated[RecordId, Path()],
+    body: DocumentArtifactAffinityUpdate,
+    identity: CurrentIdentity,
+    repository_factory: DocumentRepositoryFactoryDep,
+    resolver: ConnectionResolverDep,
+) -> None:
+    """One-time store-affinity repair for documents created before migration 0013."""
+
+    # Snapshot and close the first session before touching the provider. The
+    # second phase re-locks and rejects any row change made during verification.
+    async with repository_factory() as repository:
+        document = await repository.get_any(document_id)
+        if document is None or not _writable(identity, document):
+            raise HTTPException(status_code=404, detail="document not found")
+        if document.upload_pending_at is not None and document.deletion_pending_at is None:
+            raise HTTPException(
+                status_code=409,
+                detail="cannot change affinity while a document upload is active",
+            )
+        if document.artifact_connection_id is not None:
+            if document.artifact_connection_id == body.connection_id:
+                return
+            raise HTTPException(
+                status_code=409,
+                detail="document artifact-store affinity is already fixed",
+            )
+        candidate = _legacy_affinity_candidate(document)
+
+    try:
+        store, resolved_connection_id = await resolver.resolve_with_connection_id(
+            PortKind.ARTIFACT_STORE,
+            connection_id=body.connection_id,
+            project_id=candidate.project_id,
+        )
+        if resolved_connection_id != body.connection_id:
+            raise HTTPException(
+                status_code=409,
+                detail="resolver did not select the requested artifact-store connection",
+            )
+        exists = await _artifact_key_exists(store, candidate.artifact_key)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
+    if not exists:
+        raise HTTPException(
+            status_code=409,
+            detail="document artifact does not exist in the requested store",
+        )
+
+    async with repository_factory() as repository:
+        document = await repository.get_any_for_update(document_id)
+        if document is None or not _writable(identity, document):
+            raise HTTPException(status_code=404, detail="document not found")
+        if _legacy_affinity_candidate(document) != candidate:
+            raise HTTPException(
+                status_code=409,
+                detail="document changed while artifact-store affinity was being verified",
+            )
+        try:
+            await repository.assign_artifact_connection(document, body.connection_id)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409, detail="document affinity update conflict"
+            ) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
 
 
 @router.delete(
@@ -278,26 +518,25 @@ async def get_document(
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def delete_document(
-    document_id: str,
+    document_id: Annotated[RecordId, Path()],
     identity: CurrentIdentity,
     repository: RepositoryDep,
     resolver: ConnectionResolverDep,
 ) -> None:
     document = await repository.get(document_id)
     if document is None or not _writable(identity, document):
-        raise HTTPException(status_code=404, detail=f"document {document_id!r} not found")
+        raise HTTPException(status_code=404, detail="document not found")
     try:
-        store, _connection_id = await resolver.resolve_with_connection_id(
-            PortKind.ARTIFACT_STORE,
-            connection_id=document.artifact_connection_id,
-            project_id=document.project_id,
-        )
-    except (KeyError, OSError, RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
+        # The committed tombstone hides metadata and retains store affinity
+        # before any irreversible object deletion. A background reconciler can
+        # safely resume every failure/cancellation point after this write.
+        await repository.mark_deletion_pending(document)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="could not persist document deletion") from exc
     try:
-        delete = getattr(store, "delete", None)
-        if delete is not None:
-            await delete(document.artifact_key)
-    finally:
-        await close_adapter(store)
-    await repository.delete(document)
+        await purge_document_tombstone(document, repository, resolver)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="document deletion is queued for retry",
+        ) from exc

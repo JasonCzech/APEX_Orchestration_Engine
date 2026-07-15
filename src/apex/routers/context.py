@@ -1,6 +1,6 @@
 """Context routes (`/context`): summary runs + dashboard evidence aggregation.
 
-POST /context/summaries launches a stateless background run on the `context`
+POST /context/summaries launches a durable background run on the `context`
 assistant through the loopback LangGraph client (caller's API key forwarded, so
 auth/scoping match a direct call) and answers 202 with the run id + stream URL.
 GET /context/evidence aggregates context packets across recent pipeline threads.
@@ -9,11 +9,13 @@ GET /context/evidence aggregates context packets across recent pipeline threads.
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
+from apex.domain.input_limits import NoNulStr, ResourceId, ScopeId
+from apex.persistence.db import release_read_transactions
 from apex.persistence.repositories.documents import DocumentsRepository
 from apex.routers.work_tracking import (
     resolve_scoped_work_tracking_adapter,
@@ -59,16 +61,22 @@ DocumentsRepo = Annotated[DocumentsRepository, Depends(get_documents_repository)
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
+ContextWorkItemKey = Annotated[
+    NoNulStr,
+    Field(min_length=1, max_length=MAX_WORK_ITEM_KEY_CHARS),
+]
+ContextDocumentId = Annotated[NoNulStr, Field(min_length=1, max_length=128)]
+
 
 class ContextSummaryRequest(BaseModel):
-    subject: str = Field(min_length=1, max_length=2000)
-    work_item_keys: list[
-        Annotated[str, Field(min_length=1, max_length=MAX_WORK_ITEM_KEY_CHARS)]
-    ] = Field(default_factory=list, max_length=MAX_WORK_ITEM_KEYS_HARD)
-    document_ids: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(
-        default_factory=list, max_length=64
+    model_config = ConfigDict(extra="forbid")
+
+    subject: NoNulStr = Field(min_length=1, max_length=2000)
+    work_item_keys: list[ContextWorkItemKey] = Field(
+        default_factory=list, max_length=MAX_WORK_ITEM_KEYS_HARD
     )
-    project_id: str | None = Field(default=None, min_length=1, max_length=256)
+    document_ids: list[ContextDocumentId] = Field(default_factory=list, max_length=64)
+    project_id: ScopeId | None = None
 
 
 class ContextSummaryAccepted(BaseModel):
@@ -118,7 +126,7 @@ async def create_context_summary(
             }
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="invalid context summary request") from exc
     if validated.work_item_keys:
         # The graph fetches keys outside the HTTP dependency chain. Prove here
         # that its resolved real-provider adapter is bound to the caller's project.
@@ -132,7 +140,7 @@ async def create_context_summary(
             documents, identity, body.document_ids
         )
     except DocumentContextNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="document context not found") from exc
     try:
         validated = validate_context_run_input(
             {
@@ -143,7 +151,8 @@ async def create_context_summary(
             }
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="invalid context summary request") from exc
+    await release_read_transactions(documents)
     client = _loopback_client_after_scope(request)
     result = await start_context_summary(
         client,
@@ -162,13 +171,21 @@ async def create_context_summary(
 async def list_context_evidence(
     identity: CurrentIdentity,
     request: Request,
-    project: Annotated[str | None, Query(description="Filter to one project")] = None,
-    thread_id: Annotated[str | None, Query(description="Narrow to one thread")] = None,
+    project: Annotated[ScopeId | None, Query(description="Filter to one project")] = None,
+    thread_id: Annotated[ResourceId | None, Query(description="Narrow to one thread")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
 ) -> list[EvidencePacket]:
     ensure_scope(identity, project_id=project)
     client = _loopback_client_after_scope(request)
     try:
-        packets = await collect_context_evidence(client, project_id=project, thread_id=thread_id)
+        packets = await collect_context_evidence(
+            client,
+            project_id=project,
+            thread_id=thread_id,
+            limit=limit,
+            offset=offset,
+        )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="context thread not found") from exc
     return [EvidencePacket(**packet) for packet in packets]

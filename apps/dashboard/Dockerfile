@@ -8,7 +8,7 @@
 # an optional same-origin reverse proxy is enabled by setting BACKEND_UPSTREAM.
 
 # ── build ─────────────────────────────────────────────────────────────────────
-FROM node:24-alpine AS build
+FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 WORKDIR /app
 # Workspace manifests + lockfile first for dependency-layer caching.
 COPY package.json package-lock.json ./
@@ -23,7 +23,7 @@ RUN npm run -w @apex/dashboard build
 
 # ── runtime ───────────────────────────────────────────────────────────────────
 # nginx-unprivileged runs as uid 101 and listens on 8080 — non-root by default.
-FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
+FROM nginxinc/nginx-unprivileged:1.27-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0 AS runtime
 # Custom config: serves the SPA from the (read-only) image rootfs, /config.json and
 # all temp/pid paths from /tmp, so readOnlyRootFilesystem=true works with one /tmp
 # emptyDir. Backend reverse-proxy snippet is generated into /tmp at startup.

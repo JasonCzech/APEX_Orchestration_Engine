@@ -42,8 +42,10 @@ migrations + bootstrap, and rolls. Workload Identity removes long-lived
 credentials end to end (CI uses OIDC federation; pods use a federated UAMI).
 
 ## Consequences
-- **Postgres URI footgun:** psycopg (`DATABASE_URI`) needs `?sslmode=require`;
-  asyncpg (`APEX_DATABASE__URI`) needs `?ssl=true` — Terraform emits both.
+- **Postgres URI footgun:** psycopg/libpq (`DATABASE_URI`) uses
+  `?sslmode=verify-full&sslrootcert=system`; asyncpg (`APEX_DATABASE__URI`) uses
+  `?sslmode=verify-full`, which APEX maps to a hostname-verifying system-CA
+  context — Terraform emits both.
 - **License gate (ADR-0005) stands:** the server crash-loops without
   `LANGGRAPH_CLOUD_LICENSE_KEY`; it is stored in Key Vault and must be present
   before prod pods start. The identity-injecting-gateway fallback remains the

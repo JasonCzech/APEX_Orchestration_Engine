@@ -56,7 +56,9 @@ def test_external_results_enable_analysis_only_run() -> None:
     execution = result["phase_results"]["execution"]
     assert execution["status"] == "succeeded"
     assert execution["external"] is True
+    assert execution["attempt"] == 1
     assert execution["test_summary"]["kpis"]["p95_ms"] == 450.0
+    assert result["external_results"] is None
 
     for phase in ("reporting", "postmortem"):
         assert result["phase_results"][phase]["status"] == "succeeded"
@@ -67,11 +69,61 @@ def test_external_results_enable_analysis_only_run() -> None:
     assert any(packet["id"] == "external-results" for packet in result["context_packets"])
 
 
+def test_new_external_results_advance_attempt_and_replace_prior_evidence() -> None:
+    g = compiled()
+    cfg = config("ext-rerun", phases=["reporting"], gates={"reporting": dict(AUTO)})
+    first = g.invoke(
+        {"title": "Analyze", "request": "first", "external_results": EXTERNAL},
+        cfg,
+    )
+    second_external = {
+        **EXTERNAL,
+        "source": "second-dashboard",
+        "summary": "Second run completed",
+        "kpis": {"p95_ms": 275.0},
+    }
+
+    second = g.invoke(
+        {"title": "Analyze", "request": "second", "external_results": second_external},
+        cfg,
+    )
+
+    assert first["phase_results"]["execution"]["attempt"] == 1
+    assert second["phase_results"]["execution"]["attempt"] == 2
+    assert second["phase_results"]["execution"]["test_summary"]["kpis"]["p95_ms"] == 275.0
+    packets = [p for p in second["context_packets"] if p["id"] == "external-results"]
+    assert len(packets) == 1
+    assert packets[0]["source"] == "second-dashboard"
+    assert second["external_results"] is None
+
+
 def test_reporting_only_without_external_results_still_raises() -> None:
     g = compiled()
     cfg = config("ext2", phases=["reporting"], gates={"reporting": dict(AUTO)})
     with pytest.raises(ValueError, match="execution"):
         g.invoke({"title": "Analyze", "request": "x"}, cfg)
+
+
+def test_graph_revalidation_rejects_signed_external_results_uri() -> None:
+    g = compiled()
+    cfg = config("ext-signed", phases=["reporting"], gates={"reporting": dict(AUTO)})
+
+    with pytest.raises(ValueError, match="external results uri") as raised:
+        g.invoke(
+            {
+                "title": "Analyze",
+                "request": "summarize",
+                "external_results": {
+                    **EXTERNAL,
+                    "uri": (
+                        "https://results.example.com/run/42?X-Amz-Signature=graph-signed-url-secret"
+                    ),
+                },
+            },
+            cfg,
+        )
+
+    assert "graph-signed-url-secret" not in str(raised.value)
 
 
 def test_anthropic_backend_without_key_degrades_to_stub(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,3 +256,49 @@ def test_accumulate_usage_sums_tokens_and_details() -> None:
     assert acc["output_tokens"] == 6
     assert acc["total_tokens"] == 19
     assert acc["input_token_details"]["cache_read"] == 2
+
+
+def test_accumulate_usage_sanitizes_malformed_provider_counts() -> None:
+    acc: dict[str, Any] = {
+        "input_tokens": "already-malformed",
+        "input_token_details": "not-a-mapping",
+    }
+
+    ps._accumulate_usage(
+        acc,
+        {
+            "input_tokens": "not-a-number",
+            "output_tokens": float("inf"),
+            "total_tokens": -100,
+            "input_token_details": {
+                "cache_read": float("nan"),
+                "negative": -5,
+                123: 9,
+            },
+        },
+    )
+
+    assert acc["input_tokens"] == 0
+    assert acc["output_tokens"] == 0
+    assert acc["total_tokens"] == 0
+    assert acc["input_token_details"] == {"cache_read": 0, "negative": 0}
+
+
+def test_accumulate_usage_saturates_repeated_tool_loop_totals() -> None:
+    from apex.services.pricing import MAX_TOKEN_COUNT
+
+    acc: dict[str, Any] = {}
+    provider_usage = {
+        "input_tokens": MAX_TOKEN_COUNT - 1,
+        "output_tokens": MAX_TOKEN_COUNT - 1,
+        "total_tokens": MAX_TOKEN_COUNT - 1,
+        "output_token_details": {"reasoning": MAX_TOKEN_COUNT - 1},
+    }
+
+    ps._accumulate_usage(acc, provider_usage)
+    ps._accumulate_usage(acc, provider_usage)
+
+    assert acc["input_tokens"] == MAX_TOKEN_COUNT
+    assert acc["output_tokens"] == MAX_TOKEN_COUNT
+    assert acc["total_tokens"] == MAX_TOKEN_COUNT
+    assert acc["output_token_details"]["reasoning"] == MAX_TOKEN_COUNT

@@ -8,16 +8,48 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
-import { useEnrichWorkItem, useWorkItem, type WorkItem } from '@/api/hooks/useWorkTracking'
+import {
+  createWorkItemMutationKey,
+  useEnrichWorkItem,
+  useWorkItem,
+  type WorkItem,
+} from '@/api/hooks/useWorkTracking'
 import { isApiError } from '@/api/errors'
 import { useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { canMutateAudience } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
 import { ExternalLink, KindChip, StatusBadge } from './workItemsBits'
+import {
+  bindDurableMutationDraft,
+  clearDurableMutationDraft,
+  initializeDurableMutationDraft,
+  stableMutationFingerprint,
+  updateDurableMutationDraft,
+} from './durableMutationDraft'
 import { descriptionParagraphs, parseJsonObject } from './workItemsLogic'
 import './work-items.css'
+
+interface EnrichDraftState {
+  fieldsText: string
+  comment: string
+}
+
+function isEnrichDraftState(value: unknown): value is EnrichDraftState {
+  if (!value || typeof value !== 'object') return false
+  const draft = value as Partial<EnrichDraftState>
+  return typeof draft.fieldsText === 'string' && typeof draft.comment === 'string'
+}
+
+function enrichFingerprint(draft: EnrichDraftState): string {
+  const fields = parseJsonObject(draft.fieldsText)
+  return stableMutationFingerprint(
+    fields.ok
+      ? { fields: fields.value, comment: draft.comment.trim() || null }
+      : { invalidFieldsText: draft.fieldsText, comment: draft.comment },
+  )
+}
 
 /** Fields JSON editor + comment textarea -> POST items/{key}/enrich (operator+). */
 function EnrichModal({
@@ -30,22 +62,54 @@ function EnrichModal({
   onClose: () => void
 }) {
   const enrich = useEnrichWorkItem()
-  const [fieldsText, setFieldsText] = useState('{}')
-  const [comment, setComment] = useState('')
+  const storageKey = `apex.work-items.enrich.v1:${encodeURIComponent(project ?? 'global')}:${encodeURIComponent(item.key)}`
+  const [attempt, setAttempt] = useState(() =>
+    initializeDurableMutationDraft(
+      storageKey,
+      { fieldsText: '{}', comment: '' },
+      isEnrichDraftState,
+      enrichFingerprint,
+      () => createWorkItemMutationKey('enrich'),
+    ),
+  )
+  const { fieldsText, comment } = attempt.draft
 
   const fieldsParse = parseJsonObject(fieldsText)
-  const canSubmit = fieldsParse.ok && !enrich.isPending
+  const hasPayload =
+    fieldsParse.ok && (Object.keys(fieldsParse.value).length > 0 || comment.trim() !== '')
+  const canSubmit = fieldsParse.ok && hasPayload && !enrich.isPending
+
+  function updateDraft(changes: Partial<EnrichDraftState>) {
+    if (enrich.isPending) return
+    setAttempt((previous) =>
+      updateDurableMutationDraft(
+        storageKey,
+        previous,
+        { ...previous.draft, ...changes },
+        enrichFingerprint,
+        () => createWorkItemMutationKey('enrich'),
+      ),
+    )
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
     if (!canSubmit || !fieldsParse.ok) return
+    const submittedAttempt = bindDurableMutationDraft(storageKey, attempt, enrichFingerprint)
+    setAttempt(submittedAttempt)
     enrich.mutate(
       {
         key: item.key,
         body: { fields: fieldsParse.value, comment: comment.trim() || null },
+        idempotencyKey: submittedAttempt.idempotencyKey,
         ...(project ? { project } : {}),
       },
-      { onSuccess: onClose },
+      {
+        onSuccess: () => {
+          clearDurableMutationDraft(storageKey)
+          onClose()
+        },
+      },
     )
   }
 
@@ -64,50 +128,52 @@ function EnrichModal({
       <p className="wi-modal-caption">
         Pushes field values and an optional comment to the tracker item.
       </p>
-        <label className="wi-field">
-          <span className="wi-field-label">Fields (JSON)</span>
-          <textarea
-            className="field-input wi-json-input"
-            aria-label="Fields JSON"
-            rows={5}
-            spellCheck={false}
-            value={fieldsText}
-            onChange={(event) => setFieldsText(event.target.value)}
-          />
-        </label>
-        {!fieldsParse.ok && (
-          <p className="wi-caption wi-caption--danger" role="alert">
-            {fieldsParse.message}
-          </p>
-        )}
-        <label className="wi-field">
-          <span className="wi-field-label">Comment</span>
-          <textarea
-            className="field-input"
-            aria-label="Enrich comment"
-            rows={3}
-            value={comment}
-            onChange={(event) => setComment(event.target.value)}
-          />
-        </label>
-        {enrich.isError && (
-          <div className="wi-inline-error" role="alert">
-            <span>Enrich failed: {enrich.error.message}</span>
-          </div>
-        )}
-        <div className="wi-modal-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onClose}
-            disabled={enrich.isPending}
-          >
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
-            {enrich.isPending ? 'Enriching…' : 'Enrich item'}
-          </button>
+      <label className="wi-field">
+        <span className="wi-field-label">Fields (JSON)</span>
+        <textarea
+          className="field-input wi-json-input"
+          aria-label="Fields JSON"
+          rows={5}
+          spellCheck={false}
+          value={fieldsText}
+          disabled={enrich.isPending}
+          onChange={(event) => updateDraft({ fieldsText: event.target.value })}
+        />
+      </label>
+      {!fieldsParse.ok && (
+        <p className="wi-caption wi-caption--danger" role="alert">
+          {fieldsParse.message}
+        </p>
+      )}
+      <label className="wi-field">
+        <span className="wi-field-label">Comment</span>
+        <textarea
+          className="field-input"
+          aria-label="Enrich comment"
+          rows={3}
+          value={comment}
+          disabled={enrich.isPending}
+          onChange={(event) => updateDraft({ comment: event.target.value })}
+        />
+      </label>
+      {enrich.isError && (
+        <div className="wi-inline-error" role="alert">
+          <span>Enrich failed: {enrich.error.message}</span>
         </div>
+      )}
+      <div className="wi-modal-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onClose}
+          disabled={enrich.isPending}
+        >
+          Cancel
+        </button>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
+          {enrich.isPending ? 'Enriching…' : 'Enrich item'}
+        </button>
+      </div>
     </Dialog>
   )
 }
@@ -121,18 +187,17 @@ export function WorkItemDetailPage() {
 
   const itemQuery = useWorkItem(key, project)
   const consumer = useConsumer()
-  const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const consumerProjects = Array.from(
+    new Set((consumer?.scopes ?? []).map((scope) => scope.project_id)),
+  )
+  const effectiveProject = project ?? (consumerProjects.length === 1 ? consumerProjects[0] : null)
+  const canMutate = canMutateAudience(consumer, effectiveProject, null)
   const [enriching, setEnriching] = useState(false)
 
   if (itemQuery.isPending) {
     return (
       <section className="wi-page animate-enter">
-        <div
-          className="wi-skeleton"
-          role="status"
-          aria-busy="true"
-          aria-label="Loading work item"
-        >
+        <div className="wi-skeleton" role="status" aria-busy="true" aria-label="Loading work item">
           <div className="glass-panel wi-skeleton-row" />
           <div className="glass-panel wi-skeleton-row" />
         </div>

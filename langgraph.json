@@ -1,5 +1,7 @@
 {
   "python_version": "3.12",
+  "_INTERNAL_docker_tag": "0.10.0-py3.12@sha256:812e919f12ad9605c9a2b443c95fcdc7d4f8cfecaf11de02181f04943864f27c",
+  "base_image": "langchain/langgraph-api",
   "dependencies": ["."],
   "graphs": {
     "pipeline": "./src/apex/graphs/pipeline/graph.py:graph",
@@ -8,9 +10,33 @@
   },
   "http": {
     "app": "./src/apex/app/http.py:app",
+    "disable_meta": true,
     "disable_ui": true,
     "disable_mcp": true,
-    "disable_a2a": true
+    "disable_a2a": true,
+    "disable_store": true,
+    "disable_webhooks": true,
+    "disable_event_streaming": true,
+    "cors": {
+      "allow_origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+      "allow_methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      "allow_headers": [
+        "authorization",
+        "content-type",
+        "idempotency-key",
+        "last-event-id",
+        "x-api-key",
+        "x-request-id"
+      ],
+      "allow_credentials": true,
+      "expose_headers": [
+        "content-location",
+        "retry-after",
+        "x-pagination-next",
+        "x-pagination-total"
+      ],
+      "max_age": 600
+    }
   },
   "auth": {
     "path": "./src/apex/auth/handlers.py:auth",

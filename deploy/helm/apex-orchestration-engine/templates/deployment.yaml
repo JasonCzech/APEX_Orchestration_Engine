@@ -19,6 +19,9 @@ spec:
         # Restart pods when non-secret settings change. Safe mid-run: the
         # checkpointed poll loop resumes (tests/integration/test_restart_survival.py).
         checksum/settings: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.databaseRoleProvisioning.credentialGeneration }}
+        apex.io/database-credential-generation: {{ .Values.databaseRoleProvisioning.credentialGeneration | quote }}
+        {{- end }}
         {{- if .Values.metrics.podAnnotations }}
         prometheus.io/scrape: "true"
         prometheus.io/path: {{ .Values.metrics.path | quote }}
@@ -44,9 +47,35 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.schemaReadiness.enabled }}
+      initContainers:
+        - name: schema-readiness
+          image: {{ include "apex.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "apex.persistence.schema_readiness"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "settings") }}
+          env:
+            - name: APEX_DATABASE__URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | quote }}
+                  key: {{ required "database.apexUriKey is required" .Values.database.apexUriKey | quote }}
+            - name: REDIS_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.existingSecret | quote }}
+                  key: {{ .Values.redis.uriKey | quote }}
+            {{- include "apex.authEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.schemaReadiness.resources | nindent 12 }}
+      {{- end }}
       containers:
         - name: apex-server
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "apex.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
@@ -56,7 +85,7 @@ spec:
               protocol: TCP
           envFrom:
             - configMapRef:
-                name: {{ include "apex.fullname" . }}-settings
+                name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "settings") }}
           env:
             # LangGraph runtime: checkpoints/threads/runs live here — this is
             # what makes the replicas stateless and restart-safe.
@@ -76,6 +105,7 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.redis.existingSecret | quote }}
                   key: {{ .Values.redis.uriKey | quote }}
+            {{- include "apex.authEnv" . | nindent 12 }}
             {{- if .Values.license.existingSecret }}
             # REQUIRED in production: the standalone server does not boot
             # without an Enterprise license key (ADR-0001 / ADR-0003).
@@ -90,6 +120,8 @@ spec:
             {{- end }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
+          # The init container and application lifespan both verify the exact
+          # Alembic head before the dependency-aware readiness probe can succeed.
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           {{- with .Values.startupProbe }}

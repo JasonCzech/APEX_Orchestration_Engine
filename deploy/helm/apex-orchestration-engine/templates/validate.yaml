@@ -1,0 +1,108 @@
+{{- $environment := lower (toString (get .Values.apexSettings "APEX_ENVIRONMENT")) -}}
+{{- $authEnabled := ne (lower (toString (get .Values.apexSettings "APEX_AUTH__ENABLED"))) "false" -}}
+{{- $unlocked := has $environment (list "local" "development" "dev" "test" "testing" "compose") -}}
+{{- $rateBackend := lower (toString (get .Values.apexSettings "APEX_RATE_LIMIT__BACKEND")) -}}
+{{- $canRunMultipleReplicas := or (gt (int .Values.replicaCount) 1) (and .Values.autoscaling.enabled (gt (int .Values.autoscaling.maxReplicas) 1)) -}}
+{{- if and $canRunMultipleReplicas (ne $rateBackend "redis") -}}
+{{- fail "apexSettings.APEX_RATE_LIMIT__BACKEND=redis is required when the chart can run more than one replica" -}}
+{{- end -}}
+{{- if and (eq $rateBackend "redis") (empty .Values.redis.existingSecret) -}}
+{{- fail "redis.existingSecret is required by the shared Redis rate-limit backend" -}}
+{{- end -}}
+{{- if and $authEnabled (not $unlocked) (empty .Values.auth.existingSecret) -}}
+{{- fail "auth.existingSecret is required when authentication is enabled in a locked environment" -}}
+{{- end -}}
+{{- $secretSettings := list "DATABASE_URI" "REDIS_URI" "LANGGRAPH_CLOUD_LICENSE_KEY" "APEX_DATABASE__URI" "APEX_AUTH__API_KEY_HASH_PEPPER" "APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS" "APEX_AUTH__DEV_API_KEY" "APEX_BOOTSTRAP_ADMIN_KEY" -}}
+{{- $normalizedSecretSettings := list "DATABASEURI" "DATABASEURL" "POSTGRESURL" "POSTGRESQLURL" "MONGODBURI" "REDISURI" "REDISURL" "AWSACCESSKEYID" "AWSSECRETACCESSKEY" "GOOGLEAPPLICATIONCREDENTIALS" "LANGGRAPHCLOUDLICENSEKEY" "APEXDATABASEURI" "APEXAUTHAPIKEYHASHPEPPER" "APEXAUTHPREVIOUSAPIKEYHASHPEPPERS" "APEXAUTHDEVAPIKEY" "APEXBOOTSTRAPADMINKEY" -}}
+{{- range $key, $_ := .Values.apexSettings -}}
+{{- $normalizedKey := regexReplaceAll "[^A-Za-z0-9]" (upper (toString $key)) "" -}}
+{{- $looksSecret := regexMatch "(PASSWORD|TOKEN|SECRET|SECRETKEY|APIKEY|LICENSEKEY|PRIVATEKEY|AUTHORIZATION|CREDENTIAL|CREDENTIALS|ACCESSKEY|ACCESSKEYID)$" $normalizedKey -}}
+{{- if or (has $normalizedKey $normalizedSecretSettings) (hasPrefix "APEXINTEGRATION" $normalizedKey) $looksSecret -}}
+{{- fail (printf "apexSettings.%s is secret-bearing; configure it through the chart Secret settings instead" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- range $index, $entry := .Values.extraEnv -}}
+{{- $name := toString (get $entry "name") -}}
+{{- $normalizedName := regexReplaceAll "[^A-Za-z0-9]" (upper $name) "" -}}
+{{- $looksSecret := regexMatch "(PASSWORD|TOKEN|SECRET|SECRETKEY|APIKEY|LICENSEKEY|PRIVATEKEY|AUTHORIZATION|CREDENTIAL|CREDENTIALS|ACCESSKEY|ACCESSKEYID)$" $normalizedName -}}
+{{- $secretEnv := or (has $normalizedName $normalizedSecretSettings) (hasPrefix "APEXINTEGRATION" $normalizedName) $looksSecret -}}
+{{- if or (has $name $secretSettings) (hasKey $.Values.apexSettings $name) -}}
+{{- fail (printf "extraEnv[%d].name=%s overrides a chart-managed environment variable; use its dedicated chart setting" $index $name) -}}
+{{- end -}}
+{{- if $secretEnv -}}
+{{- $valueFrom := get $entry "valueFrom" -}}
+{{- if or (hasKey $entry "value") (not (kindIs "map" $valueFrom)) -}}
+{{- fail (printf "extraEnv[%d] %s is secret-bearing and must use valueFrom.secretKeyRef" $index $name) -}}
+{{- end -}}
+{{- $secretKeyRef := get $valueFrom "secretKeyRef" -}}
+{{- if not (kindIs "map" $secretKeyRef) -}}
+{{- fail (printf "extraEnv[%d] %s is secret-bearing and must use valueFrom.secretKeyRef" $index $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if kindIs "map" .Values.bootstrap.document -}}
+{{- $document := .Values.bootstrap.document -}}
+{{- range $section := list "connections" "environments" -}}
+{{- $entries := get $document $section | default (list) -}}
+{{- if kindIs "slice" $entries -}}
+{{- range $index, $entry := $entries -}}
+{{- if kindIs "map" $entry -}}
+{{- $options := get $entry "options" | default (dict) -}}
+{{- include "apex.assertSecretFreeOptions" (dict "value" $options "label" (printf "bootstrap.document.%s[%d].options" $section $index)) -}}
+{{- if eq $section "connections" -}}
+{{- $secretRef := get $entry "secret_ref" | default "" | toString -}}
+{{- if and $secretRef (not (regexMatch "^env:[A-Za-z_][A-Za-z0-9_]{0,254}$" $secretRef)) -}}
+{{- fail (printf "bootstrap.document.connections[%d].secret_ref must use the supported env:NAME reference format" $index) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and .Release.IsInstall (eq .Values.secretBackend.mode "externalSecrets") (or .Values.migrations.enabled .Values.bootstrap.enabled .Values.databaseRoleProvisioning.enabled) -}}
+{{- fail "secretBackend.mode=externalSecrets cannot be combined with pre-install database-role/migration/bootstrap hooks: install once with all three hooks disabled, wait for ExternalSecrets to become Ready, then upgrade with the hooks enabled" -}}
+{{- end -}}
+{{- if and .Values.image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.image.digest)) -}}
+{{- fail "image.digest must be a sha256:<64 lowercase hex> OCI digest" -}}
+{{- end -}}
+{{- if and (not $unlocked) (empty .Values.image.digest) -}}
+{{- fail "image.digest is required in locked environments; mutable application tags are not deployable" -}}
+{{- end -}}
+{{- if and .Values.dashboard.image.digest (not (regexMatch "^sha256:[a-f0-9]{64}$" .Values.dashboard.image.digest)) -}}
+{{- fail "dashboard.image.digest must be a sha256:<64 lowercase hex> OCI digest" -}}
+{{- end -}}
+{{- if and (not $unlocked) .Values.dashboard.enabled (empty .Values.dashboard.image.digest) -}}
+{{- fail "dashboard.image.digest is required when the dashboard is enabled in a locked environment" -}}
+{{- end -}}
+{{- if and (not $unlocked) .Values.tests.enabled (not (regexMatch "@sha256:[a-f0-9]{64}$" .Values.tests.image)) -}}
+{{- fail "tests.image must be pinned by @sha256:<64 lowercase hex> in locked environments" -}}
+{{- end -}}
+{{- if and (not $unlocked) .Values.secretBackend.csi.cleanup.enabled (not (regexMatch "@sha256:[a-f0-9]{64}$" .Values.secretBackend.csi.cleanup.image)) -}}
+{{- fail "secretBackend.csi.cleanup.image must be pinned by @sha256:<64 lowercase hex> in locked environments" -}}
+{{- end -}}
+{{- if .Values.databaseRoleProvisioning.enabled -}}
+{{- $runtimeOwner := toString .Values.databaseRoleProvisioning.runtimeOwnerRole -}}
+{{- $migrationOwner := toString .Values.databaseRoleProvisioning.migrationOwnerRole -}}
+{{- $generation := toString .Values.databaseRoleProvisioning.credentialGeneration -}}
+{{- $claimSecret := toString .Values.databaseRoleProvisioning.claimSecret -}}
+{{- $claimSecretKey := toString .Values.databaseRoleProvisioning.claimSecretKey -}}
+{{- if not (regexMatch "^[a-z_][a-z0-9_]{0,31}$" $runtimeOwner) -}}
+{{- fail "databaseRoleProvisioning.runtimeOwnerRole must be a 1-32 character lowercase PostgreSQL role identifier" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z_][a-z0-9_]{0,31}$" $migrationOwner) -}}
+{{- fail "databaseRoleProvisioning.migrationOwnerRole must be a 1-32 character lowercase PostgreSQL role identifier" -}}
+{{- end -}}
+{{- if eq $runtimeOwner $migrationOwner -}}
+{{- fail "databaseRoleProvisioning runtime and migration owner roles must be distinct" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-f0-9]{16}$" $generation) -}}
+{{- fail "databaseRoleProvisioning.credentialGeneration must be the first 16 hex characters of sha256(<runtime-login>:<migration-login>)" -}}
+{{- end -}}
+{{- if or (empty $claimSecret) (empty $claimSecretKey) -}}
+{{- fail "databaseRoleProvisioning.claimSecret and claimSecretKey are required" -}}
+{{- end -}}
+{{- if and .Release.IsInstall (not .Values.migrations.enabled) -}}
+{{- fail "migrations.enabled must be true on the first install when databaseRoleProvisioning is enabled" -}}
+{{- end -}}
+{{- end -}}

@@ -1,4 +1,4 @@
-"""ConnectionResolver: default DEV connections, instance caching, error paths."""
+"""ConnectionResolver: default DEV connections, generation caching, error paths."""
 
 import pytest
 
@@ -22,10 +22,12 @@ def test_dev_connections_cover_every_port_kind() -> None:
 async def test_resolve_default_builds_expected_adapters() -> None:
     resolver = ConnectionResolver()
     work = await resolver.resolve(PortKind.WORK_TRACKING)
+    assert isinstance(work._managed.adapter, StubWorkTrackingAdapter)
     assert isinstance(work, StubWorkTrackingAdapter)
     assert isinstance(work, WorkTrackingPort)
 
     engine = await resolver.resolve(PortKind.EXECUTION_ENGINE)
+    assert isinstance(engine._managed.adapter, SimExecutionEngine)
     assert isinstance(engine, SimExecutionEngine)
     assert isinstance(engine, ExecutionEnginePort)
 
@@ -38,7 +40,11 @@ async def test_resolve_caches_instances_per_connection_id() -> None:
     first = await resolver.resolve(PortKind.WORK_TRACKING)
     second = await resolver.resolve(PortKind.WORK_TRACKING)
     by_id = await resolver.resolve(PortKind.WORK_TRACKING, "dev-work-tracking-stub")
-    assert first is second is by_id
+    # Each caller receives its own lifetime lease, while the underlying adapter
+    # generation remains cached until configuration rotation or resolver close.
+    assert first is not second
+    assert second is not by_id
+    assert first._managed is second._managed is by_id._managed
 
 
 async def test_resolve_unknown_connection_id_raises() -> None:
@@ -65,6 +71,7 @@ async def test_resolver_builds_secretful_connection(monkeypatch: pytest.MonkeyPa
     )
     resolver = ConnectionResolver([custom, DEV_CONNECTIONS[PortKind.SECRETS]])
     adapter = await resolver.resolve(PortKind.WORK_TRACKING, "wt-with-secret")
+    assert isinstance(adapter._managed.adapter, StubWorkTrackingAdapter)
     assert isinstance(adapter, StubWorkTrackingAdapter)
 
 

@@ -1,0 +1,130 @@
+{{- if .Values.secretBackend.csi.cleanup.enabled -}}
+{{- $name := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-cleanup") -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-cleanup
+  annotations:
+    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook-weight": "-60"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook-weight": "-60"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    resourceNames:
+      - {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-sync") | quote }}
+    verbs: ["get", "delete"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames:
+      - {{ include "apex.defaultHookServiceAccountName" . | quote }}
+    verbs: ["get", "delete"]
+  - apiGroups: ["secrets-store.csi.x-k8s.io"]
+    resources: ["secretproviderclasses"]
+    resourceNames:
+      - {{ include "apex.hookAkVSecretProviderClassName" . | quote }}
+      - {{ include "apex.hookRuntimeAkVSecretProviderClassName" . | quote }}
+    verbs: ["get", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    resourceNames:
+      - {{ include "apex.csiSyncRbacName" . | quote }}
+    verbs: ["get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook-weight": "-60"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-cleanup
+  annotations:
+    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook-weight": "-50"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: csi-cleanup
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: cleanup
+          image: {{ .Values.secretBackend.csi.cleanup.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["sh", "-ec"]
+          args:
+            - |
+              # Wait for the sync pod to release its CSI mounts before Helm
+              # recreates these fixed-name hook resources in the same upgrade.
+              kubectl -n "$POD_NAMESPACE" delete job {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-sync") }} --ignore-not-found --wait=true --timeout=120s
+              kubectl -n "$POD_NAMESPACE" delete secretproviderclass {{ include "apex.hookAkVSecretProviderClassName" . }} --ignore-not-found --wait=true --timeout=120s
+              kubectl -n "$POD_NAMESPACE" delete secretproviderclass {{ include "apex.hookRuntimeAkVSecretProviderClassName" . }} --ignore-not-found --wait=true --timeout=120s
+              kubectl -n "$POD_NAMESPACE" delete rolebinding {{ include "apex.csiSyncRbacName" . }} --ignore-not-found --wait=true --timeout=120s
+              kubectl -n "$POD_NAMESPACE" delete role {{ include "apex.csiSyncRbacName" . }} --ignore-not-found --wait=true --timeout=120s
+              kubectl -n "$POD_NAMESPACE" delete serviceaccount {{ include "apex.defaultHookServiceAccountName" . }} --ignore-not-found --wait=true --timeout=120s
+          env:
+            - name: HOME
+              value: /tmp
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

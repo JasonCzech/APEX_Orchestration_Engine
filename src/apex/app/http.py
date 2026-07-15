@@ -5,12 +5,18 @@ built-in surface (/assistants, /threads, /runs) coexists with these routes; docs
 the OpenAPI document live under /v1 to avoid shadowing built-in endpoints.
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from apex.app.distributed_limits import RedisDistributedLimitBackend
 from apex.app.errors import register_exception_handlers
-from apex.app.lifespan import lifespan
-from apex.app.security import AuthAuditMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
+from apex.app.lifespan import check_runtime_readiness, lifespan
+from apex.app.security import (
+    AuthAuditMiddleware,
+    RateLimitMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from apex.routers.analytics import router as analytics_router
 from apex.routers.artifacts import router as artifacts_router
 from apex.routers.auth import router as auth_router
@@ -45,21 +51,66 @@ app = FastAPI(
 
 register_exception_handlers(app)
 
+
+@app.get(
+    "/ready",
+    include_in_schema=False,
+    operation_id="runtimeReadiness",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def runtime_readiness(request: Request) -> Response:
+    """Opaque, unauthenticated dependency-aware orchestrator probe."""
+
+    try:
+        await check_runtime_readiness(request.app)
+    except Exception as exc:
+        # Dependency diagnostics may contain database/Redis endpoints. Keep the
+        # public probe deliberately opaque; detailed failures remain in logs.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service is not ready",
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+limit_backend = (
+    RedisDistributedLimitBackend(settings.redis_uri)
+    if settings.rate_limit.backend == "redis"
+    else None
+)
+app.state.distributed_limit_backend = limit_backend
+app.add_middleware(
+    RateLimitMiddleware,
+    settings=settings.rate_limit,
+    backend=limit_backend,
+)
+app.add_middleware(
+    AuthAuditMiddleware,
+    settings=settings.rate_limit,
+    backend=limit_backend,
+)
+
+# Usage analytics (M6): one best-effort event per matched /v1 operation.
+app.add_middleware(UsageTrackingMiddleware)
+# The body cap must wrap analytics/auth/routing, including when LangGraph merges
+# this FastAPI middleware around its built-in routes.
+app.add_middleware(RequestBodyLimitMiddleware, settings=settings.request_body)
+# Security and CORS wrap direct 413/429 responses as well as routed responses.
+app.add_middleware(SecurityHeadersMiddleware, settings=settings.security_headers)
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["authorization", "content-type", "x-api-key"],
+        allow_headers=[
+            "authorization",
+            "content-type",
+            "idempotency-key",
+            "last-event-id",
+            "x-api-key",
+            "x-request-id",
+        ],
     )
-
-app.add_middleware(SecurityHeadersMiddleware, settings=settings.security_headers)
-app.add_middleware(RateLimitMiddleware, settings=settings.rate_limit)
-app.add_middleware(AuthAuditMiddleware, settings=settings.rate_limit)
-
-# Usage analytics (M6): one best-effort event per matched /v1 operation.
-app.add_middleware(UsageTrackingMiddleware)
 
 app.include_router(system_router, prefix="/v1")
 app.include_router(auth_router, prefix="/v1")

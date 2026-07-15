@@ -1,0 +1,30 @@
+# Apply only after the Helm rollout has placed the stable client capability
+# label on every APEX server pod. Splitting this from minio.yaml avoids cutting
+# off old unlabeled pods during the one-time security-boundary adoption rollout.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: apex-minio
+  labels:
+    app.kubernetes.io/name: apex-minio
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: apex-minio
+  policyTypes:
+    - Ingress
+    # The archived server and its loopback-only gateway have no legitimate
+    # external dependencies. Deny egress so a compromised process cannot use
+    # the pod as an exfiltration or scanning foothold.
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              apex.io/minio-client: "true"
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: apex-minio-backup
+      ports:
+        - { port: 9000, protocol: TCP }
+  egress: []

@@ -494,6 +494,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/documents/{document_id}/artifact-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Assign Document Artifact Connection
+         * @description One-time store-affinity repair for documents created before migration 0013.
+         */
+        put: operations["assignDocumentArtifactConnection"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/drafts": {
         parameters: {
             query?: never;
@@ -560,7 +580,7 @@ export interface paths {
         };
         /**
          * Get Engine Runs
-         * @description All engine-run attempts for one thread, newest attempt first ([] when none).
+         * @description One bounded page of thread attempts, newest first ([] when none).
          */
         get: operations["getEngineRuns"];
         put?: never;
@@ -582,11 +602,12 @@ export interface paths {
         put?: never;
         /**
          * Abort Engine Run
-         * @description Engine-level kill switch: abort the external run, then cancel graph runs.
+         * @description Engine-level kill switch that preserves the graph's finalization monitor.
          *
          *     For when graph-level cancel isn't enough — the external load run keeps burning
-         *     even after the poll loop dies. 404 when no engine handle is discoverable from
-         *     thread state or the projection.
+         *     even after the poll loop dies. An active monitor is left alive to collect results
+         *     and checkpoint the terminal execution state. 404 when no engine handle is
+         *     discoverable from thread state or the projection.
          */
         post: operations["abortEngineRun"];
         delete?: never;
@@ -703,7 +724,7 @@ export interface paths {
         put?: never;
         /**
          * Abort Pipeline
-         * @description Stop an external engine first, then cancel the thread's active runs.
+         * @description Stop an external engine while preserving its graph finalization monitor.
          *
          *     Threads that have not entered execution have no engine handle and fall back
          *     to graph-only cancellation. Engine abort failures propagate so the API never
@@ -752,6 +773,26 @@ export interface paths {
         head?: never;
         /** Patch Phase Prompt Review */
         patch: operations["patchPhasePromptReview"];
+        trace?: never;
+    };
+    "/v1/pipelines/{thread_id}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rerun Pipeline
+         * @description Rerun phases using the complete server-side checkpointed configuration.
+         */
+        post: operations["rerunPipeline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/prompts": {
@@ -1068,6 +1109,13 @@ export interface components {
         AbortPipelineResponse: {
             /** Cancelled Run Ids */
             cancelled_run_ids: string[];
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /** Phase */
+            phase?: string | null;
         };
         /** ActiveVersionRef */
         ActiveVersionRef: {
@@ -1353,7 +1401,7 @@ export interface components {
             /** Options */
             options?: {
                 [key: string]: unknown;
-            } | null;
+            };
             /** Project Id */
             project_id?: string | null;
             /** Provider */
@@ -1572,6 +1620,11 @@ export interface components {
             /** Workspace Id */
             workspace_id?: string | null;
         };
+        /** DocumentArtifactAffinityUpdate */
+        DocumentArtifactAffinityUpdate: {
+            /** Connection Id */
+            connection_id: string;
+        };
         /** DocumentListResponse */
         DocumentListResponse: {
             /** Items */
@@ -1676,22 +1729,12 @@ export interface components {
         EngineRunRead: {
             /** App Id */
             app_id?: string | null;
-            /** Artifact Connection Id */
-            artifact_connection_id?: string | null;
-            /** Artifact Namespace */
-            artifact_namespace?: string | null;
             /** Attempt */
             attempt: number;
             /** Ended At */
             ended_at: string | null;
             /** Engine */
             engine: string;
-            /** External Run Id */
-            external_run_id: string | null;
-            /** Handle */
-            handle: {
-                [key: string]: unknown;
-            };
             /** Id */
             id: string;
             /** Project Id */
@@ -2193,6 +2236,24 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** RerunPipelineRequest */
+        RerunPipelineRequest: {
+            /**
+             * Gates Mode
+             * @default inherit
+             * @enum {string}
+             */
+            gates_mode: "inherit" | "gated" | "auto";
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Phases */
+            phases: string[];
+        };
+        /** RerunPipelineResponse */
+        RerunPipelineResponse: {
+            /** Run Id */
+            run_id: string;
+        };
         /** ResumeGateRequest */
         ResumeGateRequest: {
             /** Action */
@@ -2425,8 +2486,12 @@ export interface components {
         };
         /** TestPromptRequest */
         TestPromptRequest: {
+            /** App Id */
+            app_id?: string | null;
             /** Content */
             content?: string | null;
+            /** Project Id */
+            project_id?: string | null;
             /** Sample Input */
             sample_input?: {
                 [key: string]: components["schemas"]["JsonValue"];
@@ -2768,6 +2833,8 @@ export interface operations {
             query?: {
                 kind?: components["schemas"]["PortKind"] | null;
                 project?: string | null;
+                limit?: number;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -2833,6 +2900,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -2864,6 +2932,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -2893,6 +2962,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -2928,6 +2998,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -2959,6 +3030,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -2990,6 +3062,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -3021,6 +3094,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -3056,6 +3130,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Connection id */
                 connection_id: string;
             };
             cookie?: never;
@@ -3084,7 +3159,10 @@ export interface operations {
     };
     listConsumers: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3098,6 +3176,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConsumerRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3419,6 +3506,8 @@ export interface operations {
             query?: {
                 project?: string | null;
                 include_archived?: boolean;
+                limit?: number;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -3484,6 +3573,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Application id */
                 application_id: string;
             };
             cookie?: never;
@@ -3515,6 +3605,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Application id */
                 application_id: string;
             };
             cookie?: never;
@@ -3544,6 +3635,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Application id */
                 application_id: string;
             };
             cookie?: never;
@@ -3579,6 +3671,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Application id */
                 application_id: string;
             };
             cookie?: never;
@@ -3610,6 +3703,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Application id */
                 application_id: string;
             };
             cookie?: never;
@@ -3640,6 +3734,8 @@ export interface operations {
         parameters: {
             query?: {
                 application?: string | null;
+                limit?: number;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -3705,6 +3801,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Environment id */
                 environment_id: string;
             };
             cookie?: never;
@@ -3736,6 +3833,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Environment id */
                 environment_id: string;
             };
             cookie?: never;
@@ -3765,6 +3863,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Environment id */
                 environment_id: string;
             };
             cookie?: never;
@@ -3802,6 +3901,8 @@ export interface operations {
                 project?: string | null;
                 /** @description Narrow to one thread */
                 thread_id?: string | null;
+                limit?: number;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -3967,6 +4068,39 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    assignDocumentArtifactConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DocumentArtifactAffinityUpdate"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             204: {
@@ -4189,7 +4323,10 @@ export interface operations {
     };
     getEngineRuns: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path: {
                 /** @description Pipeline thread id the engine run belongs to */
@@ -4260,6 +4397,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Environment id */
                 environment_id: string;
             };
             cookie?: never;
@@ -4289,10 +4427,12 @@ export interface operations {
     rescanEnvironment: {
         parameters: {
             query?: {
+                /** @description Explicit cluster-inventory connection id */
                 connection_id?: string | null;
             };
             header?: never;
             path: {
+                /** @description Environment id */
                 environment_id: string;
             };
             cookie?: never;
@@ -4428,6 +4568,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Pipeline thread id */
                 thread_id: string;
             };
             cookie?: never;
@@ -4459,6 +4600,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Pipeline thread id */
                 thread_id: string;
             };
             cookie?: never;
@@ -4490,7 +4632,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Pipeline thread id */
                 thread_id: string;
+                /** @description Pending interrupt id */
                 interrupt_id: string;
             };
             cookie?: never;
@@ -4526,6 +4670,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Pipeline thread id */
                 thread_id: string;
                 phase: string;
             };
@@ -4558,6 +4703,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Pipeline thread id */
                 thread_id: string;
                 phase: string;
             };
@@ -4589,12 +4735,50 @@ export interface operations {
             };
         };
     };
+    rerunPipeline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RerunPipelineRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RerunPipelineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listPrompts: {
         parameters: {
             query?: {
                 namespace?: string | null;
                 include_archived?: boolean;
                 q?: string | null;
+                limit?: number;
+                offset?: number;
             };
             header?: never;
             path?: never;
@@ -4660,6 +4844,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4691,6 +4876,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4722,6 +4908,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4757,6 +4944,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4792,6 +4980,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4820,9 +5009,13 @@ export interface operations {
     };
     listPromptVersions: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4854,6 +5047,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
             };
             cookie?: never;
@@ -4889,7 +5083,9 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
+                /** @description Prompt id */
                 prompt_id: string;
+                /** @description Prompt version id */
                 version_id: string;
             };
             cookie?: never;
@@ -4983,7 +5179,10 @@ export interface operations {
                 /** @description Project used to resolve scoped work-tracking connections */
                 project?: string | null;
             };
-            header?: never;
+            header: {
+                /** @description Caller-stable key for durable at-most-once provider dispatch and reconciliation; ambiguous outcomes return 409 and are never blindly redispatched */
+                "Idempotency-Key": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -5057,7 +5256,10 @@ export interface operations {
                 /** @description Project used to resolve scoped work-tracking connections */
                 project?: string | null;
             };
-            header?: never;
+            header: {
+                /** @description Caller-stable key for durable at-most-once provider dispatch and reconciliation; ambiguous outcomes return 409 and are never blindly redispatched */
+                "Idempotency-Key": string;
+            };
             path: {
                 key: string;
             };

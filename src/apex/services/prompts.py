@@ -21,8 +21,10 @@ log) so `langgraph dev` keeps working without Postgres.
 """
 
 import asyncio
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
+from string import Formatter
 from typing import Any, Protocol, TypedDict
 from uuid import uuid4
 
@@ -32,6 +34,7 @@ from apex.domain.pipeline import PHASE_ORDER, Phase
 from apex.graphs.pipeline.configurable import PipelineConfigurable, PromptOverride
 from apex.persistence.models import Prompt, PromptVersion
 from apex.persistence.repositories.prompts import DuplicatePromptKeyError
+from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
 
@@ -43,6 +46,11 @@ APPLICATION_NAMESPACE = "application"
 CATALOG_TIMEOUT_S = 5.0
 
 ADDITIONAL_CONTEXT_DELIMITER = "\n\n===ADDITIONAL CONTEXT (operator)===\n"
+_FORMAT_NUMBER_RE = re.compile(r"\d+")
+
+
+class _UnsafePromptTemplateError(ValueError):
+    """A valid format string whose expansion cannot be bounded safely."""
 
 
 # ── Errors (routers map these onto problem-details responses) ───────────────
@@ -98,13 +106,17 @@ class PromptStore(Protocol):
         include_archived: bool = False,
         q: str | None = None,
         allow_application: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[Prompt]: ...
 
     async def get_version(self, version_id: str) -> PromptVersion | None: ...
 
     async def get_versions_by_ids(self, version_ids: list[str]) -> list[PromptVersion]: ...
 
-    async def list_versions(self, prompt_id: str) -> list[PromptVersion]: ...
+    async def list_versions(
+        self, prompt_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[PromptVersion]: ...
 
     async def max_version(self, prompt_id: str) -> int: ...
 
@@ -145,12 +157,16 @@ class PromptCatalogService:
         include_archived: bool = False,
         q: str | None = None,
         allow_application: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[tuple[Prompt, PromptVersion | None]]:
         prompts = await self._store.search(
             namespace=namespace,
             include_archived=include_archived,
             q=q,
             allow_application=allow_application,
+            limit=limit,
+            offset=offset,
         )
         active_ids = [p.active_version_id for p in prompts if p.active_version_id]
         versions = {v.id: v for v in await self._store.get_versions_by_ids(active_ids)}
@@ -230,10 +246,15 @@ class PromptCatalogService:
         return prompt, version
 
     async def list_versions(
-        self, prompt_id: str, *, allow_application: bool = False
+        self,
+        prompt_id: str,
+        *,
+        allow_application: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[PromptVersion]:
         await self._require_readable(prompt_id, allow_application=allow_application)
-        return await self._store.list_versions(prompt_id)
+        return await self._store.list_versions(prompt_id, limit=limit, offset=offset)
 
     async def get_version(
         self,
@@ -322,12 +343,83 @@ class _SafeVariables(dict[str, Any]):
 
 
 def render_template(template: str, variables: Mapping[str, Any]) -> str:
-    """Best-effort {placeholder} substitution; malformed templates pass through
-    unchanged (catalog content may contain literal braces, e.g. JSON examples)."""
+    """Render bounded top-level placeholders without format-string amplification.
+
+    Malformed templates still pass through unchanged so catalog prompts may
+    contain literal JSON examples. Valid format fields are preflighted before
+    ``format_map``: traversal/dynamic specs are forbidden and width, precision,
+    and aggregate repeated expansion must fit the deployment model-input budget.
+    """
+
+    limit = get_settings().runs.max_model_input_chars
+    estimated_chars = 0
     try:
-        return template.format_map(_SafeVariables(variables))
+        parts = Formatter().parse(template)
+        for literal, field_name, format_spec, conversion in parts:
+            estimated_chars += len(literal)
+            if field_name is None:
+                continue
+            format_spec = format_spec or ""
+            if (
+                not field_name
+                or any(marker in field_name for marker in (".", "[", "]"))
+                or "{" in format_spec
+                or "}" in format_spec
+            ):
+                raise _UnsafePromptTemplateError(
+                    "prompt placeholders must use top-level variables and static formats"
+                )
+            if conversion not in {None, "s", "r", "a"}:
+                raise _UnsafePromptTemplateError("prompt placeholder conversion is unsupported")
+            if len(format_spec) > 128:
+                raise _UnsafePromptTemplateError("prompt placeholder format is too long")
+            if field_name not in variables:
+                # Unknown fields render as their literal ``{name}`` marker. Probe
+                # the format grammar with all numeric widths reduced to one before
+                # applying amplification checks. This preserves literal JSON such
+                # as {"timeout": 1000000000}: Python would reject that JSON colon
+                # text as a string format specifier before allocating any padding.
+                probe_spec = _FORMAT_NUMBER_RE.sub("1", format_spec)
+                try:
+                    format("{" + field_name + "}", probe_spec)
+                except (TypeError, ValueError):
+                    return template
+            widths = [int(number) for number in _FORMAT_NUMBER_RE.findall(format_spec)]
+            if any(width > limit for width in widths):
+                raise _UnsafePromptTemplateError(
+                    f"prompt format width/precision exceeds the rendered limit ({limit})"
+                )
+            if field_name in variables:
+                try:
+                    value_bound = len(str(variables[field_name])) * 8 + 2
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise _UnsafePromptTemplateError(
+                        "prompt variable cannot be rendered safely"
+                    ) from exc
+            else:
+                value_bound = len(field_name) + 2
+            # Leave room for signs, prefixes, separators, and exponent markers
+            # that are not represented by a width/precision number itself.
+            estimated_chars += max(value_bound, *(widths or [0])) + 32
+            if estimated_chars > limit:
+                raise _UnsafePromptTemplateError(
+                    f"rendered prompt exceeds the deployment limit ({limit} characters)"
+                )
+    except _UnsafePromptTemplateError:
+        raise
+    except ValueError:
+        # Formatter.parse raises for unmatched/literal braces. Keep that legacy
+        # behavior. Safety rejections use the private exception above instead.
+        return template
+    try:
+        rendered = template.format_map(_SafeVariables(variables))
     except (ValueError, KeyError, IndexError):
         return template
+    if len(rendered) > limit:
+        raise ValueError(
+            f"rendered prompt exceeds the deployment limit ({limit} characters)"
+        )
+    return rendered
 
 
 # ── Phase prompt resolver ────────────────────────────────────────────────────
@@ -535,9 +627,18 @@ class PromptResolver:
                         else None,
                     )
                 return await _load_prompts_with_fresh_engine(phase, app_id)
-        except Exception:
+        except Exception as exc:
+            if get_settings().is_locked_down:
+                # Catalog/application prompts are part of the approved production
+                # execution contract. Substituting built-ins on an outage would let a
+                # headless run proceed with materially different instructions.
+                raise
             # Expected when running without Postgres (langgraph dev, unit tests).
-            logger.debug("apex.prompts.catalog_unavailable", phase=phase.value, exc_info=True)
+            logger.debug(
+                "apex.prompts.catalog_unavailable",
+                phase=phase.value,
+                error_type=exc.__class__.__name__,
+            )
             return None, None, None
 
 
@@ -559,8 +660,13 @@ async def resolve_phase_prompts(
     try:
         async with asyncio.timeout(CATALOG_TIMEOUT_S):
             return await _resolve_phase_prompts_with_fresh_engine(phases, cfg, variables)
-    except Exception:
-        logger.debug("apex.prompts.catalog_unavailable_batch", exc_info=True)
+    except Exception as exc:
+        if get_settings().is_locked_down:
+            raise
+        logger.debug(
+            "apex.prompts.catalog_unavailable_batch",
+            error_type=exc.__class__.__name__,
+        )
         return {
             phase: resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
             for phase in phases
@@ -657,6 +763,8 @@ def resolve_phase_prompt_sync(
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(resolve_phase_prompt(phase, cfg, variables=variables))
+    if get_settings().is_locked_down:
+        raise RuntimeError("prompt catalog resolution cannot fall back inside a running event loop")
     return resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
 
 
@@ -671,6 +779,8 @@ def resolve_phase_prompts_sync(
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(resolve_phase_prompts(phases, cfg, variables=variables))
+    if get_settings().is_locked_down:
+        raise RuntimeError("prompt catalog resolution cannot fall back inside a running event loop")
     return {
         phase: resolve_phase_prompt_no_catalog(phase, cfg, variables=variables) for phase in phases
     }

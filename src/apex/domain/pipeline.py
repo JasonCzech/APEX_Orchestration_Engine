@@ -8,9 +8,13 @@ boundaries with model_validate when typed access is needed.
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
+from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, FiniteFloat, field_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
+
+from apex.domain.diagnostics import bounded_diagnostic, is_credential_field
+from apex.domain.input_limits import NoNulStr, validate_json_object
 
 MAX_CONTEXT_ID_CHARS = 128
 MAX_CONTEXT_SOURCE_CHARS = 128
@@ -19,6 +23,8 @@ MAX_CONTEXT_SUMMARY_CHARS = 4_000
 MAX_CONTEXT_REF_CHARS = 2_048
 MAX_CONTEXT_TEXT_CHARS = 150_000
 MAX_GATE_TEXT_CHARS = 20_000
+MAX_TOOL_CALL_RECORDS = 80
+MAX_TOOL_ARGS_PREVIEW_BYTES = 8_192
 
 
 class Phase(StrEnum):
@@ -81,20 +87,20 @@ def new_id() -> str:
 
 
 class ArtifactRef(BaseModel):
-    id: str = Field(default_factory=new_id)
-    kind: str
-    name: str
-    uri: str
+    id: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=128)
+    kind: NoNulStr = Field(min_length=1, max_length=64)
+    name: NoNulStr = Field(min_length=1, max_length=512)
+    uri: NoNulStr = Field(min_length=1, max_length=4_096)
     # Canonical object-store key.  Keeping this separate from ``uri`` avoids
     # reverse-parsing provider-specific URLs when persisting ownership metadata.
-    key: str | None = None
+    key: NoNulStr | None = Field(default=None, max_length=1_024)
     # Durable resolver identity for the object store that owns ``key``. Project
     # defaults can change after a run, so artifact reads must not re-resolve by
     # today's default and accidentally fetch from a different store.
-    artifact_connection_id: str | None = None
-    media_type: str = "application/octet-stream"
-    summary: str | None = None
-    created_at: str = Field(default_factory=utcnow_iso)
+    artifact_connection_id: NoNulStr | None = Field(default=None, max_length=256)
+    media_type: NoNulStr = Field(default="application/octet-stream", min_length=1, max_length=255)
+    summary: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
+    created_at: NoNulStr = Field(default_factory=utcnow_iso, min_length=1, max_length=64)
 
 
 class ApprovalRecord(BaseModel):
@@ -107,30 +113,45 @@ class ApprovalRecord(BaseModel):
 
 
 class ToolCallRecord(BaseModel):
-    id: str = Field(default_factory=new_id)
-    tool: str
-    args_preview: dict[str, Any] = Field(default_factory=dict)
+    id: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=256)
+    tool: NoNulStr = Field(min_length=1, max_length=256)
+    args_preview: dict[str, Any] = Field(default_factory=dict, max_length=32)
     status: Literal["ok", "error"] = "ok"
-    duration_ms: int | None = None
-    error: str | None = None
-    at: str = Field(default_factory=utcnow_iso)
+    duration_ms: int | None = Field(default=None, ge=0, le=86_400_000)
+    error: NoNulStr | None = Field(default=None, max_length=4_096)
+    at: NoNulStr = Field(default_factory=utcnow_iso, min_length=1, max_length=64)
+
+    @field_validator("args_preview")
+    @classmethod
+    def validate_args_preview(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_json_object(
+            value,
+            label="tool-call argument preview",
+            max_bytes=MAX_TOOL_ARGS_PREVIEW_BYTES,
+            max_nodes=128,
+            max_depth=6,
+            max_key_chars=128,
+        )
 
 
 class DialogueEntry(BaseModel):
     id: str = Field(default_factory=new_id)
     phase: Phase
+    attempt: int = Field(default=1, ge=1)
     role: Literal["operator", "agent"]
     content: str = Field(max_length=MAX_GATE_TEXT_CHARS)
     at: str = Field(default_factory=utcnow_iso)
 
 
 class ContextPacket(BaseModel):
-    id: str = Field(default_factory=new_id, min_length=1, max_length=MAX_CONTEXT_ID_CHARS)
-    source: str = Field(min_length=1, max_length=MAX_CONTEXT_SOURCE_CHARS)
-    title: str = Field(min_length=1, max_length=MAX_CONTEXT_TITLE_CHARS)
-    summary: str | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
-    ref: str | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
-    text: str | None = Field(default=None, max_length=MAX_CONTEXT_TEXT_CHARS)
+    model_config = ConfigDict(extra="forbid")
+
+    id: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=MAX_CONTEXT_ID_CHARS)
+    source: NoNulStr = Field(min_length=1, max_length=MAX_CONTEXT_SOURCE_CHARS)
+    title: NoNulStr = Field(min_length=1, max_length=MAX_CONTEXT_TITLE_CHARS)
+    summary: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
+    ref: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
+    text: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_TEXT_CHARS)
 
 
 class ExternalResults(BaseModel):
@@ -142,31 +163,99 @@ class ExternalResults(BaseModel):
     so the reporting phase reads it the same way it reads a real engine run.
     """
 
-    source: str = Field(min_length=1, max_length=MAX_CONTEXT_SOURCE_CHARS)
-    uri: str | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
-    engine: str | None = Field(default=None, max_length=128)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    source: NoNulStr = Field(min_length=1, max_length=MAX_CONTEXT_SOURCE_CHARS)
+    uri: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
+    engine: NoNulStr | None = Field(default=None, max_length=128)
     passed: bool | None = None
     kpis: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=32)
-    summary: str | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
-    notes: str | None = Field(default=None, max_length=MAX_GATE_TEXT_CHARS)
+    summary: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
+    notes: NoNulStr | None = Field(default=None, max_length=MAX_GATE_TEXT_CHARS)
+
+    @field_validator("uri")
+    @classmethod
+    def validate_uri(cls, value: str | None) -> str | None:
+        """Keep bearer/signed URLs out of durable graph state."""
+
+        if value is None:
+            return None
+        if (
+            not value
+            or value != value.strip()
+            or "\\" in value
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        ):
+            raise ValueError("external results uri must be a bounded http(s) URL")
+        try:
+            parsed = urlsplit(value)
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("external results uri must be a bounded http(s) URL") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or (port is not None and not 1 <= port <= 65_535)
+        ):
+            raise ValueError(
+                "external results uri must not contain credentials, query, or fragment"
+            )
+        return value
 
     @field_validator("kpis")
     @classmethod
     def validate_kpis(cls, values: dict[str, float]) -> dict[str, float]:
         for name, value in values.items():
-            if not name.strip() or len(name) > 64:
+            if not name.strip() or len(name) > 64 or "\x00" in name:
                 raise ValueError("KPI names must be 1-64 characters")
             if abs(value) > 1_000_000_000_000:
                 raise ValueError("KPI values must be between -1e12 and 1e12")
         return values
 
 
+ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL = (
+    "engine run lacks durable execution-connection affinity; identify the original "
+    "provider connection and recover the run out of band before retrying"
+)
+
+
+class EngineConnectionAffinityMissingError(RuntimeError):
+    """A legacy run cannot be mapped safely to one exact execution connection."""
+
+    def __init__(self) -> None:
+        super().__init__(ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL)
+
+
 class EngineHandle(BaseModel):
-    engine: str
-    connection_id: str | None = None
-    external_run_id: str | None = None
-    idempotency_key: str = Field(default_factory=new_id)
-    extras: dict[str, str] = Field(default_factory=dict)
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    engine: NoNulStr = Field(min_length=1, max_length=64)
+    connection_id: NoNulStr | None = Field(default=None, max_length=256)
+    external_run_id: NoNulStr | None = Field(default=None, max_length=255)
+    idempotency_key: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=256)
+    extras: dict[NoNulStr, NoNulStr] = Field(default_factory=dict, max_length=32)
+
+    @field_validator("extras")
+    @classmethod
+    def validate_extras(cls, values: dict[str, str]) -> dict[str, str]:
+        aggregate_chars = 0
+        for name, value in values.items():
+            if not name or len(name) > 64 or "\x00" in name:
+                raise ValueError("engine handle extra names must be 1-64 characters")
+            if is_credential_field(name):
+                raise ValueError("engine handle extras must not contain credential fields")
+            if len(value) > 2_048 or "\x00" in value:
+                raise ValueError("engine handle extra values must not exceed 2048 characters")
+            if bounded_diagnostic(value, max_chars=max(1, len(value))) != value:
+                raise ValueError("engine handle extras must not contain credential material")
+            aggregate_chars += len(name) + len(value)
+        if aggregate_chars > 16_384:
+            raise ValueError("engine handle extras must not exceed 16384 aggregate characters")
+        return values
 
 
 class ResolvedPromptSource(BaseModel):
@@ -189,7 +278,7 @@ class PhaseResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     approvals: list[ApprovalRecord] = Field(default_factory=list)
-    tool_calls: list[ToolCallRecord] = Field(default_factory=list)
+    tool_calls: list[ToolCallRecord] = Field(default_factory=list, max_length=MAX_TOOL_CALL_RECORDS)
     resolved_prompt_source: ResolvedPromptSource | None = None
 
     def as_state(self) -> dict[str, Any]:

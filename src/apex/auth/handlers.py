@@ -6,18 +6,28 @@ the server runtime.
 """
 
 import asyncio
-from collections.abc import Mapping
-from typing import Any, cast
+import math
+from collections.abc import Mapping, Sequence
+from typing import Any, Never, cast
 
 from langgraph_sdk import Auth
 from langgraph_sdk.auth import is_studio_user
 from pydantic import ValidationError
 
+from apex.app.security import mark_stream_request_authenticated
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import AuthStoreUnavailableError, extract_api_key, get_default_resolver
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
+from apex.domain.input_limits import validate_json_object, validation_error_summary
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.services.audit import append_audit_event_best_effort, event_from_identity
-from apex.services.langgraph_client import TRUSTED_LOOPBACK_CLAIM, is_trusted_loopback
+from apex.services.langgraph_client import (
+    LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
+    RERUN_CLAIM_METADATA_KEY,
+    RERUN_FINGERPRINT_METADATA_KEY,
+    TRUSTED_LOOPBACK_CLAIM,
+    is_trusted_loopback,
+)
 from apex.services.run_validation import (
     validate_context_run_input,
     validate_gate_payload,
@@ -39,6 +49,98 @@ _STUDIO_IDENTITY = ConsumerIdentity(
 _PENDING_AUTH_AUDIT: set[asyncio.Task[None]] = set()
 _MAX_PENDING_AUTH_AUDIT = 1024
 _PROJECT_NAMESPACE_PREFIX = ("apex", "project")
+_MAX_LANGGRAPH_JSON_BYTES = 5_000_000
+_MAX_LANGGRAPH_JSON_NODES = 20_000
+_MAX_LANGGRAPH_READ_PAGE_SIZE = 100
+_MAX_LANGGRAPH_READ_OFFSET = 10_000
+_MAX_LANGGRAPH_IDENTIFIER_CHARS = 255
+_THREAD_SEARCH_SUMMARY_SELECT = [
+    "thread_id",
+    "created_at",
+    "updated_at",
+    "status",
+]
+_MAX_STORE_NAMESPACE_LABELS = 32
+_MAX_STORE_NAMESPACE_LABEL_CHARS = 255
+_MAX_STORE_KEY_CHARS = 255
+_MAX_STORE_QUERY_CHARS = 20_000
+_MAX_STORE_FILTER_BYTES = 100_000
+_MAX_STORE_FILTER_NODES = 2_000
+_MAX_STORE_INDEX_PATHS = 32
+_MAX_STORE_MAX_DEPTH = 32
+_MAX_STORE_TTL_MINUTES = 60 * 24 * 365 * 10
+
+# These fields are inserted by LangGraph after its public request validator has
+# stripped caller-supplied reserved keys and before the Runs.create auth hook is
+# invoked. Keep the list explicit: treating every unknown configurable as
+# runtime-owned would also admit caller-controlled checkpoint/replay controls.
+_LANGGRAPH_RUN_RUNTIME_KEYS = frozenset(
+    {
+        "langgraph_auth_user",
+        "langgraph_auth_user_id",
+        "langgraph_auth_permissions",
+        "langgraph_request_id",
+        "__langsmith_project__",
+        "__langsmith_example_id__",
+        "__request_start_time_ms__",
+        "__after_seconds__",
+        "__otel_traceparent__",
+        "__otel_tracestate__",
+        "__dd_trace_headers__",
+        "__pregel_node_finished",
+    }
+)
+# LangGraph always forwards these tracing headers/baggage values when a
+# langsmith-trace header is present. Unlike the reserved fields above, they are
+# caller-controlled, so they receive their own strict shape and size checks.
+_LANGGRAPH_TRACE_CONFIG_KEYS = frozenset(
+    {
+        "langsmith-trace",
+        "langsmith-metadata",
+        "langsmith-tags",
+        "langsmith-project",
+    }
+)
+_LANGGRAPH_CREDENTIAL_SCAN_EXEMPT_KEYS = frozenset(
+    {
+        # These values are injected from authenticated/server objects rather
+        # than caller tracing headers. Their field names intentionally contain
+        # ``auth`` and would otherwise trip the generic credential classifier.
+        "langgraph_auth_user",
+        "langgraph_auth_user_id",
+        "langgraph_auth_permissions",
+        "__request_start_time_ms__",
+        "__after_seconds__",
+        "__pregel_node_finished",
+    }
+)
+_MAX_RUNTIME_TEXT_CHARS = 4_096
+_MAX_RUNTIME_PERMISSIONS = 128
+_MAX_RUNTIME_TRACE_HEADERS = 32
+_LAUNCH_IDEMPOTENCY_METADATA_KEYS = frozenset(
+    {
+        "launch_idempotency_key",
+        "launch_idempotency_fingerprint",
+        "launch_principal_id",
+    }
+)
+_SERVER_OWNED_LAUNCH_METADATA_KEYS = _LAUNCH_IDEMPOTENCY_METADATA_KEYS | {
+    LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
+    RERUN_CLAIM_METADATA_KEY,
+    RERUN_FINGERPRINT_METADATA_KEY,
+}
+_DIRECT_RUNS_ALLOWED_METADATA_KEY = "apex_direct_runs_allowed"
+_IMMUTABLE_THREAD_METADATA_KEYS = frozenset(
+    {
+        "project_id",
+        "app_id",
+        "created_by",
+        "graph_id",
+        "assistant_id",
+        _DIRECT_RUNS_ALLOWED_METADATA_KEY,
+        *_SERVER_OWNED_LAUNCH_METADATA_KEYS,
+    }
+)
 
 
 def user_payload(identity: ConsumerIdentity, *, trusted_loopback: bool = False) -> dict[str, Any]:
@@ -234,10 +336,13 @@ def ensure_thread_scope(
     project. App-narrowed scopes are also pinned to `app_id`; project-wide scopes
     may omit it.
     """
+    project_id = _project_id(metadata.get("project_id"))
+    app_id = _project_id(metadata.get("app_id"))
     if identity.is_unscoped:
+        # Platform admins may select any scope, but values still cross a durable
+        # identifier boundary and must never be coerced from arbitrary JSON.
         return
     projects = identity.scoped_project_ids()
-    project_id = _project_id(metadata.get("project_id"))
     if project_id is None:
         if len(projects) == 1:
             project_id = projects[0]
@@ -259,7 +364,6 @@ def ensure_thread_scope(
             detail=f"Project '{project_id}' is outside this consumer's scopes",
         )
 
-    app_id = _project_id(metadata.get("app_id"))
     if app_id is not None:
         metadata["app_id"] = app_id
         if not _allows_langgraph_scope(identity, project_id=project_id, app_id=app_id):
@@ -406,6 +510,465 @@ def _mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _reject_invalid_persisted_input(
+    identity: ConsumerIdentity,
+    *,
+    action: str,
+    detail: str,
+) -> Never:
+    _schedule_auth_decision(
+        identity,
+        action=action,
+        decision="denied",
+        status_code=422,
+        reason="persisted request input rejected",
+    )
+    raise Auth.exceptions.HTTPException(
+        status_code=422,
+        detail=f"Invalid persisted input: {detail}",
+    )
+
+
+def _reject_invalid_request_input(
+    identity: ConsumerIdentity,
+    *,
+    action: str,
+    detail: str,
+) -> Never:
+    _schedule_auth_decision(
+        identity,
+        action=action,
+        decision="denied",
+        status_code=422,
+        reason="request resource or shape limits rejected the request",
+    )
+    raise Auth.exceptions.HTTPException(
+        status_code=422,
+        detail=f"Invalid request input: {detail}",
+    )
+
+
+def _validate_bounded_page(
+    identity: ConsumerIdentity,
+    payload: Mapping[str, Any],
+    *,
+    action: str,
+    default_limit: int,
+    max_limit: int = _MAX_LANGGRAPH_READ_PAGE_SIZE,
+    allow_count_sentinel: bool = False,
+) -> None:
+    limit = payload.get("limit", default_limit)
+    offset = payload.get("offset", 0)
+    count_sentinel = allow_count_sentinel and limit == 0 and offset == 0
+    if not count_sentinel and (type(limit) is not int or not 1 <= limit <= max_limit):
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=f"limit must be an integer between 1 and {max_limit}",
+        )
+    if type(offset) is not int or not 0 <= offset <= _MAX_LANGGRAPH_READ_OFFSET:
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=f"offset must be an integer between 0 and {_MAX_LANGGRAPH_READ_OFFSET}",
+        )
+
+
+def _validate_store_namespace_field(
+    identity: ConsumerIdentity,
+    payload: Mapping[str, Any],
+    field: str,
+    *,
+    action: str,
+    label: str,
+) -> None:
+    value = payload.get(field)
+    if value is None:
+        return
+    if isinstance(value, str | bytes) or not isinstance(value, (list, tuple)):
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=f"{label} must be a string sequence",
+        )
+    if len(value) > _MAX_STORE_NAMESPACE_LABELS:
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=f"{label} must contain at most {_MAX_STORE_NAMESPACE_LABELS} labels",
+        )
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or not item
+            or len(item) > _MAX_STORE_NAMESPACE_LABEL_CHARS
+            or "." in item
+            or "\x00" in item
+        ):
+            _reject_invalid_request_input(
+                identity,
+                action=action,
+                detail=(
+                    f"{label} labels must be 1-{_MAX_STORE_NAMESPACE_LABEL_CHARS} "
+                    "characters without periods or U+0000"
+                ),
+            )
+
+
+def _validate_store_key(
+    identity: ConsumerIdentity,
+    payload: Mapping[str, Any],
+    *,
+    action: str,
+) -> None:
+    key = payload.get("key")
+    if key is None:
+        return
+    if not isinstance(key, str) or not key or len(key) > _MAX_STORE_KEY_CHARS or "\x00" in key:
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=f"store key must be 1-{_MAX_STORE_KEY_CHARS} characters without U+0000",
+        )
+
+
+def _validate_store_index(
+    identity: ConsumerIdentity,
+    payload: Mapping[str, Any],
+    *,
+    action: str,
+) -> None:
+    value = payload.get("index")
+    if value is None or value is False:
+        return
+    if isinstance(value, str | bytes) or not isinstance(value, (list, tuple)):
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail="store index must be false or a string sequence",
+        )
+    if len(value) > _MAX_STORE_INDEX_PATHS or any(
+        not isinstance(item, str)
+        or not item
+        or len(item) > _MAX_STORE_NAMESPACE_LABEL_CHARS
+        or "\x00" in item
+        for item in value
+    ):
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=(
+                f"store index must contain at most {_MAX_STORE_INDEX_PATHS} non-empty "
+                f"paths of at most {_MAX_STORE_NAMESPACE_LABEL_CHARS} characters without U+0000"
+            ),
+        )
+
+
+def _validate_store_ttl(
+    identity: ConsumerIdentity,
+    payload: Mapping[str, Any],
+    *,
+    action: str,
+) -> None:
+    ttl = payload.get("ttl")
+    if ttl is None:
+        return
+    if (
+        isinstance(ttl, bool)
+        or not isinstance(ttl, int | float)
+        or not math.isfinite(ttl)
+        or not 0 < ttl <= _MAX_STORE_TTL_MINUTES
+    ):
+        _reject_invalid_request_input(
+            identity,
+            action=action,
+            detail=(
+                "store ttl must be a finite positive number no greater than "
+                f"{_MAX_STORE_TTL_MINUTES} minutes"
+            ),
+        )
+
+
+def _validate_store_read_request(
+    identity: ConsumerIdentity,
+    payload: Mapping[str, Any],
+    *,
+    action: str,
+    store_action: str,
+) -> None:
+    _validate_store_namespace_field(
+        identity,
+        payload,
+        "namespace",
+        action=action,
+        label="store namespace",
+    )
+    if store_action == "get":
+        _validate_store_key(identity, payload, action=action)
+        return
+    if store_action == "search":
+        _validate_bounded_page(identity, payload, action=action, default_limit=10)
+        _validate_persisted_json_field(
+            identity,
+            payload,
+            "filter",
+            action=action,
+            label="store search filter",
+            max_bytes=_MAX_STORE_FILTER_BYTES,
+            max_nodes=_MAX_STORE_FILTER_NODES,
+        )
+        query = payload.get("query")
+        if query is not None and (
+            not isinstance(query, str) or len(query) > _MAX_STORE_QUERY_CHARS or "\x00" in query
+        ):
+            _reject_invalid_request_input(
+                identity,
+                action=action,
+                detail=(
+                    "store search query must be a string of at most "
+                    f"{_MAX_STORE_QUERY_CHARS} characters without U+0000"
+                ),
+            )
+        return
+    if store_action in {"list", "list_namespaces"}:
+        _validate_store_namespace_field(
+            identity,
+            payload,
+            "suffix",
+            action=action,
+            label="store namespace suffix",
+        )
+        _validate_bounded_page(identity, payload, action=action, default_limit=100)
+        max_depth = payload.get("max_depth")
+        if max_depth is not None and (
+            type(max_depth) is not int or not 1 <= max_depth <= _MAX_STORE_MAX_DEPTH
+        ):
+            _reject_invalid_request_input(
+                identity,
+                action=action,
+                detail=(f"store max_depth must be an integer between 1 and {_MAX_STORE_MAX_DEPTH}"),
+            )
+
+
+def _validate_persisted_json_field(
+    identity: ConsumerIdentity,
+    container: Mapping[str, Any],
+    field: str,
+    *,
+    action: str,
+    label: str,
+    max_bytes: int = _MAX_LANGGRAPH_JSON_BYTES,
+    max_nodes: int = _MAX_LANGGRAPH_JSON_NODES,
+) -> None:
+    if field not in container or container[field] is None:
+        return
+    value = container[field]
+    if not isinstance(value, Mapping):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} must be a JSON object",
+        )
+    try:
+        validate_json_object(
+            dict(value),
+            label=label,
+            max_bytes=max_bytes,
+            max_nodes=max_nodes,
+        )
+    except ValueError as exc:
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=bounded_diagnostic(exc, max_chars=1_024),
+        )
+
+
+def _validate_persisted_text_field(
+    identity: ConsumerIdentity,
+    container: Mapping[str, Any],
+    field: str,
+    *,
+    action: str,
+    label: str,
+    max_chars: int | None = None,
+) -> None:
+    if field not in container or container[field] is None:
+        return
+    value = container[field]
+    if not isinstance(value, str):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} must be a string",
+        )
+    if "\x00" in value:
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} must not contain U+0000",
+        )
+    if max_chars is not None and len(value) > max_chars:
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} must contain at most {max_chars} characters",
+        )
+
+
+def _reject_persisted_credential_material(
+    identity: ConsumerIdentity,
+    value: Any,
+    *,
+    action: str,
+    label: str,
+) -> None:
+    """Reject credential-shaped data before a native durable JSON write."""
+
+    if contains_credential_material(value):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} must not contain credential material",
+        )
+
+
+def _validate_persisted_text_sequence_field(
+    identity: ConsumerIdentity,
+    container: Mapping[str, Any],
+    field: str,
+    *,
+    action: str,
+    label: str,
+) -> None:
+    if field not in container or container[field] is None:
+        return
+    value = container[field]
+    if isinstance(value, str | bytes) or not isinstance(value, (list, tuple)):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} must be a string sequence",
+        )
+    if any(not isinstance(item, str) or "\x00" in item for item in value):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=f"{label} entries must be strings without U+0000",
+        )
+
+
+def _validate_run_persisted_inputs(
+    identity: ConsumerIdentity,
+    value: Auth.types.RunsCreate,
+    *,
+    action: str,
+    trusted_loopback: bool = False,
+) -> None:
+    """Reject PostgreSQL-incompatible JSON before scope/catalog database reads."""
+
+    payload = _mapping(value)
+    run_args = _run_arguments(payload)
+    _validate_persisted_json_field(
+        identity,
+        payload,
+        "metadata",
+        action=action,
+        label="run metadata",
+    )
+    if not trusted_loopback and payload.get("metadata") is not None:
+        _reject_persisted_credential_material(
+            identity,
+            payload["metadata"],
+            action=action,
+            label="run metadata",
+        )
+    _validate_persisted_json_field(
+        identity,
+        run_args,
+        "input",
+        action=action,
+        label="run input",
+    )
+    if not trusted_loopback and run_args.get("input") is not None:
+        _reject_persisted_credential_material(
+            identity,
+            run_args["input"],
+            action=action,
+            label="run input",
+        )
+    if "config" not in run_args or run_args["config"] is None:
+        return
+    config = run_args["config"]
+    if not isinstance(config, Mapping):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail="run config must be a JSON object",
+        )
+    config_for_validation = dict(config)
+    configurable = config_for_validation.get("configurable")
+    if isinstance(configurable, Mapping):
+        configurable_for_validation = dict(configurable)
+        runtime_user = configurable_for_validation.get("langgraph_auth_user")
+        if runtime_user is not None:
+            # LangGraph's ProxyUser implements mapping-style methods without
+            # registering as a Mapping, so the generic JSON walker cannot inspect
+            # it. This value is injected from our own authenticated user response;
+            # use that bounded JSON representation in the validation copy, then
+            # verify the live object against ``identity`` in ensure_run_controls.
+            configurable_for_validation["langgraph_auth_user"] = user_payload(identity)
+        if "__pregel_node_finished" in configurable_for_validation:
+            # This server-owned callback is never persisted as JSON. Preserve a
+            # scalar placeholder only in the validation copy so the surrounding
+            # attacker-controlled config still receives the normal budget walk.
+            configurable_for_validation["__pregel_node_finished"] = "runtime-callback"
+        config_for_validation["configurable"] = configurable_for_validation
+    try:
+        validate_json_object(
+            config_for_validation,
+            label="run config",
+            max_bytes=_MAX_LANGGRAPH_JSON_BYTES,
+            max_nodes=_MAX_LANGGRAPH_JSON_NODES,
+        )
+    except ValueError as exc:
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail=bounded_diagnostic(exc, max_chars=1_024),
+        )
+    if not trusted_loopback:
+        configurable_for_scan = _mapping(config_for_validation.get("configurable"))
+        for runtime_key in _LANGGRAPH_CREDENTIAL_SCAN_EXEMPT_KEYS:
+            configurable_for_scan.pop(runtime_key, None)
+        config_for_validation["configurable"] = configurable_for_scan
+        _reject_persisted_credential_material(
+            identity,
+            config_for_validation,
+            action=action,
+            label="run config",
+        )
+
+
+def _reject_untrusted_launch_metadata(
+    identity: ConsumerIdentity,
+    metadata: Mapping[str, Any],
+    *,
+    action: str,
+    trusted_loopback: bool,
+) -> None:
+    forged = _SERVER_OWNED_LAUNCH_METADATA_KEYS.intersection(metadata)
+    if forged and not trusted_loopback:
+        _deny_authz(
+            identity,
+            action=action,
+            detail=(
+                "Launch idempotency metadata is server-owned and may only be set by "
+                f"the validated pipeline facade: {', '.join(sorted(forged))}"
+            ),
+        )
+
+
 def _nested_mapping(root: dict[str, Any], *keys: str) -> dict[str, Any]:
     current: Any = root
     for key in keys:
@@ -428,8 +991,21 @@ def _run_arguments(payload: dict[str, Any]) -> dict[str, Any]:
 def _project_id(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value).strip()
-    return text or None
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > _MAX_LANGGRAPH_IDENTIFIER_CHARS
+        or "\x00" in value
+    ):
+        raise Auth.exceptions.HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid scope identifier: expected a non-empty, NUL-free string of at most "
+                f"{_MAX_LANGGRAPH_IDENTIFIER_CHARS} characters"
+            ),
+        )
+    return value
 
 
 def ensure_run_scope(
@@ -446,9 +1022,6 @@ def ensure_run_scope(
     preventing a run configured for one tenant from executing on another
     tenant's thread.
     """
-    if identity.is_unscoped:
-        return None
-
     payload = _mapping(value)
     run_args = _run_arguments(payload)
     raw_input = run_args.get("input")
@@ -474,6 +1047,8 @@ def ensure_run_scope(
         _project_id(metadata.get("app_id")),
         _project_id(config_metadata.get("app_id")),
     ]
+    if identity.is_unscoped:
+        return None
     explicit_projects = [project for project in explicit if project is not None]
     for project_id in explicit_projects:
         if not identity.allows_project(project_id):
@@ -539,7 +1114,7 @@ def ensure_run_scope(
 
 async def _load_run_environment_target(
     environment_id: str, project_id: str | None, app_id: str | None
-) -> tuple[str, int]:
+) -> tuple[str, int, str]:
     """Resolve through the catalog at the authorization boundary (injectable in tests)."""
 
     from apex.persistence.db import get_sessionmaker
@@ -553,7 +1128,7 @@ async def _load_run_environment_target(
             project_id=project_id,
             app_id=app_id,
         )
-    return target.base_url, target.version
+    return target.base_url, target.version, target.app_id
 
 
 async def ensure_run_environment(
@@ -561,13 +1136,16 @@ async def ensure_run_environment(
     value: Auth.types.RunsCreate,
     *,
     action: str = "runs.create",
-) -> None:
+) -> Auth.types.HandlerResult:
     """Replace caller target data with an authorized, catalog-resolved immutable target."""
 
     payload = _mapping(value)
     run_args = _run_arguments(payload)
+    input_payload = _mapping(run_args.get("input"))
     config_payload = _mapping(run_args.get("config"))
     configurable = _mapping(config_payload.get("configurable"))
+    metadata = _mapping(payload.get("metadata"))
+    config_metadata = _mapping(config_payload.get("metadata"))
     load_test = _mapping(configurable.get("load_test"))
     if "target_environment" in load_test:
         _deny_authz(
@@ -595,14 +1173,224 @@ async def ensure_run_environment(
         project_id = _project_id(configurable.get("project_id"))
         app_id = _project_id(configurable.get("app_id"))
         try:
-            target, version = await _load_run_environment_target(environment_id, project_id, app_id)
+            target, version, target_app_id = await _load_run_environment_target(
+                environment_id, project_id, app_id
+            )
+            authoritative_app_id = _project_id(target_app_id)
+            if project_id is None:
+                # The catalog resolver already rejects this case. Keep the
+                # stamping boundary explicit so a future resolver cannot turn
+                # an environment into an ownership-less run.
+                raise LookupError("environment target has no project ownership")
+            if authoritative_app_id is None or (
+                app_id is not None and app_id != authoritative_app_id
+            ):
+                raise LookupError("environment target has conflicting application ownership")
+            _require_langgraph_scope(
+                identity,
+                project_id=project_id,
+                app_id=authoritative_app_id,
+                action=action,
+            )
             configurable["environment_target"] = target
             configurable["environment_target_version"] = version
+            # Environment ownership is authoritative. A project-wide caller
+            # may omit app_id, but persisting that run as project-level would
+            # let sibling-app identities read its state and artifacts. Stamp
+            # the owning app into every LangGraph scope-bearing surface before
+            # either thread authorization or persistence.
+            _stamp_run_scope(
+                payload,
+                run_args,
+                input_payload,
+                config_payload,
+                configurable,
+                metadata,
+                config_metadata,
+                project_id=project_id,
+                app_id=authoritative_app_id,
+            )
         except LookupError as exc:
-            raise Auth.exceptions.HTTPException(status_code=404, detail=str(exc)) from exc
+            raise Auth.exceptions.HTTPException(
+                status_code=404,
+                detail="Environment target not found",
+            ) from exc
 
     config_payload["configurable"] = configurable
     run_args["config"] = config_payload
+    if environment_id is None or identity.is_unscoped:
+        return None
+    project_id = _project_id(configurable.get("project_id"))
+    target_app_id = _project_id(configurable.get("app_id"))
+    assert project_id is not None and target_app_id is not None
+    return cast("Auth.types.FilterType", _metadata_filter(project_id, target_app_id))
+
+
+def _validate_runtime_text(
+    value: Any,
+    *,
+    label: str,
+    max_chars: int = _MAX_RUNTIME_TEXT_CHARS,
+    allow_none: bool = True,
+) -> None:
+    if value is None and allow_none:
+        return
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a string")
+    if len(value) > max_chars:
+        raise ValueError(f"{label} must contain at most {max_chars} characters")
+    if "\x00" in value:
+        raise ValueError(f"{label} must not contain U+0000")
+
+
+def _validate_runtime_text_sequence(
+    value: Any,
+    *,
+    label: str,
+    max_items: int,
+    max_chars: int = _MAX_LANGGRAPH_IDENTIFIER_CHARS,
+) -> None:
+    if isinstance(value, str | bytes) or not isinstance(value, Sequence):
+        raise ValueError(f"{label} must be a list of strings")
+    if len(value) > max_items:
+        raise ValueError(f"{label} must contain at most {max_items} entries")
+    for item in value:
+        _validate_runtime_text(
+            item,
+            label=f"{label} entries",
+            max_chars=max_chars,
+            allow_none=False,
+        )
+
+
+def _validate_runtime_run_configurable(
+    identity: ConsumerIdentity,
+    runtime: Mapping[str, Any],
+    *,
+    trusted_loopback: bool,
+) -> None:
+    """Validate only the metadata LangGraph itself adds around app config.
+
+    Public reserved keys are stripped by LangGraph before these values are
+    injected. Header-derived LangSmith values are deliberately validated as
+    untrusted input. Application configuration is validated separately through
+    ``PipelineConfigurable`` so runtime metadata cannot weaken its extra-forbid
+    contract.
+    """
+
+    allowed = _LANGGRAPH_RUN_RUNTIME_KEYS | _LANGGRAPH_TRACE_CONFIG_KEYS
+    unknown_count = sum(key not in allowed for key in runtime)
+    if unknown_count:
+        raise ValueError(f"config.configurable contains {unknown_count} unsupported field(s)")
+
+    if "langgraph_auth_user" in runtime:
+        try:
+            runtime_identity = identity_from_user(runtime["langgraph_auth_user"])
+        except Auth.exceptions.HTTPException as exc:
+            raise ValueError("langgraph_auth_user is malformed") from exc
+        if runtime_identity != identity:
+            raise ValueError("langgraph_auth_user does not match the authenticated consumer")
+
+    if "langgraph_auth_user_id" in runtime:
+        auth_user_id = runtime["langgraph_auth_user_id"]
+        _validate_runtime_text(
+            auth_user_id,
+            label="langgraph_auth_user_id",
+            max_chars=_MAX_LANGGRAPH_IDENTIFIER_CHARS,
+            allow_none=False,
+        )
+        if auth_user_id != identity.consumer_id:
+            raise ValueError("langgraph_auth_user_id does not match the authenticated consumer")
+
+    if "langgraph_auth_permissions" in runtime:
+        _validate_runtime_text_sequence(
+            runtime["langgraph_auth_permissions"],
+            label="langgraph_auth_permissions",
+            max_items=_MAX_RUNTIME_PERMISSIONS,
+        )
+
+    for key, max_chars in (
+        ("langgraph_request_id", _MAX_LANGGRAPH_IDENTIFIER_CHARS),
+        ("__langsmith_project__", _MAX_LANGGRAPH_IDENTIFIER_CHARS),
+        ("__langsmith_example_id__", _MAX_LANGGRAPH_IDENTIFIER_CHARS),
+        ("__otel_traceparent__", 512),
+        ("__otel_tracestate__", _MAX_RUNTIME_TEXT_CHARS),
+        ("langsmith-trace", _MAX_RUNTIME_TEXT_CHARS),
+        ("langsmith-project", _MAX_LANGGRAPH_IDENTIFIER_CHARS),
+    ):
+        if key in runtime:
+            _validate_runtime_text(runtime[key], label=key, max_chars=max_chars)
+
+    if "__request_start_time_ms__" in runtime:
+        request_start = runtime["__request_start_time_ms__"]
+        if (
+            isinstance(request_start, bool)
+            or not isinstance(request_start, int | float)
+            or not math.isfinite(request_start)
+            or request_start < 0
+        ):
+            raise ValueError("__request_start_time_ms__ must be a finite non-negative number")
+
+    if "__after_seconds__" in runtime:
+        after_seconds = runtime["__after_seconds__"]
+        if type(after_seconds) is not int:
+            raise ValueError("__after_seconds__ must be an integer")
+        max_after_seconds = 86_400 if trusted_loopback else 0
+        if not 0 <= after_seconds <= max_after_seconds:
+            if trusted_loopback:
+                raise ValueError("__after_seconds__ must be between 0 and 86400")
+            raise ValueError("__after_seconds__ must be 0 for direct run creation")
+
+    if "__dd_trace_headers__" in runtime:
+        headers = runtime["__dd_trace_headers__"]
+        if not isinstance(headers, Mapping):
+            raise ValueError("__dd_trace_headers__ must be an object")
+        if len(headers) > _MAX_RUNTIME_TRACE_HEADERS:
+            raise ValueError(
+                f"__dd_trace_headers__ must contain at most {_MAX_RUNTIME_TRACE_HEADERS} entries"
+            )
+        normalized_headers: dict[str, str] = {}
+        for key, value in headers.items():
+            _validate_runtime_text(
+                key,
+                label="__dd_trace_headers__ names",
+                max_chars=128,
+                allow_none=False,
+            )
+            _validate_runtime_text(
+                value,
+                label="__dd_trace_headers__ values",
+                max_chars=_MAX_RUNTIME_TEXT_CHARS,
+                allow_none=False,
+            )
+            normalized_headers[key] = value
+        validate_json_object(
+            normalized_headers,
+            label="__dd_trace_headers__",
+            max_bytes=20_000,
+            max_nodes=128,
+        )
+
+    if "__pregel_node_finished" in runtime and not callable(runtime["__pregel_node_finished"]):
+        raise ValueError("__pregel_node_finished must be a runtime callback")
+
+    if "langsmith-metadata" in runtime:
+        metadata = runtime["langsmith-metadata"]
+        if not isinstance(metadata, dict):
+            raise ValueError("langsmith-metadata must be a JSON object")
+        validate_json_object(
+            metadata,
+            label="langsmith-metadata",
+            max_bytes=100_000,
+            max_nodes=2_000,
+        )
+
+    if "langsmith-tags" in runtime:
+        _validate_runtime_text_sequence(
+            runtime["langsmith-tags"],
+            label="langsmith-tags",
+            max_items=128,
+        )
 
 
 def ensure_run_controls(
@@ -623,17 +1411,66 @@ def ensure_run_controls(
     try:
         requested_action = payload.get("action") or run_args.get("action")
         multitask_strategy = payload.get("multitask_strategy") or run_args.get("multitask_strategy")
+        webhook = payload.get("webhook") if "webhook" in payload else run_args.get("webhook")
+        if not trusted_loopback and webhook is not None:
+            raise ValueError("run webhooks are disabled by outbound-network policy")
         if not trusted_loopback and requested_action in {"interrupt", "rollback"}:
             raise ValueError(
                 "run action cannot interrupt or roll back an existing run; use "
                 "/v1/pipelines/{thread_id}/abort"
             )
-        if not trusted_loopback and multitask_strategy in {"interrupt", "rollback"}:
+        if not trusted_loopback and multitask_strategy not in {None, "reject"}:
             raise ValueError(
-                "multitask_strategy cannot interrupt or roll back an existing run; "
-                "use 'reject' or /v1/pipelines/{thread_id}/abort"
+                "multitask_strategy must be 'reject' for direct run creation; "
+                "use the validated /v1 pipeline APIs for lifecycle transitions"
             )
         if not trusted_loopback:
+            if (
+                "kwargs" in payload
+                and "thread_id" in payload
+                and payload.get("thread_id") is None
+                and run_args.get("temporary") is not True
+            ):
+                raise ValueError(
+                    "stateless direct runs must be temporary; on_completion='keep' is disabled"
+                )
+            # The runtime accepts arbitrary JSON numbers here and only coerces
+            # them while building the backend request.  Disable delayed direct
+            # runs so fractional/negative values cannot silently change meaning
+            # and oversized integers cannot become backend/protobuf failures.
+            control_containers = (payload,) if run_args is payload else (payload, run_args)
+            for controls in control_containers:
+                if "after_seconds" in controls:
+                    after_seconds = controls["after_seconds"]
+                    if type(after_seconds) is not int or after_seconds != 0:
+                        raise ValueError(
+                            "after_seconds must be the integer 0 for direct run creation"
+                        )
+                if "feedback_keys" in controls:
+                    feedback_keys = controls["feedback_keys"]
+                    if feedback_keys is not None and (
+                        isinstance(feedback_keys, str | bytes)
+                        or not isinstance(feedback_keys, (list, tuple))
+                        or len(feedback_keys) != 0
+                    ):
+                        raise ValueError("feedback_keys are disabled for direct run creation")
+                if controls.get("checkpoint_during") is False:
+                    raise ValueError("checkpoint_during cannot be disabled for direct run creation")
+                for interrupt_field in ("interrupt_before", "interrupt_after"):
+                    if controls.get(interrupt_field) is not None:
+                        raise ValueError(
+                            f"{interrupt_field} is server-owned for direct run creation"
+                        )
+                if "durability" in controls:
+                    # Native LangGraph defaults to async durability. APEX must
+                    # checkpoint the external-engine abort handle before work can
+                    # proceed, so normalize every public run to the same write-ahead
+                    # contract used by the validated facade.
+                    controls["durability"] = "sync"
+                if "checkpoint_during" in controls:
+                    controls["checkpoint_during"] = True
+            run_args["durability"] = "sync"
+            run_args["checkpoint_during"] = True
             load_test = _mapping(configurable.get("load_test"))
             forbidden_selectors = {
                 "script_refs",
@@ -645,6 +1482,12 @@ def ensure_run_controls(
                     "provider workload selectors are connection/catalog-owned and cannot be "
                     f"overridden per run: {', '.join(sorted(forbidden_selectors))}"
                 )
+        assistant_id = str(payload.get("assistant_id") or run_args.get("assistant_id") or "")
+        if assistant_id == "pipeline":
+            # Trusted facade calls (notably gate resumes) need the same
+            # write-ahead durability guarantee as initial pipeline launches.
+            run_args["durability"] = "sync"
+            run_args["checkpoint_during"] = True
         if raw_input is not None and not isinstance(raw_input, Mapping):
             raise ValueError("run input must be a JSON object")
         requested_thread_id = _project_id(payload.get("thread_id"))
@@ -653,9 +1496,23 @@ def ensure_run_controls(
             raise ValueError(
                 "config.configurable.thread_id is server-owned and must match the target thread"
             )
-        PipelineConfigurable.model_validate(configurable)
+        application_config = {
+            key: value
+            for key, value in configurable.items()
+            if key in PipelineConfigurable.model_fields
+        }
+        runtime_config = {
+            key: value
+            for key, value in configurable.items()
+            if key not in PipelineConfigurable.model_fields
+        }
+        _validate_runtime_run_configurable(
+            identity,
+            runtime_config,
+            trusted_loopback=trusted_loopback,
+        )
+        PipelineConfigurable.model_validate(application_config)
         validate_public_run_input(input_payload)
-        assistant_id = str(payload.get("assistant_id") or run_args.get("assistant_id") or "")
         context_keys = {"subject", "work_item_keys", "document_packets"}
         playground_keys = {"prompt", "sample_input"}
         if assistant_id == "context" or context_keys.intersection(input_payload):
@@ -678,11 +1535,12 @@ def ensure_run_controls(
             reason="run resource or payload limits rejected the request",
         )
         if isinstance(exc, ValidationError):
-            error = exc.errors(include_url=False, include_context=False, include_input=False)[0]
-            location = ".".join(str(part) for part in error.get("loc") or ())
-            detail = f"{location}: {error['msg']}" if location else str(error["msg"])
+            detail = validation_error_summary(exc, max_errors=1, max_chars=1_024)
         else:
-            detail = str(exc)
+            # ValueError messages in this validation pipeline are code-owned,
+            # but still apply the shared response cap and credential redaction
+            # instead of reflecting an exception verbatim.
+            detail = bounded_diagnostic(exc, max_chars=1_024)
         raise Auth.exceptions.HTTPException(
             status_code=422, detail=f"Invalid run controls: {detail}"
         ) from exc
@@ -793,11 +1651,14 @@ def ensure_metadata_scope(
 ) -> None:
     """Stamp/verify `metadata.project_id` on assistant-like resources."""
 
-    if identity.is_unscoped:
-        return
     if not isinstance(value, dict):
         _deny_authz(identity, action=action, detail="resource payload is malformed")
     metadata = _mapping(value.get("metadata"))
+    # Validate durable ownership selectors even for an unscoped platform admin.
+    _project_id(metadata.get("project_id"))
+    _project_id(metadata.get("app_id"))
+    if identity.is_unscoped:
+        return
     if required and not metadata:
         _deny_authz(
             identity,
@@ -838,8 +1699,32 @@ def scope_filter(identity: ConsumerIdentity) -> Auth.types.FilterType | bool | N
     )
 
 
+def _require_direct_runs_allowed(
+    base_filter: Auth.types.HandlerResult,
+) -> Auth.types.HandlerResult:
+    """Constrain an untrusted run creation to explicitly public threads.
+
+    Exact-match filtering intentionally fails closed for legacy threads that do
+    not carry the server-owned classification marker.
+    """
+    if base_filter is False:
+        return False
+    direct_run_filter = {
+        _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
+    }
+    if base_filter is None:
+        return cast("Auth.types.FilterType", direct_run_filter)
+    return cast(
+        "Auth.types.FilterType",
+        {**cast("dict[str, Any]", base_filter), **direct_run_filter},
+    )
+
+
 @auth.authenticate
-async def authenticate(headers: dict[bytes, bytes]) -> dict[str, Any]:
+async def authenticate(
+    headers: dict[bytes, bytes],
+    scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     try:
         identity = await get_default_resolver().resolve(extract_api_key(headers))
     except AuthStoreUnavailableError as exc:
@@ -856,6 +1741,8 @@ async def authenticate(headers: dict[bytes, bytes]) -> dict[str, Any]:
             reason=detail,
         )
         raise Auth.exceptions.HTTPException(status_code=401, detail=detail)
+    if scope is not None:
+        await mark_stream_request_authenticated(scope)
     return user_payload(identity, trusted_loopback=is_trusted_loopback(headers))
 
 
@@ -866,9 +1753,39 @@ async def on_threads_create(
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
-    metadata = value.setdefault("metadata", {})
-    metadata.setdefault("created_by", identity.consumer_id)
+    payload = _mapping(value)
+    _validate_persisted_json_field(
+        identity,
+        payload,
+        "metadata",
+        action=action,
+        label="thread metadata",
+    )
+    metadata = _mapping(payload.get("metadata"))
+    trusted_loopback = _is_trusted_loopback_user(ctx.user)
+    if not trusted_loopback and payload.get("metadata") is not None:
+        _reject_persisted_credential_material(
+            identity,
+            metadata,
+            action=action,
+            label="thread metadata",
+        )
+    _reject_untrusted_launch_metadata(
+        identity,
+        metadata,
+        action=action,
+        trusted_loopback=trusted_loopback,
+    )
+    # This classification is derived rather than accepted from callers. Facade
+    # launch threads must remain replay-stable: a public native run appended to
+    # one could otherwise become the newest run adopted by an idempotent retry.
+    metadata[_DIRECT_RUNS_ALLOWED_METADATA_KEY] = not bool(
+        _LAUNCH_IDEMPOTENCY_METADATA_KEYS.intersection(metadata)
+    )
+    # Attribution is server-owned; never preserve a caller-supplied identity.
+    metadata["created_by"] = identity.consumer_id
     ensure_thread_scope(identity, metadata, action=action)
+    value["metadata"] = metadata
     await _ensure_catalog_app_scope(identity, value)
     return scope_filter(identity)
 
@@ -880,16 +1797,53 @@ async def on_threads_create_run(
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
-    result = ensure_run_scope(identity, value, action=action)
-    await _ensure_catalog_app_scope(identity, value)
-    await ensure_run_environment(identity, value, action=action)
+    payload = _mapping(value)
+    metadata = _mapping(payload.get("metadata"))
+    trusted_loopback = _is_trusted_loopback_user(ctx.user)
+    _validate_run_persisted_inputs(
+        identity,
+        value,
+        action=action,
+        trusted_loopback=trusted_loopback,
+    )
+    _reject_untrusted_launch_metadata(
+        identity,
+        metadata,
+        action=action,
+        trusted_loopback=trusted_loopback,
+    )
+    # Also classify threads created implicitly by Runs.create. Existing thread
+    # metadata is not mutated by this run metadata; the returned filter below
+    # authorizes public runs only when the thread itself was classified public.
+    metadata[_DIRECT_RUNS_ALLOWED_METADATA_KEY] = not bool(
+        _LAUNCH_IDEMPOTENCY_METADATA_KEYS.intersection(metadata)
+    )
+    metadata["created_by"] = identity.consumer_id
+    payload["metadata"] = metadata
+    # Perform all cheap model/shape/resource checks before any catalog or
+    # environment query can receive attacker-sized identifiers.
     ensure_run_controls(
         identity,
         value,
         action=action,
-        trusted_loopback=_is_trusted_loopback_user(ctx.user),
+        trusted_loopback=trusted_loopback,
     )
-    return result
+    result = ensure_run_scope(identity, value, action=action)
+    await _ensure_catalog_app_scope(identity, value)
+    environment_filter = await ensure_run_environment(identity, value, action=action)
+    if environment_filter is not None:
+        result = environment_filter
+    # Environment resolution stamps deployment-owned target fields; validate
+    # the final effective configurable before the runtime persists the run.
+    ensure_run_controls(
+        identity,
+        value,
+        action=action,
+        trusted_loopback=trusted_loopback,
+    )
+    if trusted_loopback:
+        return result
+    return _require_direct_runs_allowed(result)
 
 
 @auth.on.threads.read
@@ -903,7 +1857,45 @@ async def on_threads_read(
 async def on_threads_search(
     ctx: Auth.types.AuthContext, value: Auth.types.ThreadsSearch
 ) -> Auth.types.HandlerResult:
-    return scope_filter(identity_from_user(ctx.user))
+    identity = identity_from_user(ctx.user)
+    action = _authz_action(ctx)
+    payload = _mapping(value)
+    if payload.get("values") and not _is_trusted_loopback_user(ctx.user):
+        _deny_authz(
+            identity,
+            action=action,
+            detail="Native thread value filters are disabled on the public summary surface",
+        )
+    _validate_bounded_page(
+        identity,
+        payload,
+        action=action,
+        default_limit=10,
+        allow_count_sentinel=True,
+    )
+    for field, label in (
+        ("metadata", "thread metadata filter"),
+        ("values", "thread values filter"),
+    ):
+        _validate_persisted_json_field(
+            identity,
+            payload,
+            field,
+            action=action,
+            label=label,
+            max_bytes=_MAX_STORE_FILTER_BYTES,
+            max_nodes=_MAX_STORE_FILTER_NODES,
+        )
+    if payload.get("metadata") and not _is_trusted_loopback_user(ctx.user):
+        _deny_authz(
+            identity,
+            action=action,
+            detail="Native thread metadata filters are disabled on the public summary surface",
+        )
+    # The runtime omits select/extract from its auth value. The outer body
+    # middleware therefore enforces the public projection before this handler;
+    # this handler owns only fields the runtime actually exposes to auth.
+    return scope_filter(identity)
 
 
 @auth.on.threads.update
@@ -914,9 +1906,8 @@ async def on_threads_update(
     action = _authz_action(ctx)
     ensure_role(identity, Role.OPERATOR, action=action)
     payload = _mapping(value)
-    if payload.get("action") in {"interrupt", "rollback"} and not _is_trusted_loopback_user(
-        ctx.user
-    ):
+    trusted_loopback = _is_trusted_loopback_user(ctx.user)
+    if payload.get("action") in {"interrupt", "rollback"} and not trusted_loopback:
         _deny_authz(
             identity,
             action=action,
@@ -932,11 +1923,7 @@ async def on_threads_update(
     # carries action + metadata and was handled above. Fail closed on the only
     # remaining bare shape so callers cannot forge phase_results, reviews,
     # handles, or graph cursors around PipelineInput.
-    if (
-        "metadata" not in payload
-        and payload.get("action") is None
-        and not _is_trusted_loopback_user(ctx.user)
-    ):
+    if "metadata" not in payload and payload.get("action") is None and not trusted_loopback:
         _deny_authz(
             identity,
             action=action,
@@ -945,11 +1932,26 @@ async def on_threads_update(
             ),
         )
     metadata = _mapping(payload.get("metadata"))
-    if not identity.is_unscoped and ({"project_id", "app_id"} & metadata.keys()):
+    _validate_persisted_json_field(
+        identity,
+        payload,
+        "metadata",
+        action=action,
+        label="thread metadata",
+    )
+    if not trusted_loopback and payload.get("metadata") is not None:
+        _reject_persisted_credential_material(
+            identity,
+            metadata,
+            action=action,
+            label="thread metadata",
+        )
+    immutable = _IMMUTABLE_THREAD_METADATA_KEYS.intersection(metadata)
+    if immutable:
         _deny_authz(
             identity,
             action=action,
-            detail="Scoped consumers cannot mutate thread ownership metadata",
+            detail=("Server-owned thread metadata is immutable: " + ", ".join(sorted(immutable))),
         )
     return scope_filter(identity)
 
@@ -984,6 +1986,34 @@ async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.t
     ensure_unscoped_admin(identity, action=action, resource="assistant mutation")
     if ctx.action == "delete":
         return
+    payload = _mapping(value)
+    for field, label in (("graph_id", "assistant graph_id"), ("name", "assistant name")):
+        _validate_persisted_text_field(
+            identity,
+            payload,
+            field,
+            action=action,
+            label=label,
+        )
+    for field, label in (
+        ("config", "assistant config"),
+        ("context", "assistant context"),
+        ("metadata", "assistant metadata"),
+    ):
+        _validate_persisted_json_field(
+            identity,
+            payload,
+            field,
+            action=action,
+            label=label,
+        )
+        if payload.get(field) is not None:
+            _reject_persisted_credential_material(
+                identity,
+                payload[field],
+                action=action,
+                label=label,
+            )
     ensure_metadata_scope(identity, value, action=action)
     # On update, constrain the existing resource as well as stamping the new
     # metadata; otherwise a scoped admin could take over a sibling assistant by id.
@@ -995,11 +2025,44 @@ async def on_assistants_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.ty
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
     ensure_role(identity, Role.VIEWER, action=action)
+    payload = _mapping(value)
+    _validate_bounded_page(
+        identity,
+        payload,
+        action=action,
+        default_limit=10,
+        max_limit=10,
+        allow_count_sentinel=True,
+    )
+    _validate_persisted_json_field(
+        identity,
+        payload,
+        "metadata",
+        action=action,
+        label="assistant metadata filter",
+        max_bytes=_MAX_STORE_FILTER_BYTES,
+        max_nodes=_MAX_STORE_FILTER_NODES,
+    )
+    if payload.get("metadata") and not _is_trusted_loopback_user(ctx.user):
+        _deny_authz(
+            identity,
+            action=action,
+            detail="Native assistant metadata filters are disabled on the public summary surface",
+        )
+    for field in ("graph_id", "name"):
+        _validate_persisted_text_field(
+            identity,
+            payload,
+            field,
+            action=action,
+            label=f"assistant {field} filter",
+            max_chars=_MAX_LANGGRAPH_IDENTIFIER_CHARS,
+        )
     # Read/search payloads commonly carry no metadata. In that case the
     # returned server-side filter is sufficient and must support identities
     # spanning multiple projects. If metadata was explicitly supplied, still
     # reject an out-of-scope selector.
-    if _mapping(_mapping(value).get("metadata")):
+    if _mapping(payload.get("metadata")):
         ensure_metadata_scope(identity, value, action=action)
     return scope_filter(identity)
 
@@ -1008,36 +2071,44 @@ async def on_assistants_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.ty
 async def on_crons_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
-    ensure_role(identity, Role.VIEWER, action=action)
-    ensure_unscoped_admin(identity, action=action, resource="cron access")
-    return None
+    _deny_authz(
+        identity,
+        action=action,
+        detail="Native scheduled runs are disabled; use an operator-controlled scheduler",
+    )
 
 
 @auth.on(resources="crons", actions=["create", "update", "delete"])
 async def on_crons_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
-    ensure_role(identity, Role.OPERATOR, action=action)
-    ensure_unscoped_admin(identity, action=action, resource="cron mutation")
-    return None
+    _deny_authz(
+        identity,
+        action=action,
+        detail="Native scheduled runs are disabled; use an operator-controlled scheduler",
+    )
 
 
-@auth.on(resources="store", actions=["get", "list", "search"])
+@auth.on(resources="store", actions=["get", "list", "list_namespaces", "search"])
 async def on_store_read(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
-    ensure_role(identity, Role.VIEWER, action=action)
-    ensure_store_namespace_scope(identity, value, action=action)
-    return None
+    _deny_authz(
+        identity,
+        action=action,
+        detail="Native LangGraph store access is disabled; use APEX domain repositories",
+    )
 
 
 @auth.on(resources="store", actions=["put", "delete", "create", "update"])
 async def on_store_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.types.HandlerResult:
     identity = identity_from_user(ctx.user)
     action = _authz_action(ctx)
-    ensure_role(identity, Role.OPERATOR, action=action)
-    ensure_store_namespace_scope(identity, value, action=action)
-    return None
+    _deny_authz(
+        identity,
+        action=action,
+        detail="Native LangGraph store access is disabled; use APEX domain repositories",
+    )
 
 
 @auth.on

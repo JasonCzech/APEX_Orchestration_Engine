@@ -15,6 +15,10 @@ class StoredArtifact(BaseModel):
     size: int
 
 
+class ArtifactStoreBusyError(RuntimeError):
+    """Artifact bytes cannot start streaming without exceeding provider capacity."""
+
+
 def engine_artifact_namespace(idempotency_key: str) -> str:
     """Opaque, globally stable namespace for one internal engine attempt."""
 

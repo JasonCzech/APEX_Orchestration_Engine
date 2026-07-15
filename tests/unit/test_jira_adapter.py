@@ -9,6 +9,7 @@ import respx
 
 from apex.adapters.jira.work_tracking import (
     JiraWorkTrackingAdapter,
+    _adf_contains_text,
     adf_to_text,
     render_jql,
     text_to_adf,
@@ -140,6 +141,45 @@ def test_constructor_validates_options_and_secret() -> None:
         JiraWorkTrackingAdapter(conn, None)
 
 
+@pytest.mark.parametrize(
+    ("option", "value", "match"),
+    [
+        ("base_url", True, "base_url"),
+        ("user_email", True, "user_email"),
+        ("user_email", "bad:user@example.test", "must not contain"),
+        ("project_key", True, "project_key"),
+        ("project_key", "P" * 256, "255"),
+    ],
+)
+def test_constructor_rejects_coercible_or_unbounded_identity_options(
+    option: str,
+    value: object,
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        make_adapter(**{option: value})
+
+
+@pytest.mark.parametrize("token", ["unsafe\r\ntoken", "t" * 16_385])
+def test_constructor_rejects_unsafe_or_oversized_token_without_reflection(token: str) -> None:
+    conn = ConnectionConfig(
+        id="jira-credential-boundary",
+        kind=PortKind.WORK_TRACKING,
+        provider="jira",
+        name="Jira",
+        options={
+            "base_url": BASE,
+            "project_key": "PHX",
+            "user_email": "qa@acme.test",
+        },
+    )
+
+    with pytest.raises(ValueError) as error:
+        JiraWorkTrackingAdapter(conn, SecretValue(value=token))
+
+    assert token not in str(error.value)
+
+
 # ── ADF helpers ───────────────────────────────────────────────────────────────
 
 
@@ -154,6 +194,34 @@ def test_adf_to_text_tolerates_non_adf_values() -> None:
     assert adf_to_text("plain string description") == "plain string description"
     assert adf_to_text(None) == ""
     assert adf_to_text({"type": "mention", "attrs": {"text": "@qa-bot"}}) == "@qa-bot"
+
+
+def test_adf_to_text_is_iterative_and_bounded() -> None:
+    from apex.domain.input_limits import MAX_DESCRIPTION_CHARS
+
+    node: object = {"type": "text", "text": "x" * (MAX_DESCRIPTION_CHARS + 100)}
+    for _ in range(5_000):
+        node = {"type": "doc", "content": [node]}
+
+    flattened = adf_to_text(node)
+
+    assert len(flattened) == MAX_DESCRIPTION_CHARS
+    assert flattened.endswith("…")
+
+
+def test_adf_marker_search_is_iterative_and_matches_across_text_nodes() -> None:
+    node: object = {
+        "type": "paragraph",
+        "content": [
+            {"type": "text", "text": "prefix [APEX-IDEM"},
+            {"type": "text", "text": "POTENCY:marker] suffix"},
+        ],
+    }
+    for _ in range(5_000):
+        node = {"type": "doc", "content": [node]}
+
+    assert _adf_contains_text(node, "[APEX-IDEMPOTENCY:marker]") is True
+    assert _adf_contains_text(node, "missing-marker") is False
 
 
 def test_text_to_adf_round_trips_lines() -> None:
@@ -204,9 +272,21 @@ async def test_get_item_rejects_key_from_another_configured_project_without_http
 
 
 @respx.mock
-async def test_get_item_rejects_malformed_key_without_http() -> None:
+@pytest.mark.parametrize(
+    "key",
+    [
+        "../search",
+        "A/B-1",
+        "A\\B-1",
+        "A?B-1",
+        "A#B-1",
+        "PHX-0",
+        f"PHX-{'9' * 20}",
+    ],
+)
+async def test_get_item_rejects_malformed_key_without_http(key: str) -> None:
     with pytest.raises(KeyError, match="valid jira issue key"):
-        await make_adapter(project_key="").get_item("../search")
+        await make_adapter(project_key="").get_item(key)
     assert respx.calls == []
 
 
@@ -253,7 +333,14 @@ async def test_execute_query_follows_next_page_token() -> None:
     assert first_body == {
         "jql": "project = PHX ORDER BY updated DESC",
         "maxResults": 3,
-        "fields": ["summary", "status", "issuetype", "description", "project"],
+        "fields": [
+            "summary",
+            "status",
+            "issuetype",
+            "description",
+            "project",
+            "labels",
+        ],
     }
     second_body = json.loads(route.calls[1].request.content)
     assert second_body["nextPageToken"] == "tok-2"
@@ -300,6 +387,72 @@ async def test_execute_query_total_is_lower_bound_when_more_pages_remain() -> No
     assert result.total == 3  # fetched + 1 signals "more available"
 
 
+@pytest.mark.parametrize("issues", [None, {}, "", False])
+@respx.mock
+async def test_execute_query_requires_explicit_issues_list(issues: object) -> None:
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": issues, "isLast": True})
+    )
+    query = TranslatedQuery(provider="jira", query="project = PHX")
+
+    with pytest.raises(RuntimeError, match="issues.*must be a list"):
+        await make_adapter().execute_query(query, page=Page())
+
+
+@pytest.mark.parametrize("is_last", ["false", 0, 1, None])
+@respx.mock
+async def test_execute_query_requires_boolean_is_last(is_last: object) -> None:
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(
+            200,
+            json={"issues": [], "nextPageToken": "next", "isLast": is_last},
+        )
+    )
+    query = TranslatedQuery(provider="jira", query="project = PHX")
+
+    with pytest.raises(RuntimeError, match="isLast.*boolean"):
+        await make_adapter().execute_query(query, page=Page())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"issues": [search_issue("PHX-1")], "isLast": False},
+        {
+            "issues": [search_issue("PHX-1")],
+            "nextPageToken": "next",
+            "isLast": True,
+        },
+    ],
+)
+@respx.mock
+async def test_execute_query_rejects_inconsistent_pagination_fields(
+    payload: dict[str, object],
+) -> None:
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(return_value=httpx.Response(200, json=payload))
+    query = TranslatedQuery(provider="jira", query="project = PHX")
+
+    with pytest.raises(RuntimeError, match="inconsistent pagination"):
+        await make_adapter().execute_query(query, page=Page())
+
+
+@respx.mock
+async def test_execute_query_rejects_duplicate_issue_keys() -> None:
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "issues": [search_issue("PHX-1"), search_issue("PHX-1")],
+                "isLast": True,
+            },
+        )
+    )
+    query = TranslatedQuery(provider="jira", query="project = PHX")
+
+    with pytest.raises(RuntimeError, match="duplicate issue key"):
+        await make_adapter().execute_query(query, page=Page(limit=2))
+
+
 @respx.mock
 async def test_execute_query_invalid_jql_raises_value_error() -> None:
     respx.post(f"{BASE}/rest/api/3/search/jql").mock(
@@ -317,6 +470,16 @@ async def test_execute_query_rejects_provider_mismatch() -> None:
     query = TranslatedQuery(provider="stub", query="status = Open")
     with pytest.raises(ValueError, match="provider"):
         await make_adapter().execute_query(query, page=Page())
+
+
+@respx.mock
+async def test_execute_query_rejects_unbounded_provider_window_before_http() -> None:
+    query = TranslatedQuery(provider="jira", query="project = PHX")
+
+    with pytest.raises(ValueError, match="window"):
+        await make_adapter().execute_query(query, page=Page(offset=801, limit=200))
+
+    assert respx.calls == []
 
 
 # ── list / create / enrich ────────────────────────────────────────────────────
@@ -370,6 +533,63 @@ async def test_create_item_posts_adf_description() -> None:
         ],
     }
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_idempotent_create_adds_marker_label_and_can_reconcile_it() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    create_route = respx.post(f"{BASE}/rest/api/3/issue").mock(
+        return_value=httpx.Response(201, json={"id": "10501", "key": "PHX-901"})
+    )
+    search_route = respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": [issue_json("PHX-901")]})
+    )
+
+    created = await make_adapter().create_item_idempotent(
+        WorkItemDraft(title="Marked issue", fields={"labels": ["perf"]}),
+        marker=marker,
+    )
+    found = await make_adapter().find_item_by_idempotency_marker(marker)
+
+    assert created.key == found.key == "PHX-901"  # type: ignore[union-attr]
+    create_body = json.loads(create_route.calls[0].request.content)
+    assert create_body["fields"]["labels"] == ["perf", marker]
+    search_body = json.loads(search_route.calls[0].request.content)
+    assert search_body["maxResults"] == 2
+    assert marker in search_body["jql"]
+
+
+@respx.mock
+async def test_idempotency_lookup_quotes_configured_project_as_jql_data() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    project = 'PHX" OR project = OTHER OR project = "PHX'
+    route = respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": []})
+    )
+
+    assert await make_adapter(project_key=project).find_item_by_idempotency_marker(marker) is None
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["jql"] == (
+        f'project = "PHX\\" OR project = OTHER OR project = \\"PHX" AND labels = "{marker}"'
+    )
+
+
+@respx.mock
+async def test_idempotent_create_reuses_case_variant_labels_field() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    route = respx.post(f"{BASE}/rest/api/3/issue").mock(
+        return_value=httpx.Response(201, json={"id": "10501", "key": "PHX-901"})
+    )
+
+    await make_adapter().create_item_idempotent(
+        WorkItemDraft(title="Marked issue", fields={"Labels": ["perf"]}),
+        marker=marker,
+    )
+
+    fields = json.loads(route.calls[0].request.content)["fields"]
+    assert fields["Labels"] == ["perf", marker]
+    assert "labels" not in fields
 
 
 async def test_create_item_without_project_is_value_error() -> None:

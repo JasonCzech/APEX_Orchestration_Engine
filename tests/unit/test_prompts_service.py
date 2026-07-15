@@ -24,6 +24,8 @@ class FakePromptRepository:
     def __init__(self) -> None:
         self.prompts: dict[str, Prompt] = {}
         self.versions: dict[str, PromptVersion] = {}
+        self.search_calls = 0
+        self.list_version_calls = 0
 
     async def get(self, prompt_id: str) -> Prompt | None:
         return self.prompts.get(prompt_id)
@@ -41,7 +43,10 @@ class FakePromptRepository:
         include_archived: bool = False,
         q: str | None = None,
         allow_application: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[Prompt]:
+        self.search_calls += 1
         rows = list(self.prompts.values())
         if namespace is not None:
             rows = [p for p in rows if p.namespace == namespace]
@@ -58,7 +63,7 @@ class FakePromptRepository:
                 or needle in p.namespace.lower()
                 or needle in (p.description or "").lower()
             ]
-        return sorted(rows, key=lambda p: (p.namespace, p.key))
+        return sorted(rows, key=lambda p: (p.namespace, p.key))[offset : offset + limit]
 
     async def get_version(self, version_id: str) -> PromptVersion | None:
         return self.versions.get(version_id)
@@ -66,9 +71,12 @@ class FakePromptRepository:
     async def get_versions_by_ids(self, version_ids: list[str]) -> list[PromptVersion]:
         return [self.versions[vid] for vid in version_ids if vid in self.versions]
 
-    async def list_versions(self, prompt_id: str) -> list[PromptVersion]:
+    async def list_versions(
+        self, prompt_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[PromptVersion]:
+        self.list_version_calls += 1
         rows = [v for v in self.versions.values() if v.prompt_id == prompt_id]
-        return sorted(rows, key=lambda v: v.version, reverse=True)
+        return sorted(rows, key=lambda v: v.version, reverse=True)[offset : offset + limit]
 
     async def max_version(self, prompt_id: str) -> int:
         return max(

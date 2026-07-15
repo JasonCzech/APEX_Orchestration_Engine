@@ -96,12 +96,118 @@ def test_constructor_validates_options_and_secret() -> None:
         AdoWorkTrackingAdapter(conn, None)
 
 
+@pytest.mark.parametrize(
+    ("option", "value", "match"),
+    [
+        ("base_url", True, "base_url"),
+        ("project", True, "project"),
+    ],
+)
+def test_constructor_rejects_coercible_identity_options(
+    option: str,
+    value: object,
+    match: str,
+) -> None:
+    options: dict[str, object] = {"base_url": BASE, "project": "Phoenix"}
+    options[option] = value
+    conn = ConnectionConfig(
+        id="ado-coercible-option",
+        kind=PortKind.WORK_TRACKING,
+        provider="ado",
+        name="bad",
+        options=options,
+    )
+
+    with pytest.raises(ValueError, match=match):
+        AdoWorkTrackingAdapter(conn, SecretValue(value="ado-pat-secret"))
+
+
+@pytest.mark.parametrize("pat", ["unsafe\r\npat", "p" * 16_385])
+def test_constructor_rejects_unsafe_or_oversized_pat_without_reflection(pat: str) -> None:
+    conn = ConnectionConfig(
+        id="ado-credential-boundary",
+        kind=PortKind.WORK_TRACKING,
+        provider="ado",
+        name="ADO",
+        options={"base_url": BASE, "project": "Phoenix"},
+    )
+
+    with pytest.raises(ValueError) as error:
+        AdoWorkTrackingAdapter(conn, SecretValue(value=pat))
+
+    assert pat not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "project",
+    [
+        ".",
+        "..",
+        "../Apollo",
+        "Phoenix/Apollo",
+        "Phoenix\\Apollo",
+        "Phoenix?x=Apollo",
+        "Phoenix#Apollo",
+        "Phoenix%2FApollo",
+        "Phoenix%5cApollo",
+        "%2e%2e%2fApollo",
+    ],
+)
+@respx.mock
+def test_constructor_rejects_project_route_escape_before_authenticated_io(
+    project: str,
+) -> None:
+    conn = ConnectionConfig(
+        id="ado-bad-project",
+        kind=PortKind.WORK_TRACKING,
+        provider="ado",
+        name="bad",
+        options={"base_url": BASE, "project": project},
+    )
+
+    with pytest.raises(ValueError, match="unsafe path characters"):
+        AdoWorkTrackingAdapter(conn, SecretValue(value="t"))
+
+    assert respx.calls.call_count == 0
+
+
+@respx.mock
+async def test_project_name_is_one_encoded_route_segment() -> None:
+    conn = ConnectionConfig(
+        id="ado-spaced-project",
+        kind=PortKind.WORK_TRACKING,
+        provider="ado",
+        name="spaced",
+        options={"base_url": BASE, "project": "Phoenix Team"},
+    )
+    adapter = AdoWorkTrackingAdapter(conn, SecretValue(value="ado-pat-secret"))
+    route = respx.post(f"{BASE}/Phoenix%20Team/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json=wiql_response())
+    )
+
+    await adapter.execute_query(
+        TranslatedQuery(provider="ado", query="SELECT [System.Id] FROM WorkItems"),
+        page=Page(),
+    )
+
+    assert route.called
+
+
 def test_html_to_text_strips_tags_and_entities() -> None:
     assert html_to_text("<div>Watch <b>RSS</b> growth &amp; restarts</div>") == (
         "Watch RSS growth & restarts"
     )
     assert html_to_text(None) == ""
     assert html_to_text("plain") == "plain"
+
+
+def test_html_to_text_bounds_provider_description() -> None:
+    from apex.domain.input_limits import MAX_DESCRIPTION_CHARS
+
+    description = html_to_text("<p>" + "x" * (MAX_DESCRIPTION_CHARS + 100) + "</p>")
+
+    assert len(description) == MAX_DESCRIPTION_CHARS
+    assert description.endswith("…")
 
 
 # ── execute_query (WIQL ids + batch hydration, client-side paging) ────────────
@@ -124,6 +230,7 @@ async def test_execute_query_pages_id_list_client_side() -> None:
         "query": "SELECT [System.Id] FROM WorkItems"
     }
     assert wiql_route.calls[0].request.url.params["api-version"] == "7.1"
+    assert wiql_route.calls[0].request.url.params["$top"] == "4"
     params = batch_route.calls[0].request.url.params
     assert params["ids"] == "43,44"  # offset=1 skipped id 42
     assert "System.Title" in params["fields"]
@@ -151,10 +258,80 @@ async def test_execute_query_empty_window_skips_batch_call() -> None:
     assert len(respx.calls) == 1  # no workitems batch GET
 
 
+@pytest.mark.parametrize("work_items", [None, {}, "", False])
+@respx.mock
+async def test_execute_query_requires_explicit_work_items_list(work_items: object) -> None:
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json={"workItems": work_items})
+    )
+    query = TranslatedQuery(provider="ado", query="SELECT [System.Id] FROM WorkItems")
+
+    with pytest.raises(RuntimeError, match="workItems.*must be a list"):
+        await make_adapter().execute_query(query, page=Page())
+
+
+@pytest.mark.parametrize("item_id", [True, 42.0, "42", 0, 2_147_483_648])
+@respx.mock
+async def test_execute_query_requires_exact_bounded_integer_ids(item_id: object) -> None:
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json={"workItems": [{"id": item_id}]})
+    )
+    query = TranslatedQuery(provider="ado", query="SELECT [System.Id] FROM WorkItems")
+
+    with pytest.raises(RuntimeError, match="no valid id"):
+        await make_adapter().execute_query(query, page=Page())
+
+
+@respx.mock
+async def test_execute_query_rejects_duplicate_wiql_ids_before_batch() -> None:
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json=wiql_response(42, 42))
+    )
+    query = TranslatedQuery(provider="ado", query="SELECT [System.Id] FROM WorkItems")
+
+    with pytest.raises(RuntimeError, match="duplicate id"):
+        await make_adapter().execute_query(query, page=Page())
+
+    assert len(respx.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("rows", "message"),
+    [
+        ([work_item_row(99)], "unexpected id"),
+        ([work_item_row(42), work_item_row(42)], "duplicate id"),
+    ],
+)
+@respx.mock
+async def test_execute_query_rejects_unexpected_or_duplicate_batch_ids(
+    rows: list[dict[str, object]], message: str
+) -> None:
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json=wiql_response(42, 43))
+    )
+    respx.get(f"{BASE}/_apis/wit/workitems").mock(
+        return_value=httpx.Response(200, json={"value": rows})
+    )
+    query = TranslatedQuery(provider="ado", query="SELECT [System.Id] FROM WorkItems")
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter().execute_query(query, page=Page(limit=2))
+
+
 async def test_execute_query_rejects_provider_mismatch() -> None:
     query = TranslatedQuery(provider="stub", query="SELECT [System.Id] FROM WorkItems")
     with pytest.raises(ValueError, match="provider"):
         await make_adapter().execute_query(query, page=Page())
+
+
+@respx.mock
+async def test_execute_query_rejects_unbounded_provider_window_before_http() -> None:
+    query = TranslatedQuery(provider="ado", query="SELECT [System.Id] FROM WorkItems")
+
+    with pytest.raises(ValueError, match="window"):
+        await make_adapter().execute_query(query, page=Page(offset=801, limit=200))
+
+    assert respx.calls == []
 
 
 @respx.mock
@@ -179,7 +356,7 @@ async def test_execute_query_invalid_wiql_raises_value_error() -> None:
 
 @respx.mock
 async def test_get_item_maps_fields() -> None:
-    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(200, json=work_item_row(42, state="New"))
     )
     item = await make_adapter().get_item("42")
@@ -192,7 +369,7 @@ async def test_get_item_maps_fields() -> None:
 
 @respx.mock
 async def test_get_item_404_raises_key_error() -> None:
-    respx.get(f"{BASE}/_apis/wit/workitems/999").mock(
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/999").mock(
         return_value=httpx.Response(
             404,
             json={
@@ -211,7 +388,7 @@ async def test_get_item_404_raises_key_error() -> None:
 
 @respx.mock
 async def test_get_item_hides_item_from_another_project() -> None:
-    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(200, json=work_item_row(42, project="Apollo"))
     )
     with pytest.raises(KeyError, match="configured azure devops project"):
@@ -228,7 +405,7 @@ async def test_get_item_rejects_malformed_id_without_http() -> None:
 @respx.mock
 async def test_unauthorized_is_actionable_runtime_error() -> None:
     # ADO answers bad PATs on API routes with a 203 + sign-in page.
-    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(203, text="<html>Sign in</html>")
     )
     with pytest.raises(RuntimeError, match="PAT"):
@@ -279,10 +456,157 @@ async def test_create_item_posts_json_patch() -> None:
     assert_all_calls_authed()
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [
+        ".",
+        "..",
+        "Bug/../../_apis/projects",
+        "Bug?api-version=7.1",
+        "Bug#fragment",
+        r"Bug\..\_apis\projects",
+        "Bug%2f..%2f_apis%2fprojects",
+        "Bug%2F..%2F_apis%2Fprojects",
+        "Bug%5c..%5c_apis%5cprojects",
+        "%2e%2e%2f_apis%2fprojects",
+    ],
+)
+@respx.mock
+async def test_create_item_rejects_route_escape_before_authenticated_io(kind: str) -> None:
+    adapter = make_adapter()
+    draft = WorkItemDraft(title="unsafe route", kind=kind)
+
+    with pytest.raises(ValueError, match="unsafe path characters"):
+        await adapter.create_item(draft)
+    with pytest.raises(ValueError, match="unsafe path characters"):
+        adapter.validate_create_item_idempotent(
+            draft,
+            marker="apex-idem-0123456789abcdef0123456789abcdef",
+        )
+
+    assert respx.calls.call_count == 0
+
+
+@respx.mock
+async def test_custom_work_item_type_is_one_encoded_route_segment() -> None:
+    route = respx.post(f"{BASE}/Phoenix/_apis/wit/workitems/$Risk%20item").mock(
+        return_value=httpx.Response(200, json=work_item_row(79, state="New"))
+    )
+
+    item = await make_adapter().create_item(WorkItemDraft(title="custom type", kind="risk item"))
+
+    assert item.key == "79"
+    assert route.called
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_find_idempotency_marker_caps_provider_results_and_detects_duplicate() -> None:
+    route = respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(
+            200,
+            json={"workItems": [{"id": 71}, {"id": 72}, {"id": 73}]},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="multiple items"):
+        await make_adapter().find_item_by_idempotency_marker(
+            "apex-idem-0123456789abcdef0123456789abcdef"
+        )
+
+    request = route.calls[0].request
+    assert request.url.params["$top"] == "2"
+    assert request.url.params["api-version"] == "7.1"
+    body = json.loads(request.content)
+    assert "System.Tags" in body["query"]
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_idempotent_create_adds_provider_marker_tag() -> None:
+    route = respx.post(f"{BASE}/Phoenix/_apis/wit/workitems/$Task").mock(
+        return_value=httpx.Response(200, json=work_item_row(78, state="New"))
+    )
+    marker = "apex-idem-fedcba9876543210fedcba9876543210"
+
+    await make_adapter().create_item_idempotent(
+        WorkItemDraft(title="Marked", kind="task", fields={"System.Tags": "perf"}),
+        marker=marker,
+    )
+
+    assert json.loads(route.calls[0].request.content)[-1] == {
+        "op": "add",
+        "path": "/fields/System.Tags",
+        "value": f"perf; {marker}",
+    }
+
+
 async def test_create_item_rejects_unknown_bare_field() -> None:
     draft = WorkItemDraft(title="x", fields={"priority": 1})
     with pytest.raises(ValueError, match="reference name"):
         await make_adapter().create_item(draft)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "System.Title/../../relations",
+        "System.Title~1relations",
+        "System..Title",
+        ".System.Title",
+    ],
+)
+@respx.mock
+async def test_create_item_rejects_ambiguous_json_pointer_before_io(
+    field_name: str,
+) -> None:
+    with pytest.raises(ValueError, match="reference name"):
+        await make_adapter().create_item(
+            WorkItemDraft(title="unsafe pointer", fields={field_name: "value"})
+        )
+
+    assert respx.calls.call_count == 0
+
+
+@respx.mock
+async def test_idempotent_field_update_rejects_append_only_history_before_request() -> None:
+    get_route = respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+    patch_route = respx.patch(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+
+    with pytest.raises(ValueError, match="System.History is append-only"):
+        await make_adapter().update_item_fields_idempotent(
+            "42", {"System.History": "duplicate-prone note"}
+        )
+
+    assert not get_route.called
+    assert not patch_route.called
+
+
+@respx.mock
+async def test_idempotent_field_update_is_project_scoped_and_revision_fenced() -> None:
+    row = work_item_row(42)
+    row["rev"] = 17
+    get_route = respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=row)
+    )
+    patch_route = respx.patch(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json={**row, "rev": 18})
+    )
+
+    await make_adapter().update_item_fields_idempotent(
+        "42",
+        {"System.Tags": "performance"},
+    )
+
+    assert get_route.called
+    assert json.loads(patch_route.calls[0].request.content) == [
+        {"op": "test", "path": "/rev", "value": 17},
+        {"op": "add", "path": "/fields/System.Tags", "value": "performance"},
+    ]
 
 
 @pytest.mark.parametrize(
@@ -291,22 +615,53 @@ async def test_create_item_rejects_unknown_bare_field() -> None:
         {"System.TeamProject": "Apollo"},
         {"System.AreaPath": "Apollo\\Payments"},
         {"System.IterationPath": "Apollo\\Sprint 1"},
+        {"System.AreaId": 1234},
+        {"System.IterationId": 5678},
     ],
 )
+@respx.mock
 async def test_create_item_rejects_project_override(fields: dict[str, object]) -> None:
     with pytest.raises(ValueError, match="project|configured"):
         await make_adapter().create_item(WorkItemDraft(title="Wrong home", fields=fields))
 
+    assert respx.calls.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"System.TeamProject": "Apollo"},
+        {"System.AreaPath": "Apollo\\Payments"},
+        {"System.IterationPath": "Apollo\\Sprint 1"},
+        {"System.AreaId": 1234},
+        {"System.IterationId": 5678},
+    ],
+)
+@respx.mock
+async def test_update_paths_reject_project_override_before_authenticated_io(
+    fields: dict[str, object],
+) -> None:
+    adapter = make_adapter()
+
+    with pytest.raises(ValueError, match="project|configured"):
+        await adapter.enrich_item("42", Enrichment(fields=fields))
+    with pytest.raises(ValueError, match="project|configured"):
+        await adapter.update_item_fields_idempotent("42", fields)
+    with pytest.raises(ValueError, match="project|configured"):
+        adapter.validate_update_item_fields_idempotent(fields)
+
+    assert respx.calls.call_count == 0
+
 
 @respx.mock
 async def test_enrich_item_patches_fields_and_posts_comment() -> None:
-    patch_route = respx.patch(f"{BASE}/_apis/wit/workitems/42").mock(
+    patch_route = respx.patch(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(200, json=work_item_row(42))
     )
     comment_route = respx.post(f"{BASE}/Phoenix/_apis/wit/workItems/42/comments").mock(
         return_value=httpx.Response(200, json={"id": 1, "text": "load profile attached"})
     )
-    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(200, json=work_item_row(42, state="Active"))
     )
     enrichment = Enrichment(
@@ -318,6 +673,7 @@ async def test_enrich_item_patches_fields_and_posts_comment() -> None:
     patch_request = patch_route.calls[0].request
     assert patch_request.headers["Content-Type"] == "application/json-patch+json"
     assert json.loads(patch_request.content) == [
+        {"op": "test", "path": "/rev", "value": 5},
         {"op": "add", "path": "/fields/System.State", "value": "Active"},
         {"op": "add", "path": "/fields/System.Tags", "value": "perf; checkout"},
     ]
@@ -329,10 +685,10 @@ async def test_enrich_item_patches_fields_and_posts_comment() -> None:
 
 @respx.mock
 async def test_enrich_item_checks_project_before_mutation() -> None:
-    respx.get(f"{BASE}/_apis/wit/workitems/42").mock(
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(200, json=work_item_row(42, project="Apollo"))
     )
-    patch_route = respx.patch(f"{BASE}/_apis/wit/workitems/42").mock(
+    patch_route = respx.patch(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
         return_value=httpx.Response(200, json=work_item_row(42))
     )
 

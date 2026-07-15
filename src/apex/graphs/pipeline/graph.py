@@ -40,7 +40,7 @@ def _prompt_variables(state: PipelineState) -> dict[str, str]:
     }
 
 
-def _external_seed(external: JsonDict) -> tuple[JsonDict, JsonDict]:
+def _external_seed(external: JsonDict, *, attempt: int) -> tuple[JsonDict, JsonDict]:
     """Synthetic succeeded-execution result + context packet from external results.
 
     Maps the ExternalResults payload onto the execution phase's test_summary shape so
@@ -60,7 +60,7 @@ def _external_seed(external: JsonDict) -> tuple[JsonDict, JsonDict]:
         **PhaseResult(
             phase=Phase.EXECUTION,
             status=PhaseStatus.SUCCEEDED,
-            attempt=1,
+            attempt=attempt,
             summary=summary_text,
         ).as_state(),
         "test_summary": test_summary,
@@ -97,15 +97,16 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     # Externally-supplied results seed a succeeded execution entry so analysis-only
     # runs (reporting/postmortem) satisfy the execution prerequisite honestly, without
     # the caller forging internal phase state. Skipped if execution is itself selected
-    # or already succeeded on this thread.
+    # on this run. A newly supplied envelope deliberately supersedes earlier
+    # execution evidence and therefore receives the next monotonic attempt.
     external = state.get("external_results")
     external_execution: JsonDict | None = None
     external_packet: JsonDict | None = None
     if external and Phase.EXECUTION not in selected_set:
         exec_current = existing.get(Phase.EXECUTION.value) or {}
-        if exec_current.get("status") != PhaseStatus.SUCCEEDED.value:
-            external_execution, external_packet = _external_seed(external)
-            existing[Phase.EXECUTION.value] = external_execution
+        external_attempt = max(1, int(exec_current.get("attempt") or 0) + 1)
+        external_execution, external_packet = _external_seed(external, attempt=external_attempt)
+        existing[Phase.EXECUTION.value] = external_execution
 
     for phase in selected:
         for prereq in PHASE_PREREQUISITES[phase]:
@@ -160,13 +161,24 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         "run_config": cfg.snapshot(),
         # Legacy/read-model convenience; run_config is authoritative for new runs.
         "limits": cfg.limits.model_dump(mode="json"),
+        # ExternalResults is a per-run input envelope. Consume it even when this
+        # run selected a real execution phase so a later checkpoint resume/rerun
+        # can never silently reuse stale caller-supplied evidence.
+        "external_results": None,
     }
+    if Phase.EXECUTION in selected_set:
+        # A thread rerun starts a new execution attempt. Do not leave the previous
+        # attempt's top-level handle available to the abort facade while the new
+        # attempt is still in prompt review or provisioning.
+        update["engine_handle"] = None
     if seeded_reviews:
         update["prompt_reviews"] = seeded_reviews
     if external_packet is not None:
         current_packets = list(state.get("context_packets") or [])
-        if not any(packet.get("id") == external_packet["id"] for packet in current_packets):
-            validate_context_packets([*current_packets, external_packet])
+        candidate_packets = [
+            packet for packet in current_packets if packet.get("id") != external_packet["id"]
+        ]
+        validate_context_packets([*candidate_packets, external_packet])
         update["context_packets"] = [external_packet]
     return update
 

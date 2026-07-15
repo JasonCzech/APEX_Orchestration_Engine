@@ -166,7 +166,9 @@ export function getItemHandler(items: WorkItem[] = [ITEM_PAYMENT, ITEM_BUG]) {
 /** POST items — captures drafts, answers 201 with a keyed item. */
 export function createItemHandler(key = 'PHX-300') {
   const captured: WorkItemDraft[] = []
+  const idempotencyKeys: string[] = []
   const handler = http.post('*/v1/work-tracking/items', async ({ request }) => {
+    idempotencyKeys.push(request.headers.get('Idempotency-Key') ?? '')
     const body = (await request.json()) as WorkItemDraft
     captured.push(body)
     const created: WorkItem = {
@@ -179,15 +181,17 @@ export function createItemHandler(key = 'PHX-300') {
     }
     return HttpResponse.json(created, { status: 201 })
   })
-  return { handler, captured }
+  return { handler, captured, idempotencyKeys }
 }
 
 /** POST items/{key}/enrich — captures bodies, answers the provided refreshed item. */
 export function enrichHandler(result: WorkItem) {
   const captured: Enrichment[] = []
+  const idempotencyKeys: string[] = []
   const handler = http.post('*/v1/work-tracking/items/:key/enrich', async ({ request }) => {
+    idempotencyKeys.push(request.headers.get('Idempotency-Key') ?? '')
     captured.push((await request.json()) as Enrichment)
     return HttpResponse.json(result)
   })
-  return { handler, captured }
+  return { handler, captured, idempotencyKeys }
 }

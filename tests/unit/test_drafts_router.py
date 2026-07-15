@@ -45,6 +45,7 @@ class FakeDraftsRepository:
     def __init__(self) -> None:
         self.rows: dict[str, Draft] = {}
         self.for_update_calls: list[str] = []
+        self.list_calls = 0
 
     def seed(
         self,
@@ -70,11 +71,26 @@ class FakeDraftsRepository:
         self.rows[draft_id] = draft
         return draft
 
-    async def list_all(self, *, project_id: str | None = None) -> list[Draft]:
+    async def list_all(
+        self,
+        *,
+        project_id: str | None = None,
+        allowed_scopes: tuple[ScopeRef, ...] | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[Draft]:
+        self.list_calls += 1
         drafts = list(self.rows.values())
+        if allowed_scopes is not None:
+            drafts = [
+                draft
+                for draft in drafts
+                if draft.project_id is None
+                or any(scope.project_id == draft.project_id for scope in allowed_scopes)
+            ]
         if project_id is not None:
             drafts = [d for d in drafts if d.project_id == project_id]
-        return drafts
+        return drafts[offset : offset + limit]
 
     async def get(self, draft_id: str) -> Draft | None:
         return self.rows.get(draft_id)
@@ -186,6 +202,16 @@ def test_list_with_project_filter() -> None:
     assert [row["id"] for row in rows] == ["d-proj-a"]
 
 
+def test_list_rejects_huge_offset_before_repository() -> None:
+    repo = seeded_repo()
+
+    with make_client(repo, ALICE) as client:
+        response = client.get("/v1/drafts", params={"offset": 10_001})
+
+    assert response.status_code == 422
+    assert repo.list_calls == 0
+
+
 def test_create_sets_created_by_from_identity() -> None:
     repo = FakeDraftsRepository()
     with make_client(repo, ALICE) as client:
@@ -199,6 +225,116 @@ def test_create_sets_created_by_from_identity() -> None:
     assert body["payload"] == {"step": 2}
     assert repo.rows[body["id"]].project_id == "proj-a"
     assert repo.rows[body["id"]].created_by_consumer_id == "op-alice"
+
+
+def test_create_rejects_oversized_scope_and_deep_payload_before_write() -> None:
+    repo = FakeDraftsRepository()
+    nested: dict[str, Any] = {}
+    cursor = nested
+    for _ in range(17):
+        child: dict[str, Any] = {}
+        cursor["child"] = child
+        cursor = child
+
+    with make_client(repo, ADMIN) as client:
+        long_scope = client.post(
+            "/v1/drafts",
+            json={"title": "draft", "project_id": "p" * 256, "payload": {}},
+        )
+        deep = client.post("/v1/drafts", json={"title": "draft", "payload": nested})
+
+    assert long_scope.status_code == 422
+    assert deep.status_code == 422
+    assert repo.rows == {}
+
+
+def test_create_rejects_recursive_draft_credentials_without_reflection() -> None:
+    canaries = {
+        "field": "raw-field-secret-canary-11aa",
+        "bearer": "bearer-secret-canary-22bb",
+        "signed": "signed-url-secret-canary-33cc",
+    }
+    payloads = [
+        {"nested": {"api_key": canaries["field"]}},
+        {"nested": [{"content": f"Bearer {canaries['bearer']}"}]},
+        {
+            "request": (
+                "https://example.test/object?"
+                f"X-Amz-Signature={canaries['signed']}"
+            )
+        },
+    ]
+
+    for payload in payloads:
+        repo = FakeDraftsRepository()
+        with make_client(repo, ALICE) as client:
+            response = client.post(
+                "/v1/drafts",
+                json={"title": "wizard", "project_id": "proj-a", "payload": payload},
+            )
+
+        assert response.status_code == 422
+        assert all(canary not in response.text for canary in canaries.values())
+        assert repo.rows == {}
+
+
+def test_update_rejects_recursive_draft_credentials_before_write() -> None:
+    canary = "update-bearer-secret-canary-44dd"
+    repo = seeded_repo()
+
+    with make_client(repo, ALICE) as client:
+        response = client.put(
+            "/v1/drafts/d-proj-a",
+            json={
+                "title": "A2",
+                "payload": {"request": [f"Authorization: Bearer {canary}"]},
+            },
+        )
+
+    assert response.status_code == 422
+    assert canary not in response.text
+    assert repo.rows["d-proj-a"].title == "A"
+    assert repo.rows["d-proj-a"].payload == {}
+
+
+def test_read_redacts_legacy_draft_credentials_for_shared_audience() -> None:
+    canaries = {
+        "title": "legacy-title-secret-canary-55ee",
+        "field": "legacy-field-secret-canary-66ff",
+        "bearer": "legacy-bearer-secret-canary-77aa",
+        "signed": "legacy-signed-url-secret-canary-88bb",
+    }
+    repo = seeded_repo()
+    draft = repo.rows["d-proj-a"]
+    draft.title = f"password={canaries['title']}"
+    draft.payload = {
+        "client_secret": canaries["field"],
+        "nested": [
+            f"Bearer {canaries['bearer']}",
+            (
+                "https://example.test/object?"
+                f"X-Goog-Signature={canaries['signed']}"
+            ),
+        ],
+        "safe": {"request": "ordinary wizard text"},
+    }
+
+    with make_client(repo, ALICE) as client:
+        detail = client.get("/v1/drafts/d-proj-a")
+        listing = client.get("/v1/drafts")
+
+    assert detail.status_code == 200
+    assert listing.status_code == 200
+    for response in (detail, listing):
+        assert all(canary not in response.text for canary in canaries.values())
+    body = detail.json()
+    assert body["title"] == "password=[REDACTED]"
+    assert "client_secret" not in body["payload"]
+    assert body["payload"]["nested"] == [
+        "Bearer [REDACTED]",
+        "https://example.test/object?X-Goog-Signature=[REDACTED]",
+    ]
+    assert body["payload"]["safe"] == {"request": "ordinary wizard text"}
 
 
 def test_create_outside_scope_403() -> None:
@@ -276,6 +412,16 @@ def test_get_out_of_scope_draft_is_404() -> None:
         assert client.get("/v1/drafts/d-proj-b").status_code == 404
         assert client.get("/v1/drafts/d-proj-a").status_code == 200
         assert client.get("/v1/drafts/missing").status_code == 404
+
+
+def test_draft_not_found_does_not_reflect_credential_shaped_id() -> None:
+    canary = "Bearer-secret-canary"
+    with make_client(seeded_repo(), ALICE) as client:
+        response = client.get(f"/v1/drafts/{canary}")
+
+    assert response.status_code == 404
+    assert response.json()["title"] == "draft not found"
+    assert canary not in response.text
 
 
 def test_update_replaces_title_payload_and_bumps_updated_at() -> None:

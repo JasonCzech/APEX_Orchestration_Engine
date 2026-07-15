@@ -3,15 +3,22 @@ name: deploy-aks
 # Manual, environment-gated deploy to AKS. Auth is OIDC (federated) — no stored
 # cloud credentials. Configure per GitHub Environment:
 #   vars:    AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
-#            AZURE_TFSTATE_RG, AZURE_TFSTATE_SA
-#   secrets: PG_ADMIN_PASSWORD, LANGGRAPH_CLOUD_LICENSE_KEY, APEX_MINIO_SECRET_KEY
+#            AZURE_TFSTATE_RG, AZURE_TFSTATE_SA,
+#            AZURE_KUBERNETES_VERSION (reviewed 1.x minor/patch),
+#            AZURE_BACKUP_ALERT_ACTION_GROUP_IDS (JSON array; required for
+#            staging/prod while backup monitoring is enabled)
+#   secrets: PG_ADMIN_PASSWORD, LANGGRAPH_CLOUD_LICENSE_KEY, APEX_MINIO_SECRET_KEY,
+#            APEX_BOOTSTRAP_ADMIN_KEY, APEX_API_KEY_HASH_PEPPER,
+#            APEX_PREVIOUS_API_KEY_HASH_PEPPERS, APEX_TLS_CERTIFICATE,
+#            APEX_TLS_PRIVATE_KEY, APEX_TERRAFORM_PLAN_PASSPHRASE (32+ chars)
 # The AZURE_CLIENT_ID is a *deployer* identity federated to this repo+environment
 # (distinct from the in-cluster workload identity Terraform creates).
 #
 # Ordering enforces migrate-then-roll: the Helm pre-upgrade hooks run alembic and
 # the bootstrap Job before the Deployment rolls; `helm upgrade --wait` gates on them.
-# Rollback: `helm rollback <release>` (migrations are additive — old code is safe on
-# the newer schema; see docs/runbooks/deployment.md).
+# Rollback: `helm rollback <release>` to a lineage-aware image (migrations are
+# additive and the newer head is a registered descendant). Never cross the
+# pre-lineage adoption boundary; see docs/runbooks/deployment.md.
 
 on:
   workflow_dispatch:
@@ -26,12 +33,11 @@ on:
         required: true
         type: string
       tls_secret_name:
-        description: Existing Kubernetes TLS Secret for the hostname
+        description: TLS Secret name (created/updated from environment TLS secrets when supplied)
         required: true
         type: string
 
 permissions:
-  id-token: write
   contents: read
 
 concurrency:
@@ -40,6 +46,7 @@ concurrency:
 
 env:
   TF_DIR: deploy/terraform
+  BACKUP_TF_DIR: deploy/terraform/backup
   NAMESPACE: apex
   RELEASE: apex
 
@@ -58,19 +65,19 @@ jobs:
       - run: uv run pyright
       - run: uv run pytest tests/unit -q
 
-  provision:
+  plan-infrastructure:
     needs: verify
-    runs-on: ubuntu-latest
+    # The state backend is private in staging/prod, so planning and applying use
+    # the same private-network runner class as kubectl/Helm.
+    runs-on:
+      group: apex-aks
+      labels: [self-hosted, linux]
     environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
     outputs:
-      acr: ${{ steps.tf.outputs.acr }}
-      aks: ${{ steps.tf.outputs.aks }}
-      rg: ${{ steps.tf.outputs.rg }}
-      kv: ${{ steps.tf.outputs.kv }}
-      tenant: ${{ steps.tf.outputs.tenant }}
-      client_id: ${{ steps.tf.outputs.client_id }}
-      service_account: ${{ steps.tf.outputs.service_account }}
-      hook_service_account: ${{ steps.tf.outputs.hook_service_account }}
+      plan_sha256: ${{ steps.plan.outputs.sha256 }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
@@ -85,44 +92,304 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         env:
           ARM_USE_OIDC: "true"
+          ARM_USE_AZUREAD: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
         run: |
           terraform init -input=false \
             -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
             -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=apex-${{ inputs.environment }}.tfstate"
-      - name: Terraform plan + apply
-        id: tf
+            -backend-config="key=apex-${{ inputs.environment }}.tfstate" \
+            -backend-config="use_azuread_auth=true"
+      - name: Create and enforce saved Terraform plan
+        id: plan
         working-directory: ${{ env.TF_DIR }}
         env:
           ARM_USE_OIDC: "true"
+          ARM_USE_AZUREAD: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           TF_VAR_postgres_admin_password: ${{ secrets.PG_ADMIN_PASSWORD }}
           TF_VAR_langgraph_license_key: ${{ secrets.LANGGRAPH_CLOUD_LICENSE_KEY }}
           TF_VAR_artifact_store_secret: ${{ secrets.APEX_MINIO_SECRET_KEY }}
           TF_VAR_bootstrap_admin_key: ${{ secrets.APEX_BOOTSTRAP_ADMIN_KEY }}
           TF_VAR_api_key_hash_pepper: ${{ secrets.APEX_API_KEY_HASH_PEPPER }}
+          # Terraform parses list-typed TF_VAR values as JSON; an unset rotation list is empty.
           TF_VAR_previous_api_key_hash_peppers: ${{ secrets.APEX_PREVIOUS_API_KEY_HASH_PEPPERS || '[]' }}
           TF_VAR_workload_namespace: ${{ env.NAMESPACE }}
+          TF_VAR_kubernetes_version: ${{ vars.AZURE_KUBERNETES_VERSION }}
+          TF_VAR_backup_alert_action_group_ids: ${{ vars.AZURE_BACKUP_ALERT_ACTION_GROUP_IDS || '[]' }}
+          TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
         run: |
+          umask 077
+          test "${#TFPLAN_PASSPHRASE}" -ge 32
           terraform plan -input=false -out=tfplan -var-file="env/${{ inputs.environment }}.tfvars"
-          terraform apply -input=false -auto-approve tfplan
+          terraform show -json tfplan \
+            | python3 ../../scripts/terraform_plan_policy.py "${{ inputs.environment }}" -
+          terraform show -no-color tfplan > tfplan.txt
+          sha256sum tfplan | tee tfplan.sha256
+          echo "sha256=$(cut -d' ' -f1 tfplan.sha256)" >> "$GITHUB_OUTPUT"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in tfplan -out tfplan.enc -pass env:TFPLAN_PASSPHRASE
+          rm -f tfplan
+          {
+            echo '### Main infrastructure saved plan'
+            echo
+            echo '```text'
+            sed -n '/Plan:/,$p' tfplan.txt | tail -30
+            echo '```'
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 tfplan.sha256)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apex-main-plan-${{ github.run_id }}
+          path: |
+            deploy/terraform/tfplan.enc
+            deploy/terraform/tfplan.sha256
+            deploy/terraform/tfplan.txt
+          retention-days: 1
+          if-no-files-found: error
+      - name: Remove local main-plan files
+        if: always()
+        working-directory: ${{ env.TF_DIR }}
+        run: rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt
+
+  provision:
+    needs: plan-infrastructure
+    runs-on:
+      group: apex-aks
+      labels: [self-hosted, linux]
+    # Required reviewers now approve after the exact plan/digest is available.
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      acr: ${{ steps.tf.outputs.acr }}
+      aks: ${{ steps.tf.outputs.aks }}
+      rg: ${{ steps.tf.outputs.rg }}
+      location: ${{ steps.tf.outputs.location }}
+      deployer_object_id: ${{ steps.tf.outputs.deployer_object_id }}
+      kv: ${{ steps.tf.outputs.kv }}
+      hook_kv: ${{ steps.tf.outputs.hook_kv }}
+      tenant: ${{ steps.tf.outputs.tenant }}
+      client_id: ${{ steps.tf.outputs.client_id }}
+      hook_client_id: ${{ steps.tf.outputs.hook_client_id }}
+      backup_client_id: ${{ steps.tf.outputs.backup_client_id }}
+      backup_principal_id: ${{ steps.tf.outputs.backup_principal_id }}
+      service_account: ${{ steps.tf.outputs.service_account }}
+      hook_service_account: ${{ steps.tf.outputs.hook_service_account }}
+      backup_service_account: ${{ steps.tf.outputs.backup_service_account }}
+      database_credential_generation: ${{ steps.tf.outputs.database_credential_generation }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apex-main-plan-${{ github.run_id }}
+          path: ${{ env.TF_DIR }}
+      - name: Terraform init and apply exact approved plan
+        id: tf
+        working-directory: ${{ env.TF_DIR }}
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_USE_AZUREAD: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
+        run: |
+          umask 077
+          trap 'rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt' EXIT
+          test "${#TFPLAN_PASSPHRASE}" -ge 32
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=apex-${{ inputs.environment }}.tfstate" \
+            -backend-config="use_azuread_auth=true"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in tfplan.enc -out tfplan -pass env:TFPLAN_PASSPHRASE
+          test "$(cut -d' ' -f1 tfplan.sha256)" = "${{ needs.plan-infrastructure.outputs.plan_sha256 }}"
+          sha256sum --check tfplan.sha256
+          terraform apply -input=false tfplan
           {
             echo "acr=$(terraform output -raw acr_login_server)"
             echo "aks=$(terraform output -raw aks_cluster_name)"
             echo "rg=$(terraform output -raw resource_group)"
+            echo "location=$(terraform output -raw location)"
+            echo "deployer_object_id=$(terraform output -raw deployer_object_id)"
             echo "kv=$(terraform output -raw key_vault_name)"
+            echo "hook_kv=$(terraform output -raw hook_key_vault_name)"
             echo "tenant=$(terraform output -raw tenant_id)"
             echo "client_id=$(terraform output -raw workload_identity_client_id)"
+            echo "hook_client_id=$(terraform output -raw hook_identity_client_id)"
+            echo "backup_client_id=$(terraform output -raw backup_identity_client_id)"
+            echo "backup_principal_id=$(terraform output -raw backup_identity_principal_id)"
             echo "service_account=$(terraform output -raw workload_service_account)"
             echo "hook_service_account=$(terraform output -raw workload_hook_service_account)"
+            echo "backup_service_account=$(terraform output -raw backup_service_account)"
+            echo "database_credential_generation=$(terraform output -raw database_credential_generation)"
           } >> "$GITHUB_OUTPUT"
+
+  plan-backup:
+    needs: provision
+    runs-on:
+      group: apex-aks
+      labels: [self-hosted, linux]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      plan_sha256: ${{ steps.plan.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+      - name: Initialize independent backup state
+        working-directory: ${{ env.BACKUP_TF_DIR }}
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_USE_AZUREAD: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=apex-${{ inputs.environment }}-backup.tfstate" \
+            -backend-config="use_azuread_auth=true"
+      - name: Create and enforce backup saved plan
+        id: plan
+        working-directory: ${{ env.BACKUP_TF_DIR }}
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_USE_AZUREAD: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
+        run: |
+          umask 077
+          test "${#TFPLAN_PASSPHRASE}" -ge 32
+          terraform plan -input=false -out=tfplan \
+            -var="environment=${{ inputs.environment }}" \
+            -var="location=${{ needs.provision.outputs.location }}" \
+            -var="backup_identity_principal_id=${{ needs.provision.outputs.backup_principal_id }}" \
+            -var="deployer_object_id=${{ needs.provision.outputs.deployer_object_id }}"
+          terraform show -json tfplan \
+            | python3 ../../../scripts/terraform_plan_policy.py "${{ inputs.environment }}" -
+          terraform show -no-color tfplan > tfplan.txt
+          sha256sum tfplan | tee tfplan.sha256
+          echo "sha256=$(cut -d' ' -f1 tfplan.sha256)" >> "$GITHUB_OUTPUT"
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -in tfplan -out tfplan.enc -pass env:TFPLAN_PASSPHRASE
+          rm -f tfplan
+          {
+            echo '### Independent backup saved plan'
+            echo
+            echo '```text'
+            sed -n '/Plan:/,$p' tfplan.txt | tail -30
+            echo '```'
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 tfplan.sha256)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: apex-backup-plan-${{ github.run_id }}
+          path: |
+            deploy/terraform/backup/tfplan.enc
+            deploy/terraform/backup/tfplan.sha256
+            deploy/terraform/backup/tfplan.txt
+          retention-days: 1
+          if-no-files-found: error
+      - name: Remove local backup-plan files
+        if: always()
+        working-directory: ${{ env.BACKUP_TF_DIR }}
+        run: rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt
+
+  provision-backup:
+    needs: [provision, plan-backup]
+    runs-on:
+      group: apex-aks
+      labels: [self-hosted, linux]
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      storage_account: ${{ steps.tf.outputs.storage_account }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_wrapper: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: apex-backup-plan-${{ github.run_id }}
+          path: ${{ env.BACKUP_TF_DIR }}
+      - name: Apply exact approved backup plan
+        id: tf
+        working-directory: ${{ env.BACKUP_TF_DIR }}
+        env:
+          ARM_USE_OIDC: "true"
+          ARM_USE_AZUREAD: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
+        run: |
+          umask 077
+          trap 'rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt' EXIT
+          test "${#TFPLAN_PASSPHRASE}" -ge 32
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=apex-${{ inputs.environment }}-backup.tfstate" \
+            -backend-config="use_azuread_auth=true"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in tfplan.enc -out tfplan -pass env:TFPLAN_PASSPHRASE
+          test "$(cut -d' ' -f1 tfplan.sha256)" = "${{ needs.plan-backup.outputs.plan_sha256 }}"
+          sha256sum --check tfplan.sha256
+          terraform apply -input=false tfplan
+          echo "storage_account=$(terraform output -raw storage_account_name)" >> "$GITHUB_OUTPUT"
 
   build-push:
     needs: [provision, verify]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      backend_digest: ${{ steps.images.outputs.backend_digest }}
+      dashboard_digest: ${{ steps.images.outputs.dashboard_digest }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
@@ -138,6 +405,7 @@ jobs:
       - name: ACR login
         run: az acr login --name "$(echo '${{ needs.provision.outputs.acr }}' | cut -d. -f1)"
       - name: Build + push images
+        id: images
         env:
           ACR: ${{ needs.provision.outputs.acr }}
           TAG: sha-${{ github.sha }}
@@ -146,11 +414,30 @@ jobs:
           docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
           docker push "$ACR/apex-orchestration-engine:$TAG"
           docker push "$ACR/apex-dashboard:$TAG"
+          backend_repo_digest="$(docker image inspect \
+            --format='{{json .RepoDigests}}' "$ACR/apex-orchestration-engine:$TAG" \
+            | python3 scripts/docker_repo_digest.py "$ACR/apex-orchestration-engine")"
+          dashboard_repo_digest="$(docker image inspect \
+            --format='{{json .RepoDigests}}' "$ACR/apex-dashboard:$TAG" \
+            | python3 scripts/docker_repo_digest.py "$ACR/apex-dashboard")"
+          backend_digest="${backend_repo_digest##*@}"
+          dashboard_digest="${dashboard_repo_digest##*@}"
+          [[ "$backend_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$dashboard_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "backend_digest=$backend_digest" >> "$GITHUB_OUTPUT"
+          echo "dashboard_digest=$dashboard_digest" >> "$GITHUB_OUTPUT"
 
   deploy:
-    needs: [provision, build-push]
-    runs-on: ubuntu-latest
+    needs: [provision, provision-backup, build-push]
+    # Staging/prod use a private AKS API endpoint. This runner must have the
+    # `apex-aks` runner group, VNet/private-DNS reachability, kubectl, and kubelogin.
+    runs-on:
+      group: apex-aks
+      labels: [self-hosted, linux]
     environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
@@ -160,10 +447,31 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
       - name: Cluster credentials
-        run: az aks get-credentials --resource-group "${{ needs.provision.outputs.rg }}" --name "${{ needs.provision.outputs.aks }}" --overwrite-existing
-      - name: Prepare namespace and CSI API
+        run: |
+          command -v kubelogin >/dev/null || {
+            echo "The private AKS runner must provide kubelogin" >&2
+            exit 2
+          }
+          az aks get-credentials \
+            --resource-group "${{ needs.provision.outputs.rg }}" \
+            --name "${{ needs.provision.outputs.aks }}" \
+            --overwrite-existing --format exec
+          kubelogin convert-kubeconfig -l azurecli
+          for attempt in {1..30}; do
+            if [[ "$(kubectl auth can-i '*' '*' --all-namespaces 2>/dev/null)" == "yes" ]]; then
+              exit 0
+            fi
+            echo "Waiting for AKS Azure RBAC propagation ($attempt/30)"
+            sleep 10
+          done
+          echo "Deployer did not receive AKS Azure RBAC admin access" >&2
+          exit 1
+      - name: Prepare namespace, TLS, and CSI API
         env:
           TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
+          APEX_HOSTNAME: ${{ inputs.hostname }}
+          TLS_CERTIFICATE: ${{ secrets.APEX_TLS_CERTIFICATE }}
+          TLS_PRIVATE_KEY: ${{ secrets.APEX_TLS_PRIVATE_KEY }}
         run: |
           validate_dns_subdomain() {
             local value="$1" label
@@ -180,11 +488,40 @@ jobs:
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl wait --for=condition=Established \
             crd/secretproviderclasses.secrets-store.csi.x-k8s.io --timeout=5m
-          kubectl -n "$NAMESPACE" get secret "$TLS_SECRET_NAME"
+          if [[ -n "$TLS_CERTIFICATE" || -n "$TLS_PRIVATE_KEY" ]]; then
+            if [[ -z "$TLS_CERTIFICATE" || -z "$TLS_PRIVATE_KEY" ]]; then
+              echo "APEX_TLS_CERTIFICATE and APEX_TLS_PRIVATE_KEY must be configured together" >&2
+              exit 2
+            fi
+            tls_dir="$(mktemp -d)"
+            trap 'rm -rf "$tls_dir"' EXIT
+            umask 077
+            printf '%s' "$TLS_CERTIFICATE" > "$tls_dir/tls.crt"
+            printf '%s' "$TLS_PRIVATE_KEY" > "$tls_dir/tls.key"
+            openssl x509 -in "$tls_dir/tls.crt" -noout -checkend 86400
+            openssl x509 -in "$tls_dir/tls.crt" -noout -checkhost "$APEX_HOSTNAME"
+            cert_key="$(openssl x509 -in "$tls_dir/tls.crt" -pubkey -noout \
+              | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)"
+            private_key="$(openssl pkey -in "$tls_dir/tls.key" -pubout -outform DER \
+              | sha256sum | cut -d' ' -f1)"
+            if [[ "$cert_key" != "$private_key" ]]; then
+              echo "TLS certificate and private key do not match" >&2
+              exit 2
+            fi
+            kubectl -n "$NAMESPACE" create secret tls "$TLS_SECRET_NAME" \
+              --cert="$tls_dir/tls.crt" --key="$tls_dir/tls.key" \
+              --dry-run=client -o yaml | kubectl apply -f -
+          elif ! kubectl -n "$NAMESPACE" get secret "$TLS_SECRET_NAME" >/dev/null; then
+            echo "TLS Secret is absent; configure APEX_TLS_CERTIFICATE and APEX_TLS_PRIVATE_KEY in the GitHub Environment" >&2
+            exit 2
+          fi
+          test "$(kubectl -n "$NAMESPACE" get secret "$TLS_SECRET_NAME" -o jsonpath='{.type}')" = kubernetes.io/tls
       - name: Helm upgrade (migrate + bootstrap hooks run first)
         env:
           ACR: ${{ needs.provision.outputs.acr }}
           TAG: sha-${{ github.sha }}
+          BACKEND_DIGEST: ${{ needs.build-push.outputs.backend_digest }}
+          DASHBOARD_DIGEST: ${{ needs.build-push.outputs.dashboard_digest }}
           APEX_HOSTNAME: ${{ inputs.hostname }}
           TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
         run: |
@@ -208,16 +545,27 @@ jobs:
           fi
           FULLNAME="${FULLNAME:0:63}"
           FULLNAME="${FULLNAME%-}"
-          DASHBOARD_NAME="${FULLNAME}-dashboard"
-          DASHBOARD_NAME="${DASHBOARD_NAME:0:63}"
-          DASHBOARD_NAME="${DASHBOARD_NAME%-}"
+          suffixed_name() {
+            local base="$1" suffix="${2#-}" max_base_length
+            if (( ${#suffix} < 1 || ${#suffix} > 61 )); then
+              echo "Helm name suffix must be between 1 and 61 characters" >&2
+              return 2
+            fi
+            max_base_length=$((62 - ${#suffix}))
+            base="${base:0:max_base_length}"
+            base="${base%-}"
+            printf '%s-%s' "$base" "$suffix"
+          }
+          DASHBOARD_NAME="$(suffixed_name "$FULLNAME" dashboard)"
           helm upgrade --install "$RELEASE" deploy/helm/apex-orchestration-engine \
             -n "$NAMESPACE" --create-namespace \
             -f deploy/azure/helm/values-azure.yaml \
             --set image.repository="$ACR/apex-orchestration-engine" \
             --set image.tag="$TAG" \
+            --set-string image.digest="$BACKEND_DIGEST" \
             --set dashboard.image.repository="$ACR/apex-dashboard" \
             --set dashboard.image.tag="$TAG" \
+            --set-string dashboard.image.digest="$DASHBOARD_DIGEST" \
             --set-string dashboard.backendUpstream="http://$FULLNAME:80" \
             --set-string bootstrap.document.connections[0].options.endpoint="apex-minio:9000" \
             --set-string "ingress.hosts[0].host=$APEX_HOSTNAME" \
@@ -225,21 +573,85 @@ jobs:
             --set-string "ingress.tls[0].secretName=$TLS_SECRET_NAME" \
             --set-string "apexSettings.APEX_CORS_ORIGINS=[\"https://$APEX_HOSTNAME\"]" \
             --set secretBackend.csi.keyvaultName="${{ needs.provision.outputs.kv }}" \
+            --set secretBackend.csi.hookKeyvaultName="${{ needs.provision.outputs.hook_kv }}" \
             --set secretBackend.csi.tenantId="${{ needs.provision.outputs.tenant }}" \
             --set workloadIdentity.clientId="${{ needs.provision.outputs.client_id }}" \
+            --set hookWorkloadIdentity.clientId="${{ needs.provision.outputs.hook_client_id }}" \
+            --set backupWorkloadIdentity.clientId="${{ needs.provision.outputs.backup_client_id }}" \
             --set serviceAccount.name="${{ needs.provision.outputs.service_account }}" \
             --set hookServiceAccountName="${{ needs.provision.outputs.hook_service_account }}" \
+            --set backupWorkloadIdentity.serviceAccountName="${{ needs.provision.outputs.backup_service_account }}" \
+            --set-string databaseRoleProvisioning.credentialGeneration="${{ needs.provision.outputs.database_credential_generation }}" \
             --wait --timeout 15m
           kubectl -n "$NAMESPACE" rollout restart \
             "deployment/$FULLNAME" \
             "deployment/$DASHBOARD_NAME"
-          kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME"
-          kubectl -n "$NAMESPACE" rollout status "deployment/$DASHBOARD_NAME"
+          kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME" --timeout=15m
+          kubectl -n "$NAMESPACE" rollout status "deployment/$DASHBOARD_NAME" --timeout=15m
       - name: MinIO artifact store
         run: |
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
+          kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/networkpolicy.yaml
           kubectl -n "$NAMESPACE" rollout restart deployment/apex-minio
           kubectl -n "$NAMESPACE" rollout status deployment/apex-minio --timeout=5m
+          kubectl -n "$NAMESPACE" create configmap apex-minio-backup-config \
+            --from-literal=AZURE_STORAGE_ACCOUNT="${{ needs.provision-backup.outputs.storage_account }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/backup-cronjob.yaml
-      - name: Smoke test
-        run: helm test "$RELEASE" -n "$NAMESPACE"
+      - name: Exercise and verify artifact backup
+        env:
+          STORAGE_ACCOUNT: ${{ needs.provision-backup.outputs.storage_account }}
+          SMOKE_OBJECT: .apex-backup-smoke/${{ inputs.environment }}/${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          kubectl -n "$NAMESPACE" exec deployment/apex-minio -- \
+            env "SMOKE_OBJECT=$SMOKE_OBJECT" sh -ec '
+              mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+              mc mb --ignore-existing local/apex-artifacts >/dev/null
+              printf "%s\n" "APEX backup deployment smoke" | mc pipe "local/apex-artifacts/$SMOKE_OBJECT"
+            '
+          job=apex-minio-backup-smoke
+          kubectl -n "$NAMESPACE" delete job "$job" --ignore-not-found --wait=true
+          kubectl -n "$NAMESPACE" create job --from=cronjob/apex-minio-backup "$job"
+          if ! kubectl -n "$NAMESPACE" wait --for=condition=complete "job/$job" --timeout=15m; then
+            kubectl -n "$NAMESPACE" logs "job/$job" --all-containers=true || true
+            exit 1
+          fi
+          kubectl -n "$NAMESPACE" logs "job/$job" --all-containers=true
+          for attempt in {1..30}; do
+            exists="$(az storage blob exists \
+              --account-name "$STORAGE_ACCOUNT" \
+              --container-name apex-artifacts-backup \
+              --name "$SMOKE_OBJECT" --auth-mode login \
+              --query exists -o tsv 2>/dev/null || true)"
+            if [[ "$exists" == "true" ]]; then
+              kubectl -n "$NAMESPACE" exec deployment/apex-minio -- \
+                env "SMOKE_OBJECT=$SMOKE_OBJECT" sh -ec '
+                  mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null
+                  mc rm "local/apex-artifacts/$SMOKE_OBJECT"
+                '
+              kubectl -n "$NAMESPACE" delete job "$job" --wait=false
+              exit 0
+            fi
+            echo "Waiting for backup object/RBAC propagation ($attempt/30)"
+            sleep 10
+          done
+          echo "Backup job completed but sentinel is absent from Azure Blob" >&2
+          exit 1
+      - name: Internal and public HTTPS smoke tests
+        env:
+          APEX_HOSTNAME: ${{ inputs.hostname }}
+        run: |
+          helm test "$RELEASE" -n "$NAMESPACE"
+          INGRESS="$(kubectl -n "$NAMESPACE" get ingress \
+            -l "app.kubernetes.io/instance=$RELEASE" \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$INGRESS"
+          kubectl -n "$NAMESPACE" wait \
+            --for=jsonpath='{.status.loadBalancer.ingress}' \
+            "ingress/$INGRESS" --timeout=10m
+          test "$(kubectl -n "$NAMESPACE" get "ingress/$INGRESS" \
+            -o jsonpath='{.spec.ingressClassName}')" = webapprouting.kubernetes.azure.com
+          curl --fail --silent --show-error --retry 12 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 "https://$APEX_HOSTNAME/ok"
+          curl --fail --silent --show-error --retry 12 --retry-all-errors \
+            --connect-timeout 10 --max-time 30 "https://$APEX_HOSTNAME/ready"

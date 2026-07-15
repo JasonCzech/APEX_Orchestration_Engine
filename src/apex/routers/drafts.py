@@ -1,21 +1,28 @@
 """Server-side new-test wizard drafts (`/drafts`).
 
 Visibility: unscoped admins see everything; everyone else sees global drafts
-(project_id NULL), drafts in their scoped projects, and drafts they created.
-Out-of-scope rows answer 404 (not 403) so ids don't leak across projects.
+(project_id NULL) and drafts in their scoped projects. Creation provenance is
+audit metadata, not an authorization grant. Out-of-scope rows answer 404.
 """
 
 import inspect
-import json
 from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
+from apex.domain.diagnostics import bounded_diagnostic, is_credential_field
+from apex.domain.input_limits import (
+    MAX_DB_LIST_OFFSET,
+    NoNulStr,
+    RecordId,
+    ScopeId,
+    validate_json_object,
+)
 from apex.persistence.db import get_session
 from apex.persistence.models import Draft
 from apex.persistence.repositories.drafts import DraftsRepository
@@ -31,7 +38,7 @@ def get_drafts_repository(
 
 DraftsRepo = Annotated[DraftsRepository, Depends(get_drafts_repository)]
 OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
-DraftId = Annotated[str, Path(description="Draft id")]
+DraftId = Annotated[RecordId, Path(description="Draft id")]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -46,10 +53,22 @@ class DraftRead(BaseModel):
     created_at: datetime | None
     updated_at: datetime | None
 
+    @field_validator("title", mode="before")
+    @classmethod
+    def sanitize_legacy_title(cls, value: Any) -> str:
+        return _public_draft_title(value)
+
+    @field_validator("payload", mode="before")
+    @classmethod
+    def sanitize_legacy_payload(cls, value: Any) -> dict[str, Any]:
+        return _public_draft_payload(value)
+
 
 class DraftCreateRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=1024)
-    project_id: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    title: NoNulStr = Field(min_length=1, max_length=1024)
+    project_id: ScopeId | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("payload")
@@ -57,13 +76,20 @@ class DraftCreateRequest(BaseModel):
     def validate_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
         _validate_draft_payload(value)
         return value
+
+    @field_validator("title")
+    @classmethod
+    def reject_credential_title(cls, value: str) -> str:
+        return _reject_draft_credential_text(value, label="draft title")
 
 
 class DraftUpdateRequest(BaseModel):
     """Full replace of editable fields; omitted project_id keeps legacy ownership."""
 
-    title: str = Field(min_length=1, max_length=1024)
-    project_id: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    title: NoNulStr = Field(min_length=1, max_length=1024)
+    project_id: ScopeId | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("payload")
@@ -72,24 +98,88 @@ class DraftUpdateRequest(BaseModel):
         _validate_draft_payload(value)
         return value
 
+    @field_validator("title")
+    @classmethod
+    def reject_credential_title(cls, value: str) -> str:
+        return _reject_draft_credential_text(value, label="draft title")
+
 
 def _validate_draft_payload(value: dict[str, Any]) -> None:
-    try:
-        if len(json.dumps(value, ensure_ascii=False, allow_nan=False)) > 200_000:
-            raise ValueError("draft payload exceeds 200000 characters")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("draft payload must be finite JSON under 200000 characters") from exc
-    stack: list[tuple[Any, int]] = [(value, 0)]
-    nodes = 0
+    validate_json_object(
+        value,
+        label="draft payload",
+        max_bytes=200_000,
+        max_nodes=2_000,
+        max_depth=16,
+    )
+    _reject_draft_credentials(value)
+
+
+def _reject_draft_credential_text(value: str, *, label: str) -> str:
+    if bounded_diagnostic(value, max_chars=max(1, len(value))) != value:
+        raise ValueError(f"{label} must not contain credential material")
+    return value
+
+
+def _reject_draft_credentials(value: dict[str, Any]) -> None:
+    """Keep roaming/shared wizard state free of recursive secret material."""
+
+    stack: list[Any] = [value]
     while stack:
-        current, depth = stack.pop()
-        nodes += 1
-        if nodes > 2_000 or depth > 16:
-            raise ValueError("draft payload exceeds structural limits")
+        current = stack.pop()
         if isinstance(current, dict):
-            stack.extend((item, depth + 1) for item in current.values())
+            for key, nested in current.items():
+                if is_credential_field(key) or bounded_diagnostic(
+                    key, max_chars=max(1, len(key))
+                ) != key:
+                    raise ValueError("draft payload must not contain credential material")
+                stack.append(nested)
         elif isinstance(current, list):
-            stack.extend((item, depth + 1) for item in current)
+            stack.extend(current)
+        elif isinstance(current, str):
+            _reject_draft_credential_text(current, label="draft payload")
+
+
+def _public_draft_title(value: Any) -> str:
+    if not isinstance(value, str):
+        return "[invalid legacy draft title]"
+    return bounded_diagnostic(value, max_chars=min(max(1, len(value)), 1_024))
+
+
+def _public_draft_payload(value: Any) -> dict[str, Any]:
+    """Redact valid legacy JSON; quarantine malformed or oversized rows."""
+
+    if not isinstance(value, dict):
+        return {}
+    try:
+        validate_json_object(
+            value,
+            label="legacy draft payload",
+            max_bytes=200_000,
+            max_nodes=2_000,
+            max_depth=16,
+        )
+    except (RecursionError, TypeError, ValueError):
+        return {}
+    projected = _redact_legacy_draft_value(value)
+    return projected if isinstance(projected, dict) else {}
+
+
+def _redact_legacy_draft_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, nested in value.items():
+            if is_credential_field(key) or bounded_diagnostic(
+                key, max_chars=max(1, len(key))
+            ) != key:
+                continue
+            projected[key] = _redact_legacy_draft_value(nested)
+        return projected
+    if isinstance(value, list):
+        return [_redact_legacy_draft_value(item) for item in value]
+    if isinstance(value, str):
+        return bounded_diagnostic(value, max_chars=max(1, len(value)))
+    return value
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -140,7 +230,7 @@ async def _visible_or_404(
 ) -> Draft:
     draft = await repo.get(draft_id)
     if draft is None or not _visible(identity, draft):
-        raise HTTPException(status_code=404, detail=f"Draft '{draft_id}' not found")
+        raise HTTPException(status_code=404, detail="draft not found")
     return draft
 
 
@@ -149,7 +239,7 @@ async def _writable_or_404(
 ) -> Draft:
     draft = await repo.get_for_update(draft_id)
     if draft is None or not _writable(identity, draft):
-        raise HTTPException(status_code=404, detail=f"Draft '{draft_id}' not found")
+        raise HTTPException(status_code=404, detail="draft not found")
     return draft
 
 
@@ -160,9 +250,9 @@ async def _writable_or_404(
 async def list_drafts(
     identity: CurrentIdentity,
     repo: DraftsRepo,
-    project: Annotated[str | None, Query(description="Filter to one project")] = None,
+    project: Annotated[ScopeId | None, Query(description="Filter to one project")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
 ) -> list[DraftRead]:
     ensure_scope(identity, project_id=project)
     parameters = inspect.signature(repo.list_all).parameters
@@ -217,4 +307,4 @@ async def update_draft(
 async def delete_draft(draft_id: DraftId, identity: OperatorIdentity, repo: DraftsRepo) -> None:
     draft = await _writable_or_404(repo, identity, draft_id)
     if not await repo.delete_existing(draft):
-        raise HTTPException(status_code=404, detail=f"Draft '{draft_id}' not found")
+        raise HTTPException(status_code=404, detail="draft not found")

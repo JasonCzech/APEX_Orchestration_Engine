@@ -17,10 +17,11 @@ Auth modes:
   each client rebuild so projected-token rotation is honored. RBAC comes from the
   pod's ServiceAccount (see the Helm chart's workloadIdentity/rbac values).
 
-Namespace precedence (documented contract): options["environment_namespaces"]
-looked up by immutable environment id > options["namespaces"] >
-options["namespace"] > the pod's own namespace file (in_cluster only). The
-editable catalog display name is intentionally never an authorization input.
+Namespace selection for ``in_cluster`` ambient identity requires an exact
+``options["environment_namespaces"]`` binding looked up by immutable environment
+id. Bearer connections may instead use connection-wide ``namespaces`` or
+``namespace`` fallbacks. The editable catalog display name and the pod namespace
+are intentionally never authorization inputs.
 
 A scan lists deployments, services, and ingresses per namespace. Only
 deployments are representable today: the domain ServiceInfo model carries
@@ -33,18 +34,37 @@ absent from older or trimmed clusters).
 
 import asyncio
 import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
-from apex.adapters.http_resilience import resilient_request
+from apex.adapters.http_resilience import (
+    DEFAULT_JSON_RESPONSE_BYTES,
+    ResponseTooLargeError,
+    parse_json_response,
+    resilient_request,
+)
 from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.options import coerce_bool
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
-from apex.domain.integrations import EnvironmentSnapshot, EnvRef, SecretValue, ServiceInfo
+from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.integrations import (
+    MAX_INVENTORY_SERVICES,
+    EnvironmentSnapshot,
+    EnvRef,
+    SecretValue,
+    ServiceInfo,
+)
 
 DEFAULT_TIMEOUT_S = 15.0
+MAX_NAMESPACES_PER_SCAN = 16
+MAX_SCAN_DECODED_BYTES = 16 * 1024 * 1024
+MAX_SCAN_DURATION_S = 30.0
+MAX_SERVICE_ACCOUNT_TOKEN_BYTES = 64 * 1024
 
 # Projected ServiceAccount mount (in_cluster mode). Module-level so tests can
 # point them at fixtures via monkeypatch.
@@ -54,6 +74,33 @@ IN_CLUSTER_CA_PATH = f"{SA_DIR}/ca.crt"
 IN_CLUSTER_NAMESPACE_PATH = f"{SA_DIR}/namespace"
 
 _IN_CLUSTER_ALIASES = frozenset({"in_cluster", "in-cluster", "incluster"})
+_NAMESPACE_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+@dataclass(slots=True)
+class _ScanBudget:
+    limit: int
+    decoded_bytes: int = 0
+
+    @property
+    def remaining(self) -> int:
+        return self.limit - self.decoded_bytes
+
+    def next_response_limit(self) -> int:
+        if self.remaining < 1:
+            raise RuntimeError(
+                f"kubernetes inventory scan exhausted its aggregate decoded-body "
+                f"budget of {self.limit} bytes"
+            )
+        return min(DEFAULT_JSON_RESPONSE_BYTES, self.remaining)
+
+    def consume(self, size: int) -> None:
+        if size < 0 or size > self.remaining:
+            raise RuntimeError(
+                f"kubernetes inventory scan exceeded its aggregate decoded-body "
+                f"budget of {self.limit} bytes"
+            )
+        self.decoded_bytes += size
 
 
 @AdapterRegistry.register(PortKind.CLUSTER_INVENTORY, "kubernetes")
@@ -72,6 +119,7 @@ class KubernetesClusterInventoryAdapter:
     ) -> None:
         options: dict[str, Any] = dict(conn.options) if conn is not None else {}
         conn_id = conn.id if conn is not None else "<none>"
+        _validate_namespace_options(options)
 
         raw_mode = str(options.get("auth_mode", "bearer")).strip().lower()
         in_cluster = raw_mode in _IN_CLUSTER_ALIASES
@@ -82,13 +130,16 @@ class KubernetesClusterInventoryAdapter:
             )
         self._in_cluster = in_cluster
 
-        base_url = str(options.get("base_url", "")).strip()
-        if in_cluster and not base_url:
-            base_url = _in_cluster_base_url()
+        configured_base_url = str(options.get("base_url", "")).strip()
+        if in_cluster and configured_base_url:
+            raise ValueError(
+                f"kubernetes connection {conn_id!r} cannot set base_url with in_cluster auth; "
+                "the API server is pinned to KUBERNETES_SERVICE_HOST"
+            )
+        base_url = _in_cluster_base_url() if in_cluster else configured_base_url
         if not base_url:
             hint = (
-                "in_cluster auth requires running inside a pod "
-                "(KUBERNETES_SERVICE_HOST unset) or an explicit options['base_url']"
+                "in_cluster auth requires running inside a pod (KUBERNETES_SERVICE_HOST is unset)"
                 if in_cluster
                 else "(e.g. 'https://kube-api.internal:6443')"
             )
@@ -107,8 +158,23 @@ class KubernetesClusterInventoryAdapter:
         self._allow_private_hosts = in_cluster or private_hosts_allowed(options)
         # bearer: static token from the resolved secret. in_cluster: the projected
         # token is read per client rebuild (rotation), unless a secret is supplied.
-        self._static_token: str | None = secret.value if secret is not None else None
-        self._verify = _resolve_verify(in_cluster, options.get("verify_tls"))
+        self._static_token: str | None = (
+            _validated_bearer_token(secret.value, source="connection secret")
+            if secret is not None
+            else None
+        )
+        if in_cluster:
+            if not os.path.isfile(IN_CLUSTER_CA_PATH):
+                raise ValueError(
+                    f"kubernetes connection {conn_id!r} requires the in-cluster "
+                    f"ServiceAccount CA bundle at {IN_CLUSTER_CA_PATH}"
+                )
+            # Ambient credentials are sent only to the Kubernetes-injected API
+            # endpoint and authenticated with its projected CA. A connection
+            # option cannot disable or replace either trust anchor.
+            self._verify = IN_CLUSTER_CA_PATH
+        else:
+            self._verify = _resolve_verify(False, options.get("verify_tls"))
         self._options = options
         self._client: httpx.AsyncClient | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
@@ -116,23 +182,52 @@ class KubernetesClusterInventoryAdapter:
     # ── port surface ──────────────────────────────────────────────────────────
 
     async def scan_environment(self, env_ref: EnvRef) -> EnvironmentSnapshot:
+        try:
+            async with asyncio.timeout(MAX_SCAN_DURATION_S):
+                return await self._scan_environment(env_ref)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"kubernetes inventory scan exceeded its {MAX_SCAN_DURATION_S:g}s deadline"
+            ) from exc
+
+    async def _scan_environment(self, env_ref: EnvRef) -> EnvironmentSnapshot:
         services: list[ServiceInfo] = []
+        budget = _ScanBudget(MAX_SCAN_DECODED_BYTES)
         for namespace in self._namespaces_for(env_ref):
             deployments = (
                 await self._get_json(
-                    f"/apis/apps/v1/namespaces/{namespace}/deployments", namespace=namespace
+                    f"/apis/apps/v1/namespaces/{namespace}/deployments",
+                    namespace=namespace,
+                    budget=budget,
                 )
                 or {}
             )
+            deployment_items = _deployment_items(deployments)
+            if len(services) + len(deployment_items) > MAX_INVENTORY_SERVICES:
+                raise RuntimeError(
+                    "kubernetes inventory scan exceeded its aggregate service limit of "
+                    f"{MAX_INVENTORY_SERVICES}"
+                )
+            # Check and map the aggregate before making the next provider call.
+            # An oversized deployment list cannot trigger service/ingress fanout.
+            services.extend(_service_info(item) for item in deployment_items)
             # Fetched to validate connectivity/RBAC and pin the wire contract;
             # the domain model has no fields for endpoints/routing yet.
-            await self._get_json(f"/api/v1/namespaces/{namespace}/services", namespace=namespace)
-            await self._get_json(
+            service_payload = await self._get_json(
+                f"/api/v1/namespaces/{namespace}/services",
+                namespace=namespace,
+                budget=budget,
+            )
+            assert service_payload is not None
+            _resource_items(service_payload, resource="service")
+            ingress_payload = await self._get_json(
                 f"/apis/networking.k8s.io/v1/namespaces/{namespace}/ingresses",
                 namespace=namespace,
                 tolerate_404=True,
+                budget=budget,
             )
-            services.extend(_service_info(item) for item in deployments.get("items", []))
+            if ingress_payload is not None:
+                _resource_items(ingress_payload, resource="ingress")
         return EnvironmentSnapshot(services=services)
 
     # ── namespace + client plumbing ───────────────────────────────────────────
@@ -145,27 +240,28 @@ class KubernetesClusterInventoryAdapter:
             bound = bindings.get(env_ref.id)
             if bound is not None:
                 values = bound if isinstance(bound, (list, tuple)) else [bound]
-                namespaces = [str(namespace).strip() for namespace in values]
-                if namespaces and all(namespaces):
-                    return namespaces
-                raise ValueError(f"environment {env_ref.id!r} has an empty namespace binding")
+                return _validated_namespaces(values, source=f"environment {env_ref.id!r}")
+        if self._in_cluster:
+            # The pod ServiceAccount is ambient, shared process identity. Never
+            # let an arbitrary environment select a connection-wide or pod
+            # namespace: a platform administrator must bind each immutable
+            # environment id explicitly before any token-authenticated request.
+            raise ValueError(
+                f"in_cluster connection has no namespace binding for environment "
+                f"{env_ref.id!r}; set options['environment_namespaces'][{env_ref.id!r}]"
+            )
         configured = self._options.get("namespaces")
         if isinstance(configured, str):
             configured = [configured]
         if isinstance(configured, (list, tuple)) and configured:
-            return [str(ns) for ns in configured]
+            return _validated_namespaces(configured, source="connection")
         single = self._options.get("namespace")
         if single:
-            return [str(single)]
-        if self._in_cluster:
-            pod_namespace = _read_file(IN_CLUSTER_NAMESPACE_PATH)
-            if pod_namespace:
-                return [pod_namespace]
+            return _validated_namespaces([single], source="connection")
         raise ValueError(
             f"no namespace configured for environment {env_ref.id!r}: set "
             "options['environment_namespaces'], options['namespace'], or "
-            "options['namespaces'] on the connection, or (in_cluster) mount the "
-            "pod's serviceaccount namespace file"
+            "options['namespaces'] on the connection"
         )
 
     def _bearer_token(self) -> str:
@@ -173,13 +269,7 @@ class KubernetesClusterInventoryAdapter:
             return self._static_token
         # in_cluster without an explicit secret: read (and thereby refresh) the
         # projected ServiceAccount token on every client rebuild.
-        token = _read_file(IN_CLUSTER_TOKEN_PATH)
-        if not token:
-            raise RuntimeError(
-                "in_cluster kubernetes auth: ServiceAccount token not readable at "
-                f"{IN_CLUSTER_TOKEN_PATH}; is the pod's serviceaccount token mounted?"
-            )
-        return token
+        return _read_service_account_token(IN_CLUSTER_TOKEN_PATH)
 
     def _client_for_loop(self) -> httpx.AsyncClient:
         loop = asyncio.get_running_loop()
@@ -203,15 +293,32 @@ class KubernetesClusterInventoryAdapter:
     # ── HTTP + error mapping ──────────────────────────────────────────────────
 
     async def _get_json(
-        self, path: str, *, namespace: str, tolerate_404: bool = False
+        self,
+        path: str,
+        *,
+        namespace: str,
+        budget: _ScanBudget,
+        tolerate_404: bool = False,
     ) -> dict[str, Any] | None:
         client = self._client_for_loop()
         try:
-            response = await resilient_request(client, "GET", path)
-        except httpx.HTTPError as exc:
+            response = await resilient_request(
+                client,
+                "GET",
+                path,
+                max_response_bytes=budget.next_response_limit(),
+            )
+        except ResponseTooLargeError as exc:
             raise RuntimeError(
-                f"kubernetes API request failed for GET {path} on {self._base_url}: "
-                f"{exc.__class__.__name__}: {exc}"
+                "kubernetes inventory scan exceeded its decoded-body response budget"
+            ) from exc
+        except httpx.HTTPError as exc:
+            detail = bounded_diagnostic(exc)
+            raise RuntimeError(
+                bounded_diagnostic(
+                    f"kubernetes API request failed for GET {path} on {self._base_url}: "
+                    f"{exc.__class__.__name__}: {detail}"
+                )
             ) from exc
         if response.status_code in (401, 403):
             raise RuntimeError(
@@ -231,7 +338,67 @@ class KubernetesClusterInventoryAdapter:
                 f"kubernetes API returned {response.status_code} for GET {path}: "
                 f"{_status_message(response)}"
             )
-        return response.json()
+        budget.consume(len(response.content))
+        try:
+            payload = parse_json_response(
+                response,
+                context=f"kubernetes API response for GET {path}",
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(f"kubernetes API returned invalid JSON for GET {path}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"kubernetes API returned a non-object JSON body for GET {path}")
+        return payload
+
+
+def _validated_namespaces(values: list[Any] | tuple[Any, ...], *, source: str) -> list[str]:
+    if len(values) > MAX_NAMESPACES_PER_SCAN:
+        raise ValueError(
+            f"{source} may configure at most {MAX_NAMESPACES_PER_SCAN} Kubernetes namespaces"
+        )
+    if any(not isinstance(namespace, str) for namespace in values):
+        raise ValueError(f"{source} has a non-string Kubernetes namespace")
+    namespaces = [namespace.strip() for namespace in values]
+    if not namespaces or not all(_NAMESPACE_RE.fullmatch(namespace) for namespace in namespaces):
+        raise ValueError(f"{source} has an invalid Kubernetes namespace; expected a DNS-1123 label")
+    if len(set(namespaces)) != len(namespaces):
+        raise ValueError(f"{source} contains duplicate Kubernetes namespaces")
+    return namespaces
+
+
+def _validate_namespace_options(options: dict[str, Any]) -> None:
+    """Fail connection construction before an oversized namespace fanout is usable."""
+
+    bindings = options.get("environment_namespaces")
+    if bindings is not None:
+        if not isinstance(bindings, dict):
+            raise ValueError("options['environment_namespaces'] must be an object")
+        for environment_id, bound in bindings.items():
+            if bound is None:
+                continue
+            values = bound if isinstance(bound, (list, tuple)) else [bound]
+            _validated_namespaces(values, source=f"environment {environment_id!r}")
+
+    configured = options.get("namespaces")
+    if configured is not None:
+        values = [configured] if isinstance(configured, str) else configured
+        if not isinstance(values, (list, tuple)):
+            raise ValueError("options['namespaces'] must be a namespace or list of namespaces")
+        _validated_namespaces(values, source="connection")
+
+    if "namespace" in options:
+        _validated_namespaces([options["namespace"]], source="connection")
+
+
+def _deployment_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return _resource_items(payload, resource="deployment")
+
+
+def _resource_items(payload: dict[str, Any], *, resource: str) -> list[dict[str, Any]]:
+    raw_items = payload.get("items")
+    if not isinstance(raw_items, list) or not all(isinstance(item, dict) for item in raw_items):
+        raise RuntimeError(f"kubernetes {resource} list has malformed items")
+    return raw_items
 
 
 def _in_cluster_base_url() -> str:
@@ -258,35 +425,84 @@ def _resolve_verify(in_cluster: bool, verify_tls_option: Any) -> bool | str:
     return IN_CLUSTER_CA_PATH if os.path.exists(IN_CLUSTER_CA_PATH) else True
 
 
-def _read_file(path: str) -> str:
-    """Best-effort read of a mounted file; '' when absent/unreadable."""
+def _validated_bearer_token(value: object, *, source: str) -> str:
+    if not isinstance(value, str):
+        raise RuntimeError(f"kubernetes {source} is not a string")
+    token = value.strip()
+    if not token or len(token.encode("utf-8")) > MAX_SERVICE_ACCOUNT_TOKEN_BYTES:
+        raise RuntimeError(
+            f"kubernetes {source} must be 1-{MAX_SERVICE_ACCOUNT_TOKEN_BYTES} UTF-8 bytes"
+        )
+    if any(ord(char) < 0x21 or ord(char) > 0x7E for char in token):
+        raise RuntimeError(f"kubernetes {source} contains invalid HTTP header characters")
+    return token
+
+
+def _read_service_account_token(path: str) -> str:
+    """Read a projected token with a hard byte cap and strict header validation."""
     try:
-        return Path(path).read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+        with Path(path).open("rb") as token_file:
+            raw = token_file.read(MAX_SERVICE_ACCOUNT_TOKEN_BYTES + 1)
+    except OSError as exc:
+        raise RuntimeError(
+            "in_cluster kubernetes auth: ServiceAccount token not readable at "
+            f"{path}; is the pod's serviceaccount token mounted?"
+        ) from exc
+    if len(raw) > MAX_SERVICE_ACCOUNT_TOKEN_BYTES:
+        raise RuntimeError(
+            f"in_cluster kubernetes auth: ServiceAccount token exceeds "
+            f"{MAX_SERVICE_ACCOUNT_TOKEN_BYTES} bytes"
+        )
+    try:
+        decoded = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(
+            "in_cluster kubernetes auth: ServiceAccount token is not valid UTF-8"
+        ) from exc
+    return _validated_bearer_token(decoded, source="ServiceAccount token")
 
 
 def _service_info(deployment: dict[str, Any]) -> ServiceInfo:
     """Deployment item -> ServiceInfo. k8s omits readyReplicas when zero are ready."""
-    metadata = deployment.get("metadata") or {}
-    status = deployment.get("status") or {}
-    template_spec = ((deployment.get("spec") or {}).get("template") or {}).get("spec") or {}
-    containers = template_spec.get("containers") or []
-    image = str(containers[0].get("image", "")) if containers else ""
-    return ServiceInfo(
-        name=str(metadata.get("name", "")),
-        replicas=int(status.get("readyReplicas") or 0),
-        image=image,
-    )
+    metadata = deployment.get("metadata")
+    raw_status = deployment.get("status")
+    spec = deployment.get("spec")
+    status = {} if raw_status is None else raw_status
+    if not isinstance(metadata, dict) or not isinstance(status, dict) or not isinstance(spec, dict):
+        raise RuntimeError("kubernetes deployment response has malformed metadata/status/spec")
+    template = spec.get("template")
+    if not isinstance(template, dict):
+        raise RuntimeError("kubernetes deployment response has malformed pod template")
+    template_spec = template.get("spec")
+    if not isinstance(template_spec, dict):
+        raise RuntimeError("kubernetes deployment response has malformed pod template spec")
+    containers = template_spec.get("containers")
+    if not isinstance(containers, list) or not containers or not isinstance(containers[0], dict):
+        raise RuntimeError("kubernetes deployment response has no valid container")
+    name = metadata.get("name")
+    image = containers[0].get("image")
+    ready_replicas = status.get("readyReplicas", 0)
+    if not isinstance(name, str) or not isinstance(image, str):
+        raise RuntimeError("kubernetes deployment response contains non-string name or image")
+    if isinstance(ready_replicas, bool) or not isinstance(ready_replicas, int):
+        raise RuntimeError("kubernetes deployment readyReplicas must be an integer")
+    try:
+        return ServiceInfo(
+            name=name,
+            replicas=ready_replicas,
+            image=image,
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise RuntimeError("kubernetes deployment response contains invalid service data") from exc
 
 
 def _status_message(response: httpx.Response) -> str:
     """Best-effort message from a Kubernetes Status body; falls back to raw text."""
     try:
-        body = response.json()
-    except ValueError:
+        body = parse_json_response(response, context="kubernetes error response")
+    except RuntimeError:
         body = None
     if isinstance(body, dict) and body.get("message"):
-        return str(body["message"])
-    text = response.text.strip()
-    return text[:300] if text else response.reason_phrase
+        return bounded_diagnostic(body["message"])
+    text = bounded_diagnostic(response.text.strip(), max_chars=300)
+    return text if text else bounded_diagnostic(response.reason_phrase, max_chars=300)

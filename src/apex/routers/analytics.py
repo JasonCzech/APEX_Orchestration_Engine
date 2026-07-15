@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, SettingsDep
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
+from apex.domain.input_limits import MAX_DB_LIST_OFFSET, NoNulStr, ScopeId
 from apex.persistence.db import get_session
 from apex.services.agent_analytics import (
     AgentAnalyticsRepository,
@@ -30,6 +31,11 @@ from apex.services.usage import UsageAnalyticsRepository
 from apex.settings import ApexSettings
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+MAX_HOURLY_ANALYTICS_WINDOW = timedelta(days=31)
+MAX_DAILY_ANALYTICS_WINDOW = timedelta(days=366)
+MAX_ANALYTICS_FILTER_VALUES = 50
+MAX_ANALYTICS_FILTER_CHARS = 255
 
 
 class UsageAnalyticsReader(Protocol):
@@ -95,20 +101,33 @@ ToParam = Annotated[
 ]
 BucketParam = Annotated[Literal["day", "hour"], Query(description="Histogram bucket size.")]
 ProjectParam = Annotated[
-    str | None,
-    Query(description="Filter to one project (must be inside the consumer's scopes)."),
+    ScopeId | None,
+    Query(
+        max_length=255,
+        description="Filter to one project (must be inside the consumer's scopes).",
+    ),
+]
+AnalyticsFilterValue = Annotated[
+    NoNulStr,
+    Field(max_length=MAX_ANALYTICS_FILTER_CHARS),
 ]
 GroupByParam = Annotated[AgentGroupBy, Query(description="Breakdown dimension.")]
 AgentSortParam = Annotated[AgentSort, Query(description="Breakdown sort metric.")]
 AgentOrderParam = Annotated[AgentOrder, Query(description="Sort direction.")]
 MultiParam = Annotated[
-    list[str] | None,
-    Query(description="Filter. Accepts repeated values or comma-separated values."),
+    list[AnalyticsFilterValue] | None,
+    Query(
+        max_length=MAX_ANALYTICS_FILTER_VALUES,
+        description="Filter. Accepts repeated values or comma-separated values.",
+    ),
 ]
-TestParam = Annotated[str | None, Query(description="Filter to one pipeline thread/test id.")]
+TestParam = Annotated[
+    NoNulStr | None,
+    Query(max_length=64, description="Filter to one pipeline thread/test id."),
+]
 StatusParam = Annotated[Literal["ok", "error"] | None, Query(description="Agent event status.")]
 LimitParam = Annotated[int, Query(ge=1, le=100)]
-OffsetParam = Annotated[int, Query(ge=0)]
+OffsetParam = Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -234,11 +253,52 @@ def _aware(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+def _default_window_start(window_to: datetime) -> datetime:
+    """Return the seven-day default without leaking datetime underflow as a 500."""
+
+    try:
+        return window_to - timedelta(days=7)
+    except OverflowError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="`to` is too early to derive the default seven-day analytics window",
+        ) from exc
+
+
 def _multi(values: list[str] | None) -> tuple[str, ...]:
     flattened: list[str] = []
     for value in values or []:
         flattened.extend(part.strip() for part in value.split(","))
-    return tuple(part for part in flattened if part)
+        if len(flattened) > MAX_ANALYTICS_FILTER_VALUES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"analytics filters accept at most {MAX_ANALYTICS_FILTER_VALUES} values",
+            )
+    result = tuple(part for part in flattened if part)
+    if len(result) > MAX_ANALYTICS_FILTER_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"analytics filters accept at most {MAX_ANALYTICS_FILTER_VALUES} values",
+        )
+    if any(len(part) > MAX_ANALYTICS_FILTER_CHARS for part in result):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"analytics filter values must not exceed {MAX_ANALYTICS_FILTER_CHARS} characters"
+            ),
+        )
+    return result
+
+
+def _validate_window(window_from: datetime, window_to: datetime, bucket: str) -> None:
+    if window_from >= window_to:
+        raise HTTPException(status_code=422, detail="`from` must be earlier than `to`")
+    maximum = MAX_HOURLY_ANALYTICS_WINDOW if bucket == "hour" else MAX_DAILY_ANALYTICS_WINDOW
+    if window_to - window_from > maximum:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{bucket} analytics windows must not exceed {maximum.days} days",
+        )
 
 
 def _cost_visible(identity: ConsumerIdentity, settings: ApexSettings) -> bool:
@@ -265,13 +325,10 @@ async def get_usage_analytics(
 ) -> UsageAnalyticsResponse:
     """Aggregate usage events (any authenticated role; results are scope-filtered)."""
     window_to = _aware(to) or datetime.now(UTC)
-    window_from = _aware(from_) or window_to - timedelta(days=7)
-    if window_from >= window_to:
-        raise HTTPException(status_code=422, detail="`from` must be earlier than `to`")
+    window_from = _aware(from_) or _default_window_start(window_to)
+    _validate_window(window_from, window_to, bucket)
     if project is not None and not identity.allows_project(project):
-        raise HTTPException(
-            status_code=403, detail=f"Project '{project}' is outside this consumer's scopes"
-        )
+        raise HTTPException(status_code=403, detail="project is outside this consumer's scopes")
     visible = None if identity.is_unscoped else tuple(identity.scopes)
     data = await repo.aggregate(
         window_from=window_from,
@@ -311,16 +368,16 @@ async def get_agent_analytics(
 ) -> AgentAnalyticsResponse:
     """Aggregate LangGraph agent behavior events."""
     window_to = _aware(to) or datetime.now(UTC)
-    window_from = _aware(from_) or window_to - timedelta(days=7)
-    if window_from >= window_to:
-        raise HTTPException(status_code=422, detail="`from` must be earlier than `to`")
+    window_from = _aware(from_) or _default_window_start(window_to)
+    _validate_window(window_from, window_to, bucket)
     if project is not None and not identity.allows_project(project):
-        raise HTTPException(
-            status_code=403, detail=f"Project '{project}' is outside this consumer's scopes"
-        )
+        raise HTTPException(status_code=403, detail="project is outside this consumer's scopes")
     visible = None if identity.is_unscoped else tuple(identity.scopes)
     show_cost = _cost_visible(identity, settings)
     effective_sort = "total_tokens" if not show_cost and sort == "cost_usd" else sort
+    models = _multi(model)
+    stages = _multi(stage)
+    agents = _multi(agent)
     data = await repo.aggregate(
         window_from=window_from,
         window_to=window_to,
@@ -328,9 +385,9 @@ async def get_agent_analytics(
         group_by=group_by,
         project_id=project,
         visible_scopes=visible,
-        models=_multi(model),
-        stages=_multi(stage),
-        agents=_multi(agent),
+        models=models,
+        stages=stages,
+        agents=agents,
         test=test,
         status=status,
         sort=effective_sort,

@@ -11,7 +11,7 @@ EOF
 # 2) Same-origin reverse proxy to the backend, only when BACKEND_UPSTREAM is set.
 if [ -n "${BACKEND_UPSTREAM:-}" ]; then
     cat > /tmp/apex-proxy.conf <<EOF
-location ~ ^/(v1|threads|runs|assistants|crons|store|ok)(/|\$) {
+location ~ ^/(v1|threads|runs|assistants|crons|store|ok|ready)(/|\$) {
     # /runs collides with an SPA route: browser navigations (Accept: text/html)
     # get index.html; API/SSE requests are forwarded (mirrors the vite dev proxy).
     if (\$http_accept ~* "text/html") {

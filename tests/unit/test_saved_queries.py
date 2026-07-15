@@ -21,6 +21,11 @@ async def test_update_rejects_unknown_fields_without_touching_db() -> None:
     repo = SavedQueriesRepository(session=None)  # type: ignore[arg-type] — fails before any IO
     with pytest.raises(ValueError, match="not updatable"):
         await repo.update(SavedQuery(name="n", provider="jira", query="q"), {"id": "nope"})
+    with pytest.raises(ValueError, match="not updatable"):
+        await repo.update(
+            SavedQuery(name="n", provider="jira", query="q"),
+            {"project_id": "other-project"},
+        )
 
 
 def test_global_saved_query_names_are_unique_when_project_is_null() -> None:

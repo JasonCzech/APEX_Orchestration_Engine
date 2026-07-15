@@ -10,10 +10,15 @@ import hashlib
 import json
 from typing import Annotated, Any, TypedDict
 
+from apex.domain.pipeline import MAX_TOOL_CALL_RECORDS
+
 JsonDict = dict[str, Any]
 
 _BY_ID_FIELDS = ("approvals", "tool_calls")
 _PLAIN_LIST_FIELDS = ("warnings", "errors", "artifact_ids")
+MAX_DURABLE_ARTIFACTS = 256
+MAX_DURABLE_DIALOGUE_ENTRIES = 256
+MAX_DURABLE_PHASE_DIAGNOSTICS = 128
 
 
 def _merge_lists_by_id(current: list[JsonDict], incoming: list[JsonDict]) -> list[JsonDict]:
@@ -41,16 +46,38 @@ def _merge_unique(current: list[Any], incoming: list[Any]) -> list[Any]:
     return merged
 
 
+def _cap_plain_phase_list(field: str, values: list[Any]) -> list[Any]:
+    limit = (
+        MAX_DURABLE_PHASE_DIAGNOSTICS if field in {"warnings", "errors"} else MAX_DURABLE_ARTIFACTS
+    )
+    return values[-limit:]
+
+
+def _bounded_phase_entry(entry: JsonDict) -> JsonDict:
+    bounded = dict(entry)
+    for field in _PLAIN_LIST_FIELDS:
+        if field in bounded:
+            bounded[field] = _cap_plain_phase_list(field, list(bounded.get(field) or []))
+    return bounded
+
+
 def _merge_phase_entry(current: JsonDict, incoming: JsonDict) -> JsonDict:
     # A new attempt replaces the entry wholesale (re-run semantics, ADR-0004);
     # within the same attempt, scalars are last-write-wins and lists union.
     if incoming.get("attempt") != current.get("attempt"):
-        return dict(incoming)
+        return _bounded_phase_entry(incoming)
     merged = {**current, **incoming}
     for field in _BY_ID_FIELDS:
         merged[field] = _merge_lists_by_id(current.get(field) or [], incoming.get(field) or [])
+        if field == "tool_calls":
+            merged[field] = merged[field][-MAX_TOOL_CALL_RECORDS:]
     for field in _PLAIN_LIST_FIELDS:
-        merged[field] = _merge_unique(current.get(field) or [], incoming.get(field) or [])
+        current_values = _cap_plain_phase_list(field, list(current.get(field) or []))
+        incoming_values = _cap_plain_phase_list(field, list(incoming.get(field) or []))
+        merged[field] = _cap_plain_phase_list(
+            field,
+            _merge_unique(current_values, incoming_values),
+        )
     return merged
 
 
@@ -58,13 +85,15 @@ def merge_phase_results(
     left: dict[str, JsonDict] | None, right: dict[str, JsonDict] | None
 ) -> dict[str, JsonDict]:
     if not left:
-        return dict(right or {})
+        return {phase: _bounded_phase_entry(entry) for phase, entry in (right or {}).items()}
     if not right:
-        return dict(left)
+        return {phase: _bounded_phase_entry(entry) for phase, entry in left.items()}
     merged = dict(left)
     for phase, incoming in right.items():
         current = merged.get(phase)
-        merged[phase] = _merge_phase_entry(current, incoming) if current else incoming
+        merged[phase] = (
+            _merge_phase_entry(current, incoming) if current else _bounded_phase_entry(incoming)
+        )
     return merged
 
 
@@ -72,6 +101,62 @@ def append_unique_by_id(
     left: list[JsonDict] | None, right: list[JsonDict] | None
 ) -> list[JsonDict]:
     return _merge_lists_by_id(list(left or []), list(right or []))
+
+
+def merge_artifacts(left: list[JsonDict] | None, right: list[JsonDict] | None) -> list[JsonDict]:
+    """Retain a bounded recent window; durable ownership lives outside checkpoints."""
+
+    return append_unique_by_id(left, right)[-MAX_DURABLE_ARTIFACTS:]
+
+
+def _dialogue_attempt(entry: JsonDict) -> int:
+    raw_attempt = entry.get("attempt", 1)
+    try:
+        attempt = int(raw_attempt)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, attempt)
+
+
+def merge_dialogue(left: list[JsonDict] | None, right: list[JsonDict] | None) -> list[JsonDict]:
+    """Keep only each phase's latest attempt and a bounded global tail."""
+
+    merged = append_unique_by_id(left, right)
+    latest_by_phase: dict[str, int] = {}
+    for entry in merged:
+        phase = str(entry.get("phase") or "")
+        latest_by_phase[phase] = max(latest_by_phase.get(phase, 1), _dialogue_attempt(entry))
+    current = [
+        entry
+        for entry in merged
+        if _dialogue_attempt(entry) == latest_by_phase.get(str(entry.get("phase") or ""), 1)
+    ]
+    return current[-MAX_DURABLE_DIALOGUE_ENTRIES:]
+
+
+def merge_latest_by_id(left: list[JsonDict] | None, right: list[JsonDict] | None) -> list[JsonDict]:
+    """Idempotently append new ids and replace existing ids in place."""
+
+    merged = _merge_lists_by_id([], list(left or []))
+    positions = {entry.get("id"): index for index, entry in enumerate(merged)}
+    for incoming in _merge_lists_by_id([], list(right or [])):
+        position = positions.get(incoming.get("id"))
+        if position is None:
+            positions[incoming.get("id")] = len(merged)
+            merged.append(incoming)
+        else:
+            merged[position] = incoming
+    return merged
+
+
+def merge_context_packets(
+    left: list[JsonDict] | None, right: list[JsonDict] | None
+) -> list[JsonDict]:
+    """Latest-by-id merge with deployment count and serialized-size budgets."""
+
+    from apex.services.run_validation import validate_context_packets
+
+    return validate_context_packets(merge_latest_by_id(left, right))
 
 
 def merge_prompt_reviews(
@@ -90,7 +175,7 @@ class PipelineInput(TypedDict, total=False):
 
     title: str
     request: str
-    external_results: JsonDict
+    external_results: JsonDict | None
     context_packets: list[JsonDict]
 
 
@@ -101,7 +186,7 @@ class PipelineState(TypedDict, total=False):
     # Optional externally-produced results (ExternalResults shape) supplied as run
     # input. When present, plan_resolver seeds a succeeded execution result from it so
     # analysis-only runs (reporting/postmortem) satisfy the execution prerequisite.
-    external_results: JsonDict
+    external_results: JsonDict | None
 
     # Per-run cursor (overwritten by each run's plan resolver)
     phases_plan: list[str]
@@ -121,7 +206,7 @@ class PipelineState(TypedDict, total=False):
     # run: every phase resolves its application prompt from this single entry, so
     # an operator edit on one phase propagates to all phases of the run.
     application_reviews: Annotated[dict[str, JsonDict], merge_prompt_reviews]
-    artifacts: Annotated[list[JsonDict], append_unique_by_id]
-    dialogue: Annotated[list[JsonDict], append_unique_by_id]
-    context_packets: Annotated[list[JsonDict], append_unique_by_id]
+    artifacts: Annotated[list[JsonDict], merge_artifacts]
+    dialogue: Annotated[list[JsonDict], merge_dialogue]
+    context_packets: Annotated[list[JsonDict], merge_context_packets]
     engine_handle: JsonDict | None

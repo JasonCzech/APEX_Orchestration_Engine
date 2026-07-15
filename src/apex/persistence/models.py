@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     Numeric,
     String,
@@ -117,6 +118,11 @@ class ConsumerKey(Base):
     key_hash: Mapped[str] = mapped_column(String(64), unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expiry_source: Mapped[str] = mapped_column(
+        String(32),
+        default="independent",
+        server_default="legacy_ambiguous",
+    )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rotated_from_id: Mapped[str | None] = mapped_column(String(32))
@@ -203,7 +209,6 @@ class Prompt(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
     versions: Mapped[list["PromptVersion"]] = relationship(
         back_populates="prompt",
         cascade="all, delete-orphan",
@@ -336,11 +341,18 @@ class Connection(Base):
     project_id: Mapped[str | None] = mapped_column(String(255))  # null = global
     base_url: Mapped[str | None] = mapped_column(String(1024))
     options: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
-    secret_ref: Mapped[str | None] = mapped_column(String(1024))  # "env:NAME", "vault:..." only
+    secret_ref: Mapped[str | None] = mapped_column(String(1024))  # supported "env:NAME" reference
     enabled: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    # Adapter affinity uses a semantic runtime generation, not the public row
+    # modification timestamp. Metadata-only edits (for example a display-name
+    # rename) must update ``updated_at`` without invalidating an in-flight engine
+    # or artifact-store reservation.
+    runtime_version: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
     host_mappings: Mapped[list["HostMapping"]] = relationship(
@@ -376,6 +388,9 @@ class Document(Base):
         Index("ix_documents_artifact_key", "artifact_key"),
         Index("ix_documents_project_created", "project_id", "created_at"),
         Index("ix_documents_created_at", "created_at"),
+        Index("ix_documents_deletion_pending", "deletion_pending_at"),
+        Index("ix_documents_upload_pending", "upload_pending_at"),
+        Index("ix_documents_cleanup_retry", "cleanup_retry_at"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
@@ -391,6 +406,11 @@ class Document(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     uploaded_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deletion_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    upload_pending_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cleanup_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cleanup_attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cleanup_last_error: Mapped[str | None] = mapped_column(Text)
     # Extracted plain text + parse outcome, populated on upload by the text extractor.
     extracted_text: Mapped[str | None] = mapped_column(Text)
     extracted_chars: Mapped[int | None] = mapped_column(Integer)
@@ -426,7 +446,120 @@ class ArtifactReference(Base):
     thread_id: Mapped[str] = mapped_column(String(255))
     project_id: Mapped[str | None] = mapped_column(String(255))
     app_id: Mapped[str | None] = mapped_column(String(255))
+    ownership_known: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    # Uploads finalized through the durable outbox bind the logical key to exact
+    # bytes. Legacy/external references remain nullable because their payload is
+    # not available to the migration for a trustworthy backfill.
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    content_type: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ArtifactUploadIntent(Base):
+    """Durable outbox row for an artifact that has not been indexed yet."""
+
+    __tablename__ = "artifact_upload_intents"
+    __table_args__ = (
+        UniqueConstraint("artifact_key"),
+        Index("ix_artifact_upload_intents_connection_id", "connection_id"),
+        Index("ix_artifact_upload_intents_updated_at", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    artifact_key: Mapped[str] = mapped_column(String(1024))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("connections.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(64))
+    thread_id: Mapped[str] = mapped_column(String(255))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
+    ownership_known: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    payload: Mapped[bytes] = mapped_column(LargeBinary)
+    content_type: Mapped[str] = mapped_column(String(255))
+    claim_token: Mapped[str] = mapped_column(String(32))
+    claimed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WorkItemMutation(Base):
+    """Durable idempotency record for provider-side work-item mutations."""
+
+    __tablename__ = "work_item_mutations"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_scope",
+            "consumer_id",
+            "connection_id",
+            "operation",
+            "idempotency_key",
+            name="uq_work_item_mutation_scope_key",
+        ),
+        Index("ix_work_item_mutations_connection_id", "connection_id"),
+        Index("ix_work_item_mutations_reconcile", "status", "next_attempt_at"),
+        Index("ix_work_item_mutations_terminal_retirement", "status", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    tenant_scope: Mapped[str] = mapped_column(String(64))
+    consumer_id: Mapped[str] = mapped_column(String(255))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("connections.id", ondelete="RESTRICT"), nullable=False
+    )
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    operation: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    payload: Mapped[dict[str, Any]] = mapped_column(JsonColumn)
+    target_key: Mapped[str | None] = mapped_column(String(255))
+    provider_marker: Mapped[str] = mapped_column(String(64), unique=True)
+    provider_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    comment_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(32), default="pending", server_default="pending")
+    fields_status: Mapped[str] = mapped_column(
+        String(32), default="skipped", server_default="skipped"
+    )
+    comment_status: Mapped[str] = mapped_column(
+        String(32), default="skipped", server_default="skipped"
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JsonColumn)
+    claim_token: Mapped[str | None] = mapped_column(String(32))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    terminal_error: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WorkItemMutationTombstone(Base):
+    """Compact permanent key claim after the live replay window expires.
+
+    The fixed-size scope digest prevents a retired idempotency key from ever
+    issuing another provider mutation without retaining payloads, results, or
+    a foreign-key lease on a connection forever.
+    """
+
+    __tablename__ = "work_item_mutation_tombstones"
+
+    scope_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    outcome: Mapped[str] = mapped_column(String(32))
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class SavedQuery(Base):
@@ -484,6 +617,12 @@ class EngineRun(Base):
     ownership_known: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=text("true")
     )
+    # Introduced after the app-projection bug. Unlike ``ownership_known``, old
+    # rolling pods cannot explicitly set this new bit, so its false DB default
+    # quarantines writes made during the migration-to-rollout overlap.
+    scope_ownership_known: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
     attempt: Mapped[int] = mapped_column(Integer)
     engine: Mapped[str] = mapped_column(String(64))
     external_run_id: Mapped[str | None] = mapped_column(String(255))
@@ -494,6 +633,16 @@ class EngineRun(Base):
     connection_id: Mapped[str | None] = mapped_column(
         ForeignKey("connections.id", ondelete="RESTRICT")
     )
+    # Durable post-effect witness fields survive terminal lease release. They
+    # let a graph recover a committed terminal projection without resolving a
+    # connection that may have been disabled/deleted after teardown completed.
+    execution_connection_version: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    artifact_connection_version: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    completion_kind: Mapped[str | None] = mapped_column(String(32))
     handle: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     status: Mapped[str] = mapped_column(String(32))  # EngineRunPhase value
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

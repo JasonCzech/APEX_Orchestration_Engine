@@ -62,7 +62,7 @@ of `.env.local` so the local Vitest suite does not accidentally start in
 bypass mode.
 
 **Dev proxy:** the Vite dev server proxies `/v1`, `/threads`, `/runs`,
-`/assistants`, and `/ok` to the backend (default `http://127.0.0.1:2024`).
+`/assistants`, `/ok`, and `/ready` to the backend (default `http://127.0.0.1:2024`).
 Browser navigations (`Accept: text/html`) bypass the proxy so the SPA route
 `/runs` and the API path `/runs` coexist. Point at a different backend with:
 
@@ -121,8 +121,8 @@ src/
 │   ├── queryKeys.ts      #   central query-key factory — APPEND-ONLY
 │   ├── queryClient.ts / errors.ts   # one ApiError shape across both clients
 │   └── hooks/            #   one use*.ts per /v1 resource
-├── streaming/            # usePipelineStream: one SSE connection per (thread, run),
-│   │                     #   demuxing updates / messages-tuple / custom events
+├── streaming/            # usePipelineStream: one custom-only SSE connection per run,
+│   │                     #   with /v1 snapshots as the durable state authority
 │   ├── applyStreamEvent.ts  # patches the react-query cache (snapshot stays canonical)
 │   ├── ringBuffer.ts / tokenBuffer.ts  # engine_poll + token coalescing (never the cache)
 │   └── resumeStore.ts    #   last_event_id persistence for joinStream resume
@@ -223,7 +223,7 @@ caddy/nginx container) with:
 
 1. **SPA fallback** — unknown paths serve `index.html`.
 2. **Same-origin reverse proxy** of the API paths (`/v1`, `/threads`, `/runs`,
-   `/assistants`, `/ok`) to the APEX server, mirroring the dev proxy. Same
+   `/assistants`, `/ok`, `/ready`) to the APEX server, mirroring the dev proxy. Same
    origin keeps the artifact-viewer iframes and SSE free of CORS. The HTML-vs-
    API split on `/runs` must key on the `Accept` header, as the dev proxy does.
 3. **SSE-safe proxying** — response buffering OFF and long read timeouts on

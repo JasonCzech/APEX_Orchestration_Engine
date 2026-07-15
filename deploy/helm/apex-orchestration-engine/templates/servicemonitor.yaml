@@ -1,6 +1,6 @@
 {{- if .Values.metrics.serviceMonitor.enabled -}}
-# Forward-looking: the server exposes no /metrics endpoint yet. Enable only once it
-# does (otherwise scrapes 404). Requires the Prometheus Operator CRDs in-cluster.
+# LangGraph's unauthenticated /metrics route is intentionally disabled. Enable
+# only after APEX adds authenticated metrics. Requires Prometheus Operator CRDs.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

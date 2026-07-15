@@ -32,11 +32,16 @@ def ensure_scope(
     app_id: str | None = None,
 ) -> None:
     if project_id is None:
+        if app_id is not None:
+            raise HTTPException(
+                status_code=403,
+                detail="Application scope cannot be authorized without its project",
+            )
         return
     if not identity.allows_scope(project_id=project_id, app_id=app_id):
         raise HTTPException(
             status_code=403,
-            detail=f"Project '{project_id}' is outside this consumer's scopes",
+            detail="project is outside this consumer's scopes",
         )
 
 

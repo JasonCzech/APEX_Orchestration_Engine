@@ -36,13 +36,25 @@ class FakeRuns:
     async def create(
         self, thread_id: str | None, assistant_id: str, *, input: Any = None, **kwargs: Any
     ) -> dict[str, Any]:
-        self.calls.append({"thread_id": thread_id, "assistant_id": assistant_id, "input": input})
+        self.calls.append(
+            {
+                "thread_id": thread_id,
+                "assistant_id": assistant_id,
+                "input": input,
+                **kwargs,
+            }
+        )
         return {"run_id": "run-ctx-1"}
 
 
 class FakeThreads:
     def __init__(self, threads: list[dict[str, Any]]) -> None:
         self._threads = threads
+        self.create_calls: list[dict[str, Any]] = []
+
+    async def create(self, *, metadata: dict[str, Any]) -> dict[str, Any]:
+        self.create_calls.append({"metadata": metadata})
+        return {"thread_id": "thread-context-1", "metadata": metadata}
 
     async def search(
         self, *, metadata: Any = None, limit: int = 10, **kwargs: Any
@@ -122,13 +134,32 @@ def test_create_summary_returns_202_with_run_id_and_stream_hint() -> None:
     assert response.status_code == 202
     assert response.json() == {
         "run_id": "run-ctx-1",
-        "stream_url": "/runs/run-ctx-1/stream",
+        "stream_url": "/threads/thread-context-1/runs/run-ctx-1/stream?stream_mode=custom",
     }
     [call] = loopback.runs.calls
-    assert call["thread_id"] is None
+    assert call["thread_id"] == "thread-context-1"
     assert call["assistant_id"] == "context"
     assert call["input"]["project_id"] == "proj-a"
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, "proj-a")]
+
+
+def test_create_summary_rejects_nul_before_provider_or_run_persistence() -> None:
+    client, loopback, resolver = make_client(SCOPED_OPERATOR)
+
+    with client:
+        subject = client.post(
+            "/v1/context/summaries",
+            json={"subject": "unsafe\u0000subject"},
+        )
+        work_item = client.post(
+            "/v1/context/summaries",
+            json={"subject": "safe", "work_item_keys": ["ITEM\u00001"]},
+        )
+
+    assert subject.status_code == 422
+    assert work_item.status_code == 422
+    assert loopback.runs.calls == []
+    assert resolver.calls == []
 
 
 def test_create_summary_requires_operator() -> None:

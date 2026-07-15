@@ -1,10 +1,13 @@
 """Best-effort usage writers: DB failures are swallowed; phase bridge maps fields."""
 
+import json
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from sqlalchemy import create_engine, func, select
 
+from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
 from apex.persistence.models import AgentEvent, Base, UsageEvent
 from apex.services import usage
 
@@ -28,6 +31,62 @@ def test_record_usage_event_sync_swallows_db_errors() -> None:
 def test_record_phase_usage_sync_swallows_everything() -> None:
     usage.record_phase_usage_sync("execution", "succeeded", None)  # no config at all
     usage.record_phase_usage_sync("execution", "succeeded", {"configurable": None})
+
+
+@pytest.mark.parametrize(
+    "text_limits",
+    [usage._USAGE_TEXT_LIMITS, usage._AGENT_TEXT_LIMITS],
+)
+def test_every_durable_event_scalar_is_credential_redacted(
+    text_limits: dict[str, int],
+) -> None:
+    for field_name in text_limits:
+        values: dict[str, Any] = {
+            field_name: "Authorization: Bearer telemetry-secret",
+            "extra": {},
+        }
+
+        sanitized = usage._sanitize_event_values(values, text_limits)
+
+        assert "telemetry-secret" not in json.dumps(sanitized)
+
+
+def test_durable_usage_extra_redacts_paths_keys_and_nested_auth_strings() -> None:
+    values = {
+        "action": "getThing",
+        "duration_ms": 17,
+        "extra": {
+            "path": "/v1/things?sig=signed-secret&view=full",
+            "password": "mapping-secret",
+            "nested": {"finish_reason": "Basic encoded-secret"},
+        },
+    }
+
+    sanitized = usage._sanitize_event_values(values, usage._USAGE_TEXT_LIMITS)
+    encoded = json.dumps(sanitized, sort_keys=True)
+
+    assert "signed-secret" not in encoded
+    assert "mapping-secret" not in encoded
+    assert "encoded-secret" not in encoded
+    assert "[REDACTED]" in encoded
+    assert "[redacted-credential-key]" in encoded
+    assert sanitized["duration_ms"] == 17
+
+
+def test_durable_agent_numeric_evidence_is_preserved() -> None:
+    values = {
+        "phase": "execution",
+        "input_tokens": 41,
+        "cost_usd": Decimal("0.123456"),
+        "latency_ms": 88,
+        "extra": {},
+    }
+
+    sanitized = usage._sanitize_event_values(values, usage._AGENT_TEXT_LIMITS)
+
+    assert sanitized["input_tokens"] == 41
+    assert sanitized["cost_usd"] == Decimal("0.123456")
+    assert sanitized["latency_ms"] == 88
 
 
 # ── Phase bridge field mapping (capture the inner sync writer) ───────────────
@@ -147,20 +206,28 @@ def test_sqlite_native_insert_ignores_replayed_event_key(
 # ── Lazy consumer attribution for the middleware path ────────────────────────
 
 
-async def test_resolve_consumer_name_dev_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("APEX_AUTH__DEV_API_KEY", "usage-dev-key")
-    from apex.settings import get_settings
+def test_request_consumer_name_uses_resolved_identity() -> None:
+    identity = ConsumerIdentity(
+        consumer_id="consumer-1",
+        name="alice",
+        consumer_type=ConsumerType.HEADLESS,
+        role=Role.VIEWER,
+    )
+    scope = {
+        "state": {"identity": identity},
+        "headers": [(b"x-api-key", b"must-not-be-retained")],
+    }
 
-    get_settings.cache_clear()
-    assert await usage._resolve_consumer_name("usage-dev-key") == "dev"
+    assert usage._request_consumer_name(scope) == "alice"
 
 
-async def test_resolve_consumer_name_falls_back_to_fingerprint() -> None:
-    # Unknown key + unreachable DB -> resolver returns None -> fingerprint.
-    name = await usage._resolve_consumer_name("not-a-real-key")
+def test_request_consumer_name_fingerprints_unresolved_key() -> None:
+    name = usage._request_consumer_name(
+        {"state": {}, "headers": [(b"x-api-key", b"not-a-real-key")]}
+    )
     assert name.startswith("key:")
     assert len(name) == len("key:") + 12
 
 
-async def test_resolve_consumer_name_no_key_is_anonymous() -> None:
-    assert await usage._resolve_consumer_name(None) == "anonymous"
+def test_request_consumer_name_without_key_is_anonymous() -> None:
+    assert usage._request_consumer_name({"state": {}, "headers": []}) == "anonymous"

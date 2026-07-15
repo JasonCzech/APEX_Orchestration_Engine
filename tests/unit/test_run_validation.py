@@ -20,6 +20,7 @@ from apex.services.run_validation import (
     validate_context_packets,
     validate_context_run_input,
     validate_gate_payload,
+    validate_pipeline_input,
     validate_playground_render_budget,
     validate_playground_run_input,
     validate_public_run_input,
@@ -72,6 +73,26 @@ def test_pipeline_config_rejects_model_outside_deployment_allowlist(
         PipelineConfigurable(model_by_phase={Phase.REPORTING: "expensive-unapproved"})
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"assistant_id": "pipeline\x00shadow"},
+        {"project_id": "project\x00shadow"},
+        {"connections": {"execution\x00engine": "connection"}},
+        {"connections": {"execution_engine": "connection\x00shadow"}},
+        {"prompt_overrides": {"phase\x00key": {"content": "safe"}}},
+        {"prompt_overrides": {"phase": {"content": "unsafe\x00content"}}},
+        {"pre_execution_context": ["unsafe\x00context"]},
+        {"load_test": {"provider_option": "unsafe\x00value"}},
+    ],
+)
+def test_pipeline_config_rejects_nul_before_checkpoint_persistence(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ValidationError):
+        PipelineConfigurable.model_validate(payload)
+
+
 def test_context_budget_counts_all_packet_fields() -> None:
     settings = ApexSettings(
         runs=RunControlSettings(max_context_packets=2, max_context_chars_total=1_000)
@@ -114,6 +135,31 @@ def test_gate_parser_rejects_oversized_direct_langgraph_resume() -> None:
     assert "exceeds" in parsed["error"]
 
 
+@pytest.mark.parametrize("number", [nan, inf, -inf])
+def test_gate_payload_rejects_nonfinite_numbers(number: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        validate_gate_payload({"action": "discuss", "score": number})
+
+
+def test_gate_payload_rejects_shallow_width_at_the_node_budget() -> None:
+    settings = ApexSettings(runs=RunControlSettings(max_gate_payload_nodes=16))
+
+    with pytest.raises(ValueError, match="node limit"):
+        validate_gate_payload(
+            {"action": "discuss", "values": list(range(100_000))},
+            settings=settings,
+        )
+
+
+def test_gate_parser_does_not_reflect_an_unknown_action() -> None:
+    canary = "CANARY_GATE_ACTION_SECRET"
+
+    parsed = parse_gate_decision({"action": canary}, ["approve"])
+
+    assert parsed["action"] is None
+    assert canary not in parsed["error"]
+
+
 def test_rendered_model_input_has_final_budget() -> None:
     settings = ApexSettings(runs=RunControlSettings(max_model_input_chars=10_000))
     with pytest.raises(ValueError, match="rendered model input"):
@@ -153,6 +199,69 @@ def test_public_run_input_rejects_server_owned_pipeline_state() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"title": "unsafe\x00title"},
+        {"request": "unsafe\x00request"},
+        {"project_id": "unsafe\x00project"},
+        {"external_results": {"source": "unsafe\x00source"}},
+        {"context_packets": [{"id": "packet", "source": "sdk", "title": "unsafe\x00title"}]},
+    ],
+)
+def test_public_run_input_rejects_nul_before_checkpoint_persistence(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        validate_public_run_input(payload)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://alice:password@results.example.com/run/42",
+        "https://results.example.com/run/42?X-Amz-Signature=signed-url-secret",
+        "https://results.example.com/run/42#access-token-secret",
+    ],
+)
+def test_public_run_input_rejects_credential_bearing_external_results_uri(
+    uri: str,
+) -> None:
+    with pytest.raises(ValidationError, match="external results uri") as raised:
+        validate_public_run_input({"external_results": {"source": "dashboard", "uri": uri}})
+
+    rendered = str(raised.value)
+    assert "password" not in rendered
+    assert "signed-url-secret" not in rendered
+    assert "access-token-secret" not in rendered
+
+
+def test_wrapped_pydantic_errors_do_not_reflect_rejected_values() -> None:
+    canary = "CANARY_REJECTED_RUN_INPUT_SECRET"
+    gate_settings = ApexSettings(runs=RunControlSettings(max_gate_string_chars=100))
+    validators = [
+        lambda: validate_context_packets(
+            [{"id": {"secret": canary}, "source": "sdk", "title": "packet"}]
+        ),
+        lambda: validate_pipeline_input({"project_id": {"secret": canary}}),
+        lambda: validate_context_run_input({"subject": {"secret": canary}}),
+        lambda: validate_playground_run_input({"prompt": {"user": {"secret": canary}}}),
+        lambda: validate_public_run_input({canary: "value"}),
+        lambda: validate_context_packets(
+            [
+                {"id": canary, "source": "sdk", "title": "one"},
+                {"id": canary, "source": "sdk", "title": "two"},
+            ]
+        ),
+        lambda: validate_gate_payload({canary: "x" * 101}, settings=gate_settings),
+    ]
+
+    for validate in validators:
+        with pytest.raises(ValueError) as raised:
+            validate()
+        assert canary not in str(raised.value)
+
+
 def test_context_run_input_strictly_bounds_provider_fanout() -> None:
     settings = ApexSettings(runs=RunControlSettings(max_work_item_keys=2))
 
@@ -187,6 +296,21 @@ def test_context_run_input_rejects_untyped_or_oversized_document_packets() -> No
         )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"gates": {"reporting": {"prompt_review": "auto", "unknown": True}}},
+        {"limits": {"max_revise_loops": 1, "unknown": True}},
+        {"prompt_overrides": {"phase/reporting": {"content": "safe", "unknown": True}}},
+    ],
+)
+def test_pipeline_configurable_rejects_unknown_nested_fields(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="extra_forbidden"):
+        PipelineConfigurable.model_validate(payload)
+
+
 def test_stateless_json_budget_bounds_bytes_nodes_depth_and_types() -> None:
     byte_settings = ApexSettings(runs=RunControlSettings(max_stateless_payload_bytes=10_000))
     with pytest.raises(ValueError, match="serialized payload"):
@@ -207,6 +331,33 @@ def test_stateless_json_budget_bounds_bytes_nodes_depth_and_types() -> None:
         )
     with pytest.raises(ValueError, match="unsupported tuple"):
         validate_playground_run_input({"sample_input": {"value": ("not", "json")}})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"sample_input": {"key\x00shadow": "value"}},
+        {"sample_input": {"key": "value\x00shadow"}},
+        {"prompt": {"user": "unsafe\x00prompt"}},
+    ],
+)
+def test_stateless_run_input_rejects_nul_json(payload: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="U\\+0000"):
+        validate_playground_run_input(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"action": "discuss", "message": "unsafe\x00message"},
+        {"action": "modify", "prompt": {"system\x00shadow": "safe"}},
+    ],
+)
+def test_gate_payload_rejects_nul_before_checkpoint_persistence(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="U\\+0000"):
+        validate_gate_payload(payload)
 
 
 def test_playground_render_budget_rejects_placeholder_amplification() -> None:

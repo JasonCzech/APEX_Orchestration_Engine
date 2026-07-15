@@ -10,13 +10,16 @@ from apex.persistence.repositories.engine_runs import _mutation_filter, _visibil
 
 def _seed_engine_runs(session: Session) -> None:
     rows = (
-        ("exact", "p1", "app-a", True),
-        ("sibling", "p1", "app-b", True),
-        ("project-level", "p1", None, True),
-        ("legacy-unknown", "p1", None, False),
-        ("other-project", "p2", "app-a", True),
+        ("exact", "p1", "app-a", True, True),
+        ("sibling", "p1", "app-b", True, True),
+        ("project-level", "p1", None, True, True),
+        ("legacy-unknown", "p1", None, False, False),
+        # An old 0027 pod can write after the pre-upgrade 0028 migration. It
+        # explicitly sets the old bit true but cannot set the new scope bit.
+        ("rolling-ambiguous", "p1", None, True, False),
+        ("other-project", "p2", "app-a", True, True),
     )
-    for thread_id, project_id, app_id, ownership_known in rows:
+    for thread_id, project_id, app_id, ownership_known, scope_ownership_known in rows:
         session.add(
             EngineRun(
                 id=thread_id,
@@ -24,6 +27,7 @@ def _seed_engine_runs(session: Session) -> None:
                 project_id=project_id,
                 app_id=app_id,
                 ownership_known=ownership_known,
+                scope_ownership_known=scope_ownership_known,
                 attempt=1,
                 engine="sim",
                 handle={},
@@ -66,7 +70,13 @@ def test_project_scope_sees_all_project_runs_including_legacy_unknown() -> None:
         assert predicate is not None
         thread_ids = set(session.scalars(select(EngineRun.thread_id).where(predicate)))
 
-    assert thread_ids == {"exact", "sibling", "project-level", "legacy-unknown"}
+    assert thread_ids == {
+        "exact",
+        "sibling",
+        "project-level",
+        "legacy-unknown",
+        "rolling-ambiguous",
+    }
 
 
 def test_app_scope_can_mutate_only_exact_app_runs() -> None:
@@ -102,4 +112,10 @@ def test_project_scope_can_mutate_all_project_runs() -> None:
         assert predicate is not None
         thread_ids = set(session.scalars(select(EngineRun.thread_id).where(predicate)))
 
-    assert thread_ids == {"exact", "sibling", "project-level", "legacy-unknown"}
+    assert thread_ids == {
+        "exact",
+        "sibling",
+        "project-level",
+        "legacy-unknown",
+        "rolling-ambiguous",
+    }

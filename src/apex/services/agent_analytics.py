@@ -1,7 +1,7 @@
 """Agent-behavior analytics aggregation over apex.agent_events."""
 
+import math
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Literal
 
 from sqlalchemy import ColumnElement, Select, case, func, select
@@ -68,9 +68,11 @@ def _as_int(value: Any) -> int:
 def _as_float(value: Any) -> float | None:
     if value is None:
         return None
-    if isinstance(value, Decimal):
-        return float(value)
-    return float(value)
+    try:
+        converted = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return converted if math.isfinite(converted) else None
 
 
 def _key_string(value: Any) -> str:

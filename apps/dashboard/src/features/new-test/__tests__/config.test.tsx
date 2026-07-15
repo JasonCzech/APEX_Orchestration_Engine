@@ -9,12 +9,15 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
-const { assistantsSearch } = vi.hoisted(() => ({ assistantsSearch: vi.fn() }))
+const { assistantsSearch, assistantsGet } = vi.hoisted(() => ({
+  assistantsSearch: vi.fn(),
+  assistantsGet: vi.fn(),
+}))
 
 vi.mock('@/api/langgraphClient', () => ({
   getLangGraphClient: () =>
     Promise.resolve({
-      assistants: { search: assistantsSearch },
+      assistants: { search: assistantsSearch, get: assistantsGet },
     }),
 }))
 
@@ -109,6 +112,12 @@ describe('ConfigStep', () => {
 
   it('golden-config pick shows the inherited chip and pre-fills engine + gates', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN, DEFAULTED, SYSTEM_DEFAULT])
+    assistantsGet.mockImplementation((assistantId: string) => {
+      const assistant = [GOLDEN, DEFAULTED, SYSTEM_DEFAULT].find(
+        (candidate) => candidate.assistant_id === assistantId,
+      )
+      return Promise.resolve(assistant)
+    })
     installWizardHandlers()
     const user = userEvent.setup()
     const rendered = renderWizard('/runs/new?step=config')

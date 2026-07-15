@@ -1,0 +1,450 @@
+{{- if and .Values.databaseRoleProvisioning.enabled .Values.databaseRoleProvisioning.cleanupOldGenerations -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "db-role-cleanup") }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database-role-cleanup
+  annotations:
+    # This hook also verifies the exact Deployment generation and full rollout;
+    # it remains fail-safe even when Helm itself was invoked without --wait.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": {{ .Values.databaseRoleProvisioning.hookDeletePolicy }}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database-role-cleanup
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "apex.databaseRoleCleanupServiceAccountName" . | quote }}
+      automountServiceAccountToken: true
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: retire
+          image: {{ include "apex.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import asyncio
+              import hashlib
+              import hmac
+              import json
+              import os
+              import ssl
+              import time
+              import urllib.request
+              from pathlib import Path
+              from urllib.parse import unquote, urlsplit
+
+              import asyncpg
+              from apex.settings import database_asyncpg_uri, database_ssl_connect_args
+
+              # Must match the provisioning hook. Holding it through retirement
+              # prevents a cleanup from racing another release's ownership check
+              # or generation-role creation.
+              DATABASE_ROLE_LOCK_KEY = 4706337856242535493
+
+              def connect_args(uri):
+                  normalized = database_asyncpg_uri(uri).replace(
+                      "postgresql+asyncpg://", "postgresql://", 1
+                  )
+                  return normalized, database_ssl_connect_args(uri, None)
+
+              def uri_target(name):
+                  parsed = urlsplit(os.environ[name])
+                  if (
+                      not parsed.username
+                      or parsed.password is None
+                      or not parsed.hostname
+                      or not parsed.path.strip("/")
+                  ):
+                      raise SystemExit(
+                          f"{name} must include a host, database, username, and password"
+                      )
+                  return (
+                      unquote(parsed.username),
+                      unquote(parsed.password),
+                      parsed.hostname.lower().rstrip("."),
+                      parsed.port or 5432,
+                      unquote(parsed.path.strip("/")),
+                  )
+
+              def wait_for_rollout():
+                  token_dir = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+                  token = (token_dir / "token").read_text().strip()
+                  namespace = (token_dir / "namespace").read_text().strip()
+                  context = ssl.create_default_context(cafile=str(token_dir / "ca.crt"))
+                  url = (
+                      f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:"
+                      f"{os.environ['KUBERNETES_SERVICE_PORT_HTTPS']}"
+                      f"/apis/apps/v1/namespaces/{namespace}/deployments/"
+                      f"{os.environ['APEX_DEPLOYMENT_NAME']}"
+                  )
+                  expected = os.environ["APEX_DATABASE_CREDENTIAL_GENERATION"]
+                  last_reason = "Deployment has not been observed"
+                  for _ in range(90):
+                      request = urllib.request.Request(
+                          url,
+                          headers={"Authorization": f"Bearer {token}"},
+                      )
+                      with urllib.request.urlopen(request, context=context, timeout=10) as response:
+                          deployment = json.load(response)
+                      metadata = deployment.get("metadata", {})
+                      spec = deployment.get("spec", {})
+                      status = deployment.get("status", {})
+                      annotations = spec.get("template", {}).get("metadata", {}).get(
+                          "annotations", {}
+                      )
+                      desired = spec.get("replicas", 1)
+                      checks = {
+                          "credential annotation": annotations.get(
+                              "apex.io/database-credential-generation"
+                          )
+                          == expected,
+                          "observed generation": status.get("observedGeneration", 0)
+                          >= metadata.get("generation", 1),
+                          "updated replicas": status.get("updatedReplicas", 0) == desired,
+                          "ready replicas": status.get("readyReplicas", 0) == desired,
+                          "available replicas": status.get("availableReplicas", 0) == desired,
+                          "no old replicas": status.get("replicas", 0) == desired,
+                          "no unavailable replicas": status.get("unavailableReplicas", 0) == 0,
+                      }
+                      failed = [name for name, passed in checks.items() if not passed]
+                      if not failed:
+                          return
+                      last_reason = ", ".join(failed)
+                      time.sleep(5)
+                  raise SystemExit(
+                      "refusing database-role cleanup before the Deployment rollout "
+                      f"is complete: {last_reason}"
+                  )
+
+              async def main():
+                  await asyncio.to_thread(wait_for_rollout)
+                  (
+                      current_runtime,
+                      _runtime_password,
+                      runtime_host,
+                      runtime_port,
+                      runtime_database,
+                  ) = uri_target("APEX_RUNTIME_DATABASE_URI")
+                  (
+                      current_migration,
+                      _migration_password,
+                      migration_host,
+                      migration_port,
+                      migration_database,
+                  ) = uri_target("APEX_MIGRATION_DATABASE_URI")
+                  _, _admin_password, admin_host, admin_port, admin_database = uri_target(
+                      "APEX_DATABASE_ADMIN_URI"
+                  )
+                  role_claim_key = os.environ["APEX_DATABASE_ROLE_CLAIM_KEY"]
+                  if (
+                      len(role_claim_key.encode()) < 32
+                      or role_claim_key != role_claim_key.strip()
+                  ):
+                      raise SystemExit(
+                          "database role claim key must be a trimmed value of at least 32 bytes"
+                      )
+                  if (
+                      runtime_host != migration_host
+                      or runtime_host != admin_host
+                      or runtime_port != migration_port
+                      or runtime_port != admin_port
+                      or runtime_database != migration_database
+                      or runtime_database != admin_database
+                  ):
+                      raise SystemExit(
+                          "refusing database-role cleanup because the admin, runtime, and "
+                          "migration URIs do not target one database endpoint"
+                      )
+                  runtime_owner_name = os.environ["APEX_RUNTIME_OWNER_ROLE"]
+                  migration_owner_name = os.environ["APEX_MIGRATION_OWNER_ROLE"]
+                  expected_generation = hashlib.sha256(
+                      f"{current_runtime}:{current_migration}".encode()
+                  ).hexdigest()[:16]
+                  if (
+                      os.environ["APEX_DATABASE_CREDENTIAL_GENERATION"]
+                      != expected_generation
+                  ):
+                      raise SystemExit(
+                          "refusing database-role cleanup because the current Secret roles "
+                          "do not match the rolled-out credential generation"
+                      )
+                  if not current_runtime.startswith(f"{runtime_owner_name}_v"):
+                      raise SystemExit("runtime login is not a versioned generation role")
+                  if not current_migration.startswith(f"{migration_owner_name}_v"):
+                      raise SystemExit("migration login is not a versioned generation role")
+
+                  raw_admin_uri = os.environ["APEX_DATABASE_ADMIN_URI"]
+                  admin_uri, args = connect_args(raw_admin_uri)
+                  conn = await asyncpg.connect(admin_uri, **args)
+                  try:
+                      await conn.execute(
+                          "SELECT pg_advisory_lock($1::bigint)",
+                          DATABASE_ROLE_LOCK_KEY,
+                      )
+
+                      async def ident(value):
+                          return await conn.fetchval("SELECT quote_ident($1)", value)
+
+                      role_owner_id = os.environ["APEX_DATABASE_ROLE_OWNER_ID"]
+
+                      def ownership_marker(kind, role_name):
+                          payload = (
+                              f"apex-role-claim-v2:{role_owner_id}:{kind}:{role_name}"
+                          ).encode()
+                          claim = hmac.new(
+                              role_claim_key.encode(), payload, hashlib.sha256
+                          ).hexdigest()
+                          return f"apex-role-claim-v2:{role_owner_id}:{kind}:{claim}"
+
+                      async def require_safe_role(role_name, *, login, parent_name=None):
+                          state = await conn.fetchrow(
+                              """
+                              SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication,
+                                     rolbypassrls, rolinherit, rolcanlogin, rolconnlimit,
+                                     rolvaliduntil
+                              FROM pg_roles WHERE rolname = $1
+                              """,
+                              role_name,
+                          )
+                          if state is None:
+                              raise SystemExit(
+                                  f"refusing database-role cleanup because role "
+                                  f"{role_name!r} disappeared"
+                              )
+                          dangerous = any(
+                              state[key]
+                              for key in (
+                                  "rolsuper",
+                                  "rolcreaterole",
+                                  "rolcreatedb",
+                                  "rolreplication",
+                                  "rolbypassrls",
+                              )
+                          )
+                          parents = {
+                              row["rolname"]
+                              for row in await conn.fetch(
+                                  """
+                                  SELECT parent.rolname
+                                  FROM pg_auth_members AS membership
+                                  JOIN pg_roles AS parent ON parent.oid = membership.roleid
+                                  JOIN pg_roles AS member ON member.oid = membership.member
+                                  WHERE member.rolname = $1
+                                  """,
+                                  role_name,
+                              )
+                          }
+                          children = {
+                              row["rolname"]
+                              for row in await conn.fetch(
+                                  """
+                                  SELECT member.rolname
+                                  FROM pg_auth_members AS membership
+                                  JOIN pg_roles AS parent ON parent.oid = membership.roleid
+                                  JOIN pg_roles AS member ON member.oid = membership.member
+                                  WHERE parent.rolname = $1
+                                  """,
+                                  role_name,
+                              )
+                          }
+                          expected_parents = set() if parent_name is None else {parent_name}
+                          if (
+                              dangerous
+                              or not state["rolinherit"]
+                              or state["rolcanlogin"] != login
+                              or state["rolconnlimit"] != -1
+                              or state["rolvaliduntil"] is not None
+                              or parents != expected_parents
+                              or (login and children)
+                          ):
+                              raise SystemExit(
+                                  f"refusing database-role cleanup because role "
+                                  f"{role_name!r} has unsafe attributes or memberships"
+                              )
+                          return children
+
+                      for owner_kind, owner_name in (
+                          ("runtime-owner", runtime_owner_name),
+                          ("migration-owner", migration_owner_name),
+                      ):
+                          await require_safe_role(owner_name, login=False)
+                          expected_owner_marker = ownership_marker(owner_kind, owner_name)
+                          owner_marker = await conn.fetchval(
+                              "SELECT shobj_description(oid, 'pg_authid') "
+                              "FROM pg_roles WHERE rolname = $1",
+                              owner_name,
+                          )
+                          if not hmac.compare_digest(
+                              owner_marker or "", expected_owner_marker
+                          ):
+                              raise SystemExit(
+                                  f"refusing database-role cleanup because owner role "
+                                  f"{owner_name!r} is not claimed by this release"
+                              )
+
+                      schema_state = await conn.fetchrow(
+                          """
+                          SELECT owner.rolname AS owner_name,
+                                 obj_description(n.oid, 'pg_namespace') AS marker
+                          FROM pg_namespace AS n
+                          JOIN pg_roles AS owner ON owner.oid = n.nspowner
+                          WHERE n.nspname = 'apex'
+                          """
+                      )
+                      expected_schema_marker = ownership_marker("schema", "apex")
+                      if (
+                          schema_state is None
+                          or schema_state["owner_name"] != migration_owner_name
+                          or not hmac.compare_digest(
+                              schema_state["marker"] or "",
+                              expected_schema_marker,
+                          )
+                      ):
+                          raise SystemExit(
+                              "refusing database-role cleanup because the application "
+                              "schema is not claimed by this release"
+                          )
+
+                      async def retire(prefix, current, owner_name, role_kind):
+                          owner = await ident(owner_name)
+                          # Prefixes are configurable and therefore are not a safe
+                          # ownership boundary. Only direct members of this exact
+                          # stable owner are generation roles managed by this release.
+                          role_names = await conn.fetch(
+                              """
+                              SELECT member.rolname
+                              FROM pg_auth_members AS membership
+                              JOIN pg_roles AS owner ON owner.oid = membership.roleid
+                              JOIN pg_roles AS member ON member.oid = membership.member
+                              WHERE owner.rolname = $1
+                              """,
+                              owner_name,
+                          )
+                          managed = {row["rolname"] for row in role_names}
+                          if current not in managed:
+                              raise SystemExit(
+                                  f"current generation role is not a direct member of {owner_name}"
+                              )
+                          for raw_role in sorted(managed):
+                              await require_safe_role(
+                                  raw_role,
+                                  login=True,
+                                  parent_name=owner_name,
+                              )
+                              marker = await conn.fetchval(
+                                  "SELECT shobj_description(oid, 'pg_authid') "
+                                  "FROM pg_roles WHERE rolname = $1",
+                                  raw_role,
+                              )
+                              expected_marker = ownership_marker(
+                                  f"{role_kind}-generation", raw_role
+                              )
+                              if not hmac.compare_digest(
+                                  marker or "", expected_marker
+                              ):
+                                  raise SystemExit(
+                                      f"refusing database-role cleanup because generation "
+                                      f"role {raw_role!r} is not claimed by this release"
+                                  )
+                          stale = sorted(
+                              role_name
+                              for role_name in managed
+                              if role_name.startswith(f"{prefix}_v") and role_name != current
+                          )
+                          for raw_role in stale:
+                              role = await ident(raw_role)
+                              await conn.execute(
+                                  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                                  "WHERE usename = $1 AND pid <> pg_backend_pid()",
+                                  raw_role,
+                              )
+                              await conn.execute(f"REASSIGN OWNED BY {role} TO {owner}")
+                              await conn.execute(f"DROP OWNED BY {role}")
+                              await conn.execute(f"DROP ROLE {role}")
+
+                      await retire(
+                          runtime_owner_name,
+                          current_runtime,
+                          runtime_owner_name,
+                          "runtime",
+                      )
+                      await retire(
+                          migration_owner_name,
+                          current_migration,
+                          migration_owner_name,
+                          "migration",
+                      )
+
+                      # The unversioned roles may have been live logins before
+                      # this blue/green scheme. They remain stable owners/groups,
+                      # but after readiness they must no longer accept logins.
+                      for owner_name in (runtime_owner_name, migration_owner_name):
+                          owner = await ident(owner_name)
+                          await conn.execute(f"ALTER ROLE {owner} NOLOGIN")
+                          await conn.execute(
+                              "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                              "WHERE usename = $1 AND pid <> pg_backend_pid()",
+                              owner_name,
+                          )
+                  finally:
+                      await conn.close()
+
+              asyncio.run(main())
+          env:
+            - name: APEX_DATABASE_ADMIN_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.adminSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.adminUriKey | quote }}
+            - name: APEX_RUNTIME_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.runtimeSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.runtimeUriKey | quote }}
+            - name: APEX_MIGRATION_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.migrationSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.migrationUriKey | quote }}
+            - name: APEX_RUNTIME_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.runtimeOwnerRole | quote }}
+            - name: APEX_MIGRATION_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.migrationOwnerRole | quote }}
+            - name: APEX_DATABASE_CREDENTIAL_GENERATION
+              value: {{ .Values.databaseRoleProvisioning.credentialGeneration | quote }}
+            - name: APEX_DATABASE_ROLE_OWNER_ID
+              value: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
+            - name: APEX_DATABASE_ROLE_CLAIM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.claimSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.claimSecretKey | quote }}
+            - name: APEX_DEPLOYMENT_NAME
+              value: {{ include "apex.fullname" . | quote }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

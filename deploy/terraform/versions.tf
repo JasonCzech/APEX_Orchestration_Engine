@@ -1,5 +1,6 @@
 terraform {
-  required_version = ">= 1.6"
+  # Cross-variable validation below requires Terraform 1.9 or newer.
+  required_version = ">= 1.9, < 2.0"
 
   required_providers {
     azurerm = {

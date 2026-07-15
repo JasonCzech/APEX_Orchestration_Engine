@@ -26,3 +26,9 @@ apps/dashboard/dist/
 .vscode/
 coverage/
 .coverage
+
+# Terraform binary plans can contain cleartext sensitive values. Keep failed or
+# awaiting-confirmation plans local even though deploy helpers chmod them 0600.
+*.tfplan
+tfplan
+tfplan.*

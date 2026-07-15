@@ -10,20 +10,41 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 
 import structlog
 from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apex.auth.identity import ConsumerIdentity
+from apex.domain.durable_evidence import sanitize_durable_object, sanitize_durable_text
+from apex.persistence.audit_lock import AUDIT_CHAIN_LOCK_KEY
 from apex.persistence.models import AuditLog
 
 logger = structlog.get_logger(__name__)
-_CHAIN_LOCK_KEY = 0x4150455841554449  # "APEXAUDI" as a signed 64-bit advisory-lock key.
+
+_AUDIT_TEXT_LIMITS = {
+    "category": 64,
+    "action": 128,
+    "decision": 32,
+    "principal_id": 255,
+    "principal_type": 64,
+    "principal_role": 32,
+    "request_method": 16,
+    "request_path": 2048,
+    "request_id": 255,
+    "ip_address": 255,
+    "user_agent": 1024,
+    "resource_type": 128,
+    "resource_id": 255,
+}
+_AUDIT_REASON_LIMIT = 4096
+AUDIT_EXPORT_PAGE_SIZE = 250
+
+_PageValue = TypeVar("_PageValue")
 
 
 @dataclass(frozen=True)
@@ -62,6 +83,30 @@ class AuditRetentionSummary:
     before: datetime
     candidates: int
     preserved_anchor_id: str | None = None
+
+
+class AuditReadConsistencyError(RuntimeError):
+    """A paged audit read changed before its captured watermark was consumed."""
+
+
+@dataclass(frozen=True)
+class _AuditRetentionPrefix:
+    """The maximal chain-order prefix whose events precede a cutoff."""
+
+    count: int
+    anchor_id: str | None
+    anchor_chain_seq: int | None
+    first_retained_chain_seq: int | None
+
+
+def validate_retention_cutoff(before: datetime, *, now: datetime | None = None) -> None:
+    """Reject ambiguous or future retention windows before destructive work."""
+
+    if before.tzinfo is None or before.utcoffset() is None:
+        raise ValueError("before must include a timezone offset")
+    current = now or datetime.now(UTC)
+    if before > current:
+        raise ValueError("before must not be in the future")
 
 
 def event_from_identity(
@@ -153,7 +198,9 @@ class AuditService:
         if _dialect_name(self._session) != "postgresql":
             return
         await self._session.execute(
-            text("SELECT pg_advisory_xact_lock(:lock_key)").bindparams(lock_key=_CHAIN_LOCK_KEY)
+            text("SELECT pg_advisory_xact_lock(:lock_key)").bindparams(
+                lock_key=AUDIT_CHAIN_LOCK_KEY
+            )
         )
 
     async def verify_chain(self, *, allow_truncated: bool = False) -> AuditChainVerification:
@@ -213,28 +260,137 @@ class AuditService:
         return "\n".join([line async for line in self.iter_cef()])
 
     async def iter_jsonl(self) -> AsyncIterator[str]:
-        async for row in self._iter_rows():
-            yield json.dumps(_row_dict(row), sort_keys=True)
+        async for line in self._iter_materialized_values(
+            lambda row: json.dumps(_row_dict(row), sort_keys=True)
+        ):
+            yield line
 
     async def iter_cef(self) -> AsyncIterator[str]:
-        async for row in self._iter_rows():
-            yield _row_cef(row)
+        async for line in self._iter_materialized_values(_row_cef):
+            yield line
 
     async def _iter_rows(self) -> AsyncIterator[AuditLog]:
-        stream_scalars = getattr(self._session, "stream_scalars", None)
-        if stream_scalars is None:
-            for row in await self._rows():
-                yield row
-            return
-        result = await stream_scalars(select(AuditLog).order_by(AuditLog.chain_seq))
-        async for row in result:
+        async for row in self._iter_materialized_values(lambda row: row):
             yield row
+
+    async def _iter_materialized_values(
+        self,
+        materialize: Callable[[AuditLog], _PageValue],
+    ) -> AsyncIterator[_PageValue]:
+        """Yield a finite, watermark-bounded export without pinning a DB connection.
+
+        Production AsyncSession objects expose ``stream_scalars``. Small unit
+        fakes without that API retain the original in-memory path; real reads
+        use keyset pagination and release their transaction before any value is
+        handed to a potentially slow caller.
+        """
+
+        if getattr(self._session, "stream_scalars", None) is None:
+            for row in await self._rows():
+                yield materialize(row)
+            return
+
+        bounds = await self._session.execute(
+            select(func.min(AuditLog.chain_seq), func.max(AuditLog.chain_seq))
+        )
+        first_chain_seq_value, watermark_value = bounds.one()
+        await self._release_export_read_transaction()
+        if watermark_value is None:
+            return
+        if first_chain_seq_value is None:
+            raise AuditReadConsistencyError("audit export captured inconsistent chain bounds")
+        first_chain_seq = int(first_chain_seq_value)
+        watermark = int(watermark_value)
+        last_chain_seq: int | None = None
+        expected_chain_seq = first_chain_seq
+
+        while True:
+            statement = select(AuditLog).where(AuditLog.chain_seq <= watermark)
+            if last_chain_seq is not None:
+                statement = statement.where(AuditLog.chain_seq > last_chain_seq)
+            statement = statement.order_by(AuditLog.chain_seq).limit(AUDIT_EXPORT_PAGE_SIZE)
+
+            try:
+                rows = list(await self._session.scalars(statement))
+                if rows:
+                    for row in rows:
+                        actual_chain_seq = int(row.chain_seq)
+                        if actual_chain_seq != expected_chain_seq:
+                            raise AuditReadConsistencyError(
+                                "audit export chain changed before watermark "
+                                f"{watermark}: expected sequence {expected_chain_seq}, "
+                                f"found {actual_chain_seq}"
+                            )
+                        expected_chain_seq += 1
+                    next_chain_seq = int(rows[-1].chain_seq)
+                    if last_chain_seq is not None and next_chain_seq <= last_chain_seq:
+                        raise RuntimeError("audit export keyset did not advance")
+                    values = [materialize(row) for row in rows]
+                    # Detaching prevents a custom/default expire-on-commit
+                    # session from lazily checking out another connection while
+                    # the already-materialized page is being consumed.
+                    expunge = getattr(self._session, "expunge", None)
+                    if expunge is not None:
+                        for row in rows:
+                            expunge(row)
+                else:
+                    next_chain_seq = last_chain_seq
+                    values = []
+                if not rows and expected_chain_seq <= watermark:
+                    raise AuditReadConsistencyError(
+                        "audit export chain ended before captured watermark "
+                        f"{watermark}; next expected sequence is {expected_chain_seq}"
+                    )
+                if rows and len(rows) < AUDIT_EXPORT_PAGE_SIZE and next_chain_seq != watermark:
+                    raise AuditReadConsistencyError(
+                        "audit export page ended before captured watermark "
+                        f"{watermark}; last sequence is {next_chain_seq}"
+                    )
+                await self._release_export_read_transaction()
+            except BaseException:
+                await self._rollback_export_read_transaction()
+                raise
+
+            for value in values:
+                yield value
+
+            if not rows or next_chain_seq == watermark:
+                return
+            assert next_chain_seq is not None
+            last_chain_seq = next_chain_seq
+
+    async def _release_export_read_transaction(self) -> None:
+        """Release a page read without making any caller-owned writes durable."""
+
+        if any(
+            bool(getattr(self._session, attribute, ())) for attribute in ("new", "dirty", "deleted")
+        ):
+            raise RuntimeError("audit export session contains pending mutations")
+        # ``new``/``dirty``/``deleted`` cannot see Core or bulk DML issued through
+        # ``execute()``.  A commit here could therefore publish unrelated writes
+        # merely because a caller streamed an audit export through the same
+        # request-scoped session.  Every value yielded by the exporter has already
+        # been materialized (and ORM rows are detached), so rolling back the read
+        # snapshot is both sufficient and the only safe release boundary.
+        await self._session.rollback()
+
+    async def _rollback_export_read_transaction(self) -> None:
+        rollback = getattr(self._session, "rollback", None)
+        if rollback is None:
+            return
+        try:
+            await rollback()
+        except BaseException:
+            # Preserve the query/serialization/cancellation exception. Request
+            # dependency cleanup remains the final safety net for a dead pool.
+            pass
 
     async def retention_summary(
         self, *, before: datetime, retain_anchor: bool = True
     ) -> AuditRetentionSummary:
+        validate_retention_cutoff(before)
         if getattr(self._session, "stream_scalars", None) is None:
-            rows = [row for row in await self._rows() if row.at < before]
+            rows = _contiguous_retention_prefix(await self._rows(), before)
             preserved_anchor_id = rows[-1].id if retain_anchor and rows else None
             candidates = max(len(rows) - 1, 0) if retain_anchor and rows else len(rows)
             return AuditRetentionSummary(
@@ -242,21 +398,9 @@ class AuditService:
                 candidates=candidates,
                 preserved_anchor_id=preserved_anchor_id,
             )
-        count = int(
-            await self._session.scalar(
-                select(func.count()).select_from(AuditLog).where(AuditLog.at < before)
-            )
-            or 0
-        )
-        preserved_anchor_id = None
-        if retain_anchor and count:
-            preserved_anchor_id = await self._session.scalar(
-                select(AuditLog.id)
-                .where(AuditLog.at < before)
-                .order_by(AuditLog.chain_seq.desc())
-                .limit(1)
-            )
-        candidates = max(count - 1, 0) if retain_anchor and count else count
+        prefix = await self._retention_prefix(before)
+        preserved_anchor_id = prefix.anchor_id if retain_anchor else None
+        candidates = max(prefix.count - 1, 0) if retain_anchor else prefix.count
         return AuditRetentionSummary(
             before=before,
             candidates=candidates,
@@ -264,40 +408,77 @@ class AuditService:
         )
 
     async def prune_before(self, *, before: datetime, retain_anchor: bool = True) -> int:
+        validate_retention_cutoff(before)
+        await self._lock_chain()
         if getattr(self._session, "stream_scalars", None) is None:
-            rows = [row for row in await self._rows() if row.at < before]
+            rows = _contiguous_retention_prefix(await self._rows(), before)
             if retain_anchor and rows:
                 rows = rows[:-1]
             ids = [row.id for row in rows]
             if not ids:
+                await self._session.commit()
                 return 0
             await self._session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
             await self._session.commit()
             return len(ids)
-        anchor_id = None
-        if retain_anchor:
-            anchor_id = await self._session.scalar(
-                select(AuditLog.id)
-                .where(AuditLog.at < before)
-                .order_by(AuditLog.chain_seq.desc())
-                .limit(1)
-            )
-        deleted = 0
-        while True:
-            stmt = select(AuditLog.id).where(AuditLog.at < before)
-            if anchor_id is not None:
-                stmt = stmt.where(AuditLog.id != anchor_id)
-            ids = list(await self._session.scalars(stmt.order_by(AuditLog.chain_seq).limit(1_000)))
-            if not ids:
-                break
-            await self._session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
+        prefix = await self._retention_prefix(before)
+        deleted = max(prefix.count - 1, 0) if retain_anchor else prefix.count
+        if deleted == 0:
+            # Release the transaction-scoped writer lock promptly even when the
+            # selected window has nothing safe to remove.
             await self._session.commit()
-            deleted += len(ids)
+            return 0
+        if retain_anchor:
+            assert prefix.anchor_chain_seq is not None
+            predicate = AuditLog.chain_seq < prefix.anchor_chain_seq
+        elif prefix.first_retained_chain_seq is None:
+            assert prefix.anchor_chain_seq is not None
+            predicate = AuditLog.chain_seq <= prefix.anchor_chain_seq
+        else:
+            predicate = AuditLog.chain_seq < prefix.first_retained_chain_seq
+        await self._session.execute(delete(AuditLog).where(predicate))
+        # One transaction keeps the advisory lock across boundary selection and
+        # deletion; per-batch commits would let appenders race into the window.
+        await self._session.commit()
         return deleted
+
+    async def _retention_prefix(self, before: datetime) -> _AuditRetentionPrefix:
+        """Select a prefix boundary by chain order, never by arbitrary old rows."""
+
+        first_retained_chain_seq = await self._session.scalar(
+            select(func.min(AuditLog.chain_seq)).where(AuditLog.at >= before)
+        )
+        prefix_filter = (
+            AuditLog.chain_seq < first_retained_chain_seq
+            if first_retained_chain_seq is not None
+            else None
+        )
+        count_stmt = select(func.count()).select_from(AuditLog)
+        anchor_stmt = select(AuditLog).order_by(AuditLog.chain_seq.desc()).limit(1)
+        if prefix_filter is not None:
+            count_stmt = count_stmt.where(prefix_filter)
+            anchor_stmt = anchor_stmt.where(prefix_filter)
+        count = int(await self._session.scalar(count_stmt) or 0)
+        anchor = await self._session.scalar(anchor_stmt) if count else None
+        return _AuditRetentionPrefix(
+            count=count,
+            anchor_id=anchor.id if anchor is not None else None,
+            anchor_chain_seq=anchor.chain_seq if anchor is not None else None,
+            first_retained_chain_seq=first_retained_chain_seq,
+        )
 
     async def _rows(self) -> list[AuditLog]:
         result = await self._session.scalars(select(AuditLog).order_by(AuditLog.chain_seq))
         return list(result)
+
+
+def _contiguous_retention_prefix(rows: list[AuditLog], before: datetime) -> list[AuditLog]:
+    prefix: list[AuditLog] = []
+    for row in rows:
+        if row.at >= before:
+            break
+        prefix.append(row)
+    return prefix
 
 
 async def append_audit_event(
@@ -318,7 +499,7 @@ async def append_audit_event_best_effort(event: AuditEvent) -> None:
             category=event.category,
             action=event.action,
             decision=event.decision,
-            error=f"{exc.__class__.__name__}: {exc}",
+            error_type=exc.__class__.__name__,
         )
 
 
@@ -384,8 +565,16 @@ def _legacy_event_hash(event: AuditEvent, previous_hash: str | None) -> str:
 
 
 def _materialize_event(event: AuditEvent) -> AuditEvent:
+    bounded = {
+        name: sanitize_durable_text(getattr(event, name), limit)
+        for name, limit in _AUDIT_TEXT_LIMITS.items()
+    }
     return replace(
         event,
+        **bounded,
+        reason=sanitize_durable_text(event.reason, _AUDIT_REASON_LIMIT),
+        principal_scopes=sanitize_durable_object(event.principal_scopes),
+        extra=sanitize_durable_object(event.extra),
         at=event.at or datetime.now(UTC),
         event_nonce=secrets.token_hex(8),
     )
@@ -481,11 +670,7 @@ def _cef_escape(value: Any) -> str:
 
 def _cef_header_escape(value: Any) -> str:
     return (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace("|", "\\|")
-        .replace("\n", "\\n")
-        .replace("\r", "")
+        str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", "\\n").replace("\r", "")
     )
 
 

@@ -6,19 +6,27 @@ metadata:
     app.kubernetes.io/name: apex-minio-backup
 spec:
   schedule: "17 */6 * * *"
+  timeZone: Etc/UTC
   concurrencyPolicy: Forbid
+  # A controller outage should not launch a stale backup hours later, and one
+  # wedged run must terminate well before it can suppress the next six-hour run.
+  startingDeadlineSeconds: 900
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 5
   jobTemplate:
     spec:
-      backoffLimit: 3
+      activeDeadlineSeconds: 5400
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 604800
       template:
         metadata:
           labels:
             app.kubernetes.io/name: apex-minio-backup
+            azure.workload.identity/use: "true"
         spec:
+          serviceAccountName: apex-minio-backup
           automountServiceAccountToken: false
-          restartPolicy: OnFailure
+          restartPolicy: Never
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000
@@ -27,19 +35,36 @@ spec:
               type: RuntimeDefault
           containers:
             - name: mirror
-              image: rclone/rclone:1.70.3
+              image: rclone/rclone:1.70.3@sha256:34c729127386abec1c610b2aa024e39b4498dc2b4a72a0798ae21fbdc1b0493b
               args:
-                - copy
+                # Keep the current backup as an exact mirror. Azure Blob soft
+                # delete/versioning retains source deletions for recovery, while
+                # the lifecycle policy expires superseded versions so storage is
+                # bounded instead of growing forever.
+                - sync
                 - source:apex-artifacts
                 - backup:apex-artifacts-backup
                 - --checksum
+                # Fail closed on a surprising bulk deletion; operators can
+                # inspect the source and raise the cap for an intentional purge.
+                - --max-delete=1000
                 - --log-level=INFO
+                # Bound network stalls and the complete rclone operation inside
+                # the Job deadline. Kubernetes retries the failed pod twice.
+                - --contimeout=30s
+                - --timeout=5m
+                - --max-duration=75m
+                - --retries=8
+                - --low-level-retries=8
+                - --retries-sleep=30s
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true
                 capabilities:
                   drop: ["ALL"]
               env:
+                - name: HOME
+                  value: /tmp
                 - name: RCLONE_CONFIG_SOURCE_TYPE
                   value: s3
                 - name: RCLONE_CONFIG_SOURCE_PROVIDER
@@ -59,14 +84,14 @@ spec:
                   value: azureblob
                 - name: RCLONE_CONFIG_BACKUP_ACCOUNT
                   valueFrom:
-                    secretKeyRef:
-                      name: apex-minio-backup
+                    configMapKeyRef:
+                      name: apex-minio-backup-config
                       key: AZURE_STORAGE_ACCOUNT
-                - name: RCLONE_CONFIG_BACKUP_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: apex-minio-backup
-                      key: AZURE_STORAGE_KEY
+                - name: RCLONE_CONFIG_BACKUP_ENV_AUTH
+                  value: "true"
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
               resources:
                 requests:
                   cpu: 100m
@@ -74,3 +99,6 @@ spec:
                 limits:
                   cpu: "1"
                   memory: 512Mi
+          volumes:
+            - name: tmp
+              emptyDir: {}

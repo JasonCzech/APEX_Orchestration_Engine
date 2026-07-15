@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -26,6 +26,8 @@ function renderConsole(role: 'operator' | 'viewer' = 'operator') {
 }
 
 describe('WorkItemsPage', () => {
+  beforeEach(() => window.sessionStorage.clear())
+
   it('translates NL to an editable provider query and executes it', async () => {
     const translate = translateHandler()
     const execute = executeHandler()
@@ -33,14 +35,13 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     renderConsole()
 
-    await user.type(
-      await screen.findByLabelText('Find by description'),
-      'open payment stories',
-    )
+    await user.type(await screen.findByLabelText('Find by description'), 'open payment stories')
     await user.click(screen.getByRole('button', { name: 'Translate' }))
 
     // Editable provider query + confidence chip.
-    const providerInput = await screen.findByRole('textbox', { name: 'Provider' })
+    const providerInput = await screen.findByRole('textbox', {
+      name: 'Provider',
+    })
     expect(providerInput).toHaveValue('jira')
     expect(screen.getByRole('textbox', { name: 'Provider query' })).toHaveValue(TRANSLATED.query)
     expect(screen.getByText('confidence 82%')).toBeInTheDocument()
@@ -62,9 +63,7 @@ describe('WorkItemsPage', () => {
     )
     // The url-less row renders no tracker link.
     const bugRow = screen.getByTestId('wi-row-PHX-102')
-    expect(
-      within(bugRow).queryByRole('link', { name: /in tracker/ }),
-    ).not.toBeInTheDocument()
+    expect(within(bugRow).queryByRole('link', { name: /in tracker/ })).not.toBeInTheDocument()
 
     expect(execute.captured).toEqual([
       {
@@ -93,7 +92,11 @@ describe('WorkItemsPage', () => {
     await screen.findByTestId('wi-row-PHX-101')
     expect(execute.captured).toEqual([
       {
-        query: { provider: 'ado', query: 'status = Active AND type = Bug', confidence: 1 },
+        query: {
+          provider: 'ado',
+          query: 'status = Active AND type = Bug',
+          confidence: 1,
+        },
         limit: 25,
         offset: 0,
       },
@@ -116,10 +119,16 @@ describe('WorkItemsPage', () => {
     }
     renderApp({
       initialEntries: ['/work-items'],
-      authState: { ...base, consumer, systemInfo: { ...base.systemInfo, consumer } },
+      authState: {
+        ...base,
+        consumer,
+        systemInfo: { ...base.systemInfo, consumer },
+      },
     })
 
-    const project = await screen.findByRole('combobox', { name: 'Work tracking project' })
+    const project = await screen.findByRole('combobox', {
+      name: 'Work tracking project',
+    })
     const savedQuery = await screen.findByLabelText('Saved queries')
     const translateButton = screen.getByRole('button', { name: 'Translate' })
     await user.type(screen.getByLabelText('Find by description'), 'open work')
@@ -151,10 +160,16 @@ describe('WorkItemsPage', () => {
     }
     renderApp({
       initialEntries: ['/work-items?provider=jira&query=status%20%3D%20Open'],
-      authState: { ...base, consumer, systemInfo: { ...base.systemInfo, consumer } },
+      authState: {
+        ...base,
+        consumer,
+        systemInfo: { ...base.systemInfo, consumer },
+      },
     })
 
-    const project = await screen.findByRole('combobox', { name: 'Work tracking project' })
+    const project = await screen.findByRole('combobox', {
+      name: 'Work tracking project',
+    })
     expect(execute.captured).toHaveLength(0)
     await user.selectOptions(project, 'proj-alpha')
 
@@ -269,12 +284,15 @@ describe('WorkItemsPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
 
     // Provider segment falls back to 'tracker' when no query ran (display only).
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe('/work-items/tracker/PHX-300'),
-    )
+    await waitFor(() => expect(router.state.location.pathname).toBe('/work-items/tracker/PHX-300'))
     expect(create.captured).toEqual([
-      { title: 'Harden gateway retries', kind: 'task', description: 'Spike output' },
+      {
+        title: 'Harden gateway retries',
+        kind: 'task',
+        description: 'Spike output',
+      },
     ])
+    expect(create.idempotencyKeys[0]).toMatch(/^create-/)
     expect(
       await screen.findByRole('heading', { name: 'Harden gateway retries' }),
     ).toBeInTheDocument()
@@ -293,5 +311,60 @@ describe('WorkItemsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Translate' }))
     await screen.findByRole('textbox', { name: 'Provider' })
     expect(screen.queryByRole('button', { name: 'Save query' })).not.toBeInTheDocument()
+  })
+
+  it('reuses the durable create key and draft after an ambiguous error and reopen', async () => {
+    const keys: string[] = []
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/items', ({ request }) => {
+        keys.push(request.headers.get('Idempotency-Key') ?? '')
+        return HttpResponse.json({ detail: 'upstream response lost' }, { status: 502 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.click(await screen.findByRole('button', { name: 'New item' }))
+    let dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Item title' }), 'Retry me')
+    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await within(dialog).findByRole('alert')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    await user.click(screen.getByRole('button', { name: 'New item' }))
+    dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    const title = within(dialog).getByRole('textbox', { name: 'Item title' })
+    expect(title).toHaveValue('Retry me')
+    await user.clear(title)
+    await user.type(title, 'Different payload')
+    await user.clear(title)
+    await user.type(title, 'Retry me')
+    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await waitFor(() => expect(keys).toHaveLength(2))
+
+    expect(keys[0]).toMatch(/^create-/)
+    expect(keys[1]).toBe(keys[0])
+  })
+
+  it('hides project-wide mutations from app-only operators', async () => {
+    server.use(savedQueriesHandler([]))
+    const base = authenticatedState('operator')
+    if (base.status !== 'authenticated') throw new Error('expected authenticated test state')
+    const consumer = {
+      ...base.consumer,
+      scopes: [{ project_id: 'proj-alpha', app_id: 'app-one' }],
+    }
+    renderApp({
+      initialEntries: ['/work-items'],
+      authState: {
+        ...base,
+        consumer,
+        systemInfo: { ...base.systemInfo, consumer },
+      },
+    })
+
+    expect(await screen.findByLabelText('Find by description')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New item' })).not.toBeInTheDocument()
   })
 })

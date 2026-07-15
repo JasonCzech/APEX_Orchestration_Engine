@@ -1,10 +1,20 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "apex.fullname" . }}-settings
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "settings") }}
   labels:
     {{- include "apex.labels" . | nindent 4 }}
 data:
+  {{- if and (hasKey .Values.apexSettings "APEX_CORS_ORIGINS") (not (hasKey .Values.apexSettings "CORS_CONFIG")) }}
+  CORS_CONFIG: {{ dict
+    "allow_origins" (get .Values.apexSettings "APEX_CORS_ORIGINS" | fromJsonArray)
+    "allow_methods" (list "GET" "POST" "PUT" "PATCH" "DELETE" "OPTIONS")
+    "allow_headers" (list "authorization" "content-type" "idempotency-key" "last-event-id" "x-api-key" "x-request-id")
+    "allow_credentials" true
+    "expose_headers" (list "content-location" "retry-after" "x-pagination-next" "x-pagination-total")
+    "max_age" 600
+    | toJson | quote }}
+  {{- end }}
   {{- range $key, $value := .Values.apexSettings }}
   {{ $key }}: {{ $value | quote }}
   {{- end }}

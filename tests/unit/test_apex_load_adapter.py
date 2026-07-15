@@ -25,7 +25,9 @@ from typing import Any
 import httpx
 import pytest
 import respx
+from structlog.testing import capture_logs
 
+import apex.adapters.apex_load.engine as apex_load_engine
 from apex.adapters.apex_load.engine import (
     ApexLoadExecutionEngine,
     format_go_duration,
@@ -37,7 +39,7 @@ from apex.domain.pipeline import EngineHandle
 from apex.graphs.pipeline import execution_phase, phase_subgraph
 from apex.graphs.pipeline.state import PipelineState
 from apex.ports.artifact_store import StoredArtifact, engine_artifact_key
-from apex.ports.execution_engine import EngineRunPhase
+from apex.ports.execution_engine import EngineProviderRunNotFoundError, EngineRunPhase
 
 BASE = "https://apexload.acme.test"
 API_KEY = "apexload-service-key"
@@ -58,6 +60,28 @@ def make_adapter(**option_overrides: object) -> ApexLoadExecutionEngine:
         options=options,
     )
     return ApexLoadExecutionEngine(conn, SecretValue(value=API_KEY))
+
+
+def test_constructor_rejects_report_limit_above_server_ceiling() -> None:
+    with pytest.raises(ValueError, match="max_report_bytes"):
+        make_adapter(max_report_bytes=apex_load_engine._HARD_MAX_REPORT_BYTES + 1)
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "match"),
+    [
+        ("base_url", True, "base_url"),
+        ("project_id", 7, "project_id"),
+        ("project_id", "../../other-project", "project_id"),
+        ("max_report_bytes", True, "integer"),
+        ("max_report_bytes", "1024", "integer"),
+    ],
+)
+def test_constructor_rejects_coercible_or_unsafe_options(
+    option: str, value: object, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        make_adapter(**{option: value})
 
 
 def make_spec(**overrides: Any) -> LoadTestSpec:
@@ -298,6 +322,11 @@ def test_parse_go_duration(raw: Any, expected: float | None) -> None:
     assert parse_go_duration_s(raw) == expected
 
 
+def test_parse_go_duration_rejects_unbounded_values() -> None:
+    assert parse_go_duration_s("1" * 129 + "s") is None
+    assert parse_go_duration_s("999999999999999999999999999999999999999h") is None
+
+
 def test_format_go_duration() -> None:
     assert format_go_duration(300.0) == "300s"
     assert format_go_duration(2.5) == "2.5s"
@@ -321,6 +350,43 @@ def test_constructor_requires_base_url_and_secret() -> None:
     )
     with pytest.raises(ValueError, match="API key"):
         ApexLoadExecutionEngine(conn, None)
+
+
+@pytest.mark.parametrize(
+    "api_key",
+    ["unsafe-api-key\r\nInjected: value", "k" * 16_385, "non-ascii-\N{SNOWMAN}"],
+)
+def test_constructor_rejects_unsafe_or_oversized_api_key_without_reflection(
+    api_key: str,
+) -> None:
+    conn = ConnectionConfig(
+        id="apexload-credential-boundary",
+        kind=PortKind.EXECUTION_ENGINE,
+        provider="apex_load",
+        name="APEX Load",
+        options={"base_url": BASE},
+    )
+
+    with pytest.raises(ValueError) as error:
+        ApexLoadExecutionEngine(conn, SecretValue(value=api_key))
+
+    assert api_key not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "idempotency_key",
+    ["unsafe\r\nInjected: value", "non-ascii-\N{SNOWMAN}"],
+)
+async def test_spec_rejects_non_header_safe_idempotency_key_before_provider_io(
+    idempotency_key: str,
+) -> None:
+    spec = make_spec(idempotency_key=idempotency_key)
+
+    report = await make_adapter().validate(spec)
+
+    assert report.ok is False
+    assert report.issues == ["load test specification failed structural validation"]
+    assert idempotency_key not in str(report)
 
 
 # ── validate (contract: validation before provision) ─────────────────────────
@@ -379,7 +445,14 @@ async def test_validate_local_structural_issues_skip_remote() -> None:
     spec = make_spec().model_copy(update={"vusers": 0, "duration_s": 0, "ramp_s": -1})
     report = await make_adapter().validate(spec)  # no respx mock: must not call out
     assert not report.ok
-    assert len(report.issues) == 3
+    assert report.issues == ["load test specification failed structural validation"]
+
+
+async def test_provision_revalidates_a_model_copy_before_provider_io() -> None:
+    spec = make_spec().model_copy(update={"duration_s": float("nan")})
+
+    with pytest.raises(ValueError, match="structural validation"):
+        await make_adapter().provision(spec)
 
 
 async def test_validate_inline_ref_bad_json_is_an_issue() -> None:
@@ -412,6 +485,39 @@ async def test_validate_propagates_remote_issues() -> None:
     assert not report.ok
     assert report.issues == ["actions[0]: target is required"]
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_validate_rejects_non_list_remote_issues() -> None:
+    respx.post(f"{BASE}/api/v1/scripts/validate").mock(
+        return_value=httpx.Response(200, json={"valid": False, "issues": "unbounded text"})
+    )
+
+    with pytest.raises(RuntimeError, match="field 'issues' must be a list"):
+        await make_adapter().validate(make_spec())
+
+
+@respx.mock
+async def test_validate_requires_an_exact_provider_boolean() -> None:
+    respx.post(f"{BASE}/api/v1/scripts/validate").mock(
+        return_value=httpx.Response(200, json={"valid": "false", "issues": []})
+    )
+
+    with pytest.raises(RuntimeError, match="must be a boolean"):
+        await make_adapter().validate(make_spec())
+
+
+@respx.mock
+async def test_validate_rejects_remote_issue_amplification() -> None:
+    respx.post(f"{BASE}/api/v1/scripts/validate").mock(
+        return_value=httpx.Response(
+            200,
+            json={"valid": False, "issues": [f"issue-{index}" for index in range(129)]},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="128-message limit"):
+        await make_adapter().validate(make_spec())
 
 
 @respx.mock
@@ -561,6 +667,62 @@ async def test_provision_adopts_test_when_create_response_is_lost() -> None:
     assert_all_calls_authed()
 
 
+@pytest.mark.parametrize("status_code", [408, 429, 502, 503])
+@respx.mock
+async def test_provision_reconciles_test_after_ambiguous_transient_response(
+    status_code: int,
+) -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        side_effect=[
+            httpx.Response(200, json={"tests": [], "count": 0}),
+            httpx.Response(200, json={"tests": [managed_test_json()], "count": 1}),
+        ]
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(201, json={"id": "script-committed"})
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(status_code, json={"error": "proxy failure after commit"})
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    assert create.called
+    assert_all_calls_authed()
+
+
+@pytest.mark.parametrize("response_kind", ["malformed_json", "missing_id"])
+@respx.mock
+async def test_provision_reconciles_ambiguous_successful_create_response(
+    response_kind: str,
+) -> None:
+    """A committed 2xx with an unusable body must still adopt the named test."""
+
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        side_effect=[
+            httpx.Response(200, json={"tests": [], "count": 0}),
+            httpx.Response(200, json={"tests": [managed_test_json()], "count": 1}),
+        ]
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(201, json={"id": "script-committed"})
+    )
+    create_response = (
+        httpx.Response(201, text="<html>proxy replaced the body</html>")
+        if response_kind == "malformed_json"
+        else httpx.Response(201, json={})
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(return_value=create_response)
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    assert create.call_count == 1
+    assert create.calls.last.request.headers["Idempotency-Key"] == KEY
+    assert_all_calls_authed()
+
+
 @respx.mock
 async def test_provision_adopts_script_when_upload_response_is_lost() -> None:
     respx.get(f"{BASE}/api/v1/tests").mock(
@@ -597,6 +759,40 @@ async def test_provision_adopts_script_when_upload_response_is_lost() -> None:
 
 
 @respx.mock
+async def test_provision_reconciles_script_after_ambiguous_transient_response() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    committed: dict[str, str] = {}
+
+    def ambiguous_upload(request: httpx.Request) -> httpx.Response:
+        committed["name"] = json.loads(request.content)["script"]["name"]
+        return httpx.Response(503, json={"error": "proxy failure after commit"})
+
+    respx.post(f"{BASE}/api/v1/scripts").mock(side_effect=ambiguous_upload)
+    respx.get(f"{BASE}/api/v1/scripts").mock(
+        side_effect=lambda _request: httpx.Response(
+            200,
+            json={
+                "scripts": [{"id": "script-committed", "name": committed["name"]}],
+                "count": 1,
+            },
+        )
+    )
+    create_test = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(201, json=managed_test_json())
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    assert json.loads(create_test.calls.last.request.content)["groups"][0]["script_id"] == (
+        "script-committed"
+    )
+    assert_all_calls_authed()
+
+
+@respx.mock
 async def test_provision_is_get_or_create_across_a_fresh_instance() -> None:
     """Simulated process restart: a FRESH adapter re-provisioning the same key
     finds the test by name via GET /api/v1/tests and creates nothing."""
@@ -623,6 +819,24 @@ async def test_provision_is_get_or_create_across_a_fresh_instance() -> None:
     assert not create_test.called, "re-provision must not create a second remote test"
     assert not create_script.called
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_provision_rejects_an_unsafe_provider_test_id() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tests": [managed_test_json(test_id="../../other-test/start")],
+                "count": 1,
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="safe non-empty identifier"):
+        await make_adapter().provision(make_spec())
+
+    assert len(respx.calls) == 1
 
 
 @respx.mock
@@ -802,6 +1016,55 @@ async def test_get_status_without_metrics_has_no_live_stats() -> None:
     assert_all_calls_authed()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("active_vusers", True),
+        ("tps", -1),
+        ("error_pct", 101),
+        ("p95_ms", "482.5"),
+    ],
+)
+@respx.mock
+async def test_get_status_rejects_malformed_live_metrics(field: str, value: Any) -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(
+            200,
+            json=managed_test_json(
+                status="RUNNING",
+                live_metrics=live_metrics_json(**{field: value}),
+            ),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="live_metrics"):
+        await make_adapter().get_status(make_handle())
+
+
+@pytest.mark.parametrize("status", [True, 7, "RUNNING\x00FAILED", "x" * 65])
+@respx.mock
+async def test_get_status_rejects_malformed_provider_status(status: Any) -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status=status))
+    )
+
+    with pytest.raises(RuntimeError, match="field 'status'"):
+        await make_adapter().get_status(make_handle())
+
+
+@respx.mock
+async def test_get_status_rejects_boolean_duration_metadata() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(
+            200,
+            json=managed_test_json(status="RUNNING", duration_ns=True),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="duration_ns"):
+        await make_adapter().get_status(make_handle())
+
+
 @respx.mock
 async def test_get_status_failed_carries_remote_error() -> None:
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
@@ -815,11 +1078,11 @@ async def test_get_status_failed_carries_remote_error() -> None:
 
 
 @respx.mock
-async def test_get_status_404_raises_keyerror() -> None:
+async def test_get_status_404_raises_definitive_provider_not_found() -> None:
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
         return_value=httpx.Response(404, json={"error": "test not found"})
     )
-    with pytest.raises(KeyError):
+    with pytest.raises(EngineProviderRunNotFoundError):
         await make_adapter().get_status(make_handle())
 
 
@@ -860,6 +1123,11 @@ def test_unprovisioned_handle_is_rejected() -> None:
         make_adapter()._run_id(handle)  # noqa: SLF001 — shared guard for every method
 
 
+def test_unsafe_persisted_handle_id_is_rejected_before_network_io() -> None:
+    with pytest.raises(ValueError, match="invalid external_run_id"):
+        make_adapter()._run_id(make_handle("../../other-test/start"))  # noqa: SLF001
+
+
 # ── abort (contract req. 4: idempotent) ───────────────────────────────────────
 
 
@@ -871,6 +1139,22 @@ async def test_abort_posts_abort() -> None:
     await make_adapter().abort(make_handle(), reason="poll timeout")
     assert route.called
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_abort_logs_only_non_content_reason_metadata() -> None:
+    secret_reason = "opaque-api-key-value-that-redaction-cannot-recognize"
+    respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
+        return_value=httpx.Response(200, json={"status": "aborted", "test_id": TEST_ID})
+    )
+
+    with capture_logs() as logs:
+        await make_adapter().abort(make_handle(), reason=secret_reason)
+
+    assert secret_reason not in repr(logs)
+    event = next(log for log in logs if log.get("event") == "apex_load.abort")
+    assert event["reason_present"] is True
+    assert event["reason_length"] == len(secret_reason)
 
 
 @respx.mock
@@ -1038,6 +1322,73 @@ async def test_fetch_summary_sla_breach_fails_with_details() -> None:
     ]
     assert summary.kpis["error_rate"] == pytest.approx(0.04)
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_fetch_summary_rejects_non_list_sla_details_before_archive_fetch() -> None:
+    sla = sla_status_json(breached=True)
+    sla["details"] = "P95 latency breached threshold"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla)
+    )
+
+    with pytest.raises(RuntimeError, match="field 'details' must be a list"):
+        await make_adapter().fetch_summary(make_handle())
+
+    assert len(respx.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"sla_breached": "false"},
+        {"sla_breached": 0},
+        {"status": {"value": "COMPLETE"}},
+    ],
+)
+@respx.mock
+async def test_fetch_summary_rejects_malformed_sla_scalars_before_archive_fetch(
+    mutation: dict[str, Any],
+) -> None:
+    payload = sla_status_json()
+    payload.update(mutation)
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError):
+        await make_adapter().fetch_summary(make_handle())
+
+    assert len(respx.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("summary_timeline", "not-a-list", "summary_timeline"),
+        ("summary_timeline", [True], "must be an object"),
+        ("summary_timeline", [{"tps": True}], "field 'tps'"),
+        ("overview", {"error_pct": 101}, "error_pct"),
+        ("by_action", {"load_root": {"transactions": True}}, "transactions"),
+    ],
+)
+@respx.mock
+async def test_fetch_summary_rejects_malformed_archive_semantics(
+    field: str, value: Any, match: str
+) -> None:
+    report = archive_report_json()
+    report[field] = value
+    if field == "by_action":
+        report["summary_timeline"] = []
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+
+    with pytest.raises(RuntimeError, match=match):
+        await make_adapter().fetch_summary(make_handle())
 
 
 @respx.mock

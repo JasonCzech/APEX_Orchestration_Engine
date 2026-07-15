@@ -71,7 +71,6 @@ export function PreflightModal({ threadId, initialSelection, onClose }: Prefligh
         threadId,
         phases: selection,
         gatesMode,
-        baseConfigurable: state?.run_config,
       },
       {
         onSuccess: () => {

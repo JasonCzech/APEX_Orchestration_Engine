@@ -3,7 +3,7 @@
 # The chart deploys ONLY the stateless LangGraph standalone server. Postgres,
 # Redis, and the S3/MinIO artifact store are EXTERNAL dependencies — no
 # subcharts are bundled. Provision them separately and point the secret refs
-# below at them. Run `alembic upgrade head` against Postgres BEFORE every
+# below at them. Run `python -m apex.persistence.migrate` against Postgres BEFORE every
 # rollout (docs/runbooks/deployment.md).
 
 # Stateless by design: all durable state is Postgres-checkpointed, so replicas
@@ -15,6 +15,7 @@ image:
   # Built with: langgraph build -t <repository>:<tag>  (see docs/runbooks/deployment.md)
   repository: apex-orchestration-engine
   tag: ""  # defaults to .Chart.AppVersion
+  digest: ""  # required outside local/dev/test/compose; immutable sha256:...
   pullPolicy: Always
 
 imagePullSecrets: []
@@ -41,31 +42,48 @@ license:
 #   Postgres 16+  — LangGraph runtime tables (checkpoints/threads/runs, managed
 #                   by the server) AND the `apex` schema (Alembic migrations).
 #                   Both URIs usually point at the same database.
-#   Redis 7       — stream pub-sub between replicas (resumable SSE).
+#   Redis 7       — stream pub-sub plus shared request/lockout/SSE admission
+#                   limits between replicas.
 #   S3/MinIO      — artifact store; reached via catalog `connections` rows
 #                   (secret_ref -> env), not via chart values.
 database:
   # Secret holding BOTH connection strings:
   #   kubectl create secret generic apex-database \
-  #     --from-literal=DATABASE_URI='postgresql://user:pass@host:5432/apex' \
-  #     --from-literal=APEX_DATABASE__URI='postgresql+asyncpg://user:pass@host:5432/apex'
+  #     --from-literal=DATABASE_URI='postgresql://user:pass@host:5432/apex?sslmode=verify-full&sslrootcert=system' \
+  #     --from-literal=APEX_DATABASE__URI='postgresql+asyncpg://user:pass@host:5432/apex?sslmode=verify-full'
   existingSecret: apex-database
   uriKey: DATABASE_URI            # LangGraph runtime (psycopg-style URI)
   apexUriKey: APEX_DATABASE__URI  # apex schema / domain API (asyncpg URI)
 
 redis:
   # kubectl create secret generic apex-redis \
-  #   --from-literal=REDIS_URI='redis://host:6379'
+  #   --from-literal=REDIS_URI='rediss://host:6380'
   existingSecret: apex-redis
   uriKey: REDIS_URI
+
+# HMAC pepper used for API-key hashes. ExistingSecret/ESO installs share this
+# Secret; CSI creates a hook-only copy so bootstrap never mounts runtime secrets.
+auth:
+  existingSecret: apex-auth
+  apiKeyHashPepperKey: APEX_AUTH__API_KEY_HASH_PEPPER
+  # Optional JSON list used only during a pepper rotation. Empty omits the env.
+  previousApiKeyHashPeppersKey: ""
 
 # ─────────────────────────── APEX domain settings ────────────────────────────
 # Non-secret APEX_* environment (pydantic-settings, `__` nesting), rendered into
 # a ConfigMap. Secrets (DB URIs, adapter secret_refs) belong in Secret refs:
 # database/redis above or extraEnv below.
 apexSettings:
+  # Defense in depth for LangGraph's built-in request parser. The outer APEX
+  # middleware applies a tighter 2 MiB default and allows 26 MiB only for docs.
+  HTTP_MAX_REQUEST_BODY_BYTES: "27262976"
+  FF_V2_EVENT_STREAMING: "false"
+  APEX_REQUEST_BODY__TIMEOUT_S: "120"
   APEX_ENVIRONMENT: production
   APEX_AUTH__ENABLED: "true"
+  # Locked environments reject the HTTP localhost defaults. Override with the
+  # actual dashboard/ingress origin for each installation.
+  APEX_CORS_ORIGINS: '["https://apex.example.com"]'
   # PostgreSQL advisory locks prevent two replicas from creating the same
   # costly provider run after concurrent retries.
   APEX_DISTRIBUTED_REMOTE_CREATION_LOCK: "true"
@@ -73,6 +91,17 @@ apexSettings:
   # direct exposure; set to the ingress/gateway source networks when proxied so
   # authentication lockouts remain per client instead of per proxy pod.
   APEX_RATE_LIMIT__TRUSTED_PROXY_CIDRS: "[]"
+  # Required for replicaCount > 1 and every locked environment. Limits fail
+  # closed if Redis cannot make an authoritative shared admission decision.
+  APEX_RATE_LIMIT__BACKEND: redis
+  # Long-lived run SSE streams are admitted for their full connection lifetime,
+  # separately from request-rate limits.
+  APEX_RATE_LIMIT__SSE_GLOBAL_CONCURRENCY: "128"
+  APEX_RATE_LIMIT__SSE_SOURCE_CONCURRENCY: "16"
+  APEX_RATE_LIMIT__SSE_CREDENTIAL_CONCURRENCY: "8"
+  APEX_RATE_LIMIT__SSE_LEASE_TTL_S: "30"
+  APEX_RATE_LIMIT__RUN_CREATE_REQUESTS: "10"
+  APEX_RATE_LIMIT__RUN_CREATE_WINDOW_S: "60"
 
 # Extra env vars appended verbatim to the container (e.g. adapter secret_refs
 # such as APEX_INTEGRATION_MINIO_SECRET_KEY via secretKeyRef, or LANGSMITH_API_KEY).
@@ -104,7 +133,9 @@ ingress:
           pathType: Prefix
   tls: []
 
-# Probes hit the LangGraph server's unauthenticated health endpoint.
+# Liveness/startup use LangGraph's process-only endpoint. Readiness uses the
+# APEX dependency-aware endpoint, which continuously verifies the schema,
+# Redis admission backend, and required durable reconcilers.
 livenessProbe:
   httpGet:
     path: /ok
@@ -115,7 +146,7 @@ livenessProbe:
   failureThreshold: 4
 readinessProbe:
   httpGet:
-    path: /ok
+    path: /ready
     port: http
   initialDelaySeconds: 5
   periodSeconds: 10
@@ -131,6 +162,16 @@ startupProbe:
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 30  # ~150s budget before liveness takes over
+
+schemaReadiness:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
 
 resources:
   requests:
@@ -208,7 +249,7 @@ serviceAccount:
 
 # Pre-install hooks run before Helm creates ordinary resources. In CSI mode the
 # chart creates this dedicated workload-identity SA as an earlier hook; outside
-# CSI mode an empty value resolves to the namespace's default SA.
+# CSI mode hooks always use the namespace's existing default SA.
 hookServiceAccountName: ""
 
 rbac:
@@ -223,12 +264,27 @@ workloadIdentity:
   enabled: false
   clientId: ""                      # user-assigned managed identity client id
 
+# Separate identity used only by migration/bootstrap CSI hooks. Keeping it
+# distinct prevents the public server pod from reading bootstrap/admin secrets.
+hookWorkloadIdentity:
+  clientId: ""
+
+# Optional identity-bound ServiceAccount for the Azure Blob backup CronJob.
+backupWorkloadIdentity:
+  enabled: false
+  clientId: ""
+  serviceAccountName: apex-minio-backup
+
 # ──────────────────────────── migration hook Job ─────────────────────────────
-# Pre-install/pre-upgrade hook running `alembic upgrade head` against the apex
+# Pre-install/pre-upgrade hook running the compatibility-aware migration entry point against the apex
 # schema BEFORE pods roll (the documented migrate-then-roll order). OFF by
 # default: existing deployments keep running migrations out of band.
 migrations:
   enabled: false
+  # Defaults to database.existingSecret/key, or databaseRoleProvisioning.migrationSecret
+  # when the chart provisions split roles. An explicit value always wins.
+  databaseSecret: ""
+  databaseKey: APEX_DATABASE__URI
   backoffLimit: 1
   activeDeadlineSeconds: 600
   ttlSecondsAfterFinished: 300
@@ -241,6 +297,41 @@ migrations:
       cpu: "1"
       memory: 512Mi
 
+# Azure can provision dedicated PostgreSQL runtime/migration roles in-cluster
+# before Alembic runs. The admin URI is confined to the hook-only secret store.
+databaseRoleProvisioning:
+  enabled: false
+  # Stable NOLOGIN owner/group roles. They must be unique to this Helm release
+  # within the database: the provisioning hook claims them with the immutable
+  # <namespace>/<release> identity and rejects cross-release sharing. Credential
+  # URIs must use generation logins named <owner>_v<generation>; this lets
+  # rotations overlap safely.
+  runtimeOwnerRole: apex_runtime
+  migrationOwnerRole: apex_migration
+  # Cleanup independently verifies that the Deployment has completed a rollout
+  # to credentialGeneration before it retires an older login generation.
+  cleanupOldGenerations: false
+  # First 16 hex chars of sha256(<runtime-login>:<migration-login>). Binding
+  # both role names prevents either credential generation from rotating without
+  # changing the Deployment pod template.
+  credentialGeneration: ""
+  # Stable high-entropy claim key used to HMAC PostgreSQL role ownership
+  # markers. Keep this hook-only Secret across admin-password and login-role
+  # rotations; losing/rotating it intentionally makes role adoption fail closed.
+  claimSecret: apex-database-role-claim
+  claimSecretKey: APEX_DATABASE_ROLE_CLAIM_KEY
+  # CSI rotation safety: after both candidate logins connect, publish the two
+  # runtime URIs into database.existingSecret. Ignored outside secretsStoreCSI.
+  publishRuntimeSecret: false
+  adminSecret: apex-database-admin
+  adminUriKey: APEX_DATABASE_ADMIN_URI
+  runtimeSecret: apex-database
+  runtimeUriKey: APEX_DATABASE__URI
+  runtimePsycopgUriKey: DATABASE_URI
+  migrationSecret: apex-database-migration
+  migrationUriKey: APEX_DATABASE__URI
+  hookDeletePolicy: before-hook-creation,hook-succeeded
+
 # ──────────────────────────── bootstrap hook Job ─────────────────────────────
 # Post-migration hook that applies a declarative bootstrap document
 # (apex.bootstrap): prompts/applications/environments/connections + an initial
@@ -248,6 +339,11 @@ migrations:
 # admin key comes from a Secret via adminKeySecret. OFF by default.
 bootstrap:
   enabled: false
+  # Defaults to the runtime APEX URI/auth Secret. CSI deployments use distinct
+  # hook-synthesized names unless explicitly overridden.
+  databaseSecret: ""
+  databaseKey: ""
+  authSecret: ""
   # Inline JSON/YAML document rendered into a ConfigMap and mounted at /bootstrap.
   document: {}
   adminKeySecret:
@@ -277,8 +373,10 @@ secretBackend:
   csi:
     secretProviderClassName: ""     # "" => <fullname>-akv
     keyvaultName: ""
+    hookKeyvaultName: ""             # defaults to keyvaultName
     tenantId: ""
     clientId: ""                    # workload-identity client id (defaults to workloadIdentity.clientId)
+    hookClientId: ""                # defaults to hookWorkloadIdentity.clientId
     cloudName: AzurePublicCloud
     syncJob:
       backoffLimit: 2
@@ -286,12 +384,25 @@ secretBackend:
       # Keep the completed pod mounted until ordinary workload pods take over;
       # the CSI driver removes synced K8s Secrets when the final mount disappears.
       hookDeletePolicy: before-hook-creation
+    cleanup:
+      # Opt in only for CSI installations; leave enabled for the first upgrade
+      # that switches away from CSI so stale hook mounts are removed.
+      enabled: false
+      image: registry.k8s.io/kubectl:v1.31.6@sha256:75b960cfcc884965aa204619ff5eb9f9d50c7174827a867db8d24dff319a0272
     # KV object name -> the K8s secret + key the deployment expects.
     objects:
       - { objectName: database-uri, secretName: apex-database, key: DATABASE_URI }
       - { objectName: apex-database-uri, secretName: apex-database, key: APEX_DATABASE__URI }
       - { objectName: redis-uri, secretName: apex-redis, key: REDIS_URI }
       - { objectName: langgraph-license, secretName: apex-langgraph-license, key: LANGGRAPH_CLOUD_LICENSE_KEY }
+      - { objectName: api-key-hash-pepper, secretName: apex-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
+    # Hook-only objects are mounted by the ordered pre-install Job, never by the
+    # public server Deployment. The generic defaults reuse the same DB/pepper;
+    # the Azure overlay replaces this list with dedicated-role secrets.
+    hookObjects:
+      - { objectName: apex-database-uri, secretName: apex-database-bootstrap, key: APEX_DATABASE__URI }
+      - { objectName: api-key-hash-pepper, secretName: apex-hook-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
+      - { objectName: database-role-claim, secretName: apex-database-role-claim, key: APEX_DATABASE_ROLE_CLAIM_KEY }
   # External Secrets Operator. Each target becomes an ExternalSecret producing one
   # of the consumed Secret names from the configured store.
   externalSecrets:
@@ -300,6 +411,8 @@ secretBackend:
       name: ""
       kind: ClusterSecretStore
     targets: []
+    # Each target may override secretStoreRef, which is required when runtime
+    # and privileged hook credentials live in separate stores/vaults.
 
 # ───────────────────────────── gateway / ingress ─────────────────────────────
 # Gateway API (AKS app-routing) as an alternative to the Ingress above. SSE
@@ -336,7 +449,6 @@ networkPolicy:
           - { port: 6379, protocol: TCP }  # Redis
           - { port: 6380, protocol: TCP }  # Redis TLS
           - { port: 9000, protocol: TCP }  # MinIO/S3 API
-          - { port: 9001, protocol: TCP }  # MinIO console
       # Private endpoint / VNet destinations for managed Postgres, Redis, object
       # storage, and the Kubernetes API.
       - to:
@@ -352,8 +464,8 @@ networkPolicy:
     to: []                          # legacy extra destinations; allows all ports to listed peers
 
 # ─────────────────────────── observability hooks ─────────────────────────────
-# The server exposes no /metrics endpoint yet (see ADR / docs). These ship OFF;
-# enable once a metrics endpoint exists.
+# LangGraph's unauthenticated meta routes are disabled in langgraph.json, including
+# /metrics. These remain OFF until APEX adds a separately authenticated endpoint.
 metrics:
   podAnnotations: false             # add prometheus.io/scrape pod annotations
   path: /metrics
@@ -367,7 +479,7 @@ metrics:
 # ───────────────────────────── helm test ─────────────────────────────────────
 tests:
   enabled: true
-  image: curlimages/curl:8.10.1
+  image: curlimages/curl:8.10.1@sha256:d9b4541e214bcd85196d6e92e2753ac6d0ea699f0af5741f8c6cccbfcf00ef4b
 
 # ─────────────────────────────── dashboard ───────────────────────────────────
 # Optional SPA component (apps/dashboard image). OFF by default so the chart stays
@@ -379,6 +491,7 @@ dashboard:
   image:
     repository: apex-dashboard
     tag: ""                       # defaults to .Chart.AppVersion
+    digest: ""                    # required in locked environments when enabled
     pullPolicy: Always
   containerPort: 8080
   service:

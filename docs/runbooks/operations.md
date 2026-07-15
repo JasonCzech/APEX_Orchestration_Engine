@@ -64,6 +64,12 @@ load still ramping). It:
 4. best-effort marks the projection row `aborted`.
 
 `404` means no engine handle is discoverable — nothing external was started.
+`409` with a missing execution-connection-affinity message means the run predates
+durable connection binding. APEX deliberately will not try the current default
+connection: identify the original endpoint from deployment/provider audit records,
+stop the exact run in that provider's console, and reconcile the legacy projection
+out of band before retrying. There is no automatic affinity-repair endpoint because
+APEX cannot prove which historical endpoint owns a provider-local run id.
 If the adapter abort fails repeatedly, kill the run in the engine's own
 console (LoadRunner/APEX Load) and record the thread id. Abort responses expose
 the observed provider `phase` and a `confirmed` flag; a non-terminal graceful

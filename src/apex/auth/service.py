@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +22,10 @@ LAST_USED_WRITE_INTERVAL = timedelta(seconds=60)
 
 class AuthStoreUnavailableError(RuntimeError):
     """The API-key backing store could not be queried."""
+
+
+class InvalidConsumerIdentityError(ValueError):
+    """A persisted credential cannot be represented as a safe identity."""
 
 
 def hash_api_key(api_key: str) -> str:
@@ -67,6 +72,8 @@ def extract_api_key(headers: HeaderInput) -> str | None:
     try:
         api_key = _get_unique_header(headers, "x-api-key")
         authorization = _get_unique_header(headers, "authorization")
+        if api_key is not None and authorization is not None:
+            raise ValueError("x-api-key and authorization cannot be combined")
     except (UnicodeError, ValueError):
         return None
     if api_key:
@@ -152,8 +159,17 @@ class IdentityResolver:
             return _dev_identity()
         try:
             return await self._resolve_from_db(api_key)
+        except InvalidConsumerIdentityError:
+            # Treat malformed legacy rows exactly like a disabled credential. A
+            # bad scope/role must never become either an authorization bypass or
+            # a credential-shaped 500/503 response.
+            logger.warning("apex.auth.invalid_consumer_identity")
+            return None
         except Exception as exc:
-            logger.warning("apex.auth.db_lookup_failed", exc_info=True)
+            logger.warning(
+                "apex.auth.db_lookup_failed",
+                error_type=exc.__class__.__name__,
+            )
             raise AuthStoreUnavailableError("API key store is unavailable") from exc
 
     async def _resolve_from_db(self, api_key: str) -> ConsumerIdentity | None:
@@ -221,6 +237,7 @@ class IdentityResolver:
             return None
         if key.expires_at is not None and key.expires_at <= now:
             return None
+        identity = _identity_from_consumer(consumer)
         should_rehash_key = get_settings().auth.api_key_hash_pepper is not None and not (
             secrets.compare_digest(key.key_hash, current_hash)
         )
@@ -230,30 +247,78 @@ class IdentityResolver:
         should_touch_consumer = (
             consumer.last_used_at is None or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
         )
-        if should_rehash_key:
-            key.key_hash = current_hash
         should_sync_consumer_hash = not _active_key_hashes_include(consumer, consumer.key_hash, now)
-        if should_rehash_key or should_sync_consumer_hash:
-            consumer.key_hash = key.key_hash
-        if should_touch_key:
-            key.last_used_at = now
-        if should_touch_consumer:
-            consumer.last_used_at = now
-        if (
+        if not (
             should_rehash_key
             or should_sync_consumer_hash
             or should_touch_key
             or should_touch_consumer
         ):
-            try:
-                await session.commit()
-            except Exception:
-                logger.warning(
-                    "apex.auth.key_metadata_update_failed",
-                    consumer=consumer.name,
-                    exc_info=True,
+            return identity
+
+        # Metadata repairs must never be applied from the stale objects loaded by
+        # the optimistic lookup above. Credential rotation locks this same
+        # aggregate; taking that lock and re-reading lets either authentication or
+        # rotation linearize first without authentication resurrecting the old key.
+        locked_consumer = await _lock_consumer_for_auth(session, consumer.id)
+        if locked_consumer is None:
+            return None
+        locked_key = next(
+            (
+                candidate
+                for candidate in locked_consumer.keys
+                if candidate.id == key.id
+                and any(
+                    secrets.compare_digest(candidate.key_hash, candidate_hash)
+                    for candidate_hash in key_hashes
                 )
-        return _identity_from_consumer(consumer)
+            ),
+            None,
+        )
+        locked_now = datetime.now(UTC)
+        if (
+            locked_key is None
+            or not _consumer_is_active(locked_consumer, locked_now)
+            or locked_key.revoked_at is not None
+            or (locked_key.expires_at is not None and locked_key.expires_at <= locked_now)
+        ):
+            return None
+
+        locked_identity = _identity_from_consumer(locked_consumer)
+        old_key_hash = locked_key.key_hash
+        should_rehash_key = get_settings().auth.api_key_hash_pepper is not None and not (
+            secrets.compare_digest(old_key_hash, current_hash)
+        )
+        parent_tracked_authenticated_key = secrets.compare_digest(
+            locked_consumer.key_hash, old_key_hash
+        )
+        should_sync_consumer_hash = not _active_key_hashes_include(
+            locked_consumer, locked_consumer.key_hash, locked_now
+        )
+        if should_rehash_key:
+            locked_key.key_hash = current_hash
+        # Preserve a newer rotation pointer when the authenticated old key is
+        # still valid only for a grace window.
+        if parent_tracked_authenticated_key or should_sync_consumer_hash:
+            locked_consumer.key_hash = locked_key.key_hash
+        if locked_key.last_used_at is None or (
+            locked_now - locked_key.last_used_at > LAST_USED_WRITE_INTERVAL
+        ):
+            locked_key.last_used_at = locked_now
+        if locked_consumer.last_used_at is None or (
+            locked_now - locked_consumer.last_used_at > LAST_USED_WRITE_INTERVAL
+        ):
+            locked_consumer.last_used_at = locked_now
+        try:
+            await session.commit()
+        except Exception as exc:
+            await _best_effort_rollback(session)
+            logger.warning(
+                "apex.auth.key_metadata_update_failed",
+                consumer=locked_consumer.name,
+                error_type=exc.__class__.__name__,
+            )
+        return locked_identity
 
     async def _identity_from_legacy_consumer(
         self,
@@ -270,33 +335,70 @@ class IdentityResolver:
         now = datetime.now(UTC)
         if not _consumer_is_active(consumer, now):
             return None
-        should_rehash_key = get_settings().auth.api_key_hash_pepper is not None and not (
-            secrets.compare_digest(consumer.key_hash, current_hash)
-        )
-        target_hash = current_hash if should_rehash_key else consumer.key_hash
-        should_create_consumer_key = not _active_key_hashes_include(consumer, target_hash, now)
-        should_touch_last_used = (
-            consumer.last_used_at is None or now - consumer.last_used_at > LAST_USED_WRITE_INTERVAL
-        )
-        if should_rehash_key:
-            consumer.key_hash = current_hash
-        if should_create_consumer_key:
-            consumer.keys.append(
-                ConsumerKey(
-                    key_hash=target_hash,
-                    expires_at=consumer.expires_at,
-                    created_by=consumer.created_by,
-                )
+        # Once a credential has an explicit row, that row is authoritative even
+        # when revoked or expired. Falling back to the denormalized parent hash
+        # would otherwise turn an explicit revocation into successful legacy auth.
+        if _consumer_keys_include_any_hash(consumer, key_hashes):
+            return None
+
+        locked_consumer = await _lock_consumer_for_auth(session, consumer.id)
+        locked_now = datetime.now(UTC)
+        if (
+            locked_consumer is None
+            or not _consumer_is_active(locked_consumer, locked_now)
+            or not any(
+                secrets.compare_digest(locked_consumer.key_hash, value) for value in key_hashes
             )
-        if should_touch_last_used or should_rehash_key or should_create_consumer_key:
-            try:
-                consumer.last_used_at = now
-                await session.commit()
-            except Exception:
-                logger.warning(
-                    "apex.auth.last_used_update_failed", consumer=consumer.name, exc_info=True
-                )
-        return _identity_from_consumer(consumer)
+            or _consumer_keys_include_any_hash(locked_consumer, key_hashes)
+        ):
+            return None
+
+        identity = _identity_from_consumer(locked_consumer)
+        should_rehash_key = get_settings().auth.api_key_hash_pepper is not None and not (
+            secrets.compare_digest(locked_consumer.key_hash, current_hash)
+        )
+        target_hash = current_hash if should_rehash_key else locked_consumer.key_hash
+        if should_rehash_key:
+            locked_consumer.key_hash = current_hash
+        locked_consumer.keys.append(
+            ConsumerKey(
+                key_hash=target_hash,
+                expiry_source="independent",
+                created_by=locked_consumer.created_by,
+            )
+        )
+        try:
+            locked_consumer.last_used_at = locked_now
+            await session.commit()
+        except Exception as exc:
+            await _best_effort_rollback(session)
+            logger.warning(
+                "apex.auth.last_used_update_failed",
+                consumer=locked_consumer.name,
+                error_type=exc.__class__.__name__,
+            )
+        return identity
+
+
+async def _lock_consumer_for_auth(session: Any, consumer_id: str) -> ApiConsumer | None:
+    consumer = await session.scalar(
+        select(ApiConsumer)
+        .where(ApiConsumer.id == consumer_id)
+        .options(selectinload(ApiConsumer.scopes), selectinload(ApiConsumer.keys))
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    )
+    return consumer if isinstance(consumer, ApiConsumer) else None
+
+
+async def _best_effort_rollback(session: Any) -> None:
+    try:
+        await session.rollback()
+    except Exception as exc:
+        logger.warning(
+            "apex.auth.metadata_rollback_failed",
+            error_type=exc.__class__.__name__,
+        )
 
 
 def _consumer_is_active(consumer: ApiConsumer, now: datetime) -> bool:
@@ -315,16 +417,42 @@ def _active_key_hashes_include(consumer: ApiConsumer, key_hash: str, now: dateti
     )
 
 
-def _identity_from_consumer(consumer: ApiConsumer) -> ConsumerIdentity:
-    return ConsumerIdentity(
-        consumer_id=consumer.id,
-        name=consumer.name,
-        consumer_type=ConsumerType(consumer.consumer_type),
-        role=Role(consumer.role),
-        scopes=[
-            ScopeRef(project_id=scope.project_id, app_id=scope.app_id) for scope in consumer.scopes
-        ],
+def _consumer_keys_include_any_hash(
+    consumer: ApiConsumer, candidate_hashes: tuple[str, ...]
+) -> bool:
+    return any(
+        secrets.compare_digest(key.key_hash, candidate_hash)
+        for key in consumer.keys
+        for candidate_hash in candidate_hashes
     )
+
+
+def _identity_from_consumer(consumer: ApiConsumer) -> ConsumerIdentity:
+    for scope in consumer.scopes:
+        raw_values = (scope.project_id, scope.app_id)
+        if any(value is not None and (not value or value != value.strip()) for value in raw_values):
+            # Request models normalize whitespace before persistence, but legacy
+            # rows must not be normalized while authenticating: silently turning
+            # ``" project-a "`` into ``"project-a"`` could widen its authority.
+            raise InvalidConsumerIdentityError(
+                "persisted consumer scope contains non-canonical identifiers"
+            )
+    scope_keys = [(scope.project_id, scope.app_id) for scope in consumer.scopes]
+    if len(scope_keys) != len(set(scope_keys)):
+        raise InvalidConsumerIdentityError("persisted consumer has duplicate scopes")
+    try:
+        return ConsumerIdentity(
+            consumer_id=consumer.id,
+            name=consumer.name,
+            consumer_type=ConsumerType(consumer.consumer_type),
+            role=Role(consumer.role),
+            scopes=[
+                ScopeRef(project_id=scope.project_id, app_id=scope.app_id)
+                for scope in consumer.scopes
+            ],
+        )
+    except (ValidationError, ValueError) as exc:
+        raise InvalidConsumerIdentityError("persisted consumer identity is invalid") from exc
 
 
 default_resolver = IdentityResolver()

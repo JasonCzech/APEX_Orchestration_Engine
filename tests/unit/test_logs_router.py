@@ -1,8 +1,9 @@
 """/logs/search routes: window defaulting, scoping, connection selection, errors."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -11,7 +12,7 @@ from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.domain.integrations import LogEntry, LogQuery, LogSearchResult, Page, TimeWindow
-from apex.routers.logs import get_log_search_resolver, router
+from apex.routers.logs import LogSearchRequest, get_log_search_resolver, router
 from apex.services.log_search import effective_window
 
 RESULT = LogSearchResult(
@@ -27,6 +28,24 @@ RESULT = LogSearchResult(
     ],
     total=42,
 )
+
+
+def test_log_search_body_rejects_nul_connection_id() -> None:
+    with pytest.raises(ValueError, match="string_pattern_mismatch"):
+        LogSearchRequest.model_validate({"connection_id": "conn\x00id"})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"query": {"text": "secret\x00suffix"}},
+        {"query": {"filters": {"service": "api\x00shadow"}}},
+        {"window": {"from": "2026-01-01T00:00:00Z\x00shadow"}},
+    ],
+)
+def test_log_search_body_rejects_nul_provider_inputs(payload: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        LogSearchRequest.model_validate(payload)
 
 
 class FakeLogSearchAdapter:
@@ -107,6 +126,56 @@ def test_search_maps_entries_total_and_extras_for_any_authenticated_role() -> No
     assert (page.offset, page.limit) == (0, 50)
 
 
+def test_search_redacts_provider_credentials_from_messages_and_extras() -> None:
+    message_canary = "message-secret-canary-4f9d"
+    field_canary = "field-secret-canary-8a2c"
+    bearer_canary = "bearer-secret-canary-3b7e"
+    result = LogSearchResult(
+        entries=[
+            ElkLogEntry(
+                at="2026-06-10T11:59:59Z",
+                level="ERROR",
+                service="payment-svc",
+                message=f"password={message_canary}",
+                fields={
+                    "authorization": field_canary,
+                    "request": {"header": f"Bearer {bearer_canary}"},
+                },
+            )
+        ],
+        total=1,
+    )
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {},
+    )
+
+    assert response.status_code == 200
+    assert message_canary not in response.text
+    assert field_canary not in response.text
+    assert bearer_canary not in response.text
+    entry = response.json()["entries"][0]
+    assert "[REDACTED]" in entry["message"]
+    assert entry["fields"]["[redacted-credential-key]"] == "[REDACTED]"
+    assert entry["fields"]["request"]["header"] == "Bearer [REDACTED]"
+
+
+def test_search_rejects_adapter_result_larger_than_requested_page() -> None:
+    result = LogSearchResult(
+        entries=[
+            LogEntry(at="2026-06-10T11:59:59Z", message="one"),
+            LogEntry(at="2026-06-10T11:59:58Z", message="two"),
+        ],
+        total=2,
+    )
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {"limit": 1},
+    )
+
+    assert response.status_code == 502
+
+
 def test_search_defaults_window_to_last_hour_and_echoes_it() -> None:
     adapter = FakeLogSearchAdapter()
     before = datetime.now(UTC)
@@ -146,12 +215,20 @@ def test_search_forwards_filters_including_thread_id_convention() -> None:
 def test_search_rejects_unsupported_filter_fields_before_adapter_resolution() -> None:
     adapter = FakeLogSearchAdapter()
     resolver = FakeResolver(adapter)
+    canary = "caller-controlled-filter-canary"
     response = post_search(
         make_app(resolver, identity()),
-        {"query": {"filters": {"user.password": "secret", "thread_id": "thread-99"}}},
+        {"query": {"filters": {canary: "secret", "thread_id": "thread-99"}}},
     )
     assert response.status_code == 422
-    assert "unsupported log filter field" in str(response.json()["errors"])
+    assert response.json()["errors"] == [
+        {
+            "type": "value_error",
+            "loc": ["body", "<field>", "<field>"],
+            "msg": "Invalid request value",
+        }
+    ]
+    assert canary.encode() not in response.content
     assert resolver.calls == []
     assert adapter.calls == []
 
@@ -176,20 +253,72 @@ def test_search_rejects_oversized_free_text_query() -> None:
 
 def test_search_rejects_non_iso_window_with_422() -> None:
     adapter = FakeLogSearchAdapter()
+    canary = "Bearer definitely-not-for-reflection"
     response = post_search(
-        make_app(FakeResolver(adapter), identity()), {"window": {"from": "yesterday-ish"}}
+        make_app(FakeResolver(adapter), identity()), {"window": {"from": canary}}
     )
     assert response.status_code == 422
-    assert "ISO-8601" in response.json()["title"]
+    assert response.json()["title"] == "invalid log search window"
+    assert canary not in response.text
     assert adapter.calls == []
 
 
 def test_search_rejects_inverted_window_with_422() -> None:
+    start = "2026-06-02T00:00:00+00:00"
+    end = "2026-06-01T00:00:00+00:00"
     response = post_search(
         make_app(FakeResolver(FakeLogSearchAdapter()), identity()),
-        {"window": {"from": "2026-06-02T00:00:00+00:00", "to": "2026-06-01T00:00:00+00:00"}},
+        {"window": {"from": start, "to": end}},
     )
     assert response.status_code == 422
+    assert response.json()["title"] == "invalid log search window"
+    assert start not in response.text
+    assert end not in response.text
+
+
+def test_search_bounds_partial_windows_before_provider_io() -> None:
+    adapter = FakeLogSearchAdapter()
+    app = make_app(FakeResolver(adapter), identity())
+
+    from_only = post_search(app, {"window": {"from": "2000-01-01T00:00:00+00:00"}})
+    assert from_only.status_code == 422
+    assert adapter.calls == []
+
+    to_only = post_search(app, {"window": {"to": "2026-06-02T00:00:00+00:00"}})
+    assert to_only.status_code == 200
+    (_, window, _) = adapter.calls[0]
+    assert datetime.fromisoformat(window.end or "") - datetime.fromisoformat(
+        window.start or ""
+    ) == timedelta(hours=1)
+
+
+def test_search_rejects_partial_window_datetime_underflow_before_resolver_io() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    response = post_search(
+        make_app(resolver, identity()),
+        {"window": {"to": "0001-01-01T00:00:00+00:00"}},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["title"] == "invalid log search window"
+    assert resolver.calls == []
+    assert resolver.adapter.calls == []
+
+
+def test_search_rejects_wide_window_before_adapter_resolution() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    response = post_search(
+        make_app(resolver, identity()),
+        {
+            "window": {
+                "from": "2026-01-01T00:00:00+00:00",
+                "to": "2026-03-01T00:00:00+00:00",
+            }
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["title"] == "invalid log search window"
+    assert resolver.calls == []
 
 
 def test_effective_window_mixes_naive_and_aware_bounds() -> None:
@@ -202,6 +331,18 @@ def test_search_limit_above_500_fails_validation() -> None:
         make_app(FakeResolver(FakeLogSearchAdapter()), identity()), {"limit": 501}
     )
     assert response.status_code == 422
+
+
+def test_search_rejects_deep_result_window_before_adapter_resolution() -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    app = make_app(resolver, identity())
+
+    too_deep = post_search(app, {"offset": 10_000, "limit": 1})
+    crossing = post_search(app, {"offset": 9_900, "limit": 101})
+
+    assert too_deep.status_code == 422
+    assert crossing.status_code == 422
+    assert resolver.calls == []
 
 
 # ── connection selection + project scoping ────────────────────────────────────
@@ -225,6 +366,23 @@ def test_connection_id_query_param_overrides_body() -> None:
     )
     assert response.status_code == 200
     assert resolver.calls == [("conn-param", "p1")]
+
+
+@pytest.mark.parametrize("connection_id", ["x" * 33, "conn\x00logs"])
+def test_connection_id_query_rejects_invalid_values_before_resolver_io(
+    connection_id: str,
+) -> None:
+    resolver = FakeResolver(FakeLogSearchAdapter())
+
+    response = post_search(
+        make_app(resolver, identity()),
+        {},
+        params={"connection_id": connection_id},
+    )
+
+    assert response.status_code == 422
+    assert resolver.calls == []
+    assert resolver.adapter.calls == []
 
 
 def test_single_project_scope_is_passed_to_resolver() -> None:
@@ -311,7 +469,8 @@ def test_unknown_connection_keyerror_is_404_problem() -> None:
     resolver = FakeResolver(FakeLogSearchAdapter(), error=KeyError("unknown connection_id 'nope'"))
     response = post_search(make_app(resolver, identity()), {"connection_id": "nope"})
     assert response.status_code == 404
-    assert "unknown connection_id" in response.json()["title"]
+    assert response.json()["title"] == "log-search connection not found"
+    assert "nope" not in response.text
 
 
 def test_disabled_connection_valueerror_is_422_problem() -> None:
@@ -338,6 +497,17 @@ def test_upstream_runtime_error_is_502_problem() -> None:
     assert response.status_code == 502
     assert response.json()["title"] == "log search upstream failure"
     assert "elasticsearch" not in response.text
+
+
+def test_malformed_successful_provider_payload_is_sanitized_502_problem() -> None:
+    adapter = FakeLogSearchAdapter(
+        error=RuntimeError("elasticsearch search response has malformed hits.hits list")
+    )
+    response = post_search(make_app(FakeResolver(adapter), identity()), {})
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "log search upstream failure"
+    assert "hits.hits" not in response.text
 
 
 def test_raw_httpx_error_is_502_problem() -> None:

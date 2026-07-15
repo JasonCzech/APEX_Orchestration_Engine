@@ -32,6 +32,9 @@ from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_s
 
 _INITIAL_WAIT_S = 0.001
 _MAX_WAIT_S = 0.05
+POSTGRES_GUARD_CAPACITY = 8
+POSTGRES_GUARD_ADMISSION_TIMEOUT_S = 30.0
+POSTGRES_GUARD_LOCK_TIMEOUT_MS = 10_000
 
 
 @dataclass(slots=True)
@@ -42,6 +45,7 @@ class _LockEntry:
 
 _registry_lock = threading.Lock()
 _registry: dict[str, _LockEntry] = {}
+_postgres_admission = threading.BoundedSemaphore(POSTGRES_GUARD_CAPACITY)
 
 
 def _lease(key: str) -> _LockEntry:
@@ -75,6 +79,16 @@ async def _acquire(entry: _LockEntry) -> None:
         delay = min(delay * 2, _MAX_WAIT_S)
 
 
+async def _acquire_postgres_admission() -> None:
+    """Take one process-wide DB slot without blocking the event-loop thread."""
+
+    async with asyncio.timeout(POSTGRES_GUARD_ADMISSION_TIMEOUT_S):
+        delay = _INITIAL_WAIT_S
+        while not _postgres_admission.acquire(blocking=False):
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _MAX_WAIT_S)
+
+
 def _advisory_key(key: str) -> int:
     """Stable signed int64 accepted by PostgreSQL advisory-lock functions."""
 
@@ -84,22 +98,36 @@ def _advisory_key(key: str) -> int:
 
 @asynccontextmanager
 async def _postgres_guard(key: str) -> AsyncIterator[None]:
-    settings = get_settings()
-    database = settings.database
-    engine = create_async_engine(
-        database_asyncpg_uri(database.uri),
-        poolclass=NullPool,
-        connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
-    )
+    # Distinct idempotency keys do not share the keyed process lock. Bound them
+    # before opening NullPool connections so bursts cannot exhaust PostgreSQL.
+    await _acquire_postgres_admission()
+    engine = None
     try:
+        settings = get_settings()
+        database = settings.database
+        engine = create_async_engine(
+            database_asyncpg_uri(database.uri),
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
         async with engine.begin() as connection:
+            await connection.execute(
+                text(f"SET LOCAL lock_timeout = '{POSTGRES_GUARD_LOCK_TIMEOUT_MS}ms'")
+            )
+            await connection.execute(
+                text(f"SET LOCAL statement_timeout = '{POSTGRES_GUARD_LOCK_TIMEOUT_MS}ms'")
+            )
             await connection.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),
                 {"lock_key": _advisory_key(key)},
             )
             yield
     finally:
-        await engine.dispose()
+        try:
+            if engine is not None:
+                await engine.dispose()
+        finally:
+            _postgres_admission.release()
 
 
 @asynccontextmanager

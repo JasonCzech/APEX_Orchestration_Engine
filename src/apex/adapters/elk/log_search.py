@@ -34,17 +34,20 @@ object when log.level supplied the level) are kept so no data is lost.
 """
 
 import asyncio
+import re
 import threading
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
-from pydantic import Field
+from pydantic import Field, ValidationError, field_validator
 
-from apex.adapters.http_resilience import resilient_request, retry_policy
+from apex.adapters.http_resilience import parse_json_response, resilient_request, retry_policy
 from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
-from apex.adapters.options import coerce_bool
+from apex.adapters.options import coerce_bool, require_bounded_credential
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
+from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.input_limits import validate_json_object
 from apex.domain.integrations import (
     LogEntry,
     LogQuery,
@@ -57,6 +60,10 @@ from apex.domain.integrations import (
 DEFAULT_INDEX = "logs-*"
 MAX_PAGE_SIZE = 500
 REQUEST_TIMEOUT_S = 15.0
+PROVIDER_SEARCH_TIMEOUT = "10s"
+MAX_LOG_FIELDS = 64
+MAX_LOG_FIELDS_BYTES = 64 * 1024
+_INDEX_EXPRESSION = re.compile(r"[A-Za-z0-9_.*,-]{1,255}")
 
 _TIMESTAMP_KEYS = ("@timestamp", "timestamp")
 _MESSAGE_KEYS = ("message", "msg", "log")
@@ -71,7 +78,17 @@ class ElkLogEntry(LogEntry):
     keeps subclass instances), and the /logs router reads `fields` via getattr.
     """
 
-    fields: dict[str, Any] = Field(default_factory=dict)
+    fields: dict[str, Any] = Field(default_factory=dict, max_length=MAX_LOG_FIELDS)
+
+    @field_validator("fields")
+    @classmethod
+    def validate_fields(cls, value: dict[str, Any]) -> dict[str, Any]:
+        validate_json_object(
+            value,
+            label="elasticsearch log fields",
+            max_bytes=MAX_LOG_FIELDS_BYTES,
+        )
+        return value
 
 
 # ── request building ──────────────────────────────────────────────────────────
@@ -99,6 +116,12 @@ def build_search_body(query: LogQuery, window: TimeWindow, page: Page) -> dict[s
         "from": max(page.offset, 0),
         "size": min(max(page.limit, 0), MAX_PAGE_SIZE),
         "sort": [{"@timestamp": {"order": "desc", "unmapped_type": "date"}}],
+        # Bound work at the provider as well as at the HTTP client. Elasticsearch
+        # can otherwise continue an expensive query until a proxy/client timeout.
+        "timeout": PROVIDER_SEARCH_TIMEOUT,
+        # LogSearchResult.total is an exact integer, so do not accept ES's
+        # default thresholded lower-bound (`relation: gte`) semantics.
+        "track_total_hits": True,
     }
 
 
@@ -163,25 +186,27 @@ def map_hit(hit: Mapping[str, Any]) -> ElkLogEntry:
 
 
 def _parse_total(hits: Mapping[str, Any]) -> int:
-    """ES 8 total is {"value": n, "relation": "eq"|"gte"}; legacy/int also seen
-    (rest_total_hits_as_int, older OpenSearch)."""
-    total = hits.get("total", 0)
+    """Parse the exact ES/OpenSearch hit total promised by our request."""
+    if "total" not in hits:
+        raise RuntimeError("elasticsearch search response is missing hits.total")
+    total = hits["total"]
     if isinstance(total, Mapping):
-        try:
-            return int(total.get("value", 0))
-        except (TypeError, ValueError):
-            return 0
-    try:
-        return int(total or 0)
-    except (TypeError, ValueError):
-        return 0
+        relation = total.get("relation")
+        if not isinstance(relation, str) or relation not in {"eq", "gte"}:
+            raise RuntimeError("elasticsearch search response has malformed hits.total relation")
+        if relation == "gte":
+            raise RuntimeError("elasticsearch search response returned a lower-bound hits.total")
+        total = total.get("value")
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise RuntimeError("elasticsearch search response has malformed non-negative hits.total")
+    return total
 
 
 def _error_reason(response: httpx.Response) -> str:
     """Pull the most specific reason out of an ES error envelope."""
     try:
-        payload = response.json()
-    except ValueError:
+        payload = parse_json_response(response, context="elasticsearch error response")
+    except RuntimeError:
         payload = None
     if isinstance(payload, Mapping):
         error = payload.get("error")
@@ -190,14 +215,46 @@ def _error_reason(response: httpx.Response) -> str:
             if isinstance(root_causes, list):
                 for cause in root_causes:
                     if isinstance(cause, Mapping) and isinstance(cause.get("reason"), str):
-                        return cause["reason"]
+                        return bounded_diagnostic(cause["reason"])
             reason = error.get("reason")
             if isinstance(reason, str):
-                return reason
+                return bounded_diagnostic(reason)
         if isinstance(error, str):
-            return error
-    text = response.text.strip()
-    return text[:300] if text else f"HTTP {response.status_code} with empty body"
+            return bounded_diagnostic(error)
+    text = bounded_diagnostic(response.text.strip(), max_chars=300)
+    return text if text else f"HTTP {response.status_code} with empty body"
+
+
+def _require_complete_response(payload: Mapping[str, Any]) -> None:
+    """Reject successful HTTP responses that contain incomplete search results."""
+
+    timed_out = payload.get("timed_out")
+    if timed_out is True:
+        raise RuntimeError("elasticsearch search timed out before all results were collected")
+    if timed_out is not None and timed_out is not False:
+        raise RuntimeError("elasticsearch search response has malformed timeout metadata")
+
+    shards = payload.get("_shards")
+    if shards is None:
+        return
+    if not isinstance(shards, Mapping):
+        raise RuntimeError("elasticsearch search response has malformed shard metadata")
+    failed = shards.get("failed", 0)
+    if isinstance(failed, bool):
+        raise RuntimeError("elasticsearch search response has malformed failed-shard count")
+    try:
+        failed_count = int(failed)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "elasticsearch search response has malformed failed-shard count"
+        ) from None
+    if failed_count < 0:
+        raise RuntimeError("elasticsearch search response has malformed failed-shard count")
+    if failed_count:
+        noun = "shard" if failed_count == 1 else "shards"
+        raise RuntimeError(
+            f"elasticsearch search returned partial results with {failed_count} failed {noun}"
+        )
 
 
 # ── adapter ───────────────────────────────────────────────────────────────────
@@ -233,9 +290,33 @@ class ElasticsearchLogSearchAdapter:
             )
         self._base_url = base_url
         self._index = str(options.get("index") or DEFAULT_INDEX)
+        if _INDEX_EXPRESSION.fullmatch(self._index) is None:
+            raise ValueError(
+                "elasticsearch options.index must be a 1-255 character index expression "
+                "containing only letters, digits, '_', '.', '*', ',' or '-'"
+            )
         self._verify_tls = coerce_bool(options.get("verify_tls"), default=True)
         self._allow_private_hosts = private_hosts_allowed(options)
-        self._secret = secret
+        if secret is None:
+            self._secret_value = None
+        else:
+            secret_value = require_bounded_credential(
+                secret.value,
+                label="elasticsearch credential",
+            )
+            if ":" in secret_value:
+                username, _, password = secret_value.partition(":")
+                if not username or not password:
+                    raise ValueError(
+                        "elasticsearch basic credential must contain non-empty user and password"
+                    )
+            else:
+                require_bounded_credential(
+                    secret_value,
+                    label="elasticsearch API key",
+                    header_token=True,
+                )
+            self._secret_value = secret_value
         self._client = client
         self._client_loop: asyncio.AbstractEventLoop | None = None
         # threading.Lock (not asyncio.Lock): mirrors the S3 adapter — instances
@@ -256,9 +337,12 @@ class ElasticsearchLogSearchAdapter:
                 retry=retry_policy(retry_methods={"POST"}),
             )
         except httpx.HTTPError as exc:
+            detail = bounded_diagnostic(exc)
             raise RuntimeError(
-                f"elasticsearch search request failed ({exc.__class__.__name__}): {exc}; "
-                "check the connection's base_url and network reachability"
+                bounded_diagnostic(
+                    f"elasticsearch search request failed ({exc.__class__.__name__}): "
+                    f"{detail}; check the connection's base_url and network reachability"
+                )
             ) from exc
         if response.status_code == 400:
             # Bad query_string / malformed body — caller-correctable.
@@ -274,19 +358,33 @@ class ElasticsearchLogSearchAdapter:
                 f"{_error_reason(response)}"
             )
         try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError("elasticsearch returned a non-JSON search response") from exc
-        hits_obj = payload.get("hits") if isinstance(payload, Mapping) else None
+            payload = parse_json_response(response, context="elasticsearch search response")
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "elasticsearch returned a non-JSON or invalid JSON search response"
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise RuntimeError("elasticsearch search response must be a JSON object")
+        _require_complete_response(payload)
+        hits_obj = payload.get("hits")
         if not isinstance(hits_obj, Mapping):
             raise RuntimeError("elasticsearch search response is missing the 'hits' object")
         raw_hits = hits_obj.get("hits")
-        entries: list[LogEntry] = [
-            map_hit(hit)
-            for hit in (raw_hits if isinstance(raw_hits, list) else [])
-            if isinstance(hit, Mapping)
-        ]
-        return LogSearchResult(entries=entries, total=_parse_total(hits_obj))
+        if not isinstance(raw_hits, list):
+            raise RuntimeError("elasticsearch search response has malformed hits.hits list")
+        requested_size = body["size"]
+        if len(raw_hits) > requested_size:
+            raise RuntimeError(
+                "elasticsearch search response returned more hits than requested "
+                f"({len(raw_hits)} > {requested_size})"
+            )
+        if not all(isinstance(hit, Mapping) for hit in raw_hits):
+            raise RuntimeError("elasticsearch search response has non-object entries in hits.hits")
+        try:
+            entries: list[LogEntry] = [map_hit(hit) for hit in raw_hits]
+            return LogSearchResult(entries=entries, total=_parse_total(hits_obj))
+        except (ValidationError, ValueError) as exc:
+            raise RuntimeError("elasticsearch search response contains invalid log data") from exc
 
     # ── client bootstrap ──────────────────────────────────────────────────────
 
@@ -308,12 +406,12 @@ class ElasticsearchLogSearchAdapter:
     def _build_client(self) -> httpx.AsyncClient:
         headers: dict[str, str] = {}
         auth: httpx.Auth | None = None
-        if self._secret is not None and self._secret.value:
-            if ":" in self._secret.value:
-                username, _, password = self._secret.value.partition(":")
+        if self._secret_value is not None:
+            if ":" in self._secret_value:
+                username, _, password = self._secret_value.partition(":")
                 auth = httpx.BasicAuth(username, password)
             else:
-                headers["Authorization"] = f"ApiKey {self._secret.value}"
+                headers["Authorization"] = f"ApiKey {self._secret_value}"
         return safe_async_http_client(
             base_url=self._base_url,
             headers=headers,

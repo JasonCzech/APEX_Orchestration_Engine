@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.persistence.models import SavedQuery
 
-_MUTABLE_FIELDS = frozenset({"name", "provider", "query", "description", "project_id"})
+_MUTABLE_FIELDS = frozenset({"name", "provider", "query", "description"})
 
 
 class SavedQueriesRepository:
@@ -22,19 +22,32 @@ class SavedQueriesRepository:
         self._session = session
 
     async def add(self, row: SavedQuery) -> SavedQuery:
+        conflict_name = row.name
+        conflict_project_id = row.project_id
         self._session.add(row)
         try:
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
             raise ValueError(
-                f"a saved query named {row.name!r} already exists for project {row.project_id!r}"
+                f"a saved query named {conflict_name!r} already exists for project "
+                f"{conflict_project_id!r}"
             ) from exc
         await self._session.refresh(row)
         return row
 
     async def get(self, saved_query_id: str) -> SavedQuery | None:
         return await self._session.get(SavedQuery, saved_query_id)
+
+    async def get_for_update(self, saved_query_id: str) -> SavedQuery | None:
+        """Lock and refresh a mutation target before its ownership is authorized."""
+
+        return await self._session.scalar(
+            select(SavedQuery)
+            .where(SavedQuery.id == saved_query_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
 
     async def list(
         self,
@@ -69,12 +82,15 @@ class SavedQueriesRepository:
             raise ValueError(f"saved query fields not updatable: {sorted(unknown)}")
         for key, value in changes.items():
             setattr(row, key, value)
+        conflict_name = row.name
+        conflict_project_id = row.project_id
         try:
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
             raise ValueError(
-                f"a saved query named {row.name!r} already exists for project {row.project_id!r}"
+                f"a saved query named {conflict_name!r} already exists for project "
+                f"{conflict_project_id!r}"
             ) from exc
         await self._session.refresh(row)
         return row

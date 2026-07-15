@@ -86,7 +86,11 @@ Two distinct bugs in `src/apex/services/audit.py`:
 - **P2-2 · Key-hash source-of-truth.** Legacy `ApiConsumer.key_hash` and `consumer_keys` can drift; resolution checks both (no bypass) but a valid key could stop working. Add an invariant/cleanup and plan to make `consumer_keys` authoritative. `repositories/consumers.py`, `service.py`.
 - **P2-3 · Pepper lifecycle.** Lazy rehash-on-use already upgrades legacy→peppered when a key is used; add a proactive bulk rehash for never-used keys and assert pepper presence at runtime (not just boot). `service.py`, `settings.py`.
 - **P2-4 · HSTS can be disabled** (`hsts_max_age_s=0`) with no lockdown check → require `>0` in locked-down envs. `settings.py`.
-- **P2-5 · Rate-limit** is process-local (multi-replica bypass), doesn't cover the LangGraph surface, and has no auth-specific failed-attempt lockout → add a distributed limiter (Redis) or document gateway enforcement, and a per-key lockout on repeated 401s. `app/security.py`.
+- **P2-5 · Rate-limit — remediated.** Locked/HA deployments now require the Redis
+  backend. Request and run-create windows, failed-auth lockouts, and renewable SSE
+  concurrency leases are atomic and shared across replicas; Redis failures fail
+  closed. Local/test environments retain the bounded in-process implementation.
+  `app/distributed_limits.py`, `app/security.py`, `settings.py`.
 - **P2-6 · NetworkPolicy** is on-by-default with empty egress (breaks DB connectivity) → ship sane Postgres/Redis/DNS/K8s-API egress defaults. `deploy/helm/.../values.yaml`, `networkpolicy.yaml`.
 - **P2-7 · Postgres firewall** allows `0.0.0.0/0` in dev with no prod guard → fail Terraform when `public_access` is set outside dev. `deploy/terraform/postgres.tf`.
 - **P2-8 · `app_id` scope not enforced on the LangGraph surface** (`ensure_run_scope`/`scope_filter` use `project_id` only). Enforce app-narrowing or document app_id as informational. `handlers.py`.

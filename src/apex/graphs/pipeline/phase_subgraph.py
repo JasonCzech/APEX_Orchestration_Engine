@@ -8,7 +8,7 @@ ports); state writes use deterministic ids so node re-execution stays idempotent
 the append-unique reducers.
 
 M3: the execution phase swaps the stub agent for the checkpointed engine spine
-(engine_reserve -> engine_start -> engine_poll ⟲ -> engine_collect, see
+(engine_reserve -> engine_start -> engine_poll ⟲ -> engine_collect -> settle, see
 apex.graphs.pipeline.execution_phase); the gates around it are unchanged. The
 script_scenario stub additionally emits a LoadTestSpec ("load_test_spec" entry
 key) that the execution phase consumes, and the reporting stub mentions the
@@ -17,9 +17,9 @@ execution phase's test_summary KPIs when present.
 
 import asyncio
 import json
+import math
 from datetime import datetime
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 import structlog
 from langchain_core.runnables import RunnableConfig
@@ -29,12 +29,16 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
 from apex.adapters.registry import PortKind
+from apex.domain.diagnostics import bounded_diagnostic
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import (
+    MAX_TOOL_ARGS_PREVIEW_BYTES,
+    MAX_TOOL_CALL_RECORDS,
     PHASE_PREREQUISITES,
     TERMINAL_PHASE_STATUSES,
     ArtifactRef,
     DialogueEntry,
+    ExternalResults,
     Phase,
     PhaseStatus,
     ToolCallRecord,
@@ -53,14 +57,16 @@ from apex.graphs.pipeline.gates import (
 from apex.graphs.pipeline.state import JsonDict, PipelineState
 from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import usage as usage_events
-from apex.services.artifact_references import record_artifact_reference
+from apex.services.artifact_references import persist_artifact_with_intent
 from apex.services.connections import ConnectionResolver, DbConnectionStore
+from apex.services.pricing import MAX_TOKEN_COUNT, coerce_token_count
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_sync,
     resolved_from_prompt_review,
     user_prompt_with_context,
 )
+from apex.services.results_fetch import redact_fetch_url
 from apex.services.run_validation import validate_rendered_model_input
 from apex.settings import get_settings
 
@@ -69,6 +75,32 @@ logger = structlog.get_logger(__name__)
 
 # Bounds re-interrupt loops inside a single gate node (modify re-reviews, bad actions).
 MAX_GATE_LOOPS = 10
+_TOOL_ARG_SECRET_KEY_MARKERS = frozenset(
+    {
+        "auth",
+        "basicauth",
+        "bearertoken",
+        "clientsecret",
+        "credential",
+        "httpauth",
+        "password",
+        "privatekey",
+        "secret",
+        "secretkey",
+        "signature",
+        "token",
+    }
+)
+_TOOL_ARG_SECRET_KEY_FRAGMENTS = (
+    "apikey",
+    "authorization",
+    "credential",
+    "password",
+    "privatekey",
+    "secret",
+    "signature",
+    "token",
+)
 
 
 def emit_event(event: JsonDict) -> None:
@@ -99,6 +131,15 @@ def _attempt(entry: JsonDict) -> int:
     return int(entry.get("attempt") or 1)
 
 
+def _dialogue_matches_attempt(entry: JsonDict, phase: Phase, attempt: int) -> bool:
+    if entry.get("phase") != phase.value:
+        return False
+    try:
+        return int(entry.get("attempt") or 1) == attempt
+    except (TypeError, ValueError):
+        return False
+
+
 def _phase_update(phase: Phase, attempt: int, **fields: Any) -> JsonDict:
     # The merge reducer replaces wholesale when attempt differs, so every partial
     # update must carry the current attempt to merge instead of clobber.
@@ -127,7 +168,11 @@ def _transcript_bytes(
 ) -> bytes:
     """Render a deterministic, human-readable record from checkpointed state."""
 
-    dialogue = [item for item in state.get("dialogue") or [] if item.get("phase") == phase.value]
+    dialogue = [
+        item
+        for item in state.get("dialogue") or []
+        if _dialogue_matches_attempt(item, phase, attempt)
+    ]
     document = {
         "schema_version": EVENT_SCHEMA_VERSION,
         "phase": phase.value,
@@ -167,28 +212,30 @@ async def _persist_transcript(
             connection_id=cfg.connections.get(PortKind.ARTIFACT_STORE.value),
             project_id=cfg.project_id,
         )
-        stored = await store.put(
-            key,
-            _transcript_bytes(state, phase, entry, attempt=attempt, status=status),
+        stored = await persist_artifact_with_intent(
+            store,
+            artifact_key=key,
+            connection_id=connection_id,
+            kind="transcript",
+            thread_id=_thread_id(config),
+            project_id=cfg.project_id,
+            app_id=cfg.app_id,
+            payload=_transcript_bytes(state, phase, entry, attempt=attempt, status=status),
             content_type="text/plain; charset=utf-8",
         )
-        try:
-            await record_artifact_reference(
-                artifact_key=stored.key,
-                connection_id=connection_id,
-                kind="transcript",
-                thread_id=_thread_id(config),
-                project_id=cfg.project_id,
-                app_id=cfg.app_id,
-            )
-        except BaseException:
-            delete = getattr(store, "delete", None)
-            if delete is not None:
-                await delete(stored.key)
-            raise
         return stored, connection_id
     finally:
-        await resolver.close()
+        try:
+            await resolver.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # cleanup cannot overturn a committed object + index
+            logger.warning(
+                "pipeline.transcript_resolver_close_failed",
+                phase=phase.value,
+                thread_id=_thread_id(config),
+                error=bounded_diagnostic(exc),
+            )
 
 
 def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
@@ -434,7 +481,13 @@ def _make_prompt_gate(phase: Phase):
         packets = list(state.get("context_packets") or [])
         settings = get_settings()
         if cfg.agent_backend == "anthropic" and settings.llm.anthropic_api_key:
-            tools = [tool.name for tool in _build_agent_tools(settings)]
+            tools = [
+                tool.name
+                for tool in _build_agent_tools(
+                    settings,
+                    approved_urls=_approved_fetch_urls(state),
+                )
+            ]
         else:
             tools = stub_tool_names(phase)
         error: str | None = None
@@ -764,13 +817,35 @@ def _compose_user(state: PipelineState, phase: Phase, resolved: JsonDict, entry:
     return "\n\n".join(blocks) or "(no request provided)"
 
 
-def _build_agent_tools(settings: Any) -> list[Any]:
+def _approved_fetch_urls(state: PipelineState) -> frozenset[str]:
+    """Return only server-derived, credential-free URLs supplied by this run."""
+
+    execution = (state.get("phase_results") or {}).get(Phase.EXECUTION.value) or {}
+    if execution.get("external") is not True:
+        return frozenset()
+    source_uri = execution.get("source_uri")
+    try:
+        validated = ExternalResults.model_validate(
+            {"source": "external-results", "uri": source_uri}
+        )
+    except ValueError:
+        # Legacy checkpoints may contain URI shapes accepted before the durable
+        # secret boundary was enforced. Never turn one into egress authority.
+        return frozenset()
+    return frozenset({validated.uri}) if validated.uri is not None else frozenset()
+
+
+def _build_agent_tools(settings: Any, *, approved_urls: frozenset[str]) -> list[Any]:
     """The `fetch_results` tool when enabled with an allow-list, else no tools.
 
     Deny-by-default: returns [] unless explicitly enabled, so the agent binds no
     egress capability by default. Lazy-imports langchain so the stub path is clean.
     """
-    if not settings.llm.fetch_tool_enabled or not settings.llm.fetch_allowed_hosts:
+    if (
+        not settings.llm.fetch_tool_enabled
+        or not settings.llm.fetch_allowed_hosts
+        or not approved_urls
+    ):
         return []
     from langchain_core.tools import tool
 
@@ -778,20 +853,23 @@ def _build_agent_tools(settings: Any) -> list[Any]:
 
     @tool
     def fetch_results(url: str) -> str:
-        """Fetch the contents at a results URL (an allow-listed host) so you can analyze it.
+        """Fetch the exact results URL supplied with this run so you can analyze it.
 
-        Use this when given a link to results/data you should read before reporting.
+        Do not modify the URL path, query, or fragment.
         """
         try:
+            if url not in approved_urls:
+                raise FetchError("results URL was not supplied by this run")
             return fetch_results_text(
                 url,
                 allowed_hosts=settings.llm.fetch_allowed_hosts,
                 allow_private=settings.llm.fetch_allow_private_hosts,
+                require_https=_fetch_requires_https(settings),
                 max_bytes=settings.llm.fetch_max_bytes,
                 timeout_s=settings.llm.fetch_timeout_s,
             )
         except FetchError as exc:
-            return f"error: {exc}"
+            return bounded_diagnostic(f"error: {bounded_diagnostic(exc)}")
 
     return [fetch_results]
 
@@ -802,6 +880,7 @@ def _invoke_agent_tool(
     *,
     settings: Any,
     remaining_chars: int,
+    approved_urls: frozenset[str],
 ) -> Any:
     """Invoke one tool without allowing its result to exceed the prompt budget."""
 
@@ -813,32 +892,51 @@ def _invoke_agent_tool(
     from apex.services.results_fetch import FetchError, fetch_results_text
 
     try:
+        requested_url = args.get("url")
+        if not isinstance(requested_url, str) or requested_url not in approved_urls:
+            raise FetchError("results URL was not supplied by this run")
         return fetch_results_text(
-            str(args.get("url") or ""),
+            requested_url,
             allowed_hosts=settings.llm.fetch_allowed_hosts,
             allow_private=settings.llm.fetch_allow_private_hosts,
+            require_https=_fetch_requires_https(settings),
             max_bytes=min(settings.llm.fetch_max_bytes, remaining_chars),
             timeout_s=settings.llm.fetch_timeout_s,
         )
     except FetchError as exc:
-        return f"error: {exc}"
+        return bounded_diagnostic(f"error: {bounded_diagnostic(exc)}")
+
+
+def _fetch_requires_https(settings: Any) -> bool:
+    """Require TLS for every fetch performed by a locked deployment."""
+
+    return bool(getattr(settings, "is_locked_down", False))
 
 
 def _accumulate_usage(acc: dict[str, Any], usage: Any) -> None:
-    """Sum LangChain usage_metadata across tool-loop iterations (tokens + details)."""
+    """Sum untrusted usage metadata without exceptions or unbounded totals."""
     if not isinstance(usage, dict):
         return
+
+    def saturated_sum(left: Any, right: Any) -> int:
+        return min(coerce_token_count(left) + coerce_token_count(right), MAX_TOKEN_COUNT)
+
     for key in ("input_tokens", "output_tokens", "total_tokens"):
-        acc[key] = int(acc.get(key, 0)) + int(usage.get(key) or 0)
+        acc[key] = saturated_sum(acc.get(key), usage.get(key))
     for detail_key in ("input_token_details", "output_token_details"):
         source = usage.get(detail_key)
         if isinstance(source, dict):
-            target = acc.setdefault(detail_key, {})
+            existing = acc.get(detail_key)
+            target: dict[str, int] = existing if isinstance(existing, dict) else {}
+            acc[detail_key] = target
             for name, value in source.items():
-                try:
-                    target[name] = int(target.get(name, 0)) + int(value or 0)
-                except (TypeError, ValueError):
+                # Detail labels are provider-controlled. Keep the normalized
+                # metadata JSON-bounded as well as bounding every count.
+                if not isinstance(name, str) or not name or len(name) > 128:
                     continue
+                if name not in target and len(target) >= 64:
+                    continue
+                target[name] = saturated_sum(target.get(name), value)
 
 
 def _llm_agent_body(
@@ -875,7 +973,8 @@ def _llm_agent_body(
         kwargs["thinking"] = {"type": "adaptive"}
     llm = ChatAnthropic(**kwargs)
 
-    tools = _build_agent_tools(settings)
+    approved_fetch_urls = _approved_fetch_urls(state)
+    tools = _build_agent_tools(settings, approved_urls=approved_fetch_urls)
     tools_by_name = {tool.name: tool for tool in tools}
     runnable = llm.bind_tools(tools) if tools else llm
 
@@ -919,6 +1018,8 @@ def _llm_agent_body(
                 call.get("id") or f"{phase.value}-a{attempt}-tool{len(tool_calls_record)}"
             )
             args = dict(call.get("args") or {})
+            if len(tool_calls_record) >= MAX_TOOL_CALL_RECORDS:
+                raise ValueError("model returned too many aggregate tool calls")
             try:
                 remaining_chars = (
                     settings.runs.max_model_input_chars
@@ -933,18 +1034,20 @@ def _llm_agent_body(
                         args,
                         settings=settings,
                         remaining_chars=remaining_chars,
+                        approved_urls=approved_fetch_urls,
                     )
                     if tool is not None
                     else f"error: unknown tool {call.get('name')!r}"
                 )
             except Exception as exc:  # noqa: BLE001 — tool failures feed back to the model
-                output = f"error: {exc}"
+                detail = bounded_diagnostic(exc)
+                output = bounded_diagnostic(f"error: {detail}")
                 record = ToolCallRecord(
                     id=tool_id,
                     tool=str(call.get("name") or "tool"),
                     args_preview=_safe_tool_args(args),
                     status="error",
-                    error=str(exc),
+                    error=detail,
                 ).model_dump(mode="json")
             else:
                 record = ToolCallRecord(
@@ -1016,16 +1119,93 @@ def _llm_agent_body(
 
 
 def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
-    """Keep credentials out of durable tool-call previews."""
-    safe: dict[str, Any] = {}
-    for key, value in args.items():
-        if isinstance(value, str) and (key.lower() in {"url", "uri", "link"}):
-            parsed = urlsplit(value)
-            safe[key] = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))[:512]
-        elif isinstance(value, str):
-            safe[key] = value[:512]
+    """Build a recursively bounded, credential-redacted durable JSON preview."""
+
+    remaining_chars = 4_096
+    nodes = 0
+    active_containers: set[int] = set()
+
+    def key_is_sensitive(key: str) -> bool:
+        normalized = "".join(character for character in key.casefold() if character.isalnum())
+        return normalized in _TOOL_ARG_SECRET_KEY_MARKERS or any(
+            marker in normalized for marker in _TOOL_ARG_SECRET_KEY_FRAGMENTS
+        )
+
+    def safe_text(value: Any, *, key: str | None, max_chars: int) -> str:
+        """Render one untrusted scalar without preserving credential syntax."""
+
+        nonlocal remaining_chars
+        if isinstance(value, str):
+            lowered_key = (key or "").casefold()
+            url_context = lowered_key in {"url", "uri", "link"} or lowered_key.endswith(
+                ("_url", "_uri", "_link")
+            )
+            rendered = (
+                redact_fetch_url(value)
+                if url_context or value.casefold().startswith(("http://", "https://"))
+                else bounded_diagnostic(value, max_chars=max_chars)
+            )
         else:
-            safe[key] = value
+            rendered = bounded_diagnostic(value, max_chars=max_chars)
+        # Apply the generic scrub after URL normalization too, including to
+        # custom-object diagnostics and dynamic mapping keys.
+        rendered = bounded_diagnostic(rendered, max_chars=max_chars)
+        limit = min(max_chars, remaining_chars)
+        result = rendered[:limit]
+        remaining_chars -= len(result)
+        return result
+
+    def preview(value: Any, *, depth: int, key: str | None = None) -> Any:
+        nonlocal remaining_chars, nodes
+        if nodes >= 64 or remaining_chars <= 0:
+            return "…[preview truncated]"
+        nodes += 1
+        if key is not None and key_is_sensitive(key):
+            return safe_text("[REDACTED]", key=None, max_chars=512)
+        if isinstance(value, str):
+            return safe_text(value, key=key, max_chars=512)
+        if value is None or isinstance(value, bool | int):
+            return value
+        if isinstance(value, float):
+            return (
+                value
+                if math.isfinite(value)
+                else safe_text("…[non-finite number]", key=None, max_chars=64)
+            )
+        if depth >= 4:
+            return "…[max depth]"
+        if isinstance(value, dict | list | tuple):
+            container_id = id(value)
+            if container_id in active_containers:
+                return "…[cycle]"
+            active_containers.add(container_id)
+            try:
+                if isinstance(value, dict):
+                    mapping_preview: dict[str, Any] = {}
+                    for index, (raw_key, nested) in enumerate(value.items()):
+                        if index >= 16:
+                            mapping_preview["__truncated__"] = "…[more fields]"
+                            break
+                        safe_key = safe_text(raw_key, key=None, max_chars=128) or "_"
+                        mapping_preview[safe_key] = preview(
+                            nested,
+                            depth=depth + 1,
+                            key=safe_key,
+                        )
+                    return mapping_preview
+                list_preview = [preview(item, depth=depth + 1, key=key) for item in value[:16]]
+                if len(value) > 16:
+                    list_preview.append("…[more items]")
+                return list_preview
+            finally:
+                active_containers.discard(container_id)
+        return safe_text(value, key=key, max_chars=512)
+
+    safe = preview(args, depth=0)
+    if not isinstance(safe, dict):
+        return {"preview": "…[tool arguments omitted]"}
+    if len(json.dumps(safe, ensure_ascii=False).encode("utf-8")) > MAX_TOOL_ARGS_PREVIEW_BYTES:
+        return {"preview": "…[tool arguments exceeded byte budget]"}
     return safe
 
 
@@ -1057,12 +1237,13 @@ def _make_agent(phase: Phase):
             try:
                 return _llm_agent_body(phase, state, config, cfg, entry, attempt)
             except Exception as exc:  # noqa: BLE001 — surface as a failed phase, not a crash
+                detail = bounded_diagnostic(exc)
                 emit_event(
                     {
                         "schema_version": EVENT_SCHEMA_VERSION,
                         "type": "agent_error",
                         "phase": phase.value,
-                        "error": str(exc),
+                        "error": detail,
                     }
                 )
                 return _phase_update(
@@ -1070,8 +1251,8 @@ def _make_agent(phase: Phase):
                     attempt,
                     status=PhaseStatus.FAILED.value,
                     summary=f"[{phase.value}] LLM agent error",
-                    reasoning_digest=str(exc),
-                    errors=[f"LLM agent error: {exc}"],
+                    reasoning_digest=detail,
+                    errors=[bounded_diagnostic(f"LLM agent error: {detail}")],
                 )
         return _stub_agent_body(phase, state, config)
 
@@ -1083,7 +1264,8 @@ def _make_open_output_gate(phase: Phase):
         cfg = PipelineConfigurable.from_config(config)
         if cfg.gate_policy(phase).output_review is not GateMode.GATED:
             return {}
-        attempt = _attempt(_entry(state, phase))
+        entry = _entry(state, phase)
+        attempt = _attempt(entry)
         emit_event(
             {
                 "schema_version": EVENT_SCHEMA_VERSION,
@@ -1093,7 +1275,14 @@ def _make_open_output_gate(phase: Phase):
                 "attempt": attempt,
             }
         )
-        return _phase_update(phase, attempt, status=PhaseStatus.AWAITING_OUTPUT_REVIEW.value)
+        fields: JsonDict = {"status": PhaseStatus.AWAITING_OUTPUT_REVIEW.value}
+        if phase is Phase.EXECUTION and entry.get("engine_collection_settled"):
+            fields.update(
+                engine_collection_settled=False,
+                engine_collection_final_status=None,
+                engine_collection_next=None,
+            )
+        return _phase_update(phase, attempt, **fields)
 
     return open_output_gate
 
@@ -1115,7 +1304,9 @@ def _make_output_gate(phase: Phase):
             for a in state.get("artifacts") or []
             if a.get("id") in artifact_ids
         ]
-        phase_dialogue = [d for d in state.get("dialogue") or [] if d.get("phase") == phase.value]
+        phase_dialogue = [
+            d for d in state.get("dialogue") or [] if _dialogue_matches_attempt(d, phase, attempt)
+        ]
         new_dialogue: list[JsonDict] = []
         max_turns = cfg.limits.max_dialogue_turns
         error: str | None = None
@@ -1192,12 +1383,14 @@ def _make_output_gate(phase: Phase):
                     DialogueEntry(
                         id=f"{phase.value}-a{attempt}-d{index}-operator",
                         phase=phase,
+                        attempt=attempt,
                         role="operator",
                         content=message,
                     ).model_dump(mode="json"),
                     DialogueEntry(
                         id=f"{phase.value}-a{attempt}-d{index + 1}-agent",
                         phase=phase,
+                        attempt=attempt,
                         role="agent",
                         content=f"[{phase.value} agent stub] acknowledged: {message}",
                     ).model_dump(mode="json"),
@@ -1231,6 +1424,14 @@ def _make_finalize(phase: Phase):
         entry = _entry(state, phase)
         attempt = _attempt(entry)
         status = entry.get("status")
+        collection_settled = bool(
+            phase is Phase.EXECUTION and entry.get("engine_collection_settled")
+        )
+        if collection_settled and entry.get("engine_collection_final_status") in {
+            PhaseStatus.FAILED.value,
+            PhaseStatus.ABORTED.value,
+        }:
+            status = entry["engine_collection_final_status"]
         if status not in TERMINAL_PHASE_STATUSES:
             status = PhaseStatus.SUCCEEDED.value
         ended_at = utcnow_iso()
@@ -1262,13 +1463,13 @@ def _make_finalize(phase: Phase):
                 media_type="text/plain",
                 summary=entry.get("reasoning_digest"),
             ).model_dump(mode="json")
-        except Exception:  # noqa: BLE001 - terminal phase state is authoritative
+        except Exception as exc:  # noqa: BLE001 - terminal phase state is authoritative
             transcript_warning = "phase transcript persistence failed"
             logger.warning(
                 "pipeline.transcript_persistence_failed",
                 phase=phase.value,
                 attempt=attempt,
-                exc_info=True,
+                error=bounded_diagnostic(exc),
             )
         emit_event(
             {
@@ -1296,16 +1497,27 @@ def _make_finalize(phase: Phase):
         warnings = list(entry.get("warnings") or [])
         if transcript_warning is not None:
             warnings.append(transcript_warning)
+        finalize_fields: JsonDict = {
+            "status": status,
+            "ended_at": ended_at,
+            "duration_s": duration_s,
+            "artifact_ids": [transcript["id"]] if transcript is not None else [],
+            "transcript_ref": transcript,
+            "warnings": warnings,
+        }
+        if collection_settled:
+            finalize_fields.update(
+                engine_collection_settled=False,
+                engine_collection_final_status=None,
+                engine_collection_next=None,
+            )
         update = _phase_update(
             phase,
             attempt,
-            status=status,
-            ended_at=ended_at,
-            duration_s=duration_s,
-            artifact_ids=[transcript["id"]] if transcript is not None else [],
-            transcript_ref=transcript,
-            warnings=warnings,
+            **finalize_fields,
         )
+        if collection_settled and status == PhaseStatus.ABORTED.value:
+            update["run_aborted"] = True
         if transcript is not None:
             update["artifacts"] = [transcript]
         return update
@@ -1319,7 +1531,8 @@ def make_phase_subgraph(phase: Phase) -> CompiledStateGraph[PipelineState, Any, 
     Compiled without a checkpointer so it inherits the parent graph's persistence.
     For Phase.EXECUTION the stub agent is replaced by the engine spine (the gates
     still route to "agent", which the engine wiring provides as a no-op alias into
-    engine_reserve; engine_collect routes to open_output_gate / finalize itself).
+    engine_reserve; engine_collect checkpoints output before the settle node routes
+    to open_output_gate / finalize).
     """
     builder = StateGraph(PipelineState)
     builder.add_node("prepare", _make_prepare(phase))
@@ -1348,7 +1561,16 @@ def make_phase_subgraph(phase: Phase) -> CompiledStateGraph[PipelineState, Any, 
         builder.add_conditional_edges(
             START,
             route_execution_entry,
-            ["prepare", "engine_cleanup"],
+            [
+                "prepare",
+                "engine_cleanup",
+                "engine_provision_resume",
+                "engine_collection_resume",
+                "engine_collection_settle",
+                "engine_collection_settle_resume",
+                "open_output_gate",
+                "finalize",
+            ],
         )
     else:
         builder.add_edge(START, "prepare")

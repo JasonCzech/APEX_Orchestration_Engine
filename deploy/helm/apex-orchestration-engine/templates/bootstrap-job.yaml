@@ -5,7 +5,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "apex.fullname" . }}-bootstrap
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "bootstrap") }}
   labels:
     {{- include "apex.labels" . | nindent 4 }}
     app.kubernetes.io/component: bootstrap
@@ -20,7 +20,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "apex.selectorLabels" . | nindent 8 }}
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: bootstrap
     spec:
       restartPolicy: Never
@@ -34,16 +34,21 @@ spec:
       {{- end }}
       containers:
         - name: bootstrap
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "apex.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           command: ["python", "-m", "apex.bootstrap", "/bootstrap/bootstrap.json"]
           env:
-            {{- include "apex.dbEnv" . | nindent 12 }}
-            {{- with .Values.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            # Validate bootstrap under the same locked-down, TLS/CORS/auth
+            # policy as the runtime without depending on a non-hook ConfigMap
+            # that does not exist yet during pre-install.
+            {{- range $key, $value := .Values.apexSettings }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
             {{- end }}
+            {{- include "apex.bootstrapDbEnv" . | nindent 12 }}
+            {{- include "apex.bootstrapAuthEnv" . | nindent 12 }}
             {{- if .Values.bootstrap.adminKeySecret.existingSecret }}
             - name: APEX_BOOTSTRAP_ADMIN_KEY
               valueFrom:
@@ -62,7 +67,7 @@ spec:
       volumes:
         - name: bootstrap-doc
           configMap:
-            name: {{ include "apex.fullname" . }}-bootstrap
+            name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "bootstrap") }}
         - name: tmp
           emptyDir: {}
 {{- end }}

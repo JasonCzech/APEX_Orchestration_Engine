@@ -14,7 +14,10 @@ from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import hash_api_key
 from apex.persistence.models import ApiConsumer, ConsumerDeletionRecord, ConsumerKey, ConsumerScope
-from apex.persistence.repositories.consumers import DuplicateConsumerNameError
+from apex.persistence.repositories.consumers import (
+    AmbiguousConsumerKeyExpiryError,
+    DuplicateConsumerNameError,
+)
 from apex.routers.consumers import get_consumers_repository, router
 
 ADMIN = ConsumerIdentity(
@@ -46,6 +49,7 @@ class FakeConsumersRepository:
         self.rows: dict[str, ApiConsumer] = {}
         self.deletion_records: list[ConsumerDeletionRecord] = []
         self.for_update_calls: list[str] = []
+        self.list_calls = 0
         self.create_name_race = False
         self.update_name_race = False
 
@@ -66,14 +70,36 @@ class FakeConsumersRepository:
                 id=uuid4().hex,
                 consumer_id=consumer.id,
                 key_hash=key_hash,
+                expiry_source="independent",
                 created_at=datetime.now(UTC),
             )
         ]
         self.rows[consumer_id] = consumer
         return consumer
 
-    async def list_all(self) -> list[ApiConsumer]:
-        return [consumer for consumer in self.rows.values() if consumer.deleted_at is None]
+    async def list_all(
+        self,
+        *,
+        allowed_scopes: Sequence[ScopeRef] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ApiConsumer]:
+        self.list_calls += 1
+        rows = [consumer for consumer in self.rows.values() if consumer.deleted_at is None]
+        if allowed_scopes is not None:
+            project_wide = {scope.project_id for scope in allowed_scopes if scope.app_id is None}
+            exact = {(scope.project_id, scope.app_id) for scope in allowed_scopes}
+            rows = [
+                consumer
+                for consumer in rows
+                if consumer.scopes
+                and all(
+                    scope.project_id in project_wide or (scope.project_id, scope.app_id) in exact
+                    for scope in consumer.scopes
+                )
+            ]
+        rows.sort(key=lambda consumer: (consumer.created_at, consumer.id))
+        return rows[offset : offset + limit]
 
     async def get(self, consumer_id: str) -> ApiConsumer | None:
         consumer = self.rows.get(consumer_id)
@@ -122,7 +148,7 @@ class FakeConsumersRepository:
                 id=uuid4().hex,
                 consumer_id=consumer.id,
                 key_hash=key_hash,
-                expires_at=expires_at,
+                expiry_source="independent",
                 created_at=datetime.now(UTC),
                 created_by=created_by,
             )
@@ -139,7 +165,9 @@ class FakeConsumersRepository:
         enabled: bool | None = None,
         scopes: Sequence[ScopeRef] | None = None,
         expires_at: datetime | None = None,
+        expires_at_set: bool = False,
         revoked_at: datetime | None = None,
+        revoked_at_set: bool = False,
         updated_by: str | None = None,
     ) -> ApiConsumer | None:
         consumer = self.rows.get(consumer_id)
@@ -152,7 +180,9 @@ class FakeConsumersRepository:
             enabled=enabled,
             scopes=scopes,
             expires_at=expires_at,
+            expires_at_set=expires_at_set,
             revoked_at=revoked_at,
+            revoked_at_set=revoked_at_set,
             updated_by=updated_by,
         )
 
@@ -165,7 +195,9 @@ class FakeConsumersRepository:
         enabled: bool | None = None,
         scopes: Sequence[ScopeRef] | None = None,
         expires_at: datetime | None = None,
+        expires_at_set: bool = False,
         revoked_at: datetime | None = None,
+        revoked_at_set: bool = False,
         updated_by: str | None = None,
     ) -> ApiConsumer:
         if self.update_name_race:
@@ -181,9 +213,31 @@ class FakeConsumersRepository:
                 ConsumerScope(id=uuid4().hex, project_id=s.project_id, app_id=s.app_id)
                 for s in scopes
             ]
-        if expires_at is not None:
+        if expires_at_set or expires_at is not None:
+            old_consumer_expiry = consumer.expires_at
+            current_key = next(
+                (key for key in consumer.keys if key.key_hash == consumer.key_hash),
+                None,
+            )
+            if (
+                current_key is not None
+                and old_consumer_expiry is not None
+                and current_key.expires_at == old_consumer_expiry
+            ):
+                source = current_key.expiry_source or (
+                    "inherited" if int(consumer.rotation_count or 0) == 0 else "legacy_ambiguous"
+                )
+                if source == "inherited" or (
+                    source == "legacy_ambiguous" and int(consumer.rotation_count or 0) == 0
+                ):
+                    current_key.expires_at = None
+                    current_key.expiry_source = "independent"
+                elif source == "legacy_ambiguous":
+                    raise AmbiguousConsumerKeyExpiryError(
+                        "rotate the current credential before changing the consumer expiry"
+                    )
             consumer.expires_at = expires_at
-        if revoked_at is not None:
+        if revoked_at_set or revoked_at is not None:
             consumer.revoked_at = revoked_at
         if updated_by is not None:
             consumer.updated_by = updated_by
@@ -202,6 +256,17 @@ class FakeConsumersRepository:
         if consumer is None:
             return None
         now = datetime.now(UTC)
+        if not any(key.key_hash == consumer.key_hash for key in consumer.keys):
+            consumer.keys.append(
+                ConsumerKey(
+                    id=uuid4().hex,
+                    consumer_id=consumer.id,
+                    key_hash=consumer.key_hash,
+                    expiry_source="independent",
+                    created_at=now,
+                    created_by=consumer.created_by,
+                )
+            )
         active_keys = [
             key
             for key in consumer.keys
@@ -212,13 +277,15 @@ class FakeConsumersRepository:
                 key.revoked_at = now
             elif key.expires_at is None or key.expires_at > grace_expires_at:
                 key.expires_at = grace_expires_at
+                key.expiry_source = "grace"
         rotated_from_id = active_keys[0].id if active_keys else None
         consumer.keys.append(
             ConsumerKey(
                 id=uuid4().hex,
                 consumer_id=consumer.id,
                 key_hash=key_hash,
-                expires_at=expires_at or consumer.expires_at,
+                expires_at=expires_at,
+                expiry_source="explicit" if expires_at is not None else "independent",
                 rotated_from_id=rotated_from_id,
                 created_at=now,
                 created_by=rotated_by,
@@ -303,6 +370,8 @@ def test_create_returns_raw_key_exactly_once_and_stores_only_hash(
     with make_client(repo) as client:
         response = client.post("/v1/admin/consumers", json=CREATE_BODY)
         assert response.status_code == 201
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
         body = response.json()
         api_key = body["api_key"]
         assert len(api_key) >= 32
@@ -324,11 +393,43 @@ def test_create_returns_raw_key_exactly_once_and_stores_only_hash(
     ]
 
 
+def test_list_rejects_huge_offset_before_repository() -> None:
+    repo = FakeConsumersRepository()
+
+    with make_client(repo) as client:
+        response = client.get("/v1/admin/consumers", params={"offset": 10_001})
+
+    assert response.status_code == 422
+    assert repo.list_calls == 0
+
+
 def test_create_duplicate_name_conflicts() -> None:
     repo = FakeConsumersRepository()
     with make_client(repo) as client:
         assert client.post("/v1/admin/consumers", json=CREATE_BODY).status_code == 201
         assert client.post("/v1/admin/consumers", json=CREATE_BODY).status_code == 409
+
+
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        [{"project_id": "proj-a"}, {"project_id": "proj-a"}],
+        [
+            {"project_id": "proj-a"},
+            {"project_id": "proj-a", "app_id": "app-a"},
+        ],
+    ],
+)
+def test_create_rejects_duplicate_or_redundant_scopes_before_write(
+    scopes: list[dict[str, str]],
+) -> None:
+    repo = FakeConsumersRepository()
+
+    with make_client(repo) as client:
+        response = client.post("/v1/admin/consumers", json={**CREATE_BODY, "scopes": scopes})
+
+    assert response.status_code == 422
+    assert repo.rows == {}
 
 
 def test_create_name_race_conflicts() -> None:
@@ -339,7 +440,8 @@ def test_create_name_race_conflicts() -> None:
         response = client.post("/v1/admin/consumers", json=CREATE_BODY)
 
     assert response.status_code == 409
-    assert response.json()["title"] == "Consumer name 'dashboard-ui' already exists"
+    assert response.json()["title"] == "consumer name already exists"
+    assert "dashboard-ui" not in response.text
 
 
 def test_rotate_replaces_hash_and_returns_new_key_once(audit_events: list[Any]) -> None:
@@ -352,6 +454,8 @@ def test_rotate_replaces_hash_and_returns_new_key_once(audit_events: list[Any]) 
         repo.rows[created["id"]].last_used_at = old_last_used
         response = client.post(f"/v1/admin/consumers/{created['id']}/rotate")
         assert response.status_code == 200
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["pragma"] == "no-cache"
         body = response.json()
         assert body["api_key"] != created["api_key"]
         new_hash = repo.rows[created["id"]].key_hash
@@ -387,6 +491,24 @@ def test_rotate_with_grace_keeps_old_key_temporarily() -> None:
         assert repo.rows[created["id"]].keys[-1].created_by == ADMIN.consumer_id
 
 
+def test_rotate_materializes_missing_legacy_key_before_applying_grace() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="legacy", name="legacy", key_hash=hash_api_key("old-key"))
+    row.keys = []
+
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers/legacy/rotate",
+            json={"grace_period_seconds": 120},
+        )
+
+    assert response.status_code == 200
+    old = next(key for key in row.keys if key.key_hash == hash_api_key("old-key"))
+    assert old.revoked_at is None
+    assert old.expires_at is not None
+    assert old.expires_at > datetime.now(UTC)
+
+
 def test_create_accepts_expires_at() -> None:
     repo = FakeConsumersRepository()
     expires_at = (datetime.now(UTC) + timedelta(days=30)).isoformat()
@@ -397,6 +519,136 @@ def test_create_accepts_expires_at() -> None:
         )
         assert response.status_code == 201
         assert response.json()["expires_at"] is not None
+
+
+def test_create_normalizes_naive_expiry_to_utc() -> None:
+    repo = FakeConsumersRepository()
+    naive_expiry = (datetime.now(UTC) + timedelta(days=30)).replace(tzinfo=None)
+
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers",
+            json={**CREATE_BODY, "expires_at": naive_expiry.isoformat()},
+        )
+
+    assert response.status_code == 201
+    row = repo.rows[response.json()["id"]]
+    assert row.expires_at == naive_expiry.replace(tzinfo=UTC)
+
+
+def test_create_rejects_expired_consumer() -> None:
+    repo = FakeConsumersRepository()
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers",
+            json={
+                **CREATE_BODY,
+                "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+            },
+        )
+
+    assert response.status_code == 422
+    assert repo.rows == {}
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "0001-01-01T00:00:00+14:00",
+        "9999-12-31T23:59:59-14:00",
+    ],
+)
+def test_create_rejects_lifecycle_timestamp_outside_utc_range(timestamp: str) -> None:
+    repo = FakeConsumersRepository()
+
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers",
+            json={**CREATE_BODY, "expires_at": timestamp},
+        )
+
+    assert response.status_code == 422
+    assert "representable UTC range" in response.json()["title"]
+    assert repo.rows == {}
+
+
+def test_rotate_rejects_expired_new_key_without_revoking_old_key() -> None:
+    repo = FakeConsumersRepository()
+    with make_client(repo) as client:
+        created = client.post("/v1/admin/consumers", json=CREATE_BODY).json()
+        old_key = repo.rows[created["id"]].keys[0]
+        response = client.post(
+            f"/v1/admin/consumers/{created['id']}/rotate",
+            json={"expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()},
+        )
+
+    assert response.status_code == 422
+    assert old_key.revoked_at is None
+    assert len(repo.rows[created["id"]].keys) == 1
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "0001-01-01T00:00:00+14:00",
+        "9999-12-31T23:59:59-14:00",
+    ],
+)
+def test_rotate_rejects_lifecycle_timestamp_outside_utc_range(timestamp: str) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("old"))
+    old_hash = row.key_hash
+    old_key = row.keys[0]
+
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers/target/rotate",
+            json={"expires_at": timestamp},
+        )
+
+    assert response.status_code == 422
+    assert "representable UTC range" in response.json()["title"]
+    assert row.key_hash == old_hash
+    assert row.keys == [old_key]
+
+
+def test_self_rotation_requires_retry_grace_and_preserves_current_key(
+    audit_events: list[Any],
+) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+    old_key = row.keys[0]
+
+    with make_client(repo) as client:
+        response = client.post(f"/v1/admin/consumers/{ADMIN.consumer_id}/rotate")
+
+    assert response.status_code == 409
+    assert "grace period of at least 60 seconds" in response.json()["title"]
+    assert old_key.revoked_at is None
+    assert old_key.expires_at is None
+    assert len(row.keys) == 1
+    assert [(event.action, event.decision) for event in audit_events] == [
+        ("consumer.rotate_key", "denied")
+    ]
+
+
+def test_self_rotation_keeps_old_key_valid_through_response_retry_window() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+    old_key = row.keys[0]
+    new_expiry = datetime.now(UTC) + timedelta(minutes=5)
+
+    with make_client(repo) as client:
+        response = client.post(
+            f"/v1/admin/consumers/{ADMIN.consumer_id}/rotate",
+            json={"grace_period_seconds": 60, "expires_at": new_expiry.isoformat()},
+        )
+
+    assert response.status_code == 200
+    assert old_key.revoked_at is None
+    assert old_key.expires_at is not None
+    assert old_key.expires_at > datetime.now(UTC)
+    assert row.keys[-1].expires_at == new_expiry
 
 
 def test_rotate_unknown_consumer_404() -> None:
@@ -430,7 +682,8 @@ def test_update_name_race_conflicts() -> None:
         response = client.patch("/v1/admin/consumers/target", json={"name": "taken-name"})
 
     assert response.status_code == 409
-    assert response.json()["title"] == "Consumer name 'taken-name' already exists"
+    assert response.json()["title"] == "consumer name already exists"
+    assert "taken-name" not in response.text
     assert target.name == "old-name"
 
 
@@ -444,6 +697,103 @@ def test_update_can_revoke_consumer() -> None:
         )
         assert response.status_code == 200
         assert response.json()["revoked_at"] is not None
+
+
+def test_update_rejects_future_revocation_before_write() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("target"))
+
+    with make_client(repo) as client:
+        response = client.patch(
+            "/v1/admin/consumers/target",
+            json={"revoked_at": (datetime.now(UTC) + timedelta(days=1)).isoformat()},
+        )
+
+    assert response.status_code == 422
+    assert row.revoked_at is None
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "0001-01-01T00:00:00+14:00",
+        "9999-12-31T23:59:59-14:00",
+    ],
+)
+def test_update_rejects_lifecycle_timestamp_outside_utc_range(timestamp: str) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("target"))
+
+    with make_client(repo) as client:
+        response = client.patch(
+            "/v1/admin/consumers/target",
+            json={"expires_at": timestamp},
+        )
+
+    assert response.status_code == 422
+    assert "representable UTC range" in response.json()["title"]
+    assert row.expires_at is None
+    assert repo.for_update_calls == []
+
+
+def test_update_explicit_null_clears_nullable_lifecycle_fields() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("target"))
+    row.expires_at = datetime.now(UTC) + timedelta(days=3)
+    row.revoked_at = datetime.now(UTC) + timedelta(days=1)
+
+    with make_client(repo) as client:
+        response = client.patch(
+            "/v1/admin/consumers/target",
+            json={"expires_at": None, "revoked_at": None},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["expires_at"] is None
+    assert response.json()["revoked_at"] is None
+    assert row.expires_at is None
+    assert row.revoked_at is None
+
+
+def test_update_lazily_repairs_legacy_inherited_initial_key_expiry() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("target"))
+    inherited_expiry = datetime.now(UTC) + timedelta(days=3)
+    row.expires_at = inherited_expiry
+    row.keys[0].expires_at = inherited_expiry
+    row.keys[0].expiry_source = "inherited"
+    row.rotation_count = 0
+    replacement = datetime.now(UTC) + timedelta(days=7)
+
+    with make_client(repo) as client:
+        response = client.patch(
+            "/v1/admin/consumers/target",
+            json={"expires_at": replacement.isoformat()},
+        )
+
+    assert response.status_code == 200
+    assert row.expires_at == replacement
+    assert row.keys[0].expires_at is None
+
+
+def test_update_rejects_ambiguous_old_writer_rotated_key_expiry() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("current"))
+    old_expiry = datetime.now(UTC) + timedelta(days=3)
+    row.expires_at = old_expiry
+    row.rotation_count = 1
+    row.keys[0].expires_at = old_expiry
+    row.keys[0].expiry_source = "legacy_ambiguous"
+
+    with make_client(repo) as client:
+        response = client.patch(
+            "/v1/admin/consumers/target",
+            json={"expires_at": (datetime.now(UTC) + timedelta(days=7)).isoformat()},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "consumer key expiry update is ambiguous"
+    assert row.expires_at == old_expiry
 
 
 def test_scoped_admin_cannot_create_unscoped_admin(audit_events: list[Any]) -> None:
@@ -571,6 +921,67 @@ def test_self_disable_conflicts_409(audit_events: list[Any]) -> None:
     ]
 
 
+def test_self_revoke_conflicts_409(audit_events: list[Any]) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+
+    with make_client(repo) as client:
+        response = client.patch(
+            f"/v1/admin/consumers/{ADMIN.consumer_id}",
+            json={"revoked_at": datetime.now(UTC).isoformat()},
+        )
+
+    assert response.status_code == 409
+    assert row.revoked_at is None
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        ("consumer.update", "denied", "A consumer cannot revoke itself")
+    ]
+
+
+def test_self_immediate_expiry_conflicts_but_future_expiry_is_allowed(
+    audit_events: list[Any],
+) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+
+    with make_client(repo) as client:
+        denied = client.patch(
+            f"/v1/admin/consumers/{ADMIN.consumer_id}",
+            json={"expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()},
+        )
+        future = datetime.now(UTC) + timedelta(days=1)
+        allowed = client.patch(
+            f"/v1/admin/consumers/{ADMIN.consumer_id}",
+            json={"expires_at": future.isoformat()},
+        )
+
+    assert denied.status_code == 409
+    assert allowed.status_code == 200
+    assert row.expires_at == future
+    assert [(event.action, event.decision, event.reason) for event in audit_events] == [
+        (
+            "consumer.update",
+            "denied",
+            "A consumer cannot expire itself inside the response retry window",
+        ),
+        ("consumer.update", "allowed", None),
+    ]
+
+
+def test_self_near_future_expiry_cannot_lock_out_response_retry() -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
+
+    with make_client(repo) as client:
+        response = client.patch(
+            f"/v1/admin/consumers/{ADMIN.consumer_id}",
+            json={"expires_at": (datetime.now(UTC) + timedelta(seconds=1)).isoformat()},
+        )
+
+    assert response.status_code == 409
+    assert row.expires_at is None
+
+
 def test_self_role_change_conflicts_409(audit_events: list[Any]) -> None:
     repo = FakeConsumersRepository()
     row = repo.seed(consumer_id=ADMIN.consumer_id, name="root", key_hash=hash_api_key("k1"))
@@ -626,6 +1037,16 @@ def test_delete_other_consumer_soft_deletes_and_404_when_missing(
         ("consumer.delete", "victim")
     ]
     assert repo.for_update_calls == ["victim", "victim"]
+
+
+def test_consumer_not_found_does_not_reflect_credential_shaped_id() -> None:
+    canary = "Bearer-secret-canary"
+    with make_client(FakeConsumersRepository()) as client:
+        response = client.get(f"/v1/admin/consumers/{canary}")
+
+    assert response.status_code == 404
+    assert response.json()["title"] == "consumer not found"
+    assert canary not in response.text
 
 
 def test_get_unknown_consumer_404() -> None:

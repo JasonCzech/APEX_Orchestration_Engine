@@ -19,8 +19,7 @@ export interface GoldenConfig {
 }
 
 async function fetchGoldenConfigs(): Promise<GoldenConfig[]> {
-  const client = await getLangGraphClient()
-  const assistants = await client.assistants.search({ graphId: 'pipeline', limit: 100 })
+  const assistants = await fetchBoundedPipelineAssistants()
   return assistants
     .filter((assistant) => assistant.metadata?.['created_by'] !== 'system')
     .map((assistant) => ({
@@ -29,6 +28,37 @@ async function fetchGoldenConfigs(): Promise<GoldenConfig[]> {
       description: assistant.description ?? null,
       configurable: (assistant.config?.configurable ?? {}) as Record<string, unknown>,
     }))
+}
+
+const ASSISTANT_PAGE_SIZE = 5
+const MAX_GOLDEN_CONFIGS = 20
+
+async function fetchBoundedPipelineAssistants(): Promise<Assistant[]> {
+  const client = await getLangGraphClient()
+  const summaries: Assistant[] = []
+  for (let offset = 0; offset < MAX_GOLDEN_CONFIGS; offset += ASSISTANT_PAGE_SIZE) {
+    const page = await client.assistants.search({
+      graphId: 'pipeline',
+      limit: ASSISTANT_PAGE_SIZE,
+      offset,
+      select: [
+        'assistant_id',
+        'graph_id',
+        'name',
+        'description',
+        'created_at',
+        'updated_at',
+        'version',
+      ],
+    })
+    summaries.push(...page)
+    if (page.length < ASSISTANT_PAGE_SIZE) break
+  }
+  const assistants: Assistant[] = []
+  for (const summary of summaries) {
+    assistants.push(await client.assistants.get(summary.assistant_id))
+  }
+  return assistants
 }
 
 /**
@@ -72,8 +102,7 @@ function toGoldenConfigEntry(assistant: Assistant): GoldenConfigEntry {
 }
 
 async function fetchGoldenConfigsIndex(): Promise<GoldenConfigEntry[]> {
-  const client = await getLangGraphClient()
-  const assistants = await client.assistants.search({ graphId: 'pipeline', limit: 100 })
+  const assistants = await fetchBoundedPipelineAssistants()
   return assistants.map(toGoldenConfigEntry)
 }
 

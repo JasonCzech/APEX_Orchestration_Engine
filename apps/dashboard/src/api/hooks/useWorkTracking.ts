@@ -61,7 +61,11 @@ export function useExecuteQuery() {
   return useMutation<
     WorkItemPage,
     Error,
-    { query: TranslatedQuery; limit?: number; offset?: number } & WorkTrackingScope
+    {
+      query: TranslatedQuery
+      limit?: number
+      offset?: number
+    } & WorkTrackingScope
   >({
     mutationFn: async ({ query, limit = 25, offset = 0, connectionId, project }) => {
       const { data, error, response } = await getApexClient().POST(
@@ -107,10 +111,9 @@ async function fetchSavedQueries(): Promise<SavedQuery[]> {
   const items: SavedQuery[] = []
   const limit = 200
   for (let offset = 0; ; offset += limit) {
-    const { data, error, response } = await getApexClient().GET(
-      '/v1/work-tracking/saved-queries',
-      { params: { query: { limit, offset } } },
-    )
+    const { data, error, response } = await getApexClient().GET('/v1/work-tracking/saved-queries', {
+      params: { query: { limit, offset } },
+    })
     if (!response.ok || !data) {
       throw new ApiError(
         response.status,
@@ -151,14 +154,24 @@ export function useWorkItem(
 export interface CreateWorkItemInput {
   body: WorkItemDraft
   project?: string
+  idempotencyKey: string
+}
+
+export function createWorkItemMutationKey(prefix: 'create' | 'enrich'): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? `${prefix}-${crypto.randomUUID()}`
+    : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
 export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, CreateWorkItemInput> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async ({ body, project }: CreateWorkItemInput) => {
+    mutationFn: async ({ body, project, idempotencyKey }: CreateWorkItemInput) => {
       const { data, error, response } = await getApexClient().POST('/v1/work-tracking/items', {
-        params: { query: project ? { project } : {} },
+        params: {
+          query: project ? { project } : {},
+          header: { 'Idempotency-Key': idempotencyKey },
+        },
         body,
       })
       if (!response.ok || !data) {
@@ -181,16 +194,24 @@ export interface EnrichWorkItemInput {
   key: string
   body: Enrichment
   project?: string
+  idempotencyKey: string
 }
 
 /** Push fields/comment onto an item (operator+; POST items/{key}/enrich). */
 export function useEnrichWorkItem(): UseMutationResult<WorkItem, Error, EnrichWorkItemInput> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async ({ key, body, project }: EnrichWorkItemInput) => {
+    mutationFn: async ({ key, body, project, idempotencyKey }: EnrichWorkItemInput) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/work-tracking/items/{key}/enrich',
-        { params: { path: { key }, query: project ? { project } : {} }, body },
+        {
+          params: {
+            path: { key },
+            query: project ? { project } : {},
+            header: { 'Idempotency-Key': idempotencyKey },
+          },
+          body,
+        },
       )
       if (!response.ok || !data) {
         throw new ApiError(
@@ -226,7 +247,9 @@ export function useCreateSavedQuery(): UseMutationResult<SavedQuery, Error, Save
       return data
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workItems.savedQueries() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workItems.savedQueries(),
+      })
     },
   })
 }
@@ -254,7 +277,9 @@ export function useUpdateSavedQuery(): UseMutationResult<SavedQuery, Error, Upda
       return data
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workItems.savedQueries() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workItems.savedQueries(),
+      })
     },
   })
 }
@@ -276,7 +301,9 @@ export function useDeleteSavedQuery(): UseMutationResult<void, Error, string> {
       }
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workItems.savedQueries() })
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.workItems.savedQueries(),
+      })
     },
   })
 }

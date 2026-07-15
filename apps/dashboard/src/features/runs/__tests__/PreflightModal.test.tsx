@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
@@ -9,17 +10,17 @@ import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
 
-import { ALL_AUTO_GATES } from '../launchRun'
 import { PreflightModal } from '../PreflightModal'
 import { ALL_GATED_GATES } from '../useRerun'
 import { PIPELINE_DETAIL, pipelineDetailHandler, THREAD_ID } from './testUtils'
 
-const { runsCreate } = vi.hoisted(() => ({ runsCreate: vi.fn() }))
+interface CapturedRerun {
+  phases: string[]
+  gates_mode: 'inherit' | 'gated' | 'auto'
+  idempotency_key: string
+}
 
-// The rerun path goes through the SDK client factory — fake runs.create.
-vi.mock('@/api/langgraphClient', () => ({
-  getLangGraphClient: () => Promise.resolve({ runs: { create: runsCreate } }),
-}))
+let rerunBodies: CapturedRerun[] = []
 
 const FULL_PLAN = [
   'story_analysis',
@@ -99,8 +100,14 @@ const toggleByName = (name: string) => screen.getByRole('button', { name, presse
 
 describe('PreflightModal', () => {
   beforeEach(() => {
-    runsCreate.mockReset().mockResolvedValue({ run_id: 'run-9' })
+    rerunBodies = []
     server.use(pipelineDetailHandler(DETAIL_IDLE))
+    server.use(
+      http.post('*/v1/pipelines/:threadId/rerun', async ({ request }) => {
+        rerunBodies.push((await request.json()) as CapturedRerun)
+        return HttpResponse.json({ run_id: 'run-9' }, { status: 202 })
+      }),
+    )
   })
 
   it('loads thread state, pre-checks the last plan, and recomputes readiness as toggles change', async () => {
@@ -156,32 +163,18 @@ describe('PreflightModal', () => {
     expect(screen.getByRole('button', { name: 'Start phases' })).toBeDisabled()
   })
 
-  it('Start sends input {} (NOT null) + exact configurable, then navigates to ?tab=log', async () => {
+  it('Start sends only phase/gate overrides to the trusted rerun facade', async () => {
     const user = userEvent.setup()
     const { router, onClose } = renderModal(['script_scenario', 'execution'])
 
     await screen.findByRole('group', { name: 'Phases to run' })
     await user.click(screen.getByRole('button', { name: 'Start phases' }))
 
-    await waitFor(() => expect(runsCreate).toHaveBeenCalledTimes(1))
-    const [threadId, assistant, payload] = runsCreate.mock.calls[0] as [
-      string,
-      string,
-      Record<string, unknown>,
-    ]
-    expect(threadId).toBe(THREAD_ID)
-    expect(assistant).toBe('asst-gold')
-    expect(payload.input).toEqual({})
-    expect(payload.input).not.toBeNull()
-    // Inherit keeps every persisted effective setting; only phases change.
-    expect(payload.config).toEqual({
-      recursion_limit: expect.any(Number),
-      configurable: { ...EFFECTIVE_CONFIG, phases: ['script_scenario', 'execution'] },
-    })
-    expect(payload).toMatchObject({
-      streamResumable: true,
-      durability: 'sync',
-      multitaskStrategy: 'reject',
+    await waitFor(() => expect(rerunBodies).toHaveLength(1))
+    expect(rerunBodies[0]).toEqual({
+      phases: ['script_scenario', 'execution'],
+      gates_mode: 'inherit',
+      idempotency_key: expect.any(String),
     })
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`))
@@ -190,9 +183,9 @@ describe('PreflightModal', () => {
   })
 
   it.each([
-    { mode: 'All auto', gates: ALL_AUTO_GATES },
-    { mode: 'All gated', gates: ALL_GATED_GATES },
-  ])('gates mode "$mode" sends the uniform gates map', async ({ mode, gates }) => {
+    { mode: 'All auto', gatesMode: 'auto' },
+    { mode: 'All gated', gatesMode: 'gated' },
+  ])('gates mode "$mode" sends only the selected facade mode', async ({ mode, gatesMode }) => {
     const user = userEvent.setup()
     renderModal(['story_analysis'])
 
@@ -200,16 +193,23 @@ describe('PreflightModal', () => {
     await user.click(within(screen.getByRole('group', { name: 'Gates mode' })).getByText(mode))
     await user.click(screen.getByRole('button', { name: 'Start phases' }))
 
-    await waitFor(() => expect(runsCreate).toHaveBeenCalledTimes(1))
-    const payload = runsCreate.mock.calls[0]?.[2] as Record<string, unknown>
-    expect(payload.config).toEqual({
-      recursion_limit: expect.any(Number),
-      configurable: { ...EFFECTIVE_CONFIG, phases: ['story_analysis'], gates },
+    await waitFor(() => expect(rerunBodies).toHaveLength(1))
+    expect(rerunBodies[0]).toEqual({
+      phases: ['story_analysis'],
+      gates_mode: gatesMode,
+      idempotency_key: expect.any(String),
     })
   })
 
   it('keeps the modal open with an inline error when the rerun fails', async () => {
-    runsCreate.mockRejectedValue(new Error('multitask reject'))
+    server.use(
+      http.post('*/v1/pipelines/:threadId/rerun', () =>
+        HttpResponse.json(
+          { title: 'rerun_already_active', detail: 'multitask reject', status: 409 },
+          { status: 409 },
+        ),
+      ),
+    )
     const user = userEvent.setup()
     const { onClose } = renderModal(['story_analysis'])
 

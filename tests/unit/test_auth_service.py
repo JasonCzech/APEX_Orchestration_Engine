@@ -41,10 +41,22 @@ class FakeSession:
         return False
 
     async def scalar(self, _stmt: Any) -> Any | None:
+        entity = _stmt.column_descriptions[0].get("entity")
+        if entity is ConsumerKey:
+            if isinstance(self._consumer, ConsumerKey):
+                return self._consumer
+            if isinstance(self._consumer, ApiConsumer) and self._consumer.keys:
+                return self._consumer.keys[0]
+            return None
+        if isinstance(self._consumer, ConsumerKey):
+            return self._consumer.consumer
         return self._consumer
 
     async def commit(self) -> None:
         self.committed = True
+
+    async def rollback(self) -> None:
+        return None
 
 
 # ── extract_api_key ──────────────────────────────────────────────────────────
@@ -63,9 +75,9 @@ def test_extract_api_key_bearer_fallback() -> None:
     assert extract_api_key({"Authorization": "bearer tok123"}) == "tok123"
 
 
-def test_extract_api_key_prefers_x_api_key() -> None:
+def test_extract_api_key_rejects_mixed_credential_headers() -> None:
     headers = {"x-api-key": "primary", "authorization": "Bearer secondary"}
-    assert extract_api_key(headers) == "primary"
+    assert extract_api_key(headers) is None
 
 
 def test_extract_api_key_none_for_missing_or_non_bearer() -> None:
@@ -195,6 +207,52 @@ async def test_db_lookup_builds_identity_with_scopes() -> None:
     assert consumer.last_used_at is not None
 
 
+@pytest.mark.parametrize("scope_count", [2, 257])
+async def test_db_lookup_fails_closed_for_invalid_legacy_scope_sets(scope_count: int) -> None:
+    consumer = ApiConsumer(
+        id="legacy-invalid",
+        name="legacy-invalid",
+        key_hash=hash_api_key("some-key"),
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+    )
+    if scope_count == 2:
+        consumer.scopes = [
+            ConsumerScope(id="s1", project_id="p1", app_id=None),
+            ConsumerScope(id="s2", project_id="p1", app_id=None),
+        ]
+    else:
+        consumer.scopes = [
+            ConsumerScope(id=f"s{index}", project_id=f"p{index}", app_id=None)
+            for index in range(scope_count)
+        ]
+    session = FakeSession(consumer)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    assert await resolver.resolve("some-key") is None
+    assert not session.committed
+
+
+async def test_db_lookup_does_not_normalize_legacy_scope_authority() -> None:
+    consumer = ApiConsumer(
+        id="legacy-noncanonical",
+        name="legacy-noncanonical",
+        key_hash=hash_api_key("some-key"),
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+    )
+    consumer.scopes = [
+        ConsumerScope(id="s1", project_id=" p1 ", app_id=None),
+    ]
+    session = FakeSession(consumer)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    assert await resolver.resolve("some-key") is None
+    assert not session.committed
+
+
 async def test_db_lookup_resolves_consumer_key_and_updates_key_usage() -> None:
     consumer = ApiConsumer(
         id="abc123",
@@ -260,6 +318,7 @@ async def test_db_lookup_backfills_consumer_key_for_legacy_consumer_row() -> Non
         role="operator",
         enabled=True,
         last_used_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(days=1),
     )
     consumer.scopes = []
     consumer.keys = []
@@ -270,6 +329,7 @@ async def test_db_lookup_backfills_consumer_key_for_legacy_consumer_row() -> Non
 
     assert identity is not None
     assert [key.key_hash for key in consumer.keys] == [key_hash]
+    assert consumer.keys[0].expires_at is None
     assert session.committed
 
 
@@ -328,6 +388,94 @@ async def test_db_lookup_rehashes_legacy_consumer_key_with_configured_pepper(
     assert key.key_hash == hash_api_key("some-key")
     assert consumer.key_hash == hash_api_key("some-key")
     assert session.committed
+
+
+async def test_key_metadata_repair_revalidates_after_concurrent_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_AUTH__API_KEY_HASH_PEPPER", "new-pepper")
+    old_hash = legacy_hash_api_key("old-key")
+    new_hash = hash_api_key("new-key")
+    stale_consumer = ApiConsumer(
+        id="abc123",
+        name="ops-bot",
+        key_hash=old_hash,
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+    )
+    stale_consumer.scopes = []
+    stale_key = ConsumerKey(id="old", consumer_id="abc123", key_hash=old_hash)
+    stale_key.consumer = stale_consumer
+
+    rotated_consumer = ApiConsumer(
+        id="abc123",
+        name="ops-bot",
+        key_hash=new_hash,
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+    )
+    rotated_consumer.scopes = []
+    rotated_old_key = ConsumerKey(
+        id="old",
+        consumer_id="abc123",
+        key_hash=old_hash,
+        revoked_at=datetime.now(UTC),
+    )
+    rotated_new_key = ConsumerKey(id="new", consumer_id="abc123", key_hash=new_hash)
+    rotated_old_key.consumer = rotated_consumer
+    rotated_new_key.consumer = rotated_consumer
+    rotated_consumer.keys = [rotated_old_key, rotated_new_key]
+
+    class RotationInterleavingSession(FakeSession):
+        async def scalar(self, statement: Any) -> Any | None:
+            entity = statement.column_descriptions[0].get("entity")
+            if entity is ConsumerKey:
+                return stale_key
+            return rotated_consumer
+
+    session = RotationInterleavingSession(stale_key)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    assert await resolver.resolve("old-key") is None
+    assert rotated_consumer.key_hash == new_hash
+    assert rotated_old_key.revoked_at is not None
+    assert not session.committed
+
+
+async def test_legacy_fallback_rejects_matching_explicit_revoked_key() -> None:
+    key_hash = hash_api_key("old-key")
+    consumer = ApiConsumer(
+        id="abc123",
+        name="ops-bot",
+        key_hash=key_hash,
+        consumer_type="headless",
+        role="operator",
+        enabled=True,
+    )
+    consumer.scopes = []
+    revoked_key = ConsumerKey(
+        id="old",
+        consumer_id="abc123",
+        key_hash=key_hash,
+        revoked_at=datetime.now(UTC),
+    )
+    revoked_key.consumer = consumer
+    consumer.keys = [revoked_key]
+
+    class RevokedKeyFilteredSession(FakeSession):
+        async def scalar(self, statement: Any) -> Any | None:
+            entity = statement.column_descriptions[0].get("entity")
+            if entity is ConsumerKey:
+                return None
+            return consumer
+
+    session = RevokedKeyFilteredSession(consumer)
+    resolver = IdentityResolver(session_factory=lambda: session)
+
+    assert await resolver.resolve("old-key") is None
+    assert not session.committed
 
 
 async def test_db_lookup_throttles_last_used_at_write() -> None:

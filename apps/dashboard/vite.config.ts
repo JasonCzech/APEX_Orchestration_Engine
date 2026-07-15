@@ -13,7 +13,7 @@ const proxyTarget = process.env.APEX_API_PROXY ?? 'http://127.0.0.1:2024'
  * (Accept: text/html) bypass the proxy and receive index.html, while API/SSE
  * requests (application/json / text/event-stream) are forwarded.
  */
-const API_PROXY_PATHS = ['/v1', '/threads', '/runs', '/assistants', '/ok']
+const API_PROXY_PATHS = ['/v1', '/threads', '/runs', '/assistants', '/ok', '/ready']
 
 function bypassHtmlNavigation(req: IncomingMessage): string | undefined {
   return req.headers.accept?.includes('text/html') ? '/index.html' : undefined

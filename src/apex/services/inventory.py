@@ -15,26 +15,59 @@ uses the request-scoped session from apex.persistence.db.get_session — this
 module only ever runs in router scope.
 """
 
-from collections.abc import Awaitable, Callable
+import threading
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import PortKind
-from apex.domain.integrations import EnvRef, ServiceInfo
+from apex.domain.integrations import (
+    MAX_INVENTORY_SERVICES,
+    EnvRef,
+    ServiceInfo,
+)
+from apex.domain.integrations import (
+    EnvironmentSnapshot as DomainEnvironmentSnapshot,
+)
 from apex.persistence.db import get_session
-from apex.persistence.models import Environment, EnvironmentSnapshot
+from apex.persistence.models import EnvironmentSnapshot
 from apex.persistence.repositories.snapshots import SnapshotsRepository
 from apex.ports.cluster_inventory import ClusterInventoryPort
 from apex.services.connections import get_connection_resolver
 
 STALE_AFTER = timedelta(days=7)
+MAX_CONCURRENT_INVENTORY_SCANS = 4
+_INVENTORY_SCAN_ADMISSION_LOCK = threading.Lock()
+_ACTIVE_INVENTORY_SCANS = 0
 
 # (connection_id, project_id) -> adapter; a dependency so tests can inject fakes.
 AdapterResolver = Callable[[str | None, str | None], Awaitable[ClusterInventoryPort]]
+InventoryAdapterSource = ClusterInventoryPort | Callable[[], Awaitable[ClusterInventoryPort]]
+
+
+class InventoryScanBusyError(RuntimeError):
+    """Process scan capacity is exhausted; callers should retry later."""
+
+
+@asynccontextmanager
+async def inventory_scan_admission() -> AsyncIterator[None]:
+    """Fail fast before adapter/provider I/O without creating queued waiters."""
+
+    global _ACTIVE_INVENTORY_SCANS
+    with _INVENTORY_SCAN_ADMISSION_LOCK:
+        if _ACTIVE_INVENTORY_SCANS >= MAX_CONCURRENT_INVENTORY_SCANS:
+            raise InventoryScanBusyError
+        _ACTIVE_INVENTORY_SCANS += 1
+    try:
+        yield
+    finally:
+        with _INVENTORY_SCAN_ADMISSION_LOCK:
+            _ACTIVE_INVENTORY_SCANS -= 1
 
 
 class SnapshotView(BaseModel):
@@ -88,30 +121,70 @@ class InventoryService:
         row = await self._repository.latest(environment_id)
         return _view(environment_id, row)
 
-    async def rescan(self, env: Environment, adapter: ClusterInventoryPort) -> InventoryView:
-        """Scan now, persist one NEW snapshot row, return the fresh inventory."""
-        snapshot = await adapter.scan_environment(EnvRef(id=env.id, name=env.name))
-        row = await self._repository.add(
-            env.id,
-            data=snapshot.model_dump(),
-            scanned_at=_parse_scanned_at(snapshot.scanned_at),
-        )
-        return _view(env.id, row)
+    async def rescan(self, env: EnvRef, adapter: InventoryAdapterSource) -> InventoryView:
+        """Scan now, persist bounded history, and cap process-wide in-flight work.
+
+        A lazy adapter factory lets HTTP callers acquire admission before secret,
+        connection, or provider I/O. Direct service callers may still pass an
+        already-resolved adapter and receive the same provider-work protection.
+        """
+        async with inventory_scan_admission():
+            resolved_adapter = await adapter() if callable(adapter) else adapter
+            snapshot = await resolved_adapter.scan_environment(EnvRef(id=env.id, name=env.name))
+            normalized = _validated_provider_snapshot(snapshot)
+            scanned_at = datetime.now(UTC)
+            data = normalized.model_dump(mode="json")
+            # Scan time is a server-owned fact. Validate the provider field for a
+            # well-formed port result, then replace it so a provider cannot make a
+            # snapshot permanently fresh (or prematurely stale).
+            data["scanned_at"] = scanned_at.isoformat()
+            row = await self._repository.add(
+                env.id,
+                data=data,
+                scanned_at=scanned_at,
+            )
+            return _view(env.id, row)
+
+
+def _validated_provider_snapshot(snapshot: object) -> DomainEnvironmentSnapshot:
+    if not isinstance(snapshot, DomainEnvironmentSnapshot):
+        raise RuntimeError("cluster inventory adapter returned an invalid snapshot")
+    try:
+        # Re-serialize and re-validate to defeat model_construct(), unchecked
+        # assignment, and shared mutable objects crossing the adapter boundary.
+        raw = snapshot.model_dump(mode="json", warnings="error")
+        normalized = DomainEnvironmentSnapshot.model_validate(raw)
+        _parse_scanned_at(normalized.scanned_at)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise RuntimeError("cluster inventory adapter returned an invalid snapshot") from exc
+    return normalized
 
 
 def _parse_scanned_at(raw: str) -> datetime:
-    try:
-        parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        return datetime.now(UTC)
+    parsed = datetime.fromisoformat(raw)
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _view(environment_id: str, row: EnvironmentSnapshot | None) -> InventoryView:
     if row is None:
         return InventoryView(environment_id=environment_id, snapshot=None)
-    raw_services = (row.data or {}).get("services", [])
-    services = [ServiceInfo.model_validate(s) for s in raw_services if isinstance(s, dict)]
+    data = row.data
+    if not isinstance(data, dict):
+        raise RuntimeError("persisted inventory snapshot data must be an object")
+    raw_services = data.get("services", [])
+    if not isinstance(raw_services, list):
+        raise RuntimeError("persisted inventory snapshot services must be a list")
+    if len(raw_services) > MAX_INVENTORY_SERVICES:
+        raise RuntimeError(
+            "persisted inventory snapshot exceeds the aggregate service limit of "
+            f"{MAX_INVENTORY_SERVICES}"
+        )
+    if any(not isinstance(service, dict) for service in raw_services):
+        raise RuntimeError("persisted inventory snapshot contains a non-object service")
+    try:
+        services = [ServiceInfo.model_validate(service) for service in raw_services]
+    except ValidationError as exc:
+        raise RuntimeError("persisted inventory snapshot contains invalid service data") from exc
     return InventoryView(
         environment_id=environment_id,
         snapshot=SnapshotView(

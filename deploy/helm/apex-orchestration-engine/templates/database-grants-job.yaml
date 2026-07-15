@@ -1,0 +1,130 @@
+{{- if .Values.databaseRoleProvisioning.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "db-grants") }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database-grants
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": {{ .Values.databaseRoleProvisioning.hookDeletePolicy }}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database-grants
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "apex.hookServiceAccountName" . | quote }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: grant
+          image: {{ include "apex.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import asyncio
+              import os
+              from urllib.parse import unquote, urlsplit
+
+              import asyncpg
+              from apex.persistence.database_role_claims import (
+                  DATABASE_ROLE_LOCK_KEY,
+                  claim_context_from_environment,
+                  verify_database_role_claims,
+              )
+              from apex.settings import database_asyncpg_uri, database_ssl_connect_args
+
+              async def main():
+                  raw_migration_uri = os.environ["APEX_MIGRATION_DATABASE_URI"]
+                  migration_uri = database_asyncpg_uri(raw_migration_uri).replace(
+                      "postgresql+asyncpg://", "postgresql://", 1
+                  )
+                  parsed = urlsplit(os.environ["APEX_RUNTIME_DATABASE_URI"])
+                  if not parsed.username:
+                      raise SystemExit("runtime database URI must include a username")
+                  runtime_owner_name = os.environ["APEX_RUNTIME_OWNER_ROLE"]
+                  if not unquote(parsed.username).startswith(f"{runtime_owner_name}_v"):
+                      raise SystemExit("runtime login must be a versioned <runtimeOwnerRole>_v* role")
+                  conn = await asyncpg.connect(
+                      migration_uri, **database_ssl_connect_args(raw_migration_uri, None)
+                  )
+                  try:
+                      await conn.execute(
+                          "SELECT pg_advisory_lock($1::bigint)",
+                          DATABASE_ROLE_LOCK_KEY,
+                      )
+                      await verify_database_role_claims(
+                          conn,
+                          claim_context_from_environment(),
+                      )
+                      runtime = await conn.fetchval("SELECT quote_ident($1)", runtime_owner_name)
+                      await conn.execute(f"GRANT USAGE ON SCHEMA apex TO {runtime}")
+                      await conn.execute(
+                          f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA apex TO {runtime}"
+                      )
+                      await conn.execute(
+                          f"REVOKE INSERT, UPDATE, DELETE ON TABLE "
+                          f"apex.alembic_version, apex.alembic_revision_lineage FROM {runtime}"
+                      )
+                      await conn.execute(
+                          f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA apex TO {runtime}"
+                      )
+                      await conn.execute(
+                          f"ALTER DEFAULT PRIVILEGES IN SCHEMA apex "
+                          f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime}"
+                      )
+                      await conn.execute(
+                          f"ALTER DEFAULT PRIVILEGES IN SCHEMA apex "
+                          f"GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime}"
+                      )
+                  finally:
+                      await conn.close()
+
+              asyncio.run(main())
+          env:
+            - name: APEX_RUNTIME_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.runtimeSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.runtimeUriKey | quote }}
+            - name: APEX_MIGRATION_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.migrationSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.migrationUriKey | quote }}
+            - name: APEX_RUNTIME_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.runtimeOwnerRole | quote }}
+            - name: APEX_MIGRATION_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.migrationOwnerRole | quote }}
+            - name: APEX_DATABASE_ROLE_OWNER_ID
+              value: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
+            - name: APEX_DATABASE_ROLE_CLAIM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.claimSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.claimSecretKey | quote }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

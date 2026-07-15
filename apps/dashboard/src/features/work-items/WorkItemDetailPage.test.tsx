@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -8,10 +8,15 @@ import { server } from '@/test/server'
 import { ITEM_PAYMENT, enrichHandler, getItemHandler } from './workItemsTestHandlers'
 
 function renderDetail(path = '/work-items/jira/PHX-101', role: 'operator' | 'viewer' = 'operator') {
-  return renderApp({ initialEntries: [path], authState: authenticatedState(role) })
+  return renderApp({
+    initialEntries: [path],
+    authState: authenticatedState(role),
+  })
 }
 
 describe('WorkItemDetailPage', () => {
+  beforeEach(() => window.sessionStorage.clear())
+
   it('renders the item and enriches it (POST shape + refreshed detail)', async () => {
     const enrich = enrichHandler({ ...ITEM_PAYMENT, status: 'blocked' })
     server.use(getItemHandler([ITEM_PAYMENT]), enrich.handler)
@@ -19,14 +24,14 @@ describe('WorkItemDetailPage', () => {
     renderDetail()
 
     expect(
-      await screen.findByRole('heading', { name: 'Checkout retries drop payments' }),
+      await screen.findByRole('heading', {
+        name: 'Checkout retries drop payments',
+      }),
     ).toBeInTheDocument()
     expect(screen.getByText('story')).toHaveClass('dash-context-chip')
     expect(screen.getByText('open')).toHaveClass('status-badge')
     // Blank-line separated description renders as paragraphs.
-    expect(
-      screen.getByText('Retries on the payment gateway drop the cart.'),
-    ).toBeInTheDocument()
+    expect(screen.getByText('Retries on the payment gateway drop the cart.')).toBeInTheDocument()
     expect(screen.getByText('Observed on staging since 1.42.')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open PHX-101 in tracker' })).toHaveAttribute(
       'href',
@@ -34,7 +39,9 @@ describe('WorkItemDetailPage', () => {
     )
 
     await user.click(screen.getByRole('button', { name: 'Enrich' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Enrich PHX-101' })
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Enrich PHX-101',
+    })
     const fields = within(dialog).getByRole('textbox', { name: 'Fields JSON' })
 
     // Invalid JSON blocks submission with an inline message.
@@ -56,6 +63,7 @@ describe('WorkItemDetailPage', () => {
         { fields: { priority: 'P1' }, comment: 'Re-triaged after load test' },
       ]),
     )
+    expect(enrich.idempotencyKeys[0]).toMatch(/^enrich-/)
     // The 200 body replaces the cached detail — status chip refreshes.
     expect(await screen.findByText('blocked')).toHaveClass('status-badge')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
@@ -76,7 +84,32 @@ describe('WorkItemDetailPage', () => {
     server.use(getItemHandler([ITEM_PAYMENT]))
     renderDetail('/work-items/jira/PHX-101', 'viewer')
 
-    await screen.findByRole('heading', { name: 'Checkout retries drop payments' })
+    await screen.findByRole('heading', {
+      name: 'Checkout retries drop payments',
+    })
+    expect(screen.queryByRole('button', { name: 'Enrich' })).not.toBeInTheDocument()
+  })
+
+  it('hides project-wide enrichment from app-only operators', async () => {
+    server.use(getItemHandler([ITEM_PAYMENT]))
+    const base = authenticatedState('operator')
+    if (base.status !== 'authenticated') throw new Error('expected authenticated test state')
+    const consumer = {
+      ...base.consumer,
+      scopes: [{ project_id: 'proj-alpha', app_id: 'app-one' }],
+    }
+    renderApp({
+      initialEntries: ['/work-items/jira/PHX-101'],
+      authState: {
+        ...base,
+        consumer,
+        systemInfo: { ...base.systemInfo, consumer },
+      },
+    })
+
+    await screen.findByRole('heading', {
+      name: 'Checkout retries drop payments',
+    })
     expect(screen.queryByRole('button', { name: 'Enrich' })).not.toBeInTheDocument()
   })
 })

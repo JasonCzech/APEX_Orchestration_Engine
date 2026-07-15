@@ -1,5 +1,9 @@
 provider "azurerm" {
   # subscription_id comes from ARM_SUBSCRIPTION_ID (or `az login` default).
+  # Storage data-plane resources use the deployer's Entra token; shared account
+  # keys are disabled for both state and artifact-backup accounts.
+  storage_use_azuread = true
+
   features {
     key_vault {
       # Let `terraform destroy` actually remove vaults/secrets in non-prod.

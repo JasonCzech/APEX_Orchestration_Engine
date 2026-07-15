@@ -1,3 +1,5 @@
+import pytest
+
 from apex.domain.pipeline import PHASE_ORDER, Phase
 from apex.graphs.pipeline.configurable import GateMode, PipelineConfigurable
 
@@ -45,3 +47,18 @@ def test_unknown_configurable_keys_ignored() -> None:
         {"configurable": {"thread_id": "t", "langgraph_auth_user": object(), "engine": "sim"}}
     )
     assert cfg.engine == "sim"
+
+
+@pytest.mark.parametrize(
+    "configurable",
+    [
+        {"environment_id": "env-a", "project_id": "project-a"},
+        {"environment_id": "env-a", "app_id": "app-a"},
+        {"app_id": "app-a"},
+    ],
+)
+def test_runtime_config_rejects_incomplete_application_ownership(
+    configurable: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError, match="ownership|requires project_id"):
+        PipelineConfigurable.from_config({"configurable": configurable})

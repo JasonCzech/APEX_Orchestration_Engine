@@ -10,8 +10,9 @@ re-execution unable to double-start load.
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat
 
+from apex.domain.input_limits import NoNulStr
 from apex.domain.integrations import LoadTestSpec, TestResultSummary, ValidationReport
 from apex.domain.pipeline import EngineHandle
 from apex.ports.artifact_store import ArtifactStorePort
@@ -33,20 +34,32 @@ TERMINAL_ENGINE_PHASES = frozenset(
 )
 
 
+class EngineProviderRunNotFoundError(KeyError):
+    """The provider definitively reports that the exact external run is gone.
+
+    This is deliberately narrower than ``KeyError``: parser bugs and malformed
+    provider responses must never be mistaken for proof that a load run stopped.
+    """
+
+
 class LiveStats(BaseModel):
     """Normalized live metrics; engines that lack a metric report it as 0/None upstream."""
 
-    vusers: float = 0.0
-    tps: float = 0.0
-    error_rate: float = 0.0
-    p95_ms: float = 0.0
+    model_config = ConfigDict(extra="forbid")
+
+    vusers: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000)
+    tps: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000_000)
+    error_rate: FiniteFloat = Field(default=0.0, ge=0, le=1)
+    p95_ms: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000_000)
 
 
 class EngineRunStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     phase: EngineRunPhase
-    progress_pct: float = 0.0
+    progress_pct: FiniteFloat = Field(default=0.0, ge=0, le=100)
     live_stats: LiveStats | None = None
-    message: str | None = None
+    message: NoNulStr | None = Field(default=None, max_length=4_096)
 
 
 @runtime_checkable
@@ -73,4 +86,6 @@ class ExecutionEnginePort(Protocol):
 
     async def fetch_summary(self, handle: EngineHandle) -> TestResultSummary: ...
 
-    async def teardown(self, handle: EngineHandle) -> None: ...
+    async def teardown(self, handle: EngineHandle) -> None:
+        """Release provider-side resources idempotently; safe to repeat after a crash."""
+        ...

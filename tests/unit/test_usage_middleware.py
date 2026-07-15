@@ -24,7 +24,7 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
     async def fake_record(
         *,
-        api_key: str | None,
+        consumer_name: str,
         action: str,
         status: str,
         duration_ms: int,
@@ -32,12 +32,6 @@ def events(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         app_id: str | None,
         extra: dict[str, Any],
     ) -> None:
-        if api_key == DEV_KEY:
-            consumer_name = "dev"
-        elif api_key:
-            consumer_name = f"key:{usage.hash_api_key(api_key)[:12]}"
-        else:
-            consumer_name = "anonymous"
         captured.append(
             {
                 "consumer_name": consumer_name,
@@ -72,10 +66,10 @@ def test_records_operation_id_status_and_duration(events: list[dict[str, Any]]) 
     assert event["action"] == "getSystemInfo"
     assert event["surface"] == "v1"
     assert event["status"] == "ok"
-    assert event["consumer_name"] == "dev"  # lazily re-resolved from the api key header
+    assert event["consumer_name"] == "dev"
     assert isinstance(event["duration_ms"], int) and event["duration_ms"] >= 0
     assert event["extra"]["status_code"] == 200
-    assert event["extra"]["path"] == "/v1/system/info"
+    assert "path" not in event["extra"]
     assert event["project_id"] is None
     assert event["app_id"] is None
 
@@ -90,6 +84,13 @@ def test_no_event_for_openapi_docs_or_unmatched_paths(events: list[dict[str, Any
         wait_for_events(events, 1)
         time.sleep(0.05)  # grace period for any stray events
     assert [e["action"] for e in events] == ["getSystemInfo"]
+
+
+def test_readiness_probes_do_not_create_usage_events(events: list[dict[str, Any]]) -> None:
+    with TestClient(app) as client:
+        assert client.get("/ready").status_code == 204
+        time.sleep(0.05)
+    assert events == []
 
 
 def test_401_is_recorded_as_error_with_anonymous_consumer(

@@ -18,14 +18,22 @@ import {
   useExecuteQuery,
   useSavedQueries,
   useTranslateQuery,
+  createWorkItemMutationKey,
   type WorkItem,
   type WorkItemPage,
 } from '@/api/hooks/useWorkTracking'
 import { useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { canMutateAudience } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 
 import { ExternalLink, KindChip, StatusBadge } from './workItemsBits'
+import {
+  bindDurableMutationDraft,
+  clearDurableMutationDraft,
+  initializeDurableMutationDraft,
+  stableMutationFingerprint,
+  updateDurableMutationDraft,
+} from './durableMutationDraft'
 import { workItemPath } from './workItemsLogic'
 import './work-items.css'
 
@@ -33,6 +41,30 @@ const LIMIT_OPTIONS = [10, 25, 50]
 const KIND_OPTIONS = ['story', 'task', 'bug', 'epic']
 
 type ConsoleMode = 'nl' | 'manual'
+
+interface NewItemDraftState {
+  title: string
+  kind: string
+  description: string
+}
+
+function isNewItemDraftState(value: unknown): value is NewItemDraftState {
+  if (!value || typeof value !== 'object') return false
+  const draft = value as Partial<NewItemDraftState>
+  return (
+    typeof draft.title === 'string' &&
+    typeof draft.kind === 'string' &&
+    typeof draft.description === 'string'
+  )
+}
+
+function newItemFingerprint(draft: NewItemDraftState): string {
+  return stableMutationFingerprint({
+    title: draft.title.trim(),
+    kind: draft.kind,
+    description: draft.description,
+  })
+}
 
 /** Name + description modal -> POST /v1/work-tracking/saved-queries (operator+). */
 function SaveQueryModal({
@@ -81,45 +113,45 @@ function SaveQueryModal({
       <p className="wi-modal-caption">
         Saves the current <strong>{provider}</strong> query for quick reuse.
       </p>
-        <label className="wi-field">
-          <span className="wi-field-label">Name</span>
-          <input
-            type="text"
-            className="field-input"
-            aria-label="Query name"
-            placeholder="Open payment stories"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="wi-field">
-          <span className="wi-field-label">Description</span>
-          <textarea
-            className="field-input"
-            aria-label="Query description"
-            rows={2}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        {create.isError && (
-          <div className="wi-inline-error" role="alert">
-            <span>Save failed: {create.error.message}</span>
-          </div>
-        )}
-        <div className="wi-modal-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onClose}
-            disabled={create.isPending}
-          >
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
-            {create.isPending ? 'Saving…' : 'Save query'}
-          </button>
+      <label className="wi-field">
+        <span className="wi-field-label">Name</span>
+        <input
+          type="text"
+          className="field-input"
+          aria-label="Query name"
+          placeholder="Open payment stories"
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </label>
+      <label className="wi-field">
+        <span className="wi-field-label">Description</span>
+        <textarea
+          className="field-input"
+          aria-label="Query description"
+          rows={2}
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+        />
+      </label>
+      {create.isError && (
+        <div className="wi-inline-error" role="alert">
+          <span>Save failed: {create.error.message}</span>
         </div>
+      )}
+      <div className="wi-modal-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onClose}
+          disabled={create.isPending}
+        >
+          Cancel
+        </button>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
+          {create.isPending ? 'Saving…' : 'Save query'}
+        </button>
+      </div>
     </Dialog>
   )
 }
@@ -136,17 +168,52 @@ function NewItemModal({
 }) {
   const navigate = useNavigate()
   const create = useCreateWorkItem()
-  const [title, setTitle] = useState('')
-  const [kind, setKind] = useState<string>('story')
-  const [description, setDescription] = useState('')
+  // Provider is display/navigation context and is not part of the backend
+  // mutation scope. Key storage only by the durable project target so refresh
+  // cannot lose an ambiguous attempt when the query editor resets.
+  const storageKey = `apex.work-items.create.v1:${encodeURIComponent(project ?? 'global')}`
+  const [attempt, setAttempt] = useState(() =>
+    initializeDurableMutationDraft(
+      storageKey,
+      { title: '', kind: 'story', description: '' },
+      isNewItemDraftState,
+      newItemFingerprint,
+      () => createWorkItemMutationKey('create'),
+    ),
+  )
+  const { title, kind, description } = attempt.draft
   const canSubmit = title.trim() !== '' && !create.isPending
+
+  function updateDraft(changes: Partial<NewItemDraftState>) {
+    if (create.isPending) return
+    setAttempt((previous) =>
+      updateDurableMutationDraft(
+        storageKey,
+        previous,
+        { ...previous.draft, ...changes },
+        newItemFingerprint,
+        () => createWorkItemMutationKey('create'),
+      ),
+    )
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault()
     if (!canSubmit) return
+    const submittedAttempt = bindDurableMutationDraft(storageKey, attempt, newItemFingerprint)
+    setAttempt(submittedAttempt)
     create.mutate(
-      { body: { title: title.trim(), kind, description }, ...(project ? { project } : {}) },
-      { onSuccess: (item) => void navigate(workItemPath(provider, item.key, project)) },
+      {
+        body: { title: title.trim(), kind, description },
+        idempotencyKey: submittedAttempt.idempotencyKey,
+        ...(project ? { project } : {}),
+      },
+      {
+        onSuccess: (item) => {
+          clearDurableMutationDraft(storageKey)
+          void navigate(workItemPath(provider, item.key, project))
+        },
+      },
     )
   }
 
@@ -162,59 +229,62 @@ function NewItemModal({
       onSubmit={submit}
     >
       <h2 className="wi-modal-title">New work item</h2>
-        <label className="wi-field">
-          <span className="wi-field-label">Title</span>
-          <input
-            type="text"
-            className="field-input"
-            aria-label="Item title"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-          />
-        </label>
-        <label className="wi-field">
-          <span className="wi-field-label">Kind</span>
-          <select
-            className="field-select"
-            aria-label="Item kind"
-            value={kind}
-            onChange={(event) => setKind(event.target.value)}
-          >
-            {KIND_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="wi-field">
-          <span className="wi-field-label">Description</span>
-          <textarea
-            className="field-input"
-            aria-label="Item description"
-            rows={4}
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-          />
-        </label>
-        {create.isError && (
-          <div className="wi-inline-error" role="alert">
-            <span>Create failed: {create.error.message}</span>
-          </div>
-        )}
-        <div className="wi-modal-actions">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={onClose}
-            disabled={create.isPending}
-          >
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
-            {create.isPending ? 'Creating…' : 'Create item'}
-          </button>
+      <label className="wi-field">
+        <span className="wi-field-label">Title</span>
+        <input
+          type="text"
+          className="field-input"
+          aria-label="Item title"
+          value={title}
+          disabled={create.isPending}
+          onChange={(event) => updateDraft({ title: event.target.value })}
+        />
+      </label>
+      <label className="wi-field">
+        <span className="wi-field-label">Kind</span>
+        <select
+          className="field-select"
+          aria-label="Item kind"
+          value={kind}
+          disabled={create.isPending}
+          onChange={(event) => updateDraft({ kind: event.target.value })}
+        >
+          {KIND_OPTIONS.map((option) => (
+            <option key={option} value={option}>
+              {option}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="wi-field">
+        <span className="wi-field-label">Description</span>
+        <textarea
+          className="field-input"
+          aria-label="Item description"
+          rows={4}
+          value={description}
+          disabled={create.isPending}
+          onChange={(event) => updateDraft({ description: event.target.value })}
+        />
+      </label>
+      {create.isError && (
+        <div className="wi-inline-error" role="alert">
+          <span>Create failed: {create.error.message}</span>
         </div>
+      )}
+      <div className="wi-modal-actions">
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={onClose}
+          disabled={create.isPending}
+        >
+          Cancel
+        </button>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
+          {create.isPending ? 'Creating…' : 'Create item'}
+        </button>
+      </div>
     </Dialog>
   )
 }
@@ -271,7 +341,6 @@ function ResultsTable({
 export function WorkItemsPage() {
   const [searchParams] = useSearchParams()
   const consumer = useConsumer()
-  const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
 
   const preloadProvider = searchParams.get('provider')
   const preloadQuery = searchParams.get('query')
@@ -282,8 +351,7 @@ export function WorkItemsPage() {
   const requiresProject = scopedProjects.length > 1
   const defaultProject = scopedProjects.length === 1 ? scopedProjects[0] : undefined
   const validPreloadProject =
-    preloadProject &&
-    (scopedProjects.length === 0 || scopedProjects.includes(preloadProject))
+    preloadProject && (scopedProjects.length === 0 || scopedProjects.includes(preloadProject))
       ? preloadProject
       : undefined
 
@@ -293,6 +361,7 @@ export function WorkItemsPage() {
   const [queryText, setQueryText] = useState(preloadQuery ?? '')
   const [confidence, setConfidence] = useState<number | null>(null)
   const [project, setProject] = useState(validPreloadProject ?? defaultProject ?? '')
+  const canMutate = canMutateAudience(consumer, project || null, null)
   const [limit, setLimit] = useState(25)
   const [offset, setOffset] = useState(0)
   const [page, setPage] = useState<WorkItemPage | null>(null)
@@ -360,7 +429,11 @@ export function WorkItemsPage() {
       },
       {
         onSuccess: (result) => {
-          if (requestGeneration !== projectGenerationRef.current || (requestProject ?? '') !== projectRef.current) return
+          if (
+            requestGeneration !== projectGenerationRef.current ||
+            (requestProject ?? '') !== projectRef.current
+          )
+            return
           setPage(result)
           setOffset(nextOffset)
           setSubmitted({
@@ -397,17 +470,29 @@ export function WorkItemsPage() {
     const autoGeneration = projectGenerationRef.current
     executeMutate(
       {
-        query: { provider: preloadProvider, query: preloadQuery, confidence: 1 },
+        query: {
+          provider: preloadProvider,
+          query: preloadQuery,
+          confidence: 1,
+        },
         limit: 25,
         offset: 0,
         ...(autoProject ? { project: autoProject } : {}),
       },
       {
         onSuccess: (result) => {
-          if (autoGeneration !== projectGenerationRef.current || autoProject !== (projectRef.current || undefined)) return
+          if (
+            autoGeneration !== projectGenerationRef.current ||
+            autoProject !== (projectRef.current || undefined)
+          )
+            return
           setPage(result)
           setSubmitted({
-            query: { provider: preloadProvider, query: preloadQuery, confidence: 1 },
+            query: {
+              provider: preloadProvider,
+              query: preloadQuery,
+              confidence: 1,
+            },
             limit: 25,
             ...(autoProject ? { project: autoProject } : {}),
           })
@@ -423,7 +508,11 @@ export function WorkItemsPage() {
       { text: nlText, ...(requestProject ? { project: requestProject } : {}) },
       {
         onSuccess: (result) => {
-          if (requestGeneration !== projectGenerationRef.current || requestProject !== (projectRef.current || undefined)) return
+          if (
+            requestGeneration !== projectGenerationRef.current ||
+            requestProject !== (projectRef.current || undefined)
+          )
+            return
           setProvider(result.provider)
           setQueryText(result.query)
           setConfidence(result.confidence)
@@ -590,7 +679,13 @@ export function WorkItemsPage() {
                 type="button"
                 className="btn btn-primary"
                 disabled={!canExecute}
-                onClick={() => runQuery({ provider, query: queryText, confidence: confidence ?? 1 })}
+                onClick={() =>
+                  runQuery({
+                    provider,
+                    query: queryText,
+                    confidence: confidence ?? 1,
+                  })
+                }
               >
                 {execute.isPending ? 'Running…' : 'Execute'}
               </button>
@@ -598,9 +693,7 @@ export function WorkItemsPage() {
                 <button
                   type="button"
                   className="btn btn-ghost"
-                  disabled={
-                    provider.trim() === '' || queryText.trim() === '' || !projectSelected
-                  }
+                  disabled={provider.trim() === '' || queryText.trim() === '' || !projectSelected}
                   onClick={() => setSaving(true)}
                 >
                   Save query
@@ -666,8 +759,8 @@ export function WorkItemsPage() {
         <div className="dash-empty">
           <h2>Run a query to see work items</h2>
           <p className="dash-empty-hint">
-            Describe what you need and translate it, run a saved query, or write a provider query
-            in manual mode.
+            Describe what you need and translate it, run a saved query, or write a provider query in
+            manual mode.
           </p>
         </div>
       ) : items.length === 0 ? (

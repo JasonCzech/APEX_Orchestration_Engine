@@ -26,14 +26,14 @@ def environment(
     approved: bool = True,
     base_url: str | None = "https://8.8.8.8/load",
     version: int = 4,
-    options: dict[str, Any] | None = None,
+    options: Any = None,
 ) -> Any:
     return SimpleNamespace(
         id="env-1",
         application_id="app-a",
         application=SimpleNamespace(id="app-a", project_id="proj-a"),
         base_url=base_url,
-        options=options or {},
+        options={} if options is None else options,
         target_approved=approved,
         target_version=version,
     )
@@ -73,6 +73,29 @@ async def test_revalidates_target_against_private_address_policy() -> None:
             project_id="proj-a",
             app_id="app-a",
         )
+
+
+@pytest.mark.parametrize(
+    ("base_url", "options"),
+    [
+        ("https://alice:secret@8.8.8.8/load", {}),
+        ("https://8.8.8.8/load", {"nested": {"authorization": "Bearer secret"}}),
+        ("https://8.8.8.8/load", ["malformed", "options"]),
+    ],
+)
+async def test_legacy_credential_or_malformed_target_metadata_fails_closed(
+    base_url: str,
+    options: Any,
+) -> None:
+    with pytest.raises(EnvironmentTargetNotFoundError, match="no approved HTTP target") as raised:
+        await resolve_environment_target(
+            FakeEnvironmentRepository(environment(base_url=base_url, options=options)),
+            "env-1",
+            project_id="proj-a",
+            app_id="app-a",
+        )
+
+    assert "secret" not in str(raised.value)
 
 
 async def test_platform_approved_private_target_is_resolved() -> None:

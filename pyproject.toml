@@ -21,6 +21,7 @@ dependencies = [
     "urllib3>=2,<3",
     "pypdf>=5.1",
     "python-docx>=1.1",
+    "redis>=5.2,<7",
 ]
 
 [dependency-groups]
@@ -55,6 +56,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC"]
+
+[tool.ruff.format]
+# Revision 0015 is already published and must remain byte-for-byte immutable.
+exclude = ["src/apex/persistence/migrations/versions/0015_artifact_references.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

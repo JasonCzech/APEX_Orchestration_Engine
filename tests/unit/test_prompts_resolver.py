@@ -1,6 +1,8 @@
 """Phase prompt resolution order: run override > catalog > builtin, with the
 DB-down path falling through to builtins silently (no Postgres required)."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from apex.domain.pipeline import PHASE_ORDER, Phase
@@ -161,6 +163,30 @@ async def test_db_down_falls_through_to_builtin(monkeypatch: pytest.MonkeyPatch)
     assert resolved["source"]["ref"] == "phase/test_planning@builtin"
 
 
+async def test_catalog_failure_fails_closed_in_locked_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingStore:
+        async def get_active_version(
+            self,
+            namespace: str,
+            key: str,
+            *,
+            allow_application: bool = False,
+        ) -> PromptVersion | None:
+            raise RuntimeError("catalog down")
+
+    monkeypatch.setattr(
+        "apex.services.prompts.get_settings",
+        lambda: SimpleNamespace(is_locked_down=True),
+    )
+
+    with pytest.raises(RuntimeError, match="catalog down"):
+        await PromptResolver(store=FailingStore()).resolve_phase_prompt(
+            Phase.TEST_PLANNING, cfg(), variables=VARS
+        )
+
+
 def test_sync_bridge_resolves_without_running_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_DATABASE__URI", "postgresql+asyncpg://x:x@127.0.0.1:1/x")
     resolved = resolve_phase_prompt_sync(Phase.EXECUTION, cfg(), variables=VARS)
@@ -191,3 +217,57 @@ def test_render_template_is_safe() -> None:
     assert render_template("Hi {name}", {"name": "Ada"}) == "Hi Ada"
     assert render_template("Hi {missing}", {}) == "Hi {missing}"  # unknown stays literal
     assert render_template('{"json": true}', {}) == '{"json": true}'  # malformed passes through
+    assert render_template('{"timeout": 1000000000}', {}) == '{"timeout": 1000000000}'
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{title:>1000000000}",
+        "{title:.1000000000f}",
+        "{title:{width}}",
+        "{record.secret}",
+    ],
+)
+def test_render_template_rejects_unbounded_format_expansion(template: str) -> None:
+    with pytest.raises(ValueError, match="prompt|rendered"):
+        render_template(template, {"title": "Demo", "width": 1})
+
+
+def test_render_template_bounds_aggregate_repeated_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "apex.services.prompts.get_settings",
+        lambda: SimpleNamespace(runs=SimpleNamespace(max_model_input_chars=10_000)),
+    )
+
+    with pytest.raises(ValueError, match="rendered prompt exceeds"):
+        render_template("{title}" * 101, {"title": "x" * 100})
+
+
+async def test_run_override_rejects_format_width_amplification() -> None:
+    configurable = cfg(
+        prompt_overrides={
+            "phase/reporting": {"content": "{title:>1000000000}"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="format width/precision"):
+        await resolve_phase_prompt(
+            Phase.REPORTING,
+            configurable,
+            variables=VARS,
+            store=FakeStore(),
+        )
+
+
+async def test_catalog_prompt_rejects_format_width_amplification() -> None:
+    store = FakeStore(
+        {
+            ("phase", "reporting/system"): version("{title:>1000000000}"),
+        }
+    )
+
+    with pytest.raises(ValueError, match="format width/precision"):
+        await resolve_phase_prompt(Phase.REPORTING, cfg(), variables=VARS, store=store)

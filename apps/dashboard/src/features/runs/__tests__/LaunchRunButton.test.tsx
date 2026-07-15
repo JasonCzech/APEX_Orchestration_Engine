@@ -35,7 +35,7 @@ describe('LaunchRunButton', () => {
         HttpResponse.json({
           thread_id: 'thread-new',
           run_id: 'run-1',
-          stream_url: '/runs/run-1/stream',
+          stream_url: '/threads/thread-1/runs/run-1/stream',
         }),
       ),
     )
@@ -99,7 +99,7 @@ describe('LaunchRunButton', () => {
           : HttpResponse.json({
               thread_id: 'thread-new',
               run_id: 'run-1',
-              stream_url: '/runs/run-1/stream',
+              stream_url: '/threads/thread-1/runs/run-1/stream',
             })
       }),
     )

@@ -1,0 +1,31 @@
+{
+  "seed_default_prompts": true,
+  "applications": [
+    {
+      "project_id": "demo",
+      "name": "Checkout",
+      "description": "Demo checkout service (Compose bootstrap)"
+    }
+  ],
+  "connections": [
+    {
+      "name": "minio-artifacts",
+      "kind": "artifact_store",
+      "provider": "s3",
+      "options": {
+        "endpoint": "minio:9000",
+        "bucket": "apex-artifacts",
+        "secure": false,
+        "access_key": "apex",
+        "_apex_trusted_private_host": true
+      },
+      "secret_ref": "env:APEX_INTEGRATION_MINIO_SECRET_KEY"
+    }
+  ],
+  "admin": {
+    "name": "apex-admin",
+    "consumer_type": "internal",
+    "role": "admin",
+    "key_env": "APEX_BOOTSTRAP_ADMIN_KEY"
+  }
+}

@@ -37,6 +37,8 @@ class PromptRepository:
         include_archived: bool = False,
         q: str | None = None,
         allow_application: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[Prompt]:
         stmt = select(Prompt).order_by(Prompt.namespace, Prompt.key)
         if namespace is not None:
@@ -56,7 +58,7 @@ class PromptRepository:
                     Prompt.description.ilike(like),
                 )
             )
-        return list((await self._session.scalars(stmt)).all())
+        return list((await self._session.scalars(stmt.limit(limit).offset(offset))).all())
 
     async def get_version(self, version_id: str) -> PromptVersion | None:
         return await self._session.get(PromptVersion, version_id)
@@ -67,13 +69,15 @@ class PromptRepository:
         stmt = select(PromptVersion).where(PromptVersion.id.in_(version_ids))
         return list((await self._session.scalars(stmt)).all())
 
-    async def list_versions(self, prompt_id: str) -> list[PromptVersion]:
+    async def list_versions(
+        self, prompt_id: str, *, limit: int = 100, offset: int = 0
+    ) -> list[PromptVersion]:
         stmt = (
             select(PromptVersion)
             .where(PromptVersion.prompt_id == prompt_id)
             .order_by(PromptVersion.version.desc())
         )
-        return list((await self._session.scalars(stmt)).all())
+        return list((await self._session.scalars(stmt.limit(limit).offset(offset))).all())
 
     async def max_version(self, prompt_id: str) -> int:
         # Serialize version allocation on the aggregate root. Under PostgreSQL's

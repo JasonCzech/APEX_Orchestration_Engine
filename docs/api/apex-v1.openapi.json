@@ -2,11 +2,13 @@
   "components": {
     "schemas": {
       "AbortEngineRunRequest": {
+        "additionalProperties": false,
         "properties": {
           "reason": {
             "anyOf": [
               {
                 "maxLength": 1024,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -523,10 +525,13 @@
         "type": "object"
       },
       "ApplicationCreate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -538,12 +543,14 @@
           "name": {
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Name",
             "type": "string"
           },
           "project_id": {
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Project Id",
             "type": "string"
           }
@@ -616,10 +623,13 @@
         "type": "object"
       },
       "ApplicationUpdate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -633,6 +643,7 @@
               {
                 "maxLength": 255,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -739,6 +750,8 @@
           "base_url": {
             "anyOf": [
               {
+                "maxLength": 1024,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -753,6 +766,7 @@
           "name": {
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Name",
             "type": "string"
           },
@@ -764,6 +778,9 @@
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -775,6 +792,7 @@
           "provider": {
             "maxLength": 64,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Provider",
             "type": "string"
           },
@@ -891,6 +909,8 @@
           "base_url": {
             "anyOf": [
               {
+                "maxLength": 1024,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -900,10 +920,18 @@
             "title": "Base Url"
           },
           "name": {
-            "maxLength": 255,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
           "options": {
             "additionalProperties": true,
@@ -913,6 +941,9 @@
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -922,10 +953,18 @@
             "title": "Project Id"
           },
           "provider": {
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Provider",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
           },
           "secret_ref": {
             "anyOf": [
@@ -943,6 +982,7 @@
         "type": "object"
       },
       "ConsumerCreateRequest": {
+        "additionalProperties": false,
         "properties": {
           "consumer_type": {
             "$ref": "#/components/schemas/ConsumerType"
@@ -962,6 +1002,7 @@
           "name": {
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Name",
             "type": "string"
           },
@@ -972,6 +1013,7 @@
             "items": {
               "$ref": "#/components/schemas/ScopeRef"
             },
+            "maxItems": 256,
             "title": "Scopes",
             "type": "array"
           }
@@ -1317,6 +1359,7 @@
         "type": "string"
       },
       "ConsumerUpdateRequest": {
+        "additionalProperties": false,
         "description": "Partial update; omitted fields are left unchanged.",
         "properties": {
           "enabled": {
@@ -1347,6 +1390,7 @@
               {
                 "maxLength": 255,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1383,6 +1427,7 @@
                 "items": {
                   "$ref": "#/components/schemas/ScopeRef"
                 },
+                "maxItems": 256,
                 "type": "array"
               },
               {
@@ -1396,10 +1441,12 @@
         "type": "object"
       },
       "ContextPacket": {
+        "additionalProperties": false,
         "properties": {
           "id": {
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Id",
             "type": "string"
           },
@@ -1407,6 +1454,7 @@
             "anyOf": [
               {
                 "maxLength": 2048,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1418,6 +1466,7 @@
           "source": {
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Source",
             "type": "string"
           },
@@ -1425,6 +1474,7 @@
             "anyOf": [
               {
                 "maxLength": 4000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1437,6 +1487,7 @@
             "anyOf": [
               {
                 "maxLength": 150000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1448,6 +1499,7 @@
           "title": {
             "maxLength": 500,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Title",
             "type": "string"
           }
@@ -1479,11 +1531,13 @@
         "type": "object"
       },
       "ContextSummaryRequest": {
+        "additionalProperties": false,
         "properties": {
           "document_ids": {
             "items": {
               "maxLength": 128,
               "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "type": "string"
             },
             "maxItems": 64,
@@ -1493,8 +1547,9 @@
           "project_id": {
             "anyOf": [
               {
-                "maxLength": 256,
+                "maxLength": 255,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1506,6 +1561,7 @@
           "subject": {
             "maxLength": 2000,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Subject",
             "type": "string"
           },
@@ -1513,6 +1569,7 @@
             "items": {
               "maxLength": 256,
               "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "type": "string"
             },
             "maxItems": 100,
@@ -1527,14 +1584,20 @@
         "type": "object"
       },
       "CreatePromptRequest": {
+        "additionalProperties": false,
         "properties": {
           "content": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Content",
             "type": "string"
           },
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1544,16 +1607,24 @@
             "title": "Description"
           },
           "key": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Key",
             "type": "string"
           },
           "namespace": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Namespace",
             "type": "string"
           },
           "note": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1660,6 +1731,23 @@
           "is_unscoped"
         ],
         "title": "CurrentPrincipalResponse",
+        "type": "object"
+      },
+      "DocumentArtifactAffinityUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id"
+        ],
+        "title": "DocumentArtifactAffinityUpdate",
         "type": "object"
       },
       "DocumentListResponse": {
@@ -1822,6 +1910,7 @@
         "type": "object"
       },
       "DraftCreateRequest": {
+        "additionalProperties": false,
         "properties": {
           "payload": {
             "additionalProperties": true,
@@ -1831,6 +1920,9 @@
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1842,6 +1934,7 @@
           "title": {
             "maxLength": 1024,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Title",
             "type": "string"
           }
@@ -1927,6 +2020,7 @@
         "type": "object"
       },
       "DraftUpdateRequest": {
+        "additionalProperties": false,
         "description": "Full replace of editable fields; omitted project_id keeps legacy ownership.",
         "properties": {
           "payload": {
@@ -1937,6 +2031,9 @@
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -1948,6 +2045,7 @@
           "title": {
             "maxLength": 1024,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Title",
             "type": "string"
           }
@@ -2016,28 +2114,6 @@
             ],
             "title": "App Id"
           },
-          "artifact_connection_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Artifact Connection Id"
-          },
-          "artifact_namespace": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Artifact Namespace"
-          },
           "attempt": {
             "title": "Attempt",
             "type": "integer"
@@ -2057,22 +2133,6 @@
           "engine": {
             "title": "Engine",
             "type": "string"
-          },
-          "external_run_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "External Run Id"
-          },
-          "handle": {
-            "additionalProperties": true,
-            "title": "Handle",
-            "type": "object"
           },
           "id": {
             "title": "Id",
@@ -2127,9 +2187,7 @@
           "thread_id",
           "attempt",
           "engine",
-          "external_run_id",
           "status",
-          "handle",
           "summary",
           "started_at",
           "ended_at"
@@ -2138,10 +2196,13 @@
         "type": "object"
       },
       "Enrichment": {
+        "additionalProperties": false,
         "properties": {
           "comment": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2152,6 +2213,7 @@
           },
           "fields": {
             "additionalProperties": true,
+            "maxProperties": 64,
             "title": "Fields",
             "type": "object"
           }
@@ -2160,14 +2222,21 @@
         "type": "object"
       },
       "EnvironmentCreate": {
+        "additionalProperties": false,
         "properties": {
           "application_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Application Id",
             "type": "string"
           },
           "base_url": {
             "anyOf": [
               {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2180,12 +2249,15 @@
             "items": {
               "$ref": "#/components/schemas/HostIn"
             },
+            "maxItems": 256,
             "title": "Hosts",
             "type": "array"
           },
           "kind": {
             "anyOf": [
               {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2197,6 +2269,7 @@
           "name": {
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Name",
             "type": "string"
           },
@@ -2307,10 +2380,14 @@
         "type": "object"
       },
       "EnvironmentUpdate": {
+        "additionalProperties": false,
         "properties": {
           "base_url": {
             "anyOf": [
               {
+                "maxLength": 1024,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2325,6 +2402,7 @@
                 "items": {
                   "$ref": "#/components/schemas/HostIn"
                 },
+                "maxItems": 256,
                 "type": "array"
               },
               {
@@ -2336,6 +2414,8 @@
           "kind": {
             "anyOf": [
               {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2349,6 +2429,7 @@
               {
                 "maxLength": 255,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2440,10 +2521,14 @@
         "type": "object"
       },
       "ExecuteQueryRequest": {
+        "additionalProperties": false,
         "properties": {
           "connection_id": {
             "anyOf": [
               {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2461,6 +2546,7 @@
           },
           "offset": {
             "default": 0,
+            "maximum": 1000.0,
             "minimum": 0.0,
             "title": "Offset",
             "type": "integer"
@@ -2476,12 +2562,14 @@
         "type": "object"
       },
       "ExternalResults": {
+        "additionalProperties": false,
         "description": "Results produced outside APEX (e.g. by a standalone analysis dashboard).\n\nSupplied as run input so an analysis-only run (reporting/postmortem) can report\non them honestly \u2014 plan_resolver seeds a succeeded execution result from this\ninstead of the caller forging internal phase state. Maps onto TestResultSummary\nso the reporting phase reads it the same way it reads a real engine run.",
         "properties": {
           "engine": {
             "anyOf": [
               {
                 "maxLength": 128,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2502,6 +2590,7 @@
             "anyOf": [
               {
                 "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2524,6 +2613,7 @@
           "source": {
             "maxLength": 128,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Source",
             "type": "string"
           },
@@ -2531,6 +2621,7 @@
             "anyOf": [
               {
                 "maxLength": 4000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2543,6 +2634,7 @@
             "anyOf": [
               {
                 "maxLength": 2048,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2609,6 +2701,7 @@
             "anyOf": [
               {
                 "maxLength": 100000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2621,6 +2714,7 @@
             "anyOf": [
               {
                 "maxLength": 100000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2633,6 +2727,7 @@
             "anyOf": [
               {
                 "maxLength": 100000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2659,16 +2754,20 @@
         "type": "object"
       },
       "HostIn": {
+        "additionalProperties": false,
         "properties": {
           "hostname": {
             "maxLength": 1024,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Hostname",
             "type": "string"
           },
           "role": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2685,6 +2784,7 @@
         "type": "object"
       },
       "HostMappingIn": {
+        "additionalProperties": false,
         "properties": {
           "enabled": {
             "default": true,
@@ -2694,12 +2794,14 @@
           "pattern": {
             "maxLength": 1024,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Pattern",
             "type": "string"
           },
           "target": {
             "maxLength": 1024,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Target",
             "type": "string"
           }
@@ -2828,6 +2930,7 @@
         "type": "object"
       },
       "LogQueryIn": {
+        "additionalProperties": false,
         "properties": {
           "filters": {
             "additionalProperties": {
@@ -2841,6 +2944,7 @@
             "anyOf": [
               {
                 "maxLength": 2048,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2855,10 +2959,14 @@
         "type": "object"
       },
       "LogSearchRequest": {
+        "additionalProperties": false,
         "properties": {
           "connection_id": {
             "anyOf": [
               {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -2876,6 +2984,7 @@
           },
           "offset": {
             "default": 0,
+            "exclusiveMaximum": 10000.0,
             "minimum": 0.0,
             "title": "Offset",
             "type": "integer"
@@ -2937,11 +3046,15 @@
         "properties": {
           "limit": {
             "default": 50,
+            "maximum": 200.0,
+            "minimum": 1.0,
             "title": "Limit",
             "type": "integer"
           },
           "offset": {
             "default": 0,
+            "maximum": 1000.0,
+            "minimum": 0.0,
             "title": "Offset",
             "type": "integer"
           }
@@ -3038,10 +3151,12 @@
         "type": "object"
       },
       "PhasePromptReviewUpdate": {
+        "additionalProperties": false,
         "properties": {
           "additional_context": {
             "default": "",
             "maxLength": 50000,
+            "pattern": "^[^\\x00]*$",
             "title": "Additional Context",
             "type": "string"
           },
@@ -3049,6 +3164,7 @@
             "anyOf": [
               {
                 "maxLength": 100000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3059,11 +3175,13 @@
           },
           "phase_prompt": {
             "maxLength": 100000,
+            "pattern": "^[^\\x00]*$",
             "title": "Phase Prompt",
             "type": "string"
           },
           "system": {
             "maxLength": 100000,
+            "pattern": "^[^\\x00]*$",
             "title": "System",
             "type": "string"
           }
@@ -3424,6 +3542,8 @@
       "ProbeResult": {
         "properties": {
           "detail": {
+            "maxLength": 1024,
+            "pattern": "^[^\\x00]*$",
             "title": "Detail",
             "type": "string"
           },
@@ -3733,11 +3853,66 @@
         "title": "PromptVersionInfo",
         "type": "object"
       },
+      "RerunPipelineRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "gates_mode": {
+            "default": "inherit",
+            "enum": [
+              "inherit",
+              "gated",
+              "auto"
+            ],
+            "title": "Gates Mode",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "phases": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 7,
+            "minItems": 1,
+            "title": "Phases",
+            "type": "array"
+          }
+        },
+        "required": [
+          "phases",
+          "idempotency_key"
+        ],
+        "title": "RerunPipelineRequest",
+        "type": "object"
+      },
+      "RerunPipelineResponse": {
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "RerunPipelineResponse",
+        "type": "object"
+      },
       "ResumeGateRequest": {
+        "additionalProperties": false,
         "properties": {
           "action": {
             "maxLength": 32,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Action",
             "type": "string"
           },
@@ -3745,6 +3920,7 @@
             "anyOf": [
               {
                 "maxLength": 50000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3757,6 +3933,7 @@
             "anyOf": [
               {
                 "maxLength": 50000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3769,6 +3946,7 @@
             "anyOf": [
               {
                 "maxLength": 50000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3818,8 +3996,12 @@
         "type": "string"
       },
       "RollbackRequest": {
+        "additionalProperties": false,
         "properties": {
           "version_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Version Id",
             "type": "string"
           }
@@ -3831,6 +4013,7 @@
         "type": "object"
       },
       "RotateConsumerKeyRequest": {
+        "additionalProperties": false,
         "properties": {
           "expires_at": {
             "anyOf": [
@@ -3856,14 +4039,20 @@
         "type": "object"
       },
       "SaveVersionRequest": {
+        "additionalProperties": false,
         "properties": {
           "content": {
+            "maxLength": 100000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Content",
             "type": "string"
           },
           "note": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3880,10 +4069,13 @@
         "type": "object"
       },
       "SavedQueryCreate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3895,12 +4087,16 @@
           "name": {
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Name",
             "type": "string"
           },
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -3912,11 +4108,14 @@
           "provider": {
             "maxLength": 64,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Provider",
             "type": "string"
           },
           "query": {
+            "maxLength": 20000,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Query",
             "type": "string"
           }
@@ -4041,10 +4240,13 @@
         "type": "object"
       },
       "SavedQueryUpdate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4058,6 +4260,7 @@
               {
                 "maxLength": 255,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4071,6 +4274,7 @@
               {
                 "maxLength": 64,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4082,7 +4286,9 @@
           "query": {
             "anyOf": [
               {
+                "maxLength": 20000,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4096,11 +4302,15 @@
         "type": "object"
       },
       "ScopeRef": {
+        "additionalProperties": false,
         "description": "A project (optionally narrowed to one app) the consumer may act on.",
         "properties": {
           "app_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4110,6 +4320,9 @@
             "title": "App Id"
           },
           "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Project Id",
             "type": "string"
           }
@@ -4124,15 +4337,22 @@
         "properties": {
           "image": {
             "default": "",
+            "maxLength": 2048,
+            "pattern": "^[^\\x00]*$",
             "title": "Image",
             "type": "string"
           },
           "name": {
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Name",
             "type": "string"
           },
           "replicas": {
             "default": 1,
+            "maximum": 10000000.0,
+            "minimum": 0.0,
             "title": "Replicas",
             "type": "integer"
           }
@@ -4191,12 +4411,14 @@
         "type": "object"
       },
       "StartPipelineRequest": {
+        "additionalProperties": false,
         "description": "Start a pipeline run. For results analysis, select the analysis phases (e.g.\n[\"reporting\", \"postmortem\"]) and supply `external_results`; gates default to auto.",
         "properties": {
           "agent_backend": {
             "anyOf": [
               {
                 "maxLength": 32,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4208,6 +4430,9 @@
           "app_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4219,7 +4444,9 @@
           "assistant_id": {
             "anyOf": [
               {
+                "maxLength": 256,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4262,6 +4489,9 @@
             "anyOf": [
               {
                 "items": {
+                  "maxLength": 256,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 "maxItems": 64,
@@ -4301,6 +4531,7 @@
               {
                 "maxLength": 128,
                 "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4313,6 +4544,9 @@
             "anyOf": [
               {
                 "additionalProperties": {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 "maxProperties": 7,
@@ -4328,6 +4562,9 @@
             "anyOf": [
               {
                 "items": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 "maxItems": 7,
@@ -4342,6 +4579,9 @@
           "project_id": {
             "anyOf": [
               {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4353,12 +4593,14 @@
           "request": {
             "default": "",
             "maxLength": 20000,
+            "pattern": "^[^\\x00]*$",
             "title": "Request",
             "type": "string"
           },
           "title": {
             "maxLength": 500,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Title",
             "type": "string"
           }
@@ -4446,11 +4688,27 @@
         "type": "object"
       },
       "TestPromptRequest": {
+        "additionalProperties": false,
         "properties": {
+          "app_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
           "content": {
             "anyOf": [
               {
                 "maxLength": 100000,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4458,6 +4716,20 @@
               }
             ],
             "title": "Content"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
           },
           "sample_input": {
             "anyOf": [
@@ -4476,6 +4748,9 @@
           "version_id": {
             "anyOf": [
               {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4513,10 +4788,14 @@
         "type": "object"
       },
       "TranslateQueryRequest": {
+        "additionalProperties": false,
         "properties": {
           "connection_id": {
             "anyOf": [
               {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4526,7 +4805,9 @@
             "title": "Connection Id"
           },
           "text": {
+            "maxLength": 20000,
             "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Text",
             "type": "string"
           }
@@ -4538,17 +4819,26 @@
         "type": "object"
       },
       "TranslatedQuery": {
+        "additionalProperties": false,
         "properties": {
           "confidence": {
             "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
             "title": "Confidence",
             "type": "number"
           },
           "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Provider",
             "type": "string"
           },
           "query": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Query",
             "type": "string"
           }
@@ -4753,10 +5043,13 @@
         "type": "object"
       },
       "WindowIn": {
+        "additionalProperties": false,
         "properties": {
           "from": {
             "anyOf": [
               {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4769,6 +5062,8 @@
           "to": {
             "anyOf": [
               {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4814,30 +5109,42 @@
         "properties": {
           "description": {
             "default": "",
+            "maxLength": 20000,
+            "pattern": "^[^\\x00]*$",
             "title": "Description",
             "type": "string"
           },
           "key": {
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
             "title": "Key",
             "type": "string"
           },
           "kind": {
             "default": "story",
+            "maxLength": 64,
+            "pattern": "^[^\\x00]*$",
             "title": "Kind",
             "type": "string"
           },
           "status": {
             "default": "open",
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
             "title": "Status",
             "type": "string"
           },
           "title": {
+            "maxLength": 500,
+            "pattern": "^[^\\x00]*$",
             "title": "Title",
             "type": "string"
           },
           "url": {
             "anyOf": [
               {
+                "maxLength": 4096,
+                "pattern": "^[^\\x00]*$",
                 "type": "string"
               },
               {
@@ -4855,23 +5162,33 @@
         "type": "object"
       },
       "WorkItemDraft": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "default": "",
+            "maxLength": 20000,
+            "pattern": "^[^\\x00]*$",
             "title": "Description",
             "type": "string"
           },
           "fields": {
             "additionalProperties": true,
+            "maxProperties": 64,
             "title": "Fields",
             "type": "object"
           },
           "kind": {
             "default": "story",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Kind",
             "type": "string"
           },
           "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
             "title": "Title",
             "type": "string"
           }
@@ -4888,6 +5205,7 @@
             "items": {
               "$ref": "#/components/schemas/WorkItem"
             },
+            "maxItems": 200,
             "title": "Items",
             "type": "array"
           },
@@ -4896,6 +5214,7 @@
           },
           "total": {
             "default": 0,
+            "minimum": 0.0,
             "title": "Total",
             "type": "integer"
           }
@@ -5137,6 +5456,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -5144,6 +5466,30 @@
                 }
               ],
               "title": "Project"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -5223,10 +5569,15 @@
         "operationId": "deleteConnection",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5256,10 +5607,15 @@
         "operationId": "getConnection",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5296,10 +5652,15 @@
         "operationId": "updateConnection",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5348,10 +5709,15 @@
         "operationId": "disableConnection",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5390,10 +5756,15 @@
         "operationId": "enableConnection",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5432,10 +5803,15 @@
         "operationId": "getHostMappings",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5477,10 +5853,15 @@
         "operationId": "putHostMappings",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5493,6 +5874,7 @@
                 "items": {
                   "$ref": "#/components/schemas/HostMappingIn"
                 },
+                "maxItems": 256,
                 "title": "Body",
                 "type": "array"
               }
@@ -5538,10 +5920,15 @@
         "operationId": "testConnection",
         "parameters": [
           {
+            "description": "Connection id",
             "in": "path",
             "name": "connection_id",
             "required": true,
             "schema": {
+              "description": "Connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Connection Id",
               "type": "string"
             }
@@ -5578,6 +5965,32 @@
     "/v1/admin/consumers": {
       "get": {
         "operationId": "listConsumers",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -5592,6 +6005,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Consumers",
@@ -5650,6 +6073,9 @@
             "required": true,
             "schema": {
               "description": "Consumer id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Consumer Id",
               "type": "string"
             }
@@ -5685,6 +6111,9 @@
             "required": true,
             "schema": {
               "description": "Consumer id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Consumer Id",
               "type": "string"
             }
@@ -5727,6 +6156,9 @@
             "required": true,
             "schema": {
               "description": "Consumer id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Consumer Id",
               "type": "string"
             }
@@ -5781,6 +6213,9 @@
             "required": true,
             "schema": {
               "description": "Consumer id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Consumer Id",
               "type": "string"
             }
@@ -5917,6 +6352,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -5936,8 +6374,11 @@
               "anyOf": [
                 {
                   "items": {
+                    "maxLength": 255,
+                    "pattern": "^[^\\x00]*$",
                     "type": "string"
                   },
+                  "maxItems": 50,
                   "type": "array"
                 },
                 {
@@ -5957,8 +6398,11 @@
               "anyOf": [
                 {
                   "items": {
+                    "maxLength": 255,
+                    "pattern": "^[^\\x00]*$",
                     "type": "string"
                   },
+                  "maxItems": 50,
                   "type": "array"
                 },
                 {
@@ -5978,8 +6422,11 @@
               "anyOf": [
                 {
                   "items": {
+                    "maxLength": 255,
+                    "pattern": "^[^\\x00]*$",
                     "type": "string"
                   },
+                  "maxItems": 50,
                   "type": "array"
                 },
                 {
@@ -5998,6 +6445,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 64,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6091,6 +6540,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -6192,6 +6642,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6240,6 +6693,9 @@
             "name": "key",
             "required": true,
             "schema": {
+              "maxLength": 1024,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Key",
               "type": "string"
             }
@@ -6303,6 +6759,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6320,6 +6779,30 @@
               "default": false,
               "title": "Include Archived",
               "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -6399,10 +6882,15 @@
         "operationId": "deleteApplication",
         "parameters": [
           {
+            "description": "Application id",
             "in": "path",
             "name": "application_id",
             "required": true,
             "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Application Id",
               "type": "string"
             }
@@ -6432,10 +6920,15 @@
         "operationId": "getApplication",
         "parameters": [
           {
+            "description": "Application id",
             "in": "path",
             "name": "application_id",
             "required": true,
             "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Application Id",
               "type": "string"
             }
@@ -6472,10 +6965,15 @@
         "operationId": "updateApplication",
         "parameters": [
           {
+            "description": "Application id",
             "in": "path",
             "name": "application_id",
             "required": true,
             "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Application Id",
               "type": "string"
             }
@@ -6524,10 +7022,15 @@
         "operationId": "archiveApplication",
         "parameters": [
           {
+            "description": "Application id",
             "in": "path",
             "name": "application_id",
             "required": true,
             "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Application Id",
               "type": "string"
             }
@@ -6566,10 +7069,15 @@
         "operationId": "unarchiveApplication",
         "parameters": [
           {
+            "description": "Application id",
             "in": "path",
             "name": "application_id",
             "required": true,
             "schema": {
+              "description": "Application id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Application Id",
               "type": "string"
             }
@@ -6614,6 +7122,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6621,6 +7132,30 @@
                 }
               ],
               "title": "Application"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -6700,10 +7235,15 @@
         "operationId": "deleteEnvironment",
         "parameters": [
           {
+            "description": "Environment id",
             "in": "path",
             "name": "environment_id",
             "required": true,
             "schema": {
+              "description": "Environment id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Environment Id",
               "type": "string"
             }
@@ -6733,10 +7273,15 @@
         "operationId": "getEnvironment",
         "parameters": [
           {
+            "description": "Environment id",
             "in": "path",
             "name": "environment_id",
             "required": true,
             "schema": {
+              "description": "Environment id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Environment Id",
               "type": "string"
             }
@@ -6773,10 +7318,15 @@
         "operationId": "updateEnvironment",
         "parameters": [
           {
+            "description": "Environment id",
             "in": "path",
             "name": "environment_id",
             "required": true,
             "schema": {
+              "description": "Environment id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Environment Id",
               "type": "string"
             }
@@ -6832,6 +7382,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6850,6 +7403,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6858,6 +7414,30 @@
               ],
               "description": "Narrow to one thread",
               "title": "Thread Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -6945,6 +7525,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6961,6 +7544,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 500,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -6988,6 +7573,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -7078,6 +7664,9 @@
             "name": "document_id",
             "required": true,
             "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Document Id",
               "type": "string"
             }
@@ -7111,6 +7700,9 @@
             "name": "document_id",
             "required": true,
             "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Document Id",
               "type": "string"
             }
@@ -7144,6 +7736,55 @@
         ]
       }
     },
+    "/v1/documents/{document_id}/artifact-connection": {
+      "put": {
+        "description": "One-time store-affinity repair for documents created before migration 0013.",
+        "operationId": "assignDocumentArtifactConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "document_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Document Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentArtifactAffinityUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Assign Document Artifact Connection",
+        "tags": [
+          "documents"
+        ]
+      }
+    },
     "/v1/drafts": {
       "get": {
         "operationId": "listDrafts",
@@ -7156,6 +7797,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -7184,6 +7828,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -7272,6 +7917,9 @@
             "required": true,
             "schema": {
               "description": "Draft id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Draft Id",
               "type": "string"
             }
@@ -7307,6 +7955,9 @@
             "required": true,
             "schema": {
               "description": "Draft id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Draft Id",
               "type": "string"
             }
@@ -7349,6 +8000,9 @@
             "required": true,
             "schema": {
               "description": "Draft id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Draft Id",
               "type": "string"
             }
@@ -7405,6 +8059,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 64,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -7451,6 +8107,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -7487,7 +8144,7 @@
     },
     "/v1/engines/runs/{thread_id}": {
       "get": {
-        "description": "All engine-run attempts for one thread, newest attempt first ([] when none).",
+        "description": "One bounded page of thread attempts, newest first ([] when none).",
         "operationId": "getEngineRuns",
         "parameters": [
           {
@@ -7497,8 +8154,35 @@
             "required": true,
             "schema": {
               "description": "Pipeline thread id the engine run belongs to",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -7536,7 +8220,7 @@
     },
     "/v1/engines/runs/{thread_id}/abort": {
       "post": {
-        "description": "Engine-level kill switch: abort the external run, then cancel graph runs.\n\nFor when graph-level cancel isn't enough \u2014 the external load run keeps burning\neven after the poll loop dies. 404 when no engine handle is discoverable from\nthread state or the projection.",
+        "description": "Engine-level kill switch that preserves the graph's finalization monitor.\n\nFor when graph-level cancel isn't enough \u2014 the external load run keeps burning\neven after the poll loop dies. An active monitor is left alive to collect results\nand checkpoint the terminal execution state. 404 when no engine handle is\ndiscoverable from thread state or the projection.",
         "operationId": "abortEngineRun",
         "parameters": [
           {
@@ -7546,6 +8230,9 @@
             "required": true,
             "schema": {
               "description": "Pipeline thread id the engine run belongs to",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
             }
@@ -7601,10 +8288,15 @@
         "operationId": "getEnvironmentInventory",
         "parameters": [
           {
+            "description": "Environment id",
             "in": "path",
             "name": "environment_id",
             "required": true,
             "schema": {
+              "description": "Environment id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Environment Id",
               "type": "string"
             }
@@ -7643,27 +8335,37 @@
         "operationId": "rescanEnvironment",
         "parameters": [
           {
+            "description": "Environment id",
             "in": "path",
             "name": "environment_id",
             "required": true,
             "schema": {
+              "description": "Environment id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Environment Id",
               "type": "string"
             }
           },
           {
+            "description": "Explicit cluster-inventory connection id",
             "in": "query",
             "name": "connection_id",
             "required": false,
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
+              "description": "Explicit cluster-inventory connection id",
               "title": "Connection Id"
             }
           }
@@ -7709,6 +8411,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -7769,6 +8474,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -7807,6 +8515,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 256,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -7834,6 +8544,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -7913,10 +8624,15 @@
         "operationId": "getPipeline",
         "parameters": [
           {
+            "description": "Pipeline thread id",
             "in": "path",
             "name": "thread_id",
             "required": true,
             "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
             }
@@ -7952,14 +8668,19 @@
     },
     "/v1/pipelines/{thread_id}/abort": {
       "post": {
-        "description": "Stop an external engine first, then cancel the thread's active runs.\n\nThreads that have not entered execution have no engine handle and fall back\nto graph-only cancellation. Engine abort failures propagate so the API never\nreports success while production load is still running.",
+        "description": "Stop an external engine while preserving its graph finalization monitor.\n\nThreads that have not entered execution have no engine handle and fall back\nto graph-only cancellation. Engine abort failures propagate so the API never\nreports success while production load is still running.",
         "operationId": "abortPipeline",
         "parameters": [
           {
+            "description": "Pipeline thread id",
             "in": "path",
             "name": "thread_id",
             "required": true,
             "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
             }
@@ -7999,19 +8720,29 @@
         "operationId": "resumeGate",
         "parameters": [
           {
+            "description": "Pipeline thread id",
             "in": "path",
             "name": "thread_id",
             "required": true,
             "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
             }
           },
           {
+            "description": "Pending interrupt id",
             "in": "path",
             "name": "interrupt_id",
             "required": true,
             "schema": {
+              "description": "Pending interrupt id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Interrupt Id",
               "type": "string"
             }
@@ -8060,10 +8791,15 @@
         "operationId": "getPhasePromptReview",
         "parameters": [
           {
+            "description": "Pipeline thread id",
             "in": "path",
             "name": "thread_id",
             "required": true,
             "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
             }
@@ -8073,6 +8809,9 @@
             "name": "phase",
             "required": true,
             "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Phase",
               "type": "string"
             }
@@ -8109,10 +8848,15 @@
         "operationId": "patchPhasePromptReview",
         "parameters": [
           {
+            "description": "Pipeline thread id",
             "in": "path",
             "name": "thread_id",
             "required": true,
             "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Thread Id",
               "type": "string"
             }
@@ -8122,6 +8866,9 @@
             "name": "phase",
             "required": true,
             "schema": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Phase",
               "type": "string"
             }
@@ -8165,6 +8912,64 @@
         ]
       }
     },
+    "/v1/pipelines/{thread_id}/rerun": {
+      "post": {
+        "description": "Rerun phases using the complete server-side checkpointed configuration.",
+        "operationId": "rerunPipeline",
+        "parameters": [
+          {
+            "description": "Pipeline thread id",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RerunPipelineRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RerunPipelineResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rerun Pipeline",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
     "/v1/prompts": {
       "get": {
         "operationId": "listPrompts",
@@ -8176,6 +8981,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8202,6 +9009,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 500,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8209,6 +9018,30 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -8288,10 +9121,15 @@
         "operationId": "getPrompt",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
@@ -8330,10 +9168,15 @@
         "operationId": "archivePrompt",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
@@ -8372,10 +9215,15 @@
         "operationId": "rollbackPrompt",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
@@ -8425,10 +9273,15 @@
         "operationId": "testPrompt",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
@@ -8477,10 +9330,15 @@
         "operationId": "unarchivePrompt",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
@@ -8519,12 +9377,41 @@
         "operationId": "listPromptVersions",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
             }
           }
         ],
@@ -8563,10 +9450,15 @@
         "operationId": "savePromptVersion",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
@@ -8615,19 +9507,29 @@
         "operationId": "getPromptVersion",
         "parameters": [
           {
+            "description": "Prompt id",
             "in": "path",
             "name": "prompt_id",
             "required": true,
             "schema": {
+              "description": "Prompt id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Prompt Id",
               "type": "string"
             }
           },
           {
+            "description": "Prompt version id",
             "in": "path",
             "name": "version_id",
             "required": true,
             "schema": {
+              "description": "Prompt version id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Version Id",
               "type": "string"
             }
@@ -8693,6 +9595,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8709,6 +9613,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 64,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8725,6 +9631,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 2000,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8752,6 +9660,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 999,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -8765,6 +9674,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8783,6 +9695,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8832,6 +9747,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8850,6 +9768,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8858,6 +9779,20 @@
               ],
               "description": "Project used to resolve scoped work-tracking connections",
               "title": "Project"
+            }
+          },
+          {
+            "description": "Caller-stable key for durable at-most-once provider dispatch and reconciliation; ambiguous outcomes return 409 and are never blindly redispatched",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Caller-stable key for durable at-most-once provider dispatch and reconciliation; ambiguous outcomes return 409 and are never blindly redispatched",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],
@@ -8908,6 +9843,9 @@
             "name": "key",
             "required": true,
             "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Key",
               "type": "string"
             }
@@ -8920,6 +9858,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8938,6 +9879,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -8986,6 +9930,9 @@
             "name": "key",
             "required": true,
             "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Key",
               "type": "string"
             }
@@ -8998,6 +9945,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9016,6 +9966,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9024,6 +9977,20 @@
               ],
               "description": "Project used to resolve scoped work-tracking connections",
               "title": "Project"
+            }
+          },
+          {
+            "description": "Caller-stable key for durable at-most-once provider dispatch and reconciliation; ambiguous outcomes return 409 and are never blindly redispatched",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "Caller-stable key for durable at-most-once provider dispatch and reconciliation; ambiguous outcomes return 409 and are never blindly redispatched",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Idempotency-Key",
+              "type": "string"
             }
           }
         ],
@@ -9077,6 +10044,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9095,6 +10065,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9156,6 +10129,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9174,6 +10150,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9234,6 +10213,9 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9250,6 +10232,8 @@
             "schema": {
               "anyOf": [
                 {
+                  "maxLength": 64,
+                  "pattern": "^[^\\x00]*$",
                   "type": "string"
                 },
                 {
@@ -9277,6 +10261,7 @@
             "required": false,
             "schema": {
               "default": 0,
+              "maximum": 10000,
               "minimum": 0,
               "title": "Offset",
               "type": "integer"
@@ -9359,6 +10344,9 @@
             "name": "saved_query_id",
             "required": true,
             "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Saved Query Id",
               "type": "string"
             }
@@ -9392,6 +10380,9 @@
             "name": "saved_query_id",
             "required": true,
             "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Saved Query Id",
               "type": "string"
             }
@@ -9432,6 +10423,9 @@
             "name": "saved_query_id",
             "required": true,
             "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
               "title": "Saved Query Id",
               "type": "string"
             }

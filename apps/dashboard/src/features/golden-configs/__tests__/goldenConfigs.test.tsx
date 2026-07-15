@@ -122,9 +122,28 @@ function wizardDraftHandlers() {
 describe('GoldenConfigsPage', () => {
   it('renders config summary chips and marks the system default', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
+    assistantsGet.mockImplementation((assistantId: string) =>
+      Promise.resolve(assistantId === SYSTEM_DEFAULT.assistant_id ? SYSTEM_DEFAULT : GOLDEN),
+    )
     renderApp({ initialEntries: ['/golden-configs'], authState: authenticatedState() })
 
     const card = await screen.findByTestId('gc-card-asst-gold')
+    expect(assistantsSearch).toHaveBeenLastCalledWith({
+      graphId: 'pipeline',
+      limit: 5,
+      offset: 0,
+      select: [
+        'assistant_id',
+        'graph_id',
+        'name',
+        'description',
+        'created_at',
+        'updated_at',
+        'version',
+      ],
+    })
+    expect(assistantsGet).toHaveBeenCalledWith('asst-gold')
+    expect(assistantsGet).toHaveBeenCalledWith('asst-sys')
     expect(within(card).getByText('Nightly checkout soak')).toBeInTheDocument()
     expect(within(card).getByText('Pinned engine + custom gates')).toBeInTheDocument()
     expect(within(card).getByText('LoadRunner')).toBeInTheDocument()
@@ -145,6 +164,7 @@ describe('GoldenConfigsPage', () => {
 
   it('is viewer-visible (read access does not require admin)', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN])
+    assistantsGet.mockResolvedValue(GOLDEN)
     renderApp({ initialEntries: ['/golden-configs'], authState: authenticatedState('viewer') })
 
     expect(await screen.findByTestId('gc-card-asst-gold')).toBeInTheDocument()
@@ -193,7 +213,9 @@ describe('GoldenConfigDetailPage', () => {
   })
 
   it('start-run deep-links the wizard Config step and preselects the golden config', async () => {
-    assistantsGet.mockResolvedValue(GOLDEN)
+    assistantsGet.mockImplementation((assistantId: string) =>
+      Promise.resolve(assistantId === SYSTEM_DEFAULT.assistant_id ? SYSTEM_DEFAULT : GOLDEN),
+    )
     assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
     server.use(...wizardDraftHandlers())
     const user = userEvent.setup()

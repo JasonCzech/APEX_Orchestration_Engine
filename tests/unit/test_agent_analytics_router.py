@@ -1,6 +1,7 @@
 """GET /v1/analytics/agents: params, scoping, and cost visibility."""
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from fastapi import FastAPI
@@ -10,6 +11,7 @@ from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.routers.analytics import get_agent_analytics_repository, router
+from apex.services.agent_analytics import _as_float
 from apex.settings import ApexSettings, get_settings
 
 ADMIN = ConsumerIdentity(
@@ -81,6 +83,20 @@ CANNED = {
     ],
     "page": {"limit": 20, "offset": 0, "total": 1},
 }
+
+
+def test_non_finite_legacy_aggregates_normalize_to_missing() -> None:
+    for value in (
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        Decimal("NaN"),
+        Decimal("Infinity"),
+        Decimal("-Infinity"),
+    ):
+        assert _as_float(value) is None
+
+    assert _as_float(Decimal("1.25")) == 1.25
 
 
 class FakeAgentAnalyticsRepository:
@@ -175,6 +191,49 @@ def test_explicit_params_and_csv_filters_pass_through() -> None:
     assert call["offset"] == 10
     assert response.json()["cost_visible"] is True
     assert response.json()["totals"]["cost_usd"] == 0.012345
+
+
+def test_filter_fanout_and_large_offset_are_rejected_before_aggregation() -> None:
+    repo = FakeAgentAnalyticsRepository()
+    with make_client(repo, ADMIN) as client:
+        too_many = client.get(
+            "/v1/analytics/agents",
+            params={"model": ",".join(f"m{index}" for index in range(51))},
+        )
+        huge_offset = client.get("/v1/analytics/agents", params={"offset": 10_001})
+
+    assert too_many.status_code == 422
+    assert huge_offset.status_code == 422
+    assert repo.calls == []
+
+
+def test_hourly_window_cap_is_rejected_before_aggregation() -> None:
+    repo = FakeAgentAnalyticsRepository()
+    with make_client(repo, ADMIN) as client:
+        response = client.get(
+            "/v1/analytics/agents",
+            params={
+                "from": "2026-01-01T00:00:00Z",
+                "to": "2026-02-02T00:00:00Z",
+                "bucket": "hour",
+            },
+        )
+
+    assert response.status_code == 422
+    assert repo.calls == []
+
+
+def test_default_window_underflow_is_422_before_aggregation() -> None:
+    repo = FakeAgentAnalyticsRepository()
+    with make_client(repo, ADMIN) as client:
+        response = client.get(
+            "/v1/analytics/agents",
+            params={"to": "0001-01-01T00:00:00Z"},
+        )
+
+    assert response.status_code == 422
+    assert "default seven-day" in response.json()["title"]
+    assert repo.calls == []
 
 
 def test_cost_flag_does_not_show_cost_to_non_admin() -> None:

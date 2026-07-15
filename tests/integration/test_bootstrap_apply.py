@@ -25,6 +25,7 @@ from apex.persistence.models import (
     Application,
     Base,
     Connection,
+    ConsumerKey,
     Environment,
     Prompt,
 )
@@ -133,6 +134,54 @@ async def test_environment_without_application_raises(sessionmaker: async_sessio
             await apply_document(doc, session, env=os.environ)
 
 
+async def test_existing_application_drift_fails_closed(
+    sessionmaker: async_sessionmaker,
+) -> None:
+    doc = BootstrapDocument.model_validate(DOC)
+    async with sessionmaker() as session:
+        await apply_document(doc, session, env={"APEX_BOOTSTRAP_ADMIN_KEY": "expected-key"})
+        await session.commit()
+    async with sessionmaker() as session:
+        application = await session.scalar(
+            select(Application).where(Application.project_id == TEST_PROJECT)
+        )
+        assert application is not None
+        application.description = "drifted"
+        await session.commit()
+
+    async with sessionmaker() as session:
+        with pytest.raises(BootstrapError, match="application.*description"):
+            await apply_document(
+                doc,
+                session,
+                env={"APEX_BOOTSTRAP_ADMIN_KEY": "expected-key"},
+            )
+
+
+async def test_existing_environment_target_drift_fails_closed(
+    sessionmaker: async_sessionmaker,
+) -> None:
+    doc = BootstrapDocument.model_validate(DOC)
+    async with sessionmaker() as session:
+        await apply_document(doc, session, env={"APEX_BOOTSTRAP_ADMIN_KEY": "expected-key"})
+        await session.commit()
+    async with sessionmaker() as session:
+        environment = await session.scalar(
+            select(Environment).where(Environment.name == "staging-it")
+        )
+        assert environment is not None
+        environment.base_url = "https://attacker.invalid"
+        await session.commit()
+
+    async with sessionmaker() as session:
+        with pytest.raises(BootstrapError, match="environment.*base_url"):
+            await apply_document(
+                doc,
+                session,
+                env={"APEX_BOOTSTRAP_ADMIN_KEY": "expected-key"},
+            )
+
+
 async def test_admin_without_key_env_raises(
     sessionmaker: async_sessionmaker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,6 +190,45 @@ async def test_admin_without_key_env_raises(
     async with sessionmaker() as session:
         with pytest.raises(BootstrapError, match="is unset/empty"):
             await apply_document(doc, session, env=os.environ)
+
+
+async def test_existing_admin_with_different_mounted_key_fails_closed(
+    sessionmaker: async_sessionmaker,
+) -> None:
+    doc = BootstrapDocument.model_validate({"admin": {"name": ADMIN_NAME}})
+    async with sessionmaker() as session:
+        await apply_document(doc, session, env={"APEX_BOOTSTRAP_ADMIN_KEY": "expected-key"})
+        await session.commit()
+
+    async with sessionmaker() as session:
+        with pytest.raises(BootstrapError, match="bootstrap_key"):
+            await apply_document(doc, session, env={"APEX_BOOTSTRAP_ADMIN_KEY": "wrong-key"})
+
+
+async def test_existing_admin_with_authority_or_extra_key_drift_fails_closed(
+    sessionmaker: async_sessionmaker,
+) -> None:
+    key = "expected-key"
+    doc = BootstrapDocument.model_validate({"admin": {"name": ADMIN_NAME}})
+    async with sessionmaker() as session:
+        await apply_document(doc, session, env={"APEX_BOOTSTRAP_ADMIN_KEY": key})
+        await session.commit()
+    async with sessionmaker() as session:
+        consumer = await session.scalar(select(ApiConsumer).where(ApiConsumer.name == ADMIN_NAME))
+        assert consumer is not None
+        consumer.role = "viewer"
+        consumer.keys.append(
+            ConsumerKey(key_hash=hash_api_key("unexpected-active-key"), expiry_source="independent")
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        with pytest.raises(BootstrapError) as caught:
+            await apply_document(doc, session, env={"APEX_BOOTSTRAP_ADMIN_KEY": key})
+
+    assert "role" in str(caught.value)
+    assert "active_keys" in str(caught.value)
+    assert key not in str(caught.value)
 
 
 async def test_prompt_seeding_rolls_back_when_later_bootstrap_step_fails(

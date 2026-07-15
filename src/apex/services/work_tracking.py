@@ -30,7 +30,7 @@ from typing import Annotated
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.domain.integrations import QueryContext
+from apex.domain.integrations import Page, QueryContext
 from apex.persistence.db import get_session
 from apex.persistence.repositories.saved_queries import SavedQueriesRepository
 from apex.services.connections import ConnectionResolver, get_connection_resolver
@@ -73,6 +73,21 @@ _SINGLE_QUOTED = re.compile(r"(?:^|\s)'([^']+)'(?=\s|$|[.,;!?])")
 MIN_CONFIDENCE = 0.3
 MAX_CONFIDENCE = 0.9
 _CONFIDENCE_STEP = 0.15
+
+MAX_PROVIDER_PAGE_SIZE = 200
+MAX_PROVIDER_RESULT_WINDOW = 1_000
+
+
+def validate_provider_page(page: Page) -> Page:
+    """Reject work that would make an adapter scan an unbounded result prefix."""
+
+    if page.offset < 0:
+        raise ValueError("page offset must be non-negative")
+    if page.limit < 1 or page.limit > MAX_PROVIDER_PAGE_SIZE:
+        raise ValueError(f"page limit must be between 1 and {MAX_PROVIDER_PAGE_SIZE}")
+    if page.offset + page.limit > MAX_PROVIDER_RESULT_WINDOW:
+        raise ValueError(f"page window must not exceed {MAX_PROVIDER_RESULT_WINDOW} items")
+    return page
 
 
 @dataclass(frozen=True)

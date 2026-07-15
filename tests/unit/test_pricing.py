@@ -6,7 +6,7 @@ the Postgres-gated test_agent_analytics_db.py.
 
 from decimal import Decimal
 
-from apex.services.pricing import compute_cost
+from apex.services.pricing import MAX_TOKEN_COUNT, compute_cost
 from apex.services.usage import normalize_usage_metadata
 
 
@@ -52,6 +52,20 @@ def test_compute_cost_never_negative_on_malformed_counts() -> None:
     assert cost >= 0
 
 
+def test_compute_cost_bounds_malformed_or_oversized_provider_counts() -> None:
+    cost, _ = compute_cost(
+        "claude-haiku-4-5",
+        {
+            "input_tokens": Decimal("Infinity"),
+            "output_tokens": "9" * 100_000,
+            "cache_read_tokens": float("inf"),
+            "cache_creation_tokens": MAX_TOKEN_COUNT + 1,
+        },
+    )
+
+    assert cost == Decimal("12500.000000")
+
+
 def test_normalize_usage_metadata_flattens_nested_details_and_aliases() -> None:
     normalized = normalize_usage_metadata(
         {
@@ -82,3 +96,19 @@ def test_normalize_usage_metadata_defaults_and_total_fallback() -> None:
     assert normalized["total_tokens"] == 14
     assert normalized["cache_read_tokens"] == 0
     assert normalized["reasoning_tokens"] == 0
+
+
+def test_normalize_usage_metadata_bounds_non_finite_and_oversized_counts() -> None:
+    normalized = normalize_usage_metadata(
+        {
+            "input_tokens": float("inf"),
+            "output_tokens": MAX_TOKEN_COUNT + 1,
+            "total_tokens": Decimal("NaN"),
+            "input_token_details": {"cache_read": "9" * 100_000},
+        }
+    )
+
+    assert normalized["input_tokens"] == 0
+    assert normalized["output_tokens"] == MAX_TOKEN_COUNT
+    assert normalized["total_tokens"] == MAX_TOKEN_COUNT
+    assert normalized["cache_read_tokens"] == 0

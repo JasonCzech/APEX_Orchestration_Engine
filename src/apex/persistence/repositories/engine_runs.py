@@ -42,6 +42,7 @@ def _visibility_filter(
                 EngineRun.project_id.in_(sorted(scoped_projects)),
                 EngineRun.app_id.is_(None),
                 EngineRun.ownership_known.is_(True),
+                EngineRun.scope_ownership_known.is_(True),
             )
         ]
         if project_wide:
@@ -119,6 +120,12 @@ class EngineRunsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    async def release_read_transaction(self) -> None:
+        """Release a request-scoped read snapshot before slow external I/O."""
+
+        if self._session.in_transaction():
+            await self._session.rollback()
+
     async def list_runs(
         self,
         *,
@@ -163,15 +170,23 @@ class EngineRunsRepository:
         *,
         allowed_scopes: Sequence[ScopeRef] | None = None,
         allowed_project_ids: tuple[str, ...] | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> list[EngineRun]:
-        """All attempts for one thread, newest attempt first."""
+        """One bounded page of attempts for a thread, newest attempt first."""
         filters: list[ColumnElement[bool]] = [EngineRun.thread_id == thread_id]
         _append_visibility(
             filters,
             allowed_scopes=allowed_scopes,
             allowed_project_ids=allowed_project_ids,
         )
-        stmt = select(EngineRun).where(*filters).order_by(EngineRun.attempt.desc())
+        stmt = (
+            select(EngineRun)
+            .where(*filters)
+            .order_by(EngineRun.attempt.desc())
+            .limit(limit)
+            .offset(offset)
+        )
         return list(await self._session.scalars(stmt))
 
     async def get_latest_for_thread(
@@ -185,6 +200,7 @@ class EngineRunsRepository:
             thread_id,
             allowed_scopes=allowed_scopes,
             allowed_project_ids=allowed_project_ids,
+            limit=1,
         )
         return rows[0] if rows else None
 
@@ -205,7 +221,7 @@ class EngineRunsRepository:
             allowed_project_ids=allowed_project_ids,
         )
         return await self._session.scalar(
-            select(EngineRun).where(*filters).order_by(EngineRun.attempt.desc())
+            select(EngineRun).where(*filters).order_by(EngineRun.attempt.desc()).limit(1)
         )
 
     async def get_by_external_run_id(
@@ -221,7 +237,12 @@ class EngineRunsRepository:
             allowed_scopes=allowed_scopes,
             allowed_project_ids=allowed_project_ids,
         )
-        stmt = select(EngineRun).where(*filters).order_by(EngineRun.started_at.desc(), EngineRun.id)
+        stmt = (
+            select(EngineRun)
+            .where(*filters)
+            .order_by(EngineRun.started_at.desc(), EngineRun.id)
+            .limit(1)
+        )
         return await self._session.scalar(stmt)
 
     async def get_by_artifact_namespace(
@@ -246,43 +267,45 @@ class EngineRunsRepository:
         self,
         thread_id: str,
         *,
+        projection_id: str,
+        attempt: int,
+        expected_external_run_id: str | None,
         allowed_scopes: Sequence[ScopeRef] | None = None,
         allowed_project_ids: tuple[str, ...] | None = None,
     ) -> int:
-        """Flip every non-terminal row for the thread to "aborted" (+ ended_at).
-
-        Returns the number of rows updated (0 when the projection already shows a
-        terminal status — the abort endpoint treats that as fine, not an error).
-        """
-        filters = [
-            EngineRun.thread_id == thread_id,
-            EngineRun.status.not_in(TERMINAL_STATUSES),
-        ]
-        _append_mutation_scope(
-            filters,
+        return await self.mark_terminal(
+            thread_id,
+            "aborted",
+            projection_id=projection_id,
+            attempt=attempt,
+            expected_external_run_id=expected_external_run_id,
             allowed_scopes=allowed_scopes,
             allowed_project_ids=allowed_project_ids,
         )
-        stmt = (
-            update(EngineRun)
-            .where(*filters)
-            .values(status="aborted", ended_at=datetime.now(UTC), connection_id=None)
-        )
-        result = await self._session.execute(stmt)
-        await self._session.commit()
-        return int(getattr(result, "rowcount", 0) or 0)
 
     async def mark_terminal(
         self,
         thread_id: str,
         status: str,
         *,
+        projection_id: str,
+        attempt: int,
+        expected_external_run_id: str | None,
         allowed_scopes: Sequence[ScopeRef] | None = None,
         allowed_project_ids: tuple[str, ...] | None = None,
     ) -> int:
         if status not in TERMINAL_STATUSES:
             raise ValueError(f"nonterminal engine status {status!r}")
-        filters = [EngineRun.thread_id == thread_id]
+        filters = [
+            EngineRun.id == projection_id,
+            EngineRun.thread_id == thread_id,
+            EngineRun.attempt == attempt,
+            EngineRun.status.not_in(TERMINAL_STATUSES),
+        ]
+        if expected_external_run_id is None:
+            filters.append(EngineRun.external_run_id.is_(None))
+        else:
+            filters.append(EngineRun.external_run_id == expected_external_run_id)
         _append_mutation_scope(
             filters,
             allowed_scopes=allowed_scopes,

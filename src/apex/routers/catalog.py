@@ -15,15 +15,30 @@ DELETE /applications/{id} = admin (environment delete is operator+).
 from datetime import datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
+from apex.domain.input_limits import (
+    MAX_CHILD_ITEMS,
+    MAX_DB_LIST_OFFSET,
+    MAX_DESCRIPTION_CHARS,
+    NoNulStr,
+    RecordId,
+    ScopeId,
+    validate_json_object,
+)
 from apex.persistence.db import get_session
 from apex.persistence.models import Environment, EnvironmentSnapshot
 from apex.persistence.repositories.catalog import CatalogRepository, DuplicateNameError
+from apex.services.connection_credentials import (
+    connection_options_require_repair,
+    reject_raw_secret_options,
+    sanitize_connection_options_for_output,
+    sanitize_connection_url_for_output,
+)
 from apex.services.connections import (
     TRUSTED_PRIVATE_HOST_OPTION,
     validate_adapter_base_url,
@@ -42,20 +57,26 @@ def get_catalog_repository(
 
 
 CatalogRepo = Annotated[CatalogRepository, Depends(get_catalog_repository)]
+ApplicationId = Annotated[RecordId, Path(description="Application id")]
+EnvironmentId = Annotated[RecordId, Path(description="Environment id")]
 
 
 # ── schemas ──────────────────────────────────────────────────────────────────
 
 
 class ApplicationCreate(BaseModel):
-    project_id: str = Field(min_length=1, max_length=255)
-    name: str = Field(min_length=1, max_length=255)
-    description: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: ScopeId
+    name: NoNulStr = Field(min_length=1, max_length=255)
+    description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
 
 class ApplicationUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    description: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
+    description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
 
 class ApplicationOut(BaseModel):
@@ -71,8 +92,10 @@ class ApplicationOut(BaseModel):
 
 
 class HostIn(BaseModel):
-    hostname: str = Field(min_length=1, max_length=1024)
-    role: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    hostname: NoNulStr = Field(min_length=1, max_length=1024)
+    role: NoNulStr | None = Field(default=None, max_length=255)
 
 
 class HostOut(BaseModel):
@@ -91,24 +114,48 @@ class SnapshotSummary(BaseModel):
 
 
 class EnvironmentCreate(BaseModel):
-    application_id: str
-    name: str = Field(min_length=1, max_length=255)
-    kind: str | None = None
-    base_url: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    application_id: NoNulStr = Field(min_length=1, max_length=32)
+    name: NoNulStr = Field(min_length=1, max_length=255)
+    kind: NoNulStr | None = Field(default=None, max_length=64)
+    base_url: NoNulStr | None = Field(default=None, min_length=1, max_length=1024)
     options: dict[str, Any] = Field(default_factory=dict)
-    hosts: list[HostIn] = Field(default_factory=list)
+    hosts: list[HostIn] = Field(default_factory=list, max_length=MAX_CHILD_ITEMS)
+
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, options: dict[str, Any]) -> dict[str, Any]:
+        return validate_json_object(options, label="environment options")
 
 
 class EnvironmentUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    kind: str | None = None
-    base_url: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
+    kind: NoNulStr | None = Field(default=None, max_length=64)
+    base_url: NoNulStr | None = Field(default=None, min_length=1, max_length=1024)
     options: dict[str, Any] | None = None
-    hosts: list[HostIn] | None = None  # when present, REPLACES the full host list
+    hosts: list[HostIn] | None = Field(
+        default=None, max_length=MAX_CHILD_ITEMS
+    )  # when present, REPLACES the full host list
+
+    @field_validator("options")
+    @classmethod
+    def validate_options(cls, options: dict[str, Any] | None) -> dict[str, Any] | None:
+        if options is None:
+            # Explicit null clears the JSON object; omission is still excluded by
+            # model_dump(exclude_unset=True).
+            return {}
+        return validate_json_object(options, label="environment options")
 
 
 class EnvironmentOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    # Environment rows predate the secret-free connection contract. Treat
+    # persisted values as untrusted when projecting them: an old/direct-SQL row
+    # must not reflect URI userinfo, signed query strings, or raw option
+    # credentials to every viewer in the application's scope.
+    model_config = ConfigDict(from_attributes=True, hide_input_in_errors=True)
 
     id: str
     application_id: str
@@ -124,6 +171,27 @@ class EnvironmentOut(BaseModel):
     # Populated on getEnvironment only (list omits it to avoid N+1 scans).
     last_snapshot: SnapshotSummary | None = None
 
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def sanitize_legacy_base_url(cls, value: Any) -> str | None:
+        return sanitize_connection_url_for_output(value)
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def sanitize_legacy_options(cls, value: Any) -> dict[str, Any]:
+        return sanitize_connection_options_for_output(value)
+
+    @model_validator(mode="after")
+    def quarantine_repair_required_target(self) -> "EnvironmentOut":
+        if self.base_url == "[REDACTED]" or self.options.get("_apex_repair_required") is True:
+            # Keep this projection atomic. Revealing a safe sibling URL while
+            # only the options are redacted can still make an operator/UI treat
+            # a legacy target as approved and ready to execute.
+            self.base_url = "[REDACTED]"
+            self.options = {"_apex_repair_required": True}
+            self.target_approved = False
+        return self
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -134,7 +202,8 @@ def _visible_projects(identity: ConsumerIdentity) -> tuple[str, ...] | None:
 
 
 def _not_found(what: str, resource_id: str) -> HTTPException:
-    return HTTPException(status_code=404, detail=f"{what} {resource_id!r} not found")
+    del resource_id
+    return HTTPException(status_code=404, detail=f"{what} not found")
 
 
 def _environment_out(
@@ -161,6 +230,19 @@ def _is_platform_admin(identity: ConsumerIdentity) -> bool:
 
 
 def _validate_environment_options(identity: ConsumerIdentity, options: dict[str, Any]) -> None:
+    try:
+        reject_raw_secret_options(
+            options,
+            label="environment options",
+            reference="a managed connection secret_ref",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid environment options") from exc
+    if connection_options_require_repair(options):
+        raise HTTPException(
+            status_code=422,
+            detail="environment options contain unsafe credential-bearing configuration",
+        )
     if not _is_platform_admin(identity) and any(str(key).startswith("_apex_") for key in options):
         raise HTTPException(
             status_code=403,
@@ -186,7 +268,7 @@ def _approve_environment_target(
             allow_private_hosts=options.get(TRUSTED_PRIVATE_HOST_OPTION) is True or None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="invalid environment target") from exc
     return True
 
 
@@ -197,14 +279,19 @@ def _approve_environment_target(
 async def list_applications(
     identity: CurrentIdentity,
     repo: CatalogRepo,
-    project: str | None = None,
+    project: Annotated[ScopeId | None, Query()] = None,
     include_archived: bool = False,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
 ) -> list[ApplicationOut]:
     ensure_scope(identity, project_id=project)
     apps = await repo.list_applications(
         project=project,
         visible_projects=_visible_projects(identity),
+        allowed_scopes=None if identity.is_unscoped else identity.scopes,
         include_archived=include_archived,
+        limit=limit,
+        offset=offset,
     )
     return [
         ApplicationOut.model_validate(app) for app in apps if _can_access_application(identity, app)
@@ -227,14 +314,14 @@ async def create_application(
     except DuplicateNameError:
         raise HTTPException(
             status_code=409,
-            detail=f"Application {body.name!r} already exists in project {body.project_id!r}",
+            detail="application name already exists in project",
         ) from None
     return ApplicationOut.model_validate(app)
 
 
 @router.get("/applications/{application_id}", operation_id="getApplication")
 async def get_application(
-    application_id: str, identity: CurrentIdentity, repo: CatalogRepo
+    application_id: ApplicationId, identity: CurrentIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
@@ -244,25 +331,27 @@ async def get_application(
 
 @router.patch("/applications/{application_id}", operation_id="updateApplication")
 async def update_application(
-    application_id: str, body: ApplicationUpdate, identity: OperatorIdentity, repo: CatalogRepo
+    application_id: ApplicationId,
+    body: ApplicationUpdate,
+    identity: OperatorIdentity,
+    repo: CatalogRepo,
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
-    project_id = app.project_id  # capture before mutation: rollback expires the instance
     try:
         app = await repo.update_application(app, body.model_dump(exclude_unset=True))
     except DuplicateNameError:
         raise HTTPException(
             status_code=409,
-            detail=f"Application {body.name!r} already exists in project {project_id!r}",
+            detail="application name already exists in project",
         ) from None
     return ApplicationOut.model_validate(app)
 
 
 @router.post("/applications/{application_id}/archive", operation_id="archiveApplication")
 async def archive_application(
-    application_id: str, identity: OperatorIdentity, repo: CatalogRepo
+    application_id: ApplicationId, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
@@ -272,7 +361,7 @@ async def archive_application(
 
 @router.post("/applications/{application_id}/unarchive", operation_id="unarchiveApplication")
 async def unarchive_application(
-    application_id: str, identity: OperatorIdentity, repo: CatalogRepo
+    application_id: ApplicationId, identity: OperatorIdentity, repo: CatalogRepo
 ) -> ApplicationOut:
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
@@ -282,7 +371,7 @@ async def unarchive_application(
 
 @router.delete("/applications/{application_id}", operation_id="deleteApplication", status_code=204)
 async def delete_application(
-    application_id: str, identity: AdminIdentity, repo: CatalogRepo
+    application_id: ApplicationId, identity: AdminIdentity, repo: CatalogRepo
 ) -> None:
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
@@ -297,10 +386,16 @@ async def delete_application(
 async def list_environments(
     identity: CurrentIdentity,
     repo: CatalogRepo,
-    application: str | None = None,
+    application: Annotated[RecordId | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
 ) -> list[EnvironmentOut]:
     envs = await repo.list_environments(
-        application_id=application, visible_projects=_visible_projects(identity)
+        application_id=application,
+        visible_projects=_visible_projects(identity),
+        allowed_scopes=None if identity.is_unscoped else identity.scopes,
+        limit=limit,
+        offset=offset,
     )
     return [_environment_out(env) for env in envs if _can_access_environment(identity, env)]
 
@@ -332,15 +427,14 @@ async def create_environment(
     except DuplicateNameError:
         raise HTTPException(
             status_code=409,
-            detail=f"Environment {body.name!r} already exists on application "
-            f"{body.application_id!r}",
+            detail="environment name already exists on application",
         ) from None
     return _environment_out(env)
 
 
 @router.get("/environments/{environment_id}", operation_id="getEnvironment")
 async def get_environment(
-    environment_id: str, identity: CurrentIdentity, repo: CatalogRepo
+    environment_id: EnvironmentId, identity: CurrentIdentity, repo: CatalogRepo
 ) -> EnvironmentOut:
     env = await repo.get_environment(environment_id)
     if env is None or not _can_access_environment(identity, env):
@@ -351,12 +445,14 @@ async def get_environment(
 
 @router.patch("/environments/{environment_id}", operation_id="updateEnvironment")
 async def update_environment(
-    environment_id: str, body: EnvironmentUpdate, identity: OperatorIdentity, repo: CatalogRepo
+    environment_id: EnvironmentId,
+    body: EnvironmentUpdate,
+    identity: OperatorIdentity,
+    repo: CatalogRepo,
 ) -> EnvironmentOut:
-    env = await repo.get_environment(environment_id)
+    env = await repo.get_environment_for_update(environment_id)
     if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
-    application_id = env.application_id  # capture before mutation: rollback expires the instance
     changes = body.model_dump(exclude_unset=True)
     hosts = changes.pop("hosts", None)
     next_options = changes.get("options", env.options) or {}
@@ -377,16 +473,16 @@ async def update_environment(
     except DuplicateNameError:
         raise HTTPException(
             status_code=409,
-            detail=f"Environment {body.name!r} already exists on application {application_id!r}",
+            detail="environment name already exists on application",
         ) from None
     return _environment_out(env)
 
 
 @router.delete("/environments/{environment_id}", operation_id="deleteEnvironment", status_code=204)
 async def delete_environment(
-    environment_id: str, identity: OperatorIdentity, repo: CatalogRepo
+    environment_id: EnvironmentId, identity: OperatorIdentity, repo: CatalogRepo
 ) -> None:
-    env = await repo.get_environment(environment_id)
+    env = await repo.get_environment_for_update(environment_id)
     if env is None or not _can_access_environment(identity, env):
         raise _not_found("environment", environment_id)
     await repo.delete_environment(env)

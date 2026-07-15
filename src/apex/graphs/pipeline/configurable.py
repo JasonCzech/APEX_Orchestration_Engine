@@ -13,6 +13,7 @@ from typing import Any
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from apex.domain.input_limits import NoNulStr, ScopeId, validate_json_object
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import PHASE_ORDER, Phase
 from apex.services.run_validation import (
@@ -31,11 +32,15 @@ class GateMode(StrEnum):
 
 
 class GatePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     prompt_review: GateMode = GateMode.GATED
     output_review: GateMode = GateMode.GATED
 
 
 class Limits(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     max_revise_loops: int = Field(default=3, ge=0, le=10)
     max_dialogue_turns: int = Field(default=20, ge=0, le=100)
     poll_interval_s: float = Field(default=5.0, ge=0.01, le=300.0, allow_inf_nan=False)
@@ -58,8 +63,10 @@ class Limits(BaseModel):
 
 
 class PromptOverride(BaseModel):
-    content: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
-    version_id: str | None = Field(default=None, max_length=256)
+    model_config = ConfigDict(extra="forbid")
+
+    content: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    version_id: NoNulStr | None = Field(default=None, max_length=256)
 
 
 class PipelineConfigurable(BaseModel):
@@ -67,16 +74,16 @@ class PipelineConfigurable(BaseModel):
     # Assistant used to create the run. The graph itself does not branch on
     # this value, but persisting it lets later phase re-runs target the same
     # golden assistant instead of silently falling back to the base graph.
-    assistant_id: str = Field(default="pipeline", max_length=256)
-    project_id: str | None = Field(default=None, max_length=256)
-    app_id: str | None = Field(default=None, max_length=256)
-    environment_id: str | None = Field(default=None, max_length=256)
+    assistant_id: NoNulStr = Field(default="pipeline", max_length=256)
+    project_id: ScopeId | None = None
+    app_id: ScopeId | None = None
+    environment_id: NoNulStr | None = Field(default=None, max_length=256)
     # Server-owned target resolved from environment_id at run authorization time.
     # It is checkpointed so a gated run cannot drift if the catalog changes later.
-    environment_target: str | None = Field(default=None, max_length=2_048)
+    environment_target: NoNulStr | None = Field(default=None, max_length=2_048)
     environment_target_version: int | None = None
-    engine: str = Field(default="sim", max_length=64)
-    connections: dict[str, str] = Field(default_factory=dict, max_length=16)
+    engine: NoNulStr = Field(default="sim", max_length=64)
+    connections: dict[str, NoNulStr] = Field(default_factory=dict, max_length=16)
 
     # Phase selection: explicit list wins over start/stop range; default = all.
     phases: list[Phase] | None = Field(default=None, max_length=len(PHASE_ORDER))
@@ -85,8 +92,8 @@ class PipelineConfigurable(BaseModel):
 
     gates: dict[Phase, GatePolicy] = Field(default_factory=dict, max_length=len(PHASE_ORDER))
     prompt_overrides: dict[str, PromptOverride] = Field(default_factory=dict, max_length=32)
-    pre_execution_context: list[str] = Field(default_factory=list, max_length=32)
-    model_by_phase: dict[Phase, str] = Field(default_factory=dict, max_length=len(PHASE_ORDER))
+    pre_execution_context: list[NoNulStr] = Field(default_factory=list, max_length=32)
+    model_by_phase: dict[Phase, NoNulStr] = Field(default_factory=dict, max_length=len(PHASE_ORDER))
     # Per-run LoadTestSpec overrides plus provider-specific execution options.
     # This is part of the durable run contract: execution may happen after one
     # or more human gates, when the original RunnableConfig is no longer
@@ -101,6 +108,7 @@ class PipelineConfigurable(BaseModel):
     @field_validator("connections")
     @classmethod
     def validate_connections(cls, values: dict[str, str]) -> dict[str, str]:
+        validate_json_object(values, label="pipeline connections", max_bytes=20_000)
         if any(not key or len(key) > 128 for key in values):
             raise ValueError("connection kinds must be 1-128 characters")
         if any(not value or len(value) > 256 for value in values.values()):
@@ -121,6 +129,22 @@ class PipelineConfigurable(BaseModel):
             raise ValueError("pre_execution_context entries must not exceed 4000 characters")
         return values
 
+    @field_validator("prompt_overrides")
+    @classmethod
+    def validate_prompt_overrides(
+        cls, values: dict[str, PromptOverride]
+    ) -> dict[str, PromptOverride]:
+        validate_json_object(
+            {
+                key: value.model_dump(mode="json", exclude_none=True)
+                for key, value in values.items()
+            },
+            label="prompt_overrides",
+            max_bytes=4_000_000,
+            max_nodes=1_000,
+        )
+        return values
+
     @field_validator("model_by_phase")
     @classmethod
     def validate_models(cls, values: dict[Phase, str]) -> dict[Phase, str]:
@@ -131,6 +155,11 @@ class PipelineConfigurable(BaseModel):
 
     @model_validator(mode="after")
     def validate_load_test_controls(self) -> "PipelineConfigurable":
+        validate_json_object(
+            self.load_test,
+            label="load_test configuration",
+            max_bytes=20_000,
+        )
         try:
             encoded = json.dumps(self.load_test, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as exc:
@@ -154,7 +183,20 @@ class PipelineConfigurable(BaseModel):
     def from_config(cls, config: RunnableConfig | None) -> "PipelineConfigurable":
         configurable: dict[str, Any] = dict((config or {}).get("configurable") or {})
         known = {k: v for k, v in configurable.items() if k in cls.model_fields}
-        return cls.model_validate(known)
+        parsed = cls.model_validate(known)
+        # HTTP and LangGraph authorization stamp these fields for new runs. Keep
+        # the invariant here as well because a legacy checkpoint can resume
+        # directly at poll/cleanup/collection without re-entering engine_reserve
+        # (and therefore without resolving the catalog environment again).
+        if parsed.app_id is not None and parsed.project_id is None:
+            raise ValueError("pipeline application scope requires project_id")
+        if parsed.environment_id is not None and (
+            parsed.project_id is None or parsed.app_id is None
+        ):
+            raise ValueError(
+                "environment-scoped pipeline configuration is missing authoritative ownership"
+            )
+        return parsed
 
     def gate_policy(self, phase: Phase) -> GatePolicy:
         return self.gates.get(phase, GatePolicy())

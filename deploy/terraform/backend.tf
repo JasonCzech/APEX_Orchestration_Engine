@@ -5,7 +5,8 @@
 #     -backend-config="resource_group_name=$TFSTATE_RG" \
 #     -backend-config="storage_account_name=$TFSTATE_SA" \
 #     -backend-config="container_name=tfstate" \
-#     -backend-config="key=apex-$ENV.tfstate"
+#     -backend-config="key=apex-$ENV.tfstate" \
+#     -backend-config="use_azuread_auth=true"
 terraform {
   backend "azurerm" {}
 }

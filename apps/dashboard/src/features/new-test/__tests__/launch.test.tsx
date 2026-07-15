@@ -33,7 +33,11 @@ describe('wizard launch', () => {
       http.post('*/v1/pipelines', async ({ request }) => {
         launchBodies.push((await request.json()) as Record<string, unknown>)
         return HttpResponse.json(
-          { thread_id: 'thread-new', run_id: 'run-1', stream_url: '/runs/run-1/stream' },
+          {
+            thread_id: 'thread-new',
+            run_id: 'run-1',
+            stream_url: '/threads/thread-new/runs/run-1/stream',
+          },
           { status: 202 },
         )
       }),
@@ -139,7 +143,11 @@ describe('wizard launch', () => {
       http.post('*/v1/pipelines', async ({ request }) => {
         bodies.push((await request.json()) as Record<string, unknown>)
         return HttpResponse.json(
-          { thread_id: 'thread-context', run_id: 'run-context', stream_url: '/runs/x/stream' },
+          {
+            thread_id: 'thread-context',
+            run_id: 'run-context',
+            stream_url: '/threads/thread-context/runs/run-context/stream',
+          },
           { status: 202 },
         )
       }),

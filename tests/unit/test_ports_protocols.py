@@ -1,6 +1,7 @@
 """Every stub/sim adapter must satisfy its runtime_checkable port Protocol."""
 
 import pytest
+from pydantic import ValidationError
 
 from apex.adapters.sim_engine import SimExecutionEngine
 from apex.adapters.stubs import (
@@ -58,6 +59,17 @@ def test_secret_value_repr_and_str_are_redacted() -> None:
     assert secret.value == "hunter2"  # raw value still accessible by design
     assert secret.model_dump() == {"value": "***"}
     assert "hunter2" not in secret.model_dump_json()
+
+
+def test_secret_value_validation_errors_do_not_render_raw_secret() -> None:
+    raw_secret = "sentinel-provider-secret\x00tail"
+
+    with pytest.raises(ValidationError) as raised:
+        SecretValue(value=raw_secret)
+
+    rendered = str(raised.value)
+    assert "input_value=" not in rendered
+    assert "sentinel-provider-secret" not in rendered
 
 
 def test_load_test_spec_defaults() -> None:

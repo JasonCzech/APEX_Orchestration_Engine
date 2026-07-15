@@ -16,7 +16,9 @@ from typing import Any
 import httpx
 import pytest
 import respx
+from structlog.testing import capture_logs
 
+import apex.adapters.loadrunner.engine as loadrunner_engine
 from apex.adapters.loadrunner.engine import (
     AUTH_PATH,
     RUN_STATE_PHASES,
@@ -28,12 +30,16 @@ from apex.adapters.stubs import MemoryArtifactStore
 from apex.domain.integrations import LoadTestSpec, SecretValue
 from apex.domain.pipeline import EngineHandle
 from apex.ports.artifact_store import engine_artifact_key
-from apex.ports.execution_engine import EngineRunPhase
+from apex.ports.execution_engine import EngineProviderRunNotFoundError, EngineRunPhase
 
 BASE = "https://lre.internal"
 AUTH_URL = f"{BASE}{AUTH_PATH}"
 PROJECT_BASE = f"{BASE}/LoadTest/rest/domains/DEFAULT/projects/Phoenix"
-RUNS_QUERY = {"query": "{test-id[88]}"}
+RUNS_QUERY = {
+    "query": "{test-id[88]}",
+    "page-size": loadrunner_engine._RUN_LIST_PAGE_SIZE,
+    "start-index": 1,
+}
 EXPECTED_BASIC = "Basic " + base64.b64encode(b"apex-svc:lre-password").decode()
 
 
@@ -150,6 +156,28 @@ def test_constructor_validates_options_and_secret() -> None:
         LoadRunnerExecutionEngine(conn, None)
     with pytest.raises(ValueError, match="user:password"):
         LoadRunnerExecutionEngine(conn, SecretValue(value="token-without-colon"))
+    with pytest.raises(ValueError, match="max_report_bytes"):
+        make_adapter(max_report_bytes=loadrunner_engine._HARD_MAX_REPORT_BYTES + 1)
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "match"),
+    [
+        ("base_url", True, "base_url"),
+        ("domain", "../../other", "domain"),
+        ("project", True, "project"),
+        ("test_id", True, "test_id"),
+        ("test_id", 0, "test_id"),
+        ("test_instance_id", -2, "test_instance_id"),
+        ("max_report_bytes", True, "integer"),
+        ("max_report_bytes", "1024", "integer"),
+    ],
+)
+def test_constructor_rejects_coercible_or_unsafe_options(
+    option: str, value: object, match: str
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        make_adapter(**{option: value})
 
 
 def test_adapter_is_registered_for_loadrunner_provider() -> None:
@@ -173,8 +201,7 @@ async def test_validate_flags_bad_spec_and_missing_test_id() -> None:
     )
     bad = await adapter.validate(bad_spec)
     assert not bad.ok
-    assert len(bad.issues) == 4  # vusers, duration, ramp, no resolvable LRE test id
-    assert any("test_id" in issue for issue in bad.issues)
+    assert bad.issues == ["load test specification failed structural validation"]
 
 
 async def test_validate_accepts_connection_level_test_id() -> None:
@@ -186,7 +213,14 @@ async def test_validate_accepts_connection_level_test_id() -> None:
 async def test_validate_rejects_malformed_script_ref() -> None:
     report = await make_adapter().validate(make_spec(script_refs=["lre-test:abc"]))
     assert not report.ok
-    assert any("numeric" in issue for issue in report.issues)
+    assert any("bounded positive" in issue for issue in report.issues)
+
+
+async def test_provision_revalidates_model_copy_before_provider_io() -> None:
+    spec = make_spec().model_copy(update={"duration_s": float("nan")})
+
+    with pytest.raises(ValueError, match="structural validation"):
+        await make_adapter().provision(spec)
 
 
 def test_timeslot_minutes_floors_at_lre_minimum() -> None:
@@ -291,11 +325,92 @@ async def test_provision_adopts_lowest_run_carrying_the_comment_marker() -> None
 
 
 @respx.mock
+async def test_provision_finds_idempotency_marker_after_first_runs_page() -> None:
+    mock_authenticate()
+    first_page = [
+        run_json(run_id=2_000 + index, comment=f"apex-orch:other-{index}")
+        for index in range(loadrunner_engine._RUN_LIST_PAGE_SIZE)
+    ]
+    first = respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(
+            200,
+            json={"Runs": first_page, "TotalResults": len(first_page) + 1},
+        )
+    )
+    second_query = {**RUNS_QUERY, "start-index": len(first_page) + 1}
+    second = respx.get(f"{PROJECT_BASE}/Runs", params=second_query).mock(
+        return_value=httpx.Response(
+            200,
+            json={"Runs": [run_json(run_id=1042)], "TotalResults": len(first_page) + 1},
+        )
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == "lre-1042"
+    assert handle.extras["run_id"] == "1042"
+    assert first.call_count == second.call_count == 1
+
+
+@respx.mock
+async def test_provision_fails_closed_when_runs_collection_exceeds_scan_budget() -> None:
+    mock_authenticate()
+    route = respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "Runs": [],
+                "TotalResults": loadrunner_engine._MAX_RUN_RECONCILIATION_ROWS + 1,
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="scan budget"):
+        await make_adapter().provision(make_spec())
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_provision_rejects_falsey_non_list_runs_collection() -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(200, json={"Runs": {}})
+    )
+
+    with pytest.raises(RuntimeError, match="field 'Runs' must be a list"):
+        await make_adapter().provision(make_spec())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"Runs": [], "TotalResults": True},
+        {"Runs": [], "TotalResults": "0"},
+        {"Runs": [{"RunComment": {"value": "apex-orch:key-1"}}]},
+        {"Runs": [{"RunComment": "apex-orch:key-1", "ID": True}]},
+    ],
+)
+@respx.mock
+async def test_provision_rejects_malformed_reconciliation_scalars(
+    payload: dict[str, Any],
+) -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError):
+        await make_adapter().provision(make_spec())
+
+
+@respx.mock
 async def test_provision_spec_script_ref_overrides_connection_test_id() -> None:
     mock_authenticate()
-    runs = respx.get(f"{PROJECT_BASE}/Runs", params={"query": "{test-id[99]}"}).mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    runs = respx.get(
+        f"{PROJECT_BASE}/Runs",
+        params={**RUNS_QUERY, "query": "{test-id[99]}"},
+    ).mock(return_value=httpx.Response(200, json=[]))
     adapter = make_adapter(test_id=77)
     handle = await adapter.provision(make_spec(script_refs=["lre-test:99"]))
     assert handle.extras["test_id"] == "99"
@@ -502,6 +617,34 @@ async def test_get_status_unknown_state_stays_nonterminal() -> None:
     assert status.message is not None and "unmapped" in status.message
 
 
+@pytest.mark.parametrize("state", [True, 7, {"value": "Running"}, "x" * 256])
+@respx.mock
+async def test_get_status_rejects_malformed_run_state(state: Any) -> None:
+    mock_authenticate()
+    payload = run_json()
+    payload["RunState"] = state
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError, match="RunState"):
+        await make_adapter().get_status(started_handle())
+
+
+@pytest.mark.parametrize("duration", [True, -1, "2", 1_000_000_001])
+@respx.mock
+async def test_get_status_rejects_malformed_provider_duration(duration: Any) -> None:
+    mock_authenticate()
+    payload = run_json(state="Running")
+    payload["Duration"] = duration
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError, match="Duration"):
+        await make_adapter().get_status(started_handle())
+
+
 @pytest.mark.parametrize(
     ("state", "duration_min", "expected_pct"),
     [
@@ -535,10 +678,10 @@ async def test_get_status_before_start_is_ready_without_network() -> None:
 
 
 @respx.mock
-async def test_get_status_missing_run_raises_key_error() -> None:
+async def test_get_status_missing_run_raises_definitive_provider_not_found() -> None:
     mock_authenticate()
     respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(404))
-    with pytest.raises(KeyError, match="1042"):
+    with pytest.raises(EngineProviderRunNotFoundError, match="1042"):
         await make_adapter().get_status(started_handle())
 
 
@@ -553,6 +696,12 @@ async def test_unprovisioned_handle_raises_value_error() -> None:
         await adapter.fetch_summary(bare)
     with pytest.raises(ValueError, match="start"):
         await adapter.collect_artifacts(provisioned_handle(), MemoryArtifactStore())
+
+
+@pytest.mark.parametrize("run_id", ["../../other", "0", "-1", "9" * 20])
+async def test_corrupt_persisted_run_id_is_rejected_before_network_io(run_id: str) -> None:
+    with pytest.raises(ValueError, match="invalid run_id"):
+        await make_adapter().get_status(started_handle(run_id))
 
 
 # ── abort / teardown ──────────────────────────────────────────────────────────
@@ -570,6 +719,26 @@ async def test_abort_stops_a_running_run_gracefully() -> None:
     await make_adapter().abort(started_handle(), reason="operator request")
     assert stop.call_count == 1
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_abort_logs_only_non_content_reason_metadata() -> None:
+    secret_reason = "opaque-api-key-value-that-redaction-cannot-recognize"
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=run_json(state="Running"))
+    )
+    respx.post(f"{PROJECT_BASE}/Runs/1042/stop").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    with capture_logs() as logs:
+        await make_adapter().abort(started_handle(), reason=secret_reason)
+
+    assert secret_reason not in repr(logs)
+    event = next(log for log in logs if log.get("event") == "loadrunner.abort")
+    assert event["reason_present"] is True
+    assert event["reason_length"] == len(secret_reason)
 
 
 @respx.mock
@@ -801,6 +970,109 @@ async def test_collect_artifacts_falls_back_to_raw_results() -> None:
     assert [ref["name"] for ref in refs] == ["RawResults.zip"]
 
 
+@respx.mock
+async def test_collect_artifacts_rejects_provider_result_count_budget() -> None:
+    mock_authenticate()
+    results = [
+        {"ID": 3000 + index, "Name": f"report-{index}.zip", "Type": "HTML Report"}
+        for index in range(loadrunner_engine._MAX_RESULT_ARTIFACTS + 1)
+    ]
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=results)
+    )
+
+    with pytest.raises(RuntimeError, match="artifacts; limit"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("Name", 123),
+        ("Name", "bad\x00name.zip"),
+        ("Name", "bad\nname.zip"),
+        ("Name", "x" * 513),
+        ("Type", {"kind": "HTML Report"}),
+        ("Type", "HTML\rReport"),
+        ("Type", "x" * 257),
+    ],
+)
+@respx.mock
+async def test_collect_artifacts_rejects_unsafe_provider_text_before_download_or_store(
+    field: str, value: object
+) -> None:
+    mock_authenticate()
+    result: dict[str, object] = {
+        "ID": 2001,
+        "Name": "Report.zip",
+        "Type": "HTML Report",
+    }
+    result[field] = value
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=[result])
+    )
+    download = respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"must-not-be-read")
+    )
+
+    with pytest.raises(RuntimeError, match=field):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+    assert download.call_count == 0
+    assert MemoryArtifactStore._objects == {}
+
+
+@pytest.mark.parametrize("payload", [{}, {"Results": None}, {"Results": {}}])
+@respx.mock
+async def test_collect_artifacts_requires_explicit_results_list(payload: object) -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError, match="Results list"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+
+@respx.mock
+async def test_collection_failure_never_deletes_successful_deterministic_object() -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=RESULTS[:2])
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"first-committed")
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2002/data").mock(return_value=httpx.Response(404))
+    store = MemoryArtifactStore()
+
+    with pytest.raises(KeyError):
+        await make_adapter().collect_artifacts(started_handle(), store)
+
+    first_key = engine_artifact_key("key-1", "0000-result-2001-Reports.zip")
+    assert await store.get(first_key) == b"first-committed"
+
+
+@respx.mock
+async def test_collect_artifacts_enforces_aggregate_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(loadrunner_engine, "_MAX_TOTAL_ARTIFACT_BYTES", 4)
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=RESULTS[:2])
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"abc")
+    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2002/data").mock(
+        return_value=httpx.Response(200, content=b"de")
+    )
+
+    with pytest.raises(ValueError, match="maximum size of 1 bytes"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+
 # ── fetch_summary ─────────────────────────────────────────────────────────────
 
 
@@ -828,6 +1100,20 @@ async def test_fetch_summary_sla_failure_fails_the_run() -> None:
     summary = await make_adapter().fetch_summary(started_handle())
     assert summary.passed is False
     assert len(summary.sla_breaches) == 1 and "SLA" in summary.sla_breaches[0]
+
+
+@pytest.mark.parametrize("sla", [True, 7, {"value": "Failed"}, "x" * 256])
+@respx.mock
+async def test_fetch_summary_rejects_malformed_sla_status(sla: Any) -> None:
+    mock_authenticate()
+    payload = run_json(state="Finished")
+    payload["RunSLAStatus"] = sla
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError, match="RunSLAStatus"):
+        await make_adapter().fetch_summary(started_handle())
 
 
 @pytest.mark.parametrize("state", ["Run Failure", "Canceled", "Failed Collating Results"])

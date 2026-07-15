@@ -126,6 +126,35 @@ def test_from_after_to_is_422() -> None:
     assert response.status_code == 422
 
 
+def test_default_window_underflow_is_422_before_aggregation() -> None:
+    repo = FakeUsageAnalyticsRepository()
+    with make_client(repo, ADMIN) as client:
+        response = client.get(
+            "/v1/analytics/usage",
+            params={"to": "0001-01-01T00:00:00Z"},
+        )
+
+    assert response.status_code == 422
+    assert "default seven-day" in response.json()["title"]
+    assert repo.calls == []
+
+
+def test_oversized_analytics_window_is_rejected_before_aggregation() -> None:
+    repo = FakeUsageAnalyticsRepository()
+    with make_client(repo, ADMIN) as client:
+        response = client.get(
+            "/v1/analytics/usage",
+            params={
+                "from": "2025-01-01T00:00:00Z",
+                "to": "2026-07-01T00:00:00Z",
+                "bucket": "day",
+            },
+        )
+
+    assert response.status_code == 422
+    assert repo.calls == []
+
+
 def test_scoped_consumer_gets_visibility_filter() -> None:
     repo = FakeUsageAnalyticsRepository()
     with make_client(repo, ALICE) as client:

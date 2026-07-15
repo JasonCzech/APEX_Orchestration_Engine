@@ -1,15 +1,16 @@
 {{- if .Values.tests.enabled -}}
-# `helm test <release>` smoke: hit the unauthenticated /ok health endpoint.
+# `helm test <release>` smoke: hit the dependency-aware readiness endpoint.
 apiVersion: v1
 kind: Pod
 metadata:
-  name: {{ include "apex.fullname" . }}-test-ok
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "test-ok") }}
   labels:
     {{- include "apex.test.labels" . | nindent 4 }}
   annotations:
     "helm.sh/hook": test
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
+  automountServiceAccountToken: false
   restartPolicy: Never
   securityContext:
     {{- toYaml .Values.podSecurityContext | nindent 4 }}
@@ -21,5 +22,5 @@ spec:
       command:
         - curl
         - -fsS
-        - http://{{ include "apex.fullname" . }}:{{ .Values.service.port }}/ok
+        - http://{{ include "apex.fullname" . }}:{{ .Values.service.port }}/ready
 {{- end }}

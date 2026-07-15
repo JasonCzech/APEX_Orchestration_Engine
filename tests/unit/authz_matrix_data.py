@@ -23,6 +23,7 @@ MIN_ROLE: dict[str, str] = {
     "getPipeline": "viewer",
     "getPhasePromptReview": "viewer",
     "patchPhasePromptReview": "operator",
+    "rerunPipeline": "operator",
     "resumeGate": "operator",
     "abortPipeline": "operator",
     # ── prompts ─────────────────────────────────────────────────────────────
@@ -55,6 +56,8 @@ MIN_ROLE: dict[str, str] = {
     "uploadDocument": "operator",
     "listDocuments": "viewer",
     "getDocument": "viewer",
+    # One-time repair of durable artifact-store affinity is admin-only.
+    "assignDocumentArtifactConnection": "admin",
     "deleteDocument": "operator",
     "getArtifact": "viewer",
     # ── drafts ──────────────────────────────────────────────────────────────
@@ -130,6 +133,7 @@ SCOPE: dict[str, str] = {
     "getPipeline": "project",
     "getPhasePromptReview": "project",
     "patchPhasePromptReview": "project",
+    "rerunPipeline": "project",
     "resumeGate": "project",
     "abortPipeline": "project",
     # ── prompts ─────────────────────────────────────────────────────────────
@@ -160,6 +164,7 @@ SCOPE: dict[str, str] = {
     "uploadDocument": "project_app",
     "listDocuments": "project",
     "getDocument": "project_app",
+    "assignDocumentArtifactConnection": "admin_scope",
     "deleteDocument": "project_app",
     "getArtifact": "project_app",
     # ── drafts ──────────────────────────────────────────────────────────────
@@ -238,6 +243,11 @@ BODY_OVERRIDES: dict[str, Any] = {
     # putHostMappings replaces the full mapping list — the body is a JSON array.
     "putHostMappings": [],
     "resumeGate": {"action": "approve"},
+    "rerunPipeline": {
+        "phases": ["execution"],
+        "gates_mode": "inherit",
+        "idempotency_key": "matrix-rerun",
+    },
     # createPipelineRun requires a non-empty title; provide one so operator/admin
     # reach the handler (the exploding loopback stub then 5xxs — fine post-authz).
     "createPipelineRun": {"title": "matrix-run"},

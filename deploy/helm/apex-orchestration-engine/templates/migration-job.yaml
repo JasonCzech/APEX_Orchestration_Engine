@@ -1,14 +1,16 @@
 {{- if .Values.migrations.enabled -}}
-# Pre-install/pre-upgrade hook: `alembic upgrade head` against the apex schema
+# Pre-install/pre-upgrade hook: compatibility-aware Alembic upgrade against the apex schema
 # BEFORE the Deployment rolls (ADR-0005 migrate-then-roll). A failure here aborts
 # the release, so new pods never start against an un-migrated schema. The Job runs
 # the exact image+tag being deployed; only APEX_DATABASE__URI is needed (Alembic's
 # env.py resolves the URL from it). alembic.ini lives outside the wheel, so the
-# config is built inline pointing at the packaged migrations tree.
+# runner skips only when the database is a proven registered descendant of the
+# packaged head, so deploying an older compatible image never asks Alembic to
+# resolve a future revision it cannot know about.
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "apex.fullname" . }}-migrate
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "migrate") }}
   labels:
     {{- include "apex.labels" . | nindent 4 }}
     app.kubernetes.io/component: migrate
@@ -23,7 +25,7 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "apex.selectorLabels" . | nindent 8 }}
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
@@ -37,24 +39,38 @@ spec:
       {{- end }}
       containers:
         - name: migrate
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "apex.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          command: ["python", "-c"]
-          args:
-            - |
-              from alembic.config import Config
-              from alembic import command
-              from importlib.resources import files
-
-              cfg = Config()
-              cfg.set_main_option("script_location", str(files("apex.persistence") / "migrations"))
-              command.upgrade(cfg, "head")
+          command: ["python", "-m", "apex.persistence.migrate"]
           env:
-            {{- include "apex.dbEnv" . | nindent 12 }}
-            {{- with .Values.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- include "apex.hookDbEnv" . | nindent 12 }}
+            {{- if .Values.databaseRoleProvisioning.enabled }}
+            # The migration process revalidates the credential-bound owners,
+            # every direct generation, and the exact apex-schema claim before
+            # Alembic receives DDL authority.
+            - name: APEX_RUNTIME_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.runtimeSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.runtimeUriKey | quote }}
+            - name: APEX_MIGRATION_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.migrationSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.migrationUriKey | quote }}
+            - name: APEX_RUNTIME_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.runtimeOwnerRole | quote }}
+            - name: APEX_MIGRATION_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.migrationOwnerRole | quote }}
+            - name: APEX_DATABASE_ROLE_OWNER_ID
+              value: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
+            - name: APEX_DATABASE_ROLE_CLAIM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.claimSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.claimSecretKey | quote }}
             {{- end }}
           resources:
             {{- toYaml .Values.migrations.resources | nindent 12 }}

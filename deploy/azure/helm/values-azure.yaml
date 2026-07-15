@@ -5,12 +5,19 @@
 #   helm upgrade --install apex deploy/helm/apex-orchestration-engine \
 #     -f deploy/azure/helm/values-azure.yaml \
 #     --set image.repository=$ACR/apex-orchestration-engine --set image.tag=$TAG \
+#     --set-string image.digest=$BACKEND_DIGEST \
 #     --set dashboard.image.repository=$ACR/apex-dashboard --set dashboard.image.tag=$TAG \
+#     --set-string dashboard.image.digest=$DASHBOARD_DIGEST \
 #     --set secretBackend.csi.keyvaultName=$KV --set secretBackend.csi.tenantId=$TENANT \
 #     --set workloadIdentity.clientId=$CLIENT_ID
 
 image:
   repository: REPLACE_ME.azurecr.io/apex-orchestration-engine
+
+# Stable capability label consumed by the separately applied MinIO NetworkPolicy.
+# Unlike Helm instance labels, it remains correct when APEX_RELEASE is customized.
+podLabels:
+  apex.io/minio-client: "true"
 
 apexSettings:
   APEX_ENVIRONMENT: production
@@ -29,11 +36,25 @@ workloadIdentity:
   enabled: true
   clientId: REPLACE_ME # Terraform output: workload_identity_client_id
 
+hookWorkloadIdentity:
+  clientId: REPLACE_ME # Terraform output: hook_identity_client_id
+
+backupWorkloadIdentity:
+  enabled: true
+  clientId: REPLACE_ME # Terraform output: backup_identity_client_id
+  serviceAccountName: apex-minio-backup
+
 serviceAccount:
   create: true
   # Must match Terraform's workload_service_account federated-credential subject.
   name: apex-orchestration-engine
   # automountServiceAccountToken stays false; the in_cluster inventory adapter is opt-in.
+
+# Database credentials are promoted by the role-provisioning pre-hook only after
+# the new versioned login connects successfully. This Secret is deliberately not
+# owned by the CSI driver's legacy runtime SecretProviderClass.
+database:
+  existingSecret: apex-database-active
 
 # Must match Terraform's workload_hook_service_account federated subject.
 hookServiceAccountName: apex-orchestration-engine-hooks
@@ -42,33 +63,31 @@ secretBackend:
   mode: secretsStoreCSI
   csi:
     keyvaultName: REPLACE_ME # Terraform output: key_vault_name
+    hookKeyvaultName: REPLACE_ME # Terraform output: hook_key_vault_name
+    cleanup:
+      enabled: true
     tenantId: REPLACE_ME     # Terraform output: tenant_id
-    # Full object list (lists replace, not merge): DB/redis/license + the MinIO secret.
+    # Runtime-only non-database objects. Database credentials are promoted into
+    # apex-database-active by the role hook only after the candidate role works.
     objects:
-      - { objectName: database-uri, secretName: apex-database, key: DATABASE_URI }
-      - { objectName: apex-database-uri, secretName: apex-database, key: APEX_DATABASE__URI }
       - { objectName: redis-uri, secretName: apex-redis, key: REDIS_URI }
       - { objectName: langgraph-license, secretName: apex-langgraph-license, key: LANGGRAPH_CLOUD_LICENSE_KEY }
       - { objectName: artifact-secret-key, secretName: apex-minio, key: APEX_INTEGRATION_MINIO_SECRET_KEY }
-      - { objectName: bootstrap-admin-key, secretName: apex-admin, key: APEX_BOOTSTRAP_ADMIN_KEY }
       - { objectName: api-key-hash-pepper, secretName: apex-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
       - { objectName: previous-api-key-hash-peppers, secretName: apex-auth, key: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS }
-      - { objectName: artifact-backup-account, secretName: apex-minio-backup, key: AZURE_STORAGE_ACCOUNT }
-      - { objectName: artifact-backup-key, secretName: apex-minio-backup, key: AZURE_STORAGE_KEY }
+    hookObjects:
+      - { objectName: database-admin-uri, secretName: apex-database-admin, key: APEX_DATABASE_ADMIN_URI }
+      - { objectName: database-role-claim, secretName: apex-database-role-claim, key: APEX_DATABASE_ROLE_CLAIM_KEY }
+      - { objectName: database-runtime-uri, secretName: apex-database-bootstrap, key: DATABASE_URI }
+      - { objectName: apex-database-runtime-uri, secretName: apex-database-bootstrap, key: APEX_DATABASE__URI }
+      - { objectName: apex-database-migration-uri, secretName: apex-database-migration, key: APEX_DATABASE__URI }
+      - { objectName: bootstrap-admin-key, secretName: apex-admin, key: APEX_BOOTSTRAP_ADMIN_KEY }
+      - { objectName: api-key-hash-pepper, secretName: apex-hook-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
+      - { objectName: previous-api-key-hash-peppers, secretName: apex-hook-auth, key: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS }
 
 # MinIO artifact store secret -> app env
 # (the connection's secret_ref env:APEX_INTEGRATION_MINIO_SECRET_KEY).
 extraEnv:
-  - name: APEX_AUTH__API_KEY_HASH_PEPPER
-    valueFrom:
-      secretKeyRef:
-        name: apex-auth
-        key: APEX_AUTH__API_KEY_HASH_PEPPER
-  - name: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS
-    valueFrom:
-      secretKeyRef:
-        name: apex-auth
-        key: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS
   - name: APEX_INTEGRATION_MINIO_SECRET_KEY
     valueFrom:
       secretKeyRef:
@@ -78,6 +97,19 @@ extraEnv:
 # Run migrations + bootstrap as pre-upgrade hooks.
 migrations:
   enabled: true
+  databaseSecret: apex-database-migration
+
+databaseRoleProvisioning:
+  enabled: true
+  # Both supported Azure deploy paths pass `helm upgrade --wait`, so the
+  # post-upgrade hook runs only after the replacement Deployment is Ready.
+  cleanupOldGenerations: true
+  runtimeSecret: apex-database-bootstrap
+  runtimePsycopgUriKey: DATABASE_URI
+  publishRuntimeSecret: true
+
+auth:
+  previousApiKeyHashPeppersKey: APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS
 
 bootstrap:
   enabled: true
@@ -106,8 +138,9 @@ bootstrap:
 # Routing: managed NGINX ingress with SSE-safe annotations (or switch to gateway.enabled).
 ingress:
   enabled: true
-  className: webapprouting.kubernetes.io
+  className: webapprouting.kubernetes.azure.com
   annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "26m"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"

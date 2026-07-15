@@ -2,9 +2,11 @@
 
 import asyncio
 import json
+import time
 from collections.abc import Iterator
 
 import pytest
+from structlog.testing import capture_logs
 
 from apex.adapters.registry import ConnectionConfig, PortKind
 from apex.adapters.sim_engine import SimExecutionEngine
@@ -166,6 +168,21 @@ async def test_abort_persists_terminal_state_in_handle() -> None:
     assert (await engine.get_status(handle)).phase is EngineRunPhase.ABORTED
 
 
+async def test_abort_neither_persists_nor_logs_opaque_reason_content() -> None:
+    secret_reason = "opaque-api-key-value-that-redaction-cannot-recognize"
+    engine = _engine(duration_s=FAST_DURATION_S)
+    handle = await engine.provision(_spec())
+
+    with capture_logs() as logs:
+        await engine.abort(handle, reason=secret_reason)
+
+    assert secret_reason not in repr(handle.model_dump(mode="json"))
+    assert secret_reason not in repr(logs)
+    event = next(log for log in logs if log.get("event") == "sim_engine.aborted")
+    assert event["reason_present"] is True
+    assert event["reason_length"] == len(secret_reason)
+
+
 async def test_unprovisioned_handle_raises() -> None:
     engine = _engine()
     bare = EngineHandle(engine="sim")
@@ -179,3 +196,74 @@ async def test_spec_duration_used_when_no_option_override() -> None:
     engine = _engine()  # no duration_s option
     handle = await engine.provision(LoadTestSpec(idempotency_key="k", title="t", duration_s=123.0))
     assert float(handle.extras["duration_s"]) == 123.0
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"duration_s": float("nan")}, "duration_s option"),
+        ({"duration_s": float("inf")}, "duration_s option"),
+        ({"duration_s": 0}, "duration_s option"),
+        ({"duration_s": 86_401}, "duration_s option"),
+        ({"duration_s": "9" * 1_000}, "duration_s option"),
+        ({"fail_at_pct": float("nan")}, "fail_at_pct option"),
+        ({"fail_at_pct": float("inf")}, "fail_at_pct option"),
+        ({"fail_at_pct": -1}, "fail_at_pct option"),
+        ({"fail_at_pct": 101}, "fail_at_pct option"),
+        ({"fail_at_pct": "9" * 1_000}, "fail_at_pct option"),
+    ],
+)
+def test_constructor_rejects_invalid_numeric_options(
+    options: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        _engine(**options)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("started_at", "nan"),
+        ("started_at", "inf"),
+        ("started_at", str(time.time() + 10_000)),
+        ("duration_s", "nan"),
+        ("duration_s", "inf"),
+        ("duration_s", "0"),
+        ("duration_s", "86401"),
+        ("duration_s", "9" * 1_000),
+        ("vusers", "0"),
+        ("vusers", "10001"),
+        ("vusers", "1.0"),
+        ("vusers", "9" * 1_000),
+        ("fail_at_pct", "nan"),
+        ("fail_at_pct", "inf"),
+        ("fail_at_pct", "-1"),
+        ("fail_at_pct", "101"),
+        ("fail_at_pct", "9" * 1_000),
+    ],
+)
+async def test_status_rejects_corrupt_numeric_handle_extras(name: str, value: str) -> None:
+    handle = await _engine().provision(_spec())
+    # Durable handles can originate in old/corrupt storage and bypass model admission.
+    handle.extras[name] = value
+    with pytest.raises(ValueError, match=f"handle {name}"):
+        await _engine().get_status(handle)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-1", "101", "9" * 1_000])
+async def test_status_rejects_corrupt_aborted_progress(value: str) -> None:
+    handle = await _engine().provision(_spec())
+    handle.extras.update({"aborted": "true", "aborted_progress_pct": value})
+    with pytest.raises(ValueError, match="handle aborted_progress_pct"):
+        await _engine().get_status(handle)
+
+
+async def test_validate_and_provision_reject_nonfinite_bypassed_spec() -> None:
+    spec = _spec().model_copy(
+        update={"vusers": True, "duration_s": float("nan"), "ramp_s": float("inf")}
+    )
+    report = await _engine().validate(spec)
+    assert report.ok is False
+    assert len(report.issues) == 3
+    with pytest.raises(ValueError, match="invalid sim load-test spec"):
+        await _engine().provision(spec)

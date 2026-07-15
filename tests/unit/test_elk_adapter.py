@@ -9,6 +9,7 @@ import respx
 
 from apex.adapters.elk.log_search import (
     MAX_PAGE_SIZE,
+    PROVIDER_SEARCH_TIMEOUT,
     ElasticsearchLogSearchAdapter,
     ElkLogEntry,
     build_search_body,
@@ -56,7 +57,7 @@ ES_RESPONSE: dict[str, Any] = {
     "timed_out": False,
     "_shards": {"total": 2, "successful": 2, "skipped": 0, "failed": 0},
     "hits": {
-        "total": {"value": 1234, "relation": "gte"},
+        "total": {"value": 1234, "relation": "eq"},
         "max_score": None,
         "hits": [
             {  # ECS-shaped document
@@ -139,14 +140,14 @@ ES_400: dict[str, Any] = {
 
 
 @respx.mock
-async def test_search_maps_every_source_shape_and_gte_total() -> None:
+async def test_search_maps_every_source_shape_and_exact_total() -> None:
     route = search_route().mock(return_value=httpx.Response(200, json=ES_RESPONSE))
     result = await make_adapter().search(
         LogQuery(query="timeout", filters={}), window=WINDOW, page=PAGE
     )
 
     assert route.called
-    assert result.total == 1234  # {value, relation:"gte"} shape
+    assert result.total == 1234
     assert len(result.entries) == 3
 
     ecs, flat, docker = result.entries
@@ -196,6 +197,8 @@ async def test_search_sends_bool_query_with_terms_range_paging_and_sort() -> Non
     assert body["from"] == 20
     assert body["size"] == 100
     assert body["sort"] == [{"@timestamp": {"order": "desc", "unmapped_type": "date"}}]
+    assert body["timeout"] == PROVIDER_SEARCH_TIMEOUT
+    assert body["track_total_hits"] is True
 
 
 @respx.mock
@@ -204,7 +207,10 @@ async def test_search_uses_configured_index_and_caps_size() -> None:
         return_value=httpx.Response(200, json=ES_RESPONSE)
     )
     await make_adapter(index="app-logs-prod").search(
-        LogQuery(query="boom", filters={}), window=WINDOW, page=Page(offset=0, limit=9999)
+        LogQuery(query="boom", filters={}),
+        window=WINDOW,
+        # Bypass the public model bound to exercise the adapter's own defensive cap.
+        page=Page.model_construct(offset=0, limit=9999),
     )
     assert route.called
     assert sent_body(route)["size"] == MAX_PAGE_SIZE
@@ -258,6 +264,25 @@ async def test_no_secret_sends_no_authorization_header() -> None:
     assert "Authorization" not in route.calls.last.request.headers
 
 
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "api-key\r\nInjected: value",
+        "k" * 16_385,
+        "non-ascii-\N{SNOWMAN}",
+        ":password",
+        "username:",
+    ],
+)
+def test_constructor_rejects_unsafe_or_malformed_credentials_without_reflection(
+    credential: str,
+) -> None:
+    with pytest.raises(ValueError) as error:
+        make_adapter(secret=credential)
+
+    assert credential not in str(error.value)
+
+
 # ── error mapping ─────────────────────────────────────────────────────────────
 
 
@@ -296,6 +321,97 @@ async def test_transport_error_maps_to_runtime_error() -> None:
 async def test_non_json_success_body_is_runtime_error() -> None:
     search_route().mock(return_value=httpx.Response(200, text="<html>proxy error</html>"))
     with pytest.raises(RuntimeError, match="non-JSON"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+@respx.mock
+async def test_timed_out_success_response_is_rejected_as_partial() -> None:
+    payload = {**ES_RESPONSE, "timed_out": True}
+    search_route().mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="timed out before all results"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+@respx.mock
+async def test_failed_shard_success_response_is_rejected_as_partial() -> None:
+    payload = {
+        **ES_RESPONSE,
+        "_shards": {"total": 2, "successful": 1, "skipped": 0, "failed": 1},
+    }
+    search_route().mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="partial results with 1 failed shard"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+@pytest.mark.parametrize("raw_hits", [None, {}, "not-a-list", [None], [{"_source": {}}, 7]])
+@respx.mock
+async def test_malformed_hits_list_or_elements_are_rejected(raw_hits: object) -> None:
+    payload = {"hits": {"total": 0, "hits": raw_hits}}
+    search_route().mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match=r"hits\.hits"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+@respx.mock
+async def test_provider_cannot_return_more_entries_than_requested() -> None:
+    payload = {
+        **ES_RESPONSE,
+        "hits": {
+            "total": {"value": 2, "relation": "eq"},
+            "hits": ES_RESPONSE["hits"]["hits"][:2],
+        },
+    }
+    search_route().mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="returned more hits than requested"):
+        await make_adapter().search(
+            LogQuery(query="x", filters={}),
+            window=WINDOW,
+            page=Page(offset=0, limit=1),
+        )
+
+
+@pytest.mark.parametrize(
+    "raw_total",
+    [
+        None,
+        True,
+        -1,
+        1.5,
+        "3",
+        {},
+        {"value": True, "relation": "eq"},
+        {"value": -1, "relation": "eq"},
+        {"value": 1.5, "relation": "gte"},
+        {"value": 3, "relation": "approximate"},
+    ],
+)
+@respx.mock
+async def test_malformed_total_shapes_are_rejected(raw_total: object) -> None:
+    payload = {"hits": {"total": raw_total, "hits": []}}
+    search_route().mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="hits.total"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+@respx.mock
+async def test_missing_total_is_rejected() -> None:
+    search_route().mock(return_value=httpx.Response(200, json={"hits": {"hits": []}}))
+
+    with pytest.raises(RuntimeError, match="missing hits.total"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+@respx.mock
+async def test_lower_bound_total_is_not_reported_as_an_exact_count() -> None:
+    payload = {"hits": {"total": {"value": 10_000, "relation": "gte"}, "hits": []}}
+    search_route().mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="lower-bound hits.total"):
         await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
 
 
@@ -349,5 +465,6 @@ def test_map_hit_flat_dotted_log_level_key_is_consumed() -> None:
 
 
 def test_build_search_body_clamps_negative_offset() -> None:
-    page = Page(offset=-5, limit=10)
+    # Bypass the public model bound to pin the internal defense-in-depth clamp.
+    page = Page.model_construct(offset=-5, limit=10)
     assert build_search_body(LogQuery(query="", filters={}), TimeWindow(), page)["from"] == 0

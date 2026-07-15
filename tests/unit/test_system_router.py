@@ -1,9 +1,31 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from apex.app import http as http_app
 from apex.app.http import app
 
 DEV_KEY = "system-info-dev-key"
+
+
+def test_system_readiness_is_public_and_dependency_aware() -> None:
+    with TestClient(app) as client:
+        response = client.get("/ready")
+    assert response.status_code == 204
+    assert response.content == b""
+
+
+def test_system_readiness_hides_dependency_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unavailable(_app: object) -> None:
+        raise RuntimeError("postgresql://admin:secret@database.internal/apex")
+
+    monkeypatch.setattr(http_app, "check_runtime_readiness", unavailable)
+    with TestClient(app) as client:
+        response = client.get("/ready")
+    assert response.status_code == 503
+    assert "secret" not in response.text
+    assert response.json()["title"] == "Service is not ready"
 
 
 def test_system_info_requires_api_key() -> None:

@@ -2,7 +2,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "apex.fullname" . }}-csi-sync
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-sync") }}
   labels:
     {{- include "apex.labels" . | nindent 4 }}
     app.kubernetes.io/component: csi-sync
@@ -16,13 +16,13 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "apex.selectorLabels" . | nindent 8 }}
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: csi-sync
         azure.workload.identity/use: "true"
     spec:
       restartPolicy: Never
       serviceAccountName: {{ include "apex.hookServiceAccountName" . | quote }}
-      automountServiceAccountToken: false
+      automountServiceAccountToken: true
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- with .Values.imagePullSecrets }}
@@ -31,34 +31,123 @@ spec:
       {{- end }}
       containers:
         - name: sync
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          image: {{ include "apex.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           command: ["python", "-c"]
           args:
             - |
+              import base64
+              import json
+              import os
+              import ssl
+              import time
+              import urllib.error
+              import urllib.request
               from pathlib import Path
 
-              mounted = [path for path in Path("/mnt/secrets-store").iterdir() if path.is_file()]
-              expected = {{ len .Values.secretBackend.csi.objects }}
-              if len(mounted) < expected:
-                  raise SystemExit(f"CSI mounted {len(mounted)} object(s); expected {expected}")
+              # The volume mount contains the latest Key Vault bytes, but the
+              # following hooks and server consume native Secrets via env. Do
+              # not finish until both SecretProviderClasses have synchronized.
+              hook_objects = json.loads(
+                  base64.b64decode(
+                      "{{ toJson .Values.secretBackend.csi.hookObjects | b64enc }}"
+                  )
+              )
+              runtime_objects = json.loads(
+                  base64.b64decode(
+                      "{{ toJson .Values.secretBackend.csi.objects | b64enc }}"
+                  )
+              )
+              secret_groups = (
+                  ("hook", hook_objects, Path("/mnt/hook-secrets-store")),
+                  ("runtime", runtime_objects, Path("/mnt/runtime-secrets-store")),
+              )
+              token_dir = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+              token = (token_dir / "token").read_text().strip()
+              namespace = (token_dir / "namespace").read_text().strip()
+              context = ssl.create_default_context(cafile=str(token_dir / "ca.crt"))
+              api = (
+                  f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:"
+                  f"{os.environ['KUBERNETES_SERVICE_PORT_HTTPS']}"
+              )
+
+              def read_secret(name):
+                  request = urllib.request.Request(
+                      f"{api}/api/v1/namespaces/{namespace}/secrets/{name}",
+                      headers={"Authorization": f"Bearer {token}"},
+                  )
+                  with urllib.request.urlopen(request, context=context, timeout=5) as response:
+                      return json.load(response).get("data") or {}
+
+              def find_mismatches(secret_kind, objects, mount_dir, cache):
+                  mismatches = []
+                  for item in objects:
+                      secret_name = item["secretName"]
+                      secret_key = item["key"]
+                      object_name = item["objectName"]
+                      reference = f"{secret_kind} {secret_name}/{secret_key}"
+                      try:
+                          expected = (mount_dir / object_name).read_bytes()
+                      except OSError as exc:
+                          mismatches.append(
+                              f"{reference}: mounted object {object_name!r} unavailable ({exc})"
+                          )
+                          continue
+                      try:
+                          if secret_name not in cache:
+                              cache[secret_name] = read_secret(secret_name)
+                          actual = base64.b64decode(
+                              cache[secret_name][secret_key], validate=True
+                          )
+                      except (KeyError, TypeError, ValueError, OSError, urllib.error.URLError) as exc:
+                          mismatches.append(f"{reference}: native Secret unavailable ({exc})")
+                          continue
+                      if actual != expected:
+                          mismatches.append(f"{reference}: stale")
+                  return mismatches
+
+              last_mismatches = []
+              for _ in range(60):
+                  last_mismatches = []
+                  cache = {}
+                  for secret_kind, objects, mount_dir in secret_groups:
+                      last_mismatches.extend(
+                          find_mismatches(secret_kind, objects, mount_dir, cache)
+                      )
+                  if not last_mismatches:
+                      break
+                  time.sleep(1)
+              else:
+                  raise SystemExit(
+                      "CSI native Secret synchronization did not converge: "
+                      + ", ".join(last_mismatches)
+                  )
           resources:
             {{- toYaml .Values.migrations.resources | nindent 12 }}
           volumeMounts:
-            - name: secrets-store
-              mountPath: /mnt/secrets-store
+            - name: hook-secrets-store
+              mountPath: /mnt/hook-secrets-store
+              readOnly: true
+            - name: runtime-secrets-store
+              mountPath: /mnt/runtime-secrets-store
               readOnly: true
             - name: tmp
               mountPath: /tmp
       volumes:
-        - name: secrets-store
+        - name: hook-secrets-store
           csi:
             driver: secrets-store.csi.x-k8s.io
             readOnly: true
             volumeAttributes:
               secretProviderClass: {{ include "apex.hookAkVSecretProviderClassName" . }}
+        - name: runtime-secrets-store
+          csi:
+            driver: secrets-store.csi.x-k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ include "apex.hookRuntimeAkVSecretProviderClassName" . }}
         - name: tmp
           emptyDir: {}
 {{- end }}

@@ -14,6 +14,7 @@ from apex.domain.integrations import (
     WorkItemFilters,
     WorkItemPage,
 )
+from apex.ports.work_tracking import WorkTrackingMutationTargetNotFoundError
 
 _TRACKER_URL = "https://tracker.stub.local/browse"
 
@@ -75,6 +76,8 @@ class StubWorkTrackingAdapter:
         self, conn: ConnectionConfig | None = None, secret: SecretValue | None = None
     ) -> None:
         self._conn = conn
+        self._created_by_marker: dict[str, WorkItem] = {}
+        self._comment_markers: set[tuple[str, str]] = set()
 
     async def translate_query(
         self, natural_language: str, *, context: QueryContext
@@ -90,7 +93,9 @@ class StubWorkTrackingAdapter:
         for item in _BACKLOG:
             if item.key == key:
                 return item.model_copy(deep=True)
-        raise KeyError(f"work item {key!r} not found in stub backlog")
+        raise WorkTrackingMutationTargetNotFoundError(
+            f"work item {key!r} not found in stub backlog"
+        )
 
     async def list_items(self, filters: WorkItemFilters, *, page: Page) -> WorkItemPage:
         matched = [item.model_copy(deep=True) for item in _BACKLOG if _matches(item, filters)]
@@ -108,6 +113,29 @@ class StubWorkTrackingAdapter:
             description=draft.description,
             url=f"{_TRACKER_URL}/{key}",
         )
+
+    async def find_item_by_idempotency_marker(self, marker: str) -> WorkItem | None:
+        item = self._created_by_marker.get(marker)
+        return item.model_copy(deep=True) if item is not None else None
+
+    async def create_item_idempotent(self, draft: WorkItemDraft, *, marker: str) -> WorkItem:
+        existing = await self.find_item_by_idempotency_marker(marker)
+        if existing is not None:
+            return existing
+        item = await self.create_item(draft)
+        self._created_by_marker[marker] = item.model_copy(deep=True)
+        return item
+
+    async def update_item_fields_idempotent(self, key: str, fields: dict[str, object]) -> None:
+        await self.enrich_item(key, Enrichment(fields=fields))
+
+    async def has_comment_idempotency_marker(self, key: str, marker: str) -> bool:
+        await self.get_item(key)
+        return (key, marker) in self._comment_markers
+
+    async def add_item_comment_idempotent(self, key: str, comment: str, *, marker: str) -> None:
+        await self.enrich_item(key, Enrichment(comment=comment))
+        self._comment_markers.add((key, marker))
 
     async def enrich_item(self, key: str, enrichment: Enrichment) -> WorkItem:
         item = await self.get_item(key)

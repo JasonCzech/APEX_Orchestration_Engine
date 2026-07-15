@@ -11,19 +11,110 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from apex.bootstrap.runner import BootstrapError, apply_document
 from apex.bootstrap.schema import BootstrapDocument
 
+MAX_BOOTSTRAP_BYTES = 1_048_576
+MAX_BOOTSTRAP_DEPTH = 32
+MAX_BOOTSTRAP_NODES = 10_000
+
+
+def _read_document(path: str) -> str:
+    try:
+        if path == "-":
+            value = sys.stdin.read(MAX_BOOTSTRAP_BYTES + 1)
+            encoded_size = len(value.encode("utf-8"))
+        else:
+            with Path(path).open("rb") as stream:
+                payload = stream.read(MAX_BOOTSTRAP_BYTES + 1)
+            encoded_size = len(payload)
+            value = payload.decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise BootstrapError(f"cannot read bootstrap document ({type(exc).__name__})") from exc
+    if encoded_size > MAX_BOOTSTRAP_BYTES:
+        raise BootstrapError(f"bootstrap document exceeds the {MAX_BOOTSTRAP_BYTES}-byte limit")
+    return value
+
+
+def _validate_json_nesting(raw: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > MAX_BOOTSTRAP_DEPTH:
+                raise BootstrapError(
+                    f"bootstrap document exceeds maximum depth {MAX_BOOTSTRAP_DEPTH}"
+                )
+        elif char in "]}":
+            depth -= 1
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise BootstrapError("bootstrap document contains a duplicate key")
+        result[key] = value
+    return result
+
+
+def _validate_document_tree(data: Any) -> None:
+    nodes = 0
+    seen_containers: set[int] = set()
+    stack: list[tuple[Any, int]] = [(data, 1)]
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_BOOTSTRAP_NODES:
+            raise BootstrapError(f"bootstrap document exceeds the {MAX_BOOTSTRAP_NODES}-node limit")
+        if depth > MAX_BOOTSTRAP_DEPTH:
+            raise BootstrapError(f"bootstrap document exceeds maximum depth {MAX_BOOTSTRAP_DEPTH}")
+        if isinstance(value, Mapping):
+            identity = id(value)
+            if identity in seen_containers:
+                raise BootstrapError("bootstrap document must not contain aliases or cycles")
+            seen_containers.add(identity)
+            for key, child in value.items():
+                if not isinstance(key, str):
+                    raise BootstrapError("bootstrap document mapping keys must be strings")
+                stack.append((child, depth + 1))
+        elif isinstance(value, list):
+            identity = id(value)
+            if identity in seen_containers:
+                raise BootstrapError("bootstrap document must not contain aliases or cycles")
+            seen_containers.add(identity)
+            stack.extend((child, depth + 1) for child in value)
+        elif not isinstance(value, (str, int, bool)) and value is not None:
+            if not isinstance(value, float) or not math.isfinite(value):
+                raise BootstrapError(
+                    "bootstrap document values must use finite JSON-compatible scalar types"
+                )
+
 
 def _load_document(path: str) -> dict[str, Any]:
-    raw = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
+    raw = _read_document(path)
     suffix = "" if path == "-" else Path(path).suffix.lower()
     if suffix in (".yaml", ".yml"):
         try:
@@ -32,9 +123,75 @@ def _load_document(path: str) -> dict[str, Any]:
             raise BootstrapError(
                 "YAML bootstrap files need PyYAML installed; use JSON or `pip install pyyaml`"
             ) from exc
-        data = yaml.safe_load(raw)
+        try:
+            depth = 0
+            nodes = 0
+            for event in yaml.parse(raw, Loader=yaml.SafeLoader):
+                if isinstance(event, yaml.events.AliasEvent):
+                    raise BootstrapError("bootstrap YAML aliases are not allowed")
+                if isinstance(
+                    event,
+                    (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent),
+                ):
+                    depth += 1
+                    nodes += 1
+                    if depth > MAX_BOOTSTRAP_DEPTH:
+                        raise BootstrapError(
+                            f"bootstrap document exceeds maximum depth {MAX_BOOTSTRAP_DEPTH}"
+                        )
+                elif isinstance(
+                    event,
+                    (yaml.events.MappingEndEvent, yaml.events.SequenceEndEvent),
+                ):
+                    depth -= 1
+                elif isinstance(event, yaml.events.ScalarEvent):
+                    nodes += 1
+                if nodes > MAX_BOOTSTRAP_NODES:
+                    raise BootstrapError(
+                        f"bootstrap document exceeds the {MAX_BOOTSTRAP_NODES}-node limit"
+                    )
+
+            class UniqueKeyLoader(yaml.SafeLoader):
+                pass
+
+            def construct_mapping(loader: Any, node: Any, deep: bool = False) -> dict[Any, Any]:
+                loader.flatten_mapping(node)
+                result: dict[Any, Any] = {}
+                for key_node, value_node in node.value:
+                    key = loader.construct_object(key_node, deep=deep)
+                    try:
+                        duplicate = key in result
+                    except TypeError as exc:
+                        raise BootstrapError("bootstrap YAML mapping keys must be scalar") from exc
+                    if duplicate:
+                        raise BootstrapError("bootstrap document contains a duplicate key")
+                    result[key] = loader.construct_object(value_node, deep=deep)
+                return result
+
+            UniqueKeyLoader.add_constructor(
+                yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+                construct_mapping,
+            )
+            data = yaml.load(raw, Loader=UniqueKeyLoader)
+        except BootstrapError:
+            raise
+        except (yaml.YAMLError, RecursionError) as exc:
+            raise BootstrapError(f"invalid YAML bootstrap document ({type(exc).__name__})") from exc
     else:
-        data = json.loads(raw)
+        _validate_json_nesting(raw)
+        try:
+            data = json.loads(
+                raw,
+                object_pairs_hook=_unique_json_object,
+                parse_constant=lambda _value: (_ for _ in ()).throw(
+                    BootstrapError("non-finite JSON numbers are not allowed")
+                ),
+            )
+        except BootstrapError:
+            raise
+        except (json.JSONDecodeError, RecursionError) as exc:
+            raise BootstrapError(f"invalid JSON bootstrap document ({type(exc).__name__})") from exc
+    _validate_document_tree(data)
     if not isinstance(data, dict):
         raise BootstrapError(f"bootstrap document must be a mapping, got {type(data).__name__}")
     return data
@@ -70,8 +227,24 @@ def main(argv: list[str]) -> int:
 
     try:
         doc = BootstrapDocument.model_validate(_load_document(args.file))
-    except (BootstrapError, ValueError) as exc:
+    except ValidationError as exc:
+        errors = exc.errors(include_url=False, include_context=False, include_input=False)
+        kinds = sorted({str(error.get("type", "invalid")) for error in errors})[:8]
+        summary = ", ".join(kinds) or "invalid"
+        print(
+            f"apex.bootstrap: invalid document: schema validation failed "
+            f"({len(errors)} error(s): {summary})",
+            file=sys.stderr,
+        )
+        return 2
+    except BootstrapError as exc:
         print(f"apex.bootstrap: invalid document: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(
+            f"apex.bootstrap: invalid document ({type(exc).__name__})",
+            file=sys.stderr,
+        )
         return 2
 
     try:

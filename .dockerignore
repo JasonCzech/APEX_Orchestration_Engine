@@ -1,5 +1,5 @@
 # Slim the `langgraph build` context. Keep everything the wheel build needs:
-# pyproject.toml, README.md (project.readme), uv.lock, langgraph.json, .env, src/.
+# pyproject.toml, README.md (project.readme), uv.lock, langgraph.json, src/.
 #
 # VCS / tooling
 .git
@@ -38,8 +38,11 @@ plan
 CHANGELOG.md
 CONTRIBUTING.md
 
-# Local env overrides that must never bake into an image
-.env.*.local
+# Local env files must never bake into an image.  The LangGraph config uses an
+# empty environment mapping; deployment environments inject settings at runtime.
+.env
+.env.*
+!.env.example
 *.tfvars
 *.tfstate
 *.tfstate.*

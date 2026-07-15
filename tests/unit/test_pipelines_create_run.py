@@ -11,11 +11,13 @@ from typing import Any, cast
 import httpx
 import pytest
 from fastapi import HTTPException
-from langgraph_sdk.errors import ConflictError
+from langgraph_sdk.errors import APIStatusError, ConflictError, NotFoundError
 
 import apex.routers.pipelines as pipelines
+import apex.services.pipeline_read as pipeline_read
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.repositories.documents import DocumentsRepository
+from apex.services.langgraph_client import LAUNCH_ROOT_FINGERPRINT_METADATA_KEY
 from apex.services.pipeline_read import LaunchIdempotencyConflictError, PipelineReadService
 
 
@@ -75,6 +77,39 @@ def _doc(doc_id: str, project_id: str | None, app_id: str | None = None) -> Any:
     )
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"title": "unsafe\x00title"},
+        {"title": "run", "project_id": "unsafe\x00project"},
+        {"title": "run", "configurable": {"nested": "unsafe\x00value"}},
+        {"title": "run", "gates": {"phase\x00shadow": {"prompt_review": "auto"}}},
+        {"title": "run", "assistant_id": "a" * 257},
+        {"title": "run", "phases": ["unknown_phase"]},
+        {"title": "run", "phases": ["reporting", "reporting"]},
+        {"title": "run", "model_by_phase": {"reporting": "m" * 201}},
+        {"title": "run", "model_by_phase": {"unknown_phase": "claude-opus-4-8"}},
+        {
+            "title": "run",
+            "context_packets": [{"id": "packet", "source": "sdk", "title": "unsafe\x00title"}],
+        },
+    ],
+)
+def test_start_pipeline_request_rejects_nul_before_durable_run_creation(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError):
+        pipelines.StartPipelineRequest.model_validate(payload)
+
+
+def test_prompt_review_update_rejects_nul_before_checkpoint_persistence() -> None:
+    with pytest.raises(ValueError):
+        pipelines.PhasePromptReviewUpdate(
+            system="safe",
+            phase_prompt="unsafe\x00prompt",
+        )
+
+
 async def test_documents_to_packets_maps_and_scopes() -> None:
     identity = _identity(["proj-1"])
     repo = FakeDocsRepo({"d1": _doc("d1", "proj-1"), "g1": _doc("g1", None)})
@@ -99,6 +134,20 @@ async def test_documents_to_packets_maps_and_scopes() -> None:
             "text": "text-g1",
         },
     ]
+
+
+async def test_documents_to_packets_percent_encodes_artifact_path_segments() -> None:
+    identity = _identity(["proj-1"])
+    document = _doc("d1", "proj-1")
+    document.artifact_key = "documents/d1/spec ?#%.txt"
+
+    packets = await pipelines._documents_to_packets(
+        cast(DocumentsRepository, FakeDocsRepo({"d1": document})),
+        identity,
+        ["d1"],
+    )
+
+    assert packets[0]["ref"] == "/v1/artifacts/documents/d1/spec%20%3F%23%25.txt"
 
 
 async def test_documents_to_packets_rejects_out_of_scope() -> None:
@@ -165,6 +214,61 @@ class FakeClient:
         self.runs = FakeRuns()
 
 
+class AmbiguousThreads(FakeThreads):
+    def __init__(self) -> None:
+        super().__init__()
+        self.deleted: list[str] = []
+
+    async def delete(self, thread_id: str) -> None:
+        self.deleted.append(thread_id)
+
+
+class AcceptedThenLostRuns(FakeRuns):
+    def __init__(self) -> None:
+        super().__init__()
+        self.accepted: list[str] = []
+
+    async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        self.accepted.append(thread_id)
+        raise httpx.ReadTimeout("response lost after run commit")
+
+
+class AmbiguousClient:
+    def __init__(self) -> None:
+        self.threads = AmbiguousThreads()
+        self.runs = AcceptedThenLostRuns()
+
+
+class DefinitivelyRejectedRuns(FakeRuns):
+    async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        request = httpx.Request("POST", f"http://loopback/threads/{thread_id}/runs")
+        raise NotFoundError(
+            "assistant not found",
+            response=httpx.Response(404, request=request),
+            body=None,
+        )
+
+
+class DefinitivelyRejectedClient:
+    def __init__(self) -> None:
+        self.threads = AmbiguousThreads()
+        self.runs = DefinitivelyRejectedRuns()
+
+
+class RetryableClientErrorRuns(FakeRuns):
+    def __init__(self, status_code: int) -> None:
+        super().__init__()
+        self.status_code = status_code
+
+    async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        request = httpx.Request("POST", f"http://loopback/threads/{thread_id}/runs")
+        raise APIStatusError(
+            "retryable client response after dispatch",
+            response=httpx.Response(self.status_code, request=request),
+            body=None,
+        )
+
+
 class AtomicThreads:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
@@ -183,13 +287,22 @@ class AtomicThreads:
 
 class AtomicRuns:
     def __init__(self) -> None:
-        self.rows: dict[str, list[dict[str, str]]] = {}
+        self.rows: dict[str, list[dict[str, Any]]] = {}
         self.successful_creates = 0
+        self.list_options: list[dict[str, Any]] = []
 
-    async def list(self, thread_id: str, **_: Any) -> list[dict[str, str]]:
-        return list(self.rows.get(thread_id, []))
+    async def list(self, thread_id: str, **options: Any) -> list[dict[str, Any]]:
+        self.list_options.append(options)
+        rows = list(reversed(self.rows.get(thread_id, [])))
+        offset = options.get("offset", 0)
+        limit = options.get("limit", 10)
+        selected = rows[offset : offset + limit]
+        select = options.get("select")
+        if select:
+            return [{key: row[key] for key in select if key in row} for row in selected]
+        return selected
 
-    async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+    async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         await asyncio.sleep(0)
         if self.rows.get(thread_id):
             request = httpx.Request("POST", f"http://loopback/threads/{thread_id}/runs")
@@ -198,7 +311,11 @@ class AtomicRuns:
                 response=httpx.Response(409, request=request),
                 body=None,
             )
-        run = {"run_id": f"run-{len(self.rows) + 1}"}
+        run = {
+            "run_id": f"run-{len(self.rows) + 1}",
+            "metadata": dict(_kwargs.get("metadata") or {}),
+            "created_at": f"2026-01-01T00:00:{len(self.rows):02d}+00:00",
+        }
         self.rows[thread_id] = [run]
         self.successful_creates += 1
         return run
@@ -208,6 +325,60 @@ class AtomicClient:
     def __init__(self) -> None:
         self.threads = AtomicThreads()
         self.runs = AtomicRuns()
+
+
+class DuplicateFriendlyRuns:
+    """Provider fake that relies on the facade lock instead of rejecting races."""
+
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict[str, Any]]] = {}
+        self.successful_creates = 0
+
+    async def list(self, thread_id: str, **_: Any) -> list[dict[str, Any]]:
+        rows = list(reversed(self.rows.get(thread_id, [])))
+        offset = _.get("offset", 0)
+        limit = _.get("limit", 10)
+        selected = rows[offset : offset + limit]
+        select = _.get("select")
+        snapshot = (
+            [{key: row[key] for key in select if key in row} for row in selected]
+            if select
+            else selected
+        )
+        # Without a process-wide lock, independently constructed request
+        # services both observe this empty snapshot before either creates.
+        await asyncio.sleep(0.02)
+        return snapshot
+
+    async def create(self, thread_id: str, *_args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.successful_creates += 1
+        run = {
+            "run_id": f"run-{self.successful_creates}",
+            "metadata": dict(kwargs.get("metadata") or {}),
+            "created_at": f"2026-01-01T00:00:{self.successful_creates:02d}+00:00",
+        }
+        self.rows.setdefault(thread_id, []).append(run)
+        return run
+
+
+class DuplicateFriendlyClient:
+    def __init__(self) -> None:
+        self.threads = AtomicThreads()
+        self.runs = DuplicateFriendlyRuns()
+
+
+class PreseededThreadClient:
+    def __init__(self) -> None:
+        self.runs = AtomicRuns()
+
+        class Threads:
+            async def create(self, **kwargs: Any) -> dict[str, Any]:
+                return {
+                    "thread_id": kwargs["thread_id"],
+                    "metadata": {"project_id": "proj-1"},
+                }
+
+        self.threads = Threads()
 
 
 async def test_start_run_builds_config_and_input() -> None:
@@ -226,7 +397,7 @@ async def test_start_run_builds_config_and_input() -> None:
     assert result == {
         "thread_id": "thr-1",
         "run_id": "run-1",
-        "stream_url": "/runs/run-1/stream",
+        "stream_url": "/threads/thr-1/runs/run-1/stream?stream_mode=custom",
     }
     assert client.threads.metadata["project_id"] == "proj-1"
 
@@ -248,7 +419,7 @@ async def test_start_run_builds_config_and_input() -> None:
     assert "postmortem" in configurable["gates"]
     assert "recursion_limit" in run_config
     assert options == {
-        "stream_mode": ("updates", "messages-tuple", "custom"),
+        "stream_mode": "custom",
         "stream_subgraphs": True,
         "stream_resumable": True,
         "durability": "sync",
@@ -256,19 +427,106 @@ async def test_start_run_builds_config_and_input() -> None:
     }
 
 
-async def test_start_run_idempotency_is_atomic_for_concurrent_retries() -> None:
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"request": "Authorization: Bearer launch-secret-canary"},
+        {
+            "configurable": {
+                "pre_execution_context": ["database_password=launch-secret-canary"]
+            }
+        },
+        {
+            "context_packets": [
+                {
+                    "id": "packet-1",
+                    "source": "test",
+                    "title": "context",
+                    "text": "https://user:launch-secret-canary@example.test/path",
+                }
+            ]
+        },
+    ],
+)
+async def test_start_run_rejects_credential_material_before_durable_creation(
+    kwargs: dict[str, Any],
+) -> None:
+    client = FakeClient()
+
+    with pytest.raises(ValueError, match="credential material") as excinfo:
+        await PipelineReadService(client).start_run(title="Analyze", **kwargs)
+
+    assert "launch-secret-canary" not in str(excinfo.value)
+    assert client.threads.metadata is None
+    assert client.runs.args == ()
+
+
+async def test_launch_does_not_persist_raw_idempotency_key_or_principal() -> None:
+    canary = "Bearer launch-idempotency-secret-canary"
     client = AtomicClient()
-    service = PipelineReadService(client)
+
+    await PipelineReadService(client).start_run(
+        title="Credential-shaped retry key",
+        idempotency_key=canary,
+        principal_id="principal-secret-canary",
+    )
+
+    metadata = next(iter(client.threads.rows.values()))["metadata"]
+    assert metadata.get("launch_idempotency_fingerprint")
+    assert "launch_idempotency_key" not in metadata
+    assert "launch_principal_id" not in metadata
+    assert canary not in repr(metadata)
+    assert "principal-secret-canary" not in repr(metadata)
+    assert canary not in repr((client.threads.rows, client.runs.rows))
+    assert "principal-secret-canary" not in repr((client.threads.rows, client.runs.rows))
+
+
+async def test_ambiguous_run_create_keeps_thread_for_reconciliation() -> None:
+    client = AmbiguousClient()
+
+    with pytest.raises(httpx.ReadTimeout, match="response lost"):
+        await PipelineReadService(client).start_run(title="Ambiguous launch")
+
+    assert client.runs.accepted == ["thr-1"]
+    assert client.threads.deleted == []
+
+
+async def test_definitive_run_create_4xx_deletes_fresh_random_thread() -> None:
+    client = DefinitivelyRejectedClient()
+
+    with pytest.raises(NotFoundError, match="assistant not found"):
+        await PipelineReadService(client).start_run(title="Rejected launch")
+
+    assert client.threads.deleted == ["thr-1"]
+
+
+@pytest.mark.parametrize("status_code", [408, 429])
+async def test_retryable_run_create_4xx_preserves_thread_for_reconciliation(
+    status_code: int,
+) -> None:
+    client: Any = DefinitivelyRejectedClient()
+    client.runs = RetryableClientErrorRuns(status_code)
+
+    with pytest.raises(APIStatusError, match="retryable client response"):
+        await PipelineReadService(client).start_run(title="Retryable launch")
+
+    assert client.threads.deleted == []
+
+
+async def test_start_run_idempotency_is_atomic_for_concurrent_retries() -> None:
+    client = DuplicateFriendlyClient()
+    first_service = PipelineReadService(client)
+    second_service = PipelineReadService(client)
 
     first, second = await asyncio.gather(
-        service.start_run(
+        first_service.start_run(
             title="Analyze",
             request="same request",
             project_id="proj-1",
             idempotency_key="key-1",
             principal_id="consumer-1",
         ),
-        service.start_run(
+        second_service.start_run(
             title="Analyze",
             request="same request",
             project_id="proj-1",
@@ -279,6 +537,97 @@ async def test_start_run_idempotency_is_atomic_for_concurrent_retries() -> None:
 
     assert first == second
     assert len(client.threads.rows) == 1
+    assert client.runs.successful_creates == 1
+
+
+async def test_idempotent_replay_returns_launch_root_after_trusted_resume_run() -> None:
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    launch = await service.start_run(
+        title="Analyze",
+        request="same request",
+        project_id="proj-1",
+        idempotency_key="key-1",
+        principal_id="consumer-1",
+    )
+    client.runs.rows[launch["thread_id"]].append(
+        {
+            "run_id": "resume-run",
+            "metadata": {},
+            "created_at": "2026-01-02T00:00:00+00:00",
+        }
+    )
+
+    replay = await service.start_run(
+        title="Analyze",
+        request="same request",
+        project_id="proj-1",
+        idempotency_key="key-1",
+        principal_id="consumer-1",
+    )
+
+    assert replay == launch
+    assert replay["run_id"] != "resume-run"
+    assert client.runs.successful_creates == 1
+
+
+async def test_legacy_idempotent_replay_uses_oldest_run_only_after_complete_scan() -> None:
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    launch = await service.start_run(
+        title="Legacy launch",
+        project_id="proj-1",
+        idempotency_key="legacy-key",
+        principal_id="consumer-1",
+    )
+    root = client.runs.rows[launch["thread_id"]][0]
+    root["metadata"].pop(LAUNCH_ROOT_FINGERPRINT_METADATA_KEY)
+    client.runs.rows[launch["thread_id"]].append(
+        {
+            "run_id": "legacy-resume-run",
+            "metadata": {},
+            "created_at": "2026-01-02T00:00:00+00:00",
+        }
+    )
+
+    replay = await service.start_run(
+        title="Legacy launch",
+        project_id="proj-1",
+        idempotency_key="legacy-key",
+        principal_id="consumer-1",
+    )
+
+    assert replay == launch
+
+
+async def test_legacy_idempotent_replay_fails_closed_when_scan_cap_is_exhausted() -> None:
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    launch = await service.start_run(
+        title="Oversized legacy history",
+        project_id="proj-1",
+        idempotency_key="legacy-key",
+        principal_id="consumer-1",
+    )
+    root = client.runs.rows[launch["thread_id"]][0]
+    root["metadata"].pop(LAUNCH_ROOT_FINGERPRINT_METADATA_KEY)
+    client.runs.rows[launch["thread_id"]].extend(
+        {
+            "run_id": f"resume-{index}",
+            "metadata": {},
+            "created_at": f"2026-01-02T00:00:00.{index:06d}+00:00",
+        }
+        for index in range(pipeline_read._MAX_LAUNCH_RUN_RECONCILE_RECORDS)
+    )
+
+    with pytest.raises(LaunchIdempotencyConflictError, match="bounded reconciliation limit"):
+        await service.start_run(
+            title="Oversized legacy history",
+            project_id="proj-1",
+            idempotency_key="legacy-key",
+            principal_id="consumer-1",
+        )
+
     assert client.runs.successful_creates == 1
 
 
@@ -301,6 +650,11 @@ async def test_start_run_idempotency_is_scope_bound_and_rejects_payload_drift() 
     )
 
     assert first["thread_id"] != second_scope["thread_id"]
+    assert client.runs.list_options
+    assert all(
+        options["select"] == ["run_id", "status", "metadata", "created_at"]
+        for options in client.runs.list_options
+    )
     with pytest.raises(LaunchIdempotencyConflictError):
         await service.start_run(
             title="Analyze",
@@ -309,6 +663,22 @@ async def test_start_run_idempotency_is_scope_bound_and_rejects_payload_drift() 
             idempotency_key="key-1",
             principal_id="consumer-1",
         )
+
+
+async def test_start_run_never_adopts_preseeded_deterministic_thread_without_fingerprint() -> None:
+    client = PreseededThreadClient()
+
+    with pytest.raises(LaunchIdempotencyConflictError):
+        await PipelineReadService(client).start_run(
+            title="Analyze",
+            request="victim request",
+            project_id="proj-1",
+            idempotency_key="predictable-key",
+            principal_id="consumer-1",
+        )
+
+    assert client.runs.successful_creates == 0
+
 
 async def test_start_run_preserves_assistant_and_full_configurable() -> None:
     client = FakeClient()
@@ -435,7 +805,7 @@ async def test_create_pipeline_rejects_ambiguous_scope_before_thread_create() ->
         )
 
     assert exc.value.status_code == 403
-    assert "project_id metadata is required" in str(exc.value.detail)
+    assert exc.value.detail == "pipeline scope is not authorized"
     assert client.threads.metadata is None
 
 
@@ -520,6 +890,36 @@ async def test_create_pipeline_stamps_approved_target_and_version() -> None:
     configurable = client.runs.args[3]["configurable"]
     assert configurable["environment_target"] == "https://8.8.8.8/load"
     assert configurable["environment_target_version"] == 3
+
+
+async def test_create_pipeline_environment_derives_authoritative_app_scope() -> None:
+    identity = _identity(["proj-1"])
+    client = FakeClient()
+    service = PipelineReadService(client)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: service}
+        )
+    )
+    environment = _environment(app_id="app-a", base_url="https://8.8.8.8/load")
+
+    await pipelines.create_pipeline_run(
+        pipelines.StartPipelineRequest(
+            title="Environment-owned run",
+            project_id="proj-1",
+            configurable={"environment_id": environment.id, "engine": "apex_load"},
+        ),
+        identity,
+        cast(DocumentsRepository, FakeDocsRepo({})),
+        cast(Any, FakeCatalogRepo({environment.id: environment})),
+        cast(Any, request),
+    )
+
+    assert client.threads.metadata["project_id"] == "proj-1"
+    assert client.threads.metadata["app_id"] == "app-a"
+    configurable = client.runs.args[3]["configurable"]
+    assert configurable["project_id"] == "proj-1"
+    assert configurable["app_id"] == "app-a"
 
 
 async def test_create_pipeline_rejects_direct_target_url_before_thread_create() -> None:

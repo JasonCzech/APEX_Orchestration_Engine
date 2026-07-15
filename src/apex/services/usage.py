@@ -5,17 +5,11 @@ swallow-and-log, never raises):
 
 * `/v1` requests: `UsageTrackingMiddleware` (pure ASGI, registered in apex.app.http)
   times each request and, after the response is sent, schedules a fire-and-forget
-  asyncio task. The identity the route handler resolved is not reachable
-  post-response without threading state through every dependency, so consumer
-  attribution is resolved LAZILY inside that task: re-extract the API key header
-  and run it through the shared IdentityResolver. Accepted tradeoffs (analytics,
-  not billing):
-    - the resolver may run twice per request (the dev key has a no-DB fast path;
-      the DB path bumps `last_used_at` a second time);
-    - when resolution fails (key revoked mid-flight, DB down) the event records a
-      sha256 key fingerprint (`key:<12 hex>`) instead of a name;
-    - fire-and-forget means an event scheduled just before process shutdown can
-      be lost, and the request never waits on the analytics write.
+  asyncio task. The resolved identity is read from ASGI request state before the
+  task is created, so raw API credentials never outlive request processing and
+  are never authenticated a second time. Failed authentication is attributed by
+  an irreversible key fingerprint (`key:<12 hex>`). A write scheduled just before
+  process shutdown can be lost, and the request never waits on analytics storage.
 * graph nodes: `record_phase_usage_sync`, a sync bridge called from the phase
   finalize node (apex.graphs.pipeline.phase_subgraph) — one event per phase
   terminal status, surface "graph", action `phase:<phase>:<status>`.
@@ -43,11 +37,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from apex.auth.identity import ConsumerIdentity, ScopeRef
-from apex.auth.service import extract_api_key, get_default_resolver, hash_api_key
+from apex.auth.service import extract_api_key, hash_api_key
+from apex.domain.durable_evidence import sanitize_durable_object, sanitize_durable_text
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.models import AgentEvent, UsageEvent
 from apex.services.analytics_scope import analytics_scope_filter
-from apex.services.pricing import compute_cost
+from apex.services.pricing import MAX_TOKEN_COUNT, coerce_token_count, compute_cost
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
@@ -61,6 +56,42 @@ _OK_PHASE_STATUSES = ("succeeded", "skipped")
 # Strong references to in-flight fire-and-forget writes (loops may GC bare tasks).
 _PENDING: set[asyncio.Task[None]] = set()
 _MAX_PENDING = 1024
+
+_USAGE_TEXT_LIMITS = {
+    "event_key": 512,
+    "consumer_name": 255,
+    "project_id": 255,
+    "app_id": 255,
+    "surface": 32,
+    "action": 255,
+    "thread_id": 64,
+    "status": 16,
+}
+_AGENT_TEXT_LIMITS = {
+    "event_key": 512,
+    "thread_id": 64,
+    "project_id": 255,
+    "app_id": 255,
+    "phase": 64,
+    "agent_name": 255,
+    "model": 255,
+    "provider": 64,
+    "status": 16,
+}
+
+
+def _sanitize_event_values(
+    values: dict[str, Any], text_limits: Mapping[str, int]
+) -> dict[str, Any]:
+    """Apply the durable-evidence policy immediately before event persistence."""
+
+    sanitized = dict(values)
+    for field_name, limit in text_limits.items():
+        value = sanitized.get(field_name)
+        if value is not None:
+            sanitized[field_name] = sanitize_durable_text(str(value), limit)
+    sanitized["extra"] = sanitize_durable_object(sanitized.get("extra") or {})
+    return sanitized
 
 
 def _replay_event_key(kind: str, **identity: Any) -> str:
@@ -154,7 +185,11 @@ async def record_usage_event(
         finally:
             await engine_db.dispose()
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request or run
-        logger.warning("usage.record_failed", action=action, error=str(exc))
+        logger.warning(
+            "usage.record_failed",
+            action=action,
+            error_type=exc.__class__.__name__,
+        )
 
 
 async def _insert_usage_event(
@@ -172,18 +207,21 @@ async def _insert_usage_event(
     extra: dict[str, Any] | None = None,
 ) -> None:
     async with session_factory() as session:
-        values = {
-            "event_key": event_key,
-            "consumer_name": consumer_name,
-            "project_id": project_id,
-            "app_id": app_id,
-            "surface": surface,
-            "action": action,
-            "thread_id": thread_id,
-            "duration_ms": duration_ms,
-            "status": status,
-            "extra": extra or {},
-        }
+        values = _sanitize_event_values(
+            {
+                "event_key": event_key,
+                "consumer_name": consumer_name,
+                "project_id": project_id,
+                "app_id": app_id,
+                "surface": surface,
+                "action": action,
+                "thread_id": thread_id,
+                "duration_ms": duration_ms,
+                "status": status,
+                "extra": extra or {},
+            },
+            _USAGE_TEXT_LIMITS,
+        )
         await _commit_event(session, UsageEvent(**values), values)
 
 
@@ -192,7 +230,7 @@ def record_usage_event_sync(**kwargs: Any) -> None:
     try:
         asyncio.run(record_usage_event(**kwargs))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("usage.record_failed", error=str(exc))
+        logger.warning("usage.record_failed", error_type=exc.__class__.__name__)
 
 
 def record_phase_usage_sync(
@@ -242,16 +280,15 @@ def record_phase_usage_sync(
             event["event_key"] = event_key
         record_usage_event_sync(**event)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("usage.phase_record_failed", phase=phase, error=str(exc))
+        logger.warning(
+            "usage.phase_record_failed",
+            phase=phase,
+            error_type=exc.__class__.__name__,
+        )
 
 
 def _usage_int(value: Any) -> int:
-    if value is None:
-        return 0
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError):
-        return 0
+    return coerce_token_count(value)
 
 
 def _usage_detail_int(details: Mapping[str, Any], *keys: str) -> int:
@@ -270,7 +307,10 @@ def normalize_usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, int]:
     output_details = output_details if isinstance(output_details, Mapping) else {}
     input_tokens = _usage_int(usage.get("input_tokens"))
     output_tokens = _usage_int(usage.get("output_tokens"))
-    total_tokens = _usage_int(usage.get("total_tokens")) or input_tokens + output_tokens
+    total_tokens = _usage_int(usage.get("total_tokens")) or min(
+        input_tokens + output_tokens,
+        MAX_TOKEN_COUNT,
+    )
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -293,8 +333,8 @@ def normalize_usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, int]:
 
 def _provider_from(model: str | None, usage: Mapping[str, Any] | None) -> str | None:
     raw = (usage or {}).get("provider") or (usage or {}).get("ls_provider")
-    if raw:
-        return str(raw)
+    if isinstance(raw, str) and raw:
+        return raw.replace("\x00", "\\0")[:64]
     if model and ":" in model:
         return model.split(":", 1)[0]
     if model and "/" in model:
@@ -304,6 +344,12 @@ def _provider_from(model: str | None, usage: Mapping[str, Any] | None) -> str | 
     if model and model.startswith("gpt-"):
         return "openai"
     return None
+
+
+def _bounded_event_label(value: str | None, max_chars: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value.replace("\x00", "\\0")[:max_chars] or None
 
 
 async def _insert_agent_event(
@@ -330,27 +376,30 @@ async def _insert_agent_event(
     extra: dict[str, Any] | None = None,
 ) -> None:
     async with session_factory() as session:
-        values = {
-            "event_key": event_key,
-            "thread_id": thread_id,
-            "project_id": project_id,
-            "app_id": app_id,
-            "phase": phase,
-            "agent_name": agent_name,
-            "model": model,
-            "provider": provider,
-            "attempt": attempt,
-            "status": status,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": total_tokens,
-            "cache_read_tokens": cache_read_tokens,
-            "cache_creation_tokens": cache_creation_tokens,
-            "reasoning_tokens": reasoning_tokens,
-            "cost_usd": cost_usd,
-            "latency_ms": latency_ms,
-            "extra": extra or {},
-        }
+        values = _sanitize_event_values(
+            {
+                "event_key": event_key,
+                "thread_id": thread_id,
+                "project_id": project_id,
+                "app_id": app_id,
+                "phase": phase,
+                "agent_name": agent_name,
+                "model": model,
+                "provider": provider,
+                "attempt": attempt,
+                "status": status,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "cache_read_tokens": cache_read_tokens,
+                "cache_creation_tokens": cache_creation_tokens,
+                "reasoning_tokens": reasoning_tokens,
+                "cost_usd": cost_usd,
+                "latency_ms": latency_ms,
+                "extra": extra or {},
+            },
+            _AGENT_TEXT_LIMITS,
+        )
         await _commit_event(session, AgentEvent(**values), values)
 
 
@@ -370,14 +419,17 @@ async def record_agent_event(
 ) -> None:
     """Insert one agent-behavior event; never raises."""
     token_usage = normalize_usage_metadata(usage)
+    model = _bounded_event_label(model, 255)
+    provider = _bounded_event_label(provider, 64)
     cost_usd, pricing = compute_cost(model, token_usage)
     extra: dict[str, Any] = {}
     if pricing is not None:
         extra["pricing"] = pricing
     if usage:
         finish_reason = usage.get("finish_reason") or usage.get("stop_reason")
-        if finish_reason:
-            extra["finish_reason"] = finish_reason
+        safe_finish_reason = _bounded_event_label(finish_reason, 255)
+        if safe_finish_reason:
+            extra["finish_reason"] = safe_finish_reason
     event_key = (
         _replay_event_key(
             "agent",
@@ -420,7 +472,11 @@ async def record_agent_event(
         finally:
             await engine_db.dispose()
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request or run
-        logger.warning("agent_events.record_failed", phase=phase, error=str(exc))
+        logger.warning(
+            "agent_events.record_failed",
+            phase=phase,
+            error_type=exc.__class__.__name__,
+        )
 
 
 def record_agent_event_sync(
@@ -468,20 +524,24 @@ def record_agent_event_sync(
             )
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("agent_events.record_failed", phase=phase, error=str(exc))
+        logger.warning(
+            "agent_events.record_failed",
+            phase=phase,
+            error_type=exc.__class__.__name__,
+        )
 
 
 # ── /v1 request middleware ───────────────────────────────────────────────────
 
 
-async def _resolve_consumer_name(api_key: str | None) -> str:
-    """Lazy post-hoc attribution; falls back to a key fingerprint, never raises."""
-    try:
-        identity = await get_default_resolver().resolve(api_key)
-    except Exception:  # noqa: BLE001 — resolver failures must not kill the write task
-        identity = None
-    if identity is not None:
+def _request_consumer_name(scope: Mapping[str, Any]) -> str:
+    """Capture safe attribution without retaining a request credential."""
+
+    state = scope.get("state") or {}
+    identity = state.get("identity") if isinstance(state, Mapping) else None
+    if isinstance(identity, ConsumerIdentity):
         return identity.name
+    api_key = extract_api_key(scope.get("headers") or [])
     if api_key:
         return f"key:{hash_api_key(api_key)[:12]}"
     return "anonymous"
@@ -489,7 +549,7 @@ async def _resolve_consumer_name(api_key: str | None) -> str:
 
 async def _record_request_event(
     *,
-    api_key: str | None,
+    consumer_name: str,
     action: str,
     status: str,
     duration_ms: int,
@@ -497,7 +557,6 @@ async def _record_request_event(
     app_id: str | None,
     extra: dict[str, Any],
 ) -> None:
-    consumer_name = await _resolve_consumer_name(api_key)
     try:
         from apex.persistence.db import get_sessionmaker
 
@@ -513,7 +572,11 @@ async def _record_request_event(
             extra=extra,
         )
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request
-        logger.warning("usage.record_failed", action=action, error=str(exc))
+        logger.warning(
+            "usage.record_failed",
+            action=action,
+            error_type=exc.__class__.__name__,
+        )
 
 
 def _first_value(values: Mapping[str, list[str]], *keys: str) -> str | None:
@@ -613,29 +676,38 @@ class UsageTrackingMiddleware:
 
     def _schedule(self, scope: Mapping[str, Any], status_code: int, started: float) -> None:
         try:
+            if str(scope.get("path") or "") == "/ready":
+                # Kubelet polls this frequently and it is not product usage.
+                return
             operation_id = getattr(scope.get("route"), "operation_id", None)
             if not operation_id:
                 return  # docs/openapi/unmatched paths carry no contract operation
             duration_ms = int((time.perf_counter() - started) * 1000)
-            api_key = extract_api_key(dict(scope.get("headers") or []))
+            consumer_name = _request_consumer_name(scope)
             project_id, app_id = _request_scope(scope)
             if len(_PENDING) >= _MAX_PENDING:
                 return
             task = asyncio.get_running_loop().create_task(
                 _record_request_event(
-                    api_key=api_key,
+                    consumer_name=consumer_name,
                     action=str(operation_id),
                     status="ok" if status_code < 400 else "error",
                     duration_ms=duration_ms,
                     project_id=project_id,
                     app_id=app_id,
-                    extra={"status_code": status_code, "path": str(scope.get("path") or "")},
+                    # ``action`` is already the stable route operation id. Never
+                    # persist the concrete request path: path parameters can be
+                    # user-controlled identifiers or accidentally carry secrets.
+                    extra={"status_code": status_code},
                 )
             )
             _PENDING.add(task)
             task.add_done_callback(_PENDING.discard)
         except Exception as exc:  # noqa: BLE001 — analytics never fails a request
-            logger.warning("usage.middleware_failed", error=str(exc))
+            logger.warning(
+                "usage.middleware_failed",
+                error_type=exc.__class__.__name__,
+            )
 
 
 # ── Aggregation (GET /v1/analytics/usage) ────────────────────────────────────

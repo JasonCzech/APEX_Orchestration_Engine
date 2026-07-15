@@ -52,11 +52,15 @@ async def test_documents_repository_crud_roundtrip() -> None:
             scoped = await repo.list(allowed_scopes=[ScopeRef(project_id="other-project")])
             assert doc_id not in [d.id for d in scoped]
 
-            await repo.delete(fetched)
+            await repo.mark_deletion_pending(fetched)
+            await repo.complete_deletion(fetched.id)
             assert await repo.get(doc_id) is None
     finally:
         async with sessionmaker() as session:
-            leftover = await DocumentsRepository(session).get(doc_id)
+            repo = DocumentsRepository(session)
+            leftover = await repo.get(doc_id) or await repo.get_pending_deletion(doc_id)
             if leftover is not None:
-                await DocumentsRepository(session).delete(leftover)
+                if leftover.deletion_pending_at is None:
+                    await repo.mark_deletion_pending(leftover)
+                await repo.complete_deletion(leftover.id)
         await engine.dispose()

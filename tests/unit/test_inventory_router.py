@@ -1,27 +1,61 @@
 """Inventory router: latest snapshots, staleness, scoping, and inline rescans."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects import postgresql
 
+import apex.services.inventory as inventory_service
 from apex.app.dependencies import get_current_identity
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
+from apex.domain.integrations import MAX_INVENTORY_SERVICES, EnvRef, ServiceInfo
 from apex.domain.integrations import EnvironmentSnapshot as DomainSnapshot
-from apex.domain.integrations import EnvRef, ServiceInfo
 from apex.persistence.models import Application, Environment, EnvironmentSnapshot
+from apex.persistence.repositories.snapshots import (
+    SNAPSHOT_HISTORY_LIMIT,
+    _expired_snapshots_statement,
+    _latest_snapshot_statement,
+)
 from apex.routers.inventory import router
 from apex.services.inventory import (
+    MAX_CONCURRENT_INVENTORY_SCANS,
     STALE_AFTER,
+    InventoryScanBusyError,
+    InventoryService,
     get_inventory_adapter_resolver,
     get_snapshots_repository,
     is_stale,
 )
 
 NOW = datetime.now(UTC)
+
+
+def test_snapshot_retention_prunes_every_row_after_the_bounded_latest_history() -> None:
+    statement = _expired_snapshots_statement("environment-1")
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "DELETE FROM apex.environment_snapshots" in sql
+    assert f"OFFSET {SNAPSHOT_HISTORY_LIMIT}" in sql
+    assert "ORDER BY apex.environment_snapshots.scanned_at DESC" in sql
+
+    latest_sql = str(
+        _latest_snapshot_statement("environment-1").compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "scanned_at DESC, apex.environment_snapshots.id DESC" in latest_sql
+    assert "LIMIT 1" in latest_sql
 
 
 # ── fakes ────────────────────────────────────────────────────────────────────
@@ -31,8 +65,10 @@ class FakeSnapshotsRepository:
     def __init__(self) -> None:
         self.environments: dict[str, Environment] = {}
         self.rows: dict[str, list[EnvironmentSnapshot]] = {}
+        self.environment_get_calls: list[str] = []
 
     async def get_environment(self, environment_id: str) -> Environment | None:
+        self.environment_get_calls.append(environment_id)
         return self.environments.get(environment_id)
 
     async def latest(self, environment_id: str) -> EnvironmentSnapshot | None:
@@ -156,6 +192,17 @@ def test_get_unknown_environment_is_404(repo: FakeSnapshotsRepository) -> None:
     assert client.get("/inventory/environments/nope").status_code == 404
 
 
+def test_get_rejects_oversized_environment_id_before_repository_io(
+    repo: FakeSnapshotsRepository,
+) -> None:
+    client, _ = make_client(repo, ADMIN)
+
+    response = client.get(f"/inventory/environments/{'x' * 33}")
+
+    assert response.status_code == 422
+    assert repo.environment_get_calls == []
+
+
 def test_get_never_scanned_environment_returns_null_snapshot(
     repo: FakeSnapshotsRepository,
 ) -> None:
@@ -277,6 +324,27 @@ def test_rescan_forwards_connection_id_query_param(repo: FakeSnapshotsRepository
     assert captured["connection_id"] == "conn-k8s-staging"
 
 
+@pytest.mark.parametrize("connection_id", ["x" * 33, "conn\x00k8s"])
+def test_rescan_rejects_invalid_connection_id_before_repository_or_provider_io(
+    repo: FakeSnapshotsRepository,
+    connection_id: str,
+) -> None:
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot())
+    client, captured = make_client(repo, ADMIN, adapter=adapter)
+
+    response = client.post(
+        f"/inventory/environments/{env.id}/rescan",
+        params={"connection_id": connection_id},
+    )
+
+    assert response.status_code == 422
+    assert repo.environment_get_calls == []
+    assert captured == {}
+    assert adapter.calls == []
+
+
 def test_rescan_requires_operator_role(repo: FakeSnapshotsRepository) -> None:
     env = make_environment()
     repo.environments[env.id] = env
@@ -335,6 +403,51 @@ def test_rescan_adapter_failure_is_502_with_adapter_message(
     assert repo.rows.get(env.id, []) == []  # failed scans persist nothing
 
 
+def test_rescan_adapter_timeout_is_controlled_502_without_persistence(
+    repo: FakeSnapshotsRepository,
+) -> None:
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(error=TimeoutError("inventory deadline exceeded"))
+
+    client, _ = make_client(repo, OPERATOR_DEMO, adapter=adapter)
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "environment rescan failed"
+    assert "deadline" not in response.text
+    assert repo.rows.get(env.id, []) == []
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        DomainSnapshot.model_construct(services=[], scanned_at="not-an-iso-timestamp"),
+        DomainSnapshot.model_construct(
+            services=[ServiceInfo.model_construct(name="", replicas=1, image="image:1")],
+            scanned_at=NOW.isoformat(),
+        ),
+        DomainSnapshot.model_construct(
+            services=[ServiceInfo(name="service")] * (MAX_INVENTORY_SERVICES + 1),
+            scanned_at=NOW.isoformat(),
+        ),
+    ],
+)
+def test_rescan_revalidates_provider_snapshot_before_persistence(
+    repo: FakeSnapshotsRepository, snapshot: DomainSnapshot
+) -> None:
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(snapshot=snapshot)
+
+    client, _ = make_client(repo, OPERATOR_DEMO, adapter=adapter)
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "environment rescan failed"
+    assert repo.rows.get(env.id, []) == []
+
+
 def test_rescan_resolver_failure_is_502(repo: FakeSnapshotsRepository) -> None:
     env = make_environment()
     repo.environments[env.id] = env
@@ -349,3 +462,101 @@ def test_rescan_resolver_failure_is_502(repo: FakeSnapshotsRepository) -> None:
     assert response.status_code == 502
     assert response.json()["detail"] == "environment rescan failed"
     assert "conn-ghost" not in response.text
+
+
+def test_rescan_capacity_exhaustion_is_fail_fast_429(
+    repo: FakeSnapshotsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot())
+    monkeypatch.setattr(
+        inventory_service,
+        "_ACTIVE_INVENTORY_SCANS",
+        MAX_CONCURRENT_INVENTORY_SCANS,
+    )
+
+    client, _ = make_client(repo, OPERATOR_DEMO, adapter=adapter)
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "1"
+    assert adapter.calls == []
+
+
+async def test_rescan_admission_precedes_lazy_adapter_io_and_releases_after_completion(
+    repo: FakeSnapshotsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inventory_service, "MAX_CONCURRENT_INVENTORY_SCANS", 1)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockingAdapter(FakeClusterInventoryAdapter):
+        async def scan_environment(self, env_ref: EnvRef) -> DomainSnapshot:
+            self.calls.append(env_ref)
+            started.set()
+            await release.wait()
+            return fresh_domain_snapshot()
+
+    service = InventoryService(cast(Any, repo))
+    environment = EnvRef(id="env-admission", name="Admission")
+    first = asyncio.create_task(
+        service.rescan(environment, BlockingAdapter(snapshot=fresh_domain_snapshot()))
+    )
+    await started.wait()
+    resolver_called = False
+
+    async def rejected_adapter_factory() -> FakeClusterInventoryAdapter:
+        nonlocal resolver_called
+        resolver_called = True
+        return FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot())
+
+    with pytest.raises(InventoryScanBusyError):
+        await service.rescan(environment, rejected_adapter_factory)
+    assert resolver_called is False
+
+    release.set()
+    await first
+    await service.rescan(
+        environment,
+        FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot()),
+    )
+
+
+async def test_rescan_admission_releases_after_exception_and_cancellation(
+    repo: FakeSnapshotsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inventory_service, "MAX_CONCURRENT_INVENTORY_SCANS", 1)
+    service = InventoryService(cast(Any, repo))
+    environment = EnvRef(id="env-release", name="Release")
+
+    with pytest.raises(RuntimeError, match="provider failed"):
+        await service.rescan(
+            environment,
+            FakeClusterInventoryAdapter(error=RuntimeError("provider failed")),
+        )
+
+    started = asyncio.Event()
+    never_release = asyncio.Event()
+
+    class CancelledAdapter(FakeClusterInventoryAdapter):
+        async def scan_environment(self, env_ref: EnvRef) -> DomainSnapshot:
+            started.set()
+            await never_release.wait()
+            return fresh_domain_snapshot()
+
+    cancelled = asyncio.create_task(
+        service.rescan(environment, CancelledAdapter(snapshot=fresh_domain_snapshot()))
+    )
+    await started.wait()
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+    await service.rescan(
+        environment,
+        FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot()),
+    )

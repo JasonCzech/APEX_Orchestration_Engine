@@ -5,12 +5,11 @@ uses the in-process loopback transport (see langgraph_api/server.py). Always for
 the caller's API key so authorization scoping and actor attribution apply to loopback
 calls exactly as they would to direct calls.
 
-Destructive graph operations need one additional distinction: a public caller
-must not be able to cancel a pipeline run without first executing APEX's external
-engine kill switch.  Selected ``/v1`` facade services therefore opt into a
-process-local capability header.  The custom LangGraph authenticator converts a
-valid header into a boolean claim; the random token itself never enters graph
-state or an API response.
+Every in-process facade call carries a process-local capability header. This lets
+the outer HTTP guard distinguish validated `/v1` reads from public direct-runtime
+requests whose projection fields are not exposed to LangGraph auth handlers. The
+random token never enters graph state or an API response. Destructive operations
+remain reachable only from facade code that invokes them after its own checks.
 """
 
 import secrets
@@ -20,6 +19,9 @@ from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
 
 TRUSTED_LOOPBACK_CLAIM = "apex_trusted_loopback"
+LAUNCH_ROOT_FINGERPRINT_METADATA_KEY = "apex_launch_root_fingerprint"
+RERUN_CLAIM_METADATA_KEY = "apex_rerun_claim"
+RERUN_FINGERPRINT_METADATA_KEY = "apex_rerun_fingerprint"
 _TRUSTED_LOOPBACK_HEADER = "x-apex-trusted-loopback"
 _TRUSTED_LOOPBACK_TOKEN = secrets.token_urlsafe(32)
 
@@ -42,5 +44,8 @@ def loopback_client(
 ) -> LangGraphClient:
     # NB: x-api-key is a RESERVED header in langgraph_sdk — it must flow through the
     # api_key parameter (the SDK sets the header itself); passing it via headers raises.
-    headers = {_TRUSTED_LOOPBACK_HEADER: _TRUSTED_LOOPBACK_TOKEN} if authorize_destructive else None
+    # `authorize_destructive` is retained for source compatibility; all loopback
+    # calls are process-trusted, while public callers cannot forge the token.
+    del authorize_destructive
+    headers = {_TRUSTED_LOOPBACK_HEADER: _TRUSTED_LOOPBACK_TOKEN}
     return get_client(api_key=api_key, headers=headers)

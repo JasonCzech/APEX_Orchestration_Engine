@@ -1,22 +1,17 @@
 /**
  * useRerun — phase-subset re-run mutation on an EXISTING thread (plan Part 2
- * §4). Extends the D2 launch path (launchRun.ts): same SDK client, same
- * stream/durability options, but no thread create — runs.create targets the
- * existing thread so plan_resolver resolves prerequisites against its
- * succeeded phase_results.
- *
- * input is {} and NOT null: null means "continue from checkpoint" to the
- * LangGraph server, while {} triggers a fresh plan_resolver pass over the
- * existing thread state (proved by the M2 smoke).
+ * §4). The /v1 facade reloads the complete trusted checkpointed config and
+ * changes only phase/gate selection. The browser never round-trips connection,
+ * environment, prompt, or provider-affinity state.
  */
+import { useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
-import { getLangGraphClient } from '@/api/langgraphClient'
+import { getApexClient } from '@/api/apexClient'
+import { ApiError, errorMessageOf } from '@/api/errors'
 import { queryKeys } from '@/api/queryKeys'
-
-import { ALL_AUTO_GATES, recommendedRecursionLimit } from './launchRun'
 
 /** Gates mode for the pre-flight modal's segmented control. */
 export type GatesMode = 'inherit' | 'gated' | 'auto'
@@ -31,35 +26,11 @@ export const ALL_GATED_GATES: Record<PhaseName, UniformGatePolicy> = Object.from
   PHASE_NAMES.map((phase) => [phase, { prompt_review: 'gated', output_review: 'gated' }]),
 ) as Record<PhaseName, UniformGatePolicy>
 
-export interface RerunConfigurable extends Record<string, unknown> {
-  phases: PhaseName[]
-  gates?: Record<PhaseName, UniformGatePolicy>
-  limits?: { poll_interval_s?: number; poll_timeout_s?: number }
-}
-
-/**
- * Configurable for a phase-subset re-run. The previous run's persisted
- * effective config is the base; `inherit` retains its gate matrix while the
- * two explicit modes replace only that matrix.
- */
-export function buildRerunConfigurable(
-  phases: PhaseName[],
-  gatesMode: GatesMode,
-  baseConfigurable: Record<string, unknown> = {},
-): RerunConfigurable {
-  const configurable: RerunConfigurable = { ...baseConfigurable, phases }
-  if (gatesMode === 'gated') configurable.gates = ALL_GATED_GATES
-  if (gatesMode === 'auto') configurable.gates = ALL_AUTO_GATES
-  return configurable
-}
-
 export interface RerunInput {
   threadId: string
   /** Canonical-order phase subset (configurable.phases). */
   phases: PhaseName[]
   gatesMode: GatesMode
-  /** Effective config persisted by plan_resolver on the previous run. */
-  baseConfigurable?: Record<string, unknown>
 }
 
 export interface RerunResult {
@@ -67,28 +38,35 @@ export interface RerunResult {
   runId: string
 }
 
-async function rerunPhases({
-  threadId,
-  phases,
-  gatesMode,
-  baseConfigurable,
-}: RerunInput): Promise<RerunResult> {
-  const client = await getLangGraphClient()
-  const configurable = buildRerunConfigurable(phases, gatesMode, baseConfigurable)
-  const assistantId =
-    typeof baseConfigurable?.['assistant_id'] === 'string'
-      ? baseConfigurable['assistant_id']
-      : 'pipeline'
-  const run = await client.runs.create(threadId, assistantId, {
-    input: {},
-    config: { recursion_limit: recommendedRecursionLimit(configurable), configurable },
-    streamMode: ['updates', 'messages-tuple', 'custom'],
-    streamSubgraphs: true,
-    streamResumable: true,
-    durability: 'sync',
-    multitaskStrategy: 'reject',
-  })
-  return { threadId, runId: run.run_id }
+function createRerunIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `rerun-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+async function rerunPhases(
+  { threadId, phases, gatesMode }: RerunInput,
+  idempotencyKey: string,
+): Promise<RerunResult> {
+  const { data, error, response } = await getApexClient().POST(
+    '/v1/pipelines/{thread_id}/rerun',
+    {
+      params: { path: { thread_id: threadId } },
+      body: {
+        phases,
+        gates_mode: gatesMode,
+        idempotency_key: idempotencyKey,
+      },
+    },
+  )
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status,
+      errorMessageOf(error, `Failed to rerun pipeline (${response.status})`),
+      error,
+    )
+  }
+  return { threadId, runId: data.run_id }
 }
 
 /**
@@ -99,9 +77,17 @@ async function rerunPhases({
  */
 export function useRerun() {
   const queryClient = useQueryClient()
+  const idempotencyKeys = useRef(new Map<string, string>())
   return useMutation<RerunResult, Error, RerunInput>({
-    mutationFn: rerunPhases,
+    mutationFn: (input) => {
+      const signature = JSON.stringify([input.threadId, input.phases, input.gatesMode])
+      const key = idempotencyKeys.current.get(signature) ?? createRerunIdempotencyKey()
+      idempotencyKeys.current.set(signature, key)
+      return rerunPhases(input, key)
+    },
     onSuccess: (_data, variables) => {
+      const signature = JSON.stringify([variables.threadId, variables.phases, variables.gatesMode])
+      idempotencyKeys.current.delete(signature)
       void queryClient.invalidateQueries({
         queryKey: queryKeys.threads.state(variables.threadId),
       })

@@ -27,7 +27,11 @@ const ACTIVE_RUN_STATUSES = ['running', 'pending'] as const
 
 async function fetchActiveRunId(threadId: string, signal?: AbortSignal): Promise<string | null> {
   const client = await getLangGraphClient()
-  const runs = await client.runs.list(threadId, { limit: ACTIVE_RUN_SCAN_LIMIT, signal })
+  const runs = await client.runs.list(threadId, {
+    limit: ACTIVE_RUN_SCAN_LIMIT,
+    select: ['run_id', 'status'],
+    signal,
+  })
   for (const status of ACTIVE_RUN_STATUSES) {
     const match = runs.find((run) => run.status === status)
     if (match) return match.run_id

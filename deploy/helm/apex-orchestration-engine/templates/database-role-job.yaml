@@ -1,0 +1,748 @@
+{{- if .Values.databaseRoleProvisioning.enabled -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "db-roles") }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database-role-provisioning
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": {{ .Values.databaseRoleProvisioning.hookDeletePolicy }}
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "apex.hookSelectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: database-role-provisioning
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "apex.hookServiceAccountName" . | quote }}
+      automountServiceAccountToken: {{ and (eq .Values.secretBackend.mode "secretsStoreCSI") .Values.databaseRoleProvisioning.publishRuntimeSecret }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: provision
+          image: {{ include "apex.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["python", "-c"]
+          args:
+            - |
+              import asyncio
+              import base64
+              import hashlib
+              import hmac
+              import json
+              import os
+              import re
+              import ssl
+              import urllib.error
+              import urllib.request
+              from pathlib import Path
+              from urllib.parse import unquote, urlsplit
+
+              import asyncpg
+              from apex.settings import database_asyncpg_uri, database_ssl_connect_args
+
+              # "APEXROLE" as a signed int64. This session-level lock serializes
+              # ownership discovery/claiming and role DDL across Helm releases
+              # that target the same database.
+              DATABASE_ROLE_LOCK_KEY = 4706337856242535493
+
+              def connect_args(uri):
+                  normalized = database_asyncpg_uri(uri).replace(
+                      "postgresql+asyncpg://", "postgresql://", 1
+                  )
+                  return normalized, database_ssl_connect_args(uri, None)
+
+              def uri_parts(name):
+                  uri = os.environ[name].replace("postgresql+asyncpg://", "postgresql://", 1)
+                  parsed = urlsplit(uri)
+                  if (
+                      not parsed.username
+                      or parsed.password is None
+                      or not parsed.hostname
+                      or not parsed.path.strip("/")
+                  ):
+                      raise SystemExit(
+                          f"{name} must include host, database, username, and password"
+                      )
+                  return (
+                      unquote(parsed.username),
+                      unquote(parsed.password),
+                      unquote(parsed.path.strip("/")),
+                      parsed.hostname.lower().rstrip("."),
+                      parsed.port or 5432,
+                  )
+
+              def publish_runtime_secret(langgraph_uri, apex_uri):
+                  token_dir = Path("/var/run/secrets/kubernetes.io/serviceaccount")
+                  token = (token_dir / "token").read_text().strip()
+                  namespace = (token_dir / "namespace").read_text().strip()
+                  context = ssl.create_default_context(cafile=str(token_dir / "ca.crt"))
+                  api = (
+                      f"https://{os.environ['KUBERNETES_SERVICE_HOST']}:"
+                      f"{os.environ['KUBERNETES_SERVICE_PORT_HTTPS']}"
+                  )
+                  name = os.environ["APEX_RUNTIME_TARGET_SECRET"]
+                  data = {
+                      "DATABASE_URI": base64.b64encode(langgraph_uri.encode()).decode(),
+                      "APEX_DATABASE__URI": base64.b64encode(apex_uri.encode()).decode(),
+                  }
+
+                  def request(method, url, body=None, content_type="application/json"):
+                      encoded = None if body is None else json.dumps(body).encode()
+                      req = urllib.request.Request(
+                          url,
+                          data=encoded,
+                          method=method,
+                          headers={
+                              "Authorization": f"Bearer {token}",
+                              "Content-Type": content_type,
+                          },
+                      )
+                      with urllib.request.urlopen(req, context=context, timeout=10) as response:
+                          return json.load(response)
+
+                  item_url = f"{api}/api/v1/namespaces/{namespace}/secrets/{name}"
+                  try:
+                      request(
+                          "PATCH",
+                          item_url,
+                          {"data": data, "type": "Opaque"},
+                          "application/merge-patch+json",
+                      )
+                  except urllib.error.HTTPError as exc:
+                      if exc.code != 404:
+                          raise
+                      request(
+                          "POST",
+                          f"{api}/api/v1/namespaces/{namespace}/secrets",
+                          {
+                              "apiVersion": "v1",
+                              "kind": "Secret",
+                              "metadata": {"name": name, "namespace": namespace},
+                              "type": "Opaque",
+                              "data": data,
+                          },
+                      )
+                  actual = request("GET", item_url).get("data", {})
+                  if any(actual.get(key) != value for key, value in data.items()):
+                      raise SystemExit(f"runtime Secret {namespace}/{name} did not persist")
+
+              async def main():
+                  raw_admin_uri = os.environ["APEX_DATABASE_ADMIN_URI"]
+                  admin_uri, admin_connect_args = connect_args(raw_admin_uri)
+                  _, _, admin_database, admin_host, admin_port = uri_parts(
+                      "APEX_DATABASE_ADMIN_URI"
+                  )
+                  role_claim_key = os.environ["APEX_DATABASE_ROLE_CLAIM_KEY"]
+                  if (
+                      len(role_claim_key.encode()) < 32
+                      or role_claim_key != role_claim_key.strip()
+                  ):
+                      raise SystemExit(
+                          "database role claim key must be a trimmed value of at least 32 bytes"
+                      )
+                  runtime_name, runtime_password, database, runtime_host, runtime_port = uri_parts(
+                      "APEX_RUNTIME_DATABASE_URI"
+                  )
+                  (
+                      langgraph_name,
+                      langgraph_password,
+                      langgraph_database,
+                      langgraph_host,
+                      langgraph_port,
+                  ) = uri_parts(
+                      "APEX_RUNTIME_LANGGRAPH_DATABASE_URI"
+                  )
+                  (
+                      migration_name,
+                      migration_password,
+                      migration_database,
+                      migration_host,
+                      migration_port,
+                  ) = uri_parts("APEX_MIGRATION_DATABASE_URI")
+                  runtime_owner_name = os.environ["APEX_RUNTIME_OWNER_ROLE"]
+                  migration_owner_name = os.environ["APEX_MIGRATION_OWNER_ROLE"]
+                  if (
+                      database != admin_database
+                      or database != migration_database
+                      or database != langgraph_database
+                      or runtime_host != admin_host
+                      or runtime_host != migration_host
+                      or runtime_host != langgraph_host
+                      or runtime_port != admin_port
+                      or runtime_port != migration_port
+                      or runtime_port != langgraph_port
+                      or runtime_name != langgraph_name
+                      or runtime_password != langgraph_password
+                      or runtime_name == migration_name
+                  ):
+                      raise SystemExit(
+                          "admin, runtime, and migration URIs must target one database endpoint "
+                          "with distinct runtime and migration roles"
+                      )
+                  if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", runtime_name):
+                      raise SystemExit("runtime login must be a lowercase PostgreSQL role identifier")
+                  if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", migration_name):
+                      raise SystemExit("migration login must be a lowercase PostgreSQL role identifier")
+                  if not runtime_name.startswith(f"{runtime_owner_name}_v"):
+                      raise SystemExit("runtime login must be a versioned <runtimeOwnerRole>_v* role")
+                  if not migration_name.startswith(f"{migration_owner_name}_v"):
+                      raise SystemExit("migration login must be a versioned <migrationOwnerRole>_v* role")
+                  expected_generation = hashlib.sha256(
+                      f"{runtime_name}:{migration_name}".encode()
+                  ).hexdigest()[:16]
+                  if os.environ["APEX_DATABASE_CREDENTIAL_GENERATION"] != expected_generation:
+                      raise SystemExit(
+                          "database credential generation does not match the runtime and "
+                          "migration login roles"
+                      )
+                  conn = await asyncpg.connect(admin_uri, **admin_connect_args)
+                  try:
+                      await conn.execute(
+                          "SELECT pg_advisory_lock($1::bigint)",
+                          DATABASE_ROLE_LOCK_KEY,
+                      )
+
+                      async def ident(value):
+                          return await conn.fetchval("SELECT quote_ident($1)", value)
+
+                      async def literal(value):
+                          return await conn.fetchval("SELECT quote_literal($1)", value)
+
+                      async def assert_role_safety(
+                          role_name, *, login, allowed_parent=None
+                      ):
+                          state = await conn.fetchrow(
+                              """
+                              SELECT rolsuper, rolcreaterole, rolcreatedb, rolreplication,
+                                     rolbypassrls, rolinherit, rolcanlogin, rolconnlimit,
+                                     rolvaliduntil
+                              FROM pg_roles
+                              WHERE rolname = $1
+                              """,
+                              role_name,
+                          )
+                          if state is None:
+                              raise SystemExit(f"database role {role_name!r} disappeared")
+                          dangerous = any(
+                              state[key]
+                              for key in (
+                                  "rolsuper",
+                                  "rolcreaterole",
+                                  "rolcreatedb",
+                                  "rolreplication",
+                                  "rolbypassrls",
+                              )
+                          )
+                          if (
+                              dangerous
+                              or not state["rolinherit"]
+                              or state["rolcanlogin"] != login
+                              or state["rolconnlimit"] != -1
+                              or state["rolvaliduntil"] is not None
+                          ):
+                              raise SystemExit(
+                                  f"database role {role_name!r} has unsafe or drifted attributes"
+                              )
+                          parents = {
+                              row["rolname"]
+                              for row in await conn.fetch(
+                                  """
+                                  SELECT parent.rolname
+                                  FROM pg_auth_members AS membership
+                                  JOIN pg_roles AS parent ON parent.oid = membership.roleid
+                                  JOIN pg_roles AS member ON member.oid = membership.member
+                                  WHERE member.rolname = $1
+                                  """,
+                                  role_name,
+                              )
+                          }
+                          allowed = set() if allowed_parent is None else {allowed_parent}
+                          if not parents <= allowed:
+                              raise SystemExit(
+                                  f"database role {role_name!r} has unexpected parent memberships"
+                              )
+                          if login:
+                              children = {
+                                  row["rolname"]
+                                  for row in await conn.fetch(
+                                      """
+                                      SELECT member.rolname
+                                      FROM pg_auth_members AS membership
+                                      JOIN pg_roles AS parent ON parent.oid = membership.roleid
+                                      JOIN pg_roles AS member ON member.oid = membership.member
+                                      WHERE parent.rolname = $1
+                                      """,
+                                      role_name,
+                                  )
+                              }
+                              if children:
+                                  raise SystemExit(
+                                      f"database login role {role_name!r} has unexpected members"
+                                  )
+                          return parents
+
+                      async def assert_owner_members(
+                          owner_name, role_kind, *, require_markers
+                      ):
+                          expected_prefix = f"{owner_name}_v"
+                          members = {
+                              row["rolname"]
+                              for row in await conn.fetch(
+                                  """
+                                  SELECT member.rolname
+                                  FROM pg_auth_members AS membership
+                                  JOIN pg_roles AS owner ON owner.oid = membership.roleid
+                                  JOIN pg_roles AS member ON member.oid = membership.member
+                                  WHERE owner.rolname = $1
+                                  """,
+                                  owner_name,
+                              )
+                          }
+                          unexpected = sorted(
+                              name for name in members if not name.startswith(expected_prefix)
+                          )
+                          if unexpected:
+                              raise SystemExit(
+                                  f"database owner role {owner_name!r} has unexpected members"
+                              )
+                          for member_name in sorted(members):
+                              await assert_role_safety(
+                                  member_name,
+                                  login=True,
+                                  allowed_parent=owner_name,
+                              )
+                              if require_markers:
+                                  marker = await conn.fetchval(
+                                      "SELECT shobj_description(oid, 'pg_authid') "
+                                      "FROM pg_roles WHERE rolname = $1",
+                                      member_name,
+                                  )
+                                  expected_marker = ownership_marker(
+                                      f"{role_kind}-generation", member_name
+                                  )
+                                  if not hmac.compare_digest(
+                                      marker or "", expected_marker
+                                  ):
+                                      raise SystemExit(
+                                          f"database generation role {member_name!r} "
+                                          "has an invalid ownership claim"
+                                      )
+
+                      async def transfer_relations(schema_name, raw_owner_name, owner):
+                          """Consolidate objects owned by this release's login generations."""
+                          schema = await ident(schema_name)
+                          relations = await conn.fetch(
+                              """
+                              SELECT c.relkind::text AS kind, quote_ident(c.relname) AS name
+                              FROM pg_class AS c
+                              JOIN pg_namespace AS n ON n.oid = c.relnamespace
+                              WHERE n.nspname = $1
+                                AND c.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+                                AND c.relowner <> (SELECT oid FROM pg_roles WHERE rolname = $2)
+                                AND c.relowner IN (
+                                  SELECT member.oid
+                                  FROM pg_auth_members AS membership
+                                  JOIN pg_roles AS owner ON owner.oid = membership.roleid
+                                  JOIN pg_roles AS member ON member.oid = membership.member
+                                  WHERE owner.rolname = $2
+                                )
+                                AND NOT EXISTS (
+                                  SELECT 1
+                                  FROM pg_depend AS d
+                                  WHERE d.classid = 'pg_class'::regclass
+                                    AND d.objid = c.oid
+                                    AND d.deptype = 'e'
+                                )
+                              ORDER BY c.relkind, c.relname
+                              """,
+                              schema_name,
+                              raw_owner_name,
+                          )
+                          object_types = {
+                              "r": "TABLE",
+                              "p": "TABLE",
+                              "S": "SEQUENCE",
+                              "v": "VIEW",
+                              "m": "MATERIALIZED VIEW",
+                              "f": "FOREIGN TABLE",
+                          }
+                          for relation in relations:
+                              await conn.execute(
+                                  f"ALTER {object_types[relation['kind']]} "
+                                  f"{schema}.{relation['name']} OWNER TO {owner}"
+                              )
+
+                      runtime = await ident(runtime_name)
+                      migration = await ident(migration_name)
+                      runtime_owner = await ident(runtime_owner_name)
+                      migration_owner = await ident(migration_owner_name)
+                      db = await ident(database)
+                      role_owner_id = os.environ["APEX_DATABASE_ROLE_OWNER_ID"]
+
+                      def ownership_marker(kind, role_name):
+                          # The release name is public and therefore cannot by
+                          # itself prove that an untrusted co-tenant did not
+                          # pre-create a role. Bind every claim to the dedicated
+                          # high-entropy credential held only by this hook. The
+                          # digest is safe to store in PostgreSQL's shared-object
+                          # comments and does not reveal that credential.
+                          payload = (
+                              f"apex-role-claim-v2:{role_owner_id}:{kind}:{role_name}"
+                          ).encode()
+                          claim = hmac.new(
+                              role_claim_key.encode(), payload, hashlib.sha256
+                          ).hexdigest()
+                          return f"apex-role-claim-v2:{role_owner_id}:{kind}:{claim}"
+
+                      async def ensure_apex_schema():
+                          """Create or verify the release-owned application schema."""
+                          schema_name = "apex"
+                          schema = await ident(schema_name)
+                          schema_marker = ownership_marker("schema", schema_name)
+                          marker_literal = await literal(schema_marker)
+                          state = await conn.fetchrow(
+                              """
+                              SELECT owner.rolname AS owner_name,
+                                     obj_description(n.oid, 'pg_namespace') AS marker
+                              FROM pg_namespace AS n
+                              JOIN pg_roles AS owner ON owner.oid = n.nspowner
+                              WHERE n.nspname = $1
+                              """,
+                              schema_name,
+                          )
+                          if state is None:
+                              # Schema creation and its credential-bound claim
+                              # must not be separable by a killed hook.
+                              async with conn.transaction():
+                                  await conn.execute(
+                                      f"CREATE SCHEMA {schema} AUTHORIZATION {migration_owner}"
+                                  )
+                                  await conn.execute(
+                                      f"COMMENT ON SCHEMA {schema} IS {marker_literal}"
+                                  )
+                          else:
+                              # An exact verified owner is unforgeable to an
+                              # unprivileged co-tenant and provides a narrow
+                              # one-time upgrade path for legacy unmarked APEX
+                              # schemas. Never infer ownership from the schema
+                              # name or take it from a different role.
+                              if state["owner_name"] != migration_owner_name:
+                                  raise SystemExit(
+                                      "application schema exists under an unclaimed owner"
+                                  )
+                              if state["marker"] is None:
+                                  await conn.execute(
+                                      f"COMMENT ON SCHEMA {schema} IS {marker_literal}"
+                                  )
+                              elif not hmac.compare_digest(
+                                  state["marker"], schema_marker
+                              ):
+                                  raise SystemExit(
+                                      "application schema is managed by another release"
+                                  )
+                          persisted = await conn.fetchrow(
+                              """
+                              SELECT owner.rolname AS owner_name,
+                                     obj_description(n.oid, 'pg_namespace') AS marker
+                              FROM pg_namespace AS n
+                              JOIN pg_roles AS owner ON owner.oid = n.nspowner
+                              WHERE n.nspname = $1
+                              """,
+                              schema_name,
+                          )
+                          if (
+                              persisted is None
+                              or persisted["owner_name"] != migration_owner_name
+                              or not hmac.compare_digest(
+                                  persisted["marker"] or "", schema_marker
+                              )
+                          ):
+                              raise SystemExit(
+                                  "application schema ownership claim did not persist"
+                              )
+
+                      # Stable owner roles make old and new generations overlap.
+                      # Creation and the unforgeable release claim are atomic;
+                      # an existing unclaimed role is never adopted.
+                      for raw_owner, owner in (
+                          (runtime_owner_name, runtime_owner),
+                          (migration_owner_name, migration_owner),
+                      ):
+                          owner_kind = (
+                              "runtime-owner"
+                              if raw_owner == runtime_owner_name
+                              else "migration-owner"
+                          )
+                          owner_marker = ownership_marker(owner_kind, raw_owner)
+                          marker_literal = await literal(owner_marker)
+                          exists = await conn.fetchval(
+                              "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=$1)",
+                              raw_owner,
+                          )
+                          if not exists:
+                              async with conn.transaction():
+                                  await conn.execute(
+                                      f"CREATE ROLE {owner} NOLOGIN NOSUPERUSER NOCREATEDB "
+                                      "NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT "
+                                      "CONNECTION LIMIT -1"
+                                  )
+                                  await conn.execute(
+                                      f"COMMENT ON ROLE {owner} IS {marker_literal}"
+                                  )
+                          await assert_role_safety(
+                              raw_owner,
+                              login=False,
+                          )
+                      # Membership prefixes alone cannot distinguish releases.
+                      # Verify the credential-bound owner claim before adding or
+                      # retiring any login generation.
+                      for role_kind, owner_kind, raw_owner in (
+                          ("runtime", "runtime-owner", runtime_owner_name),
+                          ("migration", "migration-owner", migration_owner_name),
+                      ):
+                          owner_marker = ownership_marker(owner_kind, raw_owner)
+                          await assert_owner_members(
+                              raw_owner,
+                              role_kind,
+                              require_markers=False,
+                          )
+                          existing_marker = await conn.fetchval(
+                              "SELECT shobj_description(oid, 'pg_authid') "
+                              "FROM pg_roles WHERE rolname = $1",
+                              raw_owner,
+                          )
+                          if not hmac.compare_digest(
+                              existing_marker or "", owner_marker
+                          ):
+                              raise SystemExit(
+                                  f"database owner role {raw_owner!r} is unclaimed or managed "
+                                  "by another release"
+                              )
+                      for role_kind, raw_name, role, password, expected_parent in (
+                          (
+                              "runtime",
+                              runtime_name,
+                              runtime,
+                              runtime_password,
+                              runtime_owner_name,
+                          ),
+                          (
+                              "migration",
+                              migration_name,
+                              migration,
+                              migration_password,
+                              migration_owner_name,
+                          ),
+                      ):
+                          quoted_password = await literal(password)
+                          exists = await conn.fetchval(
+                              "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname=$1)", raw_name
+                          )
+                          generation_marker = ownership_marker(
+                              f"{role_kind}-generation", raw_name
+                          )
+                          marker_literal = await literal(generation_marker)
+                          if not exists:
+                              # CREATE and ownership marking are one transaction.
+                              # A killed hook must never strand a newly-created,
+                              # unmarked login that a later release could adopt.
+                              async with conn.transaction():
+                                  await conn.execute(
+                                      f"CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB "
+                                      "NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT "
+                                      f"CONNECTION LIMIT -1 PASSWORD {quoted_password}"
+                                  )
+                                  await conn.execute(
+                                      f"COMMENT ON ROLE {role} IS {marker_literal}"
+                                  )
+                              parents = await assert_role_safety(
+                                  raw_name, login=True, allowed_parent=expected_parent
+                              )
+                          else:
+                              parents = await assert_role_safety(
+                                  raw_name, login=True, allowed_parent=expected_parent
+                              )
+                              existing_marker = await conn.fetchval(
+                                  "SELECT shobj_description(oid, 'pg_authid') "
+                                  "FROM pg_roles WHERE rolname = $1",
+                                  raw_name,
+                              )
+                              if existing_marker is None:
+                                  # Upgrade compatibility is intentionally narrow:
+                                  # only a role already granted to this release's
+                                  # claimed owner can be adopted. Prefix and safe
+                                  # role attributes alone are not ownership proof.
+                                  if parents != {expected_parent}:
+                                      raise SystemExit(
+                                          f"database generation role {raw_name!r} is unclaimed"
+                                      )
+                                  await conn.execute(
+                                      f"COMMENT ON ROLE {role} IS {marker_literal}"
+                                  )
+                              elif not hmac.compare_digest(
+                                  existing_marker, generation_marker
+                              ):
+                                  raise SystemExit(
+                                      f"database generation role {raw_name!r} is managed by "
+                                      "another release"
+                                  )
+                          if parents - {expected_parent}:
+                              # Kept next to the ownership checks as a defensive
+                              # assertion if assert_role_safety is refactored.
+                              raise SystemExit(
+                                  f"database generation role {raw_name!r} has unexpected parents"
+                              )
+                          persisted_marker = await conn.fetchval(
+                              "SELECT shobj_description(oid, 'pg_authid') "
+                              "FROM pg_roles WHERE rolname = $1",
+                              raw_name,
+                          )
+                          if not hmac.compare_digest(
+                              persisted_marker or "", generation_marker
+                          ):
+                              raise SystemExit(
+                                  f"database generation role {raw_name!r} ownership did not persist"
+                              )
+                      await conn.execute(f"GRANT {runtime_owner} TO {runtime}")
+                      await conn.execute(f"GRANT {migration_owner} TO {migration}")
+                      await assert_role_safety(
+                          runtime_name, login=True, allowed_parent=runtime_owner_name
+                      )
+                      await assert_role_safety(
+                          migration_name, login=True, allowed_parent=migration_owner_name
+                      )
+                      await assert_owner_members(
+                          runtime_owner_name,
+                          "runtime",
+                          require_markers=True,
+                      )
+                      await assert_owner_members(
+                          migration_owner_name,
+                          "migration",
+                          require_markers=True,
+                      )
+                      await conn.execute(
+                          f"GRANT CONNECT ON DATABASE {db} TO {runtime_owner}, {migration_owner}"
+                      )
+                      await conn.execute(
+                          f"GRANT USAGE, CREATE ON SCHEMA public TO {runtime_owner}"
+                      )
+                      await ensure_apex_schema()
+                      await transfer_relations("apex", migration_owner_name, migration_owner)
+                      await transfer_relations("public", runtime_owner_name, runtime_owner)
+                      await conn.execute(f"GRANT USAGE ON SCHEMA apex TO {runtime_owner}")
+                      await conn.execute(
+                          f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA apex TO {runtime_owner}"
+                      )
+                      # Schema provenance is migration-owned. A compromised
+                      # runtime must not be able to register a fake descendant
+                      # or rewrite the active Alembic head to bypass readiness.
+                      for schema_table in (
+                          "apex.alembic_version",
+                          "apex.alembic_revision_lineage",
+                      ):
+                          if await conn.fetchval("SELECT to_regclass($1)", schema_table):
+                              await conn.execute(
+                                  f"REVOKE INSERT, UPDATE, DELETE ON TABLE {schema_table} FROM {runtime_owner}"
+                              )
+                      await conn.execute(
+                          f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA apex TO {runtime_owner}"
+                      )
+                  finally:
+                      await conn.close()
+
+                  # Never repair a generation by changing its password: a
+                  # mismatched existing role must fail safely, not invalidate a
+                  # live client. Successful connects prove both new logins.
+                  for kind, raw_uri in (
+                      ("runtime", os.environ["APEX_RUNTIME_DATABASE_URI"]),
+                      ("migration", os.environ["APEX_MIGRATION_DATABASE_URI"]),
+                  ):
+                      uri, args = connect_args(raw_uri)
+                      check = await asyncpg.connect(uri, **args)
+                      try:
+                          await check.fetchval("SELECT 1")
+                          if kind == "runtime":
+                              # Tables the new LangGraph runtime creates while
+                              # old/new pods overlap must remain available to
+                              # every generation through the stable owner role.
+                              await check.execute(
+                                  "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                                  f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime_owner}"
+                              )
+                              await check.execute(
+                                  "ALTER DEFAULT PRIVILEGES IN SCHEMA public "
+                                  f"GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime_owner}"
+                              )
+                      finally:
+                          await check.close()
+
+                  if os.environ["APEX_PUBLISH_RUNTIME_SECRET"] == "true":
+                      await asyncio.to_thread(
+                          publish_runtime_secret,
+                          os.environ["APEX_RUNTIME_LANGGRAPH_DATABASE_URI"],
+                          os.environ["APEX_RUNTIME_DATABASE_URI"],
+                      )
+
+              asyncio.run(main())
+          env:
+            - name: APEX_DATABASE_ADMIN_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.adminSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.adminUriKey | quote }}
+            - name: APEX_RUNTIME_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.runtimeSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.runtimeUriKey | quote }}
+            - name: APEX_RUNTIME_LANGGRAPH_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.runtimeSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.runtimePsycopgUriKey | quote }}
+            - name: APEX_MIGRATION_DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.migrationSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.migrationUriKey | quote }}
+            - name: APEX_RUNTIME_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.runtimeOwnerRole | quote }}
+            - name: APEX_MIGRATION_OWNER_ROLE
+              value: {{ .Values.databaseRoleProvisioning.migrationOwnerRole | quote }}
+            - name: APEX_DATABASE_CREDENTIAL_GENERATION
+              value: {{ .Values.databaseRoleProvisioning.credentialGeneration | quote }}
+            - name: APEX_DATABASE_ROLE_OWNER_ID
+              value: {{ printf "%s/%s" .Release.Namespace .Release.Name | quote }}
+            - name: APEX_DATABASE_ROLE_CLAIM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseRoleProvisioning.claimSecret | quote }}
+                  key: {{ .Values.databaseRoleProvisioning.claimSecretKey | quote }}
+            - name: APEX_PUBLISH_RUNTIME_SECRET
+              value: {{ and (eq .Values.secretBackend.mode "secretsStoreCSI") .Values.databaseRoleProvisioning.publishRuntimeSecret | quote }}
+            - name: APEX_RUNTIME_TARGET_SECRET
+              value: {{ .Values.database.existingSecret | quote }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

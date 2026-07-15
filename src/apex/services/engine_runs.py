@@ -1,8 +1,9 @@
-"""Best-effort recorder for the engine_runs history projection.
+"""Durable reservations and lifecycle projection for external engine runs.
 
 Called from the execution phase's engine nodes. Checkpointed graph state remains the
-source of truth — projection writes must never fail a pipeline run, so every DB error
-is swallowed and logged. Upsert key: (thread_id, attempt).
+source of truth for ordinary lifecycle reads, whose projection failures are logged.
+Writes marked ``required`` are provider-I/O/ownership barriers and fail closed.
+Upsert key: (thread_id, attempt).
 """
 
 import asyncio
@@ -11,12 +12,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from apex.domain.diagnostics import bounded_diagnostic
 from apex.persistence.models import Connection, EngineRun
 from apex.ports.artifact_store import engine_artifact_namespace
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
@@ -24,23 +26,298 @@ from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_s
 logger = structlog.get_logger(__name__)
 
 _TERMINAL = {"completed", "failed", "aborted"}
+_STARTABLE = {"provisioning", "ready"}
+_NONTERMINAL_ORDER = {
+    "provisioning": 0,
+    "ready": 1,
+    "running": 2,
+    "stopping": 3,
+    "collecting": 4,
+}
+COMPLETION_COLLECTION_TEARDOWN = "collection_teardown_v1"
+COMPLETION_CLEANUP_TEARDOWN = "cleanup_teardown_v1"
+_COMPLETION_KINDS = frozenset({COMPLETION_COLLECTION_TEARDOWN, COMPLETION_CLEANUP_TEARDOWN})
+
+
+class EngineRunReservationRejectedError(RuntimeError):
+    """A required lifecycle write lost the monotonic projection race."""
+
+
+def _authoritative_scope(
+    project_id: str | None,
+    app_id: str | None,
+    *,
+    required: bool,
+    operation: str,
+) -> bool:
+    """Return true only for an exact provider-I/O ownership assertion."""
+
+    complete = (
+        isinstance(project_id, str)
+        and bool(project_id.strip())
+        and isinstance(app_id, str)
+        and bool(app_id.strip())
+    )
+    if required and not complete:
+        raise EngineRunReservationRejectedError(
+            f"engine-run {operation} requires exact project and application ownership"
+        )
+    return required and complete
+
+
+def _verify_reservation_connection_generation(
+    row: EngineRun,
+    *,
+    connection_id: str | None,
+    connection_version: datetime | None,
+    operation: str,
+) -> None:
+    """Bind a recovered durable attempt to the exact adapter generation.
+
+    A connection row can be updated in place while retaining its id. Recovering a
+    provider handle written for the previous generation against the replacement
+    endpoint would graft one provider's external identity onto another provider
+    instance. Both reservation recovery paths call this before provider I/O.
+    """
+
+    if connection_id is None:
+        return
+    if row.connection_id != connection_id:
+        raise EngineRunReservationRejectedError(
+            f"engine-run {operation} reservation has different connection affinity"
+        )
+    if connection_version is None or row.execution_connection_version != connection_version:
+        raise EngineRunReservationRejectedError(
+            f"engine-run {operation} reservation has different connection generation"
+        )
+
+
+def _verify_reservation_handle_identity(
+    row_handle: dict[str, Any],
+    *,
+    engine: str,
+    idempotency_key: Any,
+    connection_id: str | None,
+    operation: str,
+) -> None:
+    """Reject a recovered provider handle whose immutable identity was replaced."""
+
+    if row_handle.get("engine") != engine:
+        raise EngineRunReservationRejectedError(
+            f"engine-run {operation} reservation handle has a different provider"
+        )
+    if row_handle.get("idempotency_key") != idempotency_key:
+        raise EngineRunReservationRejectedError(
+            f"engine-run {operation} reservation has a different idempotency key"
+        )
+    if connection_id is not None and row_handle.get("connection_id") != connection_id:
+        raise EngineRunReservationRejectedError(
+            f"engine-run {operation} reservation handle has different connection affinity"
+        )
+
+
+def _normalize_development_connection_ids(
+    handle: dict[str, Any],
+    connection_id: str | None,
+    connection_version: datetime | None,
+    artifact_connection_id: str | None,
+    *,
+    is_locked_down: bool,
+) -> tuple[bool, str | None, datetime | None, str | None]:
+    """Remove synthetic dev ids without hiding a durable half of a hybrid run.
+
+    Returns ``(skip_projection, connection_id, connection_version,
+    artifact_connection_id)``. A fully static execution has nothing durable to
+    project; a real engine paired with the static artifact store must still settle
+    its existing engine-run lease.
+    """
+
+    if is_locked_down:
+        return False, connection_id, connection_version, artifact_connection_id
+
+    handle_connection_id = handle.get("connection_id")
+    execution_connection_id = connection_id or (
+        handle_connection_id if isinstance(handle_connection_id, str) else None
+    )
+    execution_is_static = bool(
+        execution_connection_id and execution_connection_id.startswith("dev-")
+    )
+    if connection_id is not None and connection_id.startswith("dev-"):
+        connection_id = None
+        connection_version = None
+    if artifact_connection_id is not None and artifact_connection_id.startswith("dev-"):
+        artifact_connection_id = None
+
+    return (
+        execution_is_static and artifact_connection_id is None,
+        connection_id,
+        connection_version,
+        artifact_connection_id,
+    )
+
+
+def _normalize_scope_provenance(values: dict[str, Any]) -> dict[str, Any]:
+    """Quarantine statement inputs that do not prove one exact app scope."""
+
+    normalized = dict(values)
+    authoritative = (
+        normalized.get("ownership_known") is True
+        and normalized.get("scope_ownership_known") is True
+        and isinstance(normalized.get("project_id"), str)
+        and bool(normalized["project_id"].strip())
+        and isinstance(normalized.get("app_id"), str)
+        and bool(normalized["app_id"].strip())
+    )
+    if not authoritative:
+        normalized["ownership_known"] = False
+        normalized["scope_ownership_known"] = False
+    return normalized
 
 
 def _upsert_statement(values: dict[str, Any], dialect: str) -> Any:
-    """Build a replay-safe upsert for the supported runtime/test databases."""
+    """Build a replay-safe, monotonic upsert for runtime/test databases."""
+    values = _normalize_scope_provenance(values)
     if dialect == "postgresql":
         statement = pg_insert(EngineRun).values(**values)
     elif dialect == "sqlite":
         statement = sqlite_insert(EngineRun).values(**values)
     else:
         raise RuntimeError(f"engine-run upsert is unsupported for database dialect {dialect!r}")
-    update_cols = {
+    incoming_update_cols = {
         key: value for key, value in values.items() if key not in {"thread_id", "attempt"}
     }
+    incoming_status = str(values["status"])
+    mutable_existing = EngineRun.status.not_in(_TERMINAL)
+    # A terminal projection is immutable. Replays may enrich a nonterminal row or
+    # settle it once, but a stale lifecycle callback cannot reopen or replace the
+    # result of a completed/failed/aborted attempt.
+    transition_allowed = (
+        mutable_existing
+        if incoming_status not in _TERMINAL
+        else mutable_existing | (EngineRun.status == incoming_status)
+    )
+    # A lifecycle callback may enrich a quarantined legacy row, but it must never
+    # rebind a known (thread, attempt) projection to another project/application.
+    # The conflict key is global, so status monotonicity alone is not an ownership
+    # boundary under replay or a colliding caller-controlled thread id.
+    if "project_id" in values:
+        transition_allowed = and_(
+            transition_allowed,
+            or_(
+                EngineRun.project_id == values["project_id"],
+                and_(
+                    EngineRun.scope_ownership_known.is_(False),
+                    EngineRun.project_id.is_(None),
+                ),
+            ),
+        )
+    if "app_id" in values:
+        transition_allowed = and_(
+            transition_allowed,
+            or_(
+                EngineRun.app_id == values["app_id"],
+                and_(
+                    EngineRun.scope_ownership_known.is_(False),
+                    EngineRun.app_id.is_(None),
+                ),
+            ),
+        )
+    update_cols: dict[str, Any]
+    if incoming_status in _TERMINAL:
+        # A lost commit acknowledgement must report one affected row on replay,
+        # but the first terminal writer owns the immutable payload. Preserve every
+        # existing column when the row is already at this status so a stale callback
+        # cannot erase its handle/summary/ownership while masquerading as a replay.
+        update_cols = {
+            key: case(
+                (EngineRun.status == incoming_status, getattr(EngineRun, key)),
+                else_=getattr(statement.excluded, key),
+            )
+            for key in incoming_update_cols
+        }
+    elif incoming_status in _NONTERMINAL_ORDER:
+        later_statuses = tuple(
+            status
+            for status, order in _NONTERMINAL_ORDER.items()
+            if order > _NONTERMINAL_ORDER[incoming_status]
+        )
+        if later_statuses:
+            # Concurrent/replayed workers may finish an earlier side effect after
+            # another worker already advanced the durable lifecycle. Acknowledge
+            # the stale write without downgrading status or erasing the richer
+            # handle/ownership payload owned by the later stage.
+            update_cols = {
+                key: case(
+                    (EngineRun.status.in_(later_statuses), getattr(EngineRun, key)),
+                    else_=getattr(statement.excluded, key),
+                )
+                for key in incoming_update_cols
+            }
+        else:
+            update_cols = incoming_update_cols
+    else:
+        update_cols = incoming_update_cols
+    if values.get("scope_ownership_known") is not True:
+        # Best-effort/direct/legacy callbacks may create quarantined diagnostic
+        # rows, but cannot promote or poison an existing attempt's ownership.
+        update_cols["ownership_known"] = EngineRun.ownership_known
+        update_cols["scope_ownership_known"] = EngineRun.scope_ownership_known
+        update_cols["project_id"] = EngineRun.project_id
+        update_cols["app_id"] = EngineRun.app_id
     return statement.on_conflict_do_update(
         index_elements=[EngineRun.thread_id, EngineRun.attempt],
         set_=update_cols,
+        where=transition_allowed,
     )
+
+
+def _insert_reservation_statement(values: dict[str, Any], dialect: str) -> Any:
+    """Insert the first provider lease without mutating an existing richer row."""
+
+    values = _normalize_scope_provenance(values)
+
+    if dialect == "postgresql":
+        statement = pg_insert(EngineRun).values(**values)
+    elif dialect == "sqlite":
+        statement = sqlite_insert(EngineRun).values(**values)
+    else:
+        raise RuntimeError(f"engine-run insert is unsupported for database dialect {dialect!r}")
+    return statement.on_conflict_do_nothing(index_elements=[EngineRun.thread_id, EngineRun.attempt])
+
+
+def _bind_locked_run_ownership(
+    row: EngineRun,
+    *,
+    project_id: str | None,
+    app_id: str | None,
+    operation: str,
+) -> None:
+    """Verify immutable ownership, narrowly repairing a quarantined legacy row."""
+
+    _authoritative_scope(project_id, app_id, required=True, operation=operation)
+    if row.project_id != project_id:
+        if not row.scope_ownership_known and row.project_id is None and project_id is not None:
+            row.project_id = project_id
+        else:
+            raise EngineRunReservationRejectedError(
+                f"engine-run {operation} reservation has different project ownership"
+            )
+    if row.app_id != app_id:
+        if not row.scope_ownership_known and row.app_id is None and app_id is not None:
+            row.app_id = app_id
+        else:
+            raise EngineRunReservationRejectedError(
+                f"engine-run {operation} reservation has different application ownership"
+            )
+    if not row.scope_ownership_known:
+        if app_id is None:
+            raise EngineRunReservationRejectedError(
+                f"engine-run {operation} reservation has ambiguous application ownership"
+            )
+        # A non-null app id supplied by the environment-authorized execution path
+        # is the only safe way to promote a legacy project-level-looking row.
+        row.ownership_known = True
+        row.scope_ownership_known = True
 
 
 async def record_engine_run(
@@ -55,25 +332,53 @@ async def record_engine_run(
     external_run_id: str | None = None,
     artifact_namespace: str | None = None,
     artifact_connection_id: str | None = None,
+    artifact_connection_version: datetime | None = None,
     connection_id: str | None = None,
     connection_version: datetime | None = None,
     summary: dict[str, Any] | None = None,
+    completion_kind: str | None = None,
     required: bool = False,
 ) -> None:
     """Upsert one engine-run row; terminal statuses stamp ended_at.
 
-    Ordinary lifecycle projection remains best-effort. Artifact ownership writes
-    pass ``required=True`` so a retryable graph node cannot checkpoint inaccessible
-    objects without their authorization record.
+    Ordinary lifecycle projection remains best-effort. Provider reservations and
+    artifact ownership writes pass ``required=True`` so graph retries cannot perform
+    external I/O or checkpoint inaccessible objects without a durable projection.
     """
     try:
         settings = get_settings()
-        if not settings.is_locked_down and any(
-            value is not None and value.startswith("dev-")
-            for value in (connection_id, artifact_connection_id)
-        ):
-            # Static development adapters intentionally work without PostgreSQL.
+        (
+            skip_projection,
+            connection_id,
+            connection_version,
+            artifact_connection_id,
+        ) = _normalize_development_connection_ids(
+            handle,
+            connection_id,
+            connection_version,
+            artifact_connection_id,
+            is_locked_down=settings.is_locked_down,
+        )
+        if skip_projection:
+            # Fully static development adapters intentionally work without PostgreSQL.
             return
+        scope_ownership_known = _authoritative_scope(
+            project_id,
+            app_id,
+            required=required,
+            operation="record",
+        )
+        if artifact_connection_id is None:
+            artifact_connection_version = None
+        if required and connection_id is not None and connection_version is None:
+            raise RuntimeError(
+                f"execution connection {connection_id!r} is missing its reservation version"
+            )
+        if completion_kind is not None:
+            if completion_kind not in _COMPLETION_KINDS or status not in _TERMINAL:
+                raise ValueError("engine completion witness is invalid")
+            if connection_id is not None and connection_version is None:
+                raise RuntimeError("engine completion witness has no execution generation")
         # Throwaway engine per call: graph nodes run on worker threads with
         # short-lived event loops, so pooled connections must not outlive them.
         database = settings.database
@@ -93,7 +398,7 @@ async def record_engine_run(
                         raise RuntimeError(
                             f"execution connection {connection_id!r} is missing or disabled"
                         )
-                    if connection.updated_at != connection_version:
+                    if connection.runtime_version != connection_version:
                         raise RuntimeError(
                             f"execution connection {connection_id!r} changed during reservation"
                         )
@@ -109,18 +414,23 @@ async def record_engine_run(
                         or artifact_connection.kind != "artifact_store"
                     ):
                         raise RuntimeError("artifact-store connection is missing or disabled")
+                    if artifact_connection_version is None:
+                        raise RuntimeError(
+                            "artifact-store connection is missing its reservation version"
+                        )
+                    if artifact_connection.runtime_version != artifact_connection_version:
+                        raise RuntimeError("artifact-store connection changed during reservation")
                 values: dict[str, Any] = {
                     "thread_id": thread_id,
                     "attempt": attempt,
+                    "project_id": project_id,
+                    "app_id": app_id,
                     "engine": engine,
                     "handle": handle,
                     "status": status,
-                    "ownership_known": True,
+                    "ownership_known": scope_ownership_known,
+                    "scope_ownership_known": scope_ownership_known,
                 }
-                if project_id is not None:
-                    values["project_id"] = project_id
-                if app_id is not None:
-                    values["app_id"] = app_id
                 if external_run_id is not None:
                     values["external_run_id"] = external_run_id
                 handle_idempotency_key = handle.get("idempotency_key")
@@ -132,20 +442,456 @@ async def record_engine_run(
                     values["artifact_connection_id"] = artifact_connection_id
                 if connection_id is not None and connection_version is not None:
                     values["connection_id"] = connection_id
+                    values["execution_connection_version"] = connection_version
+                if artifact_connection_version is not None:
+                    values["artifact_connection_version"] = artifact_connection_version
                 if summary is not None:
                     values["summary"] = summary
+                if completion_kind is not None:
+                    values["completion_kind"] = completion_kind
                 if status in _TERMINAL:
                     values["ended_at"] = datetime.now(UTC)
                     values["connection_id"] = None
+                else:
+                    values["ended_at"] = None
                 stmt = _upsert_statement(values, session.get_bind().dialect.name)
-                await session.execute(stmt)
+                result = await session.execute(stmt)
+                if required and getattr(result, "rowcount", None) != 1:
+                    # A terminal row rejects nonterminal re-entry in the upsert's
+                    # WHERE clause. Treat that zero-row outcome as a failed durable
+                    # reservation; provider I/O must never proceed unprojected.
+                    await session.rollback()
+                    raise EngineRunReservationRejectedError(
+                        "required engine-run reservation was rejected by the durable projection"
+                    )
                 await session.commit()
         finally:
             await engine_db.dispose()
     except Exception as exc:  # noqa: BLE001 — projection writes never fail a run
-        logger.warning("engine_runs.record_failed", thread_id=thread_id, error=str(exc))
+        logger.warning(
+            "engine_runs.record_failed",
+            thread_id=thread_id,
+            error=bounded_diagnostic(exc),
+        )
         if required:
             raise
+
+
+async def prepare_engine_start(
+    thread_id: str,
+    attempt: int,
+    engine: str,
+    handle: dict[str, Any],
+    *,
+    project_id: str | None = None,
+    app_id: str | None = None,
+    connection_id: str | None = None,
+    connection_version: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Lock and verify a start reservation without weakening its durable handle.
+
+    ``None`` means the provider start is still required. A returned handle means
+    the RUNNING projection committed before its graph checkpoint; callers recover
+    that provider-owned output and skip reissuing start. Terminal or inconsistent
+    rows fail closed before provider I/O.
+    """
+
+    try:
+        settings = get_settings()
+        skip_projection, connection_id, connection_version, _artifact_connection_id = (
+            _normalize_development_connection_ids(
+                handle,
+                connection_id,
+                connection_version,
+                None,
+                is_locked_down=settings.is_locked_down,
+            )
+        )
+        if skip_projection:
+            return None
+        _authoritative_scope(project_id, app_id, required=True, operation="start")
+        if connection_id is not None and connection_version is None:
+            raise RuntimeError(
+                f"execution connection {connection_id!r} is missing its reservation version"
+            )
+        database = settings.database
+        engine_db = create_async_engine(
+            database_asyncpg_uri(database.uri),
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
+        try:
+            session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
+            async with session_factory() as session:
+                if connection_id is not None and connection_version is not None:
+                    connection = await session.scalar(
+                        select(Connection).where(Connection.id == connection_id).with_for_update()
+                    )
+                    if connection is None or not connection.enabled:
+                        raise RuntimeError(
+                            f"execution connection {connection_id!r} is missing or disabled"
+                        )
+                    if connection.runtime_version != connection_version:
+                        raise RuntimeError(
+                            f"execution connection {connection_id!r} changed during reservation"
+                        )
+                row = await session.scalar(
+                    select(EngineRun)
+                    .where(
+                        EngineRun.thread_id == thread_id,
+                        EngineRun.attempt == attempt,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise EngineRunReservationRejectedError(
+                        "required engine-run start reservation is missing"
+                    )
+                if row.engine != engine:
+                    raise EngineRunReservationRejectedError(
+                        "engine-run start reservation has a different provider"
+                    )
+                _bind_locked_run_ownership(
+                    row,
+                    project_id=project_id,
+                    app_id=app_id,
+                    operation="start",
+                )
+                _verify_reservation_connection_generation(
+                    row,
+                    connection_id=connection_id,
+                    connection_version=connection_version,
+                    operation="start",
+                )
+                row_handle = row.handle if isinstance(row.handle, dict) else {}
+                _verify_reservation_handle_identity(
+                    row_handle,
+                    engine=engine,
+                    idempotency_key=handle.get("idempotency_key"),
+                    connection_id=connection_id,
+                    operation="start",
+                )
+                if row.status in _TERMINAL:
+                    raise EngineRunReservationRejectedError(
+                        "engine-run start reservation is already terminal"
+                    )
+                if row.status == "running":
+                    recovered = dict(row_handle)
+                elif row.status in _STARTABLE:
+                    recovered = None
+                else:
+                    raise EngineRunReservationRejectedError(
+                        f"engine-run status {row.status!r} is not startable"
+                    )
+                await session.commit()
+                return recovered
+        finally:
+            await engine_db.dispose()
+    except Exception as exc:  # noqa: BLE001 — provider I/O must fail closed
+        logger.warning(
+            "engine_runs.start_reservation_failed",
+            thread_id=thread_id,
+            error=bounded_diagnostic(exc),
+        )
+        raise
+
+
+async def prepare_engine_provision(
+    thread_id: str,
+    attempt: int,
+    engine: str,
+    handle: dict[str, Any],
+    *,
+    project_id: str | None = None,
+    app_id: str | None = None,
+    artifact_namespace: str | None = None,
+    connection_id: str | None = None,
+    connection_version: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Insert-or-lock the provider lease without erasing a recovered handle.
+
+    ``None`` authorizes same-key validation/provisioning. A returned handle was
+    already durably projected by an earlier worker and must be checkpointed without
+    another provider call. Existing terminal or inconsistent attempts fail closed.
+    """
+
+    try:
+        settings = get_settings()
+        skip_projection, connection_id, connection_version, _artifact_connection_id = (
+            _normalize_development_connection_ids(
+                handle,
+                connection_id,
+                connection_version,
+                None,
+                is_locked_down=settings.is_locked_down,
+            )
+        )
+        if skip_projection:
+            return None
+        _authoritative_scope(project_id, app_id, required=True, operation="provision")
+        if connection_id is not None and connection_version is None:
+            raise RuntimeError(
+                f"execution connection {connection_id!r} is missing its reservation version"
+            )
+        database = settings.database
+        engine_db = create_async_engine(
+            database_asyncpg_uri(database.uri),
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
+        try:
+            session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
+            async with session_factory() as session:
+                if connection_id is not None and connection_version is not None:
+                    connection = await session.scalar(
+                        select(Connection).where(Connection.id == connection_id).with_for_update()
+                    )
+                    if connection is None or not connection.enabled:
+                        raise RuntimeError(
+                            f"execution connection {connection_id!r} is missing or disabled"
+                        )
+                    if connection.runtime_version != connection_version:
+                        raise RuntimeError(
+                            f"execution connection {connection_id!r} changed during reservation"
+                        )
+                values: dict[str, Any] = {
+                    "thread_id": thread_id,
+                    "attempt": attempt,
+                    "project_id": project_id,
+                    "app_id": app_id,
+                    "engine": engine,
+                    "handle": handle,
+                    "status": "provisioning",
+                    "ownership_known": True,
+                    "scope_ownership_known": True,
+                }
+                if artifact_namespace is not None:
+                    values["artifact_namespace"] = artifact_namespace.rstrip("/")
+                if connection_id is not None:
+                    values["connection_id"] = connection_id
+                if connection_version is not None:
+                    values["execution_connection_version"] = connection_version
+                await session.execute(
+                    _insert_reservation_statement(values, session.get_bind().dialect.name)
+                )
+                row = await session.scalar(
+                    select(EngineRun)
+                    .where(
+                        EngineRun.thread_id == thread_id,
+                        EngineRun.attempt == attempt,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise EngineRunReservationRejectedError(
+                        "required engine-run provision reservation is missing"
+                    )
+                if row.engine != engine:
+                    raise EngineRunReservationRejectedError(
+                        "engine-run provision reservation has a different provider"
+                    )
+                _bind_locked_run_ownership(
+                    row,
+                    project_id=project_id,
+                    app_id=app_id,
+                    operation="provision",
+                )
+                _verify_reservation_connection_generation(
+                    row,
+                    connection_id=connection_id,
+                    connection_version=connection_version,
+                    operation="provision",
+                )
+                if (
+                    artifact_namespace is not None
+                    and row.artifact_namespace != artifact_namespace.rstrip("/")
+                ):
+                    raise EngineRunReservationRejectedError(
+                        "engine-run provision reservation has a different artifact namespace"
+                    )
+                row_handle = row.handle if isinstance(row.handle, dict) else {}
+                _verify_reservation_handle_identity(
+                    row_handle,
+                    engine=engine,
+                    idempotency_key=handle.get("idempotency_key"),
+                    connection_id=connection_id,
+                    operation="provision",
+                )
+                if row.status in _TERMINAL:
+                    raise EngineRunReservationRejectedError(
+                        "engine-run provision reservation is already terminal"
+                    )
+                if row.status in {"ready", "running"}:
+                    recovered = dict(row_handle)
+                elif row.status == "provisioning":
+                    extras = row_handle.get("extras")
+                    recovered = (
+                        dict(row_handle)
+                        if row_handle.get("external_run_id")
+                        or (isinstance(extras, dict) and bool(extras))
+                        else None
+                    )
+                else:
+                    raise EngineRunReservationRejectedError(
+                        f"engine-run status {row.status!r} cannot provision"
+                    )
+                await session.commit()
+                return recovered
+        finally:
+            await engine_db.dispose()
+    except Exception as exc:  # noqa: BLE001 — provider I/O must fail closed
+        logger.warning(
+            "engine_runs.provision_reservation_failed",
+            thread_id=thread_id,
+            error=bounded_diagnostic(exc),
+        )
+        raise
+
+
+def _completion_replay_status(
+    row: EngineRun,
+    *,
+    thread_id: str,
+    attempt: int,
+    engine: str,
+    handle: dict[str, Any],
+    project_id: str | None,
+    app_id: str | None,
+    external_run_id: str | None,
+    artifact_namespace: str,
+    artifact_connection_id: str | None,
+    artifact_connection_version: datetime | None,
+    connection_version: datetime | None,
+    completion_kind: str,
+    expected_statuses: frozenset[str],
+) -> str | None:
+    """Verify an exact post-effect witness; nonterminal rows require normal I/O."""
+
+    if row.status not in _TERMINAL:
+        return None
+    row_handle = row.handle if isinstance(row.handle, dict) else {}
+    expected_idempotency_key = handle.get("idempotency_key")
+    mismatched = (
+        row.thread_id != thread_id
+        or row.attempt != attempt
+        or row.engine != engine
+        or row.ownership_known is not True
+        or row.scope_ownership_known is not True
+        or row.project_id != project_id
+        or row.app_id != app_id
+        or row.external_run_id != external_run_id
+        or row.artifact_namespace != artifact_namespace.rstrip("/")
+        or row.artifact_connection_id != artifact_connection_id
+        or row.artifact_connection_version != artifact_connection_version
+        or row.execution_connection_version != connection_version
+        or row.completion_kind != completion_kind
+        or row.status not in expected_statuses
+        or row_handle.get("engine") != engine
+        or row_handle.get("connection_id") != handle.get("connection_id")
+        or row_handle.get("external_run_id") != external_run_id
+        or row_handle.get("idempotency_key") != expected_idempotency_key
+    )
+    if mismatched:
+        raise EngineRunReservationRejectedError(
+            "terminal engine-run projection does not match the completion witness"
+        )
+    return str(row.status)
+
+
+async def recover_engine_completion(
+    thread_id: str,
+    attempt: int,
+    engine: str,
+    handle: dict[str, Any],
+    *,
+    project_id: str | None = None,
+    app_id: str | None = None,
+    external_run_id: str | None = None,
+    artifact_namespace: str,
+    artifact_connection_id: str | None = None,
+    artifact_connection_version: datetime | None = None,
+    connection_id: str | None = None,
+    connection_version: datetime | None = None,
+    completion_kind: str,
+    expected_statuses: frozenset[str],
+) -> str | None:
+    """Recover a committed post-teardown projection after its acknowledgement was lost."""
+
+    if (
+        completion_kind not in _COMPLETION_KINDS
+        or not expected_statuses
+        or not (expected_statuses <= _TERMINAL)
+    ):
+        raise ValueError("engine completion recovery contract is invalid")
+    try:
+        settings = get_settings()
+        skip_projection, connection_id, connection_version, artifact_connection_id = (
+            _normalize_development_connection_ids(
+                handle,
+                connection_id,
+                connection_version,
+                artifact_connection_id,
+                is_locked_down=settings.is_locked_down,
+            )
+        )
+        if skip_projection:
+            return None
+        _authoritative_scope(
+            project_id,
+            app_id,
+            required=True,
+            operation="completion recovery",
+        )
+        if artifact_connection_id is None:
+            artifact_connection_version = None
+        database = settings.database
+        engine_db = create_async_engine(
+            database_asyncpg_uri(database.uri),
+            poolclass=NullPool,
+            connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        )
+        try:
+            session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
+            async with session_factory() as session:
+                row = await session.scalar(
+                    select(EngineRun)
+                    .where(
+                        EngineRun.thread_id == thread_id,
+                        EngineRun.attempt == attempt,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise EngineRunReservationRejectedError(
+                        "engine completion recovery projection is missing"
+                    )
+                recovered = _completion_replay_status(
+                    row,
+                    thread_id=thread_id,
+                    attempt=attempt,
+                    engine=engine,
+                    handle=handle,
+                    project_id=project_id,
+                    app_id=app_id,
+                    external_run_id=external_run_id,
+                    artifact_namespace=artifact_namespace,
+                    artifact_connection_id=artifact_connection_id,
+                    artifact_connection_version=artifact_connection_version,
+                    connection_version=connection_version,
+                    completion_kind=completion_kind,
+                    expected_statuses=expected_statuses,
+                )
+                await session.commit()
+                return recovered
+        finally:
+            await engine_db.dispose()
+    except Exception as exc:  # noqa: BLE001 - teardown recovery must fail closed
+        logger.warning(
+            "engine_runs.completion_recovery_failed",
+            thread_id=thread_id,
+            error=bounded_diagnostic(exc),
+        )
+        raise
 
 
 def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
@@ -162,6 +908,51 @@ def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 executor.submit(asyncio.run, record_engine_run(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("engine_runs.record_failed", error=str(exc))
+        logger.warning("engine_runs.record_failed", error=bounded_diagnostic(exc))
         if kwargs.get("required") is True:
             raise
+
+
+def prepare_engine_start_sync(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    """Sync bridge for the required pre-start reservation/recovery barrier."""
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(prepare_engine_start(*args, **kwargs))
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, prepare_engine_start(*args, **kwargs)).result()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("engine_runs.start_reservation_failed", error=bounded_diagnostic(exc))
+        raise
+
+
+def prepare_engine_provision_sync(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+    """Sync bridge for the insert-or-recover provision reservation barrier."""
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(prepare_engine_provision(*args, **kwargs))
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, prepare_engine_provision(*args, **kwargs)).result()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("engine_runs.provision_reservation_failed", error=bounded_diagnostic(exc))
+        raise
+
+
+def recover_engine_completion_sync(*args: Any, **kwargs: Any) -> str | None:
+    """Sync bridge for the exact post-effect completion witness."""
+
+    try:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(recover_engine_completion(*args, **kwargs))
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(asyncio.run, recover_engine_completion(*args, **kwargs)).result()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("engine_runs.completion_recovery_failed", error=bounded_diagnostic(exc))
+        raise

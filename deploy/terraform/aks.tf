@@ -12,6 +12,18 @@ resource "azurerm_kubernetes_cluster" "main" {
   kubernetes_version  = var.kubernetes_version
   sku_tier            = var.cluster_sku_tier
 
+  # Entra/Azure RBAC credentials are short-lived and auditable. Static local
+  # cluster-admin certificates are disabled entirely.
+  local_account_disabled              = true
+  private_cluster_enabled             = var.aks_private_cluster_enabled
+  private_cluster_public_fqdn_enabled = false
+  private_dns_zone_id                 = var.aks_private_cluster_enabled ? "System" : null
+
+  azure_active_directory_role_based_access_control {
+    azure_rbac_enabled     = true
+    admin_group_object_ids = var.aks_admin_group_object_ids
+  }
+
   oidc_issuer_enabled       = true
   workload_identity_enabled = true
 
@@ -32,13 +44,15 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   default_node_pool {
-    name                 = "system"
-    vm_size              = var.system_node_vm_size
-    vnet_subnet_id       = azurerm_subnet.aks.id
-    auto_scaling_enabled = true
-    min_count            = var.system_node_min_count
-    max_count            = var.system_node_max_count
-    orchestrator_version = var.kubernetes_version
+    name                        = "system"
+    vm_size                     = var.system_node_vm_size
+    vnet_subnet_id              = azurerm_subnet.aks.id
+    auto_scaling_enabled        = true
+    min_count                   = var.system_node_min_count
+    max_count                   = var.system_node_max_count
+    orchestrator_version        = var.kubernetes_version
+    zones                       = var.system_node_zones
+    temporary_name_for_rotation = var.system_node_pool_temporary_name
   }
 
   identity {
@@ -54,4 +68,18 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   tags = local.tags
+}
+
+# `get-credentials` and Kubernetes authorization are separate Azure actions.
+# Grant both explicitly to the OIDC deployer used by the workflow/script.
+resource "azurerm_role_assignment" "aks_deployer_cluster_user" {
+  scope                = azurerm_kubernetes_cluster.main.id
+  role_definition_name = "Azure Kubernetes Service Cluster User Role"
+  principal_id         = local.deployer_object_id
+}
+
+resource "azurerm_role_assignment" "aks_deployer_rbac_admin" {
+  scope                = azurerm_kubernetes_cluster.main.id
+  role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
+  principal_id         = local.deployer_object_id
 }

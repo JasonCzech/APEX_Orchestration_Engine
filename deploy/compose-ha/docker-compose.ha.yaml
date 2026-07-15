@@ -14,9 +14,18 @@ x-apex-server: &apex-server
   environment:
     DATABASE_URI: postgresql://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
     REDIS_URI: redis://redis:6379
+    FF_V2_EVENT_STREAMING: "false"
+    HTTP_MAX_REQUEST_BODY_BYTES: "27262976"
+    CORS_CONFIG: '{"allow_origins":["http://localhost:5173","http://127.0.0.1:5173"],"allow_methods":["GET","POST","PUT","PATCH","DELETE","OPTIONS"],"allow_headers":["authorization","content-type","idempotency-key","last-event-id","x-api-key","x-request-id"],"allow_credentials":true,"expose_headers":["content-location","retry-after","x-pagination-next","x-pagination-total"],"max_age":600}'
+    APEX_RATE_LIMIT__RUN_CREATE_REQUESTS: "10"
+    APEX_RATE_LIMIT__RUN_CREATE_WINDOW_S: "60"
+    APEX_RATE_LIMIT__BACKEND: redis
     LANGGRAPH_CLOUD_LICENSE_KEY: ${LANGGRAPH_CLOUD_LICENSE_KEY:?Enterprise license required (ADR-0001) - see deploy/compose-ha/README.md}
-    APEX_ENVIRONMENT: compose-ha
+    # Reuse the explicitly unlocked Compose settings profile; HA correctness is
+    # provided by the distributed lock below, not by production-only TLS rules.
+    APEX_ENVIRONMENT: compose
     APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+    APEX_DATABASE__SSL_MODE: disable
     APEX_DISTRIBUTED_REMOTE_CREATION_LOCK: "true"
     # The isolated Compose bridge is the only path to the server containers;
     # trust nginx there so lockouts use the forwarded host client address.
@@ -27,20 +36,26 @@ x-apex-server: &apex-server
     # Secret for the seeded "minio-artifacts" connection (matches MinIO below).
     APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
   depends_on:
-    postgres:
-      condition: service_healthy
+    bootstrap:
+      condition: service_completed_successfully
     redis:
       condition: service_healthy
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+    start_period: 30s
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     environment:
       POSTGRES_USER: apex
       POSTGRES_PASSWORD: ${APEX_POSTGRES_PASSWORD:-apex}
       POSTGRES_DB: apex
     ports:
-      - "5433:5432" # host port for migrations/seeding (5433 avoids the dev compose)
+      - "127.0.0.1:5433:5432" # host-only; 5433 avoids the dev compose
     volumes:
       - pgdata-ha:/var/lib/postgresql/data
     healthcheck:
@@ -50,7 +65,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -58,13 +73,59 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:RELEASE.2024-07-16T23-46-41Z
-    command: server /data
+    image: nginxinc/nginx-unprivileged:1.31.2-alpine3.23@sha256:6320020c7da8714feab524e02c08c5a1958675c4e68700e93a2fd8970b065786
+    volumes:
+      - ../minio-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Raw MinIO shares the gateway namespace and listens only on loopback, so a
+  # compromised peer cannot bypass the signed-upload/S3-Select filters.
+  minio-storage:
+    image: minio/minio:RELEASE.2024-07-16T23-46-41Z@sha256:77ff9f7e12549d269990b167fa21da010fa8b0beb40d6064569b8887e37c456b
+    network_mode: "service:minio"
+    command: server /data --address 127.0.0.1:9100 --console-address 127.0.0.1:9101
     environment:
       MINIO_ROOT_USER: apex
       MINIO_ROOT_PASSWORD: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
     volumes:
       - miniodata-ha:/data
+
+  migrate:
+    image: ${APEX_IMAGE:-apex-orchestration-engine:local}
+    restart: "no"
+    entrypoint: ["python", "-m", "apex.persistence.migrate"]
+    environment:
+      APEX_ENVIRONMENT: compose
+      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+      APEX_DATABASE__SSL_MODE: disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  bootstrap:
+    image: ${APEX_IMAGE:-apex-orchestration-engine:local}
+    restart: "no"
+    entrypoint: ["python", "-m", "apex.bootstrap"]
+    command: ["/bootstrap/bootstrap.json"]
+    environment:
+      APEX_ENVIRONMENT: compose
+      APEX_DATABASE__URI: postgresql+asyncpg://apex:${APEX_POSTGRES_PASSWORD:-apex}@postgres:5432/apex
+      APEX_DATABASE__SSL_MODE: disable
+      # Use the same rig-only key for the durable consumer and synthetic dev
+      # admin so every documented request has one unambiguous credential.
+      APEX_BOOTSTRAP_ADMIN_KEY: ${APEX_AUTH__DEV_API_KEY:?Set a rig-only admin key outside git}
+      APEX_INTEGRATION_MINIO_SECRET_KEY: ${APEX_INTEGRATION_MINIO_SECRET_KEY:-apex-minio}
+    volumes:
+      - ../bootstrap/compose.json:/bootstrap/bootstrap.json:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
 
   apex-server-1:
     <<: *apex-server
@@ -73,14 +134,21 @@ services:
     <<: *apex-server
 
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     ports:
-      - "8123:8123"
+      - "127.0.0.1:8123:8123"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - apex-server-1
-      - apex-server-2
+      apex-server-1:
+        condition: service_healthy
+      apex-server-2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   pgdata-ha:

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from apex.persistence.models import Environment
+from apex.services.connection_credentials import environment_target_requires_repair
 from apex.services.connections import (
     TRUSTED_PRIVATE_HOST_OPTION,
     validate_adapter_base_url,
@@ -47,6 +48,14 @@ async def resolve_environment_target(
         or (app_id is not None and env.application_id != app_id)
     ):
         raise EnvironmentTargetNotFoundError(f"environment {environment_id!r} not found")
+
+    # Environment rows predate the secret-free connection contract and can be
+    # written outside the API. Treat the URL/options pair atomically: no approval
+    # bit may make legacy credentials or malformed metadata executable.
+    if environment_target_requires_repair(env.base_url, env.options):
+        raise EnvironmentTargetNotFoundError(
+            f"environment {environment_id!r} has no approved HTTP target"
+        )
 
     base_url = str(env.base_url or "").strip()
     if not env.target_approved or not base_url:

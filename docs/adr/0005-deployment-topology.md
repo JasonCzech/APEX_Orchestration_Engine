@@ -9,9 +9,12 @@ deployed as N interchangeable stateless replicas (default 2) behind a plain
 round-robin load balancer. Postgres, Redis, and the S3/MinIO artifact store are
 **external** dependencies — provisioned and operated outside the app's deploy
 artifacts (Helm chart `deploy/helm/apex-orchestration-engine/`, HA compose rig
-`deploy/compose-ha/`; no bundled database subcharts). `alembic upgrade head` runs
-against the `apex` schema **before** every rollout; migrations are additive, so
-old code on a newer schema is the supported rollback posture.
+`deploy/compose-ha/`; no bundled database subcharts). The compatibility-aware
+`python -m apex.persistence.migrate` entry point runs against the `apex` schema
+**before** every rollout. Migrations are additive, and
+the migration runner registers trusted revision ancestry so a lineage-aware older
+image accepts a newer descendant schema while rejecting behind, divergent, or
+unknown heads. Old code on a newer schema is the supported rollback posture.
 
 ## Rationale
 All durable state lives in Postgres (LangGraph checkpoints/threads/runs + the

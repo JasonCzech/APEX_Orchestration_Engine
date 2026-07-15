@@ -9,6 +9,18 @@ resource "azurerm_postgresql_flexible_server" "main" {
 
   sku_name   = var.postgres_sku_name
   storage_mb = var.postgres_storage_mb
+  zone       = var.postgres_zone != "" ? var.postgres_zone : null
+
+  backup_retention_days        = var.postgres_backup_retention_days
+  geo_redundant_backup_enabled = var.postgres_geo_redundant_backup_enabled
+
+  dynamic "high_availability" {
+    for_each = var.postgres_high_availability_mode == "" ? [] : [var.postgres_high_availability_mode]
+    content {
+      mode                      = high_availability.value
+      standby_availability_zone = var.postgres_standby_zone != "" ? var.postgres_standby_zone : null
+    }
+  }
 
   public_network_access_enabled = var.postgres_public_access
   delegated_subnet_id           = var.postgres_public_access ? null : azurerm_subnet.postgres.id

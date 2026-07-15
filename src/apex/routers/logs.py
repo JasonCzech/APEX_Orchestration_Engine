@@ -21,10 +21,13 @@ from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from apex.app.dependencies import CurrentIdentity
-from apex.domain.integrations import LogQuery, Page
+from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.durable_evidence import sanitize_durable_object
+from apex.domain.input_limits import NoNulStr, RecordId, validate_json_object
+from apex.domain.integrations import LogEntry, LogQuery, LogSearchResult, Page
 from apex.services.log_search import (
     LogSearchResolver,
     effective_window,
@@ -36,6 +39,9 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 MAX_LOG_FILTERS = 12
 MAX_LOG_FILTER_VALUE_LENGTH = 512
 MAX_LOG_TEXT_LENGTH = 2048
+MAX_LOG_RESULT_WINDOW = 10_000
+MAX_PUBLIC_LOG_FIELDS = 64
+MAX_PUBLIC_LOG_FIELDS_BYTES = 64 * 1024
 ALLOWED_LOG_FILTERS = frozenset(
     {
         "app_id",
@@ -68,7 +74,7 @@ def get_log_search_resolver() -> LogSearchResolver:
 
 ResolverDep = Annotated[LogSearchResolver, Depends(get_log_search_resolver)]
 ConnectionIdParam = Annotated[
-    str | None,
+    RecordId | None,
     Query(
         description="Explicit LOG_SEARCH connection to search through "
         "(overrides body.connection_id)."
@@ -80,7 +86,9 @@ ConnectionIdParam = Annotated[
 
 
 class LogQueryIn(BaseModel):
-    text: str | None = Field(
+    model_config = ConfigDict(extra="forbid")
+
+    text: NoNulStr | None = Field(
         default=None,
         max_length=MAX_LOG_TEXT_LENGTH,
         description="Free-text query (Lucene query_string syntax on ELK).",
@@ -104,6 +112,8 @@ class LogQueryIn(BaseModel):
             value = raw_value.strip()
             if not value:
                 raise ValueError(f"log filter {key!r} must not be blank")
+            if "\x00" in value:
+                raise ValueError(f"log filter {key!r} must not contain U+0000")
             if len(value) > MAX_LOG_FILTER_VALUE_LENGTH:
                 raise ValueError(
                     f"log filter {key!r} must be at most {MAX_LOG_FILTER_VALUE_LENGTH} characters"
@@ -113,20 +123,37 @@ class LogQueryIn(BaseModel):
 
 
 class WindowIn(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    from_: str | None = Field(default=None, alias="from", description="ISO-8601 lower bound.")
-    to: str | None = Field(default=None, description="ISO-8601 upper bound.")
+    from_: NoNulStr | None = Field(
+        default=None,
+        alias="from",
+        max_length=64,
+        description="ISO-8601 lower bound.",
+    )
+    to: NoNulStr | None = Field(
+        default=None,
+        max_length=64,
+        description="ISO-8601 upper bound.",
+    )
 
 
 class LogSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     query: LogQueryIn = Field(default_factory=LogQueryIn)
     window: WindowIn | None = Field(
         default=None, description="Defaults to the last hour, computed server-side."
     )
-    connection_id: str | None = None
+    connection_id: NoNulStr | None = Field(default=None, min_length=1, max_length=32)
     limit: int = Field(default=50, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
+    offset: int = Field(default=0, ge=0, lt=MAX_LOG_RESULT_WINDOW)
+
+    @model_validator(mode="after")
+    def validate_result_window(self) -> "LogSearchRequest":
+        if self.offset + self.limit > MAX_LOG_RESULT_WINDOW:
+            raise ValueError(f"log result window must not exceed {MAX_LOG_RESULT_WINDOW} entries")
+        return self
 
 
 class WindowOut(BaseModel):
@@ -154,6 +181,68 @@ class LogSearchResponse(BaseModel):
     window: WindowOut
 
 
+def _public_log_text(value: Any, *, max_chars: int, default: str) -> str:
+    """Return one bounded, credential-redacted provider string."""
+
+    if not isinstance(value, str) or len(value) > max_chars or "\x00" in value:
+        return default
+    return bounded_diagnostic(value, max_chars=max(1, len(value)))
+
+
+def _public_log_fields(value: Any) -> dict[str, Any]:
+    """Project provider extras through fixed JSON and credential budgets."""
+
+    if not isinstance(value, dict) or len(value) > MAX_PUBLIC_LOG_FIELDS:
+        return {}
+    try:
+        validate_json_object(
+            value,
+            label="log response fields",
+            max_bytes=MAX_PUBLIC_LOG_FIELDS_BYTES,
+        )
+    except (RecursionError, TypeError, ValueError):
+        return {}
+    return sanitize_durable_object(value)
+
+
+def _public_log_result(result: Any, *, requested_limit: int) -> tuple[list[LogEntryOut], int]:
+    """Revalidate an adapter result before it crosses the HTTP boundary."""
+
+    if not isinstance(result, LogSearchResult):
+        raise ValueError("invalid log result")
+    entries = result.entries
+    total = result.total
+    if (
+        not isinstance(entries, list)
+        or len(entries) > requested_limit
+        or isinstance(total, bool)
+        or not isinstance(total, int)
+        or not 0 <= total <= 9_223_372_036_854_775_807
+    ):
+        raise ValueError("invalid log result")
+
+    projected: list[LogEntryOut] = []
+    for entry in entries:
+        normalized = LogEntry.model_validate(
+            {
+                "at": getattr(entry, "at", None),
+                "level": getattr(entry, "level", None),
+                "service": getattr(entry, "service", None),
+                "message": getattr(entry, "message", None),
+            }
+        )
+        projected.append(
+            LogEntryOut(
+                at=_public_log_text(normalized.at, max_chars=128, default=""),
+                level=_public_log_text(normalized.level, max_chars=64, default="INFO"),
+                service=_public_log_text(normalized.service, max_chars=255, default=""),
+                message=_public_log_text(normalized.message, max_chars=20_000, default=""),
+                fields=_public_log_fields(getattr(entry, "fields", None)),
+            )
+        )
+    return projected, total
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
@@ -171,17 +260,16 @@ async def search_logs(
             body.window.to if body.window is not None else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="invalid log search window") from exc
 
     filters = dict(body.query.filters)
     project_id = _effective_project_filter(identity, filters)
     try:
         adapter = await resolver(connection_id or body.connection_id, project_id)
     except KeyError as exc:
-        detail = str(exc.args[0]) if exc.args else "log-search connection not found"
-        raise HTTPException(status_code=404, detail=detail) from exc
+        raise HTTPException(status_code=404, detail="log-search connection not found") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="log-search connection is invalid") from exc
 
     query = LogQuery(query=body.query.text or "", filters=filters)
     page = Page(offset=body.offset, limit=body.limit)
@@ -192,19 +280,13 @@ async def search_logs(
     except (RuntimeError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=502, detail="log search upstream failure") from exc
 
-    entries = [
-        LogEntryOut(
-            at=entry.at,
-            level=entry.level,
-            service=entry.service,
-            message=entry.message,
-            fields=dict(getattr(entry, "fields", None) or {}),
-        )
-        for entry in result.entries
-    ]
+    try:
+        entries, total = _public_log_result(result, requested_limit=body.limit)
+    except (AttributeError, TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=502, detail="log search upstream failure") from exc
     return LogSearchResponse(
         entries=entries,
-        total=result.total,
+        total=total,
         limit=body.limit,
         offset=body.offset,
         window=WindowOut.model_validate({"from": window.start, "to": window.end}),
@@ -222,7 +304,7 @@ def _effective_project_filter(identity: Any, filters: dict[str, str]) -> str | N
         if requested_project not in allowed_projects:
             raise HTTPException(
                 status_code=403,
-                detail=f"Project '{requested_project}' is outside this consumer's scopes",
+                detail="project is outside this consumer's scopes",
             )
         project_id = requested_project
     elif len(allowed_projects) == 1:

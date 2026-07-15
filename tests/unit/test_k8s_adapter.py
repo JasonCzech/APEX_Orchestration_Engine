@@ -4,8 +4,12 @@ Fixture JSON mirrors the real apps/v1 / core/v1 / networking.k8s.io/v1 wire
 formats (DeploymentList/ServiceList/Status bodies as the API server emits them).
 """
 
+import asyncio
+import copy
+from pathlib import Path
 from typing import Any
 
+import certifi
 import httpx
 import pytest
 import respx
@@ -17,7 +21,13 @@ from apex.adapters.k8s.cluster_inventory import (
     _resolve_verify,
 )
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
-from apex.domain.integrations import EnvRef, SecretValue
+from apex.domain.integrations import (
+    MAX_INVENTORY_SERVICES,
+    EnvironmentSnapshot,
+    EnvRef,
+    SecretValue,
+    ServiceInfo,
+)
 
 BASE_URL = "https://kube-api.test:6443"
 TOKEN = "sa-token-abc123"
@@ -250,6 +260,144 @@ async def test_scan_aggregates_multiple_namespaces() -> None:
     assert [s.name for s in snapshot.services] == ["checkout-api", "cart-svc", "report-worker"]
 
 
+def test_namespace_fanout_limit_accepts_exact_boundary() -> None:
+    namespaces = [f"team-{index}" for index in range(k8s_mod.MAX_NAMESPACES_PER_SCAN)]
+    adapter = make_adapter(namespaces=namespaces)
+
+    assert adapter._namespaces_for(EnvRef(id="env-1")) == namespaces
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"namespaces": [f"team-{index}" for index in range(k8s_mod.MAX_NAMESPACES_PER_SCAN + 1)]},
+        {
+            "environment_namespaces": {
+                "env-1": [f"team-{index}" for index in range(k8s_mod.MAX_NAMESPACES_PER_SCAN + 1)]
+            }
+        },
+    ],
+)
+def test_namespace_fanout_overflow_is_rejected_at_adapter_construction(
+    options: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="may configure at most"):
+        make_adapter(**options)
+
+
+def test_environment_snapshot_service_limit_accepts_boundary_and_rejects_overflow() -> None:
+    service = ServiceInfo(name="bounded")
+
+    assert len(EnvironmentSnapshot(services=[service] * MAX_INVENTORY_SERVICES).services) == (
+        MAX_INVENTORY_SERVICES
+    )
+    with pytest.raises(ValueError, match="at most 5000 items"):
+        EnvironmentSnapshot(services=[service] * (MAX_INVENTORY_SERVICES + 1))
+
+
+@respx.mock
+async def test_scan_service_overflow_stops_before_next_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(k8s_mod, "MAX_INVENTORY_SERVICES", 2)
+    oversized = {
+        **DEPLOYMENT_LIST,
+        "items": [*DEPLOYMENT_LIST["items"], DEPLOYMENT_LIST["items"][0]],
+    }
+    deployments_route = respx.get(DEPLOYMENTS_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=oversized)
+    )
+    services_route = respx.get(SERVICES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=EMPTY_SERVICES)
+    )
+    ingresses_route = respx.get(INGRESSES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+
+    with pytest.raises(RuntimeError, match="aggregate service limit of 2"):
+        await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1"))
+
+    assert deployments_route.call_count == 1
+    assert services_route.call_count == 0
+    assert ingresses_route.call_count == 0
+
+
+@respx.mock
+async def test_scan_decoded_body_budget_accepts_exact_aggregate_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment_response = httpx.Response(200, json=EMPTY_DEPLOYMENTS)
+    service_response = httpx.Response(200, json=EMPTY_SERVICES)
+    ingress_response = httpx.Response(200, json={"items": []})
+    exact_budget = sum(
+        len(response.content)
+        for response in (deployment_response, service_response, ingress_response)
+    )
+    monkeypatch.setattr(k8s_mod, "MAX_SCAN_DECODED_BYTES", exact_budget)
+    respx.get(DEPLOYMENTS_PATH.format(ns="staging")).mock(return_value=deployment_response)
+    respx.get(SERVICES_PATH.format(ns="staging")).mock(return_value=service_response)
+    respx.get(INGRESSES_PATH.format(ns="staging")).mock(return_value=ingress_response)
+
+    snapshot = await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1"))
+
+    assert snapshot.services == []
+
+
+@respx.mock
+async def test_scan_decoded_body_overflow_stops_before_following_provider_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deployment_response = httpx.Response(200, json=EMPTY_DEPLOYMENTS)
+    service_response = httpx.Response(200, json=EMPTY_SERVICES)
+    budget_before_service_completes = (
+        len(deployment_response.content) + len(service_response.content) - 1
+    )
+    monkeypatch.setattr(k8s_mod, "MAX_SCAN_DECODED_BYTES", budget_before_service_completes)
+    deployments_route = respx.get(DEPLOYMENTS_PATH.format(ns="staging")).mock(
+        return_value=deployment_response
+    )
+    services_route = respx.get(SERVICES_PATH.format(ns="staging")).mock(
+        return_value=service_response
+    )
+    ingresses_route = respx.get(INGRESSES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+
+    with pytest.raises(RuntimeError, match="decoded-body response budget"):
+        await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1"))
+
+    assert deployments_route.call_count == 1
+    assert services_route.call_count == 1
+    assert ingresses_route.call_count == 0
+
+
+async def test_scan_overall_deadline_cancels_before_additional_provider_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = make_adapter(namespace="staging")
+    calls: list[str] = []
+
+    async def slow_get_json(
+        path: str,
+        *,
+        namespace: str,
+        budget: Any,
+        tolerate_404: bool = False,
+    ) -> dict[str, Any]:
+        del namespace, budget, tolerate_404
+        calls.append(path)
+        await asyncio.sleep(1)
+        return {}
+
+    monkeypatch.setattr(k8s_mod, "MAX_SCAN_DURATION_S", 0.001)
+    monkeypatch.setattr(adapter, "_get_json", slow_get_json)
+
+    with pytest.raises(RuntimeError, match="0.001s deadline"):
+        await adapter.scan_environment(EnvRef(id="env-1"))
+
+    assert len(calls) == 1
+
+
 @respx.mock
 async def test_namespace_binding_uses_immutable_environment_id() -> None:
     mock_namespace("perf-lab", deployments=EMPTY_DEPLOYMENTS, services=EMPTY_SERVICES)
@@ -271,6 +419,98 @@ async def test_environment_display_name_never_selects_namespace() -> None:
 
     with pytest.raises(ValueError, match="no namespace configured"):
         await adapter.scan_environment(EnvRef(id="env-9", name="victim-namespace"))
+
+
+@pytest.mark.parametrize("namespace", ["../kube-system", "Team_A", "a" * 64])
+def test_namespace_options_reject_non_dns_labels(namespace: str) -> None:
+    with pytest.raises(ValueError, match="invalid Kubernetes namespace"):
+        make_adapter(environment_namespaces={"env-9": namespace})
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"namespace": 123},
+        {"namespaces": ["staging", 123]},
+        {"environment_namespaces": {"env-9": ["staging", None]}},
+    ],
+)
+def test_namespace_options_reject_non_string_values(options: dict[str, Any]) -> None:
+    with pytest.raises(ValueError, match="non-string Kubernetes namespace"):
+        make_adapter(**options)
+
+
+def test_namespace_options_reject_duplicates_before_provider_fanout() -> None:
+    with pytest.raises(ValueError, match="duplicate Kubernetes namespaces"):
+        make_adapter(namespaces=["staging", "staging"])
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("name", 123, "non-string name or image"),
+        ("image", {"repository": "image"}, "non-string name or image"),
+        ("readyReplicas", True, "readyReplicas must be an integer"),
+        ("readyReplicas", 1.5, "readyReplicas must be an integer"),
+        ("readyReplicas", "3", "readyReplicas must be an integer"),
+    ],
+)
+@respx.mock
+async def test_scan_rejects_malformed_deployment_scalars_before_following_calls(
+    field: str, value: object, message: str
+) -> None:
+    deployments = copy.deepcopy(DEPLOYMENT_LIST)
+    deployment = deployments["items"][0]
+    if field == "name":
+        deployment["metadata"]["name"] = value
+    elif field == "image":
+        deployment["spec"]["template"]["spec"]["containers"][0]["image"] = value
+    else:
+        deployment["status"][field] = value
+    deployments_route = respx.get(DEPLOYMENTS_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=deployments)
+    )
+    services_route = respx.get(SERVICES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=EMPTY_SERVICES)
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1"))
+
+    assert deployments_route.call_count == 1
+    assert services_route.call_count == 0
+
+
+@respx.mock
+async def test_scan_requires_explicit_deployment_items_list() -> None:
+    deployments_route = respx.get(DEPLOYMENTS_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json={"kind": "DeploymentList"})
+    )
+    services_route = respx.get(SERVICES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=EMPTY_SERVICES)
+    )
+
+    with pytest.raises(RuntimeError, match="deployment list has malformed items"):
+        await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1"))
+
+    assert deployments_route.call_count == 1
+    assert services_route.call_count == 0
+
+
+@respx.mock
+async def test_scan_requires_explicit_service_and_ingress_items_lists() -> None:
+    respx.get(DEPLOYMENTS_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=EMPTY_DEPLOYMENTS)
+    )
+    respx.get(SERVICES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json=EMPTY_SERVICES)
+    )
+    respx.get(INGRESSES_PATH.format(ns="staging")).mock(
+        return_value=httpx.Response(200, json={"kind": "IngressList"})
+    )
+
+    with pytest.raises(RuntimeError, match="ingress list has malformed items"):
+        await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1"))
 
 
 # ── error mapping ────────────────────────────────────────────────────────────
@@ -380,7 +620,7 @@ def _mount_sa(
 
     ca_file = tmp_path / "ca.crt"
     if write_ca:
-        ca_file.write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
+        ca_file.write_text(Path(certifi.where()).read_text())
     monkeypatch.setattr(k8s_mod, "IN_CLUSTER_CA_PATH", str(ca_file))
 
     ns_file = tmp_path / "namespace"
@@ -420,7 +660,7 @@ async def test_in_cluster_scan_uses_pod_token_and_env_api_server(
     )
     # base_url omitted -> derived from KUBERNETES_SERVICE_HOST/PORT. verify off to skip
     # building a real SSL context from the fixture CA.
-    adapter = make_in_cluster_adapter(namespace="staging", verify_tls=False)
+    adapter = make_in_cluster_adapter(environment_namespaces={"env-1": "staging"}, verify_tls=False)
 
     snapshot = await adapter.scan_environment(EnvRef(id="env-1", name=None))
 
@@ -430,23 +670,70 @@ async def test_in_cluster_scan_uses_pod_token_and_env_api_server(
 
 
 @respx.mock
-async def test_in_cluster_namespace_falls_back_to_pod_namespace_file(
+async def test_in_cluster_requires_exact_environment_namespace_binding(
     monkeypatch: Any, tmp_path: Any
 ) -> None:
     _mount_sa(monkeypatch, tmp_path, namespace="team-a")
-    mock_namespace("team-a", deployments=EMPTY_DEPLOYMENTS, services=EMPTY_SERVICES)
-    # Explicit base_url, no options namespace, env_ref.name None -> pod namespace file.
-    adapter = make_in_cluster_adapter(base_url=BASE_URL, verify_tls=False)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "6443")
+    adapter = make_in_cluster_adapter(namespace="team-a")
 
-    snapshot = await adapter.scan_environment(EnvRef(id="env-9", name=None))
-
-    assert snapshot.services == []
+    with pytest.raises(ValueError, match="no namespace binding for environment"):
+        await adapter.scan_environment(EnvRef(id="env-9", name=None))
 
 
 def test_in_cluster_construction_without_secret_succeeds(monkeypatch: Any, tmp_path: Any) -> None:
     _mount_sa(monkeypatch, tmp_path)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "6443")
     # Must NOT raise the bearer-token ValueError that bearer mode raises.
-    make_in_cluster_adapter(base_url=BASE_URL)
+    make_in_cluster_adapter()
+
+
+@pytest.mark.parametrize("token", ["abc\x00def", "abc\nInjected: value"])
+def test_in_cluster_rejects_projected_token_header_controls(
+    monkeypatch: Any, tmp_path: Any, token: str
+) -> None:
+    _mount_sa(monkeypatch, tmp_path, token=token)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    adapter = make_in_cluster_adapter(verify_tls=False)
+
+    with pytest.raises(RuntimeError, match="header characters"):
+        adapter._bearer_token()
+
+
+def test_in_cluster_reads_projected_token_with_hard_byte_cap(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    token_file = _mount_sa(monkeypatch, tmp_path)
+    token_file.write_bytes(b"a" * (k8s_mod.MAX_SERVICE_ACCOUNT_TOKEN_BYTES + 1))
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    adapter = make_in_cluster_adapter(verify_tls=False)
+
+    with pytest.raises(RuntimeError, match="token exceeds"):
+        adapter._bearer_token()
+
+
+def test_in_cluster_rejects_non_utf8_projected_token(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    token_file = _mount_sa(monkeypatch, tmp_path)
+    token_file.write_bytes(b"valid-prefix-\xff")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    adapter = make_in_cluster_adapter(verify_tls=False)
+
+    with pytest.raises(RuntimeError, match="not valid UTF-8"):
+        adapter._bearer_token()
+
+
+def test_in_cluster_rejects_configured_base_url_to_protect_pod_token(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    _mount_sa(monkeypatch, tmp_path)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+
+    with pytest.raises(ValueError, match="cannot set base_url with in_cluster"):
+        make_in_cluster_adapter(base_url="https://attacker.example")
 
 
 def test_in_cluster_without_api_server_is_value_error(monkeypatch: Any, tmp_path: Any) -> None:

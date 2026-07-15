@@ -15,6 +15,12 @@ jobs:
           enable-cache: true
       - run: uv python install 3.12
       - run: uv sync --frozen
+      - name: Validate pinned LangGraph image recipe
+        run: |
+          uv run langgraph validate
+          uv run langgraph dockerfile /tmp/apex-langgraph.Dockerfile
+          grep -Fx 'FROM langchain/langgraph-api:0.10.0-py3.12@sha256:812e919f12ad9605c9a2b443c95fcdc7d4f8cfecaf11de02181f04943864f27c' /tmp/apex-langgraph.Dockerfile
+          ! grep -F '.env' /tmp/apex-langgraph.Dockerfile
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -56,20 +62,74 @@ jobs:
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
       - name: Install kubeconform
         run: |
-          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
-            | tar -xz kubeconform
+          curl -fsSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo '95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kubeconform.tar.gz' \
+            | sha256sum --check -
+          tar -xzf /tmp/kubeconform.tar.gz kubeconform
           sudo install kubeconform /usr/local/bin/
       - name: Lint (strict)
-        run: helm lint --strict deploy/helm/apex-orchestration-engine
+        run: |
+          digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          helm lint --strict deploy/helm/apex-orchestration-engine \
+            --set-string image.digest="$digest" \
+            --set-string dashboard.image.digest="$digest"
       - name: Render every variant + schema-validate
         run: |
           CHART=deploy/helm/apex-orchestration-engine
           out=/tmp/manifests
           mkdir -p "$out"
-          render() { helm template smoke "$CHART" "$@"; }
+          digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          generation="0123456789abcdef"
+          locked_args=(
+            --set-string image.digest="$digest"
+            --set-string dashboard.image.digest="$digest"
+            --set-string databaseRoleProvisioning.credentialGeneration="$generation"
+          )
+          render() { helm template smoke "$CHART" "${locked_args[@]}" "$@"; }
           render > "$out/default.yaml"
+          if helm template smoke "$CHART" > "$out/missing-digest-invalid.yaml"; then
+            echo "locked chart unexpectedly accepted a mutable application tag" >&2
+            exit 1
+          fi
+          if helm template smoke "$CHART" --set-string image.digest="$digest" \
+            --set dashboard.enabled=true > "$out/missing-dashboard-digest-invalid.yaml"; then
+            echo "locked chart unexpectedly accepted a mutable dashboard tag" >&2
+            exit 1
+          fi
+          render --set image.repository=registry.example/apex \
+            --set-string image.digest="$digest" \
+            --set dashboard.enabled=true \
+            --set dashboard.image.repository=registry.example/dashboard \
+            --set-string dashboard.image.digest="$digest" > "$out/digests.yaml"
+          grep -F "image: \"registry.example/apex@$digest\"" "$out/digests.yaml"
+          grep -F "image: \"registry.example/dashboard@$digest\"" "$out/digests.yaml"
+          if render --set-string image.digest=sha256:invalid > "$out/digest-invalid.yaml"; then
+            echo "invalid application image digest unexpectedly accepted" >&2
+            exit 1
+          fi
           render --set migrations.enabled=true --set bootstrap.enabled=true \
             --set bootstrap.adminKeySecret.existingSecret=apex-admin > "$out/jobs.yaml"
+          render \
+            --set migrations.enabled=true \
+            --set databaseRoleProvisioning.enabled=true \
+            --show-only templates/migration-job.yaml > "$out/role-migration.yaml"
+          grep -F 'name: "apex-database-migration"' "$out/role-migration.yaml"
+          render --set databaseRoleProvisioning.enabled=true --set migrations.enabled=true \
+            > "$out/generic-db-roles.yaml"
+          ! grep -F 'app.kubernetes.io/component: database-role-cleanup' \
+            "$out/generic-db-roles.yaml"
+          if render --set databaseRoleProvisioning.enabled=true \
+            > "$out/db-role-without-migrations-invalid.yaml"; then
+            echo "first-install database role provisioning unexpectedly skipped migrations" >&2
+            exit 1
+          fi
+          if render --set databaseRoleProvisioning.enabled=true --set migrations.enabled=true \
+            --set databaseRoleProvisioning.migrationOwnerRole=apex_runtime \
+            > "$out/db-role-shared-owner-invalid.yaml"; then
+            echo "runtime and migration database roles unexpectedly shared an owner" >&2
+            exit 1
+          fi
           render --set ingress.enabled=true --set autoscaling.enabled=true > "$out/ingress.yaml"
           render --set gateway.enabled=true --set gateway.gatewayName=gw \
             --set ingress.enabled=false > "$out/gateway.yaml"
@@ -80,14 +140,276 @@ jobs:
           render --set secretBackend.mode=secretsStoreCSI \
             --set secretBackend.csi.keyvaultName=kv --set secretBackend.csi.tenantId=t \
             --set workloadIdentity.enabled=true --set workloadIdentity.clientId=c > "$out/csi.yaml"
+          render --set secretBackend.mode=secretsStoreCSI \
+            --set secretBackend.csi.keyvaultName=kv --set secretBackend.csi.tenantId=t \
+            --set workloadIdentity.enabled=true --set workloadIdentity.clientId=c \
+            --set migrations.enabled=true --set bootstrap.enabled=true \
+            --set bootstrap.adminKeySecret.existingSecret=apex-admin > "$out/csi-hooks.yaml"
+          grep -F 'name: "apex-database-bootstrap"' "$out/csi-hooks.yaml"
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/csi-sync-job.yaml > "$out/csi-sync.yaml"
+          grep -F '("hook", hook_objects, Path("/mnt/hook-secrets-store")),' \
+            "$out/csi-sync.yaml"
+          grep -F '("runtime", runtime_objects, Path("/mnt/runtime-secrets-store")),' \
+            "$out/csi-sync.yaml"
+          grep -F 'for secret_kind, objects, mount_dir in secret_groups:' \
+            "$out/csi-sync.yaml"
+          grep -E '^[[:space:]]+find_mismatches\(secret_kind, objects, mount_dir, cache\)$' \
+            "$out/csi-sync.yaml"
+          python3 - "$out/csi-sync.yaml" <<'PY'
+          import base64
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          rendered = Path(sys.argv[1]).read_text()
+          payloads = {
+              match.group("kind"): json.loads(
+                  base64.b64decode(match.group("payload"), validate=True)
+              )
+              for match in re.finditer(
+                  r'(?P<kind>hook|runtime)_objects = json\.loads\('
+                  r'\s*base64\.b64decode\(\s*"(?P<payload>[A-Za-z0-9+/=]+)"',
+                  rendered,
+              )
+          }
+          assert payloads.keys() == {"hook", "runtime"}, payloads.keys()
+          names = {
+              kind: {item["objectName"] for item in objects}
+              for kind, objects in payloads.items()
+          }
+          assert {"database-admin-uri", "bootstrap-admin-key"} <= names["hook"]
+          assert {"redis-uri", "artifact-secret-key"} <= names["runtime"]
+          PY
+          render --set auth.existingSecret= --set apexSettings.APEX_ENVIRONMENT=compose \
+            --set apexSettings.APEX_AUTH__ENABLED=false > "$out/auth-disabled.yaml"
+          ! grep -F 'APEX_AUTH__API_KEY_HASH_PEPPER' "$out/auth-disabled.yaml"
+          if render --set-string apexSettings.DATABASE_URI=postgresql://inline \
+            > "$out/settings-secret-invalid.yaml"; then
+            echo "secret-bearing apexSettings entry unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-string apexSettings.CUSTOM_PASSWORD=inline-secret \
+            > "$out/settings-generic-secret-invalid.yaml"; then
+            echo "generic secret-bearing apexSettings entry unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-string extraEnv[0].name=LANGSMITH_API_KEY \
+            --set-string extraEnv[0].value=inline-secret \
+            > "$out/extra-env-secret-invalid.yaml"; then
+            echo "literal secret-bearing extraEnv entry unexpectedly accepted" >&2
+            exit 1
+          fi
+          render --set-string extraEnv[0].name=LANGSMITH_API_KEY \
+            --set-string extraEnv[0].valueFrom.secretKeyRef.name=langsmith \
+            --set-string extraEnv[0].valueFrom.secretKeyRef.key=api-key \
+            > "$out/extra-env-secret-ref.yaml"
+          if render --set-string extraEnv[0].name=APEX_ENVIRONMENT \
+            --set-string extraEnv[0].value=dev \
+            > "$out/extra-env-override-invalid.yaml"; then
+            echo "chart-managed extraEnv override unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render \
+            --set-json 'bootstrap.document={"connections":[{"name":"example","kind":"artifact_store","provider":"s3","options":{"nested":[{"client_password":"inline-secret"}]}}]}' \
+            > "$out/bootstrap-secret-invalid.yaml"; then
+            echo "secret-bearing bootstrap options unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render \
+            --set-json 'bootstrap.document={"connections":[{"name":"example","kind":"artifact_store","provider":"s3","secret_ref":"inline-secret"}]}' \
+            > "$out/bootstrap-secret-ref-invalid.yaml"; then
+            echo "literal bootstrap secret_ref unexpectedly accepted" >&2
+            exit 1
+          fi
+          render --set bootstrap.enabled=true \
+            --set-json 'bootstrap.document={"connections":[{"name":"example","kind":"artifact_store","provider":"s3","options":{"endpoint":"https://example.com"},"secret_ref":"env:S3_SECRET"}]}' \
+            > "$out/bootstrap-secret-ref.yaml"
           render -f "$CHART/ci/external-secrets-values.yaml" > "$out/eso.yaml"
+          grep -F 'name: azure-hook-kv-store' "$out/eso.yaml"
+          if render -f "$CHART/ci/external-secrets-values.yaml" \
+            --set migrations.enabled=true > "$out/eso-invalid.yaml"; then
+            echo "ExternalSecrets first install unexpectedly accepted pre-install hooks" >&2
+            exit 1
+          fi
+          if render -f "$CHART/ci/external-secrets-values.yaml" \
+            --set databaseRoleProvisioning.enabled=true > "$out/eso-db-role-invalid.yaml"; then
+            echo "ExternalSecrets first install unexpectedly accepted database-role hooks" >&2
+            exit 1
+          fi
+          render --is-upgrade -f "$CHART/ci/external-secrets-values.yaml" \
+            --set migrations.enabled=true > "$out/eso-upgrade.yaml"
           render --set metrics.serviceMonitor.enabled=true \
             --set metrics.podAnnotations=true > "$out/metrics.yaml"
           render --set dashboard.enabled=true \
             --set dashboard.backendUpstream=http://apex:80 > "$out/dashboard.yaml"
+          # Exercise a valid Helm release whose base fullname reaches 63 chars.
+          # Derived names must keep their suffixes instead of colliding/truncating.
+          long_release=this-is-a-very-long-apex-production-release-name
+          helm template "$long_release" "$CHART" \
+            "${locked_args[@]}" \
+            -f deploy/azure/helm/values-azure.yaml > "$out/long-names.yaml"
+          metadata_name() {
+            awk '$1 == "metadata:" { in_metadata=1; next }
+                 in_metadata && $1 == "name:" { print $2; exit }'
+          }
+          backend_name="$(helm template "$long_release" "$CHART" \
+            "${locked_args[@]}" \
+            -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/service.yaml | metadata_name)"
+          dashboard_name="$(helm template "$long_release" "$CHART" \
+            "${locked_args[@]}" \
+            -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/dashboard-service.yaml | metadata_name)"
+          test "$backend_name" != "$dashboard_name"
+          [[ "$dashboard_name" == *-dashboard ]]
+          # Cluster-scoped RBAC names include a namespace hash so identical
+          # release names in different namespaces cannot overwrite each other.
+          render -n tenant-a --set rbac.create=true \
+            --set rbac.clusterScope=true --show-only templates/rbac.yaml > "$out/rbac-a.yaml"
+          render -n tenant-b --set rbac.create=true \
+            --set rbac.clusterScope=true --show-only templates/rbac.yaml > "$out/rbac-b.yaml"
+          cluster_role_name() {
+            awk '$1 == "kind:" && $2 == "ClusterRole" { role=1; next }
+                 role && $1 == "name:" { print $2; exit }' "$1"
+          }
+          test "$(cluster_role_name "$out/rbac-a.yaml")" != \
+            "$(cluster_role_name "$out/rbac-b.yaml")"
+          grep -F 'ingressClassName: webapprouting.kubernetes.azure.com' \
+            "$out/long-names.yaml"
+          grep -F 'nginx.ingress.kubernetes.io/proxy-body-size: 26m' \
+            "$out/long-names.yaml"
+          test "$(grep -c 'automountServiceAccountToken: false' "$out/dashboard.yaml")" -ge 3
+          # Runtime CSI mounts only runtime secrets; hook-only admin credentials
+          # stay in the distinct hook SPC/identity/vault.
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/secretproviderclass.yaml > "$out/runtime-spc.yaml"
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/deployment.yaml > "$out/runtime-deployment.yaml"
+          ! grep -E 'database-admin-uri|bootstrap-admin-key|artifact-backup-key' \
+            "$out/runtime-spc.yaml"
+          runtime_spc_name="$(awk '$1 == "metadata:" { in_metadata=1; next }
+            in_metadata && $1 == "name:" { print $2; exit }' "$out/runtime-spc.yaml")"
+          grep -F "secretProviderClass: $runtime_spc_name" "$out/runtime-deployment.yaml"
+          ! grep -F 'secretName: apex-database' "$out/runtime-spc.yaml"
+          grep -F 'name: "apex-database-active"' "$out/runtime-deployment.yaml"
+          grep -F 'name: schema-readiness' "$out/runtime-deployment.yaml"
+          grep -F 'apex.persistence.schema_readiness' "$out/runtime-deployment.yaml"
+          for runtime_secret in apex-redis apex-langgraph-license apex-auth apex-minio; do
+            grep -F "secretName: $runtime_secret" "$out/runtime-spc.yaml"
+            grep -F "$runtime_secret" "$out/runtime-deployment.yaml"
+          done
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/csi-hook-secretproviderclass.yaml > "$out/hook-spc.yaml"
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/csi-runtime-hook-secretproviderclass.yaml \
+            > "$out/runtime-hook-spc.yaml"
+          grep -F 'secretName: apex-database-bootstrap' "$out/hook-spc.yaml"
+          grep -F 'secretName: apex-hook-auth' "$out/hook-spc.yaml"
+          ! grep -F 'secretName: apex-database' "$out/runtime-hook-spc.yaml"
+          grep -F 'objectName: database-runtime-uri' "$out/hook-spc.yaml"
+          # Cleanup is opt-in generically, enabled by the Azure overlay, and
+          # remains renderable on the transition upgrade away from CSI.
+          ! grep -F 'app.kubernetes.io/component: csi-cleanup' "$out/default.yaml"
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/csi-cleanup-job.yaml > "$out/cleanup-azure.yaml"
+          grep -F -- '--wait=true --timeout=120s' "$out/cleanup-azure.yaml"
+          ! grep -F -- '--wait=false' "$out/cleanup-azure.yaml"
+          test "$(grep -c 'resourceNames:' "$out/cleanup-azure.yaml")" -eq 4
+          for cleanup_target in \
+            smoke-apex-orchestration-engine-csi-sync \
+            apex-orchestration-engine-hooks \
+            smoke-apex-orchestration-engine-akv-hooks \
+            smoke-apex-orchestration-engine-akv-runtime-hooks \
+            smoke-apex-orchestration-engine-csi-secret-sync; do
+            grep -F -- "- \"$cleanup_target\"" "$out/cleanup-azure.yaml"
+          done
+          render --is-upgrade \
+            -f deploy/azure/helm/values-azure.yaml \
+            --set secretBackend.mode=externalSecrets \
+            --show-only templates/csi-cleanup-job.yaml > "$out/cleanup-transition.yaml"
+          grep -F '"helm.sh/hook": pre-upgrade,post-delete' "$out/cleanup-transition.yaml"
+          ! grep -F 'CREATE ON DATABASE' "$out/long-names.yaml"
+          grep -F 'await transfer_relations("apex", migration_owner_name, migration_owner)' \
+            "$out/long-names.yaml"
+          grep -F 'await transfer_relations("public", runtime_owner_name, runtime_owner)' \
+            "$out/long-names.yaml"
+          grep -F '"helm.sh/hook": post-install,post-upgrade' "$out/long-names.yaml"
+          ! grep -F 'ALTER ROLE {role} LOGIN PASSWORD' "$out/long-names.yaml"
+          grep -F 'FROM pg_auth_members AS membership' "$out/long-names.yaml"
+          grep -F 'current generation role is not a direct member' "$out/long-names.yaml"
+          grep -F 'has unsafe or drifted attributes' "$out/long-names.yaml"
+          grep -F 'database credential generation does not match' "$out/long-names.yaml"
+          grep -F 'apex-role-claim-v2:' "$out/long-names.yaml"
+          grep -F 'is managed by another release' "$out/long-names.yaml"
+          grep -F 'is not claimed by this release' "$out/long-names.yaml"
+          test "$(grep -Fc 'SELECT pg_advisory_lock($1::bigint)' \
+            "$out/long-names.yaml")" -eq 3
+          test "$(grep -Fc 'DATABASE_ROLE_LOCK_KEY = 4706337856242535493' \
+            "$out/long-names.yaml")" -eq 2
+          grep -F 'refusing database-role cleanup before the Deployment rollout' \
+            "$out/long-names.yaml"
+          grep -F 'resources: ["deployments"]' "$out/long-names.yaml"
+          grep -F 'verbs: ["get"]' "$out/long-names.yaml"
+          grep -F 'value: "apex-database-active"' "$out/long-names.yaml"
+          grep -F 'value: "true"' "$out/long-names.yaml"
+          grep -F 'ALTER DEFAULT PRIVILEGES IN SCHEMA apex' "$out/long-names.yaml"
+          grep -F 'apex.alembic_revision_lineage' "$out/long-names.yaml"
+          grep -F 'REVOKE INSERT, UPDATE, DELETE ON TABLE' "$out/long-names.yaml"
+          render -f deploy/azure/helm/values-azure.yaml \
+            --show-only templates/deployment.yaml > "$out/credential-rollout.yaml"
+          grep -F "apex.io/database-credential-generation: \"$generation\"" \
+            "$out/credential-rollout.yaml"
+          # A CSI -> ESO transition has no secret-consuming pre-hooks until ESO
+          # is Ready. The second upgrade uses the existing default SA, not the
+          # deleted CSI-only hook ServiceAccount.
+          render --is-upgrade \
+            -f deploy/azure/helm/values-azure.yaml \
+            -f "$CHART/ci/external-secrets-values.yaml" \
+            --set databaseRoleProvisioning.enabled=false \
+            --set migrations.enabled=false --set bootstrap.enabled=false \
+            > "$out/eso-transition-stage1.yaml"
+          ! grep -F '"helm.sh/hook": pre-install,pre-upgrade' \
+            "$out/eso-transition-stage1.yaml"
+          render --is-upgrade \
+            -f deploy/azure/helm/values-azure.yaml \
+            -f "$CHART/ci/external-secrets-values.yaml" \
+            --set secretBackend.csi.cleanup.enabled=false \
+            --show-only templates/database-role-job.yaml \
+            > "$out/eso-transition-stage2.yaml"
+          grep -F 'serviceAccountName: "default"' "$out/eso-transition-stage2.yaml"
+          # Every Job that pulls the application image honors global registry credentials.
+          for template in database-role-job database-grants-job database-role-cleanup-job; do
+            render -f deploy/azure/helm/values-azure.yaml \
+              --set imagePullSecrets[0].name=registry-creds \
+              --show-only "templates/$template.yaml" > "$out/$template-private.yaml"
+            grep -F 'name: registry-creds' "$out/$template-private.yaml"
+          done
+          grep -F 'value = "apex-minio-backup"' deploy/terraform/outputs.tf
+          grep -F 'system:serviceaccount:${var.workload_namespace}:apex-minio-backup' \
+            deploy/terraform/identity.tf
+          grep -F 'serviceAccountName: apex-minio-backup' \
+            deploy/azure/k8s/minio/backup-cronjob.yaml
+          grep -F 'startingDeadlineSeconds: 900' deploy/azure/k8s/minio/backup-cronjob.yaml
+          grep -F 'activeDeadlineSeconds: 5400' deploy/azure/k8s/minio/backup-cronjob.yaml
+          grep -F 'nginxinc/nginx-unprivileged:1.31.2-alpine3.23' \
+            deploy/azure/k8s/minio/minio.yaml
+          grep -F '127.0.0.1:9100' deploy/azure/k8s/minio/minio.yaml
+          grep -F 'kind: NetworkPolicy' deploy/azure/k8s/minio/networkpolicy.yaml
+          grep -F 'apex.io/minio-client: "true"' \
+            deploy/azure/helm/values-azure.yaml deploy/azure/k8s/minio/networkpolicy.yaml
+          grep -F 'STREAMING-UNSIGNED-PAYLOAD-TRAILER' \
+            deploy/azure/k8s/minio/minio.yaml deploy/minio-gateway/nginx.conf
+          grep -F 'select(?:=|&|$)' \
+            deploy/azure/k8s/minio/minio.yaml deploy/minio-gateway/nginx.conf
           # Validate core resources against upstream schemas; CRDs (SecretProviderClass,
           # ExternalSecret, ServiceMonitor, HTTPRoute) have no public schema -> skip them.
           kubeconform -strict -ignore-missing-schemas -summary "$out"/*.yaml
+          kubeconform -strict -summary \
+            deploy/azure/k8s/minio/minio.yaml \
+            deploy/azure/k8s/minio/networkpolicy.yaml \
+            deploy/azure/k8s/minio/backup-cronjob.yaml
 
   integration:
     # Postgres-gated tests (skipped in `checks` where APEX_TEST_DATABASE_URI is
@@ -95,7 +417,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_USER: apex
           POSTGRES_PASSWORD: apex
@@ -116,19 +438,37 @@ jobs:
       - run: uv sync --frozen
       - name: Start MinIO
         run: |
-          docker run -d --name apex-minio \
+          docker run -d --name apex-minio-gateway \
             -p 9000:9000 \
+            -v "$PWD/deploy/minio-gateway/nginx.conf:/etc/nginx/nginx.conf:ro" \
+            nginxinc/nginx-unprivileged:1.31.2-alpine3.23@sha256:6320020c7da8714feab524e02c08c5a1958675c4e68700e93a2fd8970b065786
+          docker run -d --name apex-minio \
+            --network container:apex-minio-gateway \
             -e MINIO_ROOT_USER=apex \
             -e MINIO_ROOT_PASSWORD=apex-minio \
-            minio/minio:RELEASE.2024-07-16T23-46-41Z server /data
+            minio/minio:RELEASE.2024-07-16T23-46-41Z@sha256:77ff9f7e12549d269990b167fa21da010fa8b0beb40d6064569b8887e37c456b \
+            server /data --address 127.0.0.1:9100 --console-address 127.0.0.1:9101
           for i in {1..30}; do
             if curl -fsS http://localhost:9000/minio/health/live >/dev/null; then
-              exit 0
+              break
             fi
             sleep 1
           done
-          docker logs apex-minio
-          exit 1
+          curl -fsS http://localhost:9000/minio/health/live >/dev/null || {
+            docker logs apex-minio-gateway
+            docker logs apex-minio
+            exit 1
+          }
+          unsigned_status="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+            -H 'X-Amz-Content-Sha256: STREAMING-UNSIGNED-PAYLOAD-TRAILER' \
+            http://localhost:9000/apex-artifacts/security-probe)"
+          test "$unsigned_status" = 403
+          select_status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            'http://localhost:9000/apex-artifacts/security-probe?select&select-type=2')"
+          test "$select_status" = 403
+          encoded_select_status="$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            'http://localhost:9000/apex-artifacts/security-probe?%73elect&select-type=2')"
+          test "$encoded_select_status" = 403
       - name: Apply integration database migrations
         env:
           APEX_DATABASE__URI: postgresql+asyncpg://apex:apex@localhost:5432/apex
@@ -147,7 +487,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_USER: apex
           POSTGRES_PASSWORD: apex
@@ -183,14 +523,41 @@ jobs:
           docker compose -f docker-compose.dev.yaml config --quiet
           LANGGRAPH_CLOUD_LICENSE_KEY=ci APEX_AUTH__DEV_API_KEY=ci \
             docker compose -f deploy/compose-ha/docker-compose.ha.yaml config --quiet
+          for compose in docker-compose.yaml docker-compose.dev.yaml; do
+            test "$(docker compose -f "$compose" config --format json \
+              | jq -r '[.services[].ports[]?.host_ip] | unique | join(",")')" = 127.0.0.1
+          done
+          test "$(LANGGRAPH_CLOUD_LICENSE_KEY=ci APEX_AUTH__DEV_API_KEY=ci \
+            docker compose -f deploy/compose-ha/docker-compose.ha.yaml config --format json \
+              | jq -r '[.services[].ports[]?.host_ip] | unique | join(",")')" = 127.0.0.1
+          grep -F 'client_max_body_size 26m;' apps/dashboard/nginx.conf
+          grep -F 'client_max_body_size 26m;' deploy/compose-ha/nginx.conf
+          for compose in docker-compose.yaml docker-compose.dev.yaml \
+            deploy/compose-ha/docker-compose.ha.yaml; do
+            grep -F 'network_mode: "service:minio"' "$compose"
+            grep -F '127.0.0.1:9100' "$compose"
+          done
       - name: Build dashboard image (smoke)
-        run: docker build -f apps/dashboard/Dockerfile -t apex-dashboard:ci .
+        run: |
+          docker build -f apps/dashboard/Dockerfile -t apex-dashboard:ci .
+          docker run -d --rm --name apex-dashboard-upload-smoke \
+            -p 127.0.0.1:18080:8080 -e BACKEND_UPSTREAM=http://127.0.0.1:9 \
+            apex-dashboard:ci
+          trap 'docker rm -f apex-dashboard-upload-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in {1..30}; do
+            curl -fsS http://127.0.0.1:18080/config.json >/dev/null && break
+            sleep 1
+          done
+          status="$(head -c 2097152 /dev/zero | curl -sS -o /dev/null -w '%{http_code}' \
+            -H 'content-type: application/octet-stream' --data-binary @- \
+            http://127.0.0.1:18080/v1/documents)"
+          test "$status" = 502
 
   terraform-validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: hashicorp/setup-terraform@v3 # TODO: pin to a SHA per repo policy
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_wrapper: false
       - name: fmt + validate (no backend)
@@ -198,5 +565,10 @@ jobs:
           terraform -chdir=deploy/terraform fmt -check -recursive
           terraform -chdir=deploy/terraform init -backend=false -input=false
           terraform -chdir=deploy/terraform validate
+          terraform -chdir=deploy/terraform test
+          terraform -chdir=deploy/terraform/backup init -backend=false -input=false
+          terraform -chdir=deploy/terraform/backup validate
+          terraform -chdir=deploy/terraform/backup test
           terraform -chdir=deploy/terraform/bootstrap init -backend=false -input=false
           terraform -chdir=deploy/terraform/bootstrap validate
+          terraform -chdir=deploy/terraform/bootstrap test

@@ -14,8 +14,9 @@ from collections.abc import Mapping, Sequence
 from string import Formatter
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
+from apex.domain.input_limits import ScopeId, validation_error_summary
 from apex.domain.pipeline import (
     MAX_CONTEXT_ID_CHARS,
     MAX_CONTEXT_REF_CHARS,
@@ -34,7 +35,6 @@ MAX_GATE_STRING_CHARS_HARD = 50_000
 MAX_STATELESS_SUBJECT_CHARS = 2_000
 MAX_WORK_ITEM_KEY_CHARS = 256
 MAX_WORK_ITEM_KEYS_HARD = 100
-MAX_STATELESS_SCOPE_ID_CHARS = 256
 MAX_STATELESS_MAPPING_KEY_CHARS = 256
 
 CONTEXT_RUN_INPUT_KEYS = frozenset(
@@ -42,6 +42,30 @@ CONTEXT_RUN_INPUT_KEYS = frozenset(
 )
 PLAYGROUND_RUN_INPUT_KEYS = frozenset({"app_id", "project_id", "prompt", "sample_input"})
 _FORMAT_NUMBER_RE = re.compile(r"\d+")
+_SAFE_SERVER_OWNED_RUN_FIELDS = frozenset(
+    {
+        "approvals",
+        "artifacts",
+        "dialogue",
+        "engine_handle",
+        "events",
+        "phase_results",
+        "prompt_reviews",
+        "run_aborted",
+        "run_config",
+    }
+)
+_SAFE_GATE_PATH_FIELDS = frozenset(
+    {
+        "action",
+        "additional_context",
+        "application",
+        "message",
+        "prompt",
+        "system",
+        "user",
+    }
+)
 
 _Subject = Annotated[
     str,
@@ -55,14 +79,7 @@ _WorkItemKey = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_WORK_ITEM_KEY_CHARS),
 ]
-_ScopeId = Annotated[
-    str,
-    StringConstraints(
-        strip_whitespace=True,
-        min_length=1,
-        max_length=MAX_STATELESS_SCOPE_ID_CHARS,
-    ),
-]
+_SCOPE_ID_ADAPTER = TypeAdapter(ScopeId)
 
 
 class _StrictRunInputModel(BaseModel):
@@ -86,8 +103,8 @@ class ContextRunInput(_StrictRunInputModel):
         default_factory=list, max_length=MAX_WORK_ITEM_KEYS_HARD
     )
     document_packets: list[ContextDocumentPacket] = Field(default_factory=list, max_length=64)
-    project_id: _ScopeId | None = None
-    app_id: _ScopeId | None = None
+    project_id: ScopeId | None = None
+    app_id: ScopeId | None = None
 
 
 class PlaygroundPrompt(_StrictRunInputModel):
@@ -98,8 +115,8 @@ class PlaygroundPrompt(_StrictRunInputModel):
 class PlaygroundRunInput(_StrictRunInputModel):
     prompt: PlaygroundPrompt = Field(default_factory=PlaygroundPrompt)
     sample_input: dict[str, Any] = Field(default_factory=dict)
-    project_id: _ScopeId | None = None
-    app_id: _ScopeId | None = None
+    project_id: ScopeId | None = None
+    app_id: ScopeId | None = None
 
 
 # LangGraph run input is merged into graph state. Only these caller-owned keys
@@ -128,14 +145,13 @@ def validate_model_by_phase(
     """Reject model overrides outside the deployment-owned exact allow-list."""
 
     selected = {str(model).strip() for model in model_by_phase.values()}
-    if any(not model or len(model) > MAX_MODEL_NAME_CHARS for model in selected):
+    if any(not model or len(model) > MAX_MODEL_NAME_CHARS or "\x00" in model for model in selected):
         raise ValueError("model_by_phase values must be 1-200 character model names")
     allowed = set((settings or get_settings()).llm.allowed_models)
     denied = sorted(selected - allowed)
     if denied:
         raise ValueError(
-            "model_by_phase contains model(s) not allowed by "
-            f"APEX_LLM__ALLOWED_MODELS: {', '.join(denied)}"
+            "model_by_phase contains a model not allowed by APEX_LLM__ALLOWED_MODELS"
         )
 
 
@@ -161,9 +177,11 @@ def validate_context_packets(
         try:
             packet = raw if isinstance(raw, ContextPacket) else ContextPacket.model_validate(raw)
         except ValidationError as exc:
-            raise ValueError(f"context_packets[{index}] is invalid: {exc}") from exc
+            raise ValueError(
+                f"context_packets[{index}] is invalid: {validation_error_summary(exc)}"
+            ) from exc
         if packet.id in seen:
-            raise ValueError(f"context_packets contains duplicate id {packet.id!r}")
+            raise ValueError("context_packets contains a duplicate id")
         seen.add(packet.id)
         payload = packet.model_dump(mode="json", exclude_none=True)
         # This counts every accepted field, including id/source/title/summary/ref/text,
@@ -185,12 +203,21 @@ def validate_pipeline_input(input_payload: Mapping[str, Any]) -> None:
 
     if "title" in input_payload:
         title = input_payload.get("title")
-        if not isinstance(title, str) or not title.strip() or len(title) > 500:
+        if not isinstance(title, str) or not title.strip() or len(title) > 500 or "\x00" in title:
             raise ValueError("run input title must be a non-empty string of at most 500 characters")
     if "request" in input_payload:
         request = input_payload.get("request")
-        if not isinstance(request, str) or len(request) > 20_000:
+        if not isinstance(request, str) or len(request) > 20_000 or "\x00" in request:
             raise ValueError("run input request must be a string of at most 20000 characters")
+    for field_name in ("project_id", "app_id"):
+        value = input_payload.get(field_name)
+        if value is not None:
+            try:
+                _SCOPE_ID_ADAPTER.validate_python(value, strict=True)
+            except ValidationError as exc:
+                raise ValueError(
+                    f"run input {field_name} is invalid: {validation_error_summary(exc)}"
+                ) from exc
     if input_payload.get("external_results") is not None:
         ExternalResults.model_validate(input_payload["external_results"])
     if input_payload.get("context_packets") is not None:
@@ -222,6 +249,11 @@ def _validate_json_tree(
             raise ValueError(f"{label} nesting exceeds {limits.max_stateless_payload_depth} levels")
 
         if isinstance(value, dict):
+            remaining = limits.max_stateless_payload_nodes - nodes - len(stack)
+            if len(value) > remaining:
+                raise ValueError(
+                    f"{label} exceeds the node limit ({limits.max_stateless_payload_nodes})"
+                )
             for key, item in value.items():
                 if not isinstance(key, str):
                     raise ValueError(f"{label} mapping keys must be strings")
@@ -230,10 +262,21 @@ def _validate_json_tree(
                         f"{label} mapping keys must not exceed "
                         f"{MAX_STATELESS_MAPPING_KEY_CHARS} characters"
                     )
+                if "\x00" in key:
+                    raise ValueError(f"{label} mapping keys must not contain U+0000")
                 stack.append((item, depth + 1))
         elif isinstance(value, list):
-            stack.extend((item, depth + 1) for item in value)
-        elif value is None or isinstance(value, bool | int | str):
+            remaining = limits.max_stateless_payload_nodes - nodes - len(stack)
+            if len(value) > remaining:
+                raise ValueError(
+                    f"{label} exceeds the node limit ({limits.max_stateless_payload_nodes})"
+                )
+            for item in value:
+                stack.append((item, depth + 1))
+        elif isinstance(value, str):
+            if "\x00" in value:
+                raise ValueError(f"{label} strings must not contain U+0000")
+        elif value is None or isinstance(value, bool | int):
             continue
         elif isinstance(value, float):
             if not math.isfinite(value):
@@ -268,7 +311,9 @@ def validate_context_run_input(
     try:
         validated = ContextRunInput.model_validate(payload, strict=True)
     except ValidationError as exc:
-        raise ValueError(f"context run input is invalid: {exc}") from exc
+        raise ValueError(
+            f"context run input is invalid: {validation_error_summary(exc)}"
+        ) from exc
 
     limits = active_settings.runs
     if len(validated.work_item_keys) > limits.max_work_item_keys:
@@ -301,7 +346,9 @@ def validate_playground_run_input(
     try:
         validated = PlaygroundRunInput.model_validate(payload, strict=True)
     except ValidationError as exc:
-        raise ValueError(f"playground run input is invalid: {exc}") from exc
+        raise ValueError(
+            f"playground run input is invalid: {validation_error_summary(exc)}"
+        ) from exc
     validate_prompt_parts(
         system=validated.prompt.system,
         user=validated.prompt.user,
@@ -387,8 +434,10 @@ def validate_public_run_input(input_payload: Mapping[str, Any]) -> None:
 
     unexpected = sorted(str(key) for key in input_payload if key not in PUBLIC_RUN_INPUT_KEYS)
     if unexpected:
+        safe_names = [name for name in unexpected if name in _SAFE_SERVER_OWNED_RUN_FIELDS]
+        suffix = f": {', '.join(safe_names)}" if safe_names else ""
         raise ValueError(
-            "run input contains server-owned or unsupported field(s): " + ", ".join(unexpected)
+            "run input contains server-owned or unsupported field(s)" + suffix
         )
     validate_pipeline_input(input_payload)
 
@@ -418,6 +467,9 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
             stack.append((value.model_dump(mode="json", exclude_none=True), path, depth))
             continue
         if isinstance(value, str):
+            if "\x00" in value:
+                label = _safe_gate_path(path)
+                raise ValueError(f"gate payload {label} must not contain U+0000")
             is_prompt_part = (
                 len(path) >= 2
                 and path[-2] == "prompt"
@@ -432,25 +484,50 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
                 limits.max_prompt_part_chars if is_prompt_part else limits.max_gate_string_chars
             )
             if len(value) > per_string_limit:
-                label = ".".join(path) or "value"
+                label = _safe_gate_path(path)
                 raise ValueError(f"gate payload {label} exceeds {per_string_limit} characters")
             total_chars += len(value)
         elif isinstance(value, Mapping):
+            remaining = limits.max_gate_payload_nodes - nodes - len(stack)
+            if len(value) > remaining:
+                raise ValueError(
+                    f"gate payload exceeds the node limit ({limits.max_gate_payload_nodes})"
+                )
             for key, item in value.items():
                 key_text = str(key)
                 if len(key_text) > 256:
                     raise ValueError("gate payload mapping keys must not exceed 256 characters")
+                if "\x00" in key_text:
+                    raise ValueError("gate payload mapping keys must not contain U+0000")
                 total_chars += len(key_text)
                 stack.append((item, (*path, key_text), depth + 1))
         elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
-            stack.extend((item, (*path, "[]"), depth + 1) for item in value)
-        elif value is not None and not isinstance(value, bool | int | float):
+            remaining = limits.max_gate_payload_nodes - nodes - len(stack)
+            if len(value) > remaining:
+                raise ValueError(
+                    f"gate payload exceeds the node limit ({limits.max_gate_payload_nodes})"
+                )
+            for item in value:
+                stack.append((item, (*path, "[]"), depth + 1))
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("gate payload numbers must be finite")
+        elif value is not None and not isinstance(value, bool | int):
             raise ValueError(f"gate payload contains unsupported {type(value).__name__} value")
         if total_chars > limits.max_gate_payload_chars:
             raise ValueError(
                 "gate payload exceeds the deployment limit "
                 f"({limits.max_gate_payload_chars} characters)"
             )
+
+
+def _safe_gate_path(path: tuple[str, ...]) -> str:
+    """Describe gate fields without reflecting attacker-controlled mapping keys."""
+
+    return ".".join(
+        part if part in _SAFE_GATE_PATH_FIELDS or part == "[]" else "field"
+        for part in path
+    ) or "value"
 
 
 def validate_prompt_parts(
@@ -471,6 +548,8 @@ def validate_prompt_parts(
         "additional_context": additional_context,
     }
     for name, value in parts.items():
+        if "\x00" in value:
+            raise ValueError(f"{name} must not contain U+0000")
         per_part = (
             limits.max_gate_string_chars
             if name == "additional_context"

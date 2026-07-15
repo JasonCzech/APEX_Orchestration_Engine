@@ -17,9 +17,9 @@ from langgraph.types import Command, StateSnapshot
 from apex.adapters.stubs import MemoryArtifactStore
 from apex.domain.pipeline import PHASE_ORDER, Phase, PhaseStatus
 from apex.graphs.pipeline import phase_subgraph
-from apex.graphs.pipeline.graph import builder, graph
+from apex.graphs.pipeline.graph import builder, graph, plan_resolver
 from apex.graphs.pipeline.state import PipelineState
-from apex.ports.artifact_store import transcript_artifact_key
+from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import engine_runs
 from apex.services.connections import ConnectionResolver
 
@@ -77,6 +77,36 @@ def test_module_level_graph_compiles_without_checkpointer() -> None:
     assert graph.checkpointer is None  # the server injects persistence
 
 
+def test_execution_rerun_clears_previous_top_level_engine_handle() -> None:
+    state = cast(
+        PipelineState,
+        {
+            "title": "Demo",
+            "phase_results": {
+                "script_scenario": {"status": "succeeded", "attempt": 1},
+                "execution": {"status": "succeeded", "attempt": 1},
+            },
+            "engine_handle": {
+                "engine": "sim",
+                "connection_id": "dev-engine-sim",
+                "external_run_id": "old-run",
+                "idempotency_key": "rerun-execution-a1",
+                "extras": {},
+            },
+        },
+    )
+    cfg = config(
+        "rerun",
+        phases=["execution"],
+        gates={"execution": dict(AUTO)},
+    )
+
+    update = plan_resolver(state, cfg)
+
+    assert update["engine_handle"] is None
+    assert update["phase_results"]["execution"]["attempt"] == 2
+
+
 def test_graph_input_schema_drops_forged_internal_state() -> None:
     g = compiled()
     cfg = config(
@@ -108,14 +138,15 @@ def test_finalize_keeps_terminal_status_when_transcript_store_is_unavailable(
 
     monkeypatch.setattr("apex.graphs.pipeline.phase_subgraph._persist_transcript", fail_persistence)
     finalize = phase_subgraph._make_finalize(Phase.STORY_ANALYSIS)
+    entry: dict[str, Any] = {
+        "attempt": 1,
+        "status": PhaseStatus.SUCCEEDED.value,
+    }
     state = cast(
         PipelineState,
         {
             "phase_results": {
-                Phase.STORY_ANALYSIS.value: {
-                    "attempt": 1,
-                    "status": PhaseStatus.SUCCEEDED.value,
-                }
+                Phase.STORY_ANALYSIS.value: entry,
             }
         },
     )
@@ -127,6 +158,106 @@ def test_finalize_keeps_terminal_status_when_transcript_store_is_unavailable(
     assert entry["transcript_ref"] is None
     assert entry["artifact_ids"] == []
     assert "phase transcript persistence failed" in entry["warnings"]
+
+
+async def test_transcript_finalize_failure_keeps_bytes_for_durable_outbox_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def ambiguous_index_failure(
+        store: Any,
+        *,
+        artifact_key: str,
+        payload: bytes,
+        content_type: str,
+        **_kwargs: Any,
+    ) -> None:
+        await store.put(artifact_key, payload, content_type=content_type)
+        raise ConnectionError("commit acknowledgement lost")
+
+    monkeypatch.setattr(
+        phase_subgraph,
+        "persist_artifact_with_intent",
+        ambiguous_index_failure,
+    )
+    entry: dict[str, Any] = {
+        "attempt": 1,
+        "status": PhaseStatus.SUCCEEDED.value,
+    }
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                Phase.STORY_ANALYSIS.value: entry,
+            }
+        },
+    )
+    key = transcript_artifact_key("transcript-index-ambiguous", "story_analysis", 1)
+
+    with pytest.raises(ConnectionError, match="acknowledgement lost"):
+        await phase_subgraph._persist_transcript(
+            state,
+            Phase.STORY_ANALYSIS,
+            entry,
+            config("transcript-index-ambiguous"),
+            attempt=1,
+            status=PhaseStatus.SUCCEEDED.value,
+        )
+
+    assert await MemoryArtifactStore().get(key)
+
+
+async def test_transcript_resolver_close_failure_does_not_overturn_durable_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    indexed: list[str] = []
+
+    class CloseFailResolver:
+        async def resolve_with_connection_id(self, *_args: Any, **_kwargs: Any) -> tuple[Any, str]:
+            return MemoryArtifactStore(), "dev-artifact-store-memory"
+
+        async def close(self) -> None:
+            raise RuntimeError("dispose failed after commit")
+
+    async def record_reference(
+        store: Any,
+        *,
+        artifact_key: str,
+        payload: bytes,
+        content_type: str,
+        **_kwargs: Any,
+    ) -> StoredArtifact:
+        indexed.append(artifact_key)
+        return await store.put(artifact_key, payload, content_type=content_type)
+
+    monkeypatch.setattr(phase_subgraph, "_make_artifact_resolver", CloseFailResolver)
+    monkeypatch.setattr(phase_subgraph, "persist_artifact_with_intent", record_reference)
+    entry: dict[str, Any] = {
+        "attempt": 1,
+        "status": PhaseStatus.SUCCEEDED.value,
+    }
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                Phase.STORY_ANALYSIS.value: entry,
+            }
+        },
+    )
+    key = transcript_artifact_key("transcript-close-failure", "story_analysis", 1)
+
+    stored, connection_id = await phase_subgraph._persist_transcript(
+        state,
+        Phase.STORY_ANALYSIS,
+        entry,
+        config("transcript-close-failure"),
+        attempt=1,
+        status=PhaseStatus.SUCCEEDED.value,
+    )
+
+    assert stored.key == key
+    assert connection_id == "dev-artifact-store-memory"
+    assert indexed == [key]
+    assert await MemoryArtifactStore().get(key)
 
 
 def test_all_auto_runs_all_seven_phases() -> None:
@@ -141,7 +272,7 @@ def test_all_auto_runs_all_seven_phases() -> None:
         assert entry["status"] == "succeeded"
         assert entry["attempt"] == 1
         transcript_key = transcript_artifact_key("t1", phase.value, 1)
-        assert entry["transcript_ref"]["uri"] == f"memory://{transcript_key}"
+        assert entry["transcript_ref"]["uri"] == f"apex-artifact:///{transcript_key}"
         assert entry["transcript_ref"]["key"] == transcript_key
         assert entry["transcript_ref"]["artifact_connection_id"] == ("dev-artifact-store-memory")
         assert entry["transcript_ref"]["id"] in entry["artifact_ids"]
@@ -299,6 +430,35 @@ def test_discuss_appends_dialogue_and_reinterrupts() -> None:
     assert result["phase_results"]["story_analysis"]["status"] == "succeeded"
 
 
+def test_new_attempt_gets_fresh_dialogue_budget_and_prunes_old_attempt() -> None:
+    g = compiled()
+    gates = {"story_analysis": {"prompt_review": "auto", "output_review": "gated"}}
+    cfg = config(
+        "dialogue-rerun",
+        gates=gates,
+        phases=["story_analysis"],
+        limits={"max_dialogue_turns": 1},
+    )
+    g.invoke({"title": "Demo"}, cfg)
+    first = g.invoke(Command(resume={"action": "discuss", "message": "attempt one"}), cfg)
+    assert pending_interrupt(first).get("error") is None
+    g.invoke(Command(resume={"action": "approve"}), cfg)
+
+    second = g.invoke({"title": "Demo"}, cfg)
+    assert pending_interrupt(second)["kind"] == "phase_review"
+    assert subgraph_values(g, cfg)["phase_results"]["story_analysis"]["attempt"] == 2
+    second = g.invoke(Command(resume={"action": "discuss", "message": "attempt two"}), cfg)
+    payload = pending_interrupt(second)
+
+    assert payload.get("error") is None
+    assert [
+        entry["content"] for entry in payload["dialogue_tail"] if entry["role"] == "operator"
+    ] == ["attempt two"]
+    result = g.invoke(Command(resume={"action": "approve"}), cfg)
+    dialogue = result["dialogue"]
+    assert {entry["attempt"] for entry in dialogue} == {2}
+
+
 def test_abort_ends_run_and_leaves_downstream_pending() -> None:
     g = compiled()
     cfg = config("t7")  # default: all phases gated; abort at the first prompt gate
@@ -336,7 +496,7 @@ def test_subset_run_uses_thread_state_and_increments_attempt() -> None:
     assert entry["status"] == "succeeded"
     assert [t["id"] for t in entry["tool_calls"]] == ["test_planning-a2-r0-stub-lookup"]
     transcript_key = transcript_artifact_key("t8", "test_planning", 2)
-    assert entry["transcript_ref"]["uri"] == f"memory://{transcript_key}"
+    assert entry["transcript_ref"]["uri"] == f"apex-artifact:///{transcript_key}"
     assert entry["transcript_ref"]["key"] == transcript_key
 
 
@@ -387,7 +547,8 @@ def test_unknown_action_reinterrupts_with_error() -> None:
     result = g.invoke(Command(resume={"action": "bogus"}), cfg)
     payload = pending_interrupt(result)
     assert payload["kind"] == "prompt_review"
-    assert "bogus" in payload["error"]
+    assert payload["error"].startswith("unknown action; expected one of")
+    assert "bogus" not in payload["error"]
     result = g.invoke(Command(resume={"action": "approve"}), cfg)
     assert pending_interrupt(result)["kind"] == "phase_review"
 
@@ -443,6 +604,7 @@ def test_application_review_is_app_wide_across_phases() -> None:
         "t15",
         gates=all_auto(),
         phases=["story_analysis", "test_planning"],
+        project_id="p1",
         app_id="a1",
     )
     g.invoke({"title": "Demo", "request": "r"}, cfg)

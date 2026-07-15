@@ -149,8 +149,8 @@ Perf rule honored: `engine_poll` data reaches the UI only through the stream
 view's flushed ring buffer (≤20fps); the feed renders 1 expandable row per 10
 engine ticks, caps at 500 entries with a truncation notice, and nothing
 high-frequency enters the react-query cache. Reasoning tokens are deliberately
-omitted from the feed (M-era backend stubs don't stream messages-tuple
-meaningfully; `transcript_ref` artifacts are the durable record).
+omitted from the bounded custom stream; `transcript_ref` artifacts are the
+durable record.
 
 ## Build note
 
@@ -214,7 +214,7 @@ pages (`RunDetailPage`, `RunsListPage`).
 | `assessPlan`, `runFromHereSelection`, `lastPlanSelection`, `PHASE_ORDER`, `PHASE_PREREQUISITES`, `STALE_AFTER_MS` | `preflight.ts` | pure logic — mirrors `src/apex/domain/pipeline.py` + `graph.py` plan_resolver semantics |
 | `PreflightModal {threadId, initialSelection?, onClose}` | `PreflightModal.tsx` | the single pre-flight checkpoint every entry point funnels through |
 | `OverflowMenu {label, items, trigger?, className?}` | `PreflightModal.tsx` | shared glass dropdown (menu role, Escape/outside-click close, arrow keys, focus-first-item); stops click propagation so it is row-click safe |
-| `useRerun` / `buildRerunConfigurable` / `ALL_GATED_GATES` | `useRerun.ts` | `runs.create(threadId, state.run_config.assistant_id ?? 'pipeline', {input: {}, config:{configurable:{...state.run_config, phases, gates?}}})` on the EXISTING thread; the previous assistant, effective scope, engine, connections, prompts, models, backend, load settings, and limits are retained |
+| `useRerun` / `ALL_GATED_GATES` | `useRerun.ts` | `POST /v1/pipelines/{thread_id}/rerun` with only phases, gate mode, and an idempotency key; the server reloads and validates the complete trusted checkpointed config before starting a custom-stream, sync-durable, reject-strategy run |
 | styles | `preflight.css` | modal, overflow menu, actions cell, split button, `.sr-only` |
 
 ## Entry points (surgical edits)
@@ -238,9 +238,11 @@ pages (`RunDetailPage`, `RunsListPage`).
   will reject at plan resolution", but Start stays enabled — the backend
   plan_resolver is the authority. Start is disabled only for an EMPTY
   selection (backend treats empty `phases` as falsy → would run ALL phases).
-- Gates segmented control: Inherit defaults (gates OMITTED from configurable —
-  backend default is GATED) | All gated | All auto.
-- `input` is `{}` and **NOT null** — null means continue-from-checkpoint to
-  the LangGraph server; `{}` triggers a fresh plan_resolver pass (M2 smoke).
+- Gates segmented control: Inherit defaults (retain the checkpointed gate
+  matrix) | All gated | All auto. The browser sends only this mode; provider
+  configuration, connections, prompts, models, limits, and environment targets
+  never round-trip through public state.
+- The facade starts the native run with `input={}` so plan resolution is fresh,
+  while preserving the trusted assistant/config snapshot and exact thread scope.
 - On 2xx: invalidates `threads.state(threadId)` + `pipelines.lists()`, then
   navigates to `/runs/{threadId}?tab=activity`.

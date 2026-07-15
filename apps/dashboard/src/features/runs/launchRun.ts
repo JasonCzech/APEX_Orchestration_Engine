@@ -11,9 +11,9 @@ import { ApiError, errorMessageOf } from '@/api/errors'
  * to GATED (src/apex/graphs/pipeline/configurable.py GatePolicy), and the gate
  * review UX only lands in D3, so a D2 launch must not interrupt.
  *
- * Stream options mirror the plan's launch defaults (Part 1 "Streaming"):
- * durability sync, resumable stream, multitask reject, custom+updates+
- * messages-tuple modes with subgraph events (phase nodes are subgraphs).
+ * The /v1 launch facade creates a resumable, durable run and returns its
+ * custom-only stream URL. Durable state is read from the scoped /v1 snapshot;
+ * the stream carries bounded live pipeline events only.
  */
 
 interface GatePolicy {

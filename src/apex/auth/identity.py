@@ -6,7 +6,9 @@ Pure data + predicates; no IO so handlers and dependencies stay unit-testable.
 
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from apex.domain.input_limits import MAX_CHILD_ITEMS, ScopeId
 
 
 class ConsumerType(StrEnum):
@@ -36,8 +38,10 @@ _ROLE_RANK: dict[Role, int] = {Role.VIEWER: 0, Role.OPERATOR: 1, Role.ADMIN: 2}
 class ScopeRef(BaseModel):
     """A project (optionally narrowed to one app) the consumer may act on."""
 
-    project_id: str
-    app_id: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: ScopeId
+    app_id: ScopeId | None = None
 
 
 class ConsumerIdentity(BaseModel):
@@ -45,7 +49,7 @@ class ConsumerIdentity(BaseModel):
     name: str
     consumer_type: ConsumerType
     role: Role
-    scopes: list[ScopeRef] = Field(default_factory=list)
+    scopes: list[ScopeRef] = Field(default_factory=list, max_length=MAX_CHILD_ITEMS)
 
     @property
     def is_unscoped(self) -> bool:

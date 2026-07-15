@@ -76,7 +76,10 @@ def test_parse_gate_decision_tolerates_plain_string() -> None:
 def test_parse_gate_decision_unknown_action() -> None:
     parsed = parse_gate_decision({"action": "yolo", "note": "n"}, PROMPT_REVIEW_ACTIONS)
     assert parsed["action"] is None
-    assert "yolo" in parsed["error"]
+    assert parsed["error"] == (
+        "unknown action; expected one of ['abort', 'approve', 'modify', 'skip_phase']"
+    )
+    assert "yolo" not in parsed["error"]
     assert parsed["note"] == "n"  # original fields preserved for diagnostics
 
 

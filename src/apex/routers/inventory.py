@@ -3,7 +3,7 @@
 GET returns the latest persisted EnvironmentSnapshot row (snapshot=null when
 the environment has never been scanned; stale=true when the scan is older than
 7 days). POST .../rescan resolves the cluster-inventory adapter (optional
-?connection_id= override), scans INLINE, persists one NEW snapshot row, and
+?connection_id= override), scans INLINE, persists bounded snapshot history, and
 returns the fresh payload; adapter/resolution failures surface as 502.
 
 Scoping mirrors /catalog: environments inherit project_id through their
@@ -13,14 +13,18 @@ existence. Roles: GET = any authenticated; rescan = operator+.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from apex.app.dependencies import CurrentIdentity, require_role
 from apex.auth.identity import ConsumerIdentity, Role
+from apex.domain.input_limits import RecordId
+from apex.domain.integrations import EnvRef
+from apex.persistence.db import release_read_transactions
 from apex.persistence.models import Environment
 from apex.persistence.repositories.snapshots import SnapshotsRepository
 from apex.services.inventory import (
     AdapterResolver,
+    InventoryScanBusyError,
     InventoryService,
     InventoryView,
     get_inventory_adapter_resolver,
@@ -32,6 +36,11 @@ router = APIRouter(prefix="/inventory", tags=["inventory"])
 SnapshotsRepo = Annotated[SnapshotsRepository, Depends(get_snapshots_repository)]
 ResolverDep = Annotated[AdapterResolver, Depends(get_inventory_adapter_resolver)]
 OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
+EnvironmentId = Annotated[RecordId, Path(description="Environment id")]
+ConnectionIdParam = Annotated[
+    RecordId | None,
+    Query(description="Explicit cluster-inventory connection id"),
+]
 
 
 async def _load_visible_environment(
@@ -41,7 +50,7 @@ async def _load_visible_environment(
     if env is None or not identity.allows_scope(
         project_id=env.application.project_id, app_id=env.application_id
     ):
-        raise HTTPException(status_code=404, detail=f"environment {environment_id!r} not found")
+        raise HTTPException(status_code=404, detail="environment not found")
     return env
 
 
@@ -51,7 +60,7 @@ async def _load_visible_environment(
     response_model=InventoryView,
 )
 async def get_environment_inventory(
-    environment_id: str, identity: CurrentIdentity, repository: SnapshotsRepo
+    environment_id: EnvironmentId, identity: CurrentIdentity, repository: SnapshotsRepo
 ) -> InventoryView:
     env = await _load_visible_environment(repository, environment_id, identity)
     return await InventoryService(repository).latest_inventory(env.id)
@@ -63,16 +72,26 @@ async def get_environment_inventory(
     response_model=InventoryView,
 )
 async def rescan_environment(
-    environment_id: str,
+    environment_id: EnvironmentId,
     identity: OperatorIdentity,
     repository: SnapshotsRepo,
     resolve_adapter: ResolverDep,
-    connection_id: str | None = None,
+    connection_id: ConnectionIdParam = None,
 ) -> InventoryView:
     env = await _load_visible_environment(repository, environment_id, identity)
     project_id = env.application.project_id
+    environment = EnvRef(id=env.id, name=env.name)
+    await release_read_transactions(repository)
     try:
-        adapter = await resolve_adapter(connection_id, project_id)
-        return await InventoryService(repository).rescan(env, adapter)
-    except (KeyError, ValueError, RuntimeError) as exc:
+        return await InventoryService(repository).rescan(
+            environment,
+            lambda: resolve_adapter(connection_id, project_id),
+        )
+    except InventoryScanBusyError:
+        raise HTTPException(
+            status_code=429,
+            detail="inventory scan capacity is exhausted; retry later",
+            headers={"Retry-After": "1"},
+        ) from None
+    except (KeyError, TimeoutError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=502, detail="environment rescan failed") from exc

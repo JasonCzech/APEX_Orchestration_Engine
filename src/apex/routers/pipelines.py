@@ -7,17 +7,31 @@ router never re-filters threads client-side.
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from langgraph_sdk import Auth
-from langgraph_sdk.errors import NotFoundError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from langgraph_sdk.errors import ConflictError, NotFoundError
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.app.errors import problem
 from apex.auth.handlers import ensure_thread_scope
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
-from apex.domain.pipeline import PHASE_ORDER, ContextPacket, ExternalResults
+from apex.domain.input_limits import (
+    MAX_DB_LIST_OFFSET,
+    NoNulStr,
+    ResourceId,
+    ScopeId,
+    validate_json_object,
+)
+from apex.domain.pipeline import (
+    ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
+    PHASE_ORDER,
+    ContextPacket,
+    EngineConnectionAffinityMissingError,
+    ExternalResults,
+)
+from apex.persistence.db import release_read_transactions
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
 from apex.routers.catalog import get_catalog_repository
@@ -27,27 +41,48 @@ from apex.services.documents import (
     get_documents_repository,
     uploaded_document_context_packets,
 )
-from apex.services.engine_abort import EngineRunNotFoundError
+from apex.services.engine_abort import (
+    EngineAbortConfirmationPendingError,
+    EngineGraphFinalizationPendingError,
+    EngineProvisioningAbortPendingError,
+    EngineRunNotFoundError,
+)
 from apex.services.environments import (
     EnvironmentTargetNotFoundError,
     resolve_environment_target,
 )
 from apex.services.langgraph_client import loopback_client
 from apex.services.pipeline_read import (
+    MAX_PIPELINE_QUERY_CHARS,
+    ActiveRunSnapshotUnstableError,
     GateSupersededError,
     InvalidGateActionError,
     LaunchIdempotencyConflictError,
     NoActiveRunError,
     PipelineReadService,
+    PromptReviewConflictError,
+    RerunConfigurationConflictError,
+    RerunIdempotencyConflictError,
+    TooManyActiveRunsError,
 )
 from apex.services.run_validation import (
     MAX_GATE_STRING_CHARS_HARD,
+    MAX_MODEL_NAME_CHARS,
     MAX_PROMPT_PART_CHARS_HARD,
 )
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
 ThreadStatusFilter = Literal["idle", "busy", "interrupted", "error"]
+DocumentIdInput = Annotated[NoNulStr, Field(min_length=1, max_length=256)]
+PhaseInput = Annotated[NoNulStr, Field(min_length=1, max_length=64)]
+ModelNameInput = Annotated[
+    NoNulStr,
+    Field(min_length=1, max_length=MAX_MODEL_NAME_CHARS),
+]
+ThreadId = Annotated[ResourceId, Path(description="Pipeline thread id")]
+InterruptId = Annotated[ResourceId, Path(description="Pending interrupt id")]
+PhaseParam = Annotated[NoNulStr, Path(min_length=1, max_length=64)]
 
 
 def get_pipeline_read_service(request: Request) -> PipelineReadService:
@@ -81,7 +116,7 @@ async def _documents_to_packets(
     try:
         return await uploaded_document_context_packets(repository, identity, document_ids)
     except DocumentContextNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="document context not found") from exc
 
 
 async def _resolve_pipeline_scope(
@@ -108,7 +143,10 @@ async def _resolve_pipeline_scope(
     try:
         ensure_thread_scope(identity, metadata, action="pipelines.create")
     except Auth.exceptions.HTTPException as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail="pipeline scope is not authorized",
+        ) from exc
     resolved_project = metadata.get("project_id")
     resolved_app = metadata.get("app_id")
     if resolved_app is not None:
@@ -171,28 +209,71 @@ class StartPipelineRequest(BaseModel):
     """Start a pipeline run. For results analysis, select the analysis phases (e.g.
     ["reporting", "postmortem"]) and supply `external_results`; gates default to auto."""
 
-    title: str = Field(min_length=1, max_length=500)
-    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
-    request: str = Field(default="", max_length=20000)
-    assistant_id: str | None = Field(
+    model_config = ConfigDict(extra="forbid")
+
+    title: NoNulStr = Field(min_length=1, max_length=500)
+    idempotency_key: NoNulStr | None = Field(default=None, min_length=1, max_length=128)
+    request: NoNulStr = Field(default="", max_length=20000)
+    assistant_id: NoNulStr | None = Field(
         default=None,
         min_length=1,
+        max_length=256,
         description="Golden assistant id; defaults to the base pipeline graph.",
     )
-    project_id: str | None = None
-    app_id: str | None = None
+    project_id: ScopeId | None = None
+    app_id: ScopeId | None = None
     configurable: dict[str, Any] | None = Field(
         default=None,
         max_length=64,
         description="Full per-run PipelineConfigurable layer retained by the selected assistant.",
     )
-    phases: list[str] | None = Field(default=None, max_length=len(PHASE_ORDER))
+    phases: list[PhaseInput] | None = Field(default=None, max_length=len(PHASE_ORDER))
     gates: dict[str, Any] | None = Field(default=None, max_length=len(PHASE_ORDER))
-    agent_backend: str | None = Field(default=None, max_length=32)
-    model_by_phase: dict[str, str] | None = Field(default=None, max_length=len(PHASE_ORDER))
+    agent_backend: NoNulStr | None = Field(default=None, max_length=32)
+    model_by_phase: dict[str, ModelNameInput] | None = Field(
+        default=None,
+        max_length=len(PHASE_ORDER),
+    )
     external_results: ExternalResults | None = None
     context_packets: list[ContextPacket] | None = Field(default=None, max_length=64)
-    document_ids: list[str] | None = Field(default=None, max_length=64)
+    document_ids: list[DocumentIdInput] | None = Field(default=None, max_length=64)
+
+    @field_validator("configurable")
+    @classmethod
+    def validate_configurable(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return validate_json_object(value, label="pipeline configurable")
+
+    @field_validator("gates")
+    @classmethod
+    def validate_gates(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return validate_json_object(value, label="pipeline gates")
+
+    @field_validator("model_by_phase")
+    @classmethod
+    def validate_models(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        validate_json_object(value, label="pipeline model_by_phase")
+        known = {phase.value for phase in PHASE_ORDER}
+        if any(name not in known for name in value):
+            raise ValueError("model_by_phase keys must name known pipeline phases")
+        return value
+
+    @field_validator("phases")
+    @classmethod
+    def validate_phases(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        known = {phase.value for phase in PHASE_ORDER}
+        if any(name not in known for name in value):
+            raise ValueError("phases entries must name known pipeline phases")
+        if len(set(value)) != len(value):
+            raise ValueError("phases must not contain duplicates")
+        return value
 
     @model_validator(mode="after")
     def validate_document_ids(self) -> "StartPipelineRequest":
@@ -231,20 +312,44 @@ class PipelineDetail(PipelineSummary):
 class GatePromptEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    system: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
-    user: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
-    application: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    system: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    user: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    application: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
 
 
 class ResumeGateRequest(BaseModel):
-    action: str = Field(min_length=1, max_length=32)
+    model_config = ConfigDict(extra="forbid")
+
+    action: NoNulStr = Field(min_length=1, max_length=32)
     prompt: GatePromptEdit | None = None
-    instructions: str | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
-    message: str | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
-    note: str | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
+    instructions: NoNulStr | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
+    message: NoNulStr | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
+    note: NoNulStr | None = Field(default=None, max_length=MAX_GATE_STRING_CHARS_HARD)
 
 
 class ResumeGateResponse(BaseModel):
+    run_id: str
+
+
+class RerunPipelineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    phases: list[PhaseInput] = Field(min_length=1, max_length=len(PHASE_ORDER))
+    gates_mode: Literal["inherit", "gated", "auto"] = "inherit"
+    idempotency_key: NoNulStr = Field(min_length=1, max_length=128)
+
+    @field_validator("phases")
+    @classmethod
+    def validate_rerun_phases(cls, value: list[str]) -> list[str]:
+        known = {phase.value for phase in PHASE_ORDER}
+        if any(name not in known for name in value):
+            raise ValueError("phases entries must name known pipeline phases")
+        if len(set(value)) != len(value):
+            raise ValueError("phases must not contain duplicates")
+        return value
+
+
+class RerunPipelineResponse(BaseModel):
     run_id: str
 
 
@@ -265,10 +370,12 @@ class PhasePromptReview(BaseModel):
 
 
 class PhasePromptReviewUpdate(BaseModel):
-    system: str = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
-    phase_prompt: str = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
-    application: str | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
-    additional_context: str = Field(default="", max_length=MAX_GATE_STRING_CHARS_HARD)
+    model_config = ConfigDict(extra="forbid")
+
+    system: NoNulStr = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
+    phase_prompt: NoNulStr = Field(max_length=MAX_PROMPT_PART_CHARS_HARD)
+    application: NoNulStr | None = Field(default=None, max_length=MAX_PROMPT_PART_CHARS_HARD)
+    additional_context: NoNulStr = Field(default="", max_length=MAX_GATE_STRING_CHARS_HARD)
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -361,7 +468,15 @@ async def create_pipeline_run(
                 app_id=app_id,
             )
         except EnvironmentTargetNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(status_code=404, detail="environment target not found") from exc
+        if app_id is not None and target.app_id != app_id:
+            # The resolver already enforces this; retain the invariant at the
+            # stamping boundary for injected/internal repository implementations.
+            raise HTTPException(status_code=404, detail="environment target not found")
+        project_id = target.project_id
+        app_id = target.app_id
+        run_configurable["project_id"] = target.project_id
+        run_configurable["app_id"] = target.app_id
         run_configurable["environment_id"] = environment_id.strip()
         run_configurable["environment_target"] = target.base_url
         run_configurable["environment_target_version"] = target.version
@@ -369,6 +484,7 @@ async def create_pipeline_run(
     context_packets = [packet.model_dump(mode="json") for packet in (body.context_packets or [])]
     if body.document_ids:
         context_packets += await _documents_to_packets(documents, identity, body.document_ids)
+    await release_read_transactions(catalog, documents)
     try:
         result = await service.start_run(
             title=body.title,
@@ -389,9 +505,9 @@ async def create_pipeline_run(
             principal_id=identity.consumer_id,
         )
     except LaunchIdempotencyConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail="pipeline launch conflict") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="invalid pipeline configuration") from exc
     return StartPipelineResponse(**result)
 
 
@@ -399,11 +515,11 @@ async def create_pipeline_run(
 async def list_pipelines(
     identity: CurrentIdentity,
     request: Request,
-    project: str | None = None,
+    project: Annotated[ScopeId | None, Query()] = None,
     status: ThreadStatusFilter | None = None,
-    q: str | None = None,
+    q: Annotated[NoNulStr | None, Query(max_length=MAX_PIPELINE_QUERY_CHARS)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
 ) -> Any:
     ensure_scope(identity, project_id=project)
     service = _pipeline_read_service_after_scope(request)
@@ -414,13 +530,13 @@ async def list_pipelines(
 
 
 @router.get("/{thread_id}", operation_id="getPipeline", response_model=PipelineDetail)
-async def get_pipeline(thread_id: str, identity: CurrentIdentity, service: PipelineService) -> Any:
+async def get_pipeline(
+    thread_id: ThreadId, identity: CurrentIdentity, service: PipelineService
+) -> Any:
     try:
         return await service.get_pipeline(thread_id)
     except NotFoundError:
-        raise HTTPException(
-            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
-        ) from None
+        raise HTTPException(status_code=404, detail="pipeline thread not found") from None
 
 
 @router.get(
@@ -429,19 +545,17 @@ async def get_pipeline(thread_id: str, identity: CurrentIdentity, service: Pipel
     response_model=PhasePromptReview,
 )
 async def get_phase_prompt_review(
-    thread_id: str,
-    phase: str,
+    thread_id: ThreadId,
+    phase: PhaseParam,
     identity: CurrentIdentity,
     service: PipelineService,
 ) -> Any:
     try:
         return await service.get_phase_prompt_review(thread_id, phase)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=422, detail="invalid pipeline phase") from exc
     except NotFoundError:
-        raise HTTPException(
-            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
-        ) from None
+        raise HTTPException(status_code=404, detail="pipeline thread not found") from None
 
 
 @router.patch(
@@ -451,8 +565,8 @@ async def get_phase_prompt_review(
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def patch_phase_prompt_review(
-    thread_id: str,
-    phase: str,
+    thread_id: ThreadId,
+    phase: PhaseParam,
     body: PhasePromptReviewUpdate,
     identity: CurrentIdentity,
     service: PipelineService,
@@ -464,12 +578,62 @@ async def patch_phase_prompt_review(
             body.model_dump(mode="json"),
             actor=identity.name or identity.consumer_id,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except NotFoundError:
+    except PromptReviewConflictError as exc:
         raise HTTPException(
-            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
-        ) from None
+            status_code=409, detail="prompt review can no longer be edited"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid prompt review") from exc
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="pipeline thread not found") from None
+
+
+@router.post(
+    "/{thread_id}/rerun",
+    operation_id="rerunPipeline",
+    status_code=202,
+    response_model=RerunPipelineResponse,
+    dependencies=[Depends(require_role(Role.OPERATOR))],
+)
+async def rerun_pipeline(
+    thread_id: ThreadId,
+    body: RerunPipelineRequest,
+    identity: CurrentIdentity,
+    service: PipelineService,
+) -> Any:
+    """Rerun phases using the complete server-side checkpointed configuration."""
+
+    try:
+        run_id = await service.rerun_pipeline(
+            thread_id,
+            phases=list(body.phases),
+            gates_mode=body.gates_mode,
+            idempotency_key=body.idempotency_key,
+            principal_id=identity.consumer_id,
+        )
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="pipeline thread not found") from None
+    except RerunConfigurationConflictError:
+        return problem(
+            409,
+            "rerun_configuration_conflict",
+            detail="the stored pipeline configuration cannot be safely rerun",
+        )
+    except RerunIdempotencyConflictError:
+        return problem(
+            409,
+            "rerun_idempotency_conflict",
+            detail="the rerun idempotency claim conflicts with an existing request",
+        )
+    except ConflictError:
+        return problem(
+            409,
+            "rerun_already_active",
+            detail="the pipeline already has an active run",
+        )
+    except ValueError:
+        raise HTTPException(status_code=422, detail="invalid rerun request") from None
+    return RerunPipelineResponse(run_id=run_id)
 
 
 @router.post(
@@ -480,8 +644,8 @@ async def patch_phase_prompt_review(
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def resume_gate(
-    thread_id: str,
-    interrupt_id: str,
+    thread_id: ThreadId,
+    interrupt_id: InterruptId,
     body: ResumeGateRequest,
     service: PipelineService,
 ) -> Any:
@@ -499,25 +663,27 @@ async def resume_gate(
             },
         )
     except NotFoundError:
-        raise HTTPException(
-            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
-        ) from None
+        raise HTTPException(status_code=404, detail="pipeline thread not found") from None
     except GateSupersededError as exc:
         return problem(
             409,
             "gate_superseded",
-            detail=(
-                f"interrupt {interrupt_id!r} is no longer pending on thread {thread_id!r}; "
-                "re-fetch the pipeline and present the current gate"
-            ),
+            detail="the requested interrupt is no longer pending; re-fetch the pipeline",
             extra={"pending_gate": exc.pending_gate},
         )
     except InvalidGateActionError as exc:
         raise HTTPException(
             status_code=422,
-            detail=f"action {exc.action!r} not allowed for this gate; "
-            f"allowed: {sorted(exc.allowed)}",
+            detail="action is not allowed for this gate",
         ) from exc
+    except RerunConfigurationConflictError:
+        return problem(
+            409,
+            "pipeline_configuration_conflict",
+            detail="the stored pipeline configuration cannot be safely resumed",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid gate resume") from exc
     return ResumeGateResponse(run_id=run_id)
 
 
@@ -529,11 +695,11 @@ async def resume_gate(
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def abort_pipeline(
-    thread_id: str,
+    thread_id: ThreadId,
     service: PipelineService,
     engine_abort: AbortService,
 ) -> Any:
-    """Stop an external engine first, then cancel the thread's active runs.
+    """Stop an external engine while preserving its graph finalization monitor.
 
     Threads that have not entered execution have no engine handle and fall back
     to graph-only cancellation. Engine abort failures propagate so the API never
@@ -549,15 +715,54 @@ async def abort_pipeline(
             confirmed = result.confirmed
         except EngineRunNotFoundError:
             cancelled = await service.abort_pipeline(thread_id)
+        except EngineConnectionAffinityMissingError:
+            raise HTTPException(
+                status_code=409,
+                detail=ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
+            ) from None
+        except EngineAbortConfirmationPendingError:
+            raise HTTPException(
+                status_code=503,
+                detail="external engine is still stopping; retry abort to confirm termination",
+                headers={"Retry-After": "1"},
+            ) from None
+        except EngineProvisioningAbortPendingError:
+            raise HTTPException(
+                status_code=503,
+                detail="engine provisioning is still establishing an abort handle; retry abort",
+                headers={"Retry-After": "1"},
+            ) from None
+        except EngineGraphFinalizationPendingError:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "external engine stopped but graph finalization is pending recovery; "
+                    "resume the pipeline"
+                ),
+                headers={"Retry-After": "1"},
+            ) from None
     except NotFoundError:
-        raise HTTPException(
-            status_code=404, detail=f"pipeline thread {thread_id!r} not found"
-        ) from None
+        raise HTTPException(status_code=404, detail="pipeline thread not found") from None
     except NoActiveRunError:
         return problem(
             409,
             "no_active_run",
-            detail=f"thread {thread_id!r} has no pending or running run to abort",
+            detail="the pipeline has no pending or running run to abort",
+        )
+    except TooManyActiveRunsError as exc:
+        return problem(
+            409,
+            "active_run_backlog_too_large",
+            detail=(
+                f"the pipeline exceeds the bounded abort limit ({exc.limit}); "
+                "use the operator cleanup runbook"
+            ),
+        )
+    except ActiveRunSnapshotUnstableError:
+        return problem(
+            409,
+            "active_run_snapshot_unstable",
+            detail="active runs changed throughout abort; retry the request",
         )
     return AbortPipelineResponse(
         cancelled_run_ids=cancelled,
