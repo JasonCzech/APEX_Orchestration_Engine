@@ -50,8 +50,11 @@ function ReviewCard({
 export function ReviewStep({
   draft,
   onEditStep,
-}: Pick<StepProps, 'draft'> & { onEditStep: (step: WizardStepId) => void }) {
-  const issues = allIssues(draft)
+  maxContextPackets,
+}: Pick<StepProps, 'draft' | 'maxContextPackets'> & {
+  onEditStep: (step: WizardStepId) => void
+}) {
+  const issues = allIssues(draft, maxContextPackets)
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
   const inherited =

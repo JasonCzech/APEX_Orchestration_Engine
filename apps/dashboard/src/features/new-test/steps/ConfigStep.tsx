@@ -118,7 +118,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         prompt_override_removals: [],
         ...(projectChanged || appChanged
           ? {
-              document_ids: projectChanged ? [] : prev.document_ids,
+              document_ids: [],
               work_item_keys: projectChanged ? [] : prev.work_item_keys,
               context_summary_ids: projectChanged ? [] : prev.context_summary_ids,
             }

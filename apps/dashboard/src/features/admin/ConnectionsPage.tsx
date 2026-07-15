@@ -18,6 +18,8 @@ import {
   type PortKind,
 } from '@/api/hooks/useConnections'
 import { ProblemCard } from '@/components/ProblemCard'
+import { useConsumer } from '@/auth/AuthProvider'
+import { hasFullProjectScope, isGlobalAdmin } from '@/auth/RequireRole'
 import { formatRelative } from '@/utils/time'
 
 import { groupConnectionsByKind, kindLabel, parseJsonObject } from './adminLogic'
@@ -63,6 +65,16 @@ function ConnectionCard({ connection }: { connection: Connection }) {
 /** Inline create panel — kind, provider, name, project, base_url, options, secret_ref. */
 function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
   const navigate = useNavigate()
+  const consumer = useConsumer()
+  const globalAdmin = isGlobalAdmin(consumer)
+  const projectScopes = Array.from(
+    new Set(
+      (consumer?.scopes ?? [])
+        .filter((scope) => hasFullProjectScope(consumer, scope.project_id))
+        .map((scope) => scope.project_id),
+    ),
+  )
+  const allowedKinds = globalAdmin ? PORT_KINDS : PORT_KINDS.filter((value) => value !== 'secrets')
   const create = useCreateConnection()
   const [kind, setKind] = useState<PortKind>('work_tracking')
   const [provider, setProvider] = useState('')
@@ -73,8 +85,14 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
   const [secretRef, setSecretRef] = useState('')
 
   const optionsParse = parseJsonObject(optionsText)
+  const hasReservedOptions =
+    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
   const canSubmit =
-    provider.trim() !== '' && name.trim() !== '' && optionsParse.ok && !create.isPending
+    provider.trim() !== '' &&
+    name.trim() !== '' &&
+    optionsParse.ok &&
+    (globalAdmin || (projectScopes.includes(project) && !hasReservedOptions)) &&
+    !create.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -85,9 +103,9 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
         provider: provider.trim(),
         name: name.trim(),
         project_id: project.trim() || null,
-        base_url: baseUrl.trim() || null,
+        base_url: globalAdmin ? baseUrl.trim() || null : null,
         options: optionsParse.value,
-        secret_ref: secretRef.trim() || null,
+        secret_ref: globalAdmin ? secretRef.trim() || null : null,
       },
       { onSuccess: (created) => void navigate(`/admin/connections/${created.id}`) },
     )
@@ -105,7 +123,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             value={kind}
             onChange={(event) => setKind(event.target.value as PortKind)}
           >
-            {PORT_KINDS.map((option) => (
+            {allowedKinds.map((option) => (
               <option key={option} value={option}>
                 {option}
               </option>
@@ -136,17 +154,25 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
           />
         </label>
         <label className="adm-field">
-          <span className="adm-field-label">Project (optional)</span>
-          <input
+          <span className="adm-field-label">Project{globalAdmin ? ' (optional)' : ''}</span>
+          {globalAdmin ? <input
             type="text"
             className="field-input"
             aria-label="Project"
             placeholder="leave empty for global"
             value={project}
             onChange={(event) => setProject(event.target.value)}
-          />
+          /> : <select
+            className="field-select"
+            aria-label="Project"
+            value={project}
+            onChange={(event) => setProject(event.target.value)}
+          >
+            <option value="">Select a project…</option>
+            {projectScopes.map((projectId) => <option key={projectId} value={projectId}>{projectId}</option>)}
+          </select>}
         </label>
-        <label className="adm-field">
+        {globalAdmin && <label className="adm-field">
           <span className="adm-field-label">Base URL (optional)</span>
           <input
             type="text"
@@ -156,8 +182,8 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
-        </label>
-        <label className="adm-field">
+        </label>}
+        {globalAdmin && <label className="adm-field">
           <span className="adm-field-label">Secret ref</span>
           <input
             type="text"
@@ -168,7 +194,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             onChange={(event) => setSecretRef(event.target.value)}
           />
           <span className="adm-field-help">env:NAME — references only, never raw secrets</span>
-        </label>
+        </label>}
       </div>
       <label className="adm-field">
         <span className="adm-field-label">Options (JSON)</span>
@@ -184,6 +210,11 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
       {!optionsParse.ok && (
         <p className="adm-form-error" role="alert">
           {optionsParse.message}
+        </p>
+      )}
+      {!globalAdmin && hasReservedOptions && (
+        <p className="adm-form-error" role="alert">
+          Options beginning with _apex_ require a global administrator.
         </p>
       )}
       {create.isError && (

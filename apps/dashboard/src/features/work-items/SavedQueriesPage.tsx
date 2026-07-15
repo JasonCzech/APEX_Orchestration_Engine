@@ -14,7 +14,7 @@ import {
   type SavedQuery,
 } from '@/api/hooks/useWorkTracking'
 import { useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { hasFullProjectScope, isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
@@ -237,8 +237,8 @@ export function SavedQueriesPage() {
 
   function canMutateRow(saved: SavedQuery): boolean {
     if (!consumer || !canMutate) return false
-    if (!saved.project_id) return consumer.scopes.length === 0 && consumer.role === 'admin'
-    return consumer.scopes.length === 0 || consumer.scopes.some((scope) => scope.project_id === saved.project_id)
+    if (!saved.project_id) return isGlobalAdmin(consumer)
+    return hasFullProjectScope(consumer, saved.project_id)
   }
 
   const [editing, setEditing] = useState<SavedQuery | null>(null)

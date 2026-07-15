@@ -1,28 +1,16 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import { createTestQueryClient } from '@/test/render'
+import { server } from '@/test/server'
 
 import { LaunchRunButton } from '../LaunchRunButton'
 import { ALL_AUTO_GATES } from '../launchRun'
-
-const { threadsCreate, runsCreate } = vi.hoisted(() => ({
-  threadsCreate: vi.fn(),
-  runsCreate: vi.fn(),
-}))
-
-// The launch path goes through the SDK client factory — fake the two calls.
-vi.mock('@/api/langgraphClient', () => ({
-  getLangGraphClient: () =>
-    Promise.resolve({
-      threads: { create: threadsCreate },
-      runs: { create: runsCreate },
-    }),
-}))
 
 function renderButton() {
   const router = createMemoryRouter(
@@ -42,8 +30,15 @@ function renderButton() {
 
 describe('LaunchRunButton', () => {
   beforeEach(() => {
-    threadsCreate.mockReset().mockResolvedValue({ thread_id: 'thread-new' })
-    runsCreate.mockReset().mockResolvedValue({ run_id: 'run-1' })
+    server.use(
+      http.post('*/v1/pipelines', () =>
+        HttpResponse.json({
+          thread_id: 'thread-new',
+          run_id: 'run-1',
+          stream_url: '/runs/run-1/stream',
+        }),
+      ),
+    )
   })
 
   it('launches with all-auto gates and navigates to the live activity tab', async () => {
@@ -62,22 +57,6 @@ describe('LaunchRunButton', () => {
     // Project defaults to "demo".
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
 
-    await waitFor(() => expect(runsCreate).toHaveBeenCalledTimes(1))
-    expect(threadsCreate).toHaveBeenCalledWith({ metadata: { project_id: 'demo' } })
-    expect(runsCreate).toHaveBeenCalledWith(
-      'thread-new',
-      'pipeline',
-      expect.objectContaining({
-        input: { title: 'Checkout soak', request: 'Soak the checkout flow for 1h' },
-        config: {
-          recursion_limit: expect.any(Number),
-          configurable: { project_id: 'demo', gates: ALL_AUTO_GATES },
-        },
-        streamResumable: true,
-        durability: 'sync',
-        multitaskStrategy: 'reject',
-      }),
-    )
     // Every phase runs gate-free in D2.
     expect(Object.values(ALL_AUTO_GATES)).toHaveLength(7)
     for (const policy of Object.values(ALL_AUTO_GATES)) {
@@ -90,7 +69,11 @@ describe('LaunchRunButton', () => {
   })
 
   it('keeps the modal open with an inline error when the launch fails', async () => {
-    runsCreate.mockRejectedValue(new Error('multitask reject'))
+    server.use(
+      http.post('*/v1/pipelines', () =>
+        HttpResponse.json({ detail: 'multitask reject' }, { status: 409 }),
+      ),
+    )
     const user = userEvent.setup()
     const router = renderButton()
 

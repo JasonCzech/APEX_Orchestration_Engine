@@ -61,12 +61,14 @@ function normalizeDriftedState(raw: unknown): PipelineState {
           const candidate = entry as Record<string, unknown>
           const parsed = PhaseResultEntrySchema.safeParse(candidate)
           if (parsed.success) return [phase, parsed.data]
-          const normalized: Record<string, unknown> = {}
-          for (const field of ['phase', 'status', 'started_at', 'ended_at', 'summary', 'reasoning_digest', 'revise_instructions', 'engine']) {
-            if (typeof candidate[field] === 'string') normalized[field] = candidate[field]
-          }
-          for (const field of ['attempt', 'duration_s', 'revise_count', 'engine_poll_count']) {
-            if (typeof candidate[field] === 'number') normalized[field] = candidate[field]
+          // Preserve every valid field independently. A new enum value in one
+          // field must not erase test summaries, artifacts, approvals, tool
+          // calls, prompt provenance, or engine telemetry from the same entry.
+          const normalized: Record<string, unknown> = { ...candidate }
+          for (const [field, schema] of Object.entries(PhaseResultEntrySchema.shape)) {
+            const fieldResult = schema.safeParse(candidate[field])
+            if (fieldResult.success) normalized[field] = fieldResult.data
+            else delete normalized[field]
           }
           return [phase, normalized]
         }),

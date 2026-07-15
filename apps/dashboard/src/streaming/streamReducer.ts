@@ -102,6 +102,8 @@ function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): Pip
       return { ...state, plan: event.phases, phaseProgress }
     }
     case 'phase_status': {
+      const current = state.phaseProgress[event.phase]
+      if (current && current.attempt > event.attempt) return state
       const hint = state.pendingGateHint
       const clearsHint = hint !== null && hint.phase === event.phase && !isAwaiting(event.status)
       return {
@@ -114,6 +116,8 @@ function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): Pip
       }
     }
     case 'gate_opened': {
+      const current = state.phaseProgress[event.phase]
+      if (current && current.attempt > event.attempt) return state
       return {
         ...state,
         pendingGateHint: { gate: event.gate, phase: event.phase },

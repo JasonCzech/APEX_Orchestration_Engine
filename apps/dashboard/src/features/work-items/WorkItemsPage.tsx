@@ -316,6 +316,8 @@ export function WorkItemsPage() {
   const translate = useTranslateQuery()
   const execute = useExecuteQuery()
   const savedQueries = useSavedQueries()
+  const resetTranslate = translate.reset
+  const resetExecute = execute.reset
 
   // A project change invalidates every result and query draft tied to the old
   // tracker scope. Pending callbacks are guarded by the project captured by
@@ -332,7 +334,9 @@ export function WorkItemsPage() {
     setProvider('')
     setQueryText('')
     setConfidence(null)
-  }, [project])
+    resetTranslate()
+    resetExecute()
+  }, [project, resetTranslate, resetExecute])
 
   function runQuery(
     next: { provider: string; query: string; confidence?: number },
@@ -375,6 +379,9 @@ export function WorkItemsPage() {
     const pending = pendingSavedRunRef.current
     if (!pending || pending.project !== project) return
     pendingSavedRunRef.current = null
+    setProvider(pending.provider)
+    setQueryText(pending.query)
+    setConfidence(null)
     runQueryRef.current({ provider: pending.provider, query: pending.query }, 0, limit, project)
   }, [project, limit])
 
@@ -624,9 +631,6 @@ export function WorkItemsPage() {
                     project: saved.project_id,
                   }
                   setProject(saved.project_id)
-                  setProvider(saved.provider)
-                  setQueryText(saved.query)
-                  setConfidence(null)
                   return
                 }
                 setProvider(saved.provider)

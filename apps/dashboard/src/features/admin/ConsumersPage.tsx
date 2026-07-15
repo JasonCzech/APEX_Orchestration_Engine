@@ -181,6 +181,7 @@ function KeyRevealModal({
           <button
             type="button"
             className="btn btn-secondary btn-sm"
+            disabled={!stored}
             onClick={() => setApiKey(created.api_key)}
           >
             Use this key for this dashboard (recommended)

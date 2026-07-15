@@ -463,7 +463,8 @@ export class DevDataStore {
     name: 'APEX Orchestration Engine',
     version: 'dev-dummy',
     environment: 'development',
-    features: { engines: true, documents: true, dummy_data: true },
+      features: { engines: true, documents: true, dummy_data: true },
+      limits: { max_context_packets: 32 },
     consumer: {
       name: 'Dev Admin',
       role: 'admin',

@@ -29,23 +29,30 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
 
 export function ContextStep({ draft, onChange }: StepProps) {
   const upload = useUploadDocument()
-  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined)
+  const documents = useDocumentsList(
+    draft.scope.project_id.trim() || undefined,
+    undefined,
+    draft.scope.app_id,
+  )
   const inputRef = useRef<HTMLInputElement | null>(null)
   // Documents uploaded in this session (the list query may lag behind).
   const [uploaded, setUploaded] = useState<DocumentOut[]>([])
   const [dragOver, setDragOver] = useState(false)
   const [uploadErrors, setUploadErrors] = useState<string[]>([])
   const projectRef = useRef(draft.scope.project_id.trim())
+  const appRef = useRef(draft.scope.app_id)
   const generationRef = useRef(0)
   useEffect(() => {
     const nextProject = draft.scope.project_id.trim()
-    if (nextProject !== projectRef.current) {
+    const nextApp = draft.scope.app_id
+    if (nextProject !== projectRef.current || nextApp !== appRef.current) {
       projectRef.current = nextProject
+      appRef.current = nextApp
       generationRef.current += 1
       setUploaded([])
       setUploadErrors([])
     }
-  }, [draft.scope.project_id])
+  }, [draft.scope.project_id, draft.scope.app_id])
 
   const known = new Map<string, DocumentOut>()
   for (const doc of documents.data ?? []) known.set(doc.id, doc)
@@ -69,6 +76,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
   async function uploadFiles(files: FileList | File[]) {
     const generation = generationRef.current
     const project = projectRef.current || undefined
+    const appId = appRef.current || undefined
     setUploadErrors([])
     const errors: string[] = []
     for (const file of Array.from(files)) {
@@ -81,16 +89,27 @@ export function ContextStep({ draft, onChange }: StepProps) {
         const doc = await upload.mutateAsync({
           file,
           projectId: project,
+          appId,
         })
-        if (generation === generationRef.current && project === projectRef.current) {
+        if (
+          generation === generationRef.current &&
+          project === (projectRef.current || undefined) &&
+          appId === (appRef.current || undefined)
+        ) {
           setUploaded((prev) => [...prev, doc])
           addDocument(doc.id)
         }
       } catch (error) {
-        errors.push(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
+        if (
+          generation === generationRef.current &&
+          project === (projectRef.current || undefined) &&
+          appId === (appRef.current || undefined)
+        ) {
+          errors.push(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
+        }
       }
     }
-    if (errors.length > 0) setUploadErrors(errors)
+    if (generation === generationRef.current && errors.length > 0) setUploadErrors(errors)
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {

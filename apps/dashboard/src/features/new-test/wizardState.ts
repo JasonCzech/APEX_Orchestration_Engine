@@ -76,6 +76,7 @@ export interface WizardConfig {
 }
 
 export interface WizardDraft {
+  launch_idempotency_key: string
   title: string
   request: string
   scope: WizardScope
@@ -89,6 +90,10 @@ export interface WizardDraft {
 
 export function emptyDraft(): WizardDraft {
   return {
+    launch_idempotency_key:
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     title: '',
     request: '',
     scope: { project_id: 'demo', app_id: null, environment_id: null },
@@ -175,6 +180,10 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
   const engine = config['engine']
   const gatesMode = config['gates_mode']
   return {
+    launch_idempotency_key: stringOr(
+      payload['launch_idempotency_key'],
+      base.launch_idempotency_key,
+    ),
     title: stringOr(payload['title'], base.title),
     request: stringOr(payload['request'], base.request),
     scope: {
@@ -280,7 +289,21 @@ export function gateMatrixOf(config: WizardConfig): GateMatrix {
 
 // ── Validation ───────────────────────────────────────────────────────────────
 
-export function stepIssues(draft: WizardDraft, step: WizardStepId): string[] {
+export const DEFAULT_MAX_CONTEXT_PACKETS = 32
+
+export function contextPacketCount(draft: WizardDraft): number {
+  return (
+    draft.document_ids.length +
+    draft.work_item_keys.length +
+    draft.context_summary_ids.length
+  )
+}
+
+export function stepIssues(
+  draft: WizardDraft,
+  step: WizardStepId,
+  maxContextPackets = DEFAULT_MAX_CONTEXT_PACKETS,
+): string[] {
   const issues: string[] = []
   switch (step) {
     case 'scope': {
@@ -290,8 +313,16 @@ export function stepIssues(draft: WizardDraft, step: WizardStepId): string[] {
       break
     }
     case 'work-items':
-    case 'context':
-      break // both fully optional (skip allowed)
+      break // optional (skip allowed)
+    case 'context': {
+      const count = contextPacketCount(draft)
+      if (count > maxContextPackets) {
+        issues.push(
+          `Context has ${count} packets; this deployment allows ${maxContextPackets}`,
+        )
+      }
+      break
+    }
     case 'config': {
       if (draft.config.phases !== null && draft.config.phases.length === 0) {
         issues.push('Select at least one phase')
@@ -324,9 +355,12 @@ export interface StepIssue {
 }
 
 /** Everything outstanding across steps — the review step's issue list. */
-export function allIssues(draft: WizardDraft): StepIssue[] {
+export function allIssues(
+  draft: WizardDraft,
+  maxContextPackets = DEFAULT_MAX_CONTEXT_PACKETS,
+): StepIssue[] {
   return WIZARD_STEPS.flatMap((step) =>
-    stepIssues(draft, step).map((message) => ({ step, message })),
+    stepIssues(draft, step, maxContextPackets).map((message) => ({ step, message })),
   )
 }
 

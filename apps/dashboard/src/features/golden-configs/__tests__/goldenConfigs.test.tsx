@@ -156,7 +156,7 @@ describe('GoldenConfigDetailPage', () => {
     assistantsGet.mockResolvedValue(GOLDEN)
     renderApp({
       initialEntries: ['/golden-configs/asst-gold'],
-      authState: authenticatedState(),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
@@ -251,7 +251,7 @@ describe('GoldenConfigDetailPage', () => {
     const user = userEvent.setup()
     renderApp({
       initialEntries: ['/golden-configs/asst-gold'],
-      authState: authenticatedState(),
+      authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     await user.click(await screen.findByRole('button', { name: 'Edit JSON' }))

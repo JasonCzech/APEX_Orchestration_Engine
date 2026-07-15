@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import type { Role } from '@/api/apexClient'
+import type { ConsumerInfo, Role } from '@/api/apexClient'
 
 import { useOptionalConsumer } from './AuthProvider'
 
@@ -13,6 +13,38 @@ const ROLE_ORDER: Record<Role, number> = {
 
 export function roleAtLeast(actual: Role, required: Role): boolean {
   return ROLE_ORDER[actual] >= ROLE_ORDER[required]
+}
+
+export function isGlobalAdmin(consumer: ConsumerInfo | null | undefined): boolean {
+  return Boolean(consumer && consumer.role === 'admin' && consumer.scopes.length === 0)
+}
+
+export function hasFullProjectScope(
+  consumer: ConsumerInfo | null | undefined,
+  projectId: string,
+): boolean {
+  return Boolean(
+    consumer &&
+      (isGlobalAdmin(consumer) ||
+        consumer.scopes.some((scope) => scope.project_id === projectId && !scope.app_id)),
+  )
+}
+
+export function canMutateAudience(
+  consumer: ConsumerInfo | null | undefined,
+  projectId: string | null | undefined,
+  appId: string | null | undefined,
+): boolean {
+  if (!consumer || !roleAtLeast(consumer.role, 'operator')) return false
+  if (!projectId) return isGlobalAdmin(consumer)
+  if (!appId) return hasFullProjectScope(consumer, projectId)
+  return (
+    isGlobalAdmin(consumer) ||
+    consumer.scopes.some(
+      (scope) =>
+        scope.project_id === projectId && (!scope.app_id || scope.app_id === appId),
+    )
+  )
 }
 
 /**
@@ -47,7 +79,7 @@ export function RequireGlobalAdmin({
 }) {
   const consumer = useOptionalConsumer()
   if (consumer === undefined) return <>{children}</>
-  if (!consumer || !roleAtLeast(consumer.role, 'admin') || consumer.scopes.length > 0) {
+  if (!isGlobalAdmin(consumer)) {
     return <>{fallback}</>
   }
   return <>{children}</>

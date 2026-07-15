@@ -22,17 +22,9 @@ function safeStorage(): Storage | null {
 
 export function getApiKey(): string | null {
   if (isDevAuthEnabled()) return getDevApiKey()
-  if (memoryOnly) {
-    try {
-      const storage = safeStorage()
-      if (!storage) return memoryKey
-      memoryOnly = false
-      const stored = storage.getItem(API_KEY_STORAGE_KEY)
-      return stored && stored.length > 0 ? stored : null
-    } catch {
-      return memoryKey
-    }
-  }
+  // Once a persistence write fails, the in-memory transition is authoritative.
+  // Reading an older value successfully does not mean the failed write recovered.
+  if (memoryOnly) return memoryKey
   try {
     const storage = safeStorage()
     if (!storage) {
@@ -40,7 +32,8 @@ export function getApiKey(): string | null {
       return memoryKey
     }
     const stored = storage.getItem(API_KEY_STORAGE_KEY)
-    return stored && stored.length > 0 ? stored : null
+    memoryKey = stored && stored.length > 0 ? stored : null
+    return memoryKey
   } catch {
     memoryOnly = true
     return memoryKey
@@ -128,6 +121,7 @@ function handleStorageChange(event: StorageEvent): void {
         ? event.newValue
         : null
         : getApiKey()
+  memoryKey = key
   memoryOnly = false
   keyRevision += 1
   notify(key)

@@ -17,10 +17,10 @@ import {
   inventoryOf,
 } from './environmentsTestHandlers'
 
-function renderList(role: 'operator' | 'viewer' = 'operator') {
+function renderList(role: 'admin' | 'operator' | 'viewer' = 'operator') {
   return renderApp({
     initialEntries: ['/environments'],
-    authState: authenticatedState(role),
+    authState: role === 'admin' ? authenticatedState(role, 'Dash Ops', []) : authenticatedState(role),
   })
 }
 
@@ -69,7 +69,7 @@ describe('EnvironmentsPage', () => {
       inventoryHandler(inventoryOf('env-new', null)),
     )
     const user = userEvent.setup()
-    const { router } = renderList()
+    const { router } = renderList('admin')
 
     await user.click(await screen.findByRole('button', { name: 'New environment' }))
     const panel = screen.getByRole('form', { name: 'New environment' })

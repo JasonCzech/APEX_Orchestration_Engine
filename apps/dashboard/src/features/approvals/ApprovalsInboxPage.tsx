@@ -114,6 +114,17 @@ export function ApprovalsInboxPage() {
   })
   const actionable = rows.filter((row) => !row.removed)
 
+  // React Router reuses this route component between approval deep links.
+  // Keep local selection aligned with the current URL instead of treating the
+  // first mount as the only authoritative route identity.
+  useEffect(() => {
+    setSelection(
+      params.threadId
+        ? { threadId: params.threadId, interruptId: params.interruptId ?? null }
+        : null,
+    )
+  }, [params.threadId, params.interruptId])
+
   // Latest render state for the document-level keyboard listener + callbacks.
   const stateRef = useRef({ actionable, selection, overlayOpen, items: inbox.items })
   stateRef.current = { actionable, selection, overlayOpen, items: inbox.items }
@@ -124,6 +135,23 @@ export function ApprovalsInboxPage() {
       setSelection(toSelection(actionable[0] as ApprovalItem))
     }
   }, [selection, actionable])
+
+  // A gate can disappear between polls without GateModule getting a terminal
+  // callback. Advance the parent selection as soon as the selected instance is
+  // no longer actionable; prefer a re-gate on the same thread.
+  useEffect(() => {
+    if (inbox.isLoading || selection === null) return
+    const selectedStillOpen = actionable.some(
+      (row) =>
+        row.thread_id === selection.threadId &&
+        (selection.interruptId === null ||
+          row.pending_gate.interrupt_id === selection.interruptId),
+    )
+    if (selectedStillOpen) return
+    const sameThread = actionable.find((row) => row.thread_id === selection.threadId)
+    const next = sameThread ?? actionable[0]
+    setSelection(next ? toSelection(next as ApprovalItem) : null)
+  }, [actionable, inbox.isLoading, selection])
 
   // ── Terminal gate outcome (preview's onOutcome): gray the row, advance to
   // the next open gate.

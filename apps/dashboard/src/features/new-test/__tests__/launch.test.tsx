@@ -61,6 +61,7 @@ describe('wizard launch', () => {
       title: (json['input'] as Record<string, unknown>)['title'],
       request: (json['input'] as Record<string, unknown>)['request'],
       project_id: 'demo',
+      idempotency_key: expect.any(String),
       configurable: json['configurable'],
     })
 

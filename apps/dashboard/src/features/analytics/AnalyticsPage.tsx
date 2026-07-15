@@ -509,7 +509,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
       </section>
       {data.cost_visible && (
         <section className="glass-panel chart-panel" data-testid="analytics-cost-trend-chart">
-          <h2 className="chart-title">Cost trend</h2>
+          <h2 className="chart-title">Cost trend (top series)</h2>
           <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />

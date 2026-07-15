@@ -22,6 +22,7 @@ import {
   type GoldenConfigEntry,
 } from '@/api/hooks/useAssistants'
 import { useConsumer } from '@/auth/AuthProvider'
+import { isGlobalAdmin } from '@/auth/RequireRole'
 import { roleAtLeast } from '@/auth/RequireRole'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
@@ -225,7 +226,7 @@ export function GoldenConfigDetailPage() {
   const { assistantId = '' } = useParams()
   const navigate = useNavigate()
   const consumer = useConsumer()
-  const canEdit = consumer ? roleAtLeast(consumer.role, 'admin') : false
+  const canEdit = isGlobalAdmin(consumer)
   const canStartRun = consumer ? roleAtLeast(consumer.role, 'operator') : false
   const query = useGoldenConfig(assistantId)
   const [editing, setEditing] = useState(false)

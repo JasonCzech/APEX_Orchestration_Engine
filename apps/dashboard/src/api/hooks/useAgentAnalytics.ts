@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery, type UseQueryResult } from '@tanstack/react-query'
+import { useQuery, type UseQueryResult } from '@tanstack/react-query'
 
 import type { components, operations } from '@apex/api-client'
 
@@ -73,7 +73,6 @@ export function useAgentAnalytics(
   return useQuery({
     queryKey: queryKeys.analytics.agents(query as Record<string, unknown>),
     queryFn: () => fetchAgentAnalytics(query),
-    placeholderData: keepPreviousData,
     staleTime: 30_000,
   })
 }

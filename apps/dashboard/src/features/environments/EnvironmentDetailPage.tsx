@@ -24,7 +24,7 @@ import {
   type SnapshotView,
 } from '@/api/hooks/useInventory'
 import { useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
 import { ProblemCard } from '@/components/ProblemCard'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { formatRelative } from '@/utils/time'
@@ -90,21 +90,26 @@ function ReferenceCard({ environment }: { environment: Environment }) {
 /** Inline edit form for base_url / kind / hosts / options (PATCH; operator+). */
 function EditEnvironmentForm({
   environment,
+  canApproveTarget,
   onDone,
 }: {
   environment: Environment
+  canApproveTarget: boolean
   onDone: () => void
 }) {
   const update = useUpdateEnvironment()
   const [baseUrl, setBaseUrl] = useState(environment.base_url ?? '')
-  const [kind, setKind] = useState(environment.kind ?? KIND_OPTIONS[0])
+  const [kind, setKind] = useState(environment.kind ?? '')
   const [hosts, setHosts] = useState<HostDraft[]>(() => hostsToDrafts(environment.hosts))
   const [optionsText, setOptionsText] = useState(() =>
     JSON.stringify(environment.options, null, 2),
   )
 
   const optionsParse = parseOptionsJson(optionsText)
-  const canSave = optionsParse.ok && !update.isPending
+  const hasReservedOptions =
+    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
+  const canSave =
+    optionsParse.ok && (canApproveTarget || !hasReservedOptions) && !update.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -115,7 +120,7 @@ function EditEnvironmentForm({
         body: (() => {
           const body: EnvironmentUpdate = {}
           if ((baseUrl.trim() || null) !== (environment.base_url ?? null)) body.base_url = baseUrl.trim() || null
-          if (kind !== environment.kind) body.kind = kind
+          if ((kind || null) !== environment.kind) body.kind = kind || null
           const nextHosts = hostsToPayload(hosts)
           const currentHosts = (environment.hosts ?? []).map(({ hostname, role }) => ({ hostname, role }))
           if (JSON.stringify(nextHosts) !== JSON.stringify(currentHosts)) body.hosts = nextHosts
@@ -131,7 +136,7 @@ function EditEnvironmentForm({
     <form className="env-card glass-panel" onSubmit={submit} aria-label="Edit environment">
       <h2 className="env-card-title">Edit reference</h2>
       <div className="env-form-grid">
-        <label className="env-field">
+        {canApproveTarget && <label className="env-field">
           <span className="env-field-label">Base URL</span>
           <input
             type="text"
@@ -140,7 +145,7 @@ function EditEnvironmentForm({
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
-        </label>
+        </label>}
         <label className="env-field">
           <span className="env-field-label">Kind</span>
           <select
@@ -149,6 +154,7 @@ function EditEnvironmentForm({
             value={kind}
             onChange={(event) => setKind(event.target.value)}
           >
+            <option value="">— unspecified —</option>
             {/* Preserve a non-standard kind already on the record. */}
             {!KIND_OPTIONS.includes(kind as (typeof KIND_OPTIONS)[number]) && (
               <option value={kind}>{kind}</option>
@@ -179,6 +185,11 @@ function EditEnvironmentForm({
       {!optionsParse.ok && (
         <p className="env-form-error" role="alert">
           {optionsParse.message}
+        </p>
+      )}
+      {!canApproveTarget && hasReservedOptions && (
+        <p className="env-form-error" role="alert">
+          Options beginning with _apex_ require a global administrator.
         </p>
       )}
       {update.isError && (
@@ -327,6 +338,7 @@ export function EnvironmentDetailPage() {
   const rescan = useRescanEnvironment()
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const canApproveTarget = isGlobalAdmin(consumer)
   // ?edit=1 lets the list's row menu land directly in edit mode.
   const [editing, setEditing] = useState(searchParams.get('edit') === '1')
 
@@ -402,7 +414,11 @@ export function EnvironmentDetailPage() {
 
       <div className="env-detail-panels">
         {editing ? (
-          <EditEnvironmentForm environment={env} onDone={() => setEditing(false)} />
+          <EditEnvironmentForm
+            environment={env}
+            canApproveTarget={canApproveTarget}
+            onDone={() => setEditing(false)}
+          />
         ) : (
           <ReferenceCard environment={env} />
         )}

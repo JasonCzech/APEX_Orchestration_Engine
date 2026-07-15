@@ -9,7 +9,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
-import { getApiKeyRevision } from '@/auth/keyStorage'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { ApiError, errorMessageOf } from '@/api/errors'
 import { fetchWorkItem } from '@/api/hooks/useWorkTracking'
 import { queryKeys } from '@/api/queryKeys'
@@ -46,14 +46,16 @@ async function resolveWorkItemPackets(draft: WizardDraft): Promise<ContextPacket
 }
 
 export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> {
-  const revision = getApiKeyRevision()
+  const keyRevision = getApiKeyRevision()
+  const sessionRevision = getSessionRevision()
   const preview = buildLaunchPreview(draft)
   const contextPackets = await resolveWorkItemPackets(draft)
-  if (revision !== getApiKeyRevision()) {
+  if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) {
     throw new Error('Credentials changed while preparing the launch; please retry.')
   }
   const { data, error, response } = await getApexClient().POST('/v1/pipelines', {
     body: {
+      idempotency_key: draft.launch_idempotency_key,
       assistant_id: preview.assistant_id,
       title: preview.input.title,
       request: preview.input.request,
@@ -64,9 +66,6 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
       ...(contextPackets.length > 0 ? { context_packets: contextPackets } : {}),
     },
   })
-  if (revision !== getApiKeyRevision()) {
-    throw new Error('Credentials changed while launching; the result was discarded.')
-  }
   if (!response.ok || !data) {
     throw new ApiError(
       response.status,

@@ -1,6 +1,7 @@
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
-import { getLangGraphClient } from '@/api/langgraphClient'
+import { getApexClient } from '@/api/apexClient'
+import { ApiError, errorMessageOf } from '@/api/errors'
 
 /**
  * Minimal D2 launch (full 6-step wizard arrives in D4): create a thread with
@@ -55,24 +56,28 @@ export interface LaunchedRun {
 }
 
 export async function launchRun(input: LaunchRunInput): Promise<LaunchedRun> {
-  const client = await getLangGraphClient()
-  const thread = await client.threads.create({
-    metadata: { project_id: input.projectId },
-  })
-  const run = await client.runs.create(thread.thread_id, 'pipeline', {
-    input: { title: input.title, request: input.request },
-    config: {
-      recursion_limit: recommendedRecursionLimit(),
+  const idempotencyKey =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const { data, error, response } = await getApexClient().POST('/v1/pipelines', {
+    body: {
+      idempotency_key: idempotencyKey,
+      title: input.title,
+      request: input.request,
+      project_id: input.projectId,
       configurable: {
         project_id: input.projectId,
         gates: ALL_AUTO_GATES,
       },
     },
-    streamMode: ['updates', 'messages-tuple', 'custom'],
-    streamSubgraphs: true,
-    streamResumable: true,
-    durability: 'sync',
-    multitaskStrategy: 'reject',
   })
-  return { threadId: thread.thread_id, runId: run.run_id }
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status,
+      errorMessageOf(error, `Pipeline launch failed (${response.status})`),
+      error,
+    )
+  }
+  return { threadId: data.thread_id, runId: data.run_id }
 }

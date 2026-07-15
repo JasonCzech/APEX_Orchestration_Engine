@@ -212,6 +212,11 @@ export function useAuth(): AuthContextValue {
   return ctx
 }
 
+/** Optional variant for reusable pages that are also rendered in isolation by tests. */
+export function useOptionalAuth(): AuthContextValue | undefined {
+  return useContext(AuthContext) ?? undefined
+}
+
 export function useConsumer(): ConsumerInfo | null {
   const { state } = useAuth()
   return state.status === 'authenticated' ? state.consumer : null

@@ -16,7 +16,7 @@ import {
 function renderList(role: 'admin' | 'operator' = 'admin') {
   return renderApp({
     initialEntries: ['/admin/connections'],
-    authState: authenticatedState(role),
+    authState: role === 'admin' ? authenticatedState(role, 'Dash Ops', []) : authenticatedState(role),
   })
 }
 

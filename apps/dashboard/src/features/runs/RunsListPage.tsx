@@ -257,15 +257,15 @@ export function RunsListPage() {
     return () => window.clearTimeout(id)
   }, [search, committedQ, applyFilters])
 
-  const { data, error, isPending, isError, refetch } = usePipelines(filters)
+  const { data, error, isPending, isError, isPlaceholderData, refetch } = usePipelines(filters)
 
   const items = data?.items ?? []
   const total = data?.total
-  const prevDisabled = filters.offset === 0
+  const prevDisabled = filters.offset === 0 || isPlaceholderData
   const nextDisabled =
     total !== undefined
       ? filters.offset + filters.limit >= total
-      : items.length < filters.limit
+      : items.length < filters.limit || isPlaceholderData
   const rangeCaption =
     items.length > 0
       ? `${filters.offset + 1}–${filters.offset + items.length}${total !== undefined ? ` of ${total}` : ''}`
@@ -479,7 +479,7 @@ export function RunsListPage() {
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
-                disabled={nextDisabled}
+                disabled={nextDisabled || isPlaceholderData}
                 onClick={() => applyFilters({ offset: filters.offset + filters.limit })}
               >
                 Next

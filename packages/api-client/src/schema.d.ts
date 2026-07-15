@@ -1051,10 +1051,16 @@ export interface components {
         AbortEngineRunResponse: {
             /** Cancelled Runs */
             cancelled_runs: string[];
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
             /** Engine */
             engine: string;
             /** External Run Id */
             external_run_id: string | null;
+            phase?: components["schemas"]["EngineRunPhase"] | null;
             /** Thread Id */
             thread_id: string;
         };
@@ -2367,6 +2373,8 @@ export interface components {
             gates?: {
                 [key: string]: unknown;
             } | null;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
             /** Model By Phase */
             model_by_phase?: {
                 [key: string]: string;
@@ -2404,10 +2412,16 @@ export interface components {
             features: {
                 [key: string]: boolean;
             };
+            limits: components["schemas"]["SystemLimits"];
             /** Name */
             name: string;
             /** Version */
             version: string;
+        };
+        /** SystemLimits */
+        SystemLimits: {
+            /** Max Context Packets */
+            max_context_packets: number;
         };
         /** TestPromptRequest */
         TestPromptRequest: {
@@ -3977,6 +3991,8 @@ export interface operations {
             query?: {
                 /** @description Filter to one project */
                 project?: string | null;
+                limit?: number;
+                offset?: number;
             };
             header?: never;
             path?: never;

@@ -131,6 +131,7 @@ describe('ConsumersPage', () => {
 
     const reveal = await screen.findByRole('dialog', { name: 'API key rotated' })
     expect(reveal).toHaveTextContent('previous key remains valid for five minutes')
+    await user.click(within(reveal).getByLabelText('I have stored this key somewhere safe'))
     await user.click(
       within(reveal).getByRole('button', {
         name: 'Use this key for this dashboard (recommended)',

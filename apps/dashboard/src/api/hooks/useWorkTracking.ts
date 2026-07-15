@@ -104,17 +104,23 @@ export async function fetchWorkItem(key: string, project?: string): Promise<Work
 }
 
 async function fetchSavedQueries(): Promise<SavedQuery[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/work-tracking/saved-queries', {
-    params: { query: {} },
-  })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Saved queries request failed (${response.status})`),
-      error,
+  const items: SavedQuery[] = []
+  const limit = 200
+  for (let offset = 0; ; offset += limit) {
+    const { data, error, response } = await getApexClient().GET(
+      '/v1/work-tracking/saved-queries',
+      { params: { query: { limit, offset } } },
     )
+    if (!response.ok || !data) {
+      throw new ApiError(
+        response.status,
+        errorMessageOf(error, `Saved queries request failed (${response.status})`),
+        error,
+      )
+    }
+    items.push(...data.items)
+    if (data.items.length < limit) return items
   }
-  return data.items
 }
 
 /** Saved provider queries (wizard Work-items step quick picks). */

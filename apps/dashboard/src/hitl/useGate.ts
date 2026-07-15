@@ -140,6 +140,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   const reopeningRef = useRef<{
     interruptId: string
     baselineUpdatedAt: number
+    baselineServerUpdatedAt: string | null
     baselinePayload: string
     observedClear: boolean
   } | null>(null)
@@ -154,6 +155,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         reopeningRef.current = {
           interruptId: variables.interruptId,
           baselineUpdatedAt: thread.dataUpdatedAt,
+          baselineServerUpdatedAt: thread.data?.detail.updated_at ?? null,
           baselinePayload: gatePayloadSignature(gateOf(stateRef.current)),
           observedClear: false,
         }
@@ -196,7 +198,10 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       if (reopening && snapshotGate.interrupt_id === reopening.interruptId) {
         const refreshed = thread.dataUpdatedAt > reopening.baselineUpdatedAt
         const payloadChanged = gatePayloadSignature(snapshotGate) !== reopening.baselinePayload
-        if (refreshed && (reopening.observedClear || payloadChanged)) {
+        const serverAdvanced =
+          Boolean(thread.data?.detail.updated_at) &&
+          thread.data?.detail.updated_at !== reopening.baselineServerUpdatedAt
+        if (refreshed && (reopening.observedClear || payloadChanged || serverAdvanced)) {
           reopeningRef.current = null
           dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: true })
         } else {
@@ -242,6 +247,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
     snapshotGate,
     state.tag,
     thread.data?.detail.thread_status,
+    thread.data?.detail.updated_at,
     thread.dataUpdatedAt,
   ])
 

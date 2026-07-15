@@ -288,16 +288,19 @@ export function usePipelineStream(
         clearTimeout(hiddenTimer)
         hiddenTimer = null
       }
-      if (suspendedByVisibility && !disposed && !finished) {
+      if (disposed || finished) return
+      if (suspendedByVisibility) {
         suspendedByVisibility = false
         invalidateSnapshot() // refetch snapshot, then rejoin live
-        connect()
       }
+      // A hook mounted in a background tab has no controller yet. Becoming
+      // visible before the suspension timer fires must still make the initial
+      // connection.
+      if (!inner || inner.signal.aborted) connect()
     }
 
     document.addEventListener('visibilitychange', onVisibility)
     onVisibility()
-    if (!document.hidden) connect()
 
     return () => {
       disposed = true

@@ -94,6 +94,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
               return {
                 ...prev,
                 prompt_overrides,
+                document_ids: [],
                 scope: { ...prev.scope, app_id: nextApp, environment_id: null },
               }
             })

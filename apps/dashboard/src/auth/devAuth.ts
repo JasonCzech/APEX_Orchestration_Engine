@@ -16,6 +16,7 @@ export function getDevSystemInfo(): SystemInfo {
     version: 'dev',
     environment: 'development',
     features: { engines: true, documents: true },
+    limits: { max_context_packets: 32 },
     consumer: {
       name: 'Dev Admin',
       role: 'admin',

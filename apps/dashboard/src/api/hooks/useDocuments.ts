@@ -8,18 +8,33 @@ import { queryKeys } from '@/api/queryKeys'
 
 export type DocumentOut = components['schemas']['DocumentOut']
 
+const DOCUMENT_PAGE_SIZE = 200
+
 async function fetchDocuments(project?: string, q?: string): Promise<DocumentOut[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/documents', {
-    params: { query: { ...(project ? { project } : {}), ...(q ? { q } : {}) } },
-  })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Documents request failed (${response.status})`),
-      error,
-    )
+  const items: DocumentOut[] = []
+  let offset = 0
+  for (;;) {
+    const { data, error, response } = await getApexClient().GET('/v1/documents', {
+      params: {
+        query: {
+          ...(project ? { project } : {}),
+          ...(q ? { q } : {}),
+          limit: DOCUMENT_PAGE_SIZE,
+          offset,
+        },
+      },
+    })
+    if (!response.ok || !data) {
+      throw new ApiError(
+        response.status,
+        errorMessageOf(error, `Documents request failed (${response.status})`),
+        error,
+      )
+    }
+    items.push(...data.items)
+    if (data.items.length < DOCUMENT_PAGE_SIZE) return items
+    offset += data.items.length
   }
-  return data.items
 }
 
 /**
@@ -28,12 +43,22 @@ async function fetchDocuments(project?: string, q?: string): Promise<DocumentOut
  * D6 listWith key only when present so the wizard's cache entries are
  * untouched.
  */
-export function useDocumentsList(project?: string, q?: string): UseQueryResult<DocumentOut[], Error> {
+export function useDocumentsList(
+  project?: string,
+  q?: string,
+  appId?: string | null,
+): UseQueryResult<DocumentOut[], Error> {
   return useQuery({
-    queryKey: q
-      ? queryKeys.documents.listWith({ project: project ?? null, q })
-      : queryKeys.documents.listBy(project),
-    queryFn: () => fetchDocuments(project, q),
+    queryKey: queryKeys.documents.listWith({
+      project: project ?? null,
+      q: q ?? null,
+      app: appId === undefined ? 'all' : appId,
+    }),
+    queryFn: async () => {
+      const documents = await fetchDocuments(project, q)
+      if (appId === undefined) return documents
+      return documents.filter((document) => !document.app_id || document.app_id === appId)
+    },
     staleTime: 30_000,
   })
 }
@@ -41,6 +66,7 @@ export function useDocumentsList(project?: string, q?: string): UseQueryResult<D
 export interface UploadDocumentInput {
   file: File
   projectId?: string
+  appId?: string
   summary?: string
 }
 
@@ -52,13 +78,14 @@ export interface UploadDocumentInput {
 export function useUploadDocument() {
   const queryClient = useQueryClient()
   return useMutation<DocumentOut, Error, UploadDocumentInput>({
-    mutationFn: async ({ file, projectId, summary }) => {
+    mutationFn: async ({ file, projectId, appId, summary }) => {
       const { data, response } = await getApexClient().POST('/v1/documents', {
         body: { file: file as unknown as string },
         bodySerializer: () => {
           const form = new FormData()
           form.append('file', file, file.name)
           if (projectId) form.append('project_id', projectId)
+          if (appId) form.append('app_id', appId)
           if (summary) form.append('summary', summary)
           return form
         },

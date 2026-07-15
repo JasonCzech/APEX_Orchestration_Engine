@@ -171,6 +171,7 @@ class StartPipelineRequest(BaseModel):
     ["reporting", "postmortem"]) and supply `external_results`; gates default to auto."""
 
     title: str = Field(min_length=1, max_length=500)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     request: str = Field(default="", max_length=20000)
     assistant_id: str | None = Field(
         default=None,
@@ -359,6 +360,7 @@ async def create_pipeline_run(
     try:
         result = await service.start_run(
             title=body.title,
+            idempotency_key=body.idempotency_key,
             request=body.request,
             assistant_id=body.assistant_id,
             project_id=project_id,

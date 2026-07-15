@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } 
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { useDraftsList } from '@/api/hooks/useDrafts'
-import { RequireRole } from '@/auth/RequireRole'
+import { useOptionalAuth } from '@/auth/AuthProvider'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
+import { RequireRole, roleAtLeast } from '@/auth/RequireRole'
 
 import { ConfigStep } from './steps/ConfigStep'
 import { ContextStep } from './steps/ContextStep'
@@ -28,6 +30,7 @@ const SAVE_LABELS: Record<string, string> = {
 export interface StepProps {
   draft: import('./wizardState').WizardDraft
   onChange: (updater: import('./useDraft').DraftUpdater) => void
+  maxContextPackets?: number
 }
 
 function WizardSection({
@@ -109,6 +112,7 @@ function WizardStepContent({
   draft,
   onChange,
   onEditStep,
+  maxContextPackets,
 }: StepProps & { step: WizardStepId; onEditStep: (step: WizardStepId) => void }) {
   switch (step) {
     case 'scope':
@@ -116,17 +120,19 @@ function WizardStepContent({
     case 'work-items':
       return <WorkItemsStep draft={draft} onChange={onChange} />
     case 'context':
-      return <ContextStep draft={draft} onChange={onChange} />
+      return <ContextStep draft={draft} onChange={onChange} maxContextPackets={maxContextPackets} />
     case 'config':
       return <ConfigStep draft={draft} onChange={onChange} />
     case 'prompts':
       return <PromptsStep draft={draft} onChange={onChange} />
     case 'review':
-      return <ReviewStep draft={draft} onEditStep={onEditStep} />
+      return <ReviewStep draft={draft} onEditStep={onEditStep} maxContextPackets={maxContextPackets} />
   }
 }
 
 export function NewRunWizardPage() {
+  const auth = useOptionalAuth()
+  const authState = auth?.state
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
   const urlDraftId = searchParams.get('draft')
@@ -164,7 +170,14 @@ export function NewRunWizardPage() {
   const draftsList = useDraftsList(undefined, { enabled: urlDraftId === null && draftId === null })
   const showResume =
     draftId === null && saveState === 'idle' && (draftsList.data?.length ?? 0) > 0
-  const issues = allIssues(draft)
+  const maxContextPackets =
+    authState?.status === 'authenticated'
+      ? authState.systemInfo.limits.max_context_packets
+      : undefined
+  const canOperate =
+    authState === undefined ||
+    (authState.status === 'authenticated' && roleAtLeast(authState.consumer.role, 'operator'))
+  const issues = allIssues(draft, maxContextPackets)
 
   useEffect(() => {
     if (!loadError || !urlDraftId) return
@@ -178,10 +191,13 @@ export function NewRunWizardPage() {
   async function handleLaunch() {
     if (finalizing) return
     setFinalizing(true)
+    const keyRevision = getApiKeyRevision()
+    const sessionRevision = getSessionRevision()
     try {
       const result = await launch.mutateAsync(draft)
-      await deleteCurrentDraft()
+      if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) return
       navigate(`/runs/${result.threadId}?tab=log`)
+      void deleteCurrentDraft()
     } catch {
       // launch.error renders inline below.
       setFinalizing(false)
@@ -258,6 +274,7 @@ export function NewRunWizardPage() {
           draft={draft}
           onChange={setDraft}
           onEditStep={jumpToTab}
+          maxContextPackets={maxContextPackets}
         />
       </WizardSection>
     )
@@ -338,7 +355,7 @@ export function NewRunWizardPage() {
       {loading ? (
         <p className="wizard-caption">Loading draft…</p>
       ) : (
-          <fieldset className="wizard-fieldset" disabled={finalizing}>
+          <fieldset className="wizard-fieldset" disabled={finalizing || !canOperate}>
             <div className="wizard-stack">
               {renderTabs()}
               {WIZARD_STEPS.map(renderStepSection)}

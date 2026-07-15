@@ -19,7 +19,7 @@ import {
   type Environment,
 } from '@/api/hooks/useEnvironments'
 import { useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
@@ -91,9 +91,11 @@ function EnvironmentRow({
 /** Inline create panel — application select, name, kind, base_url, hosts, options JSON. */
 function CreateEnvironmentPanel({
   applications,
+  canApproveTarget,
   onClose,
 }: {
   applications: Application[]
+  canApproveTarget: boolean
   onClose: () => void
 }) {
   const navigate = useNavigate()
@@ -106,8 +108,14 @@ function CreateEnvironmentPanel({
   const [optionsText, setOptionsText] = useState('{}')
 
   const optionsParse = parseOptionsJson(optionsText)
+  const hasReservedOptions =
+    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
   const canSubmit =
-    applicationId !== '' && name.trim() !== '' && optionsParse.ok && !create.isPending
+    applicationId !== '' &&
+    name.trim() !== '' &&
+    optionsParse.ok &&
+    (canApproveTarget || !hasReservedOptions) &&
+    !create.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -173,7 +181,7 @@ function CreateEnvironmentPanel({
             ))}
           </select>
         </label>
-        <label className="env-field">
+        {canApproveTarget && <label className="env-field">
           <span className="env-field-label">Base URL</span>
           <input
             type="text"
@@ -183,7 +191,7 @@ function CreateEnvironmentPanel({
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
-        </label>
+        </label>}
       </div>
 
       <div className="env-field">
@@ -205,6 +213,11 @@ function CreateEnvironmentPanel({
       {!optionsParse.ok && (
         <p className="env-form-error" role="alert">
           {optionsParse.message}
+        </p>
+      )}
+      {!canApproveTarget && hasReservedOptions && (
+        <p className="env-form-error" role="alert">
+          Options beginning with _apex_ require a global administrator.
         </p>
       )}
       {create.isError && (
@@ -299,6 +312,7 @@ export function EnvironmentsPage() {
   const environments = useEnvironmentsIndex()
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const canApproveTarget = isGlobalAdmin(consumer)
 
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<Environment | null>(null)
@@ -330,6 +344,7 @@ export function EnvironmentsPage() {
       {creating && (
         <CreateEnvironmentPanel
           applications={applications.data ?? []}
+          canApproveTarget={canApproveTarget}
           onClose={() => setCreating(false)}
         />
       )}

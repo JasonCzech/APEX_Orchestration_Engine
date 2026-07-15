@@ -17,10 +17,13 @@ import {
 } from './environmentsTestHandlers'
 
 function renderDetail(
-  role: 'operator' | 'viewer' = 'operator',
+  role: 'admin' | 'operator' | 'viewer' = 'operator',
   entry = `/environments/${ENV_STAGING.id}`,
 ) {
-  return renderApp({ initialEntries: [entry], authState: authenticatedState(role) })
+  return renderApp({
+    initialEntries: [entry],
+    authState: role === 'admin' ? authenticatedState(role, 'Dash Ops', []) : authenticatedState(role),
+  })
 }
 
 describe('EnvironmentDetailPage', () => {
@@ -33,7 +36,7 @@ describe('EnvironmentDetailPage', () => {
     )
     const user = userEvent.setup()
     // ?edit=1 — the list row's Edit action lands directly in edit mode.
-    renderDetail('operator', `/environments/${ENV_STAGING.id}?edit=1`)
+    renderDetail('admin', `/environments/${ENV_STAGING.id}?edit=1`)
 
     const form = await screen.findByRole('form', { name: 'Edit environment' })
     const baseUrl = within(form).getByRole('textbox', { name: 'Base URL' })

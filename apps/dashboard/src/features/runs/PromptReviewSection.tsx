@@ -114,6 +114,7 @@ export function PromptReviewSection({
   const snapshotReview = useMemo(() => reviewFromState(state, phase, appId), [state, phase, appId])
   const query = usePromptReview(threadId, phase)
   const update = useUpdatePromptReview()
+  const resetUpdate = update.reset
   const consumer = useOptionalConsumer()
   const canEdit = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const baseline = query.data ?? snapshotReview
@@ -134,9 +135,10 @@ export function PromptReviewSection({
   useEffect(() => {
     identityRef.current = `${threadId}:${phase}`
     saveAttemptRef.current += 1
+    resetUpdate()
     setSaved(false)
     setUserTouched(false)
-  }, [threadId, phase])
+  }, [threadId, phase, resetUpdate])
 
   const appAvailable = Boolean(appId)
 
@@ -221,6 +223,12 @@ export function PromptReviewSection({
       {query.isError && !baseline && (
         <div className="tonal-card danger" role="alert">
           {query.error instanceof Error ? query.error.message : 'Prompt review could not load.'}
+        </div>
+      )}
+
+      {update.isError && (
+        <div className="tonal-card danger" role="alert">
+          {update.error instanceof Error ? update.error.message : 'Prompt review could not be saved.'}
         </div>
       )}
 

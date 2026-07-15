@@ -20,7 +20,8 @@ def test_system_info_with_dev_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["name"] == "APEX Orchestration Engine"
-    assert set(body) == {"name", "version", "environment", "features", "consumer"}
+    assert set(body) == {"name", "version", "environment", "features", "limits", "consumer"}
+    assert body["limits"]["max_context_packets"] > 0
     assert body["consumer"] == {"name": "dev", "role": "admin", "scopes": []}
 
 

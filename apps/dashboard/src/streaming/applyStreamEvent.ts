@@ -73,6 +73,7 @@ function applyPhaseStatus(
     if (!prev) return prev
     const results = prev.state.phase_results ?? {}
     const existing = results[event.phase]
+    if (typeof existing?.attempt === 'number' && existing.attempt > event.attempt) return prev
     // Attempt-aware merge mirroring the backend phase_results reducer:
     // same attempt merges onto the entry, a new attempt replaces it.
     const entry =
@@ -93,10 +94,22 @@ function applyPhaseStatus(
     }
   })
   patchListRows(queryClient, threadId, (row) => ({
-    ...row,
-    phase_strip: patchStrip(row.phase_strip, event),
-    ...currentPhasePatch,
+    ...(isOlderStripEvent(row.phase_strip, event)
+      ? row
+      : {
+          ...row,
+          phase_strip: patchStrip(row.phase_strip, event),
+          ...currentPhasePatch,
+        }),
   }))
+}
+
+function isOlderStripEvent(
+  strip: PhaseStripEntry[] | undefined,
+  event: PhaseStatusEvent,
+): boolean {
+  const current = strip?.find((segment) => segment.phase === event.phase)
+  return typeof current?.attempt === 'number' && current.attempt > event.attempt
 }
 
 function applyGateOpened(
@@ -120,7 +133,9 @@ function patchStrip(
   if (!strip) return []
   return strip.map((segment) =>
     segment.phase === event.phase
-      ? { ...segment, status: event.status, attempt: event.attempt }
+      ? typeof segment.attempt === 'number' && segment.attempt > event.attempt
+        ? segment
+        : { ...segment, status: event.status, attempt: event.attempt }
       : segment,
   )
 }

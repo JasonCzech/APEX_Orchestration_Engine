@@ -4,10 +4,11 @@
  * follow the prompt playground pattern (D5): no polling, deep-link to
  * /runs/{thread_id} when the stream URL carries one.
  */
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 
-import { getApiKey } from '@/auth/keyStorage'
+import { notifyUnauthorized } from '@/api/apexClient'
+import { getApiKey, getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { threadIdFromStreamUrl, useCreateSummary } from '@/api/hooks/useContextApi'
 import { RequireRole } from '@/auth/RequireRole'
@@ -25,27 +26,40 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
   const [state, setState] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; text?: string }>({
     status: 'idle',
   })
+  const controllerRef = useRef<AbortController | null>(null)
+  useEffect(() => () => controllerRef.current?.abort(), [])
 
   const open = useCallback(async () => {
     setState({ status: 'loading' })
+    controllerRef.current?.abort()
+    const controller = new AbortController()
+    controllerRef.current = controller
+    const apiKey = getApiKey()
+    const keyRevision = getApiKeyRevision()
+    const sessionRevision = getSessionRevision()
     try {
-      const url = new URL(streamUrl, resolveLanggraphBaseUrl() || window.location.origin)
+      const base = new URL(resolveLanggraphBaseUrl() || window.location.origin, window.location.origin)
+      const url = new URL(streamUrl, base)
+      if (url.origin !== base.origin) throw new Error('Summary stream URL must use the LangGraph origin')
       const response = await fetch(url, {
-        headers: { ...(getApiKey() ? { 'x-api-key': getApiKey()! } : {}) },
+        headers: { ...(apiKey ? { 'x-api-key': apiKey } : {}) },
+        signal: controller.signal,
       })
+      if (response.status === 401 && keyRevision === getApiKeyRevision()) notifyUnauthorized()
       if (!response.ok || !response.body) throw new Error(`Stream request failed (${response.status})`)
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
       let summary = ''
-      const consume = (raw: string) => {
-        for (const block of raw.split('\n\n')) {
-          const data = block
-            .split('\n')
+      const consume = (block: string) => {
+          const lines = block.split(/\r?\n/)
+          const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
+          const data = lines
             .filter((line) => line.startsWith('data:'))
             .map((line) => line.slice(5).trim())
-            .join('')
-          if (!data) continue
+            .join('\n')
+          if (!data) return
+          if (event === 'error') throw new Error(data)
           try {
             const parsed: unknown = JSON.parse(data)
             const record = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
@@ -56,19 +70,28 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
           } catch {
             // Ignore non-JSON keep-alives and let the stream continue.
           }
-        }
       }
       while (true) {
         const chunk = await reader.read()
         if (chunk.done) break
         buffer += decoder.decode(chunk.value, { stream: true })
-        const parts = buffer.split('\n\n')
-        buffer = parts.pop() ?? ''
-        consume(parts.join('\n\n'))
+        for (;;) {
+          const boundary = /\r?\n\r?\n/.exec(buffer)
+          if (!boundary || boundary.index === undefined) break
+          consume(buffer.slice(0, boundary.index))
+          buffer = buffer.slice(boundary.index + boundary[0].length)
+        }
       }
-      consume(buffer)
+      buffer += decoder.decode()
+      if (buffer.trim()) consume(buffer)
+      if (
+        controller.signal.aborted ||
+        keyRevision !== getApiKeyRevision() ||
+        sessionRevision !== getSessionRevision()
+      ) return
       setState({ status: 'done', text: summary || 'Stream completed without a summary payload.' })
     } catch (error) {
+      if (controller.signal.aborted) return
       setState({ status: 'error', text: error instanceof Error ? error.message : 'Unable to read the summary stream.' })
     }
   }, [streamUrl])

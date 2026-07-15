@@ -13,11 +13,16 @@ class ConsumerInfo(BaseModel):
     scopes: list[ScopeRef]
 
 
+class SystemLimits(BaseModel):
+    max_context_packets: int
+
+
 class SystemInfo(BaseModel):
     name: str
     version: str
     environment: str
     features: dict[str, bool]
+    limits: SystemLimits
     consumer: ConsumerInfo
 
 
@@ -28,5 +33,6 @@ async def get_system_info(settings: SettingsDep, identity: CurrentIdentity) -> S
         version=settings.version,
         environment=settings.environment,
         features={},
+        limits=SystemLimits(max_context_packets=settings.runs.max_context_packets),
         consumer=ConsumerInfo(name=identity.name, role=identity.role, scopes=identity.scopes),
     )

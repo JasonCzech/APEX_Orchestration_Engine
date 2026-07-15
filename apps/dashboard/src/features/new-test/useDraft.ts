@@ -21,7 +21,9 @@ import {
   getDraftRequest,
   updateDraftRequest,
 } from '@/api/hooks/useDrafts'
-import { getApiKeyRevision } from '@/auth/keyStorage'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
+import { hasFullProjectScope, roleAtLeast } from '@/auth/RequireRole'
 
 import { emptyDraft, parseDraftPayload, type WizardDraft } from './wizardState'
 
@@ -59,6 +61,7 @@ export function useDraft({
   onDraftCreated?: (id: string) => void
 }): UseDraftResult {
   const queryClient = useQueryClient()
+  const consumer = useOptionalConsumer()
   const [draft, setDraftState] = useState<WizardDraft>(emptyDraft)
   const [draftId, setDraftId] = useState<string | null>(initialDraftId)
   const [saveState, setSaveState] = useState<DraftSaveState>('idle')
@@ -72,6 +75,9 @@ export function useDraft({
   const saveQueueRef = useRef<Promise<void> | null>(null)
   const mountedRef = useRef(true)
   const authRevisionRef = useRef(getApiKeyRevision())
+  const sessionRevisionRef = useRef(getSessionRevision())
+  const consumerRef = useRef(consumer)
+  consumerRef.current = consumer
   const onCreatedRef = useRef(onDraftCreated)
   onCreatedRef.current = onDraftCreated
 
@@ -81,10 +87,26 @@ export function useDraft({
       timerRef.current = null
     }
     const saveLatest = async () => {
-      if (authRevisionRef.current !== getApiKeyRevision()) return
+      if (
+        authRevisionRef.current !== getApiKeyRevision() ||
+        sessionRevisionRef.current !== getSessionRevision()
+      ) return
       // A queued save ahead of us may already have persisted the same state.
       if (!dirtyRef.current) return
       const snapshot = draftRef.current
+      const project = snapshot.scope.project_id.trim()
+      const currentConsumer = consumerRef.current
+      const canPersist =
+        currentConsumer === undefined ||
+        (currentConsumer !== null &&
+          roleAtLeast(currentConsumer.role, 'operator') &&
+          project.length > 0 &&
+          hasFullProjectScope(currentConsumer, project))
+      if (!canPersist) {
+        dirtyRef.current = false
+        if (mountedRef.current) setSaveState('idle')
+        return
+      }
       dirtyRef.current = false
       if (mountedRef.current) setSaveState('saving')
       try {
@@ -93,7 +115,10 @@ export function useDraft({
           project_id: snapshot.scope.project_id.trim() || null,
           payload: snapshot as unknown as Record<string, unknown>,
         }
-        if (authRevisionRef.current !== getApiKeyRevision()) {
+        if (
+          authRevisionRef.current !== getApiKeyRevision() ||
+          sessionRevisionRef.current !== getSessionRevision()
+        ) {
           dirtyRef.current = true
           return
         }
@@ -182,13 +207,17 @@ export function useDraft({
   // to settle after React unmounts, but UI callbacks are suppressed.
   useEffect(() => {
     const mountRevision = authRevisionRef.current
+    const mountSessionRevision = sessionRevisionRef.current
     mountedRef.current = true
     return () => {
       mountedRef.current = false
       if (timerRef.current !== null) {
         clearTimeout(timerRef.current)
         timerRef.current = null
-        if (mountRevision === getApiKeyRevision()) void flush()
+        if (
+          mountRevision === getApiKeyRevision() &&
+          mountSessionRevision === getSessionRevision()
+        ) void flush()
       }
     }
   }, [flush])

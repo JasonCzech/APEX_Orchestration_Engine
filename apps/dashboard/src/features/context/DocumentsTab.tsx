@@ -12,7 +12,7 @@ import {
   type DocumentOut,
 } from '@/api/hooks/useDocuments'
 import { useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { canMutateAudience } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
@@ -69,7 +69,6 @@ function DeleteDocumentModal({ doc, onClose }: { doc: DocumentOut; onClose: () =
 
 export function DocumentsTab() {
   const consumer = useConsumer()
-  const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
 
   // Draft inputs commit on submit so the list query keys stay stable while typing.
   const [projectDraft, setProjectDraft] = useState('')
@@ -81,6 +80,7 @@ export function DocumentsTab() {
   const inputRef = useRef<HTMLInputElement | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<DocumentOut | null>(null)
+  const canUpload = canMutateAudience(consumer, projectDraft.trim() || null, null)
 
   function applyFilters(event: FormEvent) {
     event.preventDefault()
@@ -127,7 +127,7 @@ export function DocumentsTab() {
         <button type="submit" className="btn btn-secondary btn-sm">
           Apply
         </button>
-        {canMutate && (
+        {canUpload && (
           <>
             <button
               type="button"
@@ -207,7 +207,7 @@ export function DocumentsTab() {
                     {doc.created_at ? formatRelative(doc.created_at) : EM_DASH}
                   </td>
                   <td className="ctx-actions-cell">
-                    {canMutate && (
+                    {canMutateAudience(consumer, doc.project_id, doc.app_id) && (
                       <button
                         type="button"
                         className="btn btn-ghost btn-sm"

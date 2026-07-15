@@ -4300,6 +4300,19 @@
             ],
             "title": "Gates"
           },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
           "model_by_phase": {
             "anyOf": [
               {
@@ -4400,6 +4413,9 @@
             "title": "Features",
             "type": "object"
           },
+          "limits": {
+            "$ref": "#/components/schemas/SystemLimits"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -4414,9 +4430,23 @@
           "version",
           "environment",
           "features",
+          "limits",
           "consumer"
         ],
         "title": "SystemInfo",
+        "type": "object"
+      },
+      "SystemLimits": {
+        "properties": {
+          "max_context_packets": {
+            "title": "Max Context Packets",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_context_packets"
+        ],
+        "title": "SystemLimits",
         "type": "object"
       },
       "TestPromptRequest": {

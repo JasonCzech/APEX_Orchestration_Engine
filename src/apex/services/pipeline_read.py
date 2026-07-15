@@ -207,6 +207,7 @@ class PipelineReadService:
         *,
         title: str,
         request: str = "",
+        idempotency_key: str | None = None,
         assistant_id: str | None = None,
         project_id: str | None = None,
         app_id: str | None = None,
@@ -278,7 +279,27 @@ class PipelineReadService:
         if context_packets:
             run_input["context_packets"] = validate_context_packets(context_packets)
 
+        if idempotency_key:
+            existing_threads = await self._client.threads.search(
+                metadata={"launch_idempotency_key": idempotency_key},
+                limit=1,
+                sort_by="created_at",
+                sort_order="desc",
+            )
+            if existing_threads:
+                existing_thread_id = existing_threads[0]["thread_id"]
+                existing_runs = await self._client.runs.list(existing_thread_id, limit=1)
+                if existing_runs:
+                    existing_run_id = existing_runs[0]["run_id"]
+                    return {
+                        "thread_id": existing_thread_id,
+                        "run_id": existing_run_id,
+                        "stream_url": f"/runs/{existing_run_id}/stream",
+                    }
+
         metadata: JsonDict = {"title": title}
+        if idempotency_key:
+            metadata["launch_idempotency_key"] = idempotency_key
         if project_id:
             metadata["project_id"] = project_id
         if app_id:
