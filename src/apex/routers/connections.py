@@ -101,6 +101,7 @@ class ConnectionCreate(BaseModel):
 class ConnectionUpdate(BaseModel):
     """`kind` is immutable — create a new connection to change port kinds."""
 
+    model_config = ConfigDict(extra="forbid")
     provider: str | None = Field(default=None, min_length=1, max_length=64)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     project_id: str | None = None
@@ -108,11 +109,19 @@ class ConnectionUpdate(BaseModel):
     options: dict[str, Any] | None = None
     secret_ref: str | None = None
 
+    @field_validator("provider", "name")
+    @classmethod
+    def reject_null_required_fields(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
+
     @field_validator("options")
     @classmethod
     def reject_raw_secrets(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        if value is not None:
-            _reject_raw_secret_options(value)
+        if value is None:
+            raise ValueError("options cannot be null")
+        _reject_raw_secret_options(value)
         return value
 
     @field_validator("secret_ref")

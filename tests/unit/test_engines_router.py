@@ -271,11 +271,13 @@ class FakeEngineAdapter:
         self,
         teardown_error: Exception | None = None,
         abort_error: Exception | None = None,
+        status_phase: EngineRunPhase = EngineRunPhase.ABORTED,
     ) -> None:
         self.aborts: list[tuple[EngineHandle, str]] = []
         self.teardowns: list[EngineHandle] = []
         self.teardown_error = teardown_error
         self.abort_error = abort_error
+        self.status_phase = status_phase
 
     async def abort(self, handle: EngineHandle, *, reason: str) -> None:
         self.aborts.append((handle, reason))
@@ -283,7 +285,7 @@ class FakeEngineAdapter:
             raise self.abort_error
 
     async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
-        return EngineRunStatus(phase=EngineRunPhase.ABORTED, progress_pct=100.0)
+        return EngineRunStatus(phase=self.status_phase, progress_pct=100.0)
 
     async def teardown(self, handle: EngineHandle) -> None:
         if self.teardown_error is not None:
@@ -339,10 +341,15 @@ def abort_fixture(
     runs: FakeRuns | None = None,
     teardown_error: Exception | None = None,
     abort_error: Exception | None = None,
+    status_phase: EngineRunPhase = EngineRunPhase.ABORTED,
 ) -> tuple[FakeEngineRunsRepository, FakeRuns, FakeEngineAdapter, FakeResolver, TestClient]:
     repo = repo if repo is not None else FakeEngineRunsRepository()
     runs = runs if runs is not None else FakeRuns()
-    adapter = FakeEngineAdapter(teardown_error=teardown_error, abort_error=abort_error)
+    adapter = FakeEngineAdapter(
+        teardown_error=teardown_error,
+        abort_error=abort_error,
+        status_phase=status_phase,
+    )
     resolver = FakeResolver(adapter)
     client = FakeClient(FakeThreads(states), runs)
     service = EngineAbortService(client, repo, resolver=resolver)  # type: ignore[arg-type]
@@ -555,6 +562,28 @@ def test_abort_tolerates_no_active_runs_and_no_body() -> None:
     assert response.json()["cancelled_runs"] == []
     assert adapter.aborts[0][1] == "operator abort"
     assert fake_runs.cancelled == []
+
+
+def test_abort_keeps_graph_monitor_alive_while_provider_is_stopping() -> None:
+    repo = FakeEngineRunsRepository()
+    repo.seed(thread_id="t-1", status="running")
+    runs = FakeRuns(runs=[{"run_id": "r-run", "status": "running"}])
+    repo, fake_runs, _adapter, _, client = abort_fixture(
+        repo=repo,
+        states={"t-1": {"values": {"engine_handle": STATE_HANDLE}}},
+        runs=runs,
+        status_phase=EngineRunPhase.STOPPING,
+    )
+
+    with client:
+        response = client.post("/v1/engines/runs/t-1/abort", json={})
+
+    assert response.status_code == 202
+    assert response.json()["phase"] == "stopping"
+    assert response.json()["confirmed"] is False
+    assert response.json()["cancelled_runs"] == []
+    assert fake_runs.cancelled == []
+    assert repo.rows[0].status == "running"
 
 
 def test_abort_survives_teardown_and_projection_failures() -> None:

@@ -794,17 +794,46 @@ class ApexLoadExecutionEngine:
                 await asyncio.sleep(_CONFLICT_RECHECK_DELAY_S * (attempt + 1))
         return None
 
+    async def _find_script_by_name(self, name: str) -> dict[str, Any] | None:
+        params = {"project_id": self._project_id} if self._project_id else None
+        response = await self._request("GET", "/api/v1/scripts", params=params)
+        data = _json_object(response, "GET /api/v1/scripts")
+        for script in data.get("scripts") or []:
+            if isinstance(script, dict) and script.get("name") == name:
+                return script
+        return None
+
+    async def _find_script_after_uncertain_create(self, name: str) -> dict[str, Any] | None:
+        for attempt in range(_CONFLICT_RECHECK_ATTEMPTS):
+            script = await self._find_script_by_name(name)
+            if script is not None:
+                return script
+            if attempt + 1 < _CONFLICT_RECHECK_ATTEMPTS:
+                await asyncio.sleep(_CONFLICT_RECHECK_DELAY_S * (attempt + 1))
+        return None
+
     async def _upload_script(self, script: dict[str, Any], *, idempotency_key: str) -> str:
         payload: dict[str, Any] = {"script": script}
         if self._project_id:
             payload["project_id"] = self._project_id
-        response = await self._request(
-            "POST",
-            "/api/v1/scripts",
-            json=payload,
-            headers={"Idempotency-Key": idempotency_key},
-        )
-        stored = _json_object(response, "POST /api/v1/scripts")
+        try:
+            response = await self._request(
+                "POST",
+                "/api/v1/scripts",
+                json=payload,
+                headers={"Idempotency-Key": idempotency_key},
+            )
+            stored = _json_object(response, "POST /api/v1/scripts")
+        except (_RemoteConflictError, RuntimeError, ValueError):
+            name = str(script.get("name") or "")
+            stored = await self._find_script_after_uncertain_create(name) if name else None
+            if stored is None:
+                raise
+            logger.warning(
+                "apex_load.script_create_reconciled",
+                script_id=stored.get("id"),
+                script_name=name,
+            )
         script_id = str(stored.get("id") or "")
         if not script_id:
             raise RuntimeError(

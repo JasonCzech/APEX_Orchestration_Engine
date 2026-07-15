@@ -633,6 +633,18 @@ def ensure_run_controls(
                 "multitask_strategy cannot interrupt or roll back an existing run; "
                 "use 'reject' or /v1/pipelines/{thread_id}/abort"
             )
+        if not trusted_loopback:
+            load_test = _mapping(configurable.get("load_test"))
+            forbidden_selectors = {
+                "script_refs",
+                "test_id",
+                "test_instance_id",
+            }.intersection(load_test)
+            if forbidden_selectors:
+                raise ValueError(
+                    "provider workload selectors are connection/catalog-owned and cannot be "
+                    f"overridden per run: {', '.join(sorted(forbidden_selectors))}"
+                )
         if raw_input is not None and not isinstance(raw_input, Mapping):
             raise ValueError("run input must be a JSON object")
         requested_thread_id = _project_id(payload.get("thread_id"))

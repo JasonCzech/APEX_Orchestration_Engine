@@ -28,7 +28,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy.schema import FetchedValue
 
 JsonColumn = JSON().with_variant(JSONB(), "postgresql")
 
@@ -137,9 +136,7 @@ class AuditLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
-    chain_seq: Mapped[int] = mapped_column(
-        BigInteger, unique=True, nullable=False, server_default=FetchedValue()
-    )
+    chain_seq: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     category: Mapped[str] = mapped_column(String(64))
     action: Mapped[str] = mapped_column(String(128))
@@ -408,6 +405,28 @@ class Document(Base):
         return self.extracted_text[:DOCUMENT_TEXT_PREVIEW_CHARS] + "…"
 
 
+class ArtifactReference(Base):
+    """Durable ownership/lifecycle index for checkpoint-addressed artifacts."""
+
+    __tablename__ = "artifact_references"
+    __table_args__ = (
+        UniqueConstraint("artifact_key"),
+        Index("ix_artifact_references_connection_id", "connection_id"),
+        Index("ix_artifact_references_thread_id", "thread_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    artifact_key: Mapped[str] = mapped_column(String(1024))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("connections.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(64))
+    thread_id: Mapped[str] = mapped_column(String(255))
+    project_id: Mapped[str | None] = mapped_column(String(255))
+    app_id: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SavedQuery(Base):
     """A saved work-tracking query (project-scoped, provider-tagged)."""
 
@@ -453,6 +472,7 @@ class EngineRun(Base):
         Index("ix_engine_runs_status_started", "status", "started_at"),
         Index("ix_engine_runs_engine_started", "engine", "started_at"),
         Index("ix_engine_runs_external_run_id", "external_run_id"),
+        Index("ix_engine_runs_connection_id", "connection_id"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
@@ -467,6 +487,9 @@ class EngineRun(Base):
     external_run_id: Mapped[str | None] = mapped_column(String(255))
     artifact_namespace: Mapped[str | None] = mapped_column(String(512))
     artifact_connection_id: Mapped[str | None] = mapped_column(String(255))
+    connection_id: Mapped[str | None] = mapped_column(
+        ForeignKey("connections.id", ondelete="RESTRICT")
+    )
     handle: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     status: Mapped[str] = mapped_column(String(32))  # EngineRunPhase value
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

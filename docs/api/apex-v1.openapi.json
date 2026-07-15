@@ -869,6 +869,7 @@
         "type": "object"
       },
       "ConnectionUpdate": {
+        "additionalProperties": false,
         "description": "`kind` is immutable \u2014 create a new connection to change port kinds.",
         "properties": {
           "base_url": {

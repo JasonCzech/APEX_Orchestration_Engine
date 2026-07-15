@@ -23,8 +23,10 @@ import {
   type ConsumerType,
   type ScopeRef,
 } from '@/api/hooks/useConsumers'
-import type { Role } from '@/api/apexClient'
+import type { ConsumerInfo, Role } from '@/api/apexClient'
 import { isApiError } from '@/api/errors'
+import { useConsumer } from '@/auth/AuthProvider'
+import { isGlobalAdmin } from '@/auth/RequireRole'
 import { setApiKey } from '@/auth/keyStorage'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
@@ -57,6 +59,26 @@ function scopesToPayload(drafts: ScopeDraft[]): ScopeRef[] {
       project_id: draft.project_id.trim(),
       app_id: draft.app_id.trim() || null,
     }))
+}
+
+function delegatedGrantIssue(
+  current: ConsumerInfo | null,
+  scopes: ScopeRef[],
+): string | null {
+  if (isGlobalAdmin(current)) return null
+  if (!current) return 'Your current session cannot grant consumer access.'
+  if (scopes.length === 0) return 'Scoped administrators must grant at least one scope.'
+  const outside = scopes.find(
+    (requested) =>
+      !current.scopes.some(
+        (owned) =>
+          owned.project_id === requested.project_id &&
+          (!owned.app_id || owned.app_id === requested.app_id),
+      ),
+  )
+  return outside
+    ? `Scope ${outside.project_id}${outside.app_id ? ` / ${outside.app_id}` : ''} is outside your access.`
+    : null
 }
 
 /** Scope rows: project_id + optional app_id, add/remove. */
@@ -208,13 +230,16 @@ function CreateConsumerPanel({
   onClose: () => void
   onCreated: (created: ConsumerCreated) => void
 }) {
+  const current = useConsumer()
   const create = useCreateConsumer()
   const [name, setName] = useState('')
   const [consumerType, setConsumerType] = useState<ConsumerType>('headless')
   const [role, setRole] = useState<Role>('viewer')
   const [scopes, setScopes] = useState<ScopeDraft[]>([{ project_id: '', app_id: '' }])
 
-  const canSubmit = name.trim() !== '' && !create.isPending
+  const scopePayload = scopesToPayload(scopes)
+  const grantIssue = delegatedGrantIssue(current, scopePayload)
+  const canSubmit = name.trim() !== '' && grantIssue === null && !create.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -224,7 +249,7 @@ function CreateConsumerPanel({
         name: name.trim(),
         consumer_type: consumerType,
         role,
-        scopes: scopesToPayload(scopes),
+        scopes: scopePayload,
       },
       {
         onSuccess: (created) => {
@@ -286,6 +311,11 @@ function CreateConsumerPanel({
         <span className="adm-field-label">Scopes</span>
         <ScopesEditor scopes={scopes} onChange={setScopes} />
       </div>
+      {grantIssue && (
+        <p className="adm-form-error" role="alert">
+          {grantIssue}
+        </p>
+      )}
       {create.isError && (
         <div className="adm-inline-error" role="alert">
           <span>{create.error.message}</span>
@@ -318,12 +348,15 @@ function EditConsumerModal({
   isCurrentConsumer: boolean
   onClose: () => void
 }) {
+  const current = useConsumer()
   const update = useUpdateConsumer()
   const [role, setRole] = useState<Role>(consumer.role)
   const [enabled, setEnabled] = useState(consumer.enabled)
   const [scopes, setScopes] = useState<ScopeDraft[]>(() =>
     consumer.scopes.map((scope) => ({ project_id: scope.project_id, app_id: scope.app_id ?? '' })),
   )
+  const scopePayload = scopesToPayload(scopes)
+  const grantIssue = isCurrentConsumer ? null : delegatedGrantIssue(current, scopePayload)
 
   function close() {
     if (update.isPending) return
@@ -354,6 +387,11 @@ function EditConsumerModal({
           ))}
         </div>
       </div>
+      {grantIssue && (
+        <p className="adm-form-error" role="alert">
+          {grantIssue}
+        </p>
+      )}
       <div className="adm-field">
         <span className="adm-field-label">Scopes</span>
         {isCurrentConsumer ? (
@@ -389,14 +427,14 @@ function EditConsumerModal({
         <button
           type="button"
           className="btn btn-primary btn-sm"
-          disabled={update.isPending}
+          disabled={update.isPending || grantIssue !== null}
           onClick={() =>
             update.mutate(
               {
                 consumerId: consumer.id,
                 body: isCurrentConsumer
                   ? { enabled: true }
-                  : { role, enabled, scopes: scopesToPayload(scopes) },
+                  : { role, enabled, scopes: scopePayload },
               },
               { onSuccess: onClose },
             )

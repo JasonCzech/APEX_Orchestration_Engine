@@ -1,8 +1,7 @@
-"""Provide a database fallback for audit chain sequence writes."""
+"""Retire the unused audit sequence without rewriting the hash-chain order."""
 
 from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0014"
@@ -14,37 +13,16 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
-    op.execute("CREATE SEQUENCE IF NOT EXISTS apex.audit_chain_seq_seq")
-    op.execute(
-        """
-        WITH numbered AS (
-            SELECT id, row_number() OVER (ORDER BY at, id) AS chain_seq
-            FROM apex.audit_log
-        )
-        UPDATE apex.audit_log AS audit
-        SET chain_seq = numbered.chain_seq
-        FROM numbered
-        WHERE audit.id = numbered.id
-        """
-    )
+    # 0013 already assigned and constrained chain_seq. Re-numbering here would
+    # invalidate previous_hash traversal for events whose clocks moved backwards.
     op.alter_column("audit_log", "chain_seq", nullable=False, schema="apex")
-    op.execute(
-        """SELECT setval(
-            'apex.audit_chain_seq_seq',
-            COALESCE((SELECT MAX(chain_seq) FROM apex.audit_log), 0) + 1,
-            false
-        )"""
-    )
-    op.alter_column(
-        "audit_log",
-        "chain_seq",
-        server_default=sa.text("nextval('apex.audit_chain_seq_seq')"),
-        schema="apex",
-    )
+    op.alter_column("audit_log", "chain_seq", server_default=None, schema="apex")
+    op.execute("DROP SEQUENCE IF EXISTS apex.audit_chain_seq_seq")
 
 
 def downgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
-    op.alter_column("audit_log", "chain_seq", server_default=None, schema="apex")
-    op.execute("DROP SEQUENCE IF EXISTS apex.audit_chain_seq_seq")
+    # The service allocates from the advisory-locked chain head. A database
+    # sequence is intentionally not recreated because it cannot remain gapless
+    # across transaction rollbacks.

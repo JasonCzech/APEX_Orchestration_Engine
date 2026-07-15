@@ -36,6 +36,7 @@ from apex.services.langgraph_client import loopback_client
 from apex.services.pipeline_read import (
     GateSupersededError,
     InvalidGateActionError,
+    LaunchIdempotencyConflictError,
     NoActiveRunError,
     PipelineReadService,
 )
@@ -321,6 +322,17 @@ async def create_pipeline_run(
             ),
         )
     if isinstance(load_test, dict):
+        forbidden_selectors = {"script_refs", "test_id", "test_instance_id"}.intersection(
+            load_test
+        )
+        if forbidden_selectors:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "provider workload selectors are connection/catalog-owned and cannot be "
+                    f"overridden per run: {', '.join(sorted(forbidden_selectors))}"
+                ),
+            )
         script_refs = load_test.get("script_refs")
         if isinstance(script_refs, list) and any(
             isinstance(ref, str) and ref.lstrip().startswith("{") for ref in script_refs
@@ -374,7 +386,10 @@ async def create_pipeline_run(
                 body.external_results.model_dump(mode="json") if body.external_results else None
             ),
             context_packets=context_packets or None,
+            principal_id=identity.consumer_id,
         )
+    except LaunchIdempotencyConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return StartPipelineResponse(**result)

@@ -106,7 +106,7 @@ function applyPhaseStatus(
 
 function isOlderStripEvent(
   strip: PhaseStripEntry[] | undefined,
-  event: PhaseStatusEvent,
+  event: Pick<PhaseStatusEvent, 'phase' | 'attempt'>,
 ): boolean {
   const current = strip?.find((segment) => segment.phase === event.phase)
   return typeof current?.attempt === 'number' && current.attempt > event.attempt
@@ -121,9 +121,16 @@ function applyGateOpened(
   const pendingGate: PendingGate = { interrupt_id: null, kind: event.gate, phase: event.phase }
   queryClient.setQueryData<ThreadStateSnapshot>(queryKeys.threads.state(threadId), (prev) => {
     if (!prev) return prev
+    const existing = prev.state.phase_results?.[event.phase]
+    if (
+      (typeof existing?.attempt === 'number' && existing.attempt > event.attempt) ||
+      isOlderStripEvent(prev.detail.phase_strip, event)
+    ) return prev
     return { ...prev, detail: { ...prev.detail, pending_gate: pendingGate } }
   })
-  patchListRows(queryClient, threadId, (row) => ({ ...row, pending_gate: pendingGate }))
+  patchListRows(queryClient, threadId, (row) =>
+    isOlderStripEvent(row.phase_strip, event) ? row : { ...row, pending_gate: pendingGate },
+  )
 }
 
 function patchStrip(

@@ -771,6 +771,30 @@ async def test_direct_run_create_rejects_destructive_inflight_controls(
     assert "interrupt or roll back" in str(excinfo.value.detail)
 
 
+@pytest.mark.parametrize("selector", ["script_refs", "test_id", "test_instance_id"])
+async def test_direct_run_create_rejects_provider_workload_selectors(selector: str) -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {"title": "unsafe", "request": "run it"},
+            "config": {
+                "configurable": {
+                    "project_id": "p1",
+                    "load_test": {selector: [] if selector == "script_refs" else 42},
+                }
+            },
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "provider workload selectors" in str(excinfo.value.detail)
+
+
 async def test_threads_read_and_search_return_scope_filter() -> None:
     identity = make_identity(Role.VIEWER, [ScopeRef(project_id="p1")])
     expected = {"project_id": {"$eq": "p1"}}

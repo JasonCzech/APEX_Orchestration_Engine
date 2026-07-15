@@ -14,8 +14,13 @@ from pydantic import ValidationError
 
 from apex.adapters.registry import PortKind
 from apex.bootstrap.__main__ import _load_document, main
-from apex.bootstrap.runner import BootstrapError, BootstrapReport
+from apex.bootstrap.runner import (
+    BootstrapError,
+    BootstrapReport,
+    _reconcile_known_connection_alias,
+)
 from apex.bootstrap.schema import AdminConsumerSpec, BootstrapDocument, ConnectionSpec
+from apex.persistence.models import Connection
 
 VALID_DOC: dict[str, Any] = {
     "connections": [
@@ -70,6 +75,25 @@ def test_report_summary_is_human_readable() -> None:
     report = BootstrapReport(connections_created=["minio-artifacts"], admin_created="apex-admin")
     assert "connections +1" in report.summary()
     assert "admin=created" in report.summary()
+
+
+def test_bootstrap_reconciles_previous_minio_service_alias_only() -> None:
+    connection = Connection(
+        id="c1",
+        name="minio-artifacts",
+        kind="artifact_store",
+        provider="s3",
+        options={"endpoint": "apex-minio.apex.svc.cluster.local:9000", "bucket": "b"},
+    )
+    expected: dict[str, object] = {
+        "options": {"endpoint": "apex-minio:9000", "bucket": "b"}
+    }
+
+    assert _reconcile_known_connection_alias(connection, expected, ["options"]) is True
+    assert connection.options["endpoint"] == "apex-minio:9000"
+
+    connection.options = {"endpoint": "attacker.invalid:9000", "bucket": "b"}
+    assert _reconcile_known_connection_alias(connection, expected, ["options"]) is False
 
 
 # ── file loader ───────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -12,10 +13,11 @@ from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.models import Document
-from apex.routers.documents import router
+from apex.routers.documents import get_catalog_repository, router
 from apex.services.connections import get_connection_resolver
 from apex.services.documents import (
     MAX_DOCUMENT_BYTES,
+    DocumentsService,
     extract_boundary,
     get_documents_repository,
     parse_multipart,
@@ -89,6 +91,18 @@ class FakeDocumentsRepository:
         self.rows.pop(document.id, None)
 
 
+class FakeCatalogRepository:
+    def __init__(self, *, archived: bool = False) -> None:
+        self.archived = archived
+
+    async def get_application(self, app_id: str) -> object:
+        return SimpleNamespace(
+            id=app_id,
+            project_id="p1",
+            archived_at=datetime.now(UTC) if self.archived else None,
+        )
+
+
 @pytest.fixture(autouse=True)
 def clean_artifact_store() -> Iterator[None]:
     MemoryArtifactStore.clear()
@@ -106,12 +120,18 @@ def identity(role: Role = Role.OPERATOR, scopes: list[ScopeRef] | None = None) -
     )
 
 
-def make_app(repo: FakeDocumentsRepository, who: ConsumerIdentity) -> FastAPI:
+def make_app(
+    repo: FakeDocumentsRepository,
+    who: ConsumerIdentity,
+    *,
+    catalog: FakeCatalogRepository | None = None,
+) -> FastAPI:
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(router, prefix="/v1")
     app.dependency_overrides[get_documents_repository] = lambda: repo
     app.dependency_overrides[get_connection_resolver] = lambda: FakeArtifactResolver()
+    app.dependency_overrides[get_catalog_repository] = lambda: catalog or FakeCatalogRepository()
     app.dependency_overrides[get_current_identity] = lambda: who
     return app
 
@@ -169,6 +189,31 @@ def test_safe_filename_strips_paths() -> None:
     assert safe_filename("../../etc/passwd") == "passwd"
     assert safe_filename("C:\\evil\\name.bin") == "name.bin"
     assert safe_filename("") == "upload.bin"
+
+
+@pytest.mark.asyncio
+async def test_upload_cleans_object_when_extraction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_extraction(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("extractor crashed")
+
+    monkeypatch.setattr("apex.services.documents._extract_text_bounded", fail_extraction)
+    service = DocumentsService(FakeDocumentsRepository(), MemoryArtifactStore())
+
+    with pytest.raises(RuntimeError, match="extractor crashed"):
+        await service.upload(
+            filename="broken.txt",
+            content_type="text/plain",
+            data=b"payload",
+            artifact_connection_id="artifacts-p1",
+            project_id="p1",
+            app_id=None,
+            summary=None,
+            uploaded_by="c1",
+        )
+
+    assert MemoryArtifactStore._objects == {}
 
 
 # ── Upload ───────────────────────────────────────────────────────────────────
@@ -312,6 +357,24 @@ def test_upload_document_app_scope_is_inferred_without_widening() -> None:
     assert response.status_code == 201
     row = repo.rows[response.json()["id"]]
     assert (row.project_id, row.app_id) == ("p1", "app-a")
+
+
+def test_upload_document_rejects_archived_inferred_app_scope() -> None:
+    who = identity(scopes=[ScopeRef(project_id="p1", app_id="app-a")])
+    app = make_app(
+        FakeDocumentsRepository(),
+        who,
+        catalog=FakeCatalogRepository(archived=True),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("a.txt", b"a", "text/plain")},
+            data={"project_id": "p1"},
+        )
+
+    assert response.status_code == 422
 
 
 def test_upload_document_single_scoped_project_is_inferred_not_global() -> None:

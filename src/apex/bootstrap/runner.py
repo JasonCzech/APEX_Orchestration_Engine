@@ -58,6 +58,35 @@ class BootstrapError(RuntimeError):
     referenced application or an unset admin-key env var)."""
 
 
+_MINIO_ENDPOINT_ALIASES = {
+    "apex-minio:9000",
+    "apex-minio.apex.svc.cluster.local:9000",
+}
+
+
+def _reconcile_known_connection_alias(
+    existing: Connection, expected: dict[str, object], drift: list[str]
+) -> bool:
+    """Apply narrowly-scoped, equivalent in-cluster endpoint migrations."""
+
+    if existing.name != "minio-artifacts" or drift != ["options"]:
+        return False
+    current_options = dict(existing.options or {})
+    raw_expected_options = expected.get("options")
+    if not isinstance(raw_expected_options, Mapping):
+        return False
+    expected_options = dict(raw_expected_options)
+    current_endpoint = current_options.pop("endpoint", None)
+    expected_endpoint = expected_options.pop("endpoint", None)
+    if current_options != expected_options or {
+        current_endpoint,
+        expected_endpoint,
+    } != _MINIO_ENDPOINT_ALIASES:
+        return False
+    existing.options = expected_options | {"endpoint": expected_endpoint}
+    return True
+
+
 async def apply_document(
     doc: BootstrapDocument,
     session: AsyncSession,
@@ -220,6 +249,13 @@ async def _apply_connections(
                 field for field, value in expected.items() if getattr(existing, field) != value
             )
             if drift:
+                if _reconcile_known_connection_alias(existing, expected, drift):
+                    await session.flush()
+                    log(
+                        f"connection {spec.name}: reconciled equivalent in-cluster endpoint "
+                        f"(id={existing.id})"
+                    )
+                    continue
                 raise BootstrapError(
                     f"connection {spec.name!r} differs from bootstrap configuration "
                     f"({', '.join(drift)}); create a versioned replacement or reconcile it "

@@ -467,7 +467,8 @@ def _row_cef(row: AuditLog) -> str:
     )
     return (
         "CEF:0|APEX|Orchestration Engine|1|"
-        f"{_cef_escape(row.category)}|{_cef_escape(row.action)}|{_cef_severity(row)}|"
+        f"{_cef_header_escape(row.category)}|{_cef_header_escape(row.action)}|"
+        f"{_cef_severity(row)}|"
         f"{extension}"
     )
 
@@ -475,6 +476,16 @@ def _row_cef(row: AuditLog) -> str:
 def _cef_escape(value: Any) -> str:
     return (
         str(value).replace("\\", "\\\\").replace("=", "\\=").replace("\n", "\\n").replace("\r", "")
+    )
+
+
+def _cef_header_escape(value: Any) -> str:
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("\n", "\\n")
+        .replace("\r", "")
     )
 
 

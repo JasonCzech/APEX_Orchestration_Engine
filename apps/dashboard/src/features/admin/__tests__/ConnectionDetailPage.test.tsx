@@ -12,13 +12,14 @@ import {
   probeHandler,
   putHostMappingsHandler,
   updateConnectionHandler,
+  CONN_ENGINE,
   CONN_JIRA,
 } from './adminTestHandlers'
 
 function renderDetail(entry = '/admin/connections/conn-jira') {
   return renderApp({
     initialEntries: [entry],
-    authState: authenticatedState('admin'),
+    authState: authenticatedState('admin', 'Dash Ops', []),
   })
 }
 
@@ -132,6 +133,28 @@ describe('ConnectionDetailPage', () => {
       options: { project_key: 'ALPHA' },
     })
     expect(update.captured[0]).not.toHaveProperty('kind')
+  })
+
+  it('constrains scoped admins to owned projects and non-secret options', async () => {
+    const update = updateConnectionHandler(CONN_ENGINE)
+    server.use(...connectionsReadHandlers([CONN_ENGINE]), update.handler)
+    const user = userEvent.setup()
+    renderApp({
+      initialEntries: ['/admin/connections/conn-engine'],
+      authState: authenticatedState('admin', 'Scoped Admin', [
+        { project_id: 'proj-alpha', app_id: null },
+      ]),
+    })
+
+    const form = await screen.findByRole('form', { name: 'Connection config' })
+    expect(within(form).getByRole('combobox', { name: 'Project' })).toHaveValue('proj-alpha')
+    expect(within(form).queryByRole('textbox', { name: 'Secret ref' })).not.toBeInTheDocument()
+    const options = within(form).getByRole('textbox', { name: 'Options JSON' })
+    await user.clear(options)
+    await user.paste('{"_apex_trusted_private_host":true}')
+    expect(within(form).getByRole('alert')).toHaveTextContent('require a global administrator')
+    expect(within(form).getByRole('button', { name: 'Save changes' })).toBeDisabled()
+    expect(update.captured).toHaveLength(0)
   })
 
   it('deletes only after the connection name is typed, then returns to the list', async () => {

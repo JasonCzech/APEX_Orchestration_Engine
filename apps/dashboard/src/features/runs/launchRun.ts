@@ -45,6 +45,7 @@ export function recommendedRecursionLimit(configurable: RecursionLimitConfigurab
 }
 
 export interface LaunchRunInput {
+  idempotencyKey: string
   title: string
   request: string
   projectId: string
@@ -56,13 +57,9 @@ export interface LaunchedRun {
 }
 
 export async function launchRun(input: LaunchRunInput): Promise<LaunchedRun> {
-  const idempotencyKey =
-    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`
   const { data, error, response } = await getApexClient().POST('/v1/pipelines', {
     body: {
-      idempotency_key: idempotencyKey,
+      idempotency_key: input.idempotencyKey,
       title: input.title,
       request: input.request,
       project_id: input.projectId,

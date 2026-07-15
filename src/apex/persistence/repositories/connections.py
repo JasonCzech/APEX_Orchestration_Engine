@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apex.persistence.models import Connection, Document, EngineRun, HostMapping
+from apex.persistence.models import ArtifactReference, Connection, Document, EngineRun, HostMapping
 
 _TERMINAL_ENGINE_STATUSES = ("completed", "failed", "aborted")
 
@@ -91,9 +91,31 @@ class ConnectionsRepository:
             )
             if engine_artifact_id is not None:
                 return "stored engine artifacts"
+            pipeline_artifact_id = await self._session.scalar(
+                select(ArtifactReference.id)
+                .where(ArtifactReference.connection_id == conn.id)
+                .limit(1)
+            )
+            if pipeline_artifact_id is not None:
+                return "stored pipeline artifacts"
         if conn.kind == "execution_engine":
+            active_run_id = await self._session.scalar(
+                select(EngineRun.id)
+                .where(
+                    EngineRun.connection_id == conn.id,
+                    EngineRun.status.not_in(_TERMINAL_ENGINE_STATUSES),
+                )
+                .limit(1)
+            )
+            if active_run_id is not None:
+                return "active engine runs"
+            # Compatibility fallback for rows created before connection_id was
+            # projected as a foreign-key lease.
             handles = await self._session.scalars(
-                select(EngineRun.handle).where(EngineRun.status.not_in(_TERMINAL_ENGINE_STATUSES))
+                select(EngineRun.handle).where(
+                    EngineRun.connection_id.is_(None),
+                    EngineRun.status.not_in(_TERMINAL_ENGINE_STATUSES),
+                )
             )
             if any(
                 isinstance(handle, dict) and handle.get("connection_id") == conn.id

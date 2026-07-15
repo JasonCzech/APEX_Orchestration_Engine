@@ -562,6 +562,36 @@ async def test_provision_adopts_test_when_create_response_is_lost() -> None:
 
 
 @respx.mock
+async def test_provision_adopts_script_when_upload_response_is_lost() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    upload = respx.post(f"{BASE}/api/v1/scripts").mock(
+        side_effect=httpx.ReadTimeout("response lost after script commit")
+    )
+    respx.get(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "scripts": [{"id": "script-committed", "name": f"{TEST_NAME} script"}],
+                "count": 1,
+            },
+        )
+    )
+    create_test = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(201, json=managed_test_json())
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    assert upload.call_count == 1
+    body = json.loads(create_test.calls.last.request.content)
+    assert body["groups"][0]["script_id"] == "script-committed"
+    assert_all_calls_authed()
+
+
+@respx.mock
 async def test_provision_is_get_or_create_across_a_fresh_instance() -> None:
     """Simulated process restart: a FRESH adapter re-provisioning the same key
     finds the test by name via GET /api/v1/tests and creates nothing."""

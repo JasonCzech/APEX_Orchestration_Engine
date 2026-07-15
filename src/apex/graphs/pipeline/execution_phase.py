@@ -85,7 +85,9 @@ _SPEC_OVERRIDE_FIELDS = frozenset(LoadTestSpec.model_fields) - {
 }
 _ENGINE_OPTION_FIELDS = {
     "apex_load": frozenset[str](),
-    "loadrunner": frozenset({"abortive_stop"}),
+    # test identifiers remain accepted here for trusted persisted checkpoints;
+    # new public runs are denied at the REST/LangGraph authorization boundaries.
+    "loadrunner": frozenset({"abortive_stop", "test_id", "test_instance_id"}),
     "sim": frozenset({"fail_at_pct"}),
 }
 
@@ -177,13 +179,19 @@ async def _resolve_engine(
     options. The base URL/domain/project/secret and durable connection id remain
     those of the stored connection, so a later kill switch can resolve it.
     """
-    adapter, _connection_id = await _make_resolver().resolve_with_connection_id(
+    adapter, resolved_connection_id = await _make_resolver().resolve_with_connection_id(
         PortKind.EXECUTION_ENGINE,
         connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
         project_id=cfg.project_id,
         expected_provider=cfg.engine,
         options_overlay=engine_options,
     )
+    try:
+        adapter._apex_resolved_connection_id = resolved_connection_id
+    except (AttributeError, TypeError):
+        # Slot-based third-party adapters may reject private attributes. Their
+        # configured explicit id remains available through cfg.connections.
+        pass
     return adapter
 
 
@@ -349,6 +357,9 @@ def _build_spec(
     # The script-scenario phase is model-authored input. Provider workload IDs are
     # security-sensitive because their stored definitions may target other hosts.
     base.pop("script_refs", None)
+    legacy_script_refs = overrides.get("script_refs")
+    if isinstance(legacy_script_refs, list):
+        base["script_refs"] = legacy_script_refs
     # Ignore any caller-seeded upstream target; only the auth-resolved immutable
     # run target may reach an execution adapter.
     base["target_environment"] = target_environment
@@ -424,6 +435,32 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
     async def _provision() -> tuple[list[str], EngineHandle | None]:
         adapter = await _resolve_engine(cfg, engine_options)
         try:
+            connection_id = getattr(
+                adapter, "_apex_resolved_connection_id", None
+            ) or cfg.connections.get(PortKind.EXECUTION_ENGINE.value)
+            connection_version = getattr(adapter, "_apex_resolved_connection_version", None)
+            if not connection_id:
+                raise RuntimeError("resolved execution connection has no durable id")
+            # Required reservation before any provider validation/provisioning.
+            # Connection update/delete/disable guards inspect this nonterminal row.
+            engine_runs.record_engine_run_sync(
+                thread_id,
+                attempt,
+                cfg.engine,
+                {
+                    "engine": cfg.engine,
+                    "connection_id": connection_id,
+                    "idempotency_key": spec.idempotency_key,
+                    "extras": {},
+                },
+                EngineRunPhase.PROVISIONING.value,
+                project_id=cfg.project_id,
+                app_id=cfg.app_id,
+                artifact_namespace=engine_artifact_namespace(spec.idempotency_key),
+                connection_id=connection_id,
+                connection_version=connection_version,
+                required=True,
+            )
             report = await adapter.validate(spec)
             if not report.ok:
                 return list(report.issues), None

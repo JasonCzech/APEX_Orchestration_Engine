@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from apex.persistence.models import EngineRun
+from apex.persistence.models import Connection, EngineRun
 from apex.ports.artifact_store import engine_artifact_namespace
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
@@ -54,6 +55,8 @@ async def record_engine_run(
     external_run_id: str | None = None,
     artifact_namespace: str | None = None,
     artifact_connection_id: str | None = None,
+    connection_id: str | None = None,
+    connection_version: datetime | None = None,
     summary: dict[str, Any] | None = None,
     required: bool = False,
 ) -> None:
@@ -75,6 +78,20 @@ async def record_engine_run(
         try:
             session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
             async with session_factory() as session:
+                if required and connection_id is not None and connection_version is not None:
+                    connection = await session.scalar(
+                        select(Connection)
+                        .where(Connection.id == connection_id)
+                        .with_for_update()
+                    )
+                    if connection is None or not connection.enabled:
+                        raise RuntimeError(
+                            f"execution connection {connection_id!r} is missing or disabled"
+                        )
+                    if connection.updated_at != connection_version:
+                        raise RuntimeError(
+                            f"execution connection {connection_id!r} changed during reservation"
+                        )
                 values: dict[str, Any] = {
                     "thread_id": thread_id,
                     "attempt": attempt,
@@ -96,10 +113,13 @@ async def record_engine_run(
                     values["artifact_namespace"] = artifact_namespace.rstrip("/")
                 if artifact_connection_id is not None:
                     values["artifact_connection_id"] = artifact_connection_id
+                if connection_id is not None and connection_version is not None:
+                    values["connection_id"] = connection_id
                 if summary is not None:
                     values["summary"] = summary
                 if status in _TERMINAL:
                     values["ended_at"] = datetime.now(UTC)
+                    values["connection_id"] = None
                 stmt = _upsert_statement(values, session.get_bind().dialect.name)
                 await session.execute(stmt)
                 await session.commit()

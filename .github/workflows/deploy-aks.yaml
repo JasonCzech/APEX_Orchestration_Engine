@@ -161,16 +161,28 @@ jobs:
       - name: Cluster credentials
         run: az aks get-credentials --resource-group "${{ needs.provision.outputs.rg }}" --name "${{ needs.provision.outputs.aks }}" --overwrite-existing
       - name: Prepare namespace and CSI API
+        env:
+          TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
         run: |
+          if [[ ! "$TLS_SECRET_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+            echo "tls_secret_name must be a Kubernetes DNS label" >&2
+            exit 2
+          fi
           kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
           kubectl wait --for=condition=Established \
             crd/secretproviderclasses.secrets-store.csi.x-k8s.io --timeout=5m
-          kubectl -n "$NAMESPACE" get secret "${{ inputs.tls_secret_name }}"
+          kubectl -n "$NAMESPACE" get secret "$TLS_SECRET_NAME"
       - name: Helm upgrade (migrate + bootstrap hooks run first)
         env:
           ACR: ${{ needs.provision.outputs.acr }}
           TAG: sha-${GITHUB_SHA}
+          APEX_HOSTNAME: ${{ inputs.hostname }}
+          TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
         run: |
+          if [[ ! "$APEX_HOSTNAME" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+            echo "hostname must be a DNS hostname" >&2
+            exit 2
+          fi
           helm upgrade --install "$RELEASE" deploy/helm/apex-orchestration-engine \
             -n "$NAMESPACE" --create-namespace \
             -f deploy/azure/helm/values-azure.yaml \
@@ -180,10 +192,10 @@ jobs:
             --set dashboard.image.tag="$TAG" \
             --set-string dashboard.backendUpstream="http://$RELEASE-apex-orchestration-engine:80" \
             --set-string bootstrap.document.connections[0].options.endpoint="apex-minio:9000" \
-            --set-string ingress.hosts[0].host="${{ inputs.hostname }}" \
-            --set-string ingress.tls[0].hosts[0]="${{ inputs.hostname }}" \
-            --set-string ingress.tls[0].secretName="${{ inputs.tls_secret_name }}" \
-            --set-string apexSettings.APEX_CORS_ORIGINS='["https://${{ inputs.hostname }}"]' \
+            --set-string "ingress.hosts[0].host=$APEX_HOSTNAME" \
+            --set-string "ingress.tls[0].hosts[0]=$APEX_HOSTNAME" \
+            --set-string "ingress.tls[0].secretName=$TLS_SECRET_NAME" \
+            --set-string "apexSettings.APEX_CORS_ORIGINS=[\"https://$APEX_HOSTNAME\"]" \
             --set secretBackend.csi.keyvaultName="${{ needs.provision.outputs.kv }}" \
             --set secretBackend.csi.tenantId="${{ needs.provision.outputs.tenant }}" \
             --set workloadIdentity.clientId="${{ needs.provision.outputs.client_id }}" \

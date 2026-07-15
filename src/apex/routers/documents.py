@@ -13,11 +13,12 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
-from apex.persistence.db import get_sessionmaker
+from apex.persistence.db import get_session
 from apex.persistence.models import Document
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
@@ -37,6 +38,15 @@ from apex.services.documents import (
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 RepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+
+
+def get_catalog_repository(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CatalogRepository:
+    return CatalogRepository(session)
+
+
+CatalogRepo = Annotated[CatalogRepository, Depends(get_catalog_repository)]
 ConnectionResolverDep = Annotated[ConnectionResolver, Depends(get_connection_resolver)]
 
 
@@ -167,6 +177,7 @@ async def upload_document(
     identity: Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))],
     repository: RepositoryDep,
     resolver: ConnectionResolverDep,
+    catalog: CatalogRepo,
 ) -> Any:
     boundary = extract_boundary(request.headers.get("content-type"))
     if boundary is None:
@@ -192,15 +203,13 @@ async def upload_document(
 
     project_id = (upload.fields.get("project_id") or "").strip() or None
     app_id = (upload.fields.get("app_id") or "").strip() or None
-    explicit_app_id = app_id is not None
     project_id, app_id = _resolve_upload_scope(
         identity,
         project_id=project_id,
         app_id=app_id,
     )
-    if explicit_app_id and app_id is not None:
-        async with get_sessionmaker()() as session:
-            application = await CatalogRepository(session).get_application(app_id)
+    if app_id is not None:
+        application = await catalog.get_application(app_id)
         if (
             application is None
             or application.archived_at is not None

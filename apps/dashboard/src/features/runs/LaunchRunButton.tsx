@@ -7,6 +7,12 @@ import { RequireRole } from '@/auth/RequireRole'
 
 import './live.css'
 
+function createLaunchIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 /**
  * Minimal D2 launch entry point: btn-primary + a small modal (title, request,
  * project). Gates run ALL-AUTO in D2 (see launchRun.ts); the gate-policy
@@ -18,6 +24,7 @@ export function LaunchRunButton() {
   const [title, setTitle] = useState('')
   const [request, setRequest] = useState('')
   const [project, setProject] = useState('demo')
+  const [idempotencyKey, setIdempotencyKey] = useState(createLaunchIdempotencyKey)
   const navigate = useNavigate()
   const launch = useLaunchRun()
   const titleId = useId()
@@ -28,6 +35,7 @@ export function LaunchRunButton() {
     if (launch.isPending) return
     setOpen(false)
     launch.reset()
+    setIdempotencyKey(createLaunchIdempotencyKey())
   }
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -35,6 +43,7 @@ export function LaunchRunButton() {
     if (!canSubmit) return
     launch.mutate(
       {
+        idempotencyKey,
         title: title.trim(),
         request: request.trim(),
         projectId: project.trim() || 'demo',

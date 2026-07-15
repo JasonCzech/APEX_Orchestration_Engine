@@ -87,4 +87,33 @@ describe('LaunchRunButton', () => {
     expect(screen.getByRole('dialog', { name: 'Launch pipeline run' })).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs')
   })
+
+  it('reuses one idempotency key when the user retries a failed request', async () => {
+    const keys: string[] = []
+    server.use(
+      http.post('*/v1/pipelines', async ({ request }) => {
+        const body = (await request.json()) as { idempotency_key: string }
+        keys.push(body.idempotency_key)
+        return keys.length === 1
+          ? HttpResponse.json({ detail: 'temporary outage' }, { status: 503 })
+          : HttpResponse.json({
+              thread_id: 'thread-new',
+              run_id: 'run-1',
+              stream_url: '/runs/run-1/stream',
+            })
+      }),
+    )
+    const user = userEvent.setup()
+    renderButton()
+
+    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.type(screen.getByLabelText('Title'), 'Retryable run')
+    await user.type(screen.getByLabelText('Request'), 'Retry without duplication')
+    await user.click(screen.getByRole('button', { name: 'Launch run' }))
+    await screen.findByRole('alert')
+    await user.click(screen.getByRole('button', { name: 'Launch run' }))
+
+    await waitFor(() => expect(keys).toHaveLength(2))
+    expect(keys[0]).toBe(keys[1])
+  })
 })

@@ -159,7 +159,14 @@ class EngineAbortService:
             except Exception as exc:  # noqa: BLE001 — teardown is best-effort after a kill
                 logger.warning("engine_abort.teardown_failed", thread_id=thread_id, error=str(exc))
 
-        cancelled = await self._cancel_runs(thread_id)
+        # STOPPING is only an acknowledgement. Keep the durable graph poller
+        # alive until it observes a terminal provider phase; otherwise a stalled
+        # graceful stop would have no remaining monitor or retry path.
+        cancelled = (
+            []
+            if observed_phase is EngineRunPhase.STOPPING
+            else await self._cancel_runs(thread_id)
+        )
 
         if observed_phase is EngineRunPhase.ABORTED:
             try:

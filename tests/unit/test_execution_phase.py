@@ -8,6 +8,7 @@ Sim durations are tiny via the per-run "load_test" configurable override.
 
 import asyncio
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Any, cast
 
 import pytest
@@ -74,6 +75,8 @@ def projection_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         app_id: str | None = None,
         artifact_namespace: str | None = None,
         artifact_connection_id: str | None = None,
+        connection_id: str | None = None,
+        connection_version: datetime | None = None,
         required: bool = False,
     ) -> None:
         calls.append(
@@ -88,6 +91,8 @@ def projection_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
                 "app_id": app_id,
                 "artifact_namespace": artifact_namespace,
                 "artifact_connection_id": artifact_connection_id,
+                "connection_id": connection_id,
+                "connection_version": connection_version,
                 "required": required,
             }
         )
@@ -102,6 +107,8 @@ class EngineSpy:
     def __init__(self, inner: SimExecutionEngine, calls: list[str]) -> None:
         self._inner = inner
         self.calls = calls
+        self._apex_resolved_connection_id: str | None = None
+        self._apex_resolved_connection_version: datetime | None = None
 
     async def validate(self, spec: Any) -> Any:
         self.calls.append("validate")
@@ -152,7 +159,9 @@ def install_engine_spy(monkeypatch: pytest.MonkeyPatch) -> list[str]:
             name="Spy sim engine",
             options=dict(engine_options),
         )
-        return EngineSpy(SimExecutionEngine(conn), calls)
+        spy = EngineSpy(SimExecutionEngine(conn), calls)
+        spy._apex_resolved_connection_id = conn.id
+        return spy
 
     monkeypatch.setattr(execution_phase, "_resolve_engine", resolve)
     return calls
@@ -299,7 +308,7 @@ def test_e2e_all_auto_full_pipeline_runs_engine_and_reports(
     assert "KPIs:" in reporting and "tps_avg" in reporting and "passed" in reporting
 
     statuses = [c["status"] for c in projection_calls]
-    assert statuses == ["provisioning", "running", "completed"]
+    assert statuses == ["provisioning", "provisioning", "running", "completed"]
     assert projection_calls[-1]["external_run_id"] == handle["external_run_id"]
     assert projection_calls[-1]["summary"] == summary
 
@@ -481,15 +490,17 @@ def test_assistant_only_environment_config_requires_run_authorization_stamp() ->
         execution_phase._verified_stamped_target(cfg, "https://8.8.8.8/load", 1)
 
 
-def test_loadrunner_provider_workload_options_are_rejected() -> None:
+def test_trusted_persisted_loadrunner_workload_options_remain_resumable() -> None:
     cfg = exec_config(
         "exec-loadrunner-options",
         load_test={"test_id": 42, "test_instance_id": 7, "abortive_stop": True},
     )
     configurable = dict(cfg.get("configurable") or {})
     cfg = cast(RunnableConfig, {**cfg, "configurable": {**configurable, "engine": "loadrunner"}})
-    with pytest.raises(ValueError, match="provider workload selectors"):
-        execution_phase._build_spec(cast(PipelineState, seeded_inputs(0.1)), cfg, 1, "loadrunner")
+    _spec, engine_options = execution_phase._build_spec(
+        cast(PipelineState, seeded_inputs(0.1)), cfg, 1, "loadrunner"
+    )
+    assert engine_options == {"test_id": 42, "test_instance_id": 7, "abortive_stop": True}
 
 
 def test_engine_resolution_verifies_selector_and_overlays_stored_connection(
@@ -959,7 +970,12 @@ def test_poll_timeout_aborts_engine_and_fails_phase(
     assert "abort" in calls
     assert "teardown" in calls
     assert "collect_artifacts" not in calls
-    assert [c["status"] for c in projection_calls] == ["provisioning", "running", "aborted"]
+    assert [c["status"] for c in projection_calls] == [
+        "provisioning",
+        "provisioning",
+        "running",
+        "aborted",
+    ]
 
 
 def test_gated_output_review_opens_after_collect_with_summary() -> None:

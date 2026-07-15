@@ -138,15 +138,6 @@ class PipelineConfigurable(BaseModel):
         if len(encoded) > 20_000:
             raise ValueError("load_test configuration must not exceed 20000 characters")
 
-        forbidden_selectors = {"script_refs", "test_id", "test_instance_id"}.intersection(
-            self.load_test
-        )
-        if forbidden_selectors:
-            raise ValueError(
-                "provider workload selectors are connection/catalog-owned and cannot be "
-                f"overridden per run: {', '.join(sorted(forbidden_selectors))}"
-            )
-
         spec_fields = set(LoadTestSpec.model_fields) - {
             "idempotency_key",
             "target_environment",

@@ -53,6 +53,7 @@ from apex.graphs.pipeline.gates import (
 from apex.graphs.pipeline.state import JsonDict, PipelineState
 from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import usage as usage_events
+from apex.services.artifact_references import record_artifact_reference
 from apex.services.connections import ConnectionResolver, DbConnectionStore
 from apex.services.prompts import (
     prompt_review_from_resolved,
@@ -171,6 +172,20 @@ async def _persist_transcript(
             _transcript_bytes(state, phase, entry, attempt=attempt, status=status),
             content_type="text/plain; charset=utf-8",
         )
+        try:
+            await record_artifact_reference(
+                artifact_key=stored.key,
+                connection_id=connection_id,
+                kind="transcript",
+                thread_id=_thread_id(config),
+                project_id=cfg.project_id,
+                app_id=cfg.app_id,
+            )
+        except BaseException:
+            delete = getattr(store, "delete", None)
+            if delete is not None:
+                await delete(stored.key)
+            raise
         return stored, connection_id
     finally:
         await resolver.close()

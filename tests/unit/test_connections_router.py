@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -14,7 +14,10 @@ from apex.app.dependencies import get_current_identity
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.domain.integrations import SecretValue
 from apex.persistence.models import Connection, HostMapping
-from apex.persistence.repositories.connections import DuplicateConnectionNameError
+from apex.persistence.repositories.connections import (
+    ConnectionsRepository,
+    DuplicateConnectionNameError,
+)
 from apex.routers.connections import get_connections_repository, router
 
 
@@ -38,6 +41,35 @@ def _make_connection(**kwargs: Any) -> Connection:
     conn.updated_at = _now()
     conn.host_mappings = []
     return conn
+
+
+@pytest.mark.asyncio
+async def test_artifact_connection_guard_includes_pipeline_artifact_index() -> None:
+    class ScalarSession:
+        def __init__(self) -> None:
+            self.values = iter([None, None, "artifact-ref-1"])
+
+        async def scalar(self, _statement: object) -> object:
+            return next(self.values)
+
+    repo = ConnectionsRepository(cast(Any, ScalarSession()))
+    conn = _make_connection(
+        kind="artifact_store", provider="stub", name="artifact-store"
+    )
+
+    assert await repo.durable_reference_reason(conn) == "stored pipeline artifacts"
+
+
+@pytest.mark.asyncio
+async def test_execution_connection_guard_uses_active_foreign_key_lease() -> None:
+    class ScalarSession:
+        async def scalar(self, _statement: object) -> str:
+            return "engine-run-1"
+
+    repo = ConnectionsRepository(cast(Any, ScalarSession()))
+    conn = _make_connection(kind="execution_engine", provider="sim", name="engine")
+
+    assert await repo.durable_reference_reason(conn) == "active engine runs"
 
 
 class FakeConnectionsRepository:
@@ -543,6 +575,29 @@ def test_patch_rejects_private_base_url(admin: TestClient) -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"] == "private adapter hosts are disabled"
+
+
+@pytest.mark.parametrize("field", ["name", "provider", "options"])
+def test_patch_rejects_null_for_non_nullable_fields(admin: TestClient, field: str) -> None:
+    conn_id = admin.post(
+        "/admin/connections",
+        json={"kind": "work_tracking", "provider": "stub", "name": f"nonnull-{field}"},
+    ).json()["id"]
+
+    response = admin.patch(f"/admin/connections/{conn_id}", json={field: None})
+
+    assert response.status_code == 422
+
+
+def test_patch_rejects_unknown_fields(admin: TestClient) -> None:
+    conn_id = admin.post(
+        "/admin/connections",
+        json={"kind": "work_tracking", "provider": "stub", "name": "no-typos"},
+    ).json()["id"]
+
+    response = admin.patch(f"/admin/connections/{conn_id}", json={"optoins": {}})
+
+    assert response.status_code == 422
 
 
 def test_enable_disable_and_delete(admin: TestClient) -> None:

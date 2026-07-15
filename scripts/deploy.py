@@ -146,11 +146,27 @@ def aks_up(_: list[str]) -> None:
     env = require_env("APEX_ENV")
     hostname = require_env("APEX_HOSTNAME")
     tls_secret = require_env("APEX_TLS_SECRET")
-    tag = os.environ.get("APEX_TAG", "latest")
+    tag = os.environ.get("APEX_TAG") or f"sha-{capture(['git', 'rev-parse', '--short=12', 'HEAD'])}"
     namespace = os.environ.get("APEX_NAMESPACE", "apex")
     release = os.environ.get("APEX_RELEASE", "apex")
 
     # 1) Provision (the backend must already be initialized — see deploy/terraform/README.md).
+    backend_deployment = f"deployment/{release}-apex-orchestration-engine"
+    dashboard_deployment = f"deployment/{release}-apex-orchestration-engine-dashboard"
+    # Helm does not roll pods when an explicitly reused tag leaves the pod
+    # template unchanged. Always restart both workloads so mutable registry
+    # content and rotated Secret-backed environment variables are reloaded.
+    run(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "rollout",
+            "restart",
+            backend_deployment,
+            dashboard_deployment,
+        ]
+    )
     run(
         [
             "terraform",
@@ -273,7 +289,17 @@ def aks_up(_: list[str]) -> None:
             namespace,
             "rollout",
             "status",
-            f"deployment/{release}-apex-orchestration-engine",
+            backend_deployment,
+        ]
+    )
+    run(
+        [
+            "kubectl",
+            "-n",
+            namespace,
+            "rollout",
+            "status",
+            dashboard_deployment,
         ]
     )
     run(["kubectl", "-n", namespace, "rollout", "restart", "deployment/apex-minio"])

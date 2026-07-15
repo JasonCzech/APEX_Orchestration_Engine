@@ -212,45 +212,47 @@ class DocumentsService:
         document_id = uuid4().hex
         name = safe_filename(filename)
         key = document_artifact_key(document_id, name)
-        await self._store.put(key, data, content_type=content_type)
-
-        # Parse the bytes into text the agent can actually read. Off-thread because
-        # pypdf/python-docx are blocking; soft-fails (status set) never break the upload.
-        ingest = get_settings().documents
-        extraction = await asyncio.to_thread(
-            _extract_text_bounded,
-            data,
-            filename=name,
-            content_type=content_type,
-            max_chars=ingest.max_extract_chars,
-        )
-        if not summary and extraction.status == PARSE_PARSED and extraction.text:
-            summary = derive_summary(extraction.text, max_chars=ingest.summary_chars)
-
-        document = Document(
-            id=document_id,
-            name=name,
-            media_type=content_type,
-            size_bytes=len(data),  # actual bytes read, not the client's claim
-            artifact_key=key,
-            artifact_connection_id=artifact_connection_id,
-            project_id=project_id,
-            app_id=app_id,
-            summary=summary,
-            uploaded_by=uploaded_by,
-            extracted_text=extraction.text or None,
-            extracted_chars=extraction.char_count,
-            parse_status=extraction.status,
-            parse_error=extraction.error,
-        )
+        stored = False
         try:
+            await self._store.put(key, data, content_type=content_type)
+            stored = True
+
+            # Parse the bytes into text the agent can actually read. Off-thread because
+            # pypdf/python-docx are blocking; soft-fails (status set) never break the upload.
+            ingest = get_settings().documents
+            extraction = await asyncio.to_thread(
+                _extract_text_bounded,
+                data,
+                filename=name,
+                content_type=content_type,
+                max_chars=ingest.max_extract_chars,
+            )
+            if not summary and extraction.status == PARSE_PARSED and extraction.text:
+                summary = derive_summary(extraction.text, max_chars=ingest.summary_chars)
+
+            document = Document(
+                id=document_id,
+                name=name,
+                media_type=content_type,
+                size_bytes=len(data),  # actual bytes read, not the client's claim
+                artifact_key=key,
+                artifact_connection_id=artifact_connection_id,
+                project_id=project_id,
+                app_id=app_id,
+                summary=summary,
+                uploaded_by=uploaded_by,
+                extracted_text=extraction.text or None,
+                extracted_chars=extraction.char_count,
+                parse_status=extraction.status,
+                parse_error=extraction.error,
+            )
             return await self._repository.add(document)
-        except Exception:
+        except BaseException:
             try:
                 delete = getattr(self._store, "delete", None)
-                if delete is not None:
+                if stored and delete is not None:
                     await delete(key)
-            except Exception:
+            except BaseException:
                 logger.warning("documents.orphan_cleanup_failed", key=key, exc_info=True)
             raise
 

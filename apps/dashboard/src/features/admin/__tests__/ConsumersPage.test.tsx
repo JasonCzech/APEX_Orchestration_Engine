@@ -17,7 +17,7 @@ import {
 function renderList() {
   return renderApp({
     initialEntries: ['/admin/consumers'],
-    authState: authenticatedState('admin'),
+    authState: authenticatedState('admin', 'Dash Ops', []),
   })
 }
 
@@ -169,5 +169,30 @@ describe('ConsumersPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'Requires admin role' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New consumer' })).not.toBeInTheDocument()
+  })
+
+  it('blocks delegated grants outside a scoped administrator\'s access', async () => {
+    server.use(...consumersReadHandlers([CONSUMER_OPS]))
+    const user = userEvent.setup()
+    renderApp({
+      initialEntries: ['/admin/consumers'],
+      authState: authenticatedState('admin', 'Scoped Admin', [
+        { project_id: 'proj-alpha', app_id: 'checkout' },
+      ]),
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'New consumer' }))
+    const panel = screen.getByRole('form', { name: 'New consumer' })
+    await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'delegated')
+    await user.type(within(panel).getByRole('textbox', { name: 'Scope 1 project' }), 'proj-alpha')
+    expect(within(panel).getByRole('alert')).toHaveTextContent('outside your access')
+    expect(within(panel).getByRole('button', { name: 'Create consumer' })).toBeDisabled()
+
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Scope 1 app (optional)' }),
+      'checkout',
+    )
+    expect(within(panel).queryByRole('alert')).not.toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Create consumer' })).toBeEnabled()
   })
 })

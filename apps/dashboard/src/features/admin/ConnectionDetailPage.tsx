@@ -22,6 +22,8 @@ import {
   type Connection,
   type HostMappingOut,
 } from '@/api/hooks/useConnections'
+import { useConsumer } from '@/auth/AuthProvider'
+import { hasFullProjectScope, isGlobalAdmin } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
@@ -71,6 +73,15 @@ function ProbePanel({ probe }: { probe: ReturnType<typeof useTestConnection> }) 
 
 /** Config tab: PATCH form. Kind is immutable and rendered read-only. */
 function ConfigTab({ connection }: { connection: Connection }) {
+  const consumer = useConsumer()
+  const globalAdmin = isGlobalAdmin(consumer)
+  const projectScopes = Array.from(
+    new Set(
+      (consumer?.scopes ?? [])
+        .filter((scope) => hasFullProjectScope(consumer, scope.project_id))
+        .map((scope) => scope.project_id),
+    ),
+  )
   const update = useUpdateConnection()
   const [name, setName] = useState(connection.name)
   const [provider, setProvider] = useState(connection.provider)
@@ -82,8 +93,16 @@ function ConfigTab({ connection }: { connection: Connection }) {
   )
 
   const optionsParse = parseJsonObject(optionsText)
+  const hasReservedOptions =
+    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
+  const projectAllowed = globalAdmin || projectScopes.includes(project)
   const canSave =
-    name.trim() !== '' && provider.trim() !== '' && optionsParse.ok && !update.isPending
+    name.trim() !== '' &&
+    provider.trim() !== '' &&
+    optionsParse.ok &&
+    projectAllowed &&
+    (globalAdmin || !hasReservedOptions) &&
+    !update.isPending
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -95,7 +114,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
         provider: provider.trim(),
         project_id: project.trim() || null,
         base_url: baseUrl.trim() || null,
-        secret_ref: secretRef.trim() || null,
+        ...(globalAdmin ? { secret_ref: secretRef.trim() || null } : {}),
         options: optionsParse.value,
       },
     })
@@ -131,14 +150,23 @@ function ConfigTab({ connection }: { connection: Connection }) {
         </label>
         <label className="adm-field">
           <span className="adm-field-label">Project (optional)</span>
-          <input
+          {globalAdmin ? <input
             type="text"
             className="field-input"
             aria-label="Project"
             placeholder="leave empty for global"
             value={project}
             onChange={(event) => setProject(event.target.value)}
-          />
+          /> : <select
+            className="field-select"
+            aria-label="Project"
+            value={project}
+            onChange={(event) => setProject(event.target.value)}
+          >
+            {projectScopes.map((projectId) => (
+              <option key={projectId} value={projectId}>{projectId}</option>
+            ))}
+          </select>}
         </label>
         <label className="adm-field">
           <span className="adm-field-label">Base URL (optional)</span>
@@ -150,7 +178,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             onChange={(event) => setBaseUrl(event.target.value)}
           />
         </label>
-        <label className="adm-field">
+        {globalAdmin && <label className="adm-field">
           <span className="adm-field-label">Secret ref</span>
           <input
             type="text"
@@ -161,7 +189,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             onChange={(event) => setSecretRef(event.target.value)}
           />
           <span className="adm-field-help">env:NAME — references only, never raw secrets</span>
-        </label>
+        </label>}
       </div>
       <label className="adm-field">
         <span className="adm-field-label">Options (JSON)</span>
@@ -177,6 +205,11 @@ function ConfigTab({ connection }: { connection: Connection }) {
       {!optionsParse.ok && (
         <p className="adm-form-error" role="alert">
           {optionsParse.message}
+        </p>
+      )}
+      {!globalAdmin && hasReservedOptions && (
+        <p className="adm-form-error" role="alert">
+          Options beginning with _apex_ require a global administrator.
         </p>
       )}
       {update.isError && (

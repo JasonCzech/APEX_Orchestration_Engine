@@ -12,7 +12,11 @@ scope visibility server-side. Verified against langgraph_sdk 0.4.2:
   ``langgraph_sdk.errors.ConflictError`` (HTTP 409 from the server).
 """
 
+import asyncio
+import hashlib
+import json
 from typing import Any, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 import structlog
 from langgraph_sdk.errors import ConflictError
@@ -73,6 +77,10 @@ class NoActiveRunError(Exception):
     def __init__(self, thread_id: str) -> None:
         self.thread_id = thread_id
         super().__init__(f"thread {thread_id!r} has no pending or running run")
+
+
+class LaunchIdempotencyConflictError(Exception):
+    """An idempotency key was reused for a different scoped request."""
 
 
 # ── Pure mapping helpers ─────────────────────────────────────────────────────
@@ -218,6 +226,7 @@ class PipelineReadService:
         model_by_phase: JsonDict | None = None,
         external_results: JsonDict | None = None,
         context_packets: list[JsonDict] | None = None,
+        principal_id: str | None = None,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
 
@@ -279,33 +288,67 @@ class PipelineReadService:
         if context_packets:
             run_input["context_packets"] = validate_context_packets(context_packets)
 
-        if idempotency_key:
-            existing_threads = await self._client.threads.search(
-                metadata={"launch_idempotency_key": idempotency_key},
-                limit=1,
-                sort_by="created_at",
-                sort_order="desc",
-            )
-            if existing_threads:
-                existing_thread_id = existing_threads[0]["thread_id"]
-                existing_runs = await self._client.runs.list(existing_thread_id, limit=1)
-                if existing_runs:
-                    existing_run_id = existing_runs[0]["run_id"]
-                    return {
-                        "thread_id": existing_thread_id,
-                        "run_id": existing_run_id,
-                        "stream_url": f"/runs/{existing_run_id}/stream",
-                    }
-
         metadata: JsonDict = {"title": title}
+        deterministic_thread_id: str | None = None
+        request_fingerprint: str | None = None
         if idempotency_key:
+            idempotency_scope = {
+                "principal_id": principal_id or "unknown",
+                "project_id": project_id,
+                "app_id": app_id,
+                "idempotency_key": idempotency_key,
+            }
+            deterministic_thread_id = str(
+                uuid5(
+                    NAMESPACE_URL,
+                    "apex-launch:"
+                    + json.dumps(idempotency_scope, sort_keys=True, separators=(",", ":")),
+                )
+            )
+            request_fingerprint = hashlib.sha256(
+                json.dumps(
+                    {
+                        "assistant_id": selected_assistant_id,
+                        "input": run_input,
+                        "configurable": run_configurable,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
             metadata["launch_idempotency_key"] = idempotency_key
+            metadata["launch_idempotency_fingerprint"] = request_fingerprint
+            metadata["launch_principal_id"] = principal_id or "unknown"
         if project_id:
             metadata["project_id"] = project_id
         if app_id:
             metadata["app_id"] = app_id
-        thread = await self._client.threads.create(metadata=metadata)
+        thread = await self._client.threads.create(
+            metadata=metadata,
+            **(
+                {"thread_id": deterministic_thread_id, "if_exists": "do_nothing"}
+                if deterministic_thread_id is not None
+                else {}
+            ),
+        )
         thread_id = thread["thread_id"]
+
+        if idempotency_key:
+            existing_metadata = thread.get("metadata") or {}
+            existing_fingerprint = existing_metadata.get("launch_idempotency_fingerprint")
+            if existing_fingerprint not in {None, request_fingerprint}:
+                raise LaunchIdempotencyConflictError(
+                    "idempotency_key was already used for a different request"
+                )
+            existing_runs = await self._client.runs.list(thread_id, limit=1)
+            if existing_runs:
+                existing_run_id = existing_runs[0]["run_id"]
+                return {
+                    "thread_id": thread_id,
+                    "run_id": existing_run_id,
+                    "stream_url": f"/runs/{existing_run_id}/stream",
+                }
 
         try:
             run = await self._client.runs.create(
@@ -325,7 +368,27 @@ class PipelineReadService:
                 durability="sync",
                 multitask_strategy="reject",
             )
+        except ConflictError:
+            if idempotency_key:
+                # A concurrent caller won the run-create race on the deterministic
+                # thread. Wait briefly for its run row to become visible.
+                for delay in (0.0, 0.02, 0.05, 0.1):
+                    if delay:
+                        await asyncio.sleep(delay)
+                    existing_runs = await self._client.runs.list(thread_id, limit=1)
+                    if existing_runs:
+                        existing_run_id = existing_runs[0]["run_id"]
+                        return {
+                            "thread_id": thread_id,
+                            "run_id": existing_run_id,
+                            "stream_url": f"/runs/{existing_run_id}/stream",
+                        }
+            raise
         except Exception:
+            if idempotency_key:
+                # Keep the deterministic claim so a retry can safely create the
+                # missing run without racing a second thread identity.
+                raise
             try:
                 await self._client.threads.delete(thread_id)
             except Exception:

@@ -26,12 +26,13 @@ class DraftsRepository:
         router's job — this is a plain storage filter)."""
         stmt = select(Draft).order_by(Draft.updated_at.desc(), Draft.id)
         if allowed_scopes is not None:
-            project_wide = sorted(
-                {scope.project_id for scope in allowed_scopes if scope.app_id is None}
-            )
+            # Drafts are project-scoped and have no app dimension. Any app scope
+            # therefore grants read visibility to that project's shared drafts;
+            # write authorization remains stricter in the router.
+            visible_projects = sorted({scope.project_id for scope in allowed_scopes})
             visibility = [Draft.project_id.is_(None)]
-            if project_wide:
-                visibility.append(Draft.project_id.in_(project_wide))
+            if visible_projects:
+                visibility.append(Draft.project_id.in_(visible_projects))
             stmt = stmt.where(or_(*visibility))
         if project_id is not None:
             stmt = stmt.where(Draft.project_id == project_id)

@@ -455,6 +455,23 @@ describe('usePipelineStream', () => {
     expect(result.current.pendingGateHint).toBeNull()
   })
 
+  it('ignores a gate_opened event from an older phase attempt in every cache', async () => {
+    const { queryClient, wrapper } = setup()
+    const stream = fake.scriptStream()
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+
+    await act(async () => {
+      stream.pushCustom(phaseStatus('test_planning', 'running', 2))
+      stream.pushCustom(gateOpened('prompt_review', 'test_planning', 1))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(result.current.pendingGateHint).toBeNull()
+    expect(snapshotOf(queryClient).detail.pending_gate).toBeNull()
+    expect(listRowOf(queryClient).pending_gate).toBeNull()
+  })
+
   it('stream end while busy: reconnects and preserves the resume cursor', async () => {
     const { queryClient, wrapper } = setup()
     const stream = fake.scriptStream()

@@ -4,16 +4,19 @@ Hermetic: a fake loopback client captures the thread-create / run-start calls, a
 a fake documents repository drives the packet expansion. No DB, no LangGraph server.
 """
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any, cast
 
+import httpx
 import pytest
 from fastapi import HTTPException
+from langgraph_sdk.errors import ConflictError
 
 import apex.routers.pipelines as pipelines
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.services.pipeline_read import PipelineReadService
+from apex.services.pipeline_read import LaunchIdempotencyConflictError, PipelineReadService
 
 
 def _identity(project_ids: list[str]) -> ConsumerIdentity:
@@ -162,6 +165,51 @@ class FakeClient:
         self.runs = FakeRuns()
 
 
+class AtomicThreads:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, Any]] = {}
+
+    async def create(
+        self,
+        *,
+        metadata: dict[str, Any],
+        thread_id: str,
+        if_exists: str,
+    ) -> dict[str, Any]:
+        assert if_exists == "do_nothing"
+        self.rows.setdefault(thread_id, {"thread_id": thread_id, "metadata": metadata})
+        return self.rows[thread_id]
+
+
+class AtomicRuns:
+    def __init__(self) -> None:
+        self.rows: dict[str, list[dict[str, str]]] = {}
+        self.successful_creates = 0
+
+    async def list(self, thread_id: str, **_: Any) -> list[dict[str, str]]:
+        return list(self.rows.get(thread_id, []))
+
+    async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        await asyncio.sleep(0)
+        if self.rows.get(thread_id):
+            request = httpx.Request("POST", f"http://loopback/threads/{thread_id}/runs")
+            raise ConflictError(
+                "active run exists",
+                response=httpx.Response(409, request=request),
+                body=None,
+            )
+        run = {"run_id": f"run-{len(self.rows) + 1}"}
+        self.rows[thread_id] = [run]
+        self.successful_creates += 1
+        return run
+
+
+class AtomicClient:
+    def __init__(self) -> None:
+        self.threads = AtomicThreads()
+        self.runs = AtomicRuns()
+
+
 async def test_start_run_builds_config_and_input() -> None:
     client = FakeClient()
     service = PipelineReadService(client)
@@ -188,7 +236,6 @@ async def test_start_run_builds_config_and_input() -> None:
     assert run_input["title"] == "Analyze"
     assert run_input["external_results"] == {"source": "dash"}
     assert run_input["context_packets"] == [{"id": "p1", "source": "s", "title": "t"}]
-
     configurable = run_config["configurable"]
     assert configurable["phases"] == ["reporting", "postmortem"]
     assert configurable["agent_backend"] == "anthropic"
@@ -208,6 +255,60 @@ async def test_start_run_builds_config_and_input() -> None:
         "multitask_strategy": "reject",
     }
 
+
+async def test_start_run_idempotency_is_atomic_for_concurrent_retries() -> None:
+    client = AtomicClient()
+    service = PipelineReadService(client)
+
+    first, second = await asyncio.gather(
+        service.start_run(
+            title="Analyze",
+            request="same request",
+            project_id="proj-1",
+            idempotency_key="key-1",
+            principal_id="consumer-1",
+        ),
+        service.start_run(
+            title="Analyze",
+            request="same request",
+            project_id="proj-1",
+            idempotency_key="key-1",
+            principal_id="consumer-1",
+        ),
+    )
+
+    assert first == second
+    assert len(client.threads.rows) == 1
+    assert client.runs.successful_creates == 1
+
+
+async def test_start_run_idempotency_is_scope_bound_and_rejects_payload_drift() -> None:
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    first = await service.start_run(
+        title="Analyze",
+        request="request one",
+        project_id="proj-1",
+        idempotency_key="key-1",
+        principal_id="consumer-1",
+    )
+    second_scope = await service.start_run(
+        title="Analyze",
+        request="request one",
+        project_id="proj-2",
+        idempotency_key="key-1",
+        principal_id="consumer-1",
+    )
+
+    assert first["thread_id"] != second_scope["thread_id"]
+    with pytest.raises(LaunchIdempotencyConflictError):
+        await service.start_run(
+            title="Analyze",
+            request="different request",
+            project_id="proj-1",
+            idempotency_key="key-1",
+            principal_id="consumer-1",
+        )
 
 async def test_start_run_preserves_assistant_and_full_configurable() -> None:
     client = FakeClient()

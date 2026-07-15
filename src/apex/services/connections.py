@@ -376,6 +376,11 @@ class ConnectionResolver:
             ).hexdigest()[:16]
             cache_key = f"{conn.id}:overlay:{digest}"
         adapter = await self._build_cached(conn, version, cache_key=cache_key)
+        try:
+            adapter._apex_resolved_connection_id = conn.id
+            adapter._apex_resolved_connection_version = version
+        except (AttributeError, TypeError):
+            pass
         _expose_internal_connection_binding(adapter, internal_project_id)
         return adapter, conn.id
 

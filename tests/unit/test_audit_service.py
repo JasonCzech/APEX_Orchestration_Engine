@@ -167,6 +167,18 @@ async def test_audit_service_exports_jsonl_and_cef() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cef_export_escapes_header_delimiters() -> None:
+    service = AuditService(FakeAuditSession())  # type: ignore[arg-type]
+    await service.append(
+        AuditEvent(category="authz_decision", action="/missing|forged", decision="denied")
+    )
+
+    cef = await service.export_cef()
+
+    assert "|/missing\\|forged|8|" in cef
+
+
+@pytest.mark.asyncio
 async def test_audit_chain_uses_sequence_when_clock_moves_backwards() -> None:
     session = FakeAuditSession()
     service = AuditService(session)  # type: ignore[arg-type]

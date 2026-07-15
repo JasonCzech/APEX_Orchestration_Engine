@@ -29,11 +29,10 @@ spec:
             - name: mirror
               image: rclone/rclone:1.70.3
               args:
-                - sync
+                - copy
                 - source:apex-artifacts
                 - backup:apex-artifacts-backup
                 - --checksum
-                - --delete-during
                 - --log-level=INFO
               securityContext:
                 allowPrivilegeEscalation: false
