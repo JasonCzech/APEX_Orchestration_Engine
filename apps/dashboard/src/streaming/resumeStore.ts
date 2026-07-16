@@ -21,7 +21,7 @@ function isValidEventId(eventId: string): boolean {
 }
 
 function storageKey(threadId: string, runId: string): string {
-  return `${PREFIX}:${threadId}:${runId}`
+  return `${PREFIX}:${JSON.stringify([threadId, runId])}`
 }
 
 export const resumeStore = {

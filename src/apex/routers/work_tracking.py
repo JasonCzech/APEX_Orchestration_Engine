@@ -37,6 +37,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
+from apex.domain.diagnostics import contains_credential_material
 from apex.domain.input_limits import (
     MAX_DB_LIST_OFFSET,
     MAX_DESCRIPTION_CHARS,
@@ -114,6 +115,15 @@ ConnectionIdParam = Annotated[
     RecordId | None,
     Query(description="Explicit work-tracking connection id (default: resolved)"),
 ]
+RequiredConnectionIdParam = Annotated[
+    RecordId,
+    Query(
+        description=(
+            "Exact work-tracking connection id. Required for mutations so an "
+            "ambiguous retry cannot follow a changed default connection."
+        )
+    ),
+]
 ProjectParam = Annotated[
     ScopeId | None,
     Query(description="Project used to resolve scoped work-tracking connections"),
@@ -155,6 +165,7 @@ def _normalized_provider(value: Any) -> str | None:
         or not 1 <= len(value) <= 64
         or value != value.strip()
         or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        or contains_credential_material(value)
     ):
         return None
     return value.casefold()
@@ -166,6 +177,7 @@ def _valid_connection_id(value: Any) -> bool:
         and 1 <= len(value) <= 32
         and value == value.strip()
         and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        and not contains_credential_material(value)
     )
 
 
@@ -192,13 +204,40 @@ class TranslateQueryRequest(BaseModel):
     connection_id: NoNulStr | None = Field(default=None, min_length=1, max_length=32)
 
 
+class ExecutableTranslatedQuery(TranslatedQuery):
+    """Provider query with the optional binding returned by translation."""
+
+    connection_id: RecordId | None = None
+
+
 class ExecuteQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    query: TranslatedQuery
+    query: ExecutableTranslatedQuery
     connection_id: NoNulStr | None = Field(default=None, min_length=1, max_length=32)
     limit: int = Field(default=50, ge=1, le=200)
     offset: int = Field(default=0, ge=0, le=1_000)
+
+
+class WorkTrackingBindingOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    connection_id: RecordId
+    provider: NoNulStr = Field(min_length=1, max_length=64)
+
+
+class ResolvedTranslatedQuery(TranslatedQuery):
+    connection_id: RecordId
+
+
+class ResolvedWorkItem(WorkItem):
+    connection_id: RecordId
+    provider: NoNulStr = Field(min_length=1, max_length=64)
+
+
+class ResolvedWorkItemPage(WorkItemPage):
+    connection_id: RecordId
+    provider: NoNulStr = Field(min_length=1, max_length=64)
 
 
 class SavedQueryCreate(BaseModel):
@@ -207,6 +246,9 @@ class SavedQueryCreate(BaseModel):
     name: NoNulStr = Field(min_length=1, max_length=255)
     provider: NoNulStr = Field(min_length=1, max_length=64)
     query: NoNulStr = Field(min_length=1, max_length=20_000)
+    # Project-scoped saved queries pin one exact connection. Global rows are
+    # reusable query templates and intentionally remain unbound until execute.
+    connection_id: RecordId | None = None
     project_id: ScopeId | None = None
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
@@ -222,9 +264,10 @@ class SavedQueryUpdate(BaseModel):
     name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
     provider: NoNulStr | None = Field(default=None, min_length=1, max_length=64)
     query: NoNulStr | None = Field(default=None, min_length=1, max_length=20_000)
+    connection_id: RecordId | None = None
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
-    @field_validator("name", "provider", "query")
+    @field_validator("name", "provider", "query", "connection_id")
     @classmethod
     def reject_null_required_fields(cls, value: str | None) -> str:
         if value is None:
@@ -245,6 +288,7 @@ class SavedQueryOut(BaseModel):
     project_id: str | None = None
     provider: str
     query: str
+    connection_id: str | None = None
     description: str | None = None
     created_by: str | None = None
     created_at: datetime | None = None
@@ -270,11 +314,12 @@ class SavedQueryOut(BaseModel):
             or "[REDACTED]"
         )
 
-    @field_validator("project_id", "description", "created_by", mode="before")
+    @field_validator("project_id", "connection_id", "description", "created_by", mode="before")
     @classmethod
     def sanitize_optional_legacy_text(cls, value: Any, info: Any) -> str | None:
         bounds = {
             "project_id": (1, MAX_SCOPE_ID_CHARS),
+            "connection_id": (1, 32),
             "description": (0, MAX_DESCRIPTION_CHARS),
             "created_by": (1, 255),
         }
@@ -357,12 +402,34 @@ async def _resolve_adapter(
             persisted = resolved.persisted
             connection_version = resolved.connection_version
         else:  # compatibility for injected test/extension resolvers
-            adapter = await resolver.resolve(
-                PortKind.WORK_TRACKING,
-                connection_id=connection_id,
-                project_id=selected_project,
+            resolve_with_connection_id = getattr(
+                resolver,
+                "resolve_with_connection_id",
+                None,
             )
-            resolved_connection_id = connection_id or "dev-work-tracking-fake"
+            if callable(resolve_with_connection_id):
+                resolved_pair = await cast(
+                    Callable[..., Awaitable[Any]],
+                    resolve_with_connection_id,
+                )(
+                    PortKind.WORK_TRACKING,
+                    connection_id=connection_id,
+                    project_id=selected_project,
+                )
+                if type(resolved_pair) is not tuple or len(resolved_pair) != 2:
+                    raise ValueError("invalid legacy resolver result")
+                adapter, resolved_connection_id = resolved_pair
+            else:
+                if connection_id is None:
+                    raise ValueError(
+                        "legacy resolver cannot report the selected connection id"
+                    )
+                adapter = await resolver.resolve(
+                    PortKind.WORK_TRACKING,
+                    connection_id=connection_id,
+                    project_id=selected_project,
+                )
+                resolved_connection_id = connection_id
             persisted = False
             connection_version = None
     except KeyError:
@@ -388,6 +455,7 @@ async def _resolve_adapter(
         if (
             normalized_provider is None
             or not _valid_connection_id(resolved_connection_id)
+            or (connection_id is not None and resolved_connection_id != connection_id)
             or not _valid_connection_version(connection_version)
         ):
             binding_error = _invalid_work_tracking_connection()
@@ -419,6 +487,70 @@ class ResolvedWorkTrackingAdapter:
     connection_version: datetime | None
 
 
+def _selected_request_connection_id(
+    body_connection_id: str | None,
+    query_connection_id: str | None,
+) -> str | None:
+    if (
+        body_connection_id is not None
+        and query_connection_id is not None
+        and body_connection_id != query_connection_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="conflicting work-tracking connection ids",
+        )
+    return body_connection_id or query_connection_id
+
+
+def _resolved_translated_query(
+    query: TranslatedQuery,
+    binding: ResolvedWorkTrackingAdapter,
+) -> ResolvedTranslatedQuery:
+    return ResolvedTranslatedQuery.model_validate(
+        {
+            **query.model_dump(mode="python"),
+            "connection_id": binding.connection_id,
+        }
+    )
+
+
+def _provider_query(query: ExecutableTranslatedQuery) -> TranslatedQuery:
+    return TranslatedQuery(
+        provider=query.provider,
+        query=query.query,
+        confidence=query.confidence,
+    )
+
+
+def _resolved_work_item(
+    item: WorkItem,
+    *,
+    connection_id: str,
+    provider: str,
+) -> ResolvedWorkItem:
+    return ResolvedWorkItem.model_validate(
+        {
+            **item.model_dump(mode="python"),
+            "connection_id": connection_id,
+            "provider": provider,
+        }
+    )
+
+
+def _resolved_work_item_page(
+    page: WorkItemPage,
+    binding: ResolvedWorkTrackingAdapter,
+) -> ResolvedWorkItemPage:
+    return ResolvedWorkItemPage.model_validate(
+        {
+            **page.model_dump(mode="python"),
+            "connection_id": binding.connection_id,
+            "provider": binding.provider,
+        }
+    )
+
+
 @dataclass(frozen=True)
 class WorkTrackingMutationConnection:
     """Mutation connection selected before provider adapter construction."""
@@ -431,6 +563,13 @@ class WorkTrackingMutationConnection:
     resolver_metadata: Any | None = None
     adapter_builder: Callable[[Any], Awaitable[Any]] | None = None
     prebuilt: ResolvedWorkTrackingAdapter | None = None
+
+
+@dataclass(frozen=True)
+class WorkTrackingConnectionIdentity:
+    provider: str
+    selected_project: str | None
+    connection_id: str
 
 
 async def _select_mutation_connection(
@@ -485,6 +624,7 @@ async def _select_mutation_connection(
             if (
                 provider is None
                 or not _valid_connection_id(metadata_connection_id)
+                or (connection_id is not None and metadata_connection_id != connection_id)
                 or type(metadata_persisted) is not bool
                 or not _valid_connection_version(metadata_version)
             ):
@@ -521,6 +661,36 @@ async def _select_mutation_connection(
         connection_version=binding.connection_version,
         prebuilt=binding,
     )
+
+
+async def resolve_work_tracking_connection_identity(
+    resolver: ConnectionResolver,
+    identity: ConsumerIdentity,
+    connection_id: str | None = None,
+    project: str | None = None,
+) -> WorkTrackingConnectionIdentity:
+    """Resolve one authorized connection identity without provider I/O.
+
+    The built-in resolver uses metadata only. Compatibility resolvers may need
+    to construct an adapter; that fallback is project-validated and closed
+    before this helper returns.
+    """
+
+    selection = await _select_mutation_connection(
+        resolver,
+        identity,
+        connection_id,
+        project,
+    )
+    try:
+        return WorkTrackingConnectionIdentity(
+            provider=selection.provider,
+            selected_project=selection.selected_project,
+            connection_id=selection.connection_id,
+        )
+    finally:
+        if selection.prebuilt is not None:
+            await _close_work_tracking_adapter(selection.prebuilt.adapter)
 
 
 async def _build_mutation_adapter(
@@ -634,6 +804,49 @@ async def resolve_scoped_work_tracking_adapter(
     except BaseException:
         await _close_work_tracking_adapter(binding.adapter)
         raise
+
+
+async def _validated_saved_query_connection(
+    resolver: ConnectionResolver,
+    identity: ConsumerIdentity,
+    *,
+    project_id: str | None,
+    provider: str,
+    connection_id: str | None,
+) -> str | None:
+    """Authorize and normalize the durable binding for a saved query.
+
+    Global rows remain reusable templates because their eventual project is
+    selected by the caller at execute time. Project rows must bind exactly;
+    legacy NULL rows may be renamed or described, but cannot run or change
+    provider until an operator explicitly repairs the binding.
+    """
+
+    if project_id is None:
+        if connection_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="global saved queries must not pin a work-tracking connection",
+            )
+        return None
+    if connection_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="project saved queries require a work-tracking connection",
+        )
+    binding = await resolve_work_tracking_connection_identity(
+        resolver,
+        identity,
+        connection_id,
+        project_id,
+    )
+    normalized_provider = _normalized_provider(provider)
+    if normalized_provider is None or normalized_provider != binding.provider:
+        raise HTTPException(
+            status_code=409,
+            detail="saved query provider does not match the work-tracking connection",
+        )
+    return binding.connection_id
 
 
 async def get_work_tracking_adapter(
@@ -1245,7 +1458,34 @@ def _wiql_value(value: str) -> str:
 # ── Query passthrough ────────────────────────────────────────────────────────
 
 
-@router.post("/query/translate", operation_id="translateWorkQuery", response_model=TranslatedQuery)
+@router.get(
+    "/binding",
+    operation_id="getWorkTrackingBinding",
+    response_model=WorkTrackingBindingOut,
+)
+async def get_work_tracking_binding(
+    identity: CurrentIdentity,
+    resolver: ResolverDep,
+    connection_id: ConnectionIdParam = None,
+    project: ProjectParam = None,
+) -> WorkTrackingBindingOut:
+    binding = await resolve_work_tracking_connection_identity(
+        resolver,
+        identity,
+        connection_id,
+        project,
+    )
+    return WorkTrackingBindingOut(
+        connection_id=binding.connection_id,
+        provider=binding.provider,
+    )
+
+
+@router.post(
+    "/query/translate",
+    operation_id="translateWorkQuery",
+    response_model=ResolvedTranslatedQuery,
+)
 async def translate_work_query(
     body: TranslateQueryRequest,
     identity: CurrentIdentity,
@@ -1255,7 +1495,10 @@ async def translate_work_query(
 ) -> Any:
     selected_project = _selected_project(identity, project)
     binding = await _resolve_adapter(
-        resolver, identity, body.connection_id or connection_id, selected_project
+        resolver,
+        identity,
+        _selected_request_connection_id(body.connection_id, connection_id),
+        selected_project,
     )
     try:
         _require_project_bound(binding)
@@ -1267,16 +1510,23 @@ async def translate_work_query(
         boundary = adapter_errors()
         with boundary:
             translated = await binding.adapter.translate_query(body.text, context=context)
-            return validated_provider_query(
-                translated,
-                expected_provider=binding.provider,
+            return _resolved_translated_query(
+                validated_provider_query(
+                    translated,
+                    expected_provider=binding.provider,
+                ),
+                binding,
             )
         boundary.raise_if_error()
     finally:
         await _close_work_tracking_adapter(binding.adapter)
 
 
-@router.post("/query/execute", operation_id="executeWorkQuery", response_model=WorkItemPage)
+@router.post(
+    "/query/execute",
+    operation_id="executeWorkQuery",
+    response_model=ResolvedWorkItemPage,
+)
 async def execute_work_query(
     body: ExecuteQueryRequest,
     identity: CurrentIdentity,
@@ -1286,20 +1536,33 @@ async def execute_work_query(
 ) -> Any:
     page = _provider_page(body.offset, body.limit)
     selected_project = _selected_project(identity, project)
+    provider_query = _provider_query(body.query)
     binding = await _resolve_adapter(
-        resolver, identity, body.connection_id or connection_id, selected_project
+        resolver,
+        identity,
+        _selected_request_connection_id(
+            _selected_request_connection_id(
+                body.connection_id,
+                body.query.connection_id,
+            ),
+            connection_id,
+        ),
+        selected_project,
     )
     try:
         _require_project_bound(binding)
-        _require_matching_provider(binding, body.query)
+        _require_matching_provider(binding, provider_query)
         external_project = _external_query_project(binding)
         allowed_projects = (external_project,) if external_project is not None else None
-        scoped_query = _constrain_translated_query(body.query, allowed_projects)
+        scoped_query = _constrain_translated_query(provider_query, allowed_projects)
         boundary = adapter_errors()
         with boundary:
-            return validated_provider_work_item_page(
-                await binding.adapter.execute_query(scoped_query, page=page),
-                requested_page=page,
+            return _resolved_work_item_page(
+                validated_provider_work_item_page(
+                    await binding.adapter.execute_query(scoped_query, page=page),
+                    requested_page=page,
+                ),
+                binding,
             )
         boundary.raise_if_error()
     finally:
@@ -1309,7 +1572,7 @@ async def execute_work_query(
 # ── Item passthrough ─────────────────────────────────────────────────────────
 
 
-@router.get("/items", operation_id="listWorkItems", response_model=WorkItemPage)
+@router.get("/items", operation_id="listWorkItems", response_model=ResolvedWorkItemPage)
 async def list_work_items(
     binding: AdapterDep,
     status: Annotated[NoNulStr | None, Query(max_length=255)] = None,
@@ -1322,18 +1585,28 @@ async def list_work_items(
     page = _provider_page(offset, limit)
     boundary = adapter_errors()
     with boundary:
-        return validated_provider_work_item_page(
-            await binding.adapter.list_items(filters, page=page),
-            requested_page=page,
+        return _resolved_work_item_page(
+            validated_provider_work_item_page(
+                await binding.adapter.list_items(filters, page=page),
+                requested_page=page,
+            ),
+            binding,
         )
     boundary.raise_if_error()
 
 
-@router.get("/items/{key}", operation_id="getWorkItem", response_model=WorkItem)
+@router.get("/items/{key}", operation_id="getWorkItem", response_model=ResolvedWorkItem)
 async def get_work_item(key: Annotated[ResourceId, Path()], binding: AdapterDep) -> Any:
     boundary = adapter_errors()
     with boundary:
-        return validated_provider_work_item(await binding.adapter.get_item(key))
+        item = validated_provider_work_item(await binding.adapter.get_item(key))
+        if item.key != key:
+            raise RuntimeError("work-tracking adapter returned a mismatched work item")
+        return _resolved_work_item(
+            item,
+            connection_id=binding.connection_id,
+            provider=binding.provider,
+        )
     boundary.raise_if_error()
 
 
@@ -1341,7 +1614,7 @@ async def get_work_item(key: Annotated[ResourceId, Path()], binding: AdapterDep)
     "/items",
     operation_id="createWorkItem",
     status_code=201,
-    response_model=WorkItem,
+    response_model=ResolvedWorkItem,
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def create_work_item(
@@ -1350,7 +1623,7 @@ async def create_work_item(
     resolver: ResolverDep,
     mutations: MutationServiceDep,
     idempotency_key: IdempotencyKeyHeader,
-    connection_id: ConnectionIdParam = None,
+    connection_id: RequiredConnectionIdParam,
     project: ProjectParam = None,
 ) -> Any:
     selected_project = _selected_project(identity, project)
@@ -1377,17 +1650,25 @@ async def create_work_item(
                 else None
             )
             if replay is not None:
-                return replay
+                return _resolved_work_item(
+                    replay,
+                    connection_id=selection.connection_id,
+                    provider=selection.provider,
+                )
             binding = await _build_mutation_adapter(resolver, selection)
-            return await mutations.create(
-                adapter=binding.adapter,
-                draft=draft,
-                identity=identity,
-                project_id=binding.selected_project,
+            return _resolved_work_item(
+                await mutations.create(
+                    adapter=binding.adapter,
+                    draft=draft,
+                    identity=identity,
+                    project_id=binding.selected_project,
+                    connection_id=binding.connection_id,
+                    connection_persisted=binding.connection_persisted,
+                    connection_version=binding.connection_version,
+                    idempotency_key=idempotency_key,
+                ),
                 connection_id=binding.connection_id,
-                connection_persisted=binding.connection_persisted,
-                connection_version=binding.connection_version,
-                idempotency_key=idempotency_key,
+                provider=binding.provider,
             )
         boundary.raise_if_error()
     finally:
@@ -1398,7 +1679,7 @@ async def create_work_item(
 @router.post(
     "/items/{key}/enrich",
     operation_id="enrichWorkItem",
-    response_model=WorkItem,
+    response_model=ResolvedWorkItem,
     dependencies=[Depends(require_role(Role.OPERATOR))],
 )
 async def enrich_work_item(
@@ -1408,7 +1689,7 @@ async def enrich_work_item(
     resolver: ResolverDep,
     mutations: MutationServiceDep,
     idempotency_key: IdempotencyKeyHeader,
-    connection_id: ConnectionIdParam = None,
+    connection_id: RequiredConnectionIdParam,
     project: ProjectParam = None,
 ) -> Any:
     selected_project = _selected_project(identity, project)
@@ -1436,18 +1717,26 @@ async def enrich_work_item(
                 else None
             )
             if replay is not None:
-                return replay
+                return _resolved_work_item(
+                    replay,
+                    connection_id=selection.connection_id,
+                    provider=selection.provider,
+                )
             binding = await _build_mutation_adapter(resolver, selection)
-            return await mutations.enrich(
-                adapter=binding.adapter,
-                key=key,
-                enrichment=enrichment,
-                identity=identity,
-                project_id=binding.selected_project,
+            return _resolved_work_item(
+                await mutations.enrich(
+                    adapter=binding.adapter,
+                    key=key,
+                    enrichment=enrichment,
+                    identity=identity,
+                    project_id=binding.selected_project,
+                    connection_id=binding.connection_id,
+                    connection_persisted=binding.connection_persisted,
+                    connection_version=binding.connection_version,
+                    idempotency_key=idempotency_key,
+                ),
                 connection_id=binding.connection_id,
-                connection_persisted=binding.connection_persisted,
-                connection_version=binding.connection_version,
-                idempotency_key=idempotency_key,
+                provider=binding.provider,
             )
         boundary.raise_if_error()
     finally:
@@ -1491,13 +1780,22 @@ async def create_saved_query(
     body: SavedQueryCreate,
     identity: Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))],
     repository: RepositoryDep,
+    resolver: ResolverDep,
 ) -> Any:
     _ensure_saved_query_write(identity, body.project_id)
+    resolved_connection_id = await _validated_saved_query_connection(
+        resolver,
+        identity,
+        project_id=body.project_id,
+        provider=body.provider,
+        connection_id=body.connection_id,
+    )
     row = SavedQuery(
         name=body.name,
         project_id=body.project_id,
         provider=body.provider,
         query=body.query,
+        connection_id=resolved_connection_id,
         description=body.description,
         created_by=identity.name,
     )
@@ -1537,6 +1835,7 @@ async def update_saved_query(
     body: SavedQueryUpdate,
     identity: CurrentIdentity,
     repository: RepositoryDep,
+    resolver: ResolverDep,
 ) -> SavedQueryOut:
     row = await repository.get_for_update(saved_query_id)
     if row is None or not _visible(identity, row):
@@ -1545,6 +1844,14 @@ async def update_saved_query(
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         return SavedQueryOut.model_validate(row)
+    if "provider" in changes or "connection_id" in changes:
+        changes["connection_id"] = await _validated_saved_query_connection(
+            resolver,
+            identity,
+            project_id=row.project_id,
+            provider=cast(str, changes.get("provider", row.provider)),
+            connection_id=cast(str | None, changes.get("connection_id", row.connection_id)),
+        )
     write_error: HTTPException | None = None
     updated: Any = None
     try:

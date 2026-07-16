@@ -5,18 +5,21 @@
  * optional comment and swaps in the refreshed item the server returns.
  * A 404 renders the dash-empty 'Item not found' state, not a problem card.
  */
-import { useState, type FormEvent } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import {
   createWorkItemMutationKey,
+  workItemEnrichMutationKey,
   useEnrichWorkItem,
   useWorkItem,
-  type WorkItem,
+  type ResolvedWorkItem,
 } from '@/api/hooks/useWorkTracking'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { isApiError } from '@/api/errors'
 import { useConsumer } from '@/auth/AuthProvider'
 import { canMutateAudience } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
@@ -25,10 +28,13 @@ import {
   bindDurableMutationDraft,
   clearDurableMutationDraft,
   initializeDurableMutationDraft,
+  SafeRetryStorageError,
+  scopedMutationStorageKey,
   stableMutationFingerprint,
+  type DurableMutationDraft,
   updateDurableMutationDraft,
 } from './durableMutationDraft'
-import { descriptionParagraphs, parseJsonObject } from './workItemsLogic'
+import { descriptionParagraphs, parseJsonObject, workItemPath } from './workItemsLogic'
 import './work-items.css'
 
 interface EnrichDraftState {
@@ -55,14 +61,26 @@ function enrichFingerprint(draft: EnrichDraftState): string {
 function EnrichModal({
   item,
   project,
+  routeIdentity,
   onClose,
 }: {
-  item: WorkItem
+  item: ResolvedWorkItem
   project?: string
-  onClose: () => void
+  routeIdentity: string
+  onClose: (routeIdentity: string) => void
 }) {
-  const enrich = useEnrichWorkItem()
-  const storageKey = `apex.work-items.enrich.v1:${encodeURIComponent(project ?? 'global')}:${encodeURIComponent(item.key)}`
+  const enrich = useEnrichWorkItem(item.connection_id, item.key)
+  const writeCount = usePendingMutationCount(
+    workItemEnrichMutationKey(item.connection_id, item.key),
+  )
+  const writePending = writeCount > 0
+  const mountedRef = useRef(true)
+  const storageKey = scopedMutationStorageKey(
+    'apex.work-items.enrich.v2',
+    project,
+    item.connection_id,
+    item.key,
+  )
   const [attempt, setAttempt] = useState(() =>
     initializeDurableMutationDraft(
       storageKey,
@@ -72,15 +90,25 @@ function EnrichModal({
       () => createWorkItemMutationKey('enrich'),
     ),
   )
+  const [safeRetryError, setSafeRetryError] = useState<string | null>(null)
   const { fieldsText, comment } = attempt.draft
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const fieldsParse = parseJsonObject(fieldsText)
   const hasPayload =
     fieldsParse.ok && (Object.keys(fieldsParse.value).length > 0 || comment.trim() !== '')
-  const canSubmit = fieldsParse.ok && hasPayload && !enrich.isPending
+  const canSubmit =
+    fieldsParse.ok && hasPayload && !writePending && safeRetryError === null
 
   function updateDraft(changes: Partial<EnrichDraftState>) {
-    if (enrich.isPending) return
+    if (writePending) return
+    setSafeRetryError(null)
     setAttempt((previous) =>
       updateDurableMutationDraft(
         storageKey,
@@ -92,25 +120,33 @@ function EnrichModal({
     )
   }
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault()
     if (!canSubmit || !fieldsParse.ok) return
-    const submittedAttempt = bindDurableMutationDraft(storageKey, attempt, enrichFingerprint)
+    let submittedAttempt: DurableMutationDraft<EnrichDraftState>
+    try {
+      submittedAttempt = bindDurableMutationDraft(storageKey, attempt, enrichFingerprint)
+    } catch (error) {
+      if (error instanceof SafeRetryStorageError) {
+        setSafeRetryError(error.message)
+        return
+      }
+      throw error
+    }
     setAttempt(submittedAttempt)
-    enrich.mutate(
-      {
+    try {
+      await enrich.mutateAsync({
         key: item.key,
         body: { fields: fieldsParse.value, comment: comment.trim() || null },
+        connectionId: item.connection_id,
         idempotencyKey: submittedAttempt.idempotencyKey,
         ...(project ? { project } : {}),
-      },
-      {
-        onSuccess: () => {
-          clearDurableMutationDraft(storageKey)
-          onClose()
-        },
-      },
-    )
+      })
+      clearDurableMutationDraft(storageKey, submittedAttempt.idempotencyKey)
+      if (mountedRef.current) onClose(routeIdentity)
+    } catch {
+      // The mutation exposes its error state inline while this modal is mounted.
+    }
   }
 
   return (
@@ -118,9 +154,9 @@ function EnrichModal({
       overlayClassName="wi-overlay"
       className="wi-modal glass-panel"
       ariaLabel={`Enrich ${item.key}`}
-      onClose={onClose}
-      closeOnBackdrop={!enrich.isPending}
-      closeOnEscape={!enrich.isPending}
+      onClose={() => onClose(routeIdentity)}
+      closeOnBackdrop={!writePending}
+      closeOnEscape={!writePending}
       panelAs="form"
       onSubmit={submit}
     >
@@ -136,7 +172,7 @@ function EnrichModal({
           rows={5}
           spellCheck={false}
           value={fieldsText}
-          disabled={enrich.isPending}
+          disabled={writePending}
           onChange={(event) => updateDraft({ fieldsText: event.target.value })}
         />
       </label>
@@ -152,7 +188,7 @@ function EnrichModal({
           aria-label="Enrich comment"
           rows={3}
           value={comment}
-          disabled={enrich.isPending}
+          disabled={writePending}
           onChange={(event) => updateDraft({ comment: event.target.value })}
         />
       </label>
@@ -161,12 +197,17 @@ function EnrichModal({
           <span>Enrich failed: {enrich.error.message}</span>
         </div>
       )}
+      {safeRetryError && (
+        <div className="wi-inline-error" role="alert">
+          <span>Enrich blocked: {safeRetryError}</span>
+        </div>
+      )}
       <div className="wi-modal-actions">
         <button
           type="button"
           className="btn btn-ghost btn-sm"
-          onClick={onClose}
-          disabled={enrich.isPending}
+          onClick={() => onClose(routeIdentity)}
+          disabled={writePending}
         >
           Cancel
         </button>
@@ -179,13 +220,25 @@ function EnrichModal({
 }
 
 export function WorkItemDetailPage() {
+  const navigate = useNavigate()
   const params = useParams<{ provider: string; itemId: string }>()
   const provider = params.provider ?? 'tracker'
   const key = params.itemId
   const [searchParams] = useSearchParams()
   const project = searchParams.get('project') || undefined
+  const connectionId = searchParams.get('connection_id') || undefined
 
-  const itemQuery = useWorkItem(key, project)
+  const itemQuery = useWorkItem(
+    key,
+    project,
+    connectionId,
+    provider === 'tracker' ? undefined : provider,
+  )
+  const enrichConnectionId = itemQuery.data?.connection_id ?? connectionId ?? ''
+  const enrichKey = itemQuery.data?.key ?? key ?? ''
+  const enrichWriteCount = usePendingMutationCount(
+    workItemEnrichMutationKey(enrichConnectionId, enrichKey),
+  )
   const consumer = useConsumer()
   const consumerProjects = Array.from(
     new Set((consumer?.scopes ?? []).map((scope) => scope.project_id)),
@@ -193,8 +246,29 @@ export function WorkItemDetailPage() {
   const effectiveProject = project ?? (consumerProjects.length === 1 ? consumerProjects[0] : null)
   const canMutate = canMutateAudience(consumer, effectiveProject, null)
   const [enriching, setEnriching] = useState(false)
+  const routeIdentity = JSON.stringify([
+    provider,
+    project ?? '',
+    connectionId ?? '',
+    key ?? '',
+  ])
+  const activeRouteIdentityRef = useRef(routeIdentity)
+  activeRouteIdentityRef.current = routeIdentity
 
-  if (itemQuery.isPending) {
+  useEffect(() => {
+    setEnriching(false)
+  }, [routeIdentity])
+
+  useEffect(() => {
+    const item = itemQuery.data
+    if (!item || connectionId || !key) return
+    void navigate(
+      workItemPath(item.provider, key, project, item.connection_id),
+      { replace: true },
+    )
+  }, [connectionId, itemQuery.data, key, navigate, project])
+
+  if (itemQuery.isPending || (itemQuery.data && !connectionId)) {
     return (
       <section className="wi-page animate-enter">
         <div className="wi-skeleton" role="status" aria-busy="true" aria-label="Loading work item">
@@ -205,7 +279,7 @@ export function WorkItemDetailPage() {
     )
   }
 
-  if (itemQuery.isError || !itemQuery.data) {
+  if (!itemQuery.data) {
     const notFound = isApiError(itemQuery.error) && itemQuery.error.status === 404
     return (
       <section className="wi-page animate-enter">
@@ -236,12 +310,15 @@ export function WorkItemDetailPage() {
 
   return (
     <section className="wi-page animate-enter">
+      {itemQuery.isError && (
+        <CachedDataWarning error={itemQuery.error} onRetry={() => void itemQuery.refetch()} />
+      )}
       <header className="wi-detail-header glass-panel">
         <div className="wi-detail-heading">
           <nav className="wi-breadcrumb" aria-label="Breadcrumb">
             <Link to="/work-items">Work items</Link>
             <span aria-hidden="true">/</span>
-            <span>{provider}</span>
+            <span>{item.provider}</span>
             <span aria-hidden="true">/</span>
             <span className="strong">{item.key}</span>
           </nav>
@@ -258,6 +335,7 @@ export function WorkItemDetailPage() {
               type="button"
               className="btn btn-secondary btn-sm"
               onClick={() => setEnriching(true)}
+              disabled={enrichWriteCount > 0}
             >
               Enrich
             </button>
@@ -280,9 +358,13 @@ export function WorkItemDetailPage() {
 
       {enriching && (
         <EnrichModal
+          key={routeIdentity}
           item={item}
+          routeIdentity={routeIdentity}
           {...(project ? { project } : {})}
-          onClose={() => setEnriching(false)}
+          onClose={(completedIdentity) => {
+            if (activeRouteIdentityRef.current === completedIdentity) setEnriching(false)
+          }}
         />
       )}
     </section>

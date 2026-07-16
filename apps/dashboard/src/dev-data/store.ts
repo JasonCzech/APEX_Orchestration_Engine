@@ -32,7 +32,8 @@ type SavedQuery = components['schemas']['SavedQueryOut']
 type SavedQueryCreate = components['schemas']['SavedQueryCreate']
 type SavedQueryUpdate = components['schemas']['SavedQueryUpdate']
 type SystemInfo = components['schemas']['SystemInfo']
-type TranslatedQuery = components['schemas']['TranslatedQuery']
+type TranslatedQuery = components['schemas']['ExecutableTranslatedQuery']
+type ResolvedTranslatedQuery = components['schemas']['ResolvedTranslatedQuery']
 type AgentAnalytics = components['schemas']['AgentAnalyticsResponse']
 type AgentAnalyticsBreakdownRow = components['schemas']['AgentAnalyticsBreakdownRow']
 type AgentAnalyticsSeriesPoint = components['schemas']['AgentAnalyticsSeriesPoint']
@@ -41,7 +42,9 @@ type AgentGroupBy = AgentAnalytics['window']['group_by']
 type UsageAnalytics = components['schemas']['UsageAnalyticsResponse']
 type WorkItem = components['schemas']['WorkItem']
 type WorkItemDraft = components['schemas']['WorkItemDraft']
-type WorkItemPage = components['schemas']['WorkItemPage']
+type ResolvedWorkItem = components['schemas']['ResolvedWorkItem']
+type WorkItemPage = components['schemas']['ResolvedWorkItemPage']
+type WorkTrackingBinding = components['schemas']['WorkTrackingBindingOut']
 
 type AgentSort =
   | 'key'
@@ -533,8 +536,8 @@ export class DevDataStore {
       { key: 'BILL-44', title: 'Billing export smoke', kind: 'task', status: 'open', description: 'Exercise secondary project scoping.', url: null },
     ]
     this.savedQueries = [
-      { id: 'sq-open', name: 'Open payment stories', provider: 'jira', query: 'project = PHX AND status in (Open, "In Progress")', description: 'Sprint triage pick list', project_id: 'proj-alpha', created_by: 'ops', created_at: created, updated_at: updated },
-      { id: 'sq-bugs', name: 'Load bugs', provider: 'jira', query: 'project = PHX AND labels = load-test AND type = Bug', description: null, project_id: 'proj-alpha', created_by: 'ops', created_at: created, updated_at: updated },
+      { id: 'sq-open', name: 'Open payment stories', provider: 'jira', query: 'project = PHX AND status in (Open, "In Progress")', description: 'Sprint triage pick list', project_id: 'proj-alpha', connection_id: 'conn-jira', created_by: 'ops', created_at: created, updated_at: updated },
+      { id: 'sq-bugs', name: 'Load bugs', provider: 'jira', query: 'project = PHX AND labels = load-test AND type = Bug', description: null, project_id: 'proj-alpha', connection_id: 'conn-jira', created_by: 'ops', created_at: created, updated_at: updated },
     ]
     this.prompts = this.makePrompts(created, updated)
     this.logs = this.makeLogs()
@@ -932,15 +935,31 @@ export class DevDataStore {
   }
 
   private async handleWorkTracking(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
+    if (method === 'GET' && path === '/v1/work-tracking/binding') {
+      return jsonResponse(this.workTrackingBinding(params.get('connection_id')))
+    }
     if (method === 'POST' && path === '/v1/work-tracking/query/translate') {
-      const body = (await request.json()) as { text?: string }
+      const body = (await request.json()) as { text?: string; connection_id?: string }
       const text = body.text ?? 'open load test bugs'
       const provider = text.toLowerCase().includes('azure') ? 'ado' : 'jira'
-      return jsonResponse({ provider, query: provider === 'jira' ? `project = PHX AND text ~ "${text}"` : `SELECT [System.Id] FROM WorkItems WHERE [System.Title] CONTAINS '${text}'`, confidence: 0.86 } satisfies TranslatedQuery)
+      const binding = this.workTrackingBinding(body.connection_id, provider)
+      return jsonResponse({
+        ...binding,
+        query: binding.provider === 'jira' ? `project = PHX AND text ~ "${text}"` : `SELECT [System.Id] FROM WorkItems WHERE [System.Title] CONTAINS '${text}'`,
+        confidence: 0.86,
+      } satisfies ResolvedTranslatedQuery)
     }
     if (method === 'POST' && path === '/v1/work-tracking/query/execute') {
-      const body = (await request.json()) as { limit?: number; offset?: number; query?: TranslatedQuery }
-      return jsonResponse(this.workItemPage(this.workItems, body.limit ?? 25, body.offset ?? 0))
+      const body = (await request.json()) as { connection_id?: string; limit?: number; offset?: number; query?: TranslatedQuery }
+      const binding = this.workTrackingBinding(body.connection_id, body.query?.provider)
+      if (body.query && body.query.provider.toLowerCase() !== binding.provider) {
+        return problemResponse(
+          409,
+          'work_tracking_provider_mismatch',
+          'The query provider does not match the selected work-tracking connection.',
+        )
+      }
+      return jsonResponse(this.workItemPage(this.workItems, body.limit ?? 25, body.offset ?? 0, binding))
     }
     if (method === 'GET' && path === '/v1/work-tracking/saved-queries') {
       const project = params.get('project')
@@ -951,7 +970,7 @@ export class DevDataStore {
     }
     if (method === 'POST' && path === '/v1/work-tracking/saved-queries') {
       const body = (await request.json()) as SavedQueryCreate
-      const saved: SavedQuery = { id: this.id('sq'), created_at: nowIso(), updated_at: nowIso(), created_by: 'dev', description: body.description ?? null, name: body.name, provider: body.provider, query: body.query, project_id: body.project_id ?? null }
+      const saved: SavedQuery = { id: this.id('sq'), created_at: nowIso(), updated_at: nowIso(), created_by: 'dev', description: body.description ?? null, name: body.name, provider: body.provider, query: body.query, project_id: body.project_id ?? null, connection_id: body.connection_id ?? null }
       this.savedQueries.unshift(saved)
       return jsonResponse(saved, 201)
     }
@@ -962,18 +981,28 @@ export class DevDataStore {
       const key = `PHX-${200 + this.nextId++}`
       const item: WorkItem = { key, title: body.title, description: body.description ?? '', kind: body.kind ?? 'story', status: 'open', url: null }
       this.workItems.unshift(item)
-      return jsonResponse(item, 201)
+      return jsonResponse({
+        ...item,
+        ...this.workTrackingBinding(params.get('connection_id')),
+      } satisfies ResolvedWorkItem, 201)
     }
     const itemMatch = /^\/v1\/work-tracking\/items\/([^/]+)(?:\/enrich)?$/.exec(path)
     if (itemMatch) {
       const key = decodePart(itemMatch[1])
       const item = this.workItems.find((row) => row.key === key)
       if (!item) return problemResponse(404, 'not_found', `Work item ${key} was not found.`)
-      if (method === 'GET') return jsonResponse(item)
+      const resolved = {
+        ...item,
+        ...this.workTrackingBinding(params.get('connection_id')),
+      } satisfies ResolvedWorkItem
+      if (method === 'GET') return jsonResponse(resolved)
       if (method === 'POST' && path.endsWith('/enrich')) {
         const body = (await request.json()) as { comment?: string | null }
         item.description = [item.description, body.comment].filter(Boolean).join('\n\n')
-        return jsonResponse(item)
+        return jsonResponse({
+          ...item,
+          ...this.workTrackingBinding(params.get('connection_id')),
+        } satisfies ResolvedWorkItem)
       }
     }
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
@@ -992,6 +1021,8 @@ export class DevDataStore {
         description: body.description ?? current.description,
         provider: body.provider ?? current.provider,
         query: body.query ?? current.query,
+        connection_id:
+          body.connection_id === undefined ? current.connection_id : body.connection_id,
         updated_at: nowIso(),
       }
       return jsonResponse(this.savedQueries[index])
@@ -1722,8 +1753,35 @@ export class DevDataStore {
     return { entries: page.items, total: rows.length, limit: page.limit, offset: page.offset, window: { from: body.window?.from ?? isoMinutesAgo(60), to: body.window?.to ?? nowIso() } }
   }
 
-  private workItemPage(rows: WorkItem[], limit: number, offset: number): WorkItemPage {
-    return { items: rows.slice(offset, offset + limit), total: rows.length, page: { limit, offset } }
+  private workTrackingBinding(
+    connectionId: string | null | undefined,
+    providerHint?: string,
+  ): WorkTrackingBinding {
+    if (connectionId) {
+      return {
+        connection_id: connectionId,
+        provider: connectionId === 'conn-ado' ? 'ado' : 'jira',
+      }
+    }
+    const normalizedProvider = providerHint?.toLowerCase()
+    if (normalizedProvider === 'ado') {
+      return { connection_id: 'conn-ado', provider: 'ado' }
+    }
+    return { connection_id: 'conn-jira', provider: 'jira' }
+  }
+
+  private workItemPage(
+    rows: WorkItem[],
+    limit: number,
+    offset: number,
+    binding: WorkTrackingBinding,
+  ): WorkItemPage {
+    return {
+      ...binding,
+      items: rows.slice(offset, offset + limit),
+      total: rows.length,
+      page: { limit, offset },
+    }
   }
 
   private id(prefix: string): string {

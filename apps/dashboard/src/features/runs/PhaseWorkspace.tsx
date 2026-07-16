@@ -13,6 +13,7 @@ import type {
 } from '@apex/pipeline-events'
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
+import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 import type { GateInstance, GateMachineState } from '@/hitl/gateMachine'
 
 import { ActivityFeed } from './ActivityFeed'
@@ -93,6 +94,7 @@ export function PhaseWorkspace({
       {gateSlot}
       {!promptGateEditorActive && (
         <PromptReviewSection
+          key={JSON.stringify([threadId, phase])}
           threadId={threadId}
           phase={phase}
           state={state}
@@ -120,7 +122,7 @@ export function PhaseWorkspace({
       {tab === 'log' && (
         <div className="pipeline-log-panel" role="tabpanel" aria-label="Pipeline log">
           <ActivityFeed
-            key={`${threadId}:${phase}:${runId ?? 'snapshot'}`}
+            key={JSON.stringify([threadId, phase, runId ?? 'snapshot'])}
             phase={phase}
             streamStatus={stream?.status}
             progress={stream?.phaseProgress?.[phase]}
@@ -230,7 +232,11 @@ function ArtifactCards({
       <h3 className="workspace-section-title">Artifacts</h3>
       <div className="artifact-card-grid">
         {rows.map((artifact) => (
-          <Link key={artifact.id} className="artifact-card" to={`/runs/${threadId}/artifacts/${artifact.id}`}>
+          <Link
+            key={artifact.id}
+            className="artifact-card"
+            to={artifactViewerPath(threadId, artifact.id)}
+          >
             <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
             <strong>{artifact.name ?? artifact.id}</strong>
             <span className="artifact-card-meta">{artifact.media_type ?? '—'}</span>

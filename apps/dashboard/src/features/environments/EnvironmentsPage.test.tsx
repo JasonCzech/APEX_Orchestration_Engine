@@ -48,6 +48,22 @@ describe('EnvironmentsPage', () => {
     expect(within(dev).getByText('—')).toBeInTheDocument()
   })
 
+  it('exposes environment details through a keyboard-focusable link', async () => {
+    server.use(...catalogReadHandlers(), inventoryHandler(inventoryOf(ENV_STAGING.id, null)))
+    const user = userEvent.setup()
+    const { router } = renderList()
+
+    const link = await screen.findByRole('link', { name: 'staging' })
+    expect(link).toHaveAttribute('href', `/environments/${ENV_STAGING.id}`)
+
+    link.focus()
+    await user.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/environments/${ENV_STAGING.id}`),
+    )
+  })
+
   it('creates an environment from the panel and navigates to its detail', async () => {
     const create = createEnvironmentHandler('env-new')
     const ENV_NEW: Environment = {

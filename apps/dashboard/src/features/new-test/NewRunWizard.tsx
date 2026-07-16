@@ -1,10 +1,22 @@
-import { useCallback, useEffect, useState, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { useDraftsList } from '@/api/hooks/useDrafts'
 import { useOptionalAuth } from '@/auth/AuthProvider'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
-import { RequireRole, roleAtLeast } from '@/auth/RequireRole'
+import {
+  canMutateAudience,
+  RequireRole,
+  roleAtLeast,
+} from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 
 import { ConfigStep } from './steps/ConfigStep'
 import { ContextStep } from './steps/ContextStep'
@@ -12,9 +24,15 @@ import { PromptsStep } from './steps/PromptsStep'
 import { ReviewStep } from './steps/ReviewStep'
 import { ScopeStep } from './steps/ScopeStep'
 import { WorkItemsStep } from './steps/WorkItemsStep'
-import { useDraft } from './useDraft'
+import { canPersistWizardDraft, useDraft, type DraftUpdater } from './useDraft'
 import { useWizardLaunch } from './useWizardLaunch'
-import { allIssues, isWizardStep, STEP_LABELS, WIZARD_STEPS, type WizardStepId } from './wizardState'
+import {
+  allIssues,
+  isWizardStep,
+  STEP_LABELS,
+  WIZARD_STEPS,
+  type WizardStepId,
+} from './wizardState'
 
 import './wizard.css'
 
@@ -30,7 +48,18 @@ const SAVE_LABELS: Record<string, string> = {
 export interface StepProps {
   draft: import('./wizardState').WizardDraft
   onChange: (updater: import('./useDraft').DraftUpdater) => void
+  draftGeneration?: number
+  isDraftGenerationCurrent?: (generation: number) => boolean
+  onPendingStart?: () => () => void
   maxContextPackets?: number
+  disabled?: boolean
+}
+
+type PendingWizardStep = 'work-items' | 'context'
+
+interface PendingWizardOperation {
+  step: PendingWizardStep
+  draftGeneration: number
 }
 
 function WizardSection({
@@ -112,15 +141,44 @@ function WizardStepContent({
   draft,
   onChange,
   onEditStep,
+  draftGeneration = 0,
+  isDraftGenerationCurrent,
+  onStepPendingStart,
   maxContextPackets,
-}: StepProps & { step: WizardStepId; onEditStep: (step: WizardStepId) => void }) {
+  disabled,
+}: StepProps & {
+  step: WizardStepId
+  onEditStep: (step: WizardStepId) => void
+  onStepPendingStart: (
+    step: PendingWizardStep,
+    draftGeneration: number,
+  ) => () => void
+}) {
   switch (step) {
     case 'scope':
       return <ScopeStep draft={draft} onChange={onChange} />
     case 'work-items':
-      return <WorkItemsStep draft={draft} onChange={onChange} />
+      return (
+        <WorkItemsStep
+          draft={draft}
+          onChange={onChange}
+          draftGeneration={draftGeneration}
+          isDraftGenerationCurrent={isDraftGenerationCurrent}
+          onPendingStart={() => onStepPendingStart('work-items', draftGeneration)}
+        />
+      )
     case 'context':
-      return <ContextStep draft={draft} onChange={onChange} maxContextPackets={maxContextPackets} />
+      return (
+        <ContextStep
+          draft={draft}
+          onChange={onChange}
+          maxContextPackets={maxContextPackets}
+          disabled={disabled}
+          draftGeneration={draftGeneration}
+          isDraftGenerationCurrent={isDraftGenerationCurrent}
+          onPendingStart={() => onStepPendingStart('context', draftGeneration)}
+        />
+      )
     case 'config':
       return <ConfigStep draft={draft} onChange={onChange} />
     case 'prompts':
@@ -131,13 +189,39 @@ function WizardStepContent({
 }
 
 export function NewRunWizardPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const urlDraftId = searchParams.get('draft')
+  return (
+    <NewRunWizardContent
+      urlDraftId={urlDraftId}
+      searchParams={searchParams}
+      setSearchParams={setSearchParams}
+    />
+  )
+}
+
+function NewRunWizardContent({
+  urlDraftId,
+  searchParams,
+  setSearchParams,
+}: {
+  urlDraftId: string | null
+  searchParams: URLSearchParams
+  setSearchParams: ReturnType<typeof useSearchParams>[1]
+}) {
   const auth = useOptionalAuth()
   const authState = auth?.state
-  const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
-  const urlDraftId = searchParams.get('draft')
   const rawStep = searchParams.get('step')
   const activeStep: WizardStepId = isWizardStep(rawStep) ? rawStep : 'scope'
+  const pendingOperationsRef = useRef(new Map<number, PendingWizardOperation>())
+  const nextPendingOperationIdRef = useRef(0)
+  const [pendingStepCount, setPendingStepCount] = useState(0)
+  const mountedRef = useRef(true)
+  const canSwitchDraft = useCallback(
+    () => pendingOperationsRef.current.size === 0,
+    [],
+  )
 
   const onDraftCreated = useCallback(
     (id: string) => {
@@ -157,19 +241,28 @@ export function NewRunWizardPage() {
     draft,
     setDraft,
     draftId,
+    draftGeneration,
+    isDraftGenerationCurrent,
     saveState,
     loading,
-    loadError,
+    loadFailure,
+    isLoadFailureCurrent,
     loadDraft,
     saveNow,
     deleteCurrentDraft,
-  } = useDraft({ initialDraftId: urlDraftId, onDraftCreated })
+    deleteDraftById,
+  } = useDraft({
+    initialDraftId: urlDraftId,
+    onDraftCreated,
+    canSwitchDraft,
+  })
 
   const launch = useWizardLaunch()
   const [finalizing, setFinalizing] = useState(false)
   const draftsList = useDraftsList(undefined, { enabled: urlDraftId === null && draftId === null })
-  const showResume =
-    draftId === null && saveState === 'idle' && (draftsList.data?.length ?? 0) > 0
+  const resumeEligible = draftId === null && saveState === 'idle'
+  const showResumePicker = resumeEligible && (draftsList.data?.length ?? 0) > 0
+  const showResumeError = resumeEligible && draftsList.isError && !draftsList.data
   const maxContextPackets =
     authState?.status === 'authenticated'
       ? authState.systemInfo.limits.max_context_packets
@@ -177,35 +270,143 @@ export function NewRunWizardPage() {
   const canOperate =
     authState === undefined ||
     (authState.status === 'authenticated' && roleAtLeast(authState.consumer.role, 'operator'))
-  const issues = allIssues(draft, maxContextPackets)
+  const consumer =
+    authState === undefined
+      ? undefined
+      : authState.status === 'authenticated'
+        ? authState.consumer
+        : null
+  const scopeAuthorized =
+    consumer === undefined ||
+    canMutateAudience(consumer, draft.scope.project_id.trim(), draft.scope.app_id)
+  const issues = [
+    ...allIssues(draft, maxContextPackets),
+    ...(!scopeAuthorized
+      ? [
+          {
+            step: 'scope' as const,
+            message: 'Select a project and application within your authorized scope',
+          },
+        ]
+      : []),
+  ]
+  const canSaveDraft = canPersistWizardDraft(consumer, draft)
+  const resetLaunch = launch.reset
+  const beginStepPending = useCallback(
+    (step: PendingWizardStep, operationDraftGeneration: number) => {
+      if (!isDraftGenerationCurrent(operationDraftGeneration)) {
+        return () => undefined
+      }
+      const operationId = ++nextPendingOperationIdRef.current
+      pendingOperationsRef.current.set(operationId, {
+        step,
+        draftGeneration: operationDraftGeneration,
+      })
+      if (mountedRef.current) {
+        setPendingStepCount(pendingOperationsRef.current.size)
+      }
+      let finished = false
+      return () => {
+        if (finished) return
+        finished = true
+        pendingOperationsRef.current.delete(operationId)
+        if (mountedRef.current) {
+          setPendingStepCount(pendingOperationsRef.current.size)
+        }
+      }
+    },
+    [isDraftGenerationCurrent],
+  )
+
+  const updateDraft = useCallback(
+    (updater: DraftUpdater) => {
+      setDraft(updater)
+      if (launch.isError) resetLaunch()
+    },
+    [launch.isError, resetLaunch, setDraft],
+  )
 
   useEffect(() => {
-    if (!loadError || !urlDraftId) return
+    if (
+      !loadFailure ||
+      !isLoadFailureCurrent(loadFailure) ||
+      loadFailure.urlDraftId !== urlDraftId ||
+      urlDraftId === draftId
+    ) {
+      return
+    }
     setSearchParams((previous) => {
       const next = new URLSearchParams(previous)
-      next.delete('draft')
+      if (draftId === null) next.delete('draft')
+      else next.set('draft', draftId)
       return next
     }, { replace: true })
-  }, [loadError, urlDraftId, setSearchParams])
+  }, [
+    draftId,
+    isLoadFailureCurrent,
+    loadFailure,
+    urlDraftId,
+    setSearchParams,
+  ])
+
+  useEffect(() => {
+    let removedStaleOperation = false
+    for (const [operationId, operation] of pendingOperationsRef.current) {
+      if (operation.draftGeneration === draftGeneration) continue
+      pendingOperationsRef.current.delete(operationId)
+      removedStaleOperation = true
+    }
+    if (removedStaleOperation) {
+      setPendingStepCount(pendingOperationsRef.current.size)
+    }
+    setFinalizing(false)
+    resetLaunch()
+  }, [draftGeneration, resetLaunch])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   async function handleLaunch() {
-    if (finalizing) return
+    if (finalizing || pendingOperationsRef.current.size > 0) return
     setFinalizing(true)
     const keyRevision = getApiKeyRevision()
     const sessionRevision = getSessionRevision()
+    const launchedDraftId = draftId
+    const launchedDraftGeneration = draftGeneration
     try {
       const result = await launch.mutateAsync(draft)
-      if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) return
+      const sessionIsCurrent =
+        keyRevision === getApiKeyRevision() &&
+        sessionRevision === getSessionRevision()
+      const draftIsCurrent =
+        mountedRef.current && isDraftGenerationCurrent(launchedDraftGeneration)
+      const isCurrent = sessionIsCurrent && draftIsCurrent
+      if (sessionIsCurrent) {
+        if (draftIsCurrent) void deleteCurrentDraft()
+        else if (launchedDraftId !== null) void deleteDraftById(launchedDraftId)
+      }
+      if (!isCurrent) return
       navigate(`/runs/${result.threadId}?tab=log`)
-      void deleteCurrentDraft()
     } catch {
       // launch.error renders inline below.
-      setFinalizing(false)
+      if (
+        mountedRef.current &&
+        isDraftGenerationCurrent(launchedDraftGeneration) &&
+        keyRevision === getApiKeyRevision() &&
+        sessionRevision === getSessionRevision()
+      ) {
+        setFinalizing(false)
+      }
     }
   }
 
   async function resumeDraft(id: string) {
-    await loadDraft(id)
+    if (pendingOperationsRef.current.size > 0) return
+    if (!(await loadDraft(id))) return
     setSearchParams(
       (previous) => {
         const next = new URLSearchParams(previous)
@@ -272,9 +473,13 @@ export function NewRunWizardPage() {
         <WizardStepContent
           step={step}
           draft={draft}
-          onChange={setDraft}
+          onChange={updateDraft}
           onEditStep={jumpToTab}
+          draftGeneration={draftGeneration}
+          isDraftGenerationCurrent={isDraftGenerationCurrent}
+          onStepPendingStart={beginStepPending}
           maxContextPackets={maxContextPackets}
+          disabled={finalizing || !canOperate}
         />
       </WizardSection>
     )
@@ -323,44 +528,67 @@ export function NewRunWizardPage() {
         </div>
       )}
 
-      {showResume && (
+      {resumeEligible && draftsList.isError && draftsList.data && (
+        <CachedDataWarning error={draftsList.error} onRetry={() => void draftsList.refetch()} />
+      )}
+
+      {(showResumePicker || showResumeError) && (
         <div className="glass-panel wizard-resume" data-testid="resume-draft-panel">
-          <label className="wizard-label" htmlFor="wizard-resume-select">
-            Resume draft
-          </label>
-          <select
-            id="wizard-resume-select"
-            className="field-select"
-            value=""
-            onChange={(event) => {
-              if (event.target.value) void resumeDraft(event.target.value)
-            }}
-          >
-            <option value="">Start fresh or pick a saved draft…</option>
-            {(draftsList.data ?? []).map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {entry.title}
-              </option>
-            ))}
-          </select>
+          {showResumeError ? (
+            <>
+              <span className="wizard-label">Resume draft</span>
+              <div className="tonal-card danger" role="alert">
+                Saved drafts unavailable: {draftsList.error.message}{' '}
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => void draftsList.refetch()}
+                >
+                  Retry
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="wizard-label" htmlFor="wizard-resume-select">
+                Resume draft
+              </label>
+              <select
+                id="wizard-resume-select"
+                className="field-select"
+                value=""
+                disabled={loading || pendingStepCount > 0}
+                onChange={(event) => {
+                  if (event.target.value) void resumeDraft(event.target.value)
+                }}
+              >
+                <option value="">Start fresh or pick a saved draft…</option>
+                {(draftsList.data ?? []).map((entry) => (
+                  <option key={entry.id} value={entry.id}>
+                    {entry.title}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
         </div>
       )}
 
-      {loadError && (
+      {loadFailure && (
         <p className="wizard-caption wizard-caption--danger" role="alert">
-          {loadError}
+          {loadFailure.message}
         </p>
       )}
 
       {loading ? (
         <p className="wizard-caption">Loading draft…</p>
       ) : (
-          <fieldset className="wizard-fieldset" disabled={finalizing || !canOperate}>
-            <div className="wizard-stack">
-              {renderTabs()}
-              {WIZARD_STEPS.map(renderStepSection)}
-            </div>
-          </fieldset>
+        <fieldset className="wizard-fieldset" disabled={finalizing || !canOperate}>
+          <div className="wizard-stack">
+            {renderTabs()}
+            {WIZARD_STEPS.map(renderStepSection)}
+          </div>
+        </fieldset>
       )}
 
       <footer className="glass-panel wizard-footer">
@@ -368,7 +596,9 @@ export function NewRunWizardPage() {
           <strong>Launch Pipeline</strong>
           <span className="wizard-caption">
             {issues.length === 0
-              ? 'All required sections look ready.'
+              ? pendingStepCount > 0
+                ? 'Waiting for in-progress context changes to finish.'
+                : 'All required sections look ready.'
               : `${issues.length} item${issues.length === 1 ? '' : 's'} still need attention.`}
           </span>
         </div>
@@ -393,16 +623,36 @@ export function NewRunWizardPage() {
         )}
         <div className="wizard-footer-actions">
           <RequireRole role="operator">
-            <button type="button" className="btn btn-ghost" disabled={finalizing} onClick={() => void saveNow()}>
+            {!canSaveDraft && (
+              <span className="wizard-caption">
+                Draft saving requires project-wide access.
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn btn-ghost"
+              disabled={loading || finalizing || !canSaveDraft}
+              onClick={() => void saveNow()}
+            >
               Save Draft
             </button>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={issues.length > 0 || launch.isPending || loading || finalizing}
+              disabled={
+                issues.length > 0 ||
+                pendingStepCount > 0 ||
+                launch.isPending ||
+                loading ||
+                finalizing
+              }
               onClick={() => void handleLaunch()}
             >
-              {launch.isPending || finalizing ? 'Launching…' : 'Launch Pipeline'}
+              {launch.isPending || finalizing
+                ? 'Launching…'
+                : pendingStepCount > 0
+                  ? 'Finishing context…'
+                  : 'Launch Pipeline'}
             </button>
           </RequireRole>
         </div>

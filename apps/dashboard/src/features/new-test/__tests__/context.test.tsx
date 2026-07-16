@@ -4,14 +4,21 @@
  */
 import { File as NodeFile } from 'node:buffer'
 
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { bumpSessionRevision } from '@/auth/keyStorage'
+import { authenticatedState } from '@/test/render'
 import { server } from '@/test/server'
 
-import { flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wizardTestUtils'
+import {
+  fillScope,
+  flushAndUnmountWizard,
+  installWizardHandlers,
+  renderWizard,
+} from './wizardTestUtils'
 
 // Same realm-mismatch problem setup.ts solves for AbortSignal: the fetch stack
 // is Node's undici, which brand-checks FormData/File against Node's classes,
@@ -98,6 +105,53 @@ describe('ContextStep', () => {
     await flushAndUnmountWizard(rendered)
   })
 
+  it('blocks launch until an in-flight upload is attached to the draft', async () => {
+    installWizardHandlers()
+    let markUploadStarted!: () => void
+    const uploadStarted = new Promise<void>((resolve) => {
+      markUploadStarted = resolve
+    })
+    let releaseUpload!: () => void
+    const uploadRelease = new Promise<void>((resolve) => {
+      releaseUpload = resolve
+    })
+    server.use(
+      http.post('*/v1/documents', async ({ request }) => {
+        const form = await request.formData()
+        const file = form.get('file') as File
+        markUploadStarted()
+        await uploadRelease
+        return HttpResponse.json(
+          {
+            id: 'doc-deferred',
+            name: file.name,
+            media_type: 'text/plain',
+            size_bytes: file.size,
+            artifact_key: 'documents/doc-deferred',
+            project_id: 'demo',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: 'Context' }))
+    await user.upload(
+      await screen.findByLabelText('Upload documents'),
+      new File(['spec body'], 'deferred.txt', { type: 'text/plain' }),
+    )
+    await uploadStarted
+
+    expect(screen.getByRole('button', { name: 'Finishing context…' })).toBeDisabled()
+    await act(async () => releaseUpload())
+    expect(await screen.findByText(/deferred\.txt/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
+    await flushAndUnmountWizard(rendered)
+  })
+
   it('rejects an unsupported dropped file with a friendly error and does not upload', async () => {
     installWizardHandlers()
     let posted = false
@@ -121,6 +175,35 @@ describe('ContextStep', () => {
     expect(errors).toHaveTextContent(/diagram\.png: unsupported type/i)
     expect(posted).toBe(false)
     await flushAndUnmountWizard(rendered)
+  })
+
+  it('does not upload dropped files for viewer sessions', async () => {
+    installWizardHandlers()
+    let posted = false
+    server.use(
+      http.post('*/v1/documents', () => {
+        posted = true
+        return HttpResponse.json({}, { status: 201 })
+      }),
+    )
+    const rendered = renderWizard(
+      '/runs/new?step=context',
+      authenticatedState('viewer'),
+    )
+
+    const dropzone = await screen.findByTestId('document-dropzone')
+    expect(dropzone).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: 'Choose files' })).toBeDisabled()
+
+    fireEvent.drop(dropzone, {
+      dataTransfer: {
+        files: [new File(['context'], 'context.txt', { type: 'text/plain' })],
+      },
+    })
+
+    expect(posted).toBe(false)
+    expect(screen.queryByTestId('attached-documents')).not.toBeInTheDocument()
+    rendered.unmount()
   })
 
   it('shows parse status, char count and an expandable preview for a parsed upload', async () => {
@@ -193,6 +276,100 @@ describe('ContextStep', () => {
     const attached = await screen.findByTestId('attached-documents')
     expect(within(attached).getByText('Parse failed')).toBeInTheDocument()
     expect(within(attached).getByText(/password-protected/)).toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
+  })
+
+  it('stops a multi-file upload batch after a session transition', async () => {
+    installWizardHandlers()
+    const uploads: string[] = []
+    server.use(
+      http.get('*/v1/documents', () =>
+        HttpResponse.json({ items: [], limit: 50, offset: 0 }),
+      ),
+      http.post('*/v1/documents', async ({ request }) => {
+        const form = await request.formData()
+        const file = form.get('file') as File
+        uploads.push(file.name)
+        bumpSessionRevision()
+        return HttpResponse.json(
+          {
+            id: `doc-${uploads.length}`,
+            name: file.name,
+            media_type: 'text/plain',
+            size_bytes: file.size,
+            artifact_key: `documents/doc-${uploads.length}`,
+            project_id: 'demo',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    const rendered = renderWizard('/runs/new?step=context')
+
+    await user.upload(await screen.findByLabelText('Upload documents'), [
+      new File(['first'], 'first.txt', { type: 'text/plain' }),
+      new File(['second'], 'second.txt', { type: 'text/plain' }),
+    ])
+
+    await waitFor(() => expect(uploads).toEqual(['first.txt']))
+    expect(screen.queryByTestId('attached-documents')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('upload-errors')).not.toBeInTheDocument()
+    rendered.unmount()
+  })
+
+  it('stops a multi-file upload batch when the wizard scope changes', async () => {
+    installWizardHandlers()
+    const uploads: string[] = []
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let markStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve
+    })
+    server.use(
+      http.get('*/v1/documents', () =>
+        HttpResponse.json({ items: [], limit: 50, offset: 0 }),
+      ),
+      http.post('*/v1/documents', async ({ request }) => {
+        const form = await request.formData()
+        const file = form.get('file') as File
+        uploads.push(file.name)
+        markStarted()
+        await blocked
+        return HttpResponse.json(
+          {
+            id: `doc-${uploads.length}`,
+            name: file.name,
+            media_type: 'text/plain',
+            size_bytes: file.size,
+            artifact_key: `documents/doc-${uploads.length}`,
+            project_id: 'demo',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    const rendered = renderWizard('/runs/new?step=context')
+
+    await user.upload(await screen.findByLabelText('Upload documents'), [
+      new File(['first'], 'first.txt', { type: 'text/plain' }),
+      new File(['second'], 'second.txt', { type: 'text/plain' }),
+    ])
+    await started
+
+    await user.click(screen.getByRole('tab', { name: 'Scope' }))
+    const project = screen.getByLabelText('Project')
+    await user.clear(project)
+    await user.type(project, 'different-project')
+    release()
+
+    await waitFor(() => expect(uploads).toEqual(['first.txt']))
+    expect(screen.queryByTestId('attached-documents')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('upload-errors')).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 })

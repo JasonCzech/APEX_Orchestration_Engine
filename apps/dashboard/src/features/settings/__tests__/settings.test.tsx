@@ -6,9 +6,9 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { API_KEY_STORAGE_KEY } from '@/auth/keyStorage'
+import { API_KEY_STORAGE_KEY, setApiKey } from '@/auth/keyStorage'
 import { authenticatedState, renderApp } from '@/test/render'
 import { server, SYSTEM_INFO } from '@/test/server'
 import { THEME_STORAGE_KEY } from '@/theme/useTheme'
@@ -138,6 +138,45 @@ describe('SettingsPage', () => {
     await waitFor(() => {
       expect(window.localStorage.getItem(API_KEY_STORAGE_KEY)).toBeNull()
     })
+  })
+
+  it('does not save a replacement when the key changes while its response body parses', async () => {
+    let parsingStarted!: () => void
+    let releaseBody!: () => void
+    const started = new Promise<void>((resolve) => {
+      parsingStarted = resolve
+    })
+    const release = new Promise<void>((resolve) => {
+      releaseBody = resolve
+    })
+    const response = {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => {
+        parsingStarted()
+        await release
+        return SYSTEM_INFO
+      },
+    } as Response
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response)
+    const user = userEvent.setup()
+
+    try {
+      renderSettings()
+      await user.type(await screen.findByLabelText('Replace key'), 'apex_stale_candidate')
+      await user.click(screen.getByRole('button', { name: 'Validate & save' }))
+      await started
+
+      act(() => setApiKey('apex_newer_session'))
+      releaseBody()
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      })
+      expect(window.localStorage.getItem(API_KEY_STORAGE_KEY)).toBe('apex_newer_session')
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 
   it('revalidates identity and clears private cache when another tab changes the key', async () => {

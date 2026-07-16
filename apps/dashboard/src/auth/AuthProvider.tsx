@@ -153,9 +153,17 @@ export function AuthProvider({
     }
   }, [clearSessionCache, staticState, validate])
 
-  const submitKey = useCallback((key: string) => {
-    setApiKey(key)
-  }, [])
+  const submitKey = useCallback(
+    (key: string) => {
+      const unchanged = getApiKey() === key
+      setApiKey(key)
+      // `setApiKey` intentionally treats an identical credential as the same
+      // lifecycle so durable same-principal recovery state survives. The gate
+      // still needs an explicit retry after a transient validation failure.
+      if (unchanged) void validate()
+    },
+    [validate],
+  )
 
   const signOut = useCallback(() => {
     attemptRef.current += 1

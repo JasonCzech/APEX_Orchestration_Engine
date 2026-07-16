@@ -4,24 +4,17 @@
  * follow the prompt playground pattern (D5): no polling, deep-link to
  * /runs/{thread_id} when the stream URL carries one.
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
 import { notifyUnauthorized } from '@/api/apexClient'
 import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 import { getApiKey, getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
-import { threadIdFromStreamUrl, useCreateSummary } from '@/api/hooks/useContextApi'
 import { RequireRole } from '@/auth/RequireRole'
 import { formatRelative } from '@/utils/time'
 
-interface SummaryRun {
-  runId: string
-  threadId: string | null
-  streamUrl: string
-  at: string
-  subject: string
-}
+import type { SummaryLifecycle } from './useSummaryLifecycle'
 
 const MAX_SUMMARY_STREAM_BYTES = 4 * 1024 * 1024
 export const MAX_SUMMARY_STREAM_CHUNKS = 16_384
@@ -85,7 +78,12 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
     status: 'idle',
   })
   const controllerRef = useRef<AbortController | null>(null)
-  useEffect(() => () => controllerRef.current?.abort(), [])
+  useEffect(() => {
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    setState({ status: 'idle' })
+    return () => controllerRef.current?.abort()
+  }, [streamUrl])
 
   const open = useCallback(async () => {
     setState({ status: 'loading' })
@@ -257,53 +255,22 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
   )
 }
 
-export function SummariesTab() {
-  const createSummary = useCreateSummary()
-
-  const [subject, setSubject] = useState('')
-  const [project, setProject] = useState('')
-  const [keys, setKeys] = useState<string[]>([])
-  const [keyDraft, setKeyDraft] = useState('')
-  const [history, setHistory] = useState<SummaryRun[]>([])
-
-  function addKey() {
-    const key = keyDraft.trim()
-    if (!key) return
-    setKeys((prev) => (prev.includes(key) ? prev : [...prev, key]))
-    setKeyDraft('')
-  }
-
-  function removeKey(key: string) {
-    setKeys((prev) => prev.filter((existing) => existing !== key))
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    const trimmed = subject.trim()
-    if (!trimmed || createSummary.isPending) return
-    createSummary.mutate(
-      {
-        subject: trimmed,
-        work_item_keys: keys,
-        project_id: project.trim() || null,
-      },
-      {
-        onSuccess: (accepted) => {
-          setHistory((prev) => [
-            {
-              runId: accepted.run_id,
-              threadId: threadIdFromStreamUrl(accepted.stream_url),
-              streamUrl: accepted.stream_url,
-              at: new Date().toISOString(),
-              subject: trimmed,
-            },
-            ...prev,
-          ])
-        },
-      },
-    )
-  }
-
+export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
+  const {
+    createSummary,
+    isSubmitting,
+    subject,
+    project,
+    keys,
+    keyDraft,
+    history,
+    setSubject,
+    setProject,
+    setKeyDraft,
+    addKey,
+    removeKey,
+    submit,
+  } = lifecycle
   const latest = history[0]
 
   return (
@@ -395,9 +362,9 @@ export function SummariesTab() {
             <button
               type="submit"
               className="btn btn-primary"
-              disabled={subject.trim() === '' || createSummary.isPending}
+              disabled={subject.trim() === '' || isSubmitting}
             >
-              {createSummary.isPending ? 'Submitting…' : 'Generate summary'}
+              {isSubmitting ? 'Submitting…' : 'Generate summary'}
             </button>
           </div>
         </RequireRole>
@@ -405,7 +372,11 @@ export function SummariesTab() {
 
       <div className="ctx-card glass-panel ctx-grow">
         {latest ? (
-          <div className="tonal-card success ctx-run-card" data-testid="summary-accepted">
+          <div
+            key={latest.runId}
+            className="tonal-card success ctx-run-card"
+            data-testid="summary-accepted"
+          >
             <span className="strong">Summary run accepted</span>
             <span className="ctx-run-id">{latest.runId}</span>
             {latest.threadId ? (

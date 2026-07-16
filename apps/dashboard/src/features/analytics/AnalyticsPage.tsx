@@ -28,6 +28,7 @@ import { ProblemCard } from '@/components/ProblemCard'
 import { WindowPresets } from '@/components/controls/WindowPresets'
 
 import {
+  ANALYTICS_MAX_OFFSET,
   DEFAULT_GROUP,
   DEFAULT_LIMIT,
   DEFAULT_MEASURE,
@@ -255,7 +256,29 @@ function agentQuery(filters: AnalyticsFilters, group: GroupBy, measure: Measure,
   }
 }
 
-function seriesRows(data: AgentAnalytics, measure: Measure) {
+function seriesRows(data: AgentAnalytics, measure: Measure, group: GroupBy) {
+  if (group === 'date') {
+    const buckets = new Map<string, { sum: number; events: number }>()
+    for (const row of data.series) {
+      const current = buckets.get(row.bucket_start) ?? { sum: 0, events: 0 }
+      const weight = measure === 'latency' ? Math.max(1, row.events) : 1
+      current.sum += metricValue(row, measure) * weight
+      current.events += weight
+      buckets.set(row.bucket_start, current)
+    }
+    return {
+      keys: ['Total'],
+      fields: ['total'],
+      series: Array.from(buckets, ([bucket_start, values]) => ({
+        bucket_start,
+        total:
+          measure === 'latency'
+            ? values.sum / Math.max(1, values.events)
+            : values.sum,
+      })).sort((a, b) => a.bucket_start.localeCompare(b.bucket_start)),
+    }
+  }
+
   // `breakdown` is the currently requested table page, while `series` is the
   // server-selected chart population. Deriving legend keys from breakdown
   // makes every page after offset 0 render empty/mislabeled series. Rank the
@@ -356,7 +379,7 @@ function AgentUsageCharts({
   measure: Measure
   bucket: Bucket
 }) {
-  const stacked = useMemo(() => seriesRows(data, measure), [data, measure])
+  const stacked = useMemo(() => seriesRows(data, measure, group), [data, measure, group])
   const bars = useMemo(() => {
     const grouped = new Map<string, { sum: number; events: number }>()
     for (const row of data.series) {
@@ -381,7 +404,8 @@ function AgentUsageCharts({
     <div className="analytics-charts">
       <section className="glass-panel chart-panel" data-testid="analytics-agent-series-chart">
         <h2 className="chart-title">
-          {labelForMeasure(measure)} over time by {labelForGroup(group).toLowerCase()}
+          {labelForMeasure(measure)} over time
+          {group === 'date' ? '' : ` by ${labelForGroup(group).toLowerCase()}`}
         </h2>
         <ResponsiveContainer width="100%" height={240}>
           <AreaChart data={stacked.series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
@@ -556,7 +580,11 @@ function AgentBreakdownTable({
 }) {
   const page = data.page
   const prevDisabled = page.offset <= 0
-  const nextDisabled = page.offset + page.limit >= page.total
+  const nextDisabled =
+    page.offset >= ANALYTICS_MAX_OFFSET || page.offset + page.limit >= page.total
+  const reachedResultWindow =
+    page.offset >= ANALYTICS_MAX_OFFSET &&
+    page.offset + data.breakdown.length < page.total
   const caption =
     page.total === 0
       ? 'No rows'
@@ -606,6 +634,11 @@ function AgentBreakdownTable({
           </tbody>
         </table>
       </div>
+      {reachedResultWindow && (
+        <p className="analytics-result-window-note" role="status">
+          Reached the analytics result-window limit. Refine the filters to inspect later rows.
+        </p>
+      )}
       <footer className="analytics-pagination">
         <span className="analytics-pagination-caption">{caption}</span>
         <div className="analytics-pagination-buttons">
@@ -621,7 +654,7 @@ function AgentBreakdownTable({
             type="button"
             className="btn btn-ghost btn-sm"
             disabled={nextDisabled}
-            onClick={() => onPage(page.offset + page.limit)}
+            onClick={() => onPage(Math.min(ANALYTICS_MAX_OFFSET, page.offset + page.limit))}
           >
             Next
           </button>

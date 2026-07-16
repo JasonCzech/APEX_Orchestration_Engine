@@ -2,12 +2,13 @@
  * Home dashboard: metric cards, approval queue, recent runs, draft resume,
  * and the first-launch hero.
  */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
+import { queryKeys } from '@/api/queryKeys'
 import { makeSummaries } from '@/features/runs/runsTestHandlers'
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -43,6 +44,25 @@ function useHomeHandlers({
 
 function renderHome() {
   return renderApp({ initialEntries: ['/'], authState: authenticatedState() })
+}
+
+function pipelinesWithControlledApprovals(
+  items: typeof FLEET_FIXTURE,
+  approvalsShouldFail: () => boolean,
+) {
+  return http.get('*/v1/pipelines', ({ request }) => {
+    const url = new URL(request.url)
+    const status = url.searchParams.get('status')
+    if (status === 'interrupted' && approvalsShouldFail()) {
+      return HttpResponse.json({ detail: 'approvals offline' }, { status: 500 })
+    }
+    const filtered = status ? items.filter((run) => run.thread_status === status) : items
+    return HttpResponse.json({
+      items: filtered,
+      limit: Number(url.searchParams.get('limit') ?? '20'),
+      offset: Number(url.searchParams.get('offset') ?? '0'),
+    })
+  })
 }
 
 describe('HomePage', () => {
@@ -101,6 +121,32 @@ describe('HomePage', () => {
     expect(within(newGate).getByText('Newest gated run')).toBeInTheDocument()
   })
 
+  it('does not report a clear approvals queue when its initial request fails, and retries', async () => {
+    let approvalsFail = true
+    server.use(
+      pipelinesWithControlledApprovals(FLEET_FIXTURE, () => approvalsFail),
+      draftsHandler([]),
+      usageHandler(),
+    )
+    const user = userEvent.setup()
+    renderHome()
+
+    const panel = await screen.findByRole('region', { name: 'Awaiting HITL Approval' })
+    const alert = within(panel).getByRole('alert')
+    expect(alert).toHaveTextContent('Approvals unavailable')
+    expect(within(panel).queryByText('No pending approvals right now.')).not.toBeInTheDocument()
+
+    const approvalsBlock = screen.getByText('Pending approvals').closest('div')
+    expect(approvalsBlock).not.toBeNull()
+    expect(within(approvalsBlock as HTMLElement).getByText('—')).toBeInTheDocument()
+
+    approvalsFail = false
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }))
+
+    expect(await within(panel).findByTestId('home-approvals-list')).toBeInTheDocument()
+    expect(within(approvalsBlock as HTMLElement).getByText('2')).toBeInTheDocument()
+  })
+
   it('renders recent runs and navigates to the run detail from the run link', async () => {
     useHomeHandlers()
     const detail: PipelineDetail = {
@@ -145,6 +191,74 @@ describe('HomePage', () => {
     expect(within(drafts).getByText('Black Friday load test')).toBeInTheDocument()
     expect(screen.queryByTestId('home-hero')).not.toBeInTheDocument()
     expect(screen.getByText('No runs yet.')).toBeInTheDocument()
+  })
+
+  it('does not show the first-launch hero when draft lookup fails, and restores drafts on retry', async () => {
+    let draftsFail = true
+    server.use(
+      fleetHandler([]),
+      usageHandler(),
+      http.get('*/v1/drafts', () =>
+        draftsFail
+          ? HttpResponse.json({ detail: 'drafts offline' }, { status: 500 })
+          : HttpResponse.json([DRAFTS_FIXTURE[0]!]),
+      ),
+    )
+    const user = userEvent.setup()
+    renderHome()
+
+    const drafts = await screen.findByTestId('home-drafts')
+    const alert = within(drafts).getByRole('alert')
+    expect(alert).toHaveTextContent('Saved drafts unavailable')
+    expect(screen.queryByTestId('home-hero')).not.toBeInTheDocument()
+
+    draftsFail = false
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }))
+
+    expect(await within(drafts).findByText('Black Friday load test')).toBeInTheDocument()
+    expect(within(drafts).getByRole('link')).toHaveAttribute('href', '/runs/new?draft=draft-1')
+  })
+
+  it('keeps cached approvals and drafts visible when their refreshes fail', async () => {
+    useHomeHandlers()
+    const { queryClient } = renderHome()
+
+    const approvalPanel = await screen.findByRole('region', { name: 'Awaiting HITL Approval' })
+    const drafts = await screen.findByTestId('home-drafts')
+    expect(within(approvalPanel).getByText('Oldest gated run')).toBeInTheDocument()
+    expect(within(drafts).getByText('Black Friday load test')).toBeInTheDocument()
+
+    server.use(
+      pipelinesWithControlledApprovals(FLEET_FIXTURE, () => true),
+      http.get('*/v1/drafts', () =>
+        HttpResponse.json({ detail: 'draft refresh failed' }, { status: 500 }),
+      ),
+    )
+    await act(async () => {
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.approvals.inbox(),
+        exact: true,
+      })
+    })
+
+    await waitFor(() =>
+      expect(within(approvalPanel).getByText(/Showing cached data/)).toBeInTheDocument(),
+    )
+    expect(within(approvalPanel).getByText('Oldest gated run')).toBeInTheDocument()
+    expect(within(approvalPanel).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+
+    await act(async () => {
+      await queryClient.refetchQueries({
+        queryKey: queryKeys.drafts.list(),
+        exact: true,
+      })
+    })
+
+    await waitFor(() =>
+      expect(within(drafts).getByText(/Showing cached data/)).toBeInTheDocument(),
+    )
+    expect(within(drafts).getByText('Black Friday load test')).toBeInTheDocument()
+    expect(within(drafts).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
   it('shows empty states for approvals and recent runs on a quiet healthy fleet', async () => {

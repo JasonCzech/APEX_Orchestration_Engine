@@ -2,7 +2,11 @@ import createClient, { type Middleware } from 'openapi-fetch'
 
 import type { components, paths } from '@apex/api-client'
 
-import { getApiKey, getApiKeyRevision } from '@/auth/keyStorage'
+import {
+  getApiKey,
+  getApiKeyRevision,
+  getSessionRevision,
+} from '@/auth/keyStorage'
 import { resolveApexBaseUrl } from '@/config/runtimeConfig'
 import { getDevApexFetch, subscribeDevDataMode } from '@/dev-data'
 
@@ -17,7 +21,10 @@ export type Role = components['schemas']['Role']
 type UnauthorizedHandler = () => void
 
 const unauthorizedHandlers = new Set<UnauthorizedHandler>()
-const requestAuthRevisions = new WeakMap<Request, number>()
+const requestAuthContexts = new WeakMap<
+  Request,
+  { key: string | null; keyRevision: number; sessionRevision: number }
+>()
 
 /** Registered by AuthProvider so any 401 anywhere drops the session. */
 export function onUnauthorized(handler: UnauthorizedHandler): () => void {
@@ -36,16 +43,25 @@ const authMiddleware: Middleware = {
   onRequest({ request }) {
     const key = getApiKey()
     if (key) request.headers.set('x-api-key', key)
-    requestAuthRevisions.set(request, getApiKeyRevision())
+    requestAuthContexts.set(request, {
+      key,
+      keyRevision: getApiKeyRevision(),
+      sessionRevision: getSessionRevision(),
+    })
     return request
   },
   onResponse({ request, response }) {
-    const requestKey = request.headers.get('x-api-key')
+    const requestAuth = requestAuthContexts.get(request)
     const belongsToCurrentSession =
-      requestKey !== null &&
-      requestKey === getApiKey() &&
-      requestAuthRevisions.get(request) === getApiKeyRevision()
-    if (response.status === 401 && belongsToCurrentSession) {
+      requestAuth !== undefined &&
+      requestAuth.key === getApiKey() &&
+      requestAuth.keyRevision === getApiKeyRevision() &&
+      requestAuth.sessionRevision === getSessionRevision()
+    if (!belongsToCurrentSession) {
+      void response.body?.cancel().catch(() => undefined)
+      throw new Error('Authentication changed while the request was in flight.')
+    }
+    if (response.status === 401 && requestAuth.key !== null) {
       for (const handler of unauthorizedHandlers) handler()
     }
     return response

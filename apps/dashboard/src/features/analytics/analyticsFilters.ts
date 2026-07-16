@@ -19,6 +19,8 @@ export type Measure = (typeof MEASURES)[number]
 export const DEFAULT_GROUP: GroupBy = 'model'
 export const DEFAULT_MEASURE: Measure = 'tokens'
 export const DEFAULT_LIMIT = 20
+/** Backend database-list offset ceiling for the breakdown page. */
+export const ANALYTICS_MAX_OFFSET = 10_000
 
 export interface AnalyticsFilters {
   from?: string
@@ -82,10 +84,10 @@ function parseIso(raw: string | null): string | undefined {
   return Number.isNaN(Date.parse(raw)) ? undefined : raw
 }
 
-function parseIntParam(raw: string | null): number | undefined {
+function parseIntParam(raw: string | null, max: number): number | undefined {
   if (!raw) return undefined
   const value = Number(raw)
-  return Number.isInteger(value) && value >= 0 ? value : undefined
+  return Number.isInteger(value) && value >= 0 ? Math.min(value, max) : undefined
 }
 
 export function parseCsv(raw: string | null): string[] | undefined {
@@ -126,7 +128,9 @@ export function parseAnalyticsFilters(params: URLSearchParams): AnalyticsFilters
     ...(isStatus(status) ? { status } : {}),
     ...(isSort(sort) ? { sort } : {}),
     ...(isOrder(dir) ? { dir } : {}),
-    ...(parseIntParam(params.get('offset')) ? { offset: parseIntParam(params.get('offset')) } : {}),
+    ...(parseIntParam(params.get('offset'), ANALYTICS_MAX_OFFSET)
+      ? { offset: parseIntParam(params.get('offset'), ANALYTICS_MAX_OFFSET) }
+      : {}),
   }
 }
 

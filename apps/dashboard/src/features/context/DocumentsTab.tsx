@@ -3,16 +3,24 @@
  * /v1/documents, multipart upload (D4's useUploadDocument reused) and
  * delete with confirm (operator+).
  */
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
+
+import { useMutationState, useQueryClient } from '@tanstack/react-query'
 
 import {
+  documentUploadBatchMutationKey,
   useDeleteDocument,
+  useDocumentUploadBatchOutcome,
   useDocumentsList,
-  useUploadDocument,
+  useUploadDocumentBatch,
   type DocumentOut,
+  type UploadDocumentBatchInput,
 } from '@/api/hooks/useDocuments'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
+import { queryKeys } from '@/api/queryKeys'
 import { useConsumer } from '@/auth/AuthProvider'
 import { canMutateAudience } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
@@ -70,36 +78,136 @@ function DeleteDocumentModal({ doc, onClose }: { doc: DocumentOut; onClose: () =
 export function DocumentsTab() {
   const consumer = useConsumer()
 
+  const pendingBatches = useMutationState<UploadDocumentBatchInput | undefined>({
+    filters: {
+      exact: true,
+      mutationKey: documentUploadBatchMutationKey(),
+      status: 'pending',
+    },
+    select: (mutation) => mutation.state.variables as UploadDocumentBatchInput | undefined,
+  })
+  const pendingBatch = pendingBatches[0]
+  const uploadOutcome = useDocumentUploadBatchOutcome()
+  const restoredAudience = pendingBatch ?? uploadOutcome.data
   // Draft inputs commit on submit so the list query keys stay stable while typing.
-  const [projectDraft, setProjectDraft] = useState('')
-  const [qDraft, setQDraft] = useState('')
-  const [filters, setFilters] = useState<{ project?: string; q?: string }>({})
+  const [projectDraft, setProjectDraft] = useState(restoredAudience?.projectId ?? '')
+  const [appDraft, setAppDraft] = useState(restoredAudience?.appId ?? '')
+  const [qDraft, setQDraft] = useState(restoredAudience?.q ?? '')
+  const [filters, setFilters] = useState<{
+    project?: string
+    app?: string
+    q?: string
+  }>(() =>
+    restoredAudience
+      ? {
+          project: restoredAudience.projectId,
+          app: restoredAudience.appId,
+          q: restoredAudience.q,
+        }
+      : {},
+  )
 
-  const documents = useDocumentsList(filters.project, filters.q)
-  const upload = useUploadDocument()
+  const selectedProjectScopes = (consumer?.scopes ?? []).filter(
+    (scope) => scope.project_id === projectDraft.trim(),
+  )
+  const hasProjectWideScope = selectedProjectScopes.some((scope) => !scope.app_id)
+  const scopedAppIds = Array.from(
+    new Set(
+      selectedProjectScopes
+        .map((scope) => scope.app_id?.trim())
+        .filter((appId): appId is string => Boolean(appId)),
+    ),
+  ).sort()
+  const requiresApplication =
+    Boolean(consumer && consumer.scopes.length > 0) &&
+    selectedProjectScopes.length > 0 &&
+    !hasProjectWideScope
+
+  const activeFilters = pendingBatch
+    ? {
+        project: pendingBatch.projectId,
+        app: pendingBatch.appId,
+        q: pendingBatch.q,
+      }
+    : filters
+  const documents = useDocumentsList(
+    activeFilters.project,
+    activeFilters.q,
+    activeFilters.app,
+  )
+  const upload = useUploadDocumentBatch()
+  const queryClient = useQueryClient()
+  const uploadCount = usePendingMutationCount(documentUploadBatchMutationKey())
+  const uploadingBatch = uploadCount > 0
   const inputRef = useRef<HTMLInputElement | null>(null)
-  const [uploadError, setUploadError] = useState<string | null>(null)
+  const uploadingBatchRef = useRef(false)
   const [deleting, setDeleting] = useState<DocumentOut | null>(null)
-  const canUpload = canMutateAudience(consumer, projectDraft.trim() || null, null)
+  const uploadError = uploadOutcome.data?.errors.at(-1) ?? null
+  const canUpload = canMutateAudience(
+    consumer,
+    projectDraft.trim() || null,
+    appDraft.trim() || null,
+  )
+
+  useEffect(() => {
+    if (!restoredAudience) return
+    setProjectDraft(restoredAudience.projectId ?? '')
+    setAppDraft(restoredAudience.appId ?? '')
+    setQDraft(restoredAudience.q ?? '')
+    setFilters({
+      project: restoredAudience.projectId,
+      app: restoredAudience.appId,
+      q: restoredAudience.q,
+    })
+  }, [restoredAudience])
+
+  function changeProject(projectId: string) {
+    setProjectDraft(projectId)
+    const nextScopes = (consumer?.scopes ?? []).filter(
+      (scope) => scope.project_id === projectId.trim(),
+    )
+    const nextHasProjectWideScope = nextScopes.some((scope) => !scope.app_id)
+    const nextAppIds = Array.from(
+      new Set(
+        nextScopes
+          .map((scope) => scope.app_id?.trim())
+          .filter((appId): appId is string => Boolean(appId)),
+      ),
+    )
+    setAppDraft(
+      !nextHasProjectWideScope && nextAppIds.length === 1 ? (nextAppIds[0] ?? '') : '',
+    )
+  }
 
   function applyFilters(event: FormEvent) {
     event.preventDefault()
     setFilters({
       project: projectDraft.trim() || undefined,
+      app: appDraft.trim() || undefined,
       q: qDraft.trim() || undefined,
     })
   }
 
   async function uploadFiles(files: FileList) {
-    setUploadError(null)
-    for (const file of Array.from(files)) {
-      try {
-        // Upload follows the project currently visible in the filter input,
-        // even before the user presses Apply; never reuse the prior query key.
-        await upload.mutateAsync({ file, projectId: projectDraft.trim() || undefined })
-      } catch (error) {
-        setUploadError(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
-      }
+    if (uploadingBatchRef.current || uploadingBatch) return
+    uploadingBatchRef.current = true
+    const projectId = projectDraft.trim() || undefined
+    const appId = appDraft.trim() || undefined
+    const q = filters.q
+    setFilters({ project: projectId, app: appId, q })
+    try {
+      // Upload follows the audience currently visible in the filter inputs,
+      // even before the user presses Apply; never reuse the prior query key.
+      await upload.mutateAsync({
+        files: Array.from(files),
+        projectId,
+        appId,
+        q,
+      })
+    } catch {
+      // The mutation lifecycle publishes a durable, remount-safe outcome.
+    } finally {
+      uploadingBatchRef.current = false
     }
   }
 
@@ -114,8 +222,37 @@ export function DocumentsTab() {
           aria-label="Filter by project"
           placeholder="Project (proj-alpha)"
           value={projectDraft}
-          onChange={(event) => setProjectDraft(event.target.value)}
+          disabled={uploadingBatch}
+          onChange={(event) => changeProject(event.target.value)}
         />
+        {requiresApplication ? (
+          <select
+            className="field-select"
+            aria-label="Filter by application"
+            value={scopedAppIds.includes(appDraft) ? appDraft : ''}
+            disabled={uploadingBatch}
+            onChange={(event) => setAppDraft(event.target.value)}
+          >
+            <option value="" disabled>
+              Select an authorized application…
+            </option>
+            {scopedAppIds.map((appId) => (
+              <option key={appId} value={appId}>
+                {appId}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type="text"
+            className="field-input"
+            aria-label="Filter by application"
+            placeholder="Application (optional)"
+            value={appDraft}
+            disabled={uploadingBatch}
+            onChange={(event) => setAppDraft(event.target.value)}
+          />
+        )}
         <input
           type="search"
           className="field-input ctx-grow"
@@ -132,10 +269,10 @@ export function DocumentsTab() {
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              disabled={upload.isPending}
+              disabled={uploadingBatch}
               onClick={() => inputRef.current?.click()}
             >
-              {upload.isPending ? 'Uploading…' : 'Upload'}
+              {uploadingBatch ? 'Uploading…' : 'Upload'}
             </button>
             <input
               ref={inputRef}
@@ -143,6 +280,7 @@ export function DocumentsTab() {
               multiple
               aria-label="Upload documents"
               className="ctx-file-input"
+              disabled={uploadingBatch}
               onChange={(event) => {
                 if (event.target.files && event.target.files.length > 0) {
                   void uploadFiles(event.target.files)
@@ -157,7 +295,20 @@ export function DocumentsTab() {
       {uploadError && (
         <div className="ctx-inline-error" role="alert">
           <span>{uploadError}</span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() =>
+              queryClient.setQueryData(queryKeys.documents.uploadOutcome(), null)
+            }
+          >
+            Dismiss
+          </button>
         </div>
+      )}
+
+      {documents.isError && documents.data && (
+        <CachedDataWarning error={documents.error} onRetry={() => void documents.refetch()} />
       )}
 
       {documents.isPending ? (
@@ -166,7 +317,7 @@ export function DocumentsTab() {
             <div key={i} className="glass-panel ctx-skeleton-row" />
           ))}
         </div>
-      ) : documents.isError ? (
+      ) : documents.isError && !documents.data ? (
         <ProblemCard
           title="Documents unavailable"
           message={documents.error.message}

@@ -1047,6 +1047,29 @@ async def test_partial_enrichment_resumes_steps_without_duplicate_comment_or_fie
     assert adapter.comment_calls == 1
 
 
+async def test_enrichment_rejects_a_provider_result_for_another_key() -> None:
+    class MismatchedReadAdapter(FakeIdempotentAdapter):
+        async def get_item(self, key: str) -> WorkItem:
+            item = await super().get_item(key)
+            return item.model_copy(update={"key": "PHX-2"})
+
+    coordinator = service()
+    adapter = MismatchedReadAdapter()
+
+    with pytest.raises(RuntimeError, match="mismatched enrichment target"):
+        await coordinator.enrich(
+            adapter=adapter,
+            key="PHX-1",
+            enrichment=Enrichment(comment="triaged"),
+            identity=identity(),
+            project_id="project-1",
+            connection_id="connection-1",
+            connection_persisted=False,
+            connection_version=None,
+            idempotency_key="mismatched-enrichment-result",
+        )
+
+
 async def test_comment_waits_for_eventually_consistent_marker_without_second_post() -> None:
     coordinator = service()
     adapter = EventuallyConsistentCommentAdapter(invisible_lookups=2)

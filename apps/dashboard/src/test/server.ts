@@ -75,6 +75,14 @@ export const handlers = [
       capabilities: {},
     }),
   ),
+  http.get('*/v1/work-tracking/binding', ({ request }) => {
+    const connectionId =
+      new URL(request.url).searchParams.get('connection_id') ?? 'conn-jira'
+    return HttpResponse.json({
+      connection_id: connectionId,
+      provider: connectionId === 'conn-ado' ? 'ado' : 'jira',
+    })
+  }),
   // The shell's Approvals badge (Sidebar -> useApprovalsInbox, D3) polls the
   // pipelines list on every authenticated mount; default to an empty fleet so
   // shell-level tests stay quiet. Tests that need rows register their own

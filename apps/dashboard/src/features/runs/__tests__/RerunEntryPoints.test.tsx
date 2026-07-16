@@ -3,7 +3,7 @@
  * overflow menu and run-detail header split button. Both funnel into
  * PreflightModal with the documented preselection.
  */
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider } from 'react-router'
@@ -136,5 +136,29 @@ describe('RunDetailPage header split button (entry point 2)', () => {
     await user.click(screen.getByRole('button', { name: 'Re-run' }))
     expect(screen.getByRole('dialog', { name: 'Re-run phases' })).toBeInTheDocument()
     expect(await pressedPhases()).toHaveLength(7)
+  })
+
+  it('closes pre-flight state when a cached thread route replaces the run', async () => {
+    server.use(
+      http.get('*/v1/pipelines/:threadId', ({ params }) =>
+        HttpResponse.json({
+          ...PIPELINE_DETAIL,
+          thread_id: String(params.threadId),
+          title: `Run ${String(params.threadId)}`,
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    const { router } = renderRunRoutes(['/runs/thread-2/phases/execution'])
+
+    await screen.findByText('Run thread-2')
+    await act(async () => router.navigate('/runs/thread-1/phases/execution'))
+    await screen.findByText('Run thread-1')
+    await user.click(screen.getByRole('button', { name: 'Re-run' }))
+    expect(screen.getByRole('dialog', { name: 'Re-run phases' })).toBeInTheDocument()
+
+    await act(async () => router.navigate('/runs/thread-2/phases/execution'))
+    await screen.findByText('Run thread-2')
+    expect(screen.queryByRole('dialog', { name: 'Re-run phases' })).not.toBeInTheDocument()
   })
 })

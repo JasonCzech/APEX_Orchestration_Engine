@@ -227,6 +227,19 @@ describe('RunsListPage', () => {
     )
   })
 
+  it('does not present the previous list as matching a newly committed filter', async () => {
+    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
+    const user = userEvent.setup()
+    renderRunsPage()
+
+    expect(await screen.findByText('Checkout latency regression')).toBeInTheDocument()
+    server.use(pipelinesNeverResolves())
+    await user.type(screen.getByRole('searchbox', { name: 'Search runs' }), 'new-filter')
+
+    expect(await screen.findByRole('status', { name: 'Loading runs' })).toBeInTheDocument()
+    expect(screen.queryByText('Checkout latency regression')).not.toBeInTheDocument()
+  })
+
   it('disables pagination at the bounds (no total: next disabled when items < limit)', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
@@ -252,6 +265,43 @@ describe('RunsListPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Previous' }))
     await waitFor(() => expect(router.state.location.search).toBe('?offset=25'))
+  })
+
+  it('keeps Previous available when a speculative next page is empty', async () => {
+    server.use(
+      http.get('*/v1/pipelines', ({ request }) => {
+        const url = new URL(request.url)
+        const offset = Number(url.searchParams.get('offset') ?? '0')
+        return HttpResponse.json({
+          items: offset === 0 ? makeSummaries(25) : [],
+          limit: 25,
+          offset,
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    const router = renderRunsPage()
+
+    expect(await screen.findByText('1–25')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(await screen.findByRole('heading', { name: 'No more runs' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    const previous = screen.getByRole('button', { name: 'Previous' })
+    expect(previous).toBeEnabled()
+
+    await user.click(previous)
+    await waitFor(() => expect(router.state.location.search).toBe(''))
+    expect(await screen.findByText('1–25')).toBeInTheDocument()
+  })
+
+  it('stops at the backend result-window boundary and explains the limit', async () => {
+    server.use(pipelinesHandler(makeSummaries(25)).handler)
+    renderRunsPage('/runs?offset=10000')
+
+    expect(await screen.findByText('10001–10025')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByText(/Reached the runs result-window limit/)).toBeInTheDocument()
   })
 
   it('debounces the search input into ?q= and resets the offset', async () => {

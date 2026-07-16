@@ -18,6 +18,7 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages, findInOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 
 export type PromptSummary = components['schemas']['PromptSummary']
@@ -28,6 +29,49 @@ export type CreatePromptRequest = components['schemas']['CreatePromptRequest']
 export type TestPromptRequest = components['schemas']['TestPromptRequest']
 export type TestPromptResponse = components['schemas']['TestPromptResponse']
 
+export interface PromptPlaygroundRun {
+  runId: string
+  threadId: string | null
+  at: string
+  label: string
+}
+
+export interface TestPromptSubmission {
+  request: TestPromptRequest
+  history: {
+    promptId: string
+    projectId: string
+    appId: string
+    label: string
+  }
+}
+
+export interface PromptPlaygroundSelection {
+  projectId: string
+  appId: string
+}
+
+export interface PromptPlaygroundSelectionState {
+  selection: PromptPlaygroundSelection
+  setSelection: (selection: PromptPlaygroundSelection) => void
+}
+
+export function promptWriteMutationKey(promptId: string | undefined) {
+  return ['prompts', 'write', promptId ?? ''] as const
+}
+
+export function promptWriteMutationScopeId(promptId: string | undefined): string {
+  return `prompts:write:${promptId ?? ''}`
+}
+
+export function promptTestMutationKey(promptId: string | undefined) {
+  return ['prompts', 'test', promptId ?? ''] as const
+}
+
+export function promptTestMutationScopeId(promptId: string | undefined): string {
+  return `prompts:test:${promptId ?? ''}`
+}
+
 /** Server-side filters for GET /v1/prompts (namespace stays client-side: the tree needs all). */
 export interface PromptListFilters {
   includeArchived?: boolean
@@ -36,28 +80,43 @@ export interface PromptListFilters {
 
 // ── Fetchers ─────────────────────────────────────────────────────────────────
 
-async function fetchPromptList(filters: PromptListFilters): Promise<PromptSummary[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/prompts', {
-    params: {
-      query: {
-        ...(filters.includeArchived ? { include_archived: true } : {}),
-        ...(filters.q ? { q: filters.q } : {}),
-      },
+const PROMPT_PAGE_SIZE = 200
+
+async function fetchPromptList(
+  filters: PromptListFilters,
+  signal?: AbortSignal,
+): Promise<PromptSummary[]> {
+  return fetchAllOffsetPages({
+    label: 'Prompt list',
+    pageSize: PROMPT_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/prompts', {
+        params: {
+          query: {
+            ...(filters.includeArchived ? { include_archived: true } : {}),
+            ...(filters.q ? { q: filters.q } : {}),
+            limit,
+            offset,
+          },
+        },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Prompt list failed (${response.status})`),
+          error,
+        )
+      }
+      return data
     },
   })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Prompt list failed (${response.status})`),
-      error,
-    )
-  }
-  return data
 }
 
-async function fetchPromptDetail(promptId: string): Promise<PromptDetail> {
+async function fetchPromptDetail(promptId: string, signal?: AbortSignal): Promise<PromptDetail> {
   const { data, error, response } = await getApexClient().GET('/v1/prompts/{prompt_id}', {
     params: { path: { prompt_id: promptId } },
+    signal,
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -70,45 +129,79 @@ async function fetchPromptDetail(promptId: string): Promise<PromptDetail> {
 }
 
 /** Resolves (namespace, key) -> id via the namespace-scoped list, then loads the detail. */
-async function fetchPromptByKey(namespace: string, key: string): Promise<PromptDetail> {
-  const { data, error, response } = await getApexClient().GET('/v1/prompts', {
-    params: { query: { namespace, include_archived: true } },
+async function fetchPromptByKey(
+  namespace: string,
+  key: string,
+  signal?: AbortSignal,
+): Promise<PromptDetail> {
+  const row = await findInOffsetPages({
+    label: 'Prompt lookup',
+    pageSize: PROMPT_PAGE_SIZE,
+    predicate: (entry: PromptSummary) => entry.namespace === namespace && entry.key === key,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/prompts', {
+        params: {
+          query: {
+            namespace,
+            include_archived: true,
+            limit,
+            offset,
+          },
+        },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Prompt lookup failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
   })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Prompt lookup failed (${response.status})`),
-      error,
-    )
-  }
-  const row = data.find((entry) => entry.namespace === namespace && entry.key === key)
-  if (!row) {
-    throw new ApiError(404, `Prompt ${namespace}/${key} was not found in the catalog.`)
-  }
-  return fetchPromptDetail(row.id)
+  if (row) return fetchPromptDetail(row.id, signal)
+  throw new ApiError(404, `Prompt ${namespace}/${key} was not found in the catalog.`)
 }
 
-async function fetchPromptVersions(promptId: string): Promise<PromptVersionInfo[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/prompts/{prompt_id}/versions', {
-    params: { path: { prompt_id: promptId } },
+async function fetchPromptVersions(
+  promptId: string,
+  signal?: AbortSignal,
+): Promise<PromptVersionInfo[]> {
+  return fetchAllOffsetPages({
+    label: 'Prompt versions',
+    pageSize: PROMPT_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET(
+        '/v1/prompts/{prompt_id}/versions',
+        {
+          params: {
+            path: { prompt_id: promptId },
+            query: { limit, offset },
+          },
+          signal,
+        },
+      )
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Version history failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
   })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Version history failed (${response.status})`),
-      error,
-    )
-  }
-  return data
 }
 
 async function fetchPromptVersion(
   promptId: string,
   versionId: string,
+  signal?: AbortSignal,
 ): Promise<PromptVersionDetail> {
   const { data, error, response } = await getApexClient().GET(
     '/v1/prompts/{prompt_id}/versions/{version_id}',
-    { params: { path: { prompt_id: promptId, version_id: versionId } } },
+    { params: { path: { prompt_id: promptId, version_id: versionId } }, signal },
   )
   if (!response.ok || !data) {
     throw new ApiError(
@@ -132,7 +225,7 @@ export function usePromptList(
   }
   return useQuery({
     queryKey: queryKeys.prompts.listWith(normalized as Record<string, unknown>),
-    queryFn: () => fetchPromptList(normalized),
+    queryFn: ({ signal }) => fetchPromptList(normalized, signal),
     placeholderData: keepPreviousData,
     staleTime: STALE_TIMES.prompts,
   })
@@ -142,7 +235,7 @@ export function usePromptList(
 export function usePrompt(ns: string, key: string): UseQueryResult<PromptDetail, Error> {
   return useQuery({
     queryKey: queryKeys.prompts.detail(ns, key),
-    queryFn: () => fetchPromptByKey(ns, key),
+    queryFn: ({ signal }) => fetchPromptByKey(ns, key, signal),
     staleTime: STALE_TIMES.prompts,
     enabled: ns.length > 0 && key.length > 0,
   })
@@ -156,7 +249,7 @@ export function usePromptVersions(
 ): UseQueryResult<PromptVersionInfo[], Error> {
   return useQuery({
     queryKey: queryKeys.prompts.versions(ns, key),
-    queryFn: () => fetchPromptVersions(promptId ?? ''),
+    queryFn: ({ signal }) => fetchPromptVersions(promptId ?? '', signal),
     staleTime: STALE_TIMES.prompts,
     enabled: Boolean(promptId),
   })
@@ -171,7 +264,7 @@ export function usePromptVersion(
 ): UseQueryResult<PromptVersionDetail, Error> {
   return useQuery({
     queryKey: queryKeys.prompts.version(ns, key, versionId ?? ''),
-    queryFn: () => fetchPromptVersion(promptId ?? '', versionId ?? ''),
+    queryFn: ({ signal }) => fetchPromptVersion(promptId ?? '', versionId ?? '', signal),
     staleTime: STALE_TIMES.prompts,
     enabled: Boolean(promptId) && Boolean(versionId),
   })
@@ -212,6 +305,8 @@ export function useSaveVersion(
 ): UseMutationResult<PromptVersionDetail, Error, SaveVersionInput> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: promptWriteMutationKey(promptId),
+    scope: { id: promptWriteMutationScopeId(promptId) },
     mutationFn: async ({ content, note }: SaveVersionInput) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/prompts/{prompt_id}/versions',
@@ -243,6 +338,8 @@ export function useRollbackPrompt(
 ): UseMutationResult<PromptDetail, Error, string> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: promptWriteMutationKey(promptId),
+    scope: { id: promptWriteMutationScopeId(promptId) },
     mutationFn: async (versionId: string) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/prompts/{prompt_id}/rollback',
@@ -284,6 +381,8 @@ export function useSetArchived(
   const queryClient = useQueryClient()
   const detailKey = queryKeys.prompts.detail(ns, key)
   return useMutation({
+    mutationKey: promptWriteMutationKey(promptId),
+    scope: { id: promptWriteMutationScopeId(promptId) },
     mutationFn: async (archived: boolean) => {
       const client = getApexClient()
       const request = archived
@@ -326,15 +425,69 @@ export function useSetArchived(
   })
 }
 
-/** POST /{id}/test — 202 stateless playground run; nothing enters the cache. */
+/**
+ * Session-local accepted handles live in the query cache so a route remount
+ * can observe a POST that completed after its original mutation observer left.
+ * Authentication changes clear this cache and the REST middleware rejects
+ * responses from superseded credential or semantic-session revisions.
+ */
+export function usePromptTestHistory(
+  promptId: string | undefined,
+  projectId: string,
+  appId: string,
+): UseQueryResult<PromptPlaygroundRun[], Error> {
+  return useQuery({
+    queryKey: queryKeys.prompts.playgroundHistory(promptId ?? '', projectId, appId),
+    queryFn: async () => [],
+    initialData: [],
+    // This is client-owned session state. Keeping it disabled prevents broad
+    // prompt-catalog invalidations from replacing accepted handles with [].
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+}
+
+/**
+ * The selected audience is client-owned session state. Persisting it beside
+ * the accepted-run history keeps a manually scoped submission observable when
+ * the route remounts before or after the request completes.
+ */
+export function usePromptPlaygroundSelection(
+  promptId: string | undefined,
+  fallback: PromptPlaygroundSelection,
+): PromptPlaygroundSelectionState {
+  const queryClient = useQueryClient()
+  const queryKey = queryKeys.prompts.playgroundSelection(promptId ?? '')
+  const selection = useQuery({
+    queryKey,
+    queryFn: async (): Promise<PromptPlaygroundSelection> => fallback,
+    initialData: fallback,
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+
+  return {
+    selection: selection.data,
+    setSelection: (next) => {
+      queryClient.setQueryData<PromptPlaygroundSelection>(queryKey, next)
+    },
+  }
+}
+
+/** POST /{id}/test — 202 stateless playground run with session-local handle publication. */
 export function useTestPrompt(
   promptId: string | undefined,
-): UseMutationResult<TestPromptResponse, Error, TestPromptRequest> {
+): UseMutationResult<TestPromptResponse, Error, TestPromptSubmission> {
+  const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (body: TestPromptRequest) => {
+    mutationKey: promptTestMutationKey(promptId),
+    scope: { id: promptTestMutationScopeId(promptId) },
+    mutationFn: async ({ request }: TestPromptSubmission) => {
       const { data, error, response } = await getApexClient().POST('/v1/prompts/{prompt_id}/test', {
         params: { path: { prompt_id: promptId ?? '' } },
-        body,
+        body: request,
       })
       if (!response.ok || !data) {
         throw new ApiError(
@@ -344,6 +497,21 @@ export function useTestPrompt(
         )
       }
       return data
+    },
+    onSuccess: (accepted, submission) => {
+      const { promptId: submittedPromptId, projectId, appId, label } = submission.history
+      queryClient.setQueryData<PromptPlaygroundRun[]>(
+        queryKeys.prompts.playgroundHistory(submittedPromptId, projectId, appId),
+        (previous = []) => [
+          {
+            runId: accepted.run_id,
+            threadId: accepted.thread_id ?? null,
+            at: new Date().toISOString(),
+            label,
+          },
+          ...previous,
+        ],
+      )
     },
   })
 }

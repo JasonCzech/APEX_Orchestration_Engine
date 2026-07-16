@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type RefObject,
 } from 'react'
+import { createPortal } from 'react-dom'
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -14,6 +15,23 @@ const FOCUSABLE_SELECTOR = [
   'textarea:not([disabled])',
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
+
+const DIALOG_PORTAL_ID = 'apex-dialog-portal'
+
+interface InertSnapshot {
+  element: HTMLElement
+  previousInert: boolean
+  previousAriaHidden: string | null
+}
+
+interface ActiveDialog extends InertSnapshot {
+  token: symbol
+}
+
+const activeDialogs: ActiveDialog[] = []
+let bodySnapshots: InertSnapshot[] = []
+let previousBodyOverflow: string | null = null
+let bodyObserver: MutationObserver | null = null
 
 export interface DialogProps {
   children: ReactNode
@@ -42,8 +60,10 @@ export function Dialog({
 }: DialogProps) {
   const overlayRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLElement>(null)
+  const dialogTokenRef = useRef(Symbol('dialog'))
   const onCloseRef = useRef(onClose)
   const closeOnEscapeRef = useRef(closeOnEscape)
+  const portalHost = getDialogPortalHost()
 
   useEffect(() => {
     onCloseRef.current = onClose
@@ -54,10 +74,9 @@ export function Dialog({
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const panel = panelRef.current
     const overlay = overlayRef.current
-    if (!panel) return undefined
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    const inertSiblings = setSiblingsInert(overlay)
+    if (!panel || !overlay) return undefined
+    const token = dialogTokenRef.current
+    const releaseDocumentModal = registerDocumentModal(portalHost, overlay, token)
 
     const active = document.activeElement
     if (!(active instanceof HTMLElement) || !panel.contains(active)) {
@@ -66,6 +85,7 @@ export function Dialog({
     }
 
     function onKeyDown(event: KeyboardEvent) {
+      if (!isTopDialog(token)) return
       if (event.key === 'Escape' && closeOnEscapeRef.current) {
         event.preventDefault()
         onCloseRef.current()
@@ -78,17 +98,18 @@ export function Dialog({
     document.addEventListener('keydown', onKeyDown)
     return () => {
       document.removeEventListener('keydown', onKeyDown)
-      document.body.style.overflow = previousOverflow
-      restoreSiblings(inertSiblings)
-      previous?.focus()
+      releaseDocumentModal()
+      if (previous && !previous.closest('[inert]')) previous.focus()
     }
-  }, [])
+  }, [portalHost])
 
-  return (
+  return createPortal(
     <div
       ref={overlayRef}
       className={overlayClassName}
+      style={{ pointerEvents: 'auto' }}
       onMouseDown={(event) => {
+        if (!isTopDialog(dialogTokenRef.current)) return
         if (event.target !== event.currentTarget) return
         if (closeOnBackdrop) {
           onClose()
@@ -123,7 +144,8 @@ export function Dialog({
           {children}
         </div>
       )}
-    </div>
+    </div>,
+    portalHost,
   )
 }
 
@@ -167,33 +189,112 @@ function focusFirst(panel: HTMLElement | null) {
   first.focus()
 }
 
-function setSiblingsInert(overlay: HTMLElement | null) {
-  const parent = overlay?.parentElement
-  if (!parent || !overlay) return []
-  return Array.from(parent.children)
-    .filter((child): child is HTMLElement => child instanceof HTMLElement && child !== overlay)
-    .map((element) => {
-      const previousInert = element.inert
-      const previousAriaHidden = element.getAttribute('aria-hidden')
-      element.inert = true
-      element.setAttribute('aria-hidden', 'true')
-      return { element, previousInert, previousAriaHidden }
-    })
+function getDialogPortalHost(): HTMLElement {
+  const existing = document.getElementById(DIALOG_PORTAL_ID)
+  if (existing instanceof HTMLElement) return existing
+
+  const host = document.createElement('div')
+  host.id = DIALOG_PORTAL_ID
+  host.style.position = 'fixed'
+  host.style.inset = '0'
+  host.style.zIndex = '1000'
+  host.style.pointerEvents = 'none'
+  document.body.append(host)
+  return host
 }
 
-function restoreSiblings(
-  entries: Array<{
-    element: HTMLElement
-    previousInert: boolean
-    previousAriaHidden: string | null
-  }>,
-) {
-  for (const { element, previousInert, previousAriaHidden } of entries) {
-    element.inert = previousInert
-    if (previousAriaHidden === null) {
-      element.removeAttribute('aria-hidden')
-    } else {
-      element.setAttribute('aria-hidden', previousAriaHidden)
+function registerDocumentModal(host: HTMLElement, overlay: HTMLElement, token: symbol) {
+  if (activeDialogs.length === 0) {
+    previousBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    bodySnapshots = Array.from(document.body.children)
+      .filter(
+        (element): element is HTMLElement =>
+          element instanceof HTMLElement && element !== host,
+      )
+      .map(snapshotAndInert)
+
+    bodyObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (
+            node instanceof HTMLElement &&
+            node.parentElement === document.body &&
+            node !== host &&
+            !bodySnapshots.some(({ element }) => element === node)
+          ) {
+            bodySnapshots.push(snapshotAndInert(node))
+          }
+        }
+      }
+    })
+    bodyObserver.observe(document.body, { childList: true })
+  }
+
+  activeDialogs.push({
+    token,
+    element: overlay,
+    previousInert: overlay.inert,
+    previousAriaHidden: overlay.getAttribute('aria-hidden'),
+  })
+  syncDialogStack()
+
+  return () => {
+    const index = activeDialogs.findIndex((dialog) => dialog.token === token)
+    if (index === -1) return
+    const [removed] = activeDialogs.splice(index, 1)
+    if (removed) restoreInert(removed)
+    syncDialogStack()
+
+    if (activeDialogs.length === 0) {
+      bodyObserver?.disconnect()
+      bodyObserver = null
+      for (const snapshot of bodySnapshots) restoreInert(snapshot)
+      bodySnapshots = []
+      if (previousBodyOverflow !== null) {
+        document.body.style.overflow = previousBodyOverflow
+        previousBodyOverflow = null
+      }
     }
+  }
+}
+
+function isTopDialog(token: symbol): boolean {
+  return activeDialogs.at(-1)?.token === token
+}
+
+function syncDialogStack() {
+  const topIndex = activeDialogs.length - 1
+  activeDialogs.forEach((dialog, index) => {
+    if (index === topIndex) {
+      restoreInert(dialog)
+    } else {
+      dialog.element.inert = true
+      dialog.element.setAttribute('aria-hidden', 'true')
+    }
+  })
+}
+
+function snapshotAndInert(element: HTMLElement): InertSnapshot {
+  const snapshot = {
+    element,
+    previousInert: element.inert,
+    previousAriaHidden: element.getAttribute('aria-hidden'),
+  }
+  element.inert = true
+  element.setAttribute('aria-hidden', 'true')
+  return snapshot
+}
+
+function restoreInert({
+  element,
+  previousInert,
+  previousAriaHidden,
+}: InertSnapshot) {
+  element.inert = previousInert
+  if (previousAriaHidden === null) {
+    element.removeAttribute('aria-hidden')
+  } else {
+    element.setAttribute('aria-hidden', previousAriaHidden)
   }
 }

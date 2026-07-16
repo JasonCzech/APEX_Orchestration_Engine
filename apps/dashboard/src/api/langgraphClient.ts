@@ -1,6 +1,12 @@
 import type { Client } from '@langchain/langgraph-sdk'
 
-import { getApiKey, getApiKeyRevision, subscribeApiKey } from '@/auth/keyStorage'
+import {
+  getApiKey,
+  getApiKeyRevision,
+  getSessionRevision,
+  subscribeApiKey,
+  subscribeSession,
+} from '@/auth/keyStorage'
 import { notifyUnauthorized } from '@/api/apexClient'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { createDevLangGraphClient, subscribeDevDataMode } from '@/dev-data'
@@ -34,21 +40,42 @@ export function getLangGraphClient(): Promise<Client> {
 async function buildClient(): Promise<Client> {
   const requestKey = getApiKey()
   const requestRevision = getApiKeyRevision()
+  const requestSessionRevision = getSessionRevision()
   const { Client } = await import('@langchain/langgraph-sdk')
-  if (requestRevision !== getApiKeyRevision() || requestKey !== getApiKey()) {
-    throw new Error('API key changed while the LangGraph client was loading')
+  if (
+    requestRevision !== getApiKeyRevision() ||
+    requestSessionRevision !== getSessionRevision() ||
+    requestKey !== getApiKey()
+  ) {
+    throw new Error('Authentication changed while the LangGraph client was loading')
   }
   const authFetch: typeof fetch = async (input, init) => {
-    if (requestRevision !== getApiKeyRevision() || requestKey !== getApiKey()) {
-      throw new Error('API key changed while using the LangGraph client')
+    if (
+      requestRevision !== getApiKeyRevision() ||
+      requestSessionRevision !== getSessionRevision() ||
+      requestKey !== getApiKey()
+    ) {
+      throw new Error('Authentication changed while using the LangGraph client')
     }
+    const responseKey = new Headers(
+      init?.headers ??
+        (input instanceof Request ? input.headers : undefined),
+    ).get('x-api-key')
     const response = await fetchWithoutRedirects(input, init)
-    const responseKey = new Request(input, init).headers.get('x-api-key')
+    const belongsToCurrentSession =
+      requestRevision === getApiKeyRevision() &&
+      requestSessionRevision === getSessionRevision() &&
+      requestKey === getApiKey()
+    if (!belongsToCurrentSession) {
+      void response.body?.cancel().catch(() => undefined)
+      throw new Error('Authentication changed while the request was in flight.')
+    }
     if (
       response.status === 401 &&
       responseKey &&
       responseKey === getApiKey() &&
-      requestRevision === getApiKeyRevision()
+      requestRevision === getApiKeyRevision() &&
+      requestSessionRevision === getSessionRevision()
     ) {
       notifyUnauthorized()
     }
@@ -66,6 +93,10 @@ export function resetLangGraphClient(): void {
 }
 
 subscribeApiKey(() => {
+  resetLangGraphClient()
+})
+
+subscribeSession(() => {
   resetLangGraphClient()
 })
 

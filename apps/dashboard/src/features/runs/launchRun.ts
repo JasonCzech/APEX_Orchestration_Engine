@@ -2,6 +2,12 @@ import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
+import {
+  getDurableIdempotencyKey,
+  PIPELINE_LAUNCH_IDEMPOTENCY_STORAGE_KEY,
+  retireDurableIdempotencyKey,
+} from '@/utils/durableIdempotency'
 
 /**
  * Minimal D2 launch (full 6-step wizard arrives in D4): create a thread with
@@ -45,10 +51,10 @@ export function recommendedRecursionLimit(configurable: RecursionLimitConfigurab
 }
 
 export interface LaunchRunInput {
-  idempotencyKey: string
   title: string
   request: string
   projectId: string
+  appId?: string
 }
 
 export interface LaunchedRun {
@@ -56,19 +62,43 @@ export interface LaunchedRun {
   runId: string
 }
 
+function createLaunchIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export async function launchRun(input: LaunchRunInput): Promise<LaunchedRun> {
+  const keyRevision = getApiKeyRevision()
+  const sessionRevision = getSessionRevision()
+  const requestPayload = {
+    title: input.title,
+    request: input.request,
+    project_id: input.projectId,
+    ...(input.appId ? { app_id: input.appId } : {}),
+    configurable: {
+      project_id: input.projectId,
+      ...(input.appId ? { app_id: input.appId } : {}),
+      gates: ALL_AUTO_GATES,
+    },
+  }
+  const idempotencyKey = await getDurableIdempotencyKey(
+    PIPELINE_LAUNCH_IDEMPOTENCY_STORAGE_KEY,
+    requestPayload,
+    createLaunchIdempotencyKey,
+  )
+  if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) {
+    throw new Error('Credentials changed while preparing the launch; please retry.')
+  }
   const { data, error, response } = await getApexClient().POST('/v1/pipelines', {
     body: {
-      idempotency_key: input.idempotencyKey,
-      title: input.title,
-      request: input.request,
-      project_id: input.projectId,
-      configurable: {
-        project_id: input.projectId,
-        gates: ALL_AUTO_GATES,
-      },
+      idempotency_key: idempotencyKey,
+      ...requestPayload,
     },
   })
+  if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) {
+    throw new Error('Credentials changed while launching the run; retry to recover its result.')
+  }
   if (!response.ok || !data) {
     throw new ApiError(
       response.status,
@@ -76,5 +106,10 @@ export async function launchRun(input: LaunchRunInput): Promise<LaunchedRun> {
       error,
     )
   }
+  await retireDurableIdempotencyKey(
+    PIPELINE_LAUNCH_IDEMPOTENCY_STORAGE_KEY,
+    requestPayload,
+    idempotencyKey,
+  )
   return { threadId: data.thread_id, runId: data.run_id }
 }

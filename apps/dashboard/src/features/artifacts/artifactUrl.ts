@@ -11,7 +11,14 @@
  *   key keeps its literal slashes in the path, so we encode per-segment and
  *   re-join with '/' rather than encoding the whole key.
  */
-import { getApiKey } from '@/auth/keyStorage'
+import { notifyUnauthorized } from '@/api/apexClient'
+import {
+  getApiKey,
+  getApiKeyRevision,
+  getSessionRevision,
+  subscribeApiKey,
+  subscribeSession,
+} from '@/auth/keyStorage'
 import { resolveApexBaseUrl } from '@/config/runtimeConfig'
 import { getDevArtifactBytes } from '@/dev-data'
 
@@ -20,10 +27,18 @@ import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 
 const MEMORY_SCHEME = 'memory://'
 const S3_SCHEME = 's3://'
+const CANONICAL_SCHEME = 'apex-artifact:///'
 export const MAX_ARTIFACT_VIEWER_BYTES = 64 * 1024 * 1024
 export const MAX_ARTIFACT_VIEWER_CHUNKS = 8_192
 export const ARTIFACT_READ_IDLE_MS = 30_000
 export const ARTIFACT_READ_ERROR = 'Artifact could not be loaded safely.'
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f)
+  })
+}
 
 function withArtifactReadDeadline<T>(
   operation: Promise<T>,
@@ -139,6 +154,18 @@ export function artifactKeyFromUri(uri: string | null | undefined): string | nul
     const key = rest.slice(slash + 1)
     return key.length > 0 ? key : null
   }
+  if (uri.startsWith(CANONICAL_SCHEME)) {
+    const encodedKey = uri.slice(CANONICAL_SCHEME.length)
+    if (encodedKey.length === 0 || encodedKey.includes('?') || encodedKey.includes('#')) {
+      return null
+    }
+    try {
+      const key = decodeURIComponent(encodedKey)
+      return key.length > 0 && !containsControlCharacter(key) ? key : null
+    } catch {
+      return null
+    }
+  }
   return null
 }
 
@@ -188,16 +215,43 @@ export async function fetchArtifactBytes(url: string, signal?: AbortSignal): Pro
 
   const headers = new Headers()
   const key = getApiKey()
+  const keyRevision = getApiKeyRevision()
+  const sessionRevision = getSessionRevision()
   if (key) headers.set('x-api-key', key)
   const controller = new AbortController()
   const abortFromCaller = (): void => controller.abort()
+  const abortFromSessionChange = (): void => controller.abort()
+  const sessionIsCurrent = (): boolean =>
+    key === getApiKey() &&
+    keyRevision === getApiKeyRevision() &&
+    sessionRevision === getSessionRevision()
   if (signal?.aborted) throw new Error(ARTIFACT_READ_ERROR)
   signal?.addEventListener('abort', abortFromCaller, { once: true })
+  const unsubscribeKey = subscribeApiKey(abortFromSessionChange)
+  const unsubscribeSession = subscribeSession(abortFromSessionChange)
   try {
+    const responseOperation = fetchWithoutRedirects(artifactUrl, {
+      headers,
+      signal: controller.signal,
+    })
+    // A custom transport is allowed to ignore AbortSignal. If it resolves
+    // after a credential/session transition, drain no bytes and release its
+    // body even though the caller has already received the stable rejection.
+    void responseOperation.then(
+      (lateResponse) => {
+        if (controller.signal.aborted || !sessionIsCurrent()) cancelBody(lateResponse.body)
+      },
+      () => undefined,
+    )
     const response = await withArtifactReadDeadline(
-      fetchWithoutRedirects(artifactUrl, { headers, signal: controller.signal }),
+      responseOperation,
       controller,
     )
+    if (!sessionIsCurrent()) {
+      cancelBody(response.body)
+      throw new Error(ARTIFACT_READ_ERROR)
+    }
+    if (response.status === 401 && key !== null) notifyUnauthorized()
     if (!response.ok) {
       // Never parse or retain an untrusted error body: providers/proxies may omit
       // Content-Length and the status is sufficient for an operator-safe error.
@@ -210,6 +264,7 @@ export async function fetchArtifactBytes(url: string, signal?: AbortSignal): Pro
       MAX_ARTIFACT_VIEWER_CHUNKS,
       controller,
     )
+    if (!sessionIsCurrent()) throw new Error(ARTIFACT_READ_ERROR)
     return {
       blob,
       mediaType: response.headers.get('content-type') ?? '',
@@ -217,5 +272,7 @@ export async function fetchArtifactBytes(url: string, signal?: AbortSignal): Pro
     }
   } finally {
     signal?.removeEventListener('abort', abortFromCaller)
+    unsubscribeKey()
+    unsubscribeSession()
   }
 }

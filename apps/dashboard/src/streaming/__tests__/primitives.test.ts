@@ -99,12 +99,23 @@ describe('resumeStore', () => {
     expect(resumeStore.get('t1', 'r2')).toBe('ev-9')
   })
 
+  it('keeps delimiter-containing thread and run ids isolated', () => {
+    resumeStore.set('thread:alpha', 'run', 'event-a')
+    resumeStore.set('thread', 'alpha:run', 'event-b')
+
+    expect(resumeStore.get('thread:alpha', 'run')).toBe('event-a')
+    expect(resumeStore.get('thread', 'alpha:run')).toBe('event-b')
+  })
+
   it('drops malformed or oversized event ids instead of poisoning request headers', () => {
     resumeStore.set('t1', 'r1', 'valid-cursor')
     resumeStore.set('t1', 'r1', `x`.repeat(MAX_RESUME_EVENT_ID_CHARS + 1))
     expect(resumeStore.get('t1', 'r1')).toBeNull()
 
-    window.sessionStorage.setItem('apex:stream:last-event-id:t1:r1', 'line\nbreak')
+    window.sessionStorage.setItem(
+      `apex:stream:last-event-id:${JSON.stringify(['t1', 'r1'])}`,
+      'line\nbreak',
+    )
     expect(resumeStore.get('t1', 'r1')).toBeNull()
 
     resumeStore.set('t1', 'r1', '')

@@ -11,6 +11,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
@@ -19,7 +20,14 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
+import {
+  acceptConsumerKeyOperation,
+  beginConsumerKeyOperation,
+  rejectConsumerKeyOperation,
+  type ConsumerKeyOperationToken,
+} from '@/auth/consumerKeyHandoff'
 
 export type Consumer = components['schemas']['ConsumerRead']
 export type ConsumerCreated = components['schemas']['ConsumerCreated']
@@ -30,6 +38,24 @@ export type ScopeRef = components['schemas']['ScopeRef']
 export type CurrentPrincipal = components['schemas']['CurrentPrincipalResponse']
 
 export const CONSUMER_TYPES: readonly ConsumerType[] = ['dashboard', 'headless', 'internal']
+const CONSUMERS_PAGE_SIZE = 200
+const deletedConsumerIds = new WeakMap<QueryClient, Set<string>>()
+
+export function consumerWriteMutationKey(consumerId: string) {
+  return ['admin', 'consumers', 'write', consumerId] as const
+}
+
+function deletedIdsFor(queryClient: QueryClient): Set<string> {
+  const existing = deletedConsumerIds.get(queryClient)
+  if (existing) return existing
+  const created = new Set<string>()
+  deletedConsumerIds.set(queryClient, created)
+  return created
+}
+
+function isConsumerDeleted(queryClient: QueryClient, consumerId: string): boolean {
+  return deletedConsumerIds.get(queryClient)?.has(consumerId) ?? false
+}
 
 /** Strips the one-time api_key so only ConsumerRead fields reach the cache. */
 function toConsumerRead(created: ConsumerCreated): Consumer {
@@ -38,12 +64,21 @@ function toConsumerRead(created: ConsumerCreated): Consumer {
   return read
 }
 
-async function fetchConsumers(): Promise<Consumer[]> {
-  const { data, response } = await getApexClient().GET('/v1/admin/consumers', {})
-  if (!response.ok || !data) {
-    throw new ApiError(response.status, `Consumers request failed (${response.status})`)
-  }
-  return data
+async function fetchConsumers(signal?: AbortSignal): Promise<Consumer[]> {
+  return fetchAllOffsetPages({
+    label: 'Consumers',
+    pageSize: CONSUMERS_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, response } = await getApexClient().GET('/v1/admin/consumers', {
+        params: { query: { limit, offset } },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(response.status, `Consumers request failed (${response.status})`)
+      }
+      return data
+    },
+  })
 }
 
 async function fetchConsumer(consumerId: string): Promise<Consumer> {
@@ -64,7 +99,7 @@ async function fetchConsumer(consumerId: string): Promise<Consumer> {
 export function useConsumersIndex(): UseQueryResult<Consumer[], Error> {
   return useQuery({
     queryKey: queryKeys.admin.consumers(),
-    queryFn: fetchConsumers,
+    queryFn: ({ signal }) => fetchConsumers(signal),
     staleTime: STALE_TIMES.admin,
   })
 }
@@ -97,11 +132,17 @@ export function useConsumerDetail(consumerId: string | undefined): UseQueryResul
 export function useCreateConsumer(): UseMutationResult<
   ConsumerCreated,
   Error,
-  ConsumerCreateRequest
+  ConsumerCreateRequest,
+  ConsumerKeyOperationToken
 > {
   const queryClient = useQueryClient()
   return useMutation({
     gcTime: 0,
+    onMutate: (body) =>
+      beginConsumerKeyOperation({
+        kind: 'created',
+        consumerName: body.name,
+      }),
     mutationFn: async (body: ConsumerCreateRequest) => {
       const { data, error, response } = await getApexClient().POST('/v1/admin/consumers', {
         body,
@@ -115,9 +156,14 @@ export function useCreateConsumer(): UseMutationResult<
       }
       return data
     },
-    onSuccess: (created) => {
+    onSuccess: (created, _body, token) => {
+      acceptConsumerKeyOperation(token, created)
+      deletedIdsFor(queryClient).delete(created.id)
       queryClient.setQueryData(queryKeys.admin.consumer(created.id), toConsumerRead(created))
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.consumers() })
+    },
+    onError: (_error, _body, token) => {
+      rejectConsumerKeyOperation(token)
     },
   })
 }
@@ -127,9 +173,12 @@ export interface UpdateConsumerInput {
   body: ConsumerUpdateRequest
 }
 
-export function useUpdateConsumer(): UseMutationResult<Consumer, Error, UpdateConsumerInput> {
+export function useUpdateConsumer(
+  consumerId: string,
+): UseMutationResult<Consumer, Error, UpdateConsumerInput> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: consumerWriteMutationKey(consumerId),
     mutationFn: async ({ consumerId, body }: UpdateConsumerInput) => {
       const { data, error, response } = await getApexClient().PATCH(
         '/v1/admin/consumers/{consumer_id}',
@@ -145,6 +194,7 @@ export function useUpdateConsumer(): UseMutationResult<Consumer, Error, UpdateCo
       return data
     },
     onSuccess: (updated) => {
+      if (isConsumerDeleted(queryClient, updated.id)) return
       queryClient.setQueryData(queryKeys.admin.consumer(updated.id), updated)
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.consumers() })
     },
@@ -152,9 +202,10 @@ export function useUpdateConsumer(): UseMutationResult<Consumer, Error, UpdateCo
 }
 
 /** 409 = self-delete; the page maps it to "You cannot delete your own consumer". */
-export function useDeleteConsumer(): UseMutationResult<void, Error, string> {
+export function useDeleteConsumer(consumerId: string): UseMutationResult<void, Error, string> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: consumerWriteMutationKey(consumerId),
     mutationFn: async (consumerId: string) => {
       const { error, response } = await getApexClient().DELETE(
         '/v1/admin/consumers/{consumer_id}',
@@ -169,6 +220,7 @@ export function useDeleteConsumer(): UseMutationResult<void, Error, string> {
       }
     },
     onSuccess: (_void, consumerId) => {
+      deletedIdsFor(queryClient).add(consumerId)
       queryClient.removeQueries({ queryKey: queryKeys.admin.consumer(consumerId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.consumers() })
     },
@@ -177,17 +229,27 @@ export function useDeleteConsumer(): UseMutationResult<void, Error, string> {
 
 export interface RotateConsumerKeyInput {
   consumerId: string
+  consumerName: string
+  isCurrentConsumer: boolean
 }
 
 /** Same one-time api_key contract as create, with time to safely hand off clients. */
-export function useRotateConsumerKey(): UseMutationResult<
+export function useRotateConsumerKey(consumerId: string): UseMutationResult<
   ConsumerCreated,
   Error,
-  RotateConsumerKeyInput
+  RotateConsumerKeyInput,
+  ConsumerKeyOperationToken
 > {
   const queryClient = useQueryClient()
   return useMutation({
     gcTime: 0,
+    mutationKey: consumerWriteMutationKey(consumerId),
+    onMutate: ({ consumerName, isCurrentConsumer }) =>
+      beginConsumerKeyOperation({
+        kind: 'rotated',
+        consumerName,
+        isCurrentConsumer,
+      }),
     mutationFn: async ({ consumerId }: RotateConsumerKeyInput) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/admin/consumers/{consumer_id}/rotate',
@@ -205,9 +267,17 @@ export function useRotateConsumerKey(): UseMutationResult<
       }
       return data
     },
-    onSuccess: (rotated) => {
+    onSuccess: (rotated, _variables, token) => {
+      if (isConsumerDeleted(queryClient, rotated.id)) {
+        rejectConsumerKeyOperation(token)
+        return
+      }
+      acceptConsumerKeyOperation(token, rotated)
       queryClient.setQueryData(queryKeys.admin.consumer(rotated.id), toConsumerRead(rotated))
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.consumers() })
+    },
+    onError: (_error, _variables, token) => {
+      rejectConsumerKeyOperation(token)
     },
   })
 }

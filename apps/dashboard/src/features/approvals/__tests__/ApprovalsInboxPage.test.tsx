@@ -22,7 +22,11 @@ import {
   gatedRun,
   mutableListHandler,
 } from './approvalsTestHandlers'
-import { invokedActions, resetGateModuleMock } from './gateModuleMock'
+import {
+  invokedActions,
+  invokedActionThreads,
+  resetGateModuleMock,
+} from './gateModuleMock'
 
 // Partial mock: only the self-contained GateModule is replaced — other
 // surfaces in the test route tree (run detail's GateModuleView) stay real.
@@ -163,6 +167,44 @@ describe('ApprovalsInboxPage', () => {
     )
   })
 
+  it('routes a same-turn safe focus shortcut only to the new deep-linked gate', async () => {
+    useInboxHandlers()
+    const { router } = renderInbox('/approvals/run-old-1/int-old')
+
+    expect(await screen.findByTestId('gate-module-mock')).toHaveAttribute(
+      'data-thread',
+      'run-old-1',
+    )
+    await act(async () => router.navigate('/approvals/run-new-2/int-new'))
+    await waitFor(() =>
+      expect(screen.getByTestId('gate-module-mock')).toHaveAttribute(
+        'data-thread',
+        'run-new-2',
+      ),
+    )
+    await act(async () => router.navigate('/approvals/run-old-1/int-old'))
+    await waitFor(() =>
+      expect(screen.getByTestId('gate-module-mock')).toHaveAttribute(
+        'data-thread',
+        'run-old-1',
+      ),
+    )
+    resetGateModuleMock()
+
+    // Both gate snapshots are cached. Dispatch before passive effects run so
+    // this covers the route-commit window that previously retained the old
+    // selection and imperative handle.
+    act(() => {
+      void router.navigate('/approvals/run-new-2/int-new', { flushSync: true })
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'm', bubbles: true }))
+    })
+
+    expect(invokedActions).toEqual(['modify'])
+    expect(invokedActionThreads).toEqual(['run-new-2'])
+    expect(await findRow('run-new-2')).not.toHaveClass('removed')
+    expect(await findRow('run-old-1')).not.toHaveClass('removed')
+  })
+
   it('navigates the queue with j/k', async () => {
     useInboxHandlers()
     const user = userEvent.setup()
@@ -207,25 +249,36 @@ describe('ApprovalsInboxPage', () => {
     await screen.findByTestId('gate-module-mock')
 
     await user.click(screen.getByLabelText('mock-note'))
-    await user.keyboard('ja') // would navigate + approve outside an input
+    await user.keyboard('jm') // would navigate + move focus outside an input
     expect(screen.getByTestId('approvals-row-run-old-1')).toHaveAttribute(
       'aria-selected',
       'true',
     )
     expect(invokedActions).toHaveLength(0)
-    expect(screen.getByLabelText('mock-note')).toHaveValue('ja')
+    expect(screen.getByLabelText('mock-note')).toHaveValue('jm')
   })
 
-  it('a approves via the gate handle, grays the row and auto-advances', async () => {
+  it('bare a/s letters never invoke approval mutations', async () => {
     useInboxHandlers()
     const user = userEvent.setup()
     renderInbox()
     expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
     await screen.findByTestId('gate-module-mock')
 
-    await user.keyboard('a')
-    expect(invokedActions).toEqual(['approve'])
+    await user.keyboard('as')
+    expect(invokedActions).toHaveLength(0)
+    expect(await findRow('run-old-1')).not.toHaveClass('removed')
+    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    expect(await findRow('run-new-2')).not.toHaveClass('removed')
+  })
 
+  it('an explicit gate approval control grays the row and auto-advances', async () => {
+    useInboxHandlers()
+    const user = userEvent.setup()
+    renderInbox()
+    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+
+    await user.click(await screen.findByRole('button', { name: 'mock-approve' }))
     // Row grayed inline ('actioned', not removed) + selection advanced.
     const oldRow = await findRow('run-old-1')
     expect(oldRow).toHaveClass('removed')
@@ -271,6 +324,28 @@ describe('ApprovalsInboxPage', () => {
     expect(await findRow('run-new-2')).not.toHaveClass('removed')
   })
 
+  it('keeps cached approval actions visible when a refresh fails', async () => {
+    useInboxHandlers()
+    const { queryClient } = renderInbox()
+    await findRow('run-old-1')
+    await screen.findByTestId('gate-module-mock')
+
+    server.use(
+      http.get('*/v1/pipelines', () =>
+        HttpResponse.json({ detail: 'pipeline index temporarily unavailable' }, { status: 503 }),
+      ),
+    )
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() })
+    })
+
+    expect(await screen.findByText(/Showing cached data/)).toHaveTextContent(
+      'pipeline index temporarily unavailable',
+    )
+    expect(await findRow('run-old-1')).toBeInTheDocument()
+    expect(screen.getByTestId('gate-module-mock')).toBeInTheDocument()
+  })
+
   it('? toggles the shortcuts overlay and Escape closes it', async () => {
     useInboxHandlers()
     const user = userEvent.setup()
@@ -280,6 +355,8 @@ describe('ApprovalsInboxPage', () => {
     await user.keyboard('?')
     const dialog = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' })
     expect(within(dialog).getByText('Next gate')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/Approve/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText(/Skip phase/)).not.toBeInTheDocument()
 
     await user.keyboard('{Escape}')
     expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).not.toBeInTheDocument()

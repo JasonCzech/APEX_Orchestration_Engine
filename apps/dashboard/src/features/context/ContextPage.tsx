@@ -9,6 +9,7 @@ import { CONTEXT_TABS, isContextTab, type ContextTab } from './contextLogic'
 import { DocumentsTab } from './DocumentsTab'
 import { EvidenceTab } from './EvidenceTab'
 import { SummariesTab } from './SummariesTab'
+import { useSummaryLifecycle } from './useSummaryLifecycle'
 import './context.css'
 
 const TAB_LABELS: Record<ContextTab, string> = {
@@ -19,6 +20,7 @@ const TAB_LABELS: Record<ContextTab, string> = {
 
 export function ContextPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const summaries = useSummaryLifecycle()
   const rawTab = searchParams.get('tab')
   const tab: ContextTab = isContextTab(rawTab) ? rawTab : 'summaries'
 
@@ -47,7 +49,13 @@ export function ContextPage() {
         </div>
       </header>
 
-      {tab === 'summaries' ? <SummariesTab /> : tab === 'documents' ? <DocumentsTab /> : <EvidenceTab />}
+      {tab === 'summaries' ? (
+        <SummariesTab lifecycle={summaries} />
+      ) : tab === 'documents' ? (
+        <DocumentsTab />
+      ) : (
+        <EvidenceTab />
+      )}
     </section>
   )
 }

@@ -10,20 +10,86 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys } from '@/api/queryKeys'
 
 export type WorkItem = components['schemas']['WorkItem']
-export type WorkItemPage = components['schemas']['WorkItemPage']
+export type ResolvedWorkItem = components['schemas']['ResolvedWorkItem']
+export type WorkItemPage = components['schemas']['ResolvedWorkItemPage']
 export type WorkItemDraft = components['schemas']['WorkItemDraft']
-export type TranslatedQuery = components['schemas']['TranslatedQuery']
+export type ProviderQuery = components['schemas']['ExecutableTranslatedQuery']
+export type TranslatedQuery = components['schemas']['ResolvedTranslatedQuery']
+export type WorkTrackingBinding = components['schemas']['WorkTrackingBindingOut']
 export type Enrichment = components['schemas']['Enrichment']
 export type SavedQuery = components['schemas']['SavedQueryOut']
 export type SavedQueryCreate = components['schemas']['SavedQueryCreate']
 export type SavedQueryUpdate = components['schemas']['SavedQueryUpdate']
 
+export function workItemEnrichMutationKey(connectionId: string, key: string) {
+  return ['work-items', 'enrich', connectionId, key] as const
+}
+
+export function workItemEnrichMutationScopeId(connectionId: string, key: string): string {
+  return `work-items:enrich:${JSON.stringify([connectionId, key])}`
+}
+
+export function savedQueryWriteMutationKey(savedQueryId: string) {
+  return ['work-items', 'saved-queries', 'write', savedQueryId] as const
+}
+
+export function savedQueryWriteMutationScopeId(savedQueryId: string): string {
+  return `work-items:saved-queries:write:${savedQueryId}`
+}
+
 export interface WorkTrackingScope {
   connectionId?: string
   project?: string
+}
+
+function requireBinding<T extends { connection_id?: unknown; provider?: unknown }>(
+  value: T,
+  {
+    expectedConnectionId,
+    expectedProvider,
+  }: { expectedConnectionId?: string; expectedProvider?: string } = {},
+): T & { connection_id: string; provider: string } {
+  if (
+    typeof value.connection_id !== 'string' ||
+    value.connection_id.trim() === '' ||
+    typeof value.provider !== 'string' ||
+    value.provider.trim() === ''
+  ) {
+    throw new Error('Work-tracking response omitted its resolved connection binding.')
+  }
+  if (expectedConnectionId && value.connection_id !== expectedConnectionId) {
+    throw new Error('Work-tracking response changed the requested connection binding.')
+  }
+  if (expectedProvider && value.provider.toLowerCase() !== expectedProvider.toLowerCase()) {
+    throw new Error('Work-tracking response changed the requested provider binding.')
+  }
+  return value as T & { connection_id: string; provider: string }
+}
+
+export async function fetchWorkTrackingBinding({
+  project,
+  connectionId,
+}: WorkTrackingScope = {}): Promise<WorkTrackingBinding> {
+  const { data, error, response } = await getApexClient().GET('/v1/work-tracking/binding', {
+    params: {
+      query: {
+        ...(project ? { project } : {}),
+        ...(connectionId ? { connection_id: connectionId } : {}),
+      },
+    },
+  })
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status,
+      errorMessageOf(error, `Work-tracking binding failed (${response.status})`),
+      error,
+    )
+  }
+  return requireBinding(data, { expectedConnectionId: connectionId })
 }
 
 /** NL -> provider query (POST /v1/work-tracking/query/translate). */
@@ -35,11 +101,10 @@ export function useTranslateQuery() {
         {
           params: {
             query: {
-              ...(connectionId ? { connection_id: connectionId } : {}),
               ...(project ? { project } : {}),
             },
           },
-          body: { text },
+          body: { text, ...(connectionId ? { connection_id: connectionId } : {}) },
         },
       )
       if (!response.ok || !data) {
@@ -49,7 +114,7 @@ export function useTranslateQuery() {
           error,
         )
       }
-      return data
+      return requireBinding(data, { expectedConnectionId: connectionId })
     },
   })
 }
@@ -62,22 +127,37 @@ export function useExecuteQuery() {
     WorkItemPage,
     Error,
     {
-      query: TranslatedQuery
+      query: ProviderQuery
       limit?: number
       offset?: number
     } & WorkTrackingScope
   >({
     mutationFn: async ({ query, limit = 25, offset = 0, connectionId, project }) => {
+      if (
+        connectionId &&
+        query.connection_id &&
+        connectionId !== query.connection_id
+      ) {
+        throw new Error('Conflicting work-tracking connection bindings.')
+      }
+      const selectedConnectionId =
+        connectionId ?? query.connection_id ?? undefined
       const { data, error, response } = await getApexClient().POST(
         '/v1/work-tracking/query/execute',
         {
-          params: {
+          params: { query: { ...(project ? { project } : {}) } },
+          body: {
             query: {
-              ...(connectionId ? { connection_id: connectionId } : {}),
-              ...(project ? { project } : {}),
+              provider: query.provider,
+              query: query.query,
+              confidence: query.confidence,
             },
+            ...(selectedConnectionId
+              ? { connection_id: selectedConnectionId }
+              : {}),
+            limit,
+            offset,
           },
-          body: { query, limit, offset },
         },
       )
       if (!response.ok || !data) {
@@ -87,15 +167,34 @@ export function useExecuteQuery() {
           error,
         )
       }
-      return data
+      return requireBinding(data, {
+        expectedConnectionId: selectedConnectionId,
+        expectedProvider: query.provider,
+      })
     },
   })
 }
 
 /** Validate-on-add lookup for direct key entry (GET /v1/work-tracking/items/{key}). */
-export async function fetchWorkItem(key: string, project?: string): Promise<WorkItem> {
+export async function fetchWorkItem({
+  key,
+  project,
+  connectionId,
+  expectedProvider,
+}: {
+  key: string
+  project?: string
+  connectionId?: string
+  expectedProvider?: string
+}): Promise<ResolvedWorkItem> {
   const { data, error, response } = await getApexClient().GET('/v1/work-tracking/items/{key}', {
-    params: { path: { key }, query: project ? { project } : {} },
+    params: {
+      path: { key },
+      query: {
+        ...(project ? { project } : {}),
+        ...(connectionId ? { connection_id: connectionId } : {}),
+      },
+    },
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -104,33 +203,41 @@ export async function fetchWorkItem(key: string, project?: string): Promise<Work
       error,
     )
   }
-  return data
+  return requireBinding(data, {
+    expectedConnectionId: connectionId,
+    expectedProvider,
+  })
 }
 
-async function fetchSavedQueries(): Promise<SavedQuery[]> {
-  const items: SavedQuery[] = []
-  const limit = 200
-  for (let offset = 0; ; offset += limit) {
-    const { data, error, response } = await getApexClient().GET('/v1/work-tracking/saved-queries', {
-      params: { query: { limit, offset } },
-    })
-    if (!response.ok || !data) {
-      throw new ApiError(
-        response.status,
-        errorMessageOf(error, `Saved queries request failed (${response.status})`),
-        error,
+async function fetchSavedQueries(signal?: AbortSignal): Promise<SavedQuery[]> {
+  return fetchAllOffsetPages({
+    label: 'Saved queries',
+    pageSize: 200,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET(
+        '/v1/work-tracking/saved-queries',
+        {
+          params: { query: { limit, offset } },
+          signal,
+        },
       )
-    }
-    items.push(...data.items)
-    if (data.items.length < limit) return items
-  }
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Saved queries request failed (${response.status})`),
+          error,
+        )
+      }
+      return data.items
+    },
+  })
 }
 
 /** Saved provider queries (wizard Work-items step quick picks). */
 export function useSavedQueries(): UseQueryResult<SavedQuery[], Error> {
   return useQuery({
     queryKey: queryKeys.workItems.savedQueries(),
-    queryFn: fetchSavedQueries,
+    queryFn: ({ signal }) => fetchSavedQueries(signal),
     staleTime: 60_000,
   })
 }
@@ -141,10 +248,23 @@ export function useSavedQueries(): UseQueryResult<SavedQuery[], Error> {
 export function useWorkItem(
   key: string | undefined,
   project?: string,
-): UseQueryResult<WorkItem, Error> {
+  connectionId?: string,
+  expectedProvider?: string,
+): UseQueryResult<ResolvedWorkItem, Error> {
   return useQuery({
-    queryKey: queryKeys.workItems.key(key ?? '', project),
-    queryFn: () => fetchWorkItem(key ?? '', project),
+    queryKey: queryKeys.workItems.key(
+      key ?? '',
+      project,
+      connectionId,
+      expectedProvider,
+    ),
+    queryFn: () =>
+      fetchWorkItem({
+        key: key ?? '',
+        ...(project ? { project } : {}),
+        ...(connectionId ? { connectionId } : {}),
+        ...(expectedProvider ? { expectedProvider } : {}),
+      }),
     enabled: Boolean(key),
     staleTime: 30_000,
   })
@@ -154,6 +274,7 @@ export function useWorkItem(
 export interface CreateWorkItemInput {
   body: WorkItemDraft
   project?: string
+  connectionId: string
   idempotencyKey: string
 }
 
@@ -163,13 +284,20 @@ export function createWorkItemMutationKey(prefix: 'create' | 'enrich'): string {
     : `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
 
-export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, CreateWorkItemInput> {
+export function useCreateWorkItem(): UseMutationResult<
+  ResolvedWorkItem,
+  Error,
+  CreateWorkItemInput
+> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async ({ body, project, idempotencyKey }: CreateWorkItemInput) => {
+    mutationFn: async ({ body, project, connectionId, idempotencyKey }: CreateWorkItemInput) => {
       const { data, error, response } = await getApexClient().POST('/v1/work-tracking/items', {
         params: {
-          query: project ? { project } : {},
+          query: {
+            connection_id: connectionId,
+            ...(project ? { project } : {}),
+          },
           header: { 'Idempotency-Key': idempotencyKey },
         },
         body,
@@ -181,11 +309,19 @@ export function useCreateWorkItem(): UseMutationResult<WorkItem, Error, CreateWo
           error,
         )
       }
-      return data
+      return requireBinding(data, { expectedConnectionId: connectionId })
     },
     onSuccess: (created, { project }) => {
       // Seed the detail cache so the post-create navigation paints instantly.
-      queryClient.setQueryData(queryKeys.workItems.key(created.key, project), created)
+      queryClient.setQueryData(
+        queryKeys.workItems.key(
+          created.key,
+          project,
+          created.connection_id,
+          created.provider,
+        ),
+        created,
+      )
     },
   })
 }
@@ -194,20 +330,33 @@ export interface EnrichWorkItemInput {
   key: string
   body: Enrichment
   project?: string
+  connectionId: string
   idempotencyKey: string
 }
 
 /** Push fields/comment onto an item (operator+; POST items/{key}/enrich). */
-export function useEnrichWorkItem(): UseMutationResult<WorkItem, Error, EnrichWorkItemInput> {
+export function useEnrichWorkItem(
+  connectionId: string,
+  key: string,
+): UseMutationResult<
+  ResolvedWorkItem,
+  Error,
+  EnrichWorkItemInput
+> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async ({ key, body, project, idempotencyKey }: EnrichWorkItemInput) => {
+    mutationKey: workItemEnrichMutationKey(connectionId, key),
+    scope: { id: workItemEnrichMutationScopeId(connectionId, key) },
+    mutationFn: async ({ key, body, project, connectionId, idempotencyKey }) => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/work-tracking/items/{key}/enrich',
         {
           params: {
             path: { key },
-            query: project ? { project } : {},
+            query: {
+              connection_id: connectionId,
+              ...(project ? { project } : {}),
+            },
             header: { 'Idempotency-Key': idempotencyKey },
           },
           body,
@@ -220,11 +369,25 @@ export function useEnrichWorkItem(): UseMutationResult<WorkItem, Error, EnrichWo
           error,
         )
       }
-      return data
+      return requireBinding(data, { expectedConnectionId: connectionId })
     },
     onSuccess: (updated, { key, project }) => {
-      // The response is the refreshed item — replace the detail cache directly.
-      queryClient.setQueryData(queryKeys.workItems.key(key, project), updated)
+      // The response is the refreshed item — replace every detail identity that
+      // can be mounted for this pinned connection. Generic `/tracker/` routes
+      // intentionally omit the expected provider from their query key.
+      queryClient.setQueryData(
+        queryKeys.workItems.key(
+          key,
+          project,
+          updated.connection_id,
+          updated.provider,
+        ),
+        updated,
+      )
+      queryClient.setQueryData(
+        queryKeys.workItems.key(key, project, updated.connection_id),
+        updated,
+      )
     },
   })
 }
@@ -259,9 +422,13 @@ export interface UpdateSavedQueryInput {
   body: SavedQueryUpdate
 }
 
-export function useUpdateSavedQuery(): UseMutationResult<SavedQuery, Error, UpdateSavedQueryInput> {
+export function useUpdateSavedQuery(
+  savedQueryId: string,
+): UseMutationResult<SavedQuery, Error, UpdateSavedQueryInput> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: savedQueryWriteMutationKey(savedQueryId),
+    scope: { id: savedQueryWriteMutationScopeId(savedQueryId) },
     mutationFn: async ({ savedQueryId, body }: UpdateSavedQueryInput) => {
       const { data, error, response } = await getApexClient().PATCH(
         '/v1/work-tracking/saved-queries/{saved_query_id}',
@@ -284,9 +451,13 @@ export function useUpdateSavedQuery(): UseMutationResult<SavedQuery, Error, Upda
   })
 }
 
-export function useDeleteSavedQuery(): UseMutationResult<void, Error, string> {
+export function useDeleteSavedQuery(
+  savedQueryId: string,
+): UseMutationResult<void, Error, string> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: savedQueryWriteMutationKey(savedQueryId),
+    scope: { id: savedQueryWriteMutationScopeId(savedQueryId) },
     mutationFn: async (savedQueryId: string) => {
       const { error, response } = await getApexClient().DELETE(
         '/v1/work-tracking/saved-queries/{saved_query_id}',

@@ -9,6 +9,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
 import { queryKeys } from '@/api/queryKeys'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 
 async function abortGraphRun(threadId: string): Promise<void> {
   const { error, response } = await getApexClient().POST('/v1/pipelines/{thread_id}/abort', {
@@ -24,6 +25,8 @@ async function abortGraphRun(threadId: string): Promise<void> {
 }
 
 async function abortRun(threadId: string): Promise<void> {
+  const keyRevision = getApiKeyRevision()
+  const sessionRevision = getSessionRevision()
   // Always try the engine kill switch first. The compact pipeline summary can
   // lack engine metadata even though the backend can recover a handle from
   // nested checkpoint state or the durable projection.
@@ -43,6 +46,12 @@ async function abortRun(threadId: string): Promise<void> {
       errorMessageOf(error, `External engine abort failed (${response.status})`),
       error,
     )
+  }
+  if (
+    keyRevision !== getApiKeyRevision() ||
+    sessionRevision !== getSessionRevision()
+  ) {
+    throw new Error('Session changed before the graph abort fallback. Retry the abort.')
   }
   await abortGraphRun(threadId)
 }

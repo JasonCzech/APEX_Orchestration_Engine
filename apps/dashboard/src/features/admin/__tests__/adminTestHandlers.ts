@@ -59,7 +59,21 @@ export const CONN_ENGINE: Connection = {
   updated_at: NOW,
 }
 
-export const CONNECTIONS_FIXTURE = [CONN_JIRA, CONN_ELK, CONN_ENGINE]
+export const CONN_KUBERNETES: Connection = {
+  id: 'conn-kubernetes',
+  kind: 'cluster_inventory',
+  provider: 'kubernetes',
+  name: 'kubernetes-project',
+  project_id: 'proj-alpha',
+  base_url: 'https://kubernetes.example.com',
+  options: { auth_mode: 'bearer' },
+  secret_ref: null,
+  enabled: true,
+  created_at: NOW,
+  updated_at: NOW,
+}
+
+export const CONNECTIONS_FIXTURE = [CONN_JIRA, CONN_ELK, CONN_ENGINE, CONN_KUBERNETES]
 
 export const MAPPINGS_FIXTURE: HostMappingOut[] = [
   { id: 'map-1', pattern: '*.internal.example.com', target: 'proxy.example.com', enabled: true },

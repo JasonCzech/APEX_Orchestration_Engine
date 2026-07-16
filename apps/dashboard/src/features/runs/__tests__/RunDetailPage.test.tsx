@@ -1,9 +1,11 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 
+import { bumpSessionRevision } from '@/auth/keyStorage'
 import { server } from '@/test/server'
+import { queryKeys } from '@/api/queryKeys'
 
 import {
   PIPELINE_DETAIL,
@@ -147,6 +149,29 @@ describe('RunDetailPage', () => {
     expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
+  it('keeps the cached run usable when a background refresh fails', async () => {
+    server.use(pipelineDetailHandler())
+    const { queryClient } = renderRunRoutes([
+      `/runs/${THREAD_ID}/phases/execution?tab=details`,
+    ])
+    expect(await screen.findByTestId('kpi-row')).toBeInTheDocument()
+
+    server.use(
+      http.get(`*/v1/pipelines/${THREAD_ID}`, () =>
+        HttpResponse.json({ detail: 'temporary upstream failure' }, { status: 503 }),
+      ),
+    )
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(THREAD_ID) })
+    })
+
+    expect(await screen.findByText(/Showing cached data/)).toHaveTextContent(
+      'temporary upstream failure',
+    )
+    expect(screen.getByTestId('kpi-row')).toBeInTheDocument()
+    expect(screen.queryByText('Run failed to load')).not.toBeInTheDocument()
+  })
+
   it('uses the engine kill switch even when the compact summary lacks engine metadata', async () => {
     const calls: string[] = []
     server.use(
@@ -203,5 +228,34 @@ describe('RunDetailPage', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Abort failed: provider refused stop',
     )
+  })
+
+  it('does not run the graph abort fallback after the authenticated session changes', async () => {
+    let graphAbortCalls = 0
+    server.use(
+      pipelineDetailHandler({
+        ...PIPELINE_DETAIL,
+        engine: null,
+      }),
+      http.post(`*/v1/engines/runs/${THREAD_ID}/abort`, () => {
+        bumpSessionRevision()
+        return HttpResponse.json({ detail: 'no external engine handle' }, { status: 404 })
+      }),
+      http.post(`*/v1/pipelines/${THREAD_ID}/abort`, () => {
+        graphAbortCalls += 1
+        return HttpResponse.json({ cancelled_run_ids: ['run-1'] }, { status: 202 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
+
+    await user.click(await screen.findByRole('button', { name: 'Abort' }))
+    await user.type(screen.getByLabelText('Type ABORT to confirm'), 'ABORT')
+    await user.click(screen.getByRole('button', { name: 'Confirm abort' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Abort failed: Authentication changed while the request was in flight.',
+    )
+    expect(graphAbortCalls).toBe(0)
   })
 })

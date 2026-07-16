@@ -90,18 +90,36 @@ class FakeDocumentsRepository:
 
 
 class FakeResolver:
-    def __init__(self, adapter: Any | None = None) -> None:
+    def __init__(
+        self,
+        adapter: Any | None = None,
+        *,
+        default_connection_id: str = "conn-work-default",
+    ) -> None:
         self.adapter = adapter or FakeWorkAdapter()
+        self.default_connection_id = default_connection_id
         self.calls: list[tuple[PortKind, str | None, str | None]] = []
+        self.build_calls: list[Any] = []
 
-    async def resolve(
+    async def resolve_metadata(
         self,
         kind: PortKind,
         connection_id: str | None = None,
         project_id: str | None = None,
     ) -> Any:
         self.calls.append((kind, connection_id, project_id))
-        return self.adapter
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                id=connection_id or self.default_connection_id,
+                provider=self.adapter.provider,
+            ),
+            persisted=True,
+            connection_version=None,
+        )
+
+    async def build_from_metadata(self, metadata: Any, **_kwargs: Any) -> Any:
+        self.build_calls.append(metadata)
+        raise AssertionError("context HTTP preflight must not construct a provider adapter")
 
 
 def make_client(
@@ -140,9 +158,19 @@ def test_create_summary_returns_202_with_run_id_and_stream_hint() -> None:
     assert call["thread_id"] == "thread-context-1"
     assert call["assistant_id"] == "context"
     assert call["input"]["project_id"] == "proj-a"
-    # Provider resolution belongs to the graph node so one HTTP preflight
-    # cannot leak a discarded checkout or race a later configuration rotation.
-    assert resolver.calls == []
+    assert call["input"]["work_tracking_connection_id"] == "conn-work-default"
+    assert loopback.threads.create_calls == [
+        {
+            "metadata": {
+                "kind": "context_summary",
+                "title": "Checkout latency",
+                "project_id": "proj-a",
+                "work_tracking_connection_id": "conn-work-default",
+            }
+        }
+    ]
+    assert resolver.calls == [(PortKind.WORK_TRACKING, None, "proj-a")]
+    assert resolver.build_calls == []
 
 
 def test_create_summary_rejects_nul_before_provider_or_run_persistence() -> None:
@@ -206,7 +234,9 @@ def test_create_summary_passes_authorized_uploaded_document_evidence() -> None:
         }
     ]
     assert "document_ids" not in call["input"]
+    assert call["input"]["work_tracking_connection_id"] is None
     assert resolver.calls == []
+    assert resolver.build_calls == []
 
 
 def test_create_summary_hides_sibling_app_document() -> None:
@@ -248,17 +278,42 @@ def test_create_summary_out_of_scope_project_403() -> None:
     assert loopback.runs.calls == []
 
 
-def test_create_summary_does_not_checkout_work_adapter_in_http_preflight() -> None:
+def test_create_summary_pins_explicit_connection_without_building_adapter() -> None:
     resolver = FakeResolver(FakeWorkAdapter(provider="jira", project_id="proj-b"))
     client, loopback, _ = make_client(SCOPED_OPERATOR, resolver=resolver)
     with client:
         response = client.post(
             "/v1/context/summaries",
-            json={"subject": "x", "work_item_keys": ["PROJ-A-1"]},
+            json={
+                "subject": "x",
+                "work_item_keys": ["PROJ-A-1"],
+                "work_tracking_connection_id": "conn-work-a",
+            },
         )
     assert response.status_code == 202
-    assert len(loopback.runs.calls) == 1
+    [run_call] = loopback.runs.calls
+    assert run_call["input"]["work_tracking_connection_id"] == "conn-work-a"
+    assert resolver.calls == [(PortKind.WORK_TRACKING, "conn-work-a", "proj-a")]
+    assert resolver.build_calls == []
+
+
+def test_create_summary_rejects_connection_without_work_items_before_resolution() -> None:
+    client, loopback, resolver = make_client(SCOPED_OPERATOR)
+
+    with client:
+        response = client.post(
+            "/v1/context/summaries",
+            json={
+                "subject": "x",
+                "work_tracking_connection_id": "conn-work-a",
+            },
+        )
+
+    assert response.status_code == 422
+    assert loopback.threads.create_calls == []
+    assert loopback.runs.calls == []
     assert resolver.calls == []
+    assert resolver.build_calls == []
 
 
 def test_create_summary_multi_project_scope_requires_selection() -> None:

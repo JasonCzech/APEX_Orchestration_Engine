@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tan
 
 import type { Assistant } from '@langchain/langgraph-sdk'
 
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { getLangGraphClient } from '@/api/langgraphClient'
 import { queryKeys } from '@/api/queryKeys'
 
@@ -18,8 +19,8 @@ export interface GoldenConfig {
   configurable: Record<string, unknown>
 }
 
-async function fetchGoldenConfigs(): Promise<GoldenConfig[]> {
-  const assistants = await fetchBoundedPipelineAssistants()
+async function fetchGoldenConfigs(signal?: AbortSignal): Promise<GoldenConfig[]> {
+  const assistants = await fetchPipelineAssistants(signal)
   return assistants
     .filter((assistant) => assistant.metadata?.['created_by'] !== 'system')
     .map((assistant) => ({
@@ -30,35 +31,41 @@ async function fetchGoldenConfigs(): Promise<GoldenConfig[]> {
     }))
 }
 
-const ASSISTANT_PAGE_SIZE = 5
-const MAX_GOLDEN_CONFIGS = 20
+const ASSISTANT_PAGE_SIZE = 100
 
-async function fetchBoundedPipelineAssistants(): Promise<Assistant[]> {
-  const client = await getLangGraphClient()
-  const summaries: Assistant[] = []
-  for (let offset = 0; offset < MAX_GOLDEN_CONFIGS; offset += ASSISTANT_PAGE_SIZE) {
-    const page = await client.assistants.search({
-      graphId: 'pipeline',
-      limit: ASSISTANT_PAGE_SIZE,
-      offset,
-      select: [
-        'assistant_id',
-        'graph_id',
-        'name',
-        'description',
-        'created_at',
-        'updated_at',
-        'version',
-      ],
-    })
-    summaries.push(...page)
-    if (page.length < ASSISTANT_PAGE_SIZE) break
-  }
-  const assistants: Assistant[] = []
-  for (const summary of summaries) {
-    assistants.push(await client.assistants.get(summary.assistant_id))
-  }
-  return assistants
+export function goldenConfigWriteMutationKey(assistantId: string) {
+  return ['golden-configs', 'write', assistantId] as const
+}
+
+export function goldenConfigWriteMutationScopeId(assistantId: string): string {
+  return `golden-config-write:${assistantId}`
+}
+
+async function fetchPipelineAssistants(signal?: AbortSignal): Promise<Assistant[]> {
+  return fetchAllOffsetPages({
+    label: 'Golden configurations',
+    pageSize: ASSISTANT_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const client = await getLangGraphClient()
+      return client.assistants.search({
+        graphId: 'pipeline',
+        limit,
+        offset,
+        select: [
+          'assistant_id',
+          'graph_id',
+          'name',
+          'description',
+          'config',
+          'created_at',
+          'updated_at',
+          'metadata',
+          'version',
+        ],
+        signal,
+      })
+    },
+  })
 }
 
 /**
@@ -69,7 +76,7 @@ async function fetchBoundedPipelineAssistants(): Promise<Assistant[]> {
 export function useAssistants(): UseQueryResult<GoldenConfig[], Error> {
   return useQuery({
     queryKey: queryKeys.goldenConfigs.list(),
-    queryFn: fetchGoldenConfigs,
+    queryFn: ({ signal }) => fetchGoldenConfigs(signal),
     staleTime: 60_000,
   })
 }
@@ -101,8 +108,8 @@ function toGoldenConfigEntry(assistant: Assistant): GoldenConfigEntry {
   }
 }
 
-async function fetchGoldenConfigsIndex(): Promise<GoldenConfigEntry[]> {
-  const assistants = await fetchBoundedPipelineAssistants()
+async function fetchGoldenConfigsIndex(signal?: AbortSignal): Promise<GoldenConfigEntry[]> {
+  const assistants = await fetchPipelineAssistants(signal)
   return assistants.map(toGoldenConfigEntry)
 }
 
@@ -110,27 +117,29 @@ async function fetchGoldenConfigsIndex(): Promise<GoldenConfigEntry[]> {
 export function useGoldenConfigsIndex(): UseQueryResult<GoldenConfigEntry[], Error> {
   return useQuery({
     queryKey: queryKeys.goldenConfigs.index(),
-    queryFn: fetchGoldenConfigsIndex,
+    queryFn: ({ signal }) => fetchGoldenConfigsIndex(signal),
     staleTime: 60_000,
   })
 }
 
-async function fetchGoldenConfig(assistantId: string): Promise<GoldenConfigEntry> {
+async function fetchGoldenConfig(
+  assistantId: string,
+  signal?: AbortSignal,
+): Promise<GoldenConfigEntry> {
   const client = await getLangGraphClient()
-  return toGoldenConfigEntry(await client.assistants.get(assistantId))
+  return toGoldenConfigEntry(await client.assistants.get(assistantId, { signal }))
 }
 
 /** D7: one assistant for /golden-configs/:assistantId (SDK assistants.get). */
 export function useGoldenConfig(assistantId: string): UseQueryResult<GoldenConfigEntry, Error> {
   return useQuery({
     queryKey: queryKeys.goldenConfigs.detail(assistantId),
-    queryFn: () => fetchGoldenConfig(assistantId),
+    queryFn: ({ signal }) => fetchGoldenConfig(assistantId, signal),
     staleTime: 60_000,
   })
 }
 
 export interface UpdateGoldenConfigInput {
-  assistantId: string
   /** The full replacement config.configurable bundle. */
   configurable: Record<string, unknown>
 }
@@ -141,10 +150,12 @@ export interface UpdateGoldenConfigInput {
  * assistant version). Detail cache is patched from the response; both list
  * caches (wizard picker + index) are invalidated.
  */
-export function useUpdateGoldenConfig() {
+export function useUpdateGoldenConfig(assistantId: string) {
   const queryClient = useQueryClient()
   return useMutation<GoldenConfigEntry, Error, UpdateGoldenConfigInput>({
-    mutationFn: async ({ assistantId, configurable }) => {
+    mutationKey: goldenConfigWriteMutationKey(assistantId),
+    scope: { id: goldenConfigWriteMutationScopeId(assistantId) },
+    mutationFn: async ({ configurable }) => {
       const client = await getLangGraphClient()
       return toGoldenConfigEntry(
         await client.assistants.update(assistantId, { config: { configurable } }),

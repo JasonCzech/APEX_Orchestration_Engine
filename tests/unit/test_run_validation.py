@@ -375,18 +375,48 @@ def test_context_run_input_strictly_bounds_provider_fanout() -> None:
 
     with pytest.raises(ValueError, match="deployment limit"):
         validate_context_run_input(
-            {"subject": "incident", "work_item_keys": ["A-1", "A-2", "A-3"]},
+            {
+                "subject": "incident",
+                "work_item_keys": ["A-1", "A-2", "A-3"],
+                "work_tracking_connection_id": "conn-work-a",
+            },
             settings=settings,
         )
     with pytest.raises(ValueError, match="duplicates"):
         validate_context_run_input(
-            {"subject": "incident", "work_item_keys": ["A-1", "A-1"]},
+            {
+                "subject": "incident",
+                "work_item_keys": ["A-1", "A-1"],
+                "work_tracking_connection_id": "conn-work-a",
+            },
             settings=settings,
         )
     with pytest.raises(ValueError, match="valid string"):
         validate_context_run_input(
-            {"subject": "incident", "work_item_keys": [123]}, settings=settings
+            {
+                "subject": "incident",
+                "work_item_keys": [123],
+                "work_tracking_connection_id": "conn-work-a",
+            },
+            settings=settings,
         )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"subject": "incident", "work_item_keys": ["A-1"]},
+        {
+            "subject": "incident",
+            "work_tracking_connection_id": "conn-work-a",
+        },
+    ],
+)
+def test_context_run_input_requires_exact_work_tracking_affinity(
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="context run input is invalid"):
+        validate_context_run_input(payload)
 
 
 def test_context_run_input_rejects_untyped_or_oversized_document_packets() -> None:

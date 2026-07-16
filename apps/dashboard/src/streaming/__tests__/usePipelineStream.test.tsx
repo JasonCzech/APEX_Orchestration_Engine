@@ -181,9 +181,17 @@ function enginePoll(progress: number) {
 
 // ---------- harness ----------
 
-function setup(seed = true) {
+type SnapshotQueryFn = () => Promise<ThreadStateSnapshot>
+
+function setup(
+  seed = true,
+  snapshotQueryFn: SnapshotQueryFn = async () => makeSnapshot(),
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } },
+  })
+  queryClient.setQueryDefaults(queryKeys.threads.state('t1'), {
+    queryFn: snapshotQueryFn,
   })
   if (seed) {
     queryClient.setQueryData(queryKeys.threads.state('t1'), makeSnapshot())
@@ -556,6 +564,42 @@ describe('usePipelineStream', () => {
     expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-new')
   })
 
+  it('replays a part when its handler throws instead of committing its cursor', async () => {
+    const { queryClient, wrapper } = setup()
+    resumeStore.set('t1', 'r1', 'ev-good')
+    queryClient.setQueryData(
+      queryKeys.pipelines.list({}),
+      { ...makeListResponse(), items: null } as unknown as PipelineListResponse,
+    )
+    const first = fake.scriptStream()
+    const second = fake.scriptStream()
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+    expect(fake.joinStreamCalls[0]?.options?.lastEventId).toBe('ev-good')
+
+    await act(async () => {
+      first.pushCustom(phaseStatus('story_analysis', 'running'), 'ev-failed')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.status).toBe('reconnecting')
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-good')
+
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.pipelines.list({}), makeListResponse())
+      await vi.advanceTimersByTimeAsync(1_500)
+    })
+    expect(fake.joinStreamCalls).toHaveLength(2)
+    expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-good')
+
+    await act(async () => {
+      second.pushCustom(phaseStatus('story_analysis', 'running'), 'ev-failed')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.status).toBe('live')
+    expect(result.current.phaseProgress.story_analysis).toEqual({ status: 'running', attempt: 1 })
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-failed')
+  })
+
   it('gate_opened sets the pending hint and patches cached rows', async () => {
     const { queryClient, wrapper } = setup()
     const stream = fake.scriptStream()
@@ -660,6 +704,82 @@ describe('usePipelineStream', () => {
     await pump(1_500)
     expect(fake.joinStreamCalls).toHaveLength(2)
     expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-2')
+  })
+
+  it('awaits a fresh terminal snapshot before ending and clearing the cursor', async () => {
+    const terminal = makeSnapshot()
+    terminal.detail.thread_status = 'idle'
+    let resolveSnapshot: ((snapshot: ThreadStateSnapshot) => void) | undefined
+    const snapshotQueryFn = vi.fn(
+      () =>
+        new Promise<ThreadStateSnapshot>((resolve) => {
+          resolveSnapshot = resolve
+        }),
+    )
+    const { wrapper } = setup(true, snapshotQueryFn)
+    const stream = fake.scriptStream()
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+
+    await act(async () => {
+      stream.pushCustom(phaseStatus('story_analysis', 'succeeded'), 'ev-terminal')
+      stream.end()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(snapshotQueryFn).toHaveBeenCalledTimes(1)
+    expect(result.current.status).toBe('live')
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-terminal')
+
+    await act(async () => {
+      resolveSnapshot?.(terminal)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.status).toBe('ended')
+    expect(resumeStore.get('t1', 'r1')).toBeNull()
+    expect(fake.joinStreamCalls).toHaveLength(1)
+  })
+
+  it('preserves the cursor and reconnects when the EOF snapshot refetch fails', async () => {
+    const snapshotQueryFn = vi.fn(async (): Promise<ThreadStateSnapshot> => {
+      throw new Error('snapshot unavailable')
+    })
+    const { wrapper } = setup(true, snapshotQueryFn)
+    const first = fake.scriptStream()
+    fake.scriptStream()
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+
+    await act(async () => {
+      first.pushCustom(phaseStatus('story_analysis', 'succeeded'), 'ev-uncertain')
+      first.end()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(snapshotQueryFn).toHaveBeenCalledTimes(1)
+    expect(result.current.status).toBe('reconnecting')
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-uncertain')
+
+    await pump(1_500)
+    expect(fake.joinStreamCalls).toHaveLength(2)
+    expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-uncertain')
+  })
+
+  it('preserves the cursor when a fresh EOF snapshot has an unknown status', async () => {
+    const uncertain = makeSnapshot()
+    uncertain.detail.thread_status = null
+    const snapshotQueryFn = vi.fn(async () => uncertain)
+    const { wrapper } = setup(true, snapshotQueryFn)
+    const stream = fake.scriptStream()
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+
+    await act(async () => {
+      stream.pushCustom(phaseStatus('story_analysis', 'succeeded'), 'ev-unknown')
+      stream.end()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(snapshotQueryFn).toHaveBeenCalledTimes(1)
+    expect(result.current.status).toBe('reconnecting')
+    expect(resumeStore.get('t1', 'r1')).toBe('ev-unknown')
   })
 
   it('terminal error event surfaces a non-reflective error (single healing refetch still applies)', async () => {

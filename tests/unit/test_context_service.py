@@ -100,6 +100,7 @@ async def test_start_context_summary_creates_durable_streamable_run() -> None:
         subject="Checkout latency",
         work_item_keys=["PHX-241"],
         project_id="proj-a",
+        work_tracking_connection_id="conn-work-a",
     )
     assert result == {
         "run_id": "run-123",
@@ -111,6 +112,7 @@ async def test_start_context_summary_creates_durable_streamable_run() -> None:
                 "kind": "context_summary",
                 "title": "Checkout latency",
                 "project_id": "proj-a",
+                "work_tracking_connection_id": "conn-work-a",
             }
         }
     ]
@@ -122,11 +124,41 @@ async def test_start_context_summary_creates_durable_streamable_run() -> None:
         "work_item_keys": ["PHX-241"],
         "document_packets": [],
         "project_id": "proj-a",
+        "work_tracking_connection_id": "conn-work-a",
     }
     assert call["stream_resumable"] is True
     assert call["stream_mode"] == "custom"
     assert call["durability"] == "sync"
     assert call["multitask_strategy"] == "reject"
+
+
+async def test_context_summary_requires_exact_connection_affinity_before_durable_creation() -> None:
+    client = FakeLoopbackClient()
+
+    with pytest.raises(ValueError, match="context run input is invalid"):
+        await start_context_summary(
+            client,
+            subject="Checkout latency",
+            work_item_keys=["PHX-241"],
+            project_id="proj-a",
+        )
+
+    assert client.threads.create_calls == []
+    assert client.runs.calls == []
+
+
+async def test_context_summary_rejects_unused_connection_affinity_before_durable_creation() -> None:
+    client = FakeLoopbackClient()
+
+    with pytest.raises(ValueError, match="context run input is invalid"):
+        await start_context_summary(
+            client,
+            subject="Checkout latency",
+            work_tracking_connection_id="conn-work-a",
+        )
+
+    assert client.threads.create_calls == []
+    assert client.runs.calls == []
 
 
 @pytest.mark.parametrize(

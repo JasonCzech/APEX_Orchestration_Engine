@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router'
 
 import {
   CONSUMER_TYPES,
+  consumerWriteMutationKey,
   useCurrentPrincipal,
   useConsumersIndex,
   useCreateConsumer,
@@ -19,15 +20,15 @@ import {
   useRotateConsumerKey,
   useUpdateConsumer,
   type Consumer,
-  type ConsumerCreated,
   type ConsumerType,
   type ScopeRef,
 } from '@/api/hooks/useConsumers'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import type { ConsumerInfo, Role } from '@/api/apexClient'
 import { isApiError } from '@/api/errors'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin } from '@/auth/RequireRole'
-import { setApiKey } from '@/auth/keyStorage'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
@@ -138,98 +139,8 @@ function ScopesEditor({
   )
 }
 
-/**
- * The one-time key reveal. No overlay click, no Escape — the only way out is
- * the [I've stored it] button, gated behind an explicit confirmation check.
- */
-function KeyRevealModal({
-  title,
-  created,
-  isCurrentConsumer = false,
-  onClose,
-}: {
-  title: string
-  created: ConsumerCreated
-  isCurrentConsumer?: boolean
-  onClose: () => void
-}) {
-  const [stored, setStored] = useState(false)
-  const [copied, setCopied] = useState(false)
-
-  function copy() {
-    void navigator.clipboard?.writeText(created.api_key).then(
-      () => setCopied(true),
-      () => setCopied(false),
-    )
-  }
-
-  return (
-    <Dialog
-      overlayClassName="adm-overlay"
-      className="adm-modal glass-panel"
-      ariaLabel={title}
-      onClose={onClose}
-      closeOnBackdrop={false}
-      closeOnEscape={false}
-    >
-      <h2 className="adm-panel-title">{title}</h2>
-      <p className="adm-modal-caption">
-        API key for <strong>{created.name}</strong>. Store it now — it will never be shown again.
-      </p>
-      {title === 'API key rotated' && (
-        <p className="adm-modal-caption">
-          The previous key remains valid for five minutes so clients can switch safely.
-        </p>
-      )}
-      <div className="adm-key-row">
-        <code className="adm-key" data-testid="revealed-api-key">
-          {created.api_key}
-        </code>
-        <button type="button" className="btn btn-secondary btn-sm" onClick={copy}>
-          {copied ? 'Copied' : 'Copy'}
-        </button>
-      </div>
-      <label className="adm-confirm-check">
-        <input
-          type="checkbox"
-          checked={stored}
-          onChange={(event) => setStored(event.target.checked)}
-          aria-label="I have stored this key somewhere safe"
-        />
-        <span>I have stored this key somewhere safe</span>
-      </label>
-      <div className="adm-panel-actions">
-        {title === 'API key rotated' && isCurrentConsumer && (
-          <button
-            type="button"
-            className="btn btn-secondary btn-sm"
-            disabled={!stored}
-            onClick={() => setApiKey(created.api_key)}
-          >
-            Use this key for this dashboard (recommended)
-          </button>
-        )}
-        <button
-          type="button"
-          className="btn btn-primary btn-sm"
-          disabled={!stored}
-          onClick={onClose}
-        >
-          I&rsquo;ve stored it
-        </button>
-      </div>
-    </Dialog>
-  )
-}
-
 /** Inline create panel: name / type / role segmented / scopes editor. */
-function CreateConsumerPanel({
-  onClose,
-  onCreated,
-}: {
-  onClose: () => void
-  onCreated: (created: ConsumerCreated) => void
-}) {
+function CreateConsumerPanel({ onClose }: { onClose: () => void }) {
   const current = useConsumer()
   const create = useCreateConsumer()
   const [name, setName] = useState('')
@@ -251,12 +162,7 @@ function CreateConsumerPanel({
         role,
         scopes: scopePayload,
       },
-      {
-        onSuccess: (created) => {
-          onClose()
-          onCreated(created)
-        },
-      },
+      { onSuccess: onClose },
     )
   }
 
@@ -349,7 +255,8 @@ function EditConsumerModal({
   onClose: () => void
 }) {
   const current = useConsumer()
-  const update = useUpdateConsumer()
+  const update = useUpdateConsumer(consumer.id)
+  const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
   const [role, setRole] = useState<Role>(consumer.role)
   const [enabled, setEnabled] = useState(consumer.enabled)
   const [scopes, setScopes] = useState<ScopeDraft[]>(() =>
@@ -427,7 +334,7 @@ function EditConsumerModal({
         <button
           type="button"
           className="btn btn-primary btn-sm"
-          disabled={update.isPending || grantIssue !== null}
+          disabled={writeCount > 0 || grantIssue !== null}
           onClick={() =>
             update.mutate(
               {
@@ -447,19 +354,18 @@ function EditConsumerModal({
   )
 }
 
-/** Rotate confirm — success hands the one-time payload up for the reveal modal. */
+/** Rotate confirm — the mutation hook hands the one-time payload to the shell lifecycle. */
 function RotateConsumerModal({
   consumer,
   isCurrentConsumer,
   onClose,
-  onRotated,
 }: {
   consumer: Consumer
   isCurrentConsumer: boolean
   onClose: () => void
-  onRotated: (rotated: ConsumerCreated, isCurrentConsumer: boolean) => void
 }) {
-  const rotate = useRotateConsumerKey()
+  const rotate = useRotateConsumerKey(consumer.id)
+  const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
 
   function close() {
     if (rotate.isPending) return
@@ -495,14 +401,16 @@ function RotateConsumerModal({
         <button
           type="button"
           className="btn btn-primary btn-sm"
-          disabled={rotate.isPending}
+          disabled={writeCount > 0}
           onClick={() =>
-            rotate.mutate({ consumerId: consumer.id }, {
-              onSuccess: (rotated) => {
-                onClose()
-                onRotated(rotated, isCurrentConsumer)
+            rotate.mutate(
+              {
+                consumerId: consumer.id,
+                consumerName: consumer.name,
+                isCurrentConsumer,
               },
-            })
+              { onSuccess: onClose },
+            )
           }
         >
           {rotate.isPending ? 'Rotating…' : 'Rotate key'}
@@ -514,7 +422,8 @@ function RotateConsumerModal({
 
 /** Delete confirm — a 409 means self-delete and renders the friendly line inline. */
 function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose: () => void }) {
-  const remove = useDeleteConsumer()
+  const remove = useDeleteConsumer(consumer.id)
+  const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
   const selfDelete = remove.isError && isApiError(remove.error) && remove.error.status === 409
 
   function close() {
@@ -550,7 +459,7 @@ function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClos
         <button
           type="button"
           className="btn btn-danger btn-sm"
-          disabled={remove.isPending || selfDelete}
+          disabled={writeCount > 0 || selfDelete}
           onClick={() => remove.mutate(consumer.id, { onSuccess: onClose })}
         >
           {remove.isPending ? 'Deleting…' : 'Delete consumer'}
@@ -574,6 +483,8 @@ function ConsumerRow({
   identityReady: boolean
 }) {
   const navigate = useNavigate()
+  const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
+  const writePending = writeCount > 0
   return (
     <tr data-testid={`consumer-row-${consumer.id}`}>
       <td className="strong">{consumer.name}</td>
@@ -603,9 +514,13 @@ function ConsumerRow({
           items={[
             { label: 'Open', onSelect: () => void navigate(`/admin/consumers/${consumer.id}`) },
             ...(identityReady ? [
-              { label: 'Edit', onSelect: () => onEdit(consumer) },
-              { label: 'Rotate key…', onSelect: () => onRotate(consumer) },
-              { label: 'Delete…', onSelect: () => onDelete(consumer) },
+              { label: 'Edit', onSelect: () => onEdit(consumer), disabled: writePending },
+              {
+                label: 'Rotate key…',
+                onSelect: () => onRotate(consumer),
+                disabled: writePending,
+              },
+              { label: 'Delete…', onSelect: () => onDelete(consumer), disabled: writePending },
             ] : []),
           ]}
         />
@@ -618,11 +533,6 @@ function ConsumersContent() {
   const consumers = useConsumersIndex()
   const principal = useCurrentPrincipal()
   const [creating, setCreating] = useState(false)
-  const [reveal, setReveal] = useState<{
-    title: string
-    created: ConsumerCreated
-    isCurrentConsumer?: boolean
-  } | null>(null)
   const [editing, setEditing] = useState<Consumer | null>(null)
   const [rotating, setRotating] = useState<Consumer | null>(null)
   const [deleting, setDeleting] = useState<Consumer | null>(null)
@@ -642,11 +552,10 @@ function ConsumersContent() {
         )}
       </header>
 
-      {creating && (
-        <CreateConsumerPanel
-          onClose={() => setCreating(false)}
-          onCreated={(created) => setReveal({ title: 'API key created', created })}
-        />
+      {creating && <CreateConsumerPanel onClose={() => setCreating(false)} />}
+
+      {consumers.isError && consumers.data && (
+        <CachedDataWarning error={consumers.error} onRetry={() => void consumers.refetch()} />
       )}
 
       {consumers.isPending ? (
@@ -655,7 +564,7 @@ function ConsumersContent() {
             <div key={i} className="glass-panel adm-skeleton-row" />
           ))}
         </div>
-      ) : consumers.isError ? (
+      ) : consumers.isError && !consumers.data ? (
         <ProblemCard
           title="Consumers unavailable"
           message={consumers.error.message}
@@ -693,8 +602,8 @@ function ConsumersContent() {
                   consumer={consumer}
                   onEdit={setEditing}
                   onRotate={setRotating}
-                    onDelete={setDeleting}
-                    identityReady={principal.isSuccess}
+                  onDelete={setDeleting}
+                  identityReady={principal.isSuccess}
                 />
               ))}
             </tbody>
@@ -714,20 +623,9 @@ function ConsumersContent() {
           consumer={rotating}
           isCurrentConsumer={principal.data?.principal_id === rotating.id}
           onClose={() => setRotating(null)}
-          onRotated={(rotated, isCurrentConsumer) =>
-            setReveal({ title: 'API key rotated', created: rotated, isCurrentConsumer })
-          }
         />
       )}
       {deleting && <DeleteConsumerModal consumer={deleting} onClose={() => setDeleting(null)} />}
-      {reveal && (
-        <KeyRevealModal
-          title={reveal.title}
-          created={reveal.created}
-          isCurrentConsumer={reveal.isCurrentConsumer}
-          onClose={() => setReveal(null)}
-        />
-      )}
     </section>
   )
 }

@@ -13,6 +13,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
@@ -21,6 +22,7 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 
 export type Connection = components['schemas']['ConnectionOut']
@@ -43,17 +45,52 @@ export const PORT_KINDS: readonly PortKind[] = [
   'artifact_store',
   'secrets',
 ]
+const CONNECTIONS_PAGE_SIZE = 200
+const deletedConnectionIds = new WeakMap<QueryClient, Set<string>>()
 
-async function fetchConnections(): Promise<Connection[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/admin/connections', {})
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Connections request failed (${response.status})`),
-      error,
-    )
-  }
-  return data
+export function connectionWriteMutationKey(connectionId: string) {
+  return ['admin', 'connections', 'write', connectionId] as const
+}
+
+export function connectionProbeMutationKey(connectionId: string) {
+  return ['admin', 'connections', 'probe', connectionId] as const
+}
+
+export function connectionMutationScopeId(connectionId: string): string {
+  return `admin:connections:operation:${connectionId}`
+}
+
+function deletedIdsFor(queryClient: QueryClient): Set<string> {
+  const existing = deletedConnectionIds.get(queryClient)
+  if (existing) return existing
+  const created = new Set<string>()
+  deletedConnectionIds.set(queryClient, created)
+  return created
+}
+
+function isConnectionDeleted(queryClient: QueryClient, connectionId: string): boolean {
+  return deletedConnectionIds.get(queryClient)?.has(connectionId) ?? false
+}
+
+async function fetchConnections(signal?: AbortSignal): Promise<Connection[]> {
+  return fetchAllOffsetPages({
+    label: 'Connections',
+    pageSize: CONNECTIONS_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/admin/connections', {
+        params: { query: { limit, offset } },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Connections request failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
+  })
 }
 
 async function fetchConnection(connectionId: string): Promise<Connection> {
@@ -90,7 +127,7 @@ async function fetchHostMappings(connectionId: string): Promise<HostMappingOut[]
 export function useConnectionsIndex(): UseQueryResult<Connection[], Error> {
   return useQuery({
     queryKey: queryKeys.admin.connections(),
-    queryFn: fetchConnections,
+    queryFn: ({ signal }) => fetchConnections(signal),
     staleTime: STALE_TIMES.admin,
   })
 }
@@ -133,6 +170,7 @@ export function useCreateConnection(): UseMutationResult<Connection, Error, Conn
       return data
     },
     onSuccess: (created) => {
+      deletedIdsFor(queryClient).delete(created.id)
       queryClient.setQueryData(queryKeys.admin.connection(created.id), created)
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.connections() })
     },
@@ -144,9 +182,13 @@ export interface UpdateConnectionInput {
   body: ConnectionUpdate
 }
 
-export function useUpdateConnection(): UseMutationResult<Connection, Error, UpdateConnectionInput> {
+export function useUpdateConnection(
+  connectionId: string,
+): UseMutationResult<Connection, Error, UpdateConnectionInput> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: connectionWriteMutationKey(connectionId),
+    scope: { id: connectionMutationScopeId(connectionId) },
     mutationFn: async ({ connectionId, body }: UpdateConnectionInput) => {
       const { data, error, response } = await getApexClient().PATCH(
         '/v1/admin/connections/{connection_id}',
@@ -162,15 +204,18 @@ export function useUpdateConnection(): UseMutationResult<Connection, Error, Upda
       return data
     },
     onSuccess: (updated) => {
+      if (isConnectionDeleted(queryClient, updated.id)) return
       queryClient.setQueryData(queryKeys.admin.connection(updated.id), updated)
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.connections() })
     },
   })
 }
 
-export function useDeleteConnection(): UseMutationResult<void, Error, string> {
+export function useDeleteConnection(connectionId: string): UseMutationResult<void, Error, string> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: connectionWriteMutationKey(connectionId),
+    scope: { id: connectionMutationScopeId(connectionId) },
     mutationFn: async (connectionId: string) => {
       const { error, response } = await getApexClient().DELETE(
         '/v1/admin/connections/{connection_id}',
@@ -185,6 +230,7 @@ export function useDeleteConnection(): UseMutationResult<void, Error, string> {
       }
     },
     onSuccess: (_void, connectionId) => {
+      deletedIdsFor(queryClient).add(connectionId)
       queryClient.removeQueries({ queryKey: queryKeys.admin.connection(connectionId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.connections() })
     },
@@ -197,13 +243,15 @@ export interface SetConnectionEnabledInput {
 }
 
 /** Flips the toggle pill via the dedicated enable/disable endpoints. */
-export function useSetConnectionEnabled(): UseMutationResult<
+export function useSetConnectionEnabled(connectionId: string): UseMutationResult<
   Connection,
   Error,
   SetConnectionEnabledInput
 > {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: connectionWriteMutationKey(connectionId),
+    scope: { id: connectionMutationScopeId(connectionId) },
     mutationFn: async ({ connectionId, enabled }: SetConnectionEnabledInput) => {
       const path = enabled
         ? ('/v1/admin/connections/{connection_id}/enable' as const)
@@ -224,6 +272,7 @@ export function useSetConnectionEnabled(): UseMutationResult<
       return data
     },
     onSuccess: (updated) => {
+      if (isConnectionDeleted(queryClient, updated.id)) return
       queryClient.setQueryData(queryKeys.admin.connection(updated.id), updated)
       void queryClient.invalidateQueries({ queryKey: queryKeys.admin.connections() })
     },
@@ -236,13 +285,15 @@ export interface PutHostMappingsInput {
 }
 
 /** PUT semantics — replaces the FULL mapping list on save. */
-export function usePutHostMappings(): UseMutationResult<
+export function usePutHostMappings(connectionId: string): UseMutationResult<
   HostMappingOut[],
   Error,
   PutHostMappingsInput
 > {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: connectionWriteMutationKey(connectionId),
+    scope: { id: connectionMutationScopeId(connectionId) },
     mutationFn: async ({ connectionId, mappings }: PutHostMappingsInput) => {
       const { data, error, response } = await getApexClient().PUT(
         '/v1/admin/connections/{connection_id}/host-mappings',
@@ -258,6 +309,7 @@ export function usePutHostMappings(): UseMutationResult<
       return data
     },
     onSuccess: (saved, { connectionId }) => {
+      if (isConnectionDeleted(queryClient, connectionId)) return
       queryClient.setQueryData(queryKeys.admin.connectionHostMappings(connectionId), saved)
     },
   })
@@ -268,9 +320,13 @@ export function usePutHostMappings(): UseMutationResult<
  * Always 200 — bad secret_ref / unreachable backend come back as ok=false and
  * the detail renders inline (never a toast, never a thrown error).
  */
-export function useTestConnection(): UseMutationResult<ProbeResult, Error, string> {
+export function useTestConnection(
+  connectionId: string,
+): UseMutationResult<ProbeResult, Error, void> {
   return useMutation({
-    mutationFn: async (connectionId: string) => {
+    mutationKey: connectionProbeMutationKey(connectionId),
+    scope: { id: connectionMutationScopeId(connectionId) },
+    mutationFn: async () => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/admin/connections/{connection_id}/test',
         { params: { path: { connection_id: connectionId } } },

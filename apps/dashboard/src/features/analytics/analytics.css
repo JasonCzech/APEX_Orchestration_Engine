@@ -230,6 +230,12 @@ th[aria-sort='descending'] .analytics-sort {
   gap: 8px;
 }
 
+.analytics-result-window-note {
+  margin: 0;
+  color: var(--warning-text);
+  font-size: 12px;
+}
+
 .analytics-zero-hint {
   border: 1px solid var(--warning-border);
   background: var(--warning-bg);

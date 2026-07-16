@@ -4,6 +4,7 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys } from '@/api/queryKeys'
 
 export type DraftRead = components['schemas']['DraftRead']
@@ -75,18 +76,33 @@ export async function deleteDraftRequest(draftId: string): Promise<void> {
   }
 }
 
-async function fetchDrafts(project?: string): Promise<DraftRead[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/drafts', {
-    params: { query: project ? { project } : {} },
+const DRAFT_PAGE_SIZE = 100
+
+async function fetchDrafts(project?: string, signal?: AbortSignal): Promise<DraftRead[]> {
+  return fetchAllOffsetPages({
+    label: 'Drafts',
+    pageSize: DRAFT_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/drafts', {
+        params: {
+          query: {
+            ...(project ? { project } : {}),
+            limit,
+            offset,
+          },
+        },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Drafts request failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
   })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Drafts request failed (${response.status})`),
-      error,
-    )
-  }
-  return data
 }
 
 /** Saved drafts for the wizard's "Resume draft" entry point. */
@@ -96,7 +112,7 @@ export function useDraftsList(
 ): UseQueryResult<DraftRead[], Error> {
   return useQuery({
     queryKey: queryKeys.drafts.list(project),
-    queryFn: () => fetchDrafts(project),
+    queryFn: ({ signal }) => fetchDrafts(project, signal),
     enabled: options.enabled ?? true,
     staleTime: 30_000,
   })

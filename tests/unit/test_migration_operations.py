@@ -92,6 +92,7 @@ def test_revision_upgrade_and_downgrade_operations_are_executable(
             "0021_artifact_upload_intents",
             "0022_legacy_audit_writer_compatibility",
             "0023_work_item_mutations",
+            "0029_saved_query_connection_affinity",
         }
     ),
 )
@@ -107,6 +108,23 @@ def test_postgresql_specific_revision_paths_fail_closed_on_other_dialects(
     module.downgrade()
 
     assert not any(call.name == "execute" for call in operations.calls)
+
+
+def test_0029_downgrade_checks_for_bound_queries_before_destructive_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module(
+        "apex.persistence.migrations.versions.0029_saved_query_connection_affinity"
+    )
+    operations = RecordingOperations()
+    monkeypatch.setattr(module, "op", operations)
+
+    module.downgrade()
+
+    assert [call.name for call in operations.calls] == ["execute", "drop_index", "drop_column"]
+    guard_sql = operations.calls[0].args[0]
+    assert "WHERE connection_id IS NOT NULL" in guard_sql
+    assert "cannot downgrade with bound saved queries present" in guard_sql
 
 
 def test_domain_table_revision_has_symmetric_schema_operations(

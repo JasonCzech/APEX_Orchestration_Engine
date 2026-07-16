@@ -3,7 +3,7 @@
  * rendering added/removed lines through @codemirror/merge's unifiedMergeView
  * (REAL CodeMirror here — the probe showed it renders chunks in jsdom).
  */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeAll, describe, expect, it } from 'vitest'
 
@@ -14,6 +14,7 @@ import { promptCatalog } from './promptsTestHandlers'
 
 const V1_URL = '/prompts/phase/story_analysis%2Fsystem/versions/v-1'
 const V2_URL = '/prompts/phase/story_analysis%2Fsystem/versions/v-2'
+const EXEC_V1_URL = '/prompts/phase/execution%2Fsystem/versions/v-exec-1'
 
 // jsdom Ranges have no layout; CodeMirror's measure cycle catches the missing
 // getClientRects and logs it — polyfill empty rects to keep stderr quiet.
@@ -65,5 +66,24 @@ describe('PromptVersionPage', () => {
       .join('\n')
     expect(inserted).toContain('Be thorough.')
     expect(inserted).toContain('Cite evidence for every claim.')
+  })
+
+  it('closes rollback confirmation when a cached version route replaces it', async () => {
+    server.use(...promptCatalog().handlers)
+    const user = userEvent.setup()
+    const { router } = renderApp({
+      initialEntries: [EXEC_V1_URL],
+      authState: authenticatedState('admin', 'Dash Ops', []),
+    })
+
+    await screen.findByText('Run the plan.')
+    await act(async () => router.navigate(V1_URL))
+    await screen.findByText('Be terse.')
+    await user.click(screen.getByRole('button', { name: 'Set this version active' }))
+    expect(screen.getByRole('dialog', { name: 'Set v1 active' })).toBeInTheDocument()
+
+    await act(async () => router.navigate(EXEC_V1_URL))
+    await screen.findByText('Run the plan.')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
 })

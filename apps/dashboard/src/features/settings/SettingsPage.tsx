@@ -135,6 +135,9 @@ function ApiKeySection() {
         return
       }
       const payload: unknown = await response.json()
+      // `fetch()` resolves at response headers. The body can still be delayed,
+      // so a sign-out/key change while JSON is streaming must invalidate it too.
+      if (controller.signal.aborted || authRevision !== getApiKeyRevision()) return
       if (
         !payload ||
         typeof payload !== 'object' ||
@@ -145,6 +148,7 @@ function ApiKeySection() {
         setState({ kind: 'error', message: 'Validation returned malformed system info — the stored key is unchanged.' })
         return
       }
+      if (controller.signal.aborted || authRevision !== getApiKeyRevision()) return
       setApiKey(candidate)
       setDraft('')
       setState({ kind: 'saved' })

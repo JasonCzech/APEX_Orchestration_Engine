@@ -18,9 +18,11 @@ import type { GateAction } from '@/hitl/gateMachine'
 
 /** Handle invocations across the whole test — reset in beforeEach. */
 export const invokedActions: GateAction[] = []
+export const invokedActionThreads: string[] = []
 
 export function resetGateModuleMock(): void {
   invokedActions.length = 0
+  invokedActionThreads.length = 0
 }
 
 export function MockGateModule({
@@ -36,6 +38,7 @@ export function MockGateModule({
       isActionable: () => true,
       invoke: (action: GateAction) => {
         invokedActions.push(action)
+        invokedActionThreads.push(threadId)
         // Submit actions resolve immediately (as if the 202 landed); edit
         // actions (modify/revise/discuss) only move focus in the real module.
         if (action === 'approve' || action === 'skip_phase' || action === 'abort') {
@@ -45,7 +48,7 @@ export function MockGateModule({
       },
       focus: () => {},
     }),
-    [onOutcome],
+    [onOutcome, threadId],
   )
 
   return (

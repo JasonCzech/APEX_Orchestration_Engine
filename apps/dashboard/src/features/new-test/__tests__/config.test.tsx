@@ -3,7 +3,7 @@
  * gates segmented control + custom matrix, and the golden-config picker
  * pre-filling engine/gates from the assistant's configurable.
  */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -153,6 +153,45 @@ describe('ConfigStep', () => {
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
+    rendered.unmount()
+  })
+
+  it('applies a new golden config after an in-place search-param navigation', async () => {
+    assistantsSearch.mockResolvedValue([GOLDEN, DEFAULTED])
+    installWizardHandlers()
+    const rendered = renderWizard(
+      '/runs/new?step=config&golden=asst-gold',
+    )
+
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      ),
+    )
+    await waitFor(() =>
+      expect(rendered.router.state.location.search).not.toContain('golden='),
+    )
+
+    await act(async () => {
+      await rendered.router.navigate(
+        '/runs/new?step=config&golden=asst-defaulted',
+      )
+    })
+
+    await waitFor(() =>
+      expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute(
+        'aria-checked',
+        'true',
+      ),
+    )
+    expect(screen.getByRole('button', { name: 'All gated' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await waitFor(() =>
+      expect(rendered.router.state.location.search).not.toContain('golden='),
+    )
     rendered.unmount()
   })
 })

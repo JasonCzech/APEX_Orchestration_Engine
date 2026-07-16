@@ -1,6 +1,7 @@
 """Context-gathering graph: deterministic evidence assembly for `/v1/context/summaries`.
 
-Input:  {subject, work_item_keys?, document_packets?, project_id?}
+Input:  {subject, work_item_keys?, document_packets?, project_id?,
+         work_tracking_connection_id?}
 Output: {summary, evidence: [{id, source, title, ref, summary}]}
 
 A single node resolves work-tracking through a loop-local ConnectionResolver and
@@ -57,6 +58,7 @@ class ContextInput(TypedDict, total=False):
     document_packets: list[JsonDict]
     project_id: str | None
     app_id: str | None
+    work_tracking_connection_id: str | None
 
 
 class ContextState(TypedDict, total=False):
@@ -66,6 +68,7 @@ class ContextState(TypedDict, total=False):
     document_packets: list[JsonDict]
     project_id: str | None
     app_id: str | None
+    work_tracking_connection_id: str | None
     # output
     summary: str
     evidence: list[JsonDict]
@@ -98,11 +101,19 @@ def _packet(source: str, title: str, ref: str | None, summary: str | None) -> Js
     }
 
 
-async def _work_tracking_evidence(keys: list[str], project_id: str | None) -> list[JsonDict]:
+async def _work_tracking_evidence(
+    keys: list[str],
+    project_id: str | None,
+    connection_id: str,
+) -> list[JsonDict]:
     resolver = _make_resolver()
     tracker: Any | None = None
     try:
-        tracker = await resolver.resolve(PortKind.WORK_TRACKING, project_id=project_id)
+        tracker = await resolver.resolve(
+            PortKind.WORK_TRACKING,
+            connection_id=connection_id,
+            project_id=project_id,
+        )
         validate_resolved_work_tracking_project(
             tracker,
             provider=getattr(tracker, "provider", ""),
@@ -283,16 +294,24 @@ async def gather_evidence(state: ContextState) -> ContextState:
     project_id = validated.project_id
     evidence: list[JsonDict] = []
     provider_failed = False
-    try:
-        evidence.extend(await _work_tracking_evidence(validated.work_item_keys, project_id))
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        # LangGraph may persist and surface node failures. Provider/resolver
-        # exceptions are untrusted diagnostics. Raise a fixed error after
-        # leaving the handler so opaque provider secrets are neither rendered
-        # nor retained in ``__context__`` by the durable graph failure.
-        provider_failed = True
+    if validated.work_item_keys:
+        assert validated.work_tracking_connection_id is not None
+        try:
+            evidence.extend(
+                await _work_tracking_evidence(
+                    validated.work_item_keys,
+                    project_id,
+                    validated.work_tracking_connection_id,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # LangGraph may persist and surface node failures. Provider/resolver
+            # exceptions are untrusted diagnostics. Raise a fixed error after
+            # leaving the handler so opaque provider secrets are neither rendered
+            # nor retained in ``__context__`` by the durable graph failure.
+            provider_failed = True
     if provider_failed:
         raise RuntimeError("work-tracking evidence gathering failed")
     evidence.extend(

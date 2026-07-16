@@ -8,10 +8,11 @@
  * [Save as vN+1]. Versions tab: newest-first timeline with per-version
  * [View] and [Set active] (rollback behind a confirm modal).
  */
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
 import {
+  promptWriteMutationKey,
   usePrompt,
   usePromptVersions,
   useRollbackPrompt,
@@ -20,8 +21,10 @@ import {
   type PromptDetail,
   type PromptVersionInfo,
 } from '@/api/hooks/usePrompts'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { isApiError } from '@/api/errors'
 import { RequireGlobalAdmin } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { formatRelative } from '@/utils/time'
@@ -57,26 +60,35 @@ function DiffIndicator({ active, draft }: { active: string; draft: string }) {
 function NewVersionEditor({
   detail,
   maxVersion,
+  save,
+  content,
+  note,
+  onContentChange,
+  onNoteChange,
   onDone,
   onCancel,
+  writePending,
 }: {
   detail: PromptDetail
   maxVersion: number
-  onDone: () => void
+  save: ReturnType<typeof useSaveVersion>
+  content: string
+  note: string
+  onContentChange: (content: string) => void
+  onNoteChange: (note: string) => void
+  onDone: (promptId: string) => void
   onCancel: () => void
+  writePending: boolean
 }) {
-  const save = useSaveVersion(detail.id)
   const activeContent = detail.content ?? ''
-  const [content, setContent] = useState(activeContent)
-  const [note, setNote] = useState('')
   const nextVersion = maxVersion + 1
   const unchanged = content === activeContent
 
   function submit() {
-    if (unchanged || save.isPending) return
+    if (unchanged || writePending) return
     save.mutate(
       { content, ...(note.trim() ? { note: note.trim() } : {}) },
-      { onSuccess: onDone },
+      { onSuccess: () => onDone(detail.id) },
     )
   }
 
@@ -86,15 +98,21 @@ function NewVersionEditor({
         <span className="strong">New version</span>
         <DiffIndicator active={activeContent} draft={content} />
       </div>
-      <PromptEditor value={content} onChange={setContent} ariaLabel="New version content" />
+      <PromptEditor
+        value={content}
+        onChange={onContentChange}
+        ariaLabel="New version content"
+        disabled={writePending}
+      />
       <label className="prompt-field">
         <span className="prompt-field-label">Version note</span>
         <input
           className="field-input"
           value={note}
-          onChange={(event) => setNote(event.target.value)}
+          onChange={(event) => onNoteChange(event.target.value)}
           placeholder="why this version exists"
           aria-label="Version note"
+          disabled={writePending}
         />
       </label>
       {save.isError && (
@@ -103,14 +121,14 @@ function NewVersionEditor({
         </div>
       )}
       <div className="prompt-modal-actions">
-        <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={save.isPending}>
+        <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={writePending}>
           Cancel
         </button>
         <button
           type="button"
           className="btn btn-primary"
           onClick={submit}
-          disabled={unchanged || save.isPending}
+          disabled={unchanged || writePending}
         >
           {save.isPending ? 'Saving…' : `Save as v${nextVersion}`}
         </button>
@@ -130,6 +148,8 @@ function VersionsTimeline({
 }) {
   const versionsQuery = usePromptVersions(ns, name, detail.id)
   const rollback = useRollbackPrompt(ns, name, detail.id)
+  const writeCount = usePendingMutationCount(promptWriteMutationKey(detail.id))
+  const writePending = writeCount > 0
   const [confirming, setConfirming] = useState<PromptVersionInfo | null>(null)
 
   const versions = useMemo(
@@ -144,7 +164,7 @@ function VersionsTimeline({
       </div>
     )
   }
-  if (versionsQuery.isError) {
+  if (versionsQuery.isError && !versionsQuery.data) {
     return (
       <ProblemCard
         title="Version history unavailable"
@@ -156,6 +176,12 @@ function VersionsTimeline({
 
   return (
     <>
+      {versionsQuery.isError && (
+        <CachedDataWarning
+          error={versionsQuery.error}
+          onRetry={() => void versionsQuery.refetch()}
+        />
+      )}
       <ol className="prompt-timeline">
         {versions.map((version) => {
           const isActive = detail.active_version?.id === version.id
@@ -188,6 +214,7 @@ function VersionsTimeline({
                           rollback.reset()
                           setConfirming(version)
                         }}
+                        disabled={writePending}
                       >
                         Set active
                       </button>
@@ -203,7 +230,7 @@ function VersionsTimeline({
         <RollbackConfirm
           version={confirming.version}
           note={confirming.note}
-          pending={rollback.isPending}
+          pending={writePending}
           error={rollback.error ?? undefined}
           onCancel={() => setConfirming(null)}
           onConfirm={() =>
@@ -217,16 +244,28 @@ function VersionsTimeline({
 
 export function PromptDetailPage() {
   const { ns, name } = usePromptRouteParams()
+  return <PromptDetailContent key={JSON.stringify([ns, name])} ns={ns} name={name} />
+}
+
+function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const tab: Tab = searchParams.get('tab') === 'versions' ? 'versions' : 'content'
   const [editing, setEditing] = useState(false)
+  const [versionContent, setVersionContent] = useState('')
+  const [versionNote, setVersionNote] = useState('')
 
   const detailQuery = usePrompt(ns, name)
   const detail = detailQuery.data
+  const activePromptIdRef = useRef<string | null>(detail?.id ?? null)
+  activePromptIdRef.current = detail?.id ?? null
   const setArchived = useSetArchived(ns, name, detail?.id)
   const versionsQuery = usePromptVersions(ns, name, detail?.id)
+  const saveVersion = useSaveVersion(detail?.id)
+  const writeCount = usePendingMutationCount(promptWriteMutationKey(detail?.id))
+  const writePending = writeCount > 0
 
   function selectTab(next: Tab) {
+    if (writePending) return
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev)
       if (next === 'content') params.delete('tab')
@@ -244,7 +283,7 @@ export function PromptDetailPage() {
       </section>
     )
   }
-  if (detailQuery.isError || !detail) {
+  if (!detail) {
     return (
       <section className="prompts-page animate-enter">
         <ProblemCard
@@ -260,6 +299,9 @@ export function PromptDetailPage() {
 
   return (
     <section className="prompts-page animate-enter">
+      {detailQuery.isError && (
+        <CachedDataWarning error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
+      )}
       <header className="prompt-detail-header glass-panel">
         <div className="prompt-detail-title">
           <nav className="prompt-breadcrumb" aria-label="Breadcrumb">
@@ -285,7 +327,7 @@ export function PromptDetailPage() {
               type="button"
               className="btn btn-ghost"
               onClick={() => setArchived.mutate(!archived)}
-              disabled={setArchived.isPending}
+              disabled={writePending}
             >
               {archived ? 'Unarchive' : 'Archive'}
             </button>
@@ -294,9 +336,12 @@ export function PromptDetailPage() {
               className="btn btn-primary"
               onClick={() => {
                 selectTab('content')
+                saveVersion.reset()
+                setVersionContent(detail.content ?? '')
+                setVersionNote('')
                 setEditing(true)
               }}
-              disabled={editing}
+              disabled={editing || writePending}
             >
               New version
             </button>
@@ -318,6 +363,7 @@ export function PromptDetailPage() {
             aria-selected={tab === entry}
             className={`prompt-tab${tab === entry ? ' active' : ''}`}
             onClick={() => selectTab(entry)}
+            disabled={writePending}
           >
             {entry === 'content' ? 'Content' : 'Versions'}
           </button>
@@ -327,13 +373,30 @@ export function PromptDetailPage() {
       {tab === 'content' ? (
         editing ? (
           <NewVersionEditor
+            key={detail.id}
             detail={detail}
+            save={saveVersion}
+            content={versionContent}
+            note={versionNote}
+            onContentChange={setVersionContent}
+            onNoteChange={setVersionNote}
             maxVersion={Math.max(
               detail.active_version?.version ?? 0,
               ...(versionsQuery.data ?? []).map((entry) => entry.version),
             )}
-            onDone={() => setEditing(false)}
-            onCancel={() => setEditing(false)}
+            onDone={(savedPromptId) => {
+              if (activePromptIdRef.current === savedPromptId) {
+                setEditing(false)
+                setVersionContent('')
+                setVersionNote('')
+              }
+            }}
+            onCancel={() => {
+              setEditing(false)
+              setVersionContent('')
+              setVersionNote('')
+            }}
+            writePending={writePending}
           />
         ) : (
           <div className="prompt-content-card glass-panel">
@@ -347,7 +410,7 @@ export function PromptDetailPage() {
           </div>
         )
       ) : (
-        <VersionsTimeline ns={ns} name={name} detail={detail} />
+        <VersionsTimeline key={detail.id} ns={ns} name={name} detail={detail} />
       )}
     </section>
   )

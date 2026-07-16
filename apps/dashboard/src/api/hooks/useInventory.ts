@@ -22,6 +22,10 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import {
+  environmentWriteMutationKey,
+  environmentWriteMutationScopeId,
+} from '@/api/hooks/useEnvironments'
 import { queryKeys } from '@/api/queryKeys'
 
 export type InventoryView = components['schemas']['InventoryView']
@@ -59,10 +63,14 @@ export function useEnvironmentInventory(
  * Synchronous rescan mutation. The scan happens inline server-side, so the
  * pending state doubles as the button's "Scanning…" indicator.
  */
-export function useRescanEnvironment(): UseMutationResult<InventoryView, Error, string> {
+export function useRescanEnvironment(
+  environmentId: string,
+): UseMutationResult<InventoryView, Error, void> {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: async (environmentId: string) => {
+    mutationKey: environmentWriteMutationKey(environmentId),
+    scope: { id: environmentWriteMutationScopeId(environmentId) },
+    mutationFn: async () => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/inventory/environments/{environment_id}/rescan',
         { params: { path: { environment_id: environmentId } } },
@@ -76,7 +84,7 @@ export function useRescanEnvironment(): UseMutationResult<InventoryView, Error, 
       }
       return data
     },
-    onSuccess: (fresh, environmentId) => {
+    onSuccess: (fresh) => {
       queryClient.setQueryData(queryKeys.inventory.environment(environmentId), fresh)
       // The catalog detail carries a last_snapshot summary — keep it honest.
       void queryClient.invalidateQueries({

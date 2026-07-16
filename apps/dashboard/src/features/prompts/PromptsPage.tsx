@@ -239,7 +239,7 @@ export function PromptsPage() {
     return () => window.clearTimeout(id)
   }, [search, committedQ, setSearchParams])
 
-  const { data, error, isPending, isError, refetch } = usePromptList({
+  const { data, error, isPending, isError, isPlaceholderData, refetch } = usePromptList({
     includeArchived,
     q: committedQ || undefined,
   })
@@ -327,7 +327,13 @@ export function PromptsPage() {
         </nav>
 
         <div className="prompts-main">
-          {isPending ? (
+          {isError && (!data || isPlaceholderData) ? (
+            <ProblemCard
+              title="Prompt catalog unavailable"
+              message={errorMessage(error, 'The prompt list could not be loaded.')}
+              onRetry={() => refetch()}
+            />
+          ) : isPending || isPlaceholderData ? (
             <div
               className="prompts-skeleton"
               role="status"
@@ -338,12 +344,6 @@ export function PromptsPage() {
                 <div key={i} className="glass-panel prompts-skeleton-row" />
               ))}
             </div>
-          ) : isError && !data ? (
-            <ProblemCard
-              title="Prompt catalog unavailable"
-              message={errorMessage(error, 'The prompt list could not be loaded.')}
-              onRetry={() => refetch()}
-            />
           ) : rows.length === 0 ? (
             <div className="dash-empty">
               <h2>No prompts found</h2>
@@ -354,8 +354,17 @@ export function PromptsPage() {
               </p>
             </div>
           ) : (
-            <div className="data-table-wrap">
-              <table className="data-table striped prompts-table">
+            <>
+              {isError && (
+                <div className="runs-refresh-error" role="alert">
+                  <span>Refresh failed: {errorMessage(error, 'The prompt list could not be loaded.')}</span>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => refetch()}>
+                    Retry
+                  </button>
+                </div>
+              )}
+              <div className="data-table-wrap">
+                <table className="data-table striped prompts-table">
                 <thead>
                   <tr>
                     <th>Key</th>
@@ -369,8 +378,9 @@ export function PromptsPage() {
                     <PromptRow key={prompt.id} prompt={prompt} />
                   ))}
                 </tbody>
-              </table>
-            </div>
+                </table>
+              </div>
+            </>
           )}
         </div>
       </div>

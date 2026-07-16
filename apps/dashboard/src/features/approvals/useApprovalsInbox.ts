@@ -17,6 +17,7 @@ import { useQuery } from '@tanstack/react-query'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { MAX_LIST_OFFSET } from '@/api/fetchAllPages'
 import {
   PIPELINES_POLL_INTERVAL_MS,
   type PendingGate,
@@ -35,7 +36,7 @@ const INBOX_SCAN_LIMIT = 100
 /** Fixed filter — keep referentially stable semantics for query-key dedupe. */
 const INBOX_FILTER = { status: 'interrupted' as const, limit: INBOX_SCAN_LIMIT }
 
-async function fetchAllInterruptedPipelines(): Promise<PipelineListResponse> {
+async function fetchAllInterruptedPipelines(signal?: AbortSignal): Promise<PipelineListResponse> {
   const items: PipelineSummary[] = []
   const seen = new Set<string>()
   let offset = 0
@@ -45,6 +46,7 @@ async function fetchAllInterruptedPipelines(): Promise<PipelineListResponse> {
       params: {
         query: { status: INBOX_FILTER.status, limit: INBOX_SCAN_LIMIT, offset },
       },
+      signal,
     })
     if (!response.ok || !data) {
       throw new ApiError(
@@ -55,6 +57,9 @@ async function fetchAllInterruptedPipelines(): Promise<PipelineListResponse> {
     }
 
     const page = data as PipelineListResponse
+    if (page.items.length > INBOX_SCAN_LIMIT) {
+      throw new Error('Approvals returned an invalid oversized page.')
+    }
     let added = 0
     for (const row of page.items) {
       if (seen.has(row.thread_id)) continue
@@ -63,16 +68,20 @@ async function fetchAllInterruptedPipelines(): Promise<PipelineListResponse> {
       added += 1
     }
 
-    offset += page.items.length
+    const nextOffset = offset + page.items.length
     const total = page.total
     if (
       page.items.length < INBOX_SCAN_LIMIT ||
       page.items.length === 0 ||
       added === 0 ||
-      (total !== undefined && offset >= total)
+      (total !== undefined && nextOffset >= total)
     ) {
       return { items, limit: INBOX_SCAN_LIMIT, offset: 0, ...(total !== undefined ? { total } : {}) }
     }
+    if (nextOffset <= offset || nextOffset > MAX_LIST_OFFSET) {
+      throw new Error('Approvals could not be loaded completely within the pagination limit.')
+    }
+    offset = nextOffset
   }
 }
 
@@ -101,6 +110,7 @@ export interface ApprovalsInboxResult {
   hasStale: boolean
   isLoading: boolean
   error: Error | null
+  refreshError: Error | null
   refetch: () => void
 }
 
@@ -129,7 +139,7 @@ function toItem(
 export function useApprovalsInbox(): ApprovalsInboxResult {
   const query = useQuery({
     queryKey: queryKeys.approvals.inbox(),
-    queryFn: fetchAllInterruptedPipelines,
+    queryFn: ({ signal }) => fetchAllInterruptedPipelines(signal),
     staleTime: STALE_TIMES.pipelinesList,
     refetchInterval: PIPELINES_POLL_INTERVAL_MS,
     refetchIntervalInBackground: false,
@@ -172,7 +182,8 @@ export function useApprovalsInbox(): ApprovalsInboxResult {
     count: items.length,
     hasStale: items.some((item) => item.isStale),
     isLoading: query.isPending,
-    error: query.isError ? query.error : null,
+    error: query.isError && !query.data ? query.error : null,
+    refreshError: query.isError && query.data ? query.error : null,
     refetch: () => void query.refetch(),
   }
 }

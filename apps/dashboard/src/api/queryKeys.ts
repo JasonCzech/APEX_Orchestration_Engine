@@ -40,15 +40,16 @@ export const queryKeys = {
   prompts: {
     all: ['prompts'] as const,
     list: () => [...queryKeys.prompts.all, 'list'] as const,
-    detail: (ns: string, name: string) => [...queryKeys.prompts.all, ns, name] as const,
+    detail: (ns: string, name: string) =>
+      [...queryKeys.prompts.all, 'detail', ns, name] as const,
     versions: (ns: string, name: string) =>
-      [...queryKeys.prompts.all, ns, name, 'versions'] as const,
+      [...queryKeys.prompts.detail(ns, name), 'versions'] as const,
     version: (ns: string, name: string, v: string | number) =>
-      [...queryKeys.prompts.all, ns, name, 'versions', String(v)] as const,
+      [...queryKeys.prompts.versions(ns, name), String(v)] as const,
     /** D4 append: list filtered to one namespace (object element ≠ ns/name keys). */
     listNamespace: (ns: string) => [...queryKeys.prompts.all, 'list', { ns }] as const,
     /** D4 append: prompt fetched by catalog id (GET /v1/prompts/{prompt_id}). */
-    byId: (id: string) => [...queryKeys.prompts.all, 'id', id] as const,
+    byId: (id: string) => [...queryKeys.prompts.all, 'by-id', id] as const,
     /**
      * D5 append: browser list keyed by the full server filter object
      * (include_archived/q). The 'filtered' string at index 2 keeps it disjoint
@@ -56,12 +57,22 @@ export const queryKeys = {
      */
     listWith: (filters: Record<string, unknown>) =>
       [...queryKeys.prompts.all, 'list', 'filtered', filters] as const,
+    playgroundHistory: (promptId: string, projectId: string, appId: string) =>
+      [
+        ...queryKeys.prompts.all,
+        'playground',
+        promptId,
+        { project: projectId || null, app: appId || null },
+      ] as const,
+    playgroundSelection: (promptId: string) =>
+      [...queryKeys.prompts.all, 'playground', promptId, 'selection'] as const,
   },
   catalog: {
     all: ['catalog'] as const,
     applications: () => [...queryKeys.catalog.all, 'applications'] as const,
     environments: () => [...queryKeys.catalog.all, 'environments'] as const,
-    environment: (id: string) => [...queryKeys.catalog.all, 'environments', id] as const,
+    environment: (id: string) =>
+      [...queryKeys.catalog.all, 'environments', 'detail', id] as const,
     /** D4 append: applications filtered by project (?project=). */
     applicationsBy: (project?: string) =>
       [...queryKeys.catalog.applications(), { project: project ?? null }] as const,
@@ -79,8 +90,22 @@ export const queryKeys = {
     item: (provider: string, itemId: string) =>
       [...queryKeys.workItems.all, provider, itemId] as const,
     /** D4 append: provider-less lookup by key (GET /v1/work-tracking/items/{key}). */
-    key: (key: string, project?: string) =>
-      [...queryKeys.workItems.all, 'key', key, { project: project ?? null }] as const,
+    key: (
+      key: string,
+      project?: string,
+      connectionId?: string,
+      expectedProvider?: string,
+    ) =>
+      [
+        ...queryKeys.workItems.all,
+        'key',
+        key,
+        {
+          project: project ?? null,
+          connection: connectionId ?? null,
+          provider: expectedProvider?.toLowerCase() ?? null,
+        },
+      ] as const,
   },
   context: {
     all: ['context'] as const,
@@ -108,12 +133,13 @@ export const queryKeys = {
   goldenConfigs: {
     all: ['golden-configs'] as const,
     list: () => [...queryKeys.goldenConfigs.all, 'list'] as const,
-    detail: (assistantId: string) => [...queryKeys.goldenConfigs.all, assistantId] as const,
+    detail: (assistantId: string) =>
+      [...queryKeys.goldenConfigs.all, 'detail', assistantId] as const,
     /**
      * D7 append: full /golden-configs index INCLUDING the system-created
      * default assistant (which list() deliberately filters out for the wizard
-     * picker). 'index' at position 1 keeps it disjoint from list() and from
-     * detail() (assistant ids are UUIDs).
+     * picker). The explicit discriminator keeps it disjoint from list() and
+     * detail(), including assistants whose external id is literally "index".
      */
     index: () => [...queryKeys.goldenConfigs.all, 'index'] as const,
   },
@@ -133,7 +159,8 @@ export const queryKeys = {
   documents: {
     all: ['documents'] as const,
     list: () => [...queryKeys.documents.all, 'list'] as const,
-    detail: (id: string) => [...queryKeys.documents.all, id] as const,
+    detail: (id: string) => [...queryKeys.documents.all, 'detail', id] as const,
+    uploadOutcome: () => [...queryKeys.documents.all, 'upload-outcome'] as const,
     /** D4 append: list filtered by project (?project=). */
     listBy: (project?: string) => [...queryKeys.documents.list(), { project: project ?? null }] as const,
     /**
@@ -148,7 +175,7 @@ export const queryKeys = {
   drafts: {
     all: ['drafts'] as const,
     list: (project?: string) => [...queryKeys.drafts.all, 'list', { project: project ?? null }] as const,
-    detail: (id: string) => [...queryKeys.drafts.all, id] as const,
+    detail: (id: string) => [...queryKeys.drafts.all, 'detail', id] as const,
   },
   /** D5 append: latest k8s inventory snapshot per environment (/v1/inventory). */
   inventory: {

@@ -14,6 +14,7 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
+  type QueryClient,
   type UseMutationResult,
   type UseQueryResult,
 } from '@tanstack/react-query'
@@ -22,6 +23,7 @@ import type { components } from '@apex/api-client'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 
 export type Application = components['schemas']['ApplicationOut']
@@ -30,29 +32,69 @@ export type EnvironmentCreate = components['schemas']['EnvironmentCreate']
 export type EnvironmentUpdate = components['schemas']['EnvironmentUpdate']
 export type HostIn = components['schemas']['HostIn']
 export type HostOut = components['schemas']['HostOut']
+const CATALOG_PAGE_SIZE = 200
+const deletedEnvironmentIds = new WeakMap<QueryClient, Set<string>>()
 
-async function fetchApplicationsIndex(): Promise<Application[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/catalog/applications', {})
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Applications request failed (${response.status})`),
-      error,
-    )
-  }
-  return data
+export function environmentWriteMutationKey(environmentId: string) {
+  return ['catalog', 'environments', 'write', environmentId] as const
 }
 
-async function fetchEnvironmentsIndex(): Promise<Environment[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/catalog/environments', {})
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Environments request failed (${response.status})`),
-      error,
-    )
-  }
-  return data
+export function environmentWriteMutationScopeId(environmentId: string): string {
+  return `catalog:environments:write:${environmentId}`
+}
+
+function deletedIdsFor(queryClient: QueryClient): Set<string> {
+  const existing = deletedEnvironmentIds.get(queryClient)
+  if (existing) return existing
+  const created = new Set<string>()
+  deletedEnvironmentIds.set(queryClient, created)
+  return created
+}
+
+function isEnvironmentDeleted(queryClient: QueryClient, environmentId: string): boolean {
+  return deletedEnvironmentIds.get(queryClient)?.has(environmentId) ?? false
+}
+
+async function fetchApplicationsIndex(signal?: AbortSignal): Promise<Application[]> {
+  return fetchAllOffsetPages({
+    label: 'Applications',
+    pageSize: CATALOG_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/catalog/applications', {
+        params: { query: { limit, offset } },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Applications request failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
+  })
+}
+
+async function fetchEnvironmentsIndex(signal?: AbortSignal): Promise<Environment[]> {
+  return fetchAllOffsetPages({
+    label: 'Environments',
+    pageSize: CATALOG_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/catalog/environments', {
+        params: { query: { limit, offset } },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Environments request failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
+  })
 }
 
 async function fetchEnvironment(environmentId: string): Promise<Environment> {
@@ -74,7 +116,7 @@ async function fetchEnvironment(environmentId: string): Promise<Environment> {
 export function useApplicationsIndex(): UseQueryResult<Application[], Error> {
   return useQuery({
     queryKey: queryKeys.catalog.applicationsIndex(),
-    queryFn: fetchApplicationsIndex,
+    queryFn: ({ signal }) => fetchApplicationsIndex(signal),
     staleTime: STALE_TIMES.catalog,
   })
 }
@@ -83,7 +125,7 @@ export function useApplicationsIndex(): UseQueryResult<Application[], Error> {
 export function useEnvironmentsIndex(): UseQueryResult<Environment[], Error> {
   return useQuery({
     queryKey: queryKeys.catalog.environmentsIndex(),
-    queryFn: fetchEnvironmentsIndex,
+    queryFn: ({ signal }) => fetchEnvironmentsIndex(signal),
     staleTime: STALE_TIMES.catalog,
   })
 }
@@ -117,6 +159,7 @@ export function useCreateEnvironment(): UseMutationResult<Environment, Error, En
       return data
     },
     onSuccess: (created) => {
+      deletedIdsFor(queryClient).delete(created.id)
       // Seed the detail cache so the post-create navigation paints instantly.
       queryClient.setQueryData(queryKeys.catalog.environment(created.id), created)
       void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.environments() })
@@ -129,13 +172,15 @@ export interface UpdateEnvironmentInput {
   body: EnvironmentUpdate
 }
 
-export function useUpdateEnvironment(): UseMutationResult<
+export function useUpdateEnvironment(environmentId: string): UseMutationResult<
   Environment,
   Error,
   UpdateEnvironmentInput
 > {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: environmentWriteMutationKey(environmentId),
+    scope: { id: environmentWriteMutationScopeId(environmentId) },
     mutationFn: async ({ environmentId, body }: UpdateEnvironmentInput) => {
       const { data, error, response } = await getApexClient().PATCH(
         '/v1/catalog/environments/{environment_id}',
@@ -151,15 +196,18 @@ export function useUpdateEnvironment(): UseMutationResult<
       return data
     },
     onSuccess: (updated) => {
+      if (isEnvironmentDeleted(queryClient, updated.id)) return
       queryClient.setQueryData(queryKeys.catalog.environment(updated.id), updated)
       void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.environments() })
     },
   })
 }
 
-export function useDeleteEnvironment(): UseMutationResult<void, Error, string> {
+export function useDeleteEnvironment(environmentId: string): UseMutationResult<void, Error, string> {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: environmentWriteMutationKey(environmentId),
+    scope: { id: environmentWriteMutationScopeId(environmentId) },
     mutationFn: async (environmentId: string) => {
       const { error, response } = await getApexClient().DELETE(
         '/v1/catalog/environments/{environment_id}',
@@ -174,6 +222,7 @@ export function useDeleteEnvironment(): UseMutationResult<void, Error, string> {
       }
     },
     onSuccess: (_void, environmentId) => {
+      deletedIdsFor(queryClient).add(environmentId)
       queryClient.removeQueries({ queryKey: queryKeys.catalog.environment(environmentId) })
       queryClient.removeQueries({ queryKey: queryKeys.inventory.environment(environmentId) })
       void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.environments() })

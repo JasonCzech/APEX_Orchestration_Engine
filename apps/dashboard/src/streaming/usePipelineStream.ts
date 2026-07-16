@@ -39,7 +39,7 @@ import {
   type SchemaDriftReporter,
 } from '@apex/pipeline-events'
 
-import { useThreadState } from '@/api/hooks/useThreadState'
+import { useThreadState, type ThreadStateSnapshot } from '@/api/hooks/useThreadState'
 import { getLangGraphClient } from '@/api/langgraphClient'
 import { queryKeys } from '@/api/queryKeys'
 
@@ -129,6 +129,10 @@ function toSample(event: EnginePollEvent): EnginePollSample {
   }
 }
 
+function isTerminalThreadStatus(status: unknown): boolean {
+  return status === 'idle' || status === 'error'
+}
+
 /**
  * Live view of a pipeline run. `idle` until both ids are present; the effect
  * tears down (AbortController) and resets on identity change/unmount.
@@ -139,7 +143,7 @@ export function usePipelineStream(
 ): PipelineStreamView {
   const queryClient = useQueryClient()
   const [view, dispatch] = useReducer(streamReducer, initialStreamView)
-  const identity = `${threadId ?? ''}:${runId ?? ''}`
+  const identity = JSON.stringify([threadId ?? '', runId ?? ''])
   const identityRef = useRef(identity)
   const identityChanged = identityRef.current !== identity
   identityRef.current = identity
@@ -164,6 +168,25 @@ export function usePipelineStream(
 
     const invalidateSnapshot = (): void => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(tid) })
+    }
+
+    const refetchSnapshot = async (): Promise<ThreadStateSnapshot | undefined> => {
+      const queryKey = queryKeys.threads.state(tid)
+      const query = queryClient.getQueryCache().find({ queryKey, exact: true })
+      if (!query) throw new Error('Thread snapshot query is unavailable.')
+
+      const updateCount = query.state.dataUpdateCount
+      await queryClient.invalidateQueries(
+        { queryKey, exact: true, refetchType: 'all' },
+        { cancelRefetch: true, throwOnError: true },
+      )
+      // invalidateQueries intentionally skips disabled/static queries and
+      // resolves immediately for paused fetches. None of those outcomes is a
+      // fresh snapshot, so stale cached terminal state cannot end the stream.
+      if (query.state.dataUpdateCount <= updateCount) {
+        throw new Error('Thread snapshot refetch did not complete.')
+      }
+      return query.state.data as ThreadStateSnapshot | undefined
     }
 
     const reportDrift: SchemaDriftReporter = (drift) => {
@@ -227,29 +250,53 @@ export function usePipelineStream(
             receivedPart = true
             attempt = 0
             dispatch({ type: 'live' }) // no-op (same state ref) while already live
-            if (typeof part.id === 'string') resumeStore.set(tid, rid, part.id)
             runError = handlePart(part)
+            // Commit the cursor only after this part was fully applied (or
+            // intentionally ignored). If handling throws, rejoin from the
+            // preceding cursor so the failed part is replayed.
+            if (typeof part.id === 'string') resumeStore.set(tid, rid, part.id)
             if (runError) break
           }
           if (signal.aborted || disposed) return
           flushGate.flushNow()
-          invalidateSnapshot()
-          // A clean EOF is not itself a terminal run signal: proxies and
-          // servers can close SSE while a run remains busy. Preserve the
-          // cursor and rejoin after backoff unless the stream reported an
-          // explicit error or the latest snapshot is terminal.
-          const snapshot = queryClient.getQueryData<{
-            detail?: { thread_status?: string | null }
-          }>(queryKeys.threads.state(tid))
-          const status = snapshot?.detail?.thread_status
-          if (runError || (status && status !== 'busy' && status !== 'interrupted')) {
+          if (runError) {
+            invalidateSnapshot()
             finished = true
             resumeStore.clear(tid, rid)
-            dispatch(runError ? { type: 'failed', error: runError } : { type: 'ended' })
+            dispatch({ type: 'failed', error: runError })
+            return
+          }
+
+          // A clean EOF is not itself a terminal run signal: proxies and
+          // servers can close SSE while a run remains busy. Await a completed
+          // fresh snapshot before classifying the run; a failed/paused/skipped
+          // refetch is uncertainty and must preserve the cursor for replay.
+          let snapshot: ThreadStateSnapshot | undefined
+          try {
+            snapshot = await refetchSnapshot()
+          } catch {
+            if (signal.aborted || disposed) return
+            attempt += 1
+            dispatch({
+              type: 'reconnecting',
+              error: new Error('Run stream ended before terminal state could be confirmed'),
+            })
+            await abortableDelay(backoffDelayMs(attempt), signal)
+            continue
+          }
+          if (signal.aborted || disposed) return
+          const status = snapshot?.detail?.thread_status
+          if (isTerminalThreadStatus(status)) {
+            finished = true
+            resumeStore.clear(tid, rid)
+            dispatch({ type: 'ended' })
             return
           }
           attempt += 1
-          dispatch({ type: 'reconnecting', error: new Error('Run stream ended before terminal state') })
+          dispatch({
+            type: 'reconnecting',
+            error: new Error('Run stream ended before terminal state could be confirmed'),
+          })
           await abortableDelay(backoffDelayMs(attempt), signal)
         } catch (err) {
           if (signal.aborted || disposed) return

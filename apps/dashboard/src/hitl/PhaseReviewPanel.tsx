@@ -8,6 +8,7 @@ import { Link } from 'react-router'
 import type { PhaseReviewPayload } from '@apex/pipeline-events'
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
+import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 
 import { DialogueThread } from './DialogueThread'
 import type { GateDraft, GateDraftPatch } from './gateMachine'
@@ -80,7 +81,7 @@ export function PhaseReviewPanel({
                   <Link
                     key={artifact.id}
                     className="gate-artifact-chip"
-                    to={`/runs/${threadId}/artifacts/${artifact.id}`}
+                    to={artifactViewerPath(threadId, artifact.id)}
                   >
                     <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
                     {artifact.name ?? artifact.id}

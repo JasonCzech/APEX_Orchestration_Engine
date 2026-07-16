@@ -94,11 +94,15 @@ export function documentsListHandler(items: DocumentOut[] = [DOC_SPEC, DOC_RUNBO
 
 /** POST /v1/documents — captures multipart fields, answers 201. */
 export function uploadDocumentHandler(id = 'doc-new') {
-  const captured: { fileName: string; projectId: string | null }[] = []
+  const captured: { fileName: string; projectId: string | null; appId: string | null }[] = []
   const handler = http.post('*/v1/documents', async ({ request }) => {
     const form = await request.formData()
     const file = form.get('file') as File
-    captured.push({ fileName: file.name, projectId: form.get('project_id') as string | null })
+    captured.push({
+      fileName: file.name,
+      projectId: form.get('project_id') as string | null,
+      appId: form.get('app_id') as string | null,
+    })
     const created: DocumentOut = {
       id,
       name: file.name,

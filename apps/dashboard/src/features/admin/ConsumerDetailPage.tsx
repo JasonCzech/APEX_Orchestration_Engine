@@ -6,6 +6,7 @@
 import { Link, useParams } from 'react-router'
 
 import { useConsumerDetail } from '@/api/hooks/useConsumers'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
@@ -32,11 +33,11 @@ function ConsumerDetailContent() {
     )
   }
 
-  if (consumer.isError) {
+  if (!consumer.data) {
     return (
       <ProblemCard
         title="Consumer unavailable"
-        message={consumer.error.message}
+        message={consumer.error?.message ?? 'The consumer could not be loaded.'}
         onRetry={() => void consumer.refetch()}
       />
     )
@@ -46,6 +47,9 @@ function ConsumerDetailContent() {
 
   return (
     <section className="adm-page animate-enter">
+      {consumer.isError && (
+        <CachedDataWarning error={consumer.error} onRetry={() => void consumer.refetch()} />
+      )}
       <header className="adm-detail-header glass-panel">
         <div className="adm-detail-heading">
           <nav className="adm-breadcrumb" aria-label="Breadcrumb">

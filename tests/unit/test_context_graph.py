@@ -12,9 +12,12 @@ from apex.domain.integrations import WorkItem
 from apex.graphs.context.graph import ContextState, graph
 from apex.services.connections import ConnectionResolver
 
+WORK_TRACKING_CONNECTION_ID = "dev-work-tracking-stub"
+
 INPUT = ContextState(
     subject="Checkout latency regression",
     work_item_keys=["PHX-241", "NOPE-1"],
+    work_tracking_connection_id=WORK_TRACKING_CONNECTION_ID,
     document_packets=[
         {
             "id": "document-upload-1",
@@ -79,6 +82,42 @@ async def test_empty_input_yields_empty_evidence() -> None:
     assert "no evidence gathered" in result["summary"]
 
 
+async def test_graph_without_work_items_never_constructs_a_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_resolver() -> ConnectionResolver:
+        raise AssertionError("work-tracking resolver must not run without work-item keys")
+
+    monkeypatch.setattr(context_graph, "_make_resolver", forbidden_resolver)
+
+    result = await graph.ainvoke(
+        ContextState(
+            subject="document-only",
+            document_packets=[
+                {
+                    "id": "document-1",
+                    "source": "document",
+                    "title": "Runbook",
+                }
+            ],
+        )
+    )
+
+    assert [packet["source"] for packet in result["evidence"]] == ["document"]
+
+
+async def test_graph_rejects_work_items_without_exact_connection_before_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_resolver() -> ConnectionResolver:
+        raise AssertionError("validation must run before work-tracking resolution")
+
+    monkeypatch.setattr(context_graph, "_make_resolver", forbidden_resolver)
+
+    with pytest.raises(ValueError, match="context run input is invalid"):
+        await graph.ainvoke(ContextState(subject="anything", work_item_keys=["PHX-241"]))
+
+
 async def test_resolver_scope_errors_are_not_masked(monkeypatch: pytest.MonkeyPatch) -> None:
     class ScopeFailingResolver(ConnectionResolver):
         async def resolve(self, *args: object, **kwargs: object) -> object:
@@ -87,7 +126,12 @@ async def test_resolver_scope_errors_are_not_masked(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("apex.graphs.context.graph._make_resolver", ScopeFailingResolver)
     with pytest.raises(RuntimeError, match="evidence gathering failed"):
         await graph.ainvoke(
-            ContextState(subject="anything", work_item_keys=["PHX-241"], project_id="p2")
+            ContextState(
+                subject="anything",
+                work_item_keys=["PHX-241"],
+                project_id="p2",
+                work_tracking_connection_id="conn-work-p2",
+            )
         )
 
 
@@ -123,6 +167,7 @@ async def test_direct_graph_rejects_scoped_real_tracker_without_external_project
                 subject="cross-project read",
                 work_item_keys=["OTHER-1"],
                 project_id="internal-p1",
+                work_tracking_connection_id="conn-work-p1",
             )
         )
 
@@ -142,7 +187,13 @@ async def test_graph_provider_failure_is_redacted_and_detached(
 
     monkeypatch.setattr("apex.graphs.context.graph._make_resolver", FailingResolver)
     with pytest.raises(RuntimeError, match="evidence gathering failed") as raised:
-        await graph.ainvoke(ContextState(subject="anything", work_item_keys=["PHX-241"]))
+        await graph.ainvoke(
+            ContextState(
+                subject="anything",
+                work_item_keys=["PHX-241"],
+                work_tracking_connection_id=WORK_TRACKING_CONNECTION_ID,
+            )
+        )
 
     assert secret not in str(raised.value)
     assert raised.value.__cause__ is None
@@ -183,7 +234,11 @@ async def test_simultaneous_provider_failures_are_all_drained_and_redacted(
     loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
     task = asyncio.create_task(
         context_graph.gather_evidence(
-            ContextState(subject="incident", work_item_keys=["ONE", "TWO"])
+            ContextState(
+                subject="incident",
+                work_item_keys=["ONE", "TWO"],
+                work_tracking_connection_id=WORK_TRACKING_CONNECTION_ID,
+            )
         )
     )
     try:
@@ -212,7 +267,9 @@ async def test_resolver_operational_errors_are_not_reported_as_empty_evidence(
 
     monkeypatch.setattr("apex.graphs.context.graph._make_resolver", FailingResolver)
     with pytest.raises(OSError, match="connection store unavailable"):
-        await context_graph._work_tracking_evidence(["PHX-241"], None)
+        await context_graph._work_tracking_evidence(
+            ["PHX-241"], None, WORK_TRACKING_CONNECTION_ID
+        )
 
 
 async def test_provider_operational_errors_are_not_reported_as_missing_evidence(
@@ -236,7 +293,9 @@ async def test_provider_operational_errors_are_not_reported_as_missing_evidence(
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
 
     with pytest.raises(RuntimeError, match="provider unavailable"):
-        await context_graph._work_tracking_evidence(["PHX-241"], None)
+        await context_graph._work_tracking_evidence(
+            ["PHX-241"], None, WORK_TRACKING_CONNECTION_ID
+        )
 
 
 async def test_provider_parser_key_error_is_not_reported_as_missing_evidence(
@@ -261,7 +320,9 @@ async def test_provider_parser_key_error_is_not_reported_as_missing_evidence(
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
 
     with pytest.raises(KeyError, match="missing-provider-field"):
-        await context_graph._work_tracking_evidence(["PHX-241"], None)
+        await context_graph._work_tracking_evidence(
+            ["PHX-241"], None, WORK_TRACKING_CONNECTION_ID
+        )
 
 
 async def test_provider_evidence_is_redacted_before_checkpoint_and_stream(
@@ -289,7 +350,13 @@ async def test_provider_evidence_is_redacted_before_checkpoint_and_stream(
             return Tracker()
 
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
-    result = await graph.ainvoke(ContextState(subject="incident", work_item_keys=["SAFE-1"]))
+    result = await graph.ainvoke(
+        ContextState(
+            subject="incident",
+            work_item_keys=["SAFE-1"],
+            work_tracking_connection_id=WORK_TRACKING_CONNECTION_ID,
+        )
+    )
 
     rendered = repr(result)
     assert secret not in rendered
@@ -326,6 +393,7 @@ async def test_graph_rejects_fanout_before_resolving_provider(
             ContextState(
                 subject="incident",
                 work_item_keys=[f"ITEM-{index}" for index in range(51)],
+                work_tracking_connection_id=WORK_TRACKING_CONNECTION_ID,
             )
         )
 
@@ -371,7 +439,11 @@ async def test_work_tracking_deadline_is_not_reported_as_partial_evidence(
     monkeypatch.setattr(context_graph, "CONTEXT_EVIDENCE_TOTAL_TIMEOUT_S", 0.02)
 
     with pytest.raises(TimeoutError, match="evidence gathering timed out"):
-        await context_graph._work_tracking_evidence(["SLOW-1", "FAST-1", "SLOW-2"], None)
+        await context_graph._work_tracking_evidence(
+            ["SLOW-1", "FAST-1", "SLOW-2"],
+            None,
+            WORK_TRACKING_CONNECTION_ID,
+        )
 
 
 async def test_parent_cancellation_settles_all_evidence_children_before_resolver_exit(
@@ -407,7 +479,11 @@ async def test_parent_cancellation_settles_all_evidence_children_before_resolver
             return Tracker()
 
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
-    task = asyncio.create_task(context_graph._work_tracking_evidence(["ONE", "TWO"], None))
+    task = asyncio.create_task(
+        context_graph._work_tracking_evidence(
+            ["ONE", "TWO"], None, WORK_TRACKING_CONNECTION_ID
+        )
+    )
     await asyncio.wait_for(started.wait(), timeout=1)
 
     task.cancel()
@@ -521,7 +597,11 @@ def test_context_provider_admission_is_shared_across_event_loops(
 
     def worker(key: str) -> None:
         start.wait()
-        asyncio.run(context_graph._work_tracking_evidence([key], None))
+        asyncio.run(
+            context_graph._work_tracking_evidence(
+                [key], None, WORK_TRACKING_CONNECTION_ID
+            )
+        )
 
     threads = [threading.Thread(target=worker, args=(f"KEY-{index}",)) for index in range(2)]
     for thread in threads:

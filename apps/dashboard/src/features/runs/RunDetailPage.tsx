@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { RequireRole } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { AbortConfirm } from '@/hitl/GateActionBar'
@@ -40,7 +41,12 @@ function RunDetailSkeleton() {
  * - /runs/:threadId/phases/:phase?tab= -> shared phase flow + phase workspace
  */
 export function RunDetailPage() {
-  const { threadId = '', phase: phaseParam } = useParams()
+  const { threadId = '' } = useParams()
+  return <RunDetailContent key={threadId} threadId={threadId} />
+}
+
+function RunDetailContent({ threadId }: { threadId: string }) {
+  const { phase: phaseParam } = useParams()
   const { search } = useLocation()
   const navigate = useNavigate()
   const query = useThreadState(threadId)
@@ -54,13 +60,18 @@ export function RunDetailPage() {
   const hitl = useGate(threadId, { gateHint: live.stream.pendingGateHint })
   // D4: header Re-run split button — non-null opens the pre-flight modal
   // with this preselection.
-  const [preflight, setPreflight] = useState<PhaseName[] | null>(null)
+  const [preflight, setPreflight] = useState<{
+    threadId: string
+    phases: PhaseName[]
+  } | null>(null)
+  const activeThreadIdRef = useRef(threadId)
+  activeThreadIdRef.current = threadId
   // Busy-run abort always probes the engine kill switch first; the backend can
   // recover handles that are absent from the compact pipeline summary.
   const abortRun = useAbortRun(threadId)
 
   if (query.isPending) return <RunDetailSkeleton />
-  if (query.isError) {
+  if (query.isError && !query.data) {
     return (
       <ProblemCard
         title="Run failed to load"
@@ -122,6 +133,9 @@ export function RunDetailPage() {
 
   return (
     <>
+      {query.isError && (
+        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+      )}
       <header className="run-detail-header">
         <h2 className="run-detail-title">{detail.title ?? detail.thread_id}</h2>
         <span className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
@@ -141,16 +155,23 @@ export function RunDetailPage() {
           hitl.gate?.payload?.actions.some((action) => action === 'abort') ? (
             // Header abort drives the SAME machine as the gate action bar
             // (same type-to-confirm arm step, action 'abort').
-            <AbortConfirm key={`${threadId}:${hitl.gate?.interrupt_id ?? 'gate'}`} onConfirm={() => hitl.submit('abort')} />
+            <AbortConfirm
+              key={JSON.stringify([threadId, hitl.gate?.interrupt_id ?? 'gate'])}
+              onConfirm={() => hitl.submit('abort')}
+            />
           ) : detail.thread_status === 'busy' ? (
             // No gate to resume through — cancel the active run(s) server-side.
-            <AbortConfirm key={`${threadId}:${live.runId ?? 'busy'}`} disabled={abortRun.isPending} onConfirm={() => abortRun.mutate()} />
+            <AbortConfirm
+              key={JSON.stringify([threadId, live.runId ?? 'busy'])}
+              disabled={abortRun.isPending}
+              onConfirm={() => abortRun.mutate()}
+            />
           ) : null}
           <span className="split-button">
             <button
               type="button"
               className="btn btn-secondary btn-sm split-button-main"
-              onClick={() => setPreflight([...PHASE_NAMES])}
+              onClick={() => setPreflight({ threadId, phases: [...PHASE_NAMES] })}
             >
               Re-run
             </button>
@@ -158,10 +179,14 @@ export function RunDetailPage() {
               label="Re-run options"
               trigger="▾"
               items={[
-                { label: 'All phases', onSelect: () => setPreflight([...PHASE_NAMES]) },
+                {
+                  label: 'All phases',
+                  onSelect: () => setPreflight({ threadId, phases: [...PHASE_NAMES] }),
+                },
                 {
                   label: 'Run phases…',
-                  onSelect: () => setPreflight(lastPlanSelection(state.phases_plan)),
+                  onSelect: () =>
+                    setPreflight({ threadId, phases: lastPlanSelection(state.phases_plan) }),
                 },
               ]}
             />
@@ -180,11 +205,15 @@ export function RunDetailPage() {
           Abort failed: {abortRun.error.message}
         </div>
       )}
-      {preflight && (
+      {preflight?.threadId === threadId && (
         <PreflightModal
+          key={threadId}
           threadId={threadId}
-          initialSelection={preflight}
-          onClose={() => setPreflight(null)}
+          initialSelection={preflight.phases}
+          isCurrent={(submittedThreadId) => activeThreadIdRef.current === submittedThreadId}
+          onClose={() => {
+            if (activeThreadIdRef.current === threadId) setPreflight(null)
+          }}
         />
       )}
       <section className="run-pipeline-hero glass-panel" aria-label="Pipeline progress">

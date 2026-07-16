@@ -11,19 +11,21 @@
  * Keyboard map (disabled while typing in inputs/textareas/CodeMirror):
  *   j/k or ↓/↑  navigate queue        Enter  focus preview
  *   o           open run              ?      shortcuts overlay
- *   a/s/x       approve / skip phase / abort — delegated to the module's
- *               imperative handle, only while the preview gate is open
  *   m           modify-focus: the handle moves focus into the prompt editor
+ *   x           arm the module's typed abort confirmation
+ * Approval and skip decisions remain on the explicit gate controls; ordinary
+ * document-level letter keys must never submit them.
  *
  * Terminal outcomes gray the row inline — 'actioned' (resumed here) vs
  * 'actioned elsewhere' (superseded) — and auto-advance the selection to the
  * next open gate. Rows that vanish between polls (resumed from another
  * surface) stay grayed for one poll cycle via useApprovalsInbox.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 
 import { useThreadState, type GateInterrupt } from '@/api/hooks/useThreadState'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { GateModule } from '@/hitl/GateModule'
@@ -36,6 +38,11 @@ import './approvals.css'
 interface Selection {
   threadId: string
   interruptId: string | null
+}
+
+interface RouteOwnedSelection {
+  routeIdentity: string
+  value: Selection | null
 }
 
 /** A row actioned while on screen: grayed while the list still echoes these gate ids. */
@@ -64,9 +71,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['k / ↑', 'Previous gate'],
   ['Enter', 'Focus the gate preview'],
   ['o', 'Open the run'],
-  ['a', 'Approve (open gate)'],
   ['m', 'Modify — focus the prompt editor'],
-  ['s', 'Skip phase (prompt gates)'],
   ['x', 'Arm abort confirmation'],
   ['?', 'Toggle this overlay'],
 ]
@@ -76,10 +81,23 @@ export function ApprovalsInboxPage() {
   const navigate = useNavigate()
   const inbox = useApprovalsInbox()
 
-  const [selection, setSelection] = useState<Selection | null>(() =>
-    params.threadId
-      ? { threadId: params.threadId, interruptId: params.interruptId ?? null }
-      : null,
+  const routeIdentity = JSON.stringify([params.threadId ?? null, params.interruptId ?? null])
+  const routeSelection = useMemo<Selection | null>(
+    () =>
+      params.threadId
+        ? { threadId: params.threadId, interruptId: params.interruptId ?? null }
+        : null,
+    [params.threadId, params.interruptId],
+  )
+  const [ownedSelection, setOwnedSelection] = useState<RouteOwnedSelection>(() => ({
+    routeIdentity,
+    value: routeSelection,
+  }))
+  const selection =
+    ownedSelection.routeIdentity === routeIdentity ? ownedSelection.value : routeSelection
+  const setSelection = useCallback(
+    (value: Selection | null) => setOwnedSelection({ routeIdentity, value }),
+    [routeIdentity],
   )
   const [actioned, setActioned] = useState<ReadonlyMap<string, ActionedEntry>>(new Map())
   const [overlayOpen, setOverlayOpen] = useState(false)
@@ -114,17 +132,6 @@ export function ApprovalsInboxPage() {
   })
   const actionable = rows.filter((row) => !row.removed)
 
-  // React Router reuses this route component between approval deep links.
-  // Keep local selection aligned with the current URL instead of treating the
-  // first mount as the only authoritative route identity.
-  useEffect(() => {
-    setSelection(
-      params.threadId
-        ? { threadId: params.threadId, interruptId: params.interruptId ?? null }
-        : null,
-    )
-  }, [params.threadId, params.interruptId])
-
   // Latest render state for the document-level keyboard listener + callbacks.
   const stateRef = useRef({ actionable, selection, overlayOpen, items: inbox.items })
   stateRef.current = { actionable, selection, overlayOpen, items: inbox.items }
@@ -134,7 +141,7 @@ export function ApprovalsInboxPage() {
     if (selection === null && actionable.length > 0) {
       setSelection(toSelection(actionable[0] as ApprovalItem))
     }
-  }, [selection, actionable])
+  }, [selection, actionable, setSelection])
 
   // A gate can disappear between polls without GateModule getting a terminal
   // callback. Advance the parent selection as soon as the selected instance is
@@ -151,7 +158,7 @@ export function ApprovalsInboxPage() {
     const sameThread = actionable.find((row) => row.thread_id === selection.threadId)
     const next = sameThread ?? actionable[0]
     setSelection(next ? toSelection(next as ApprovalItem) : null)
-  }, [actionable, inbox.isLoading, selection])
+  }, [actionable, inbox.isLoading, selection, setSelection])
 
   // ── Terminal gate outcome (preview's onOutcome): gray the row, advance to
   // the next open gate.
@@ -181,7 +188,7 @@ export function ApprovalsInboxPage() {
       list.slice(index + 1).find((row) => row.thread_id !== current.threadId) ??
       remaining[remaining.length - 1]
     setSelection(next ? toSelection(next) : null)
-  }, [])
+  }, [setSelection])
 
   // ── Keyboard layer (one document listener; latest state via stateRef).
   useEffect(() => {
@@ -232,14 +239,8 @@ export function ApprovalsInboxPage() {
           if (current) void navigate(`/runs/${current.threadId}`)
           break
         }
-        case 'a':
-          invokeGate('approve')
-          break
         case 'm':
           invokeGate('modify')
-          break
-        case 's':
-          invokeGate('skip_phase')
           break
         case 'x':
           invokeGate('abort')
@@ -248,7 +249,7 @@ export function ApprovalsInboxPage() {
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [navigate])
+  }, [navigate, setSelection])
 
   const allClear = !inbox.isLoading && !inbox.error && rows.length === 0
 
@@ -272,6 +273,10 @@ export function ApprovalsInboxPage() {
           ?
         </button>
       </header>
+
+      {inbox.refreshError && (
+        <CachedDataWarning error={inbox.refreshError} onRetry={inbox.refetch} />
+      )}
 
       {inbox.error ? (
         <ProblemCard
@@ -382,7 +387,7 @@ function GatePreview({
       />
     )
   }
-  if (query.isError) {
+  if (query.isError && !query.data) {
     return (
       <ProblemCard
         title="Gate failed to load"
@@ -415,6 +420,9 @@ function GatePreview({
 
   return (
     <div className="approvals-preview">
+      {query.isError && (
+        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+      )}
       <header className="approvals-preview-header">
         <Link to={`/runs/${detail.thread_id}`} className="approvals-preview-title">
           {detail.title ?? detail.thread_id}

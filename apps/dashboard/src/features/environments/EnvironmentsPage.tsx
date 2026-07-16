@@ -8,9 +8,10 @@
  * (the list payload does not reliably carry snapshot summaries).
  */
 import { useMemo, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 
 import {
+  environmentWriteMutationKey,
   useApplicationsIndex,
   useCreateEnvironment,
   useDeleteEnvironment,
@@ -18,8 +19,10 @@ import {
   type Application,
   type Environment,
 } from '@/api/hooks/useEnvironments'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
@@ -48,12 +51,18 @@ function EnvironmentRow({
   onDelete: (environment: Environment) => void
 }) {
   const navigate = useNavigate()
+  const writeCount = usePendingMutationCount(environmentWriteMutationKey(environment.id))
+  const writePending = writeCount > 0
   const path = `/environments/${environment.id}`
   const open = () => void navigate(path)
 
   return (
-    <tr className="env-row" onClick={open} data-testid={`env-row-${environment.id}`}>
-      <td className="strong">{environment.name}</td>
+    <tr className="env-row" data-testid={`env-row-${environment.id}`}>
+      <td className="strong">
+        <Link className="env-name-link" to={path}>
+          {environment.name}
+        </Link>
+      </td>
       <td>
         <KindChip kind={environment.kind} />
       </td>
@@ -77,8 +86,16 @@ function EnvironmentRow({
             { label: 'Open', onSelect: open },
             ...(canMutate
               ? [
-                  { label: 'Edit', onSelect: () => void navigate(`${path}?edit=1`) },
-                  { label: 'Delete…', onSelect: () => onDelete(environment) },
+                  {
+                    label: 'Edit',
+                    onSelect: () => void navigate(`${path}?edit=1`),
+                    disabled: writePending,
+                  },
+                  {
+                    label: 'Delete…',
+                    onSelect: () => onDelete(environment),
+                    disabled: writePending,
+                  },
                 ]
               : []),
           ]}
@@ -251,9 +268,10 @@ function DeleteEnvironmentModal({
   environment: Environment
   onClose: () => void
 }) {
-  const remove = useDeleteEnvironment()
+  const remove = useDeleteEnvironment(environment.id)
+  const writeCount = usePendingMutationCount(environmentWriteMutationKey(environment.id))
   const [confirmation, setConfirmation] = useState('')
-  const canDelete = confirmation === environment.name && !remove.isPending
+  const canDelete = confirmation === environment.name && writeCount === 0
 
   function close() {
     if (remove.isPending) return
@@ -324,6 +342,7 @@ export function EnvironmentsPage() {
 
   const isPending = applications.isPending || environments.isPending
   const queryError = environments.error ?? applications.error
+  const hasCachedData = Boolean(applications.data && environments.data)
 
   return (
     <section className="env-page animate-enter">
@@ -349,6 +368,16 @@ export function EnvironmentsPage() {
         />
       )}
 
+      {queryError && hasCachedData && (
+        <CachedDataWarning
+          error={queryError}
+          onRetry={() => {
+            void applications.refetch()
+            void environments.refetch()
+          }}
+        />
+      )}
+
       {isPending ? (
         <div
           className="env-skeleton"
@@ -360,7 +389,7 @@ export function EnvironmentsPage() {
             <div key={i} className="glass-panel env-skeleton-row" />
           ))}
         </div>
-      ) : queryError ? (
+      ) : queryError && !hasCachedData ? (
         <ProblemCard
           title="Environments unavailable"
           message={queryError.message}

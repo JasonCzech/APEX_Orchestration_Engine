@@ -576,6 +576,7 @@ class SavedQuery(Base):
             sqlite_where=text("project_id IS NULL"),
         ),
         Index("ix_saved_queries_project_id", "project_id"),
+        Index("ix_saved_queries_connection_id", "connection_id"),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
@@ -583,6 +584,11 @@ class SavedQuery(Base):
     project_id: Mapped[str | None] = mapped_column(String(255))  # null = global
     provider: Mapped[str] = mapped_column(String(64))  # jira | ado | stub
     query: Mapped[str] = mapped_column(Text)  # JQL / WIQL / stub expression
+    # Nullable only for global templates and quarantined legacy rows. Deliberately
+    # not a foreign key: development/static adapters have stable ids without a
+    # connections-table row, and deleting a persisted connection must leave a
+    # dead explicit id that fails closed rather than silently rebinding.
+    connection_id: Mapped[str | None] = mapped_column(String(32))
     description: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -10,13 +10,16 @@ import { useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import {
+  promptWriteMutationKey,
   usePrompt,
   usePromptVersion,
   usePromptVersions,
   useRollbackPrompt,
 } from '@/api/hooks/usePrompts'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { isApiError } from '@/api/errors'
 import { RequireGlobalAdmin } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { formatRelative } from '@/utils/time'
@@ -35,6 +38,25 @@ function errorMessage(error: unknown, fallback: string): string {
 export function PromptVersionPage() {
   const { ns, name } = usePromptRouteParams()
   const { v: versionId = '' } = useParams<{ v: string }>()
+  return (
+    <PromptVersionContent
+      key={JSON.stringify([ns, name, versionId])}
+      ns={ns}
+      name={name}
+      versionId={versionId}
+    />
+  )
+}
+
+function PromptVersionContent({
+  ns,
+  name,
+  versionId,
+}: {
+  ns: string
+  name: string
+  versionId: string
+}) {
   const [searchParams, setSearchParams] = useSearchParams()
   const diffId = searchParams.get('diff') ?? ''
   const [confirming, setConfirming] = useState(false)
@@ -45,6 +67,8 @@ export function PromptVersionPage() {
   const versionsQuery = usePromptVersions(ns, name, detail?.id)
   const diffQuery = usePromptVersion(ns, name, diffId || undefined, detail?.id)
   const rollback = useRollbackPrompt(ns, name, detail?.id)
+  const writeCount = usePendingMutationCount(promptWriteMutationKey(detail?.id))
+  const writePending = writeCount > 0
 
   const history = useMemo(
     () => [...(versionsQuery.data ?? [])].sort((a, b) => b.version - a.version),
@@ -69,7 +93,7 @@ export function PromptVersionPage() {
       </section>
     )
   }
-  if (detailQuery.isError || !detail) {
+  if (!detail) {
     return (
       <section className="prompts-page animate-enter">
         <ProblemCard
@@ -80,7 +104,7 @@ export function PromptVersionPage() {
       </section>
     )
   }
-  if (versionQuery.isError || !versionQuery.data) {
+  if (!versionQuery.data) {
     return (
       <section className="prompts-page animate-enter">
         <ProblemCard
@@ -98,6 +122,18 @@ export function PromptVersionPage() {
 
   return (
     <section className="prompts-page animate-enter">
+      {detailQuery.isError && (
+        <CachedDataWarning error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
+      )}
+      {versionQuery.isError && (
+        <CachedDataWarning error={versionQuery.error} onRetry={() => void versionQuery.refetch()} />
+      )}
+      {versionsQuery.isError && versionsQuery.data && (
+        <CachedDataWarning
+          error={versionsQuery.error}
+          onRetry={() => void versionsQuery.refetch()}
+        />
+      )}
       <header className="prompt-detail-header glass-panel">
         <div className="prompt-detail-title">
           <nav className="prompt-breadcrumb" aria-label="Breadcrumb">
@@ -124,6 +160,7 @@ export function PromptVersionPage() {
                   rollback.reset()
                   setConfirming(true)
                 }}
+                disabled={writePending}
               >
                 Set this version active
               </button>
@@ -167,7 +204,7 @@ export function PromptVersionPage() {
             <div role="status" aria-busy="true" aria-label="Loading comparison" className="prompts-muted">
               Loading comparison…
             </div>
-          ) : diffQuery.isError || !diffQuery.data ? (
+          ) : !diffQuery.data ? (
             <ProblemCard
               title="Comparison unavailable"
               message={errorMessage(diffQuery.error, 'The comparison version could not be loaded.')}
@@ -175,6 +212,12 @@ export function PromptVersionPage() {
             />
           ) : (
             <>
+              {diffQuery.isError && (
+                <CachedDataWarning
+                  error={diffQuery.error}
+                  onRetry={() => void diffQuery.refetch()}
+                />
+              )}
               <p className="prompts-muted prompt-diff-legend">
                 Unified diff — <span className="prompt-diff-removed">removed in v{version.version}</span>{' '}
                 / <span className="prompt-diff-added">added in v{version.version}</span> relative to v
@@ -196,10 +239,14 @@ export function PromptVersionPage() {
         <RollbackConfirm
           version={version.version}
           note={version.note}
-          pending={rollback.isPending}
+          pending={writePending}
           error={rollback.error ?? undefined}
           onCancel={() => setConfirming(false)}
-          onConfirm={() => rollback.mutate(version.id, { onSuccess: () => setConfirming(false) })}
+          onConfirm={() =>
+            rollback.mutate(version.id, {
+              onSuccess: () => setConfirming(false),
+            })
+          }
         />
       )}
     </section>

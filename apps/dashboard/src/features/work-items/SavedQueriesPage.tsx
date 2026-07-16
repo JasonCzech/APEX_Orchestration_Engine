@@ -4,17 +4,22 @@
  * ?provider=&query= search params, which auto-execute on mount), Edit (modal
  * PATCH) and Delete (confirm) for operator+.
  */
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router'
 
 import {
+  fetchWorkTrackingBinding,
+  savedQueryWriteMutationKey,
   useDeleteSavedQuery,
   useSavedQueries,
   useUpdateSavedQuery,
   type SavedQuery,
 } from '@/api/hooks/useWorkTracking'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { hasFullProjectScope, isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { OverflowMenu } from '@/features/runs/PreflightModal'
@@ -28,25 +33,87 @@ const SKELETON_ROWS = 4
 
 /** Edit modal — PATCH name/provider/query/description. */
 function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => void }) {
-  const update = useUpdateSavedQuery()
+  const update = useUpdateSavedQuery(saved.id)
+  const writeCount = usePendingMutationCount(savedQueryWriteMutationKey(saved.id))
+  const writePending = writeCount > 0
+  const mountedRef = useRef(true)
+  const bindingOperationRef = useRef(0)
   const [name, setName] = useState(saved.name)
   const [provider, setProvider] = useState(saved.provider)
   const [query, setQuery] = useState(saved.query)
   const [description, setDescription] = useState(saved.description ?? '')
+  const providerLocked = Boolean(saved.project_id)
+  const needsBinding = Boolean(saved.project_id && !saved.connection_id)
+  const [bindingState, setBindingState] = useState<{
+    pending: boolean
+    error: string | null
+  }>({ pending: false, error: null })
   const canSubmit =
-    name.trim() !== '' && provider.trim() !== '' && query.trim() !== '' && !update.isPending
+    name.trim() !== '' &&
+    provider.trim() !== '' &&
+    query.trim() !== '' &&
+    !bindingState.pending &&
+    !writePending
+  const operationPending = bindingState.pending || writePending
 
-  function submit(event: FormEvent) {
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      bindingOperationRef.current += 1
+    }
+  }, [])
+
+  async function submit(event: FormEvent) {
     event.preventDefault()
     if (!canSubmit) return
+    let connectionId = saved.connection_id
+    if (needsBinding) {
+      const operation = ++bindingOperationRef.current
+      const keyRevision = getApiKeyRevision()
+      const sessionRevision = getSessionRevision()
+      const operationIsCurrent = () =>
+        mountedRef.current &&
+        operation === bindingOperationRef.current &&
+        keyRevision === getApiKeyRevision() &&
+        sessionRevision === getSessionRevision()
+      setBindingState({ pending: true, error: null })
+      try {
+        const binding = await fetchWorkTrackingBinding({
+          project: saved.project_id ?? undefined,
+        })
+        if (!operationIsCurrent()) return
+        if (binding.provider.toLowerCase() !== saved.provider.toLowerCase()) {
+          setBindingState({
+            pending: false,
+            error: `The current project connection uses ${binding.provider}, not ${saved.provider}.`,
+          })
+          return
+        }
+        connectionId = binding.connection_id
+      } catch (error) {
+        if (!operationIsCurrent()) return
+        setBindingState({
+          pending: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : 'The project connection could not be resolved.',
+        })
+        return
+      }
+      if (!operationIsCurrent()) return
+      setBindingState({ pending: false, error: null })
+    }
     update.mutate(
       {
         savedQueryId: saved.id,
         body: {
           name: name.trim(),
-          provider: provider.trim(),
+          ...(!providerLocked ? { provider: provider.trim() } : {}),
           query,
           description: description.trim() || null,
+          ...(needsBinding && connectionId ? { connection_id: connectionId } : {}),
         },
       },
       { onSuccess: onClose },
@@ -59,12 +126,18 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
       className="wi-modal glass-panel"
       ariaLabel={`Edit saved query ${saved.name}`}
       onClose={onClose}
-      closeOnBackdrop={!update.isPending}
-      closeOnEscape={!update.isPending}
+      closeOnBackdrop={!operationPending}
+      closeOnEscape={!operationPending}
       panelAs="form"
       onSubmit={submit}
     >
       <h2 className="wi-modal-title">Edit saved query</h2>
+        {needsBinding && (
+          <p className="wi-modal-caption">
+            This legacy query is not bound to a connection. Saving will rebind it to the
+            project’s current {saved.provider} connection.
+          </p>
+        )}
         <label className="wi-field">
           <span className="wi-field-label">Name</span>
           <input
@@ -72,6 +145,7 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
             className="field-input"
             aria-label="Query name"
             value={name}
+            disabled={operationPending}
             onChange={(event) => setName(event.target.value)}
           />
         </label>
@@ -82,6 +156,7 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
             className="field-input wi-mono"
             aria-label="Query provider"
             value={provider}
+            disabled={providerLocked || operationPending}
             onChange={(event) => setProvider(event.target.value)}
           />
         </label>
@@ -93,6 +168,7 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
             rows={3}
             spellCheck={false}
             value={query}
+            disabled={operationPending}
             onChange={(event) => setQuery(event.target.value)}
           />
         </label>
@@ -103,6 +179,7 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
             aria-label="Query description"
             rows={2}
             value={description}
+            disabled={operationPending}
             onChange={(event) => setDescription(event.target.value)}
           />
         </label>
@@ -111,17 +188,28 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
             <span>Update failed: {update.error.message}</span>
           </div>
         )}
+        {bindingState.error && (
+          <div className="wi-inline-error" role="alert">
+            <span>Rebind failed: {bindingState.error}</span>
+          </div>
+        )}
         <div className="wi-modal-actions">
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={onClose}
-            disabled={update.isPending}
+            disabled={operationPending}
           >
             Cancel
           </button>
           <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
-            {update.isPending ? 'Saving…' : 'Save changes'}
+            {bindingState.pending
+              ? 'Resolving connection…'
+              : update.isPending
+                ? 'Saving…'
+                : needsBinding
+                  ? 'Rebind and save'
+                  : 'Save changes'}
           </button>
         </div>
     </Dialog>
@@ -130,7 +218,9 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
 
 /** Simple confirm dialog (operator+). */
 function DeleteQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => void }) {
-  const remove = useDeleteSavedQuery()
+  const remove = useDeleteSavedQuery(saved.id)
+  const writeCount = usePendingMutationCount(savedQueryWriteMutationKey(saved.id))
+  const writePending = writeCount > 0
 
   return (
     <Dialog
@@ -138,8 +228,8 @@ function DeleteQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () =
       className="wi-modal glass-panel"
       ariaLabel={`Delete saved query ${saved.name}`}
       onClose={onClose}
-      closeOnBackdrop={!remove.isPending}
-      closeOnEscape={!remove.isPending}
+      closeOnBackdrop={!writePending}
+      closeOnEscape={!writePending}
     >
       <h2 className="wi-modal-title">Delete saved query</h2>
       <p className="wi-modal-caption">
@@ -155,14 +245,14 @@ function DeleteQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () =
           type="button"
           className="btn btn-ghost btn-sm"
           onClick={onClose}
-          disabled={remove.isPending}
+          disabled={writePending}
         >
           Cancel
         </button>
         <button
           type="button"
           className="btn btn-danger btn-sm"
-          disabled={remove.isPending}
+          disabled={writePending}
           onClick={() => remove.mutate(saved.id, { onSuccess: onClose })}
         >
           {remove.isPending ? 'Deleting…' : 'Delete query'}
@@ -184,6 +274,9 @@ function SavedQueryRow({
   onDelete: (saved: SavedQuery) => void
 }) {
   const navigate = useNavigate()
+  const needsBinding = Boolean(saved.project_id && !saved.connection_id)
+  const writeCount = usePendingMutationCount(savedQueryWriteMutationKey(saved.id))
+  const writePending = writeCount > 0
 
   return (
     <tr data-testid={`saved-query-row-${saved.id}`}>
@@ -213,14 +306,26 @@ function SavedQueryRow({
           label={`Saved query actions: ${saved.name}`}
           items={[
             {
-              label: 'Run',
+              label: needsBinding ? 'Run (rebind required)' : 'Run',
+              disabled: needsBinding || writePending,
               onSelect: () =>
-                void navigate(consolePath(saved.provider, saved.query, saved.project_id)),
+                void navigate(
+                  consolePath(
+                    saved.provider,
+                    saved.query,
+                    saved.project_id,
+                    saved.connection_id,
+                  ),
+                ),
             },
             ...(canMutate
               ? [
-                  { label: 'Edit…', onSelect: () => onEdit(saved) },
-                  { label: 'Delete…', onSelect: () => onDelete(saved) },
+                  {
+                    label: needsBinding ? 'Rebind…' : 'Edit…',
+                    disabled: writePending,
+                    onSelect: () => onEdit(saved),
+                  },
+                  { label: 'Delete…', disabled: writePending, onSelect: () => onDelete(saved) },
                 ]
               : []),
           ]}
@@ -255,6 +360,13 @@ export function SavedQueriesPage() {
         </Link>
       </header>
 
+      {savedQueries.isError && savedQueries.data && (
+        <CachedDataWarning
+          error={savedQueries.error}
+          onRetry={() => void savedQueries.refetch()}
+        />
+      )}
+
       {savedQueries.isPending ? (
         <div
           className="wi-skeleton"
@@ -266,7 +378,7 @@ export function SavedQueriesPage() {
             <div key={i} className="glass-panel wi-skeleton-row" />
           ))}
         </div>
-      ) : savedQueries.isError ? (
+      ) : savedQueries.isError && !savedQueries.data ? (
         <ProblemCard
           title="Saved queries unavailable"
           message={savedQueries.error.message}

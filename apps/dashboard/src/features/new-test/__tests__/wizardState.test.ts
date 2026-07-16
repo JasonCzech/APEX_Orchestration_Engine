@@ -120,7 +120,9 @@ describe('buildLaunchPreview', () => {
     draft.config.engine = 'apex_load'
     draft.config.phases = ['execution', 'reporting']
     draft.config.gates_mode = 'all_auto'
-    draft.work_item_keys = ['PHX-241']
+    draft.work_items = [
+      { key: 'PHX-241', connection_id: 'conn-jira', provider: 'jira' },
+    ]
     draft.document_ids = ['doc-9']
     draft.prompt_overrides['phase/execution'] = { content: 'Custom system prompt' }
 
@@ -135,12 +137,33 @@ describe('buildLaunchPreview', () => {
       app_id: 'app-checkout',
       environment_id: 'env-staging',
       engine: 'apex_load',
+      connections: { work_tracking: 'conn-jira' },
       phases: ['execution', 'reporting'],
       gates: ALL_AUTO_GATES,
       prompt_overrides: { 'phase/execution': { content: 'Custom system prompt' } },
     })
     expect(preview.document_ids).toEqual(['doc-9'])
     expect(preview.work_item_keys).toEqual(['PHX-241'])
+  })
+
+  it('requires legacy selections to be rebound and rejects mixed connections', () => {
+    const draft = validDraft()
+    draft.work_items = [
+      { key: 'PHX-241', connection_id: null, provider: null },
+    ]
+    expect(allIssues(draft)).toContainEqual({
+      step: 'work-items',
+      message: 'Revalidate legacy work items before launch',
+    })
+
+    draft.work_items = [
+      { key: 'PHX-241', connection_id: 'conn-jira', provider: 'jira' },
+      { key: 'ADO-8', connection_id: 'conn-ado', provider: 'ado' },
+    ]
+    expect(allIssues(draft)).toContainEqual({
+      step: 'work-items',
+      message: 'Selected work items must use one work-tracking connection',
+    })
   })
 
   it('retains unedited golden fields while visible controls override the bundle', () => {
@@ -194,5 +217,24 @@ describe('parseDraftPayload', () => {
     expect(junk.config.phases).toBeNull()
     expect(junk.config.gates_mode).toBe('all_gated')
     expect(junk.prompt_overrides).toEqual({ ok: { content: 'kept' } })
+  })
+
+  it('restores legacy bare keys as explicitly unbound work-item references', () => {
+    expect(parseDraftPayload({ work_item_keys: ['PHX-241', 'PHX-241'] }).work_items).toEqual([
+      { key: 'PHX-241', connection_id: null, provider: null },
+    ])
+  })
+
+  it('prefers an exact binding over a duplicate legacy reference for the same key', () => {
+    expect(
+      parseDraftPayload({
+        work_items: [
+          { key: 'PHX-241', connection_id: null, provider: null },
+          { key: 'PHX-241', connection_id: 'conn-jira', provider: 'jira' },
+        ],
+      }).work_items,
+    ).toEqual([
+      { key: 'PHX-241', connection_id: 'conn-jira', provider: 'jira' },
+    ])
   })
 })

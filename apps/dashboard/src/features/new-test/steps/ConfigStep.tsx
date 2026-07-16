@@ -10,6 +10,7 @@ import { useSearchParams } from 'react-router'
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useAssistants, type GoldenConfig } from '@/api/hooks/useAssistants'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { selectedPhasesView } from '@/features/golden-configs/configView'
 
 import type { StepProps } from '../NewRunWizard'
@@ -119,7 +120,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         ...(projectChanged || appChanged
           ? {
               document_ids: [],
-              work_item_keys: projectChanged ? [] : prev.work_item_keys,
+              work_items: projectChanged ? [] : prev.work_items,
               context_summary_ids: projectChanged ? [] : prev.context_summary_ids,
             }
           : {}),
@@ -195,15 +196,20 @@ export function ConfigStep({ draft, onChange }: StepProps) {
 
   // D7 (additive): /golden-configs detail deep-link — ?golden=<assistant_id>
   // preselects the matching golden config once the picker data arrives, then
-  // strips the param so Clear sticks. One-shot; a no-op without the param.
+  // strips the param so Clear sticks. Track the actual param value so an
+  // in-place back/forward navigation to another golden config is not ignored.
   const [searchParams, setSearchParams] = useSearchParams()
   const goldenParam = searchParams.get('golden')
-  const goldenAppliedRef = useRef(false)
+  const goldenAppliedRef = useRef<string | null>(null)
   useEffect(() => {
-    if (goldenAppliedRef.current || !goldenParam) return
+    if (!goldenParam) {
+      goldenAppliedRef.current = null
+      return
+    }
+    if (goldenAppliedRef.current === goldenParam) return
     const match = goldenConfigs.find((golden) => golden.assistantId === goldenParam)
     if (!match) return
-    goldenAppliedRef.current = true
+    goldenAppliedRef.current = goldenParam
     applyGoldenConfig(match)
     setSearchParams(
       (previous) => {
@@ -254,7 +260,10 @@ export function ConfigStep({ draft, onChange }: StepProps) {
             </button>
           </div>
         )}
-        {assistants.isError ? (
+        {assistants.isError && assistants.data && (
+          <CachedDataWarning error={assistants.error} onRetry={() => void assistants.refetch()} />
+        )}
+        {assistants.isError && !assistants.data ? (
           <p className="wizard-caption wizard-caption--danger">Golden configs failed to load</p>
         ) : goldenConfigs.length === 0 ? (
           <p className="wizard-caption">

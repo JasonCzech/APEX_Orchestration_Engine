@@ -52,6 +52,9 @@ migration_0027 = importlib.import_module(
 migration_0028 = importlib.import_module(
     "apex.persistence.migrations.versions.0028_artifact_ownership_provenance"
 )
+migration_0029 = importlib.import_module(
+    "apex.persistence.migrations.versions.0029_saved_query_connection_affinity"
+)
 
 
 def test_offline_upgrade_locks_audit_chain_before_revision_table_work() -> None:
@@ -115,6 +118,7 @@ def test_offline_upgrade_registers_trusted_revision_lineage_before_migrations() 
     assert "VALUES ('0026', '0025')" in sql
     assert "VALUES ('0027', '0026')" in sql
     assert "VALUES ('0028', '0027')" in sql
+    assert "VALUES ('0029', '0028')" in sql
     assert sql.index("alembic_revision_lineage") < sql.index("CREATE TABLE apex.api_consumers")
 
 
@@ -254,3 +258,30 @@ def test_0028_orm_provenance_columns_are_nonnullable_and_default_quarantined() -
     engine_column = EngineRun.__table__.c.scope_ownership_known
     assert engine_column.nullable is False
     assert str(engine_column.server_default.arg) == "false"
+
+
+def test_0029_adds_nullable_saved_query_affinity_and_guards_downgrade() -> None:
+    upgrade_source = inspect.getsource(migration_0029.upgrade)
+    downgrade_source = inspect.getsource(migration_0029.downgrade)
+
+    assert migration_0029.down_revision == "0028"
+    assert 'sa.Column("connection_id", sa.String(length=32), nullable=True)' in upgrade_source
+    assert '"ix_saved_queries_connection_id"' in upgrade_source
+    assert "ForeignKey" not in upgrade_source
+    assert "WHERE connection_id IS NOT NULL" in downgrade_source
+    assert "cannot downgrade with bound saved queries present" in downgrade_source
+    assert downgrade_source.index("op.execute") < downgrade_source.index("op.drop_index")
+    assert downgrade_source.index("op.drop_index") < downgrade_source.index("op.drop_column")
+
+
+def test_0029_orm_saved_query_affinity_is_nullable_indexed_and_not_a_foreign_key() -> None:
+    from apex.persistence.models import SavedQuery
+
+    column = SavedQuery.__table__.c.connection_id
+
+    assert column.nullable is True
+    assert not column.foreign_keys
+    assert any(
+        index.name == "ix_saved_queries_connection_id" and tuple(index.columns) == (column,)
+        for index in SavedQuery.__table__.indexes
+    )

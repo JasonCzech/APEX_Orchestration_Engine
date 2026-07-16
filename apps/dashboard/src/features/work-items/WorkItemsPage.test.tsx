@@ -1,22 +1,26 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { http, HttpResponse } from 'msw'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { delay, http, HttpResponse } from 'msw'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 import {
   ITEM_PAYMENT,
+  ITEM_BUG,
   SAVED_OPEN,
   TRANSLATED,
   createItemHandler,
   createSavedQueryHandler,
   executeHandler,
   getItemHandler,
+  resolvedWorkItemPage,
   savedQueriesHandler,
   translateHandler,
+  workTrackingBindingHandler,
 } from './workItemsTestHandlers'
+import { scopedMutationStorageKey } from './durableMutationDraft'
 
 function renderConsole(role: 'operator' | 'viewer' = 'operator') {
   return renderApp({
@@ -45,7 +49,9 @@ describe('WorkItemsPage', () => {
     expect(providerInput).toHaveValue('jira')
     expect(screen.getByRole('textbox', { name: 'Provider query' })).toHaveValue(TRANSLATED.query)
     expect(screen.getByText('confidence 82%')).toBeInTheDocument()
-    expect(translate.captured).toEqual([{ text: 'open payment stories' }])
+    expect(translate.captured).toEqual([
+      { text: 'open payment stories', connection_id: 'conn-jira' },
+    ])
 
     await user.click(screen.getByRole('button', { name: 'Execute' }))
 
@@ -53,7 +59,7 @@ describe('WorkItemsPage', () => {
     const row = await screen.findByTestId('wi-row-PHX-101')
     expect(within(row).getByRole('link', { name: 'PHX-101' })).toHaveAttribute(
       'href',
-      '/work-items/jira/PHX-101?project=proj-alpha',
+      '/work-items/jira/PHX-101?project=proj-alpha&connection_id=conn-jira',
     )
     expect(within(row).getByText('story')).toHaveClass('dash-context-chip')
     expect(within(row).getByText('open')).toHaveClass('status-badge')
@@ -68,11 +74,52 @@ describe('WorkItemsPage', () => {
     expect(execute.captured).toEqual([
       {
         query: { provider: 'jira', query: TRANSLATED.query, confidence: 0.82 },
+        connection_id: 'conn-jira',
         limit: 25,
         offset: 0,
       },
     ])
     expect(screen.getByText('1–2 of 2')).toBeInTheDocument()
+  })
+
+  it('serializes translation and execution so their responses cannot cross', async () => {
+    let translationCount = 0
+    let markExecuteStarted!: () => void
+    const executeStarted = new Promise<void>((resolve) => {
+      markExecuteStarted = resolve
+    })
+    let releaseExecute!: () => void
+    const executeRelease = new Promise<void>((resolve) => {
+      releaseExecute = resolve
+    })
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/translate', () => {
+        translationCount += 1
+        return HttpResponse.json(TRANSLATED)
+      }),
+      http.post('*/v1/work-tracking/query/execute', async () => {
+        markExecuteStarted()
+        await executeRelease
+        return HttpResponse.json(resolvedWorkItemPage([ITEM_PAYMENT], 1))
+      }),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.type(await screen.findByLabelText('Find by description'), 'open stories')
+    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(await screen.findByRole('button', { name: 'Execute' }))
+    await executeStarted
+
+    const translateButton = screen.getByRole('button', { name: 'Translate' })
+    expect(translateButton).toBeDisabled()
+    expect(screen.getByLabelText('Find by description')).toBeDisabled()
+    await user.click(translateButton)
+    expect(translationCount).toBe(1)
+
+    releaseExecute()
+    expect(await screen.findByTestId('wi-row-PHX-101')).toBeInTheDocument()
   })
 
   it('manual mode executes a hand-written provider query', async () => {
@@ -101,6 +148,70 @@ describe('WorkItemsPage', () => {
         offset: 0,
       },
     ])
+  })
+
+  it('retires prior results when a replacement query fails', async () => {
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/execute', async ({ request }) => {
+        const body = (await request.json()) as {
+          query: { query: string }
+        }
+        if (body.query.query === 'status = Broken') {
+          return HttpResponse.json({ detail: 'provider unavailable' }, { status: 503 })
+        }
+        return HttpResponse.json(resolvedWorkItemPage([ITEM_PAYMENT], 1))
+      }),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.click(await screen.findByRole('button', { name: 'Manual query' }))
+    await user.type(screen.getByRole('textbox', { name: 'Provider' }), 'jira')
+    const query = screen.getByRole('textbox', { name: 'Provider query' })
+    await user.type(query, 'status = Open')
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+    expect(await screen.findByTestId('wi-row-PHX-101')).toBeInTheDocument()
+
+    await user.clear(query)
+    await user.type(query, 'status = Broken')
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Query failed')
+    expect(screen.queryByTestId('wi-row-PHX-101')).not.toBeInTheDocument()
+    expect(screen.queryByText('1–1 of 1')).not.toBeInTheDocument()
+  })
+
+  it('retires prior query and results when replacement translation fails', async () => {
+    let translations = 0
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/translate', () => {
+        translations += 1
+        return translations === 1
+          ? HttpResponse.json(TRANSLATED)
+          : HttpResponse.json({ detail: 'translator unavailable' }, { status: 503 })
+      }),
+      http.post('*/v1/work-tracking/query/execute', () =>
+        HttpResponse.json(resolvedWorkItemPage([ITEM_PAYMENT], 1)),
+      ),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    const description = await screen.findByLabelText('Find by description')
+    await user.type(description, 'open stories')
+    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(await screen.findByRole('button', { name: 'Execute' }))
+    expect(await screen.findByTestId('wi-row-PHX-101')).toBeInTheDocument()
+
+    await user.clear(description)
+    await user.type(description, 'replacement request')
+    await user.click(screen.getByRole('button', { name: 'Translate' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Translate failed')
+    expect(screen.queryByTestId('provider-query')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('wi-row-PHX-101')).not.toBeInTheDocument()
   })
 
   it('requires and sends a project for multi-project consumers', async () => {
@@ -178,14 +289,100 @@ describe('WorkItemsPage', () => {
     expect(execute.captured).toHaveLength(1)
   })
 
+  it('rehydrates on URL query changes and rejects a stale prior result', async () => {
+    const started: string[] = []
+    const completed: string[] = []
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/execute', async ({ request }) => {
+        const body = (await request.json()) as {
+          query: { provider: string; query: string; confidence: number }
+          limit: number
+          offset: number
+        }
+        started.push(body.query.query)
+        if (body.query.query === 'status = Slow') await delay(140)
+        completed.push(body.query.query)
+        return HttpResponse.json(
+          resolvedWorkItemPage(
+            body.query.query === 'status = Slow' ? [ITEM_PAYMENT] : [ITEM_BUG],
+            1,
+            body.query.provider,
+            body.query.provider === 'ado' ? 'conn-ado' : 'conn-jira',
+          ),
+        )
+      }),
+    )
+    const { router } = renderApp({
+      initialEntries: ['/work-items?provider=jira&query=status%20%3D%20Slow'],
+      authState: authenticatedState('operator'),
+    })
+
+    await waitFor(() => expect(started).toContain('status = Slow'))
+    await act(async () =>
+      router.navigate('/work-items?provider=ado&query=status%20%3D%20Active'),
+    )
+
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Provider query' })).toHaveValue(
+        'status = Active',
+      ),
+    )
+    expect(screen.getByRole('textbox', { name: 'Provider' })).toHaveValue('ado')
+    expect(await screen.findByTestId('wi-row-PHX-102')).toBeInTheDocument()
+
+    await waitFor(() => expect(completed).toContain('status = Slow'))
+    expect(screen.getByTestId('wi-row-PHX-102')).toBeInTheDocument()
+    expect(screen.queryByTestId('wi-row-PHX-101')).not.toBeInTheDocument()
+  })
+
+  it('does not create through a deep-link connection until its provider is validated', async () => {
+    const binding = workTrackingBindingHandler({
+      connection_id: 'conn-ado',
+      provider: 'ado',
+    })
+    server.use(
+      binding.handler,
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/execute', () =>
+        HttpResponse.json(
+          { detail: 'connection provider does not match query provider' },
+          { status: 409 },
+        ),
+      ),
+    )
+
+    renderApp({
+      initialEntries: [
+        '/work-items?provider=jira&query=status%20%3D%20Open&connection_id=conn-ado',
+      ],
+      authState: authenticatedState('operator'),
+    })
+
+    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    await waitFor(() => expect(binding.connectionIds).toEqual(['conn-ado']))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Query failed')
+    expect(newItemButton).toBeDisabled()
+  })
+
   it('paginates the submitted query snapshot rather than edited controls', async () => {
     const captured: Array<Record<string, unknown>> = []
     server.use(
       savedQueriesHandler([]),
       http.post('*/v1/work-tracking/query/execute', async ({ request }) => {
-        const body = (await request.json()) as Record<string, unknown>
+        const body = (await request.json()) as {
+          query: { provider: string }
+          connection_id?: string
+        } & Record<string, unknown>
         captured.push(body)
-        return HttpResponse.json({ items: [ITEM_PAYMENT], total: 60 })
+        return HttpResponse.json(
+          resolvedWorkItemPage(
+            [ITEM_PAYMENT],
+            60,
+            body.query.provider,
+            body.connection_id,
+          ),
+        )
       }),
     )
     const user = userEvent.setup()
@@ -213,6 +410,48 @@ describe('WorkItemsPage', () => {
     })
   })
 
+  it('stops at the provider result-window boundary and explains the limit', async () => {
+    const captured: Array<{ offset: number }> = []
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/query/execute', async ({ request }) => {
+        const body = (await request.json()) as {
+          query: { provider: string }
+          connection_id?: string
+          limit: number
+          offset: number
+        }
+        captured.push(body)
+        return HttpResponse.json(
+          resolvedWorkItemPage(
+            [ITEM_PAYMENT],
+            1_100,
+            body.query.provider,
+            body.connection_id,
+          ),
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.click(await screen.findByRole('button', { name: 'Manual query' }))
+    await user.type(screen.getByRole('textbox', { name: 'Provider' }), 'jira')
+    await user.type(screen.getByRole('textbox', { name: 'Provider query' }), 'project = ALPHA')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Page size' }), '50')
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+    await screen.findByTestId('wi-row-PHX-101')
+
+    for (let page = 1; page <= 19; page += 1) {
+      await user.click(screen.getByRole('button', { name: 'Next' }))
+      await waitFor(() => expect(captured.at(-1)?.offset).toBe(page * 50))
+    }
+
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByText(/Reached the provider result-window limit/)).toBeInTheDocument()
+    expect(captured.at(-1)?.offset).toBe(950)
+  })
+
   it('runs a saved query on pick and saves the current query via the modal', async () => {
     const execute = executeHandler([ITEM_PAYMENT], 1)
     const create = createSavedQueryHandler()
@@ -227,6 +466,7 @@ describe('WorkItemsPage', () => {
     expect(execute.captured).toEqual([
       {
         query: { provider: 'jira', query: SAVED_OPEN.query, confidence: 1 },
+        connection_id: 'conn-jira',
         limit: 25,
         offset: 0,
       },
@@ -250,6 +490,7 @@ describe('WorkItemsPage', () => {
           provider: 'jira',
           query: SAVED_OPEN.query,
           project_id: 'proj-alpha',
+          connection_id: 'conn-jira',
         },
       ]),
     )
@@ -270,7 +511,9 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     const { router } = renderConsole()
 
-    await user.click(await screen.findByRole('button', { name: 'New item' }))
+    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    await waitFor(() => expect(newItemButton).toBeEnabled())
+    await user.click(newItemButton)
     const dialog = await screen.findByRole('dialog', { name: 'New work item' })
     await user.type(
       within(dialog).getByRole('textbox', { name: 'Item title' }),
@@ -283,8 +526,10 @@ describe('WorkItemsPage', () => {
     )
     await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
 
-    // Provider segment falls back to 'tracker' when no query ran (display only).
-    await waitFor(() => expect(router.state.location.pathname).toBe('/work-items/tracker/PHX-300'))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/work-items/jira/PHX-300'))
+    const params = new URLSearchParams(router.state.location.search)
+    expect(params.get('project')).toBe('proj-alpha')
+    expect(params.get('connection_id')).toBe('conn-jira')
     expect(create.captured).toEqual([
       {
         title: 'Harden gateway retries',
@@ -293,9 +538,104 @@ describe('WorkItemsPage', () => {
       },
     ])
     expect(create.idempotencyKeys[0]).toMatch(/^create-/)
+    expect(create.connectionIds).toEqual(['conn-jira'])
     expect(
       await screen.findByRole('heading', { name: 'Harden gateway retries' }),
     ).toBeInTheDocument()
+  })
+
+  it('retires a successful durable create after the submitting route unmounts', async () => {
+    let markCreateStarted!: () => void
+    const createStarted = new Promise<void>((resolve) => {
+      markCreateStarted = resolve
+    })
+    let releaseCreate!: () => void
+    const createRelease = new Promise<void>((resolve) => {
+      releaseCreate = resolve
+    })
+    server.use(
+      savedQueriesHandler([]),
+      http.post('*/v1/work-tracking/items', async ({ request }) => {
+        const body = (await request.json()) as {
+          title: string
+          kind: string
+          description: string
+        }
+        markCreateStarted()
+        await createRelease
+        return HttpResponse.json(
+          {
+            ...body,
+            key: 'PHX-302',
+            status: 'open',
+            url: null,
+            connection_id: 'conn-jira',
+            provider: 'jira',
+          },
+          { status: 201 },
+        )
+      }),
+    )
+    const storageKey = scopedMutationStorageKey(
+      'apex.work-items.create.v2',
+      'proj-alpha',
+      'conn-jira',
+    )
+    const user = userEvent.setup()
+    const { router } = renderConsole()
+
+    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    await waitFor(() => expect(newItemButton).toBeEnabled())
+    await user.click(newItemButton)
+    const dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Item title' }), 'Finish later')
+    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await createStarted
+    expect(window.sessionStorage.getItem(storageKey)).not.toBeNull()
+
+    await act(async () => router.navigate('/settings'))
+    releaseCreate()
+
+    await waitFor(() => expect(window.sessionStorage.getItem(storageKey)).toBeNull())
+    expect(router.state.location.pathname).toBe('/settings')
+
+    await act(async () => router.navigate('/work-items'))
+    const remountedButton = await screen.findByRole('button', { name: 'New item' })
+    await waitFor(() => expect(remountedButton).toBeEnabled())
+    await user.click(remountedButton)
+    const remountedDialog = await screen.findByRole('dialog', { name: 'New work item' })
+    expect(within(remountedDialog).getByRole('textbox', { name: 'Item title' })).toHaveValue('')
+    expect(within(remountedDialog).queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('blocks item creation before the request when safe retry storage is unavailable', async () => {
+    const create = createItemHandler('PHX-301')
+    server.use(savedQueriesHandler([]), create.handler)
+    const user = userEvent.setup()
+    renderConsole()
+
+    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    await waitFor(() => expect(newItemButton).toBeEnabled())
+    await user.click(newItemButton)
+    const dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Item title' }),
+      'Must be safely retryable',
+    )
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => undefined)
+
+    try {
+      const submit = within(dialog).getByRole('button', { name: 'Create item' })
+      await user.click(submit)
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        'Create blocked: Safe retry storage is unavailable',
+      )
+      expect(create.captured).toEqual([])
+      expect(submit).toBeDisabled()
+    } finally {
+      setItem.mockRestore()
+    }
   })
 
   it('hides Save query and New item from viewers', async () => {
@@ -325,7 +665,9 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     renderConsole()
 
-    await user.click(await screen.findByRole('button', { name: 'New item' }))
+    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    await waitFor(() => expect(newItemButton).toBeEnabled())
+    await user.click(newItemButton)
     let dialog = await screen.findByRole('dialog', { name: 'New work item' })
     await user.type(within(dialog).getByRole('textbox', { name: 'Item title' }), 'Retry me')
     await user.click(within(dialog).getByRole('button', { name: 'Create item' }))

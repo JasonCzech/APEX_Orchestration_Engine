@@ -4,6 +4,7 @@ import {
   DEFAULT_RUNS_FILTERS,
   hasActiveFilters,
   parseRunsFilters,
+  RUNS_MAX_OFFSET,
   serializeRunsFilters,
   type RunsFilters,
 } from './runsFilters'
@@ -36,6 +37,7 @@ describe('runsFilters', () => {
     })
     // non-integer limit falls back to the default page size
     expect(parseRunsFilters(new URLSearchParams('limit=abc')).limit).toBe(25)
+    expect(parseRunsFilters(new URLSearchParams('offset=999999')).offset).toBe(RUNS_MAX_OFFSET)
   })
 
   it('reports active filters for status/q/project but not pagination', () => {

@@ -10,6 +10,7 @@ import {
 } from '@apex/pipeline-events'
 
 import type { GateInterrupt, PipelineDetail } from '@/api/hooks/useThreadState'
+import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 
 import { normalizeGateHint, type LiveGateHint } from './liveTypes'
 import { formatTimestamp, PHASE_LABELS, isPhaseName } from './runDisplay'
@@ -200,7 +201,7 @@ export function RunRail({
               <ul className="rail-artifact-list">
                 {group.artifacts.map((artifact) => (
                   <li key={artifact.id}>
-                    <Link to={`/runs/${detail.thread_id}/artifacts/${artifact.id}`}>
+                    <Link to={artifactViewerPath(detail.thread_id, artifact.id)}>
                       <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
                       <span className="rail-artifact-name">{artifact.name ?? artifact.id}</span>
                     </Link>

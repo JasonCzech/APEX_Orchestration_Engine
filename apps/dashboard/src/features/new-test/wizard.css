@@ -264,6 +264,24 @@
   color: var(--danger);
 }
 
+.wizard-chip-revalidate {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+}
+
+.wizard-chip-revalidate:hover {
+  text-decoration: underline;
+}
+
+.wizard-chip-revalidate:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 /* Context step */
 
 .wizard-dropzone {

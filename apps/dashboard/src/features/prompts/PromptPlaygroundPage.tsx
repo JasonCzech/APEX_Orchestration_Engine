@@ -6,16 +6,22 @@
  * accepted card with a /runs/{thread_id} link plus a session-local history of
  * prior runs. Live playground streaming is a noted follow-up — no polling.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 
 import {
+  promptTestMutationKey,
   usePrompt,
+  usePromptPlaygroundSelection,
+  usePromptTestHistory,
   usePromptVersions,
   useTestPrompt,
 } from '@/api/hooks/usePrompts'
 import { isApiError } from '@/api/errors'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
+import { useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
@@ -24,13 +30,6 @@ import { promptPath, usePromptRouteParams } from './promptPaths'
 import './prompts.css'
 
 type SourceMode = 'version' | 'adhoc'
-
-interface PlaygroundRun {
-  runId: string
-  threadId: string | null
-  at: string
-  label: string
-}
 
 function errorMessage(error: unknown, fallback: string): string {
   if (isApiError(error)) return error.message
@@ -55,29 +54,91 @@ function parseSampleInput(raw: string): { ok: true; value: Record<string, unknow
 
 export function PromptPlaygroundPage() {
   const { ns, name } = usePromptRouteParams()
+  return (
+    <PromptPlaygroundContent
+      key={JSON.stringify([ns, name])}
+      ns={ns}
+      name={name}
+    />
+  )
+}
+
+function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
+  const consumer = useConsumer()
   const detailQuery = usePrompt(ns, name)
   const detail = detailQuery.data
   const versionsQuery = usePromptVersions(ns, name, detail?.id)
   const test = useTestPrompt(detail?.id)
+  const testPending = usePendingMutationCount(promptTestMutationKey(detail?.id)) > 0
+  const resetTest = test.reset
 
   const [mode, setMode] = useState<SourceMode>('version')
   const [versionId, setVersionId] = useState('')
   const [adhoc, setAdhoc] = useState<string | null>(null)
   const [sampleInput, setSampleInput] = useState('{}')
   const [inputError, setInputError] = useState<string | null>(null)
-  const [history, setHistory] = useState<PlaygroundRun[]>([])
-  const identityRef = useRef(`${ns}:${name}`)
-  useEffect(() => {
-    const identity = `${ns}:${name}`
-    if (identityRef.current === identity) return
-    identityRef.current = identity
-    setMode('version')
-    setVersionId('')
-    setAdhoc(null)
-    setSampleInput('{}')
-    setInputError(null)
-    setHistory([])
-  }, [ns, name])
+  const scopedProjects = useMemo(
+    () => Array.from(new Set((consumer?.scopes ?? []).map((scope) => scope.project_id))).sort(),
+    [consumer?.scopes],
+  )
+  const initialProject = scopedProjects.length === 1 ? scopedProjects[0] ?? '' : ''
+  const initialProjectScopes = (consumer?.scopes ?? []).filter(
+    (scope) => scope.project_id === initialProject,
+  )
+  const initialApps = Array.from(
+    new Set(
+      initialProjectScopes
+        .map((scope) => scope.app_id)
+        .filter((appId): appId is string => Boolean(appId)),
+    ),
+  ).sort()
+  const initialApp =
+    initialProjectScopes.some((scope) => !scope.app_id) || initialApps.length !== 1
+      ? ''
+      : initialApps[0] ?? ''
+  const { selection, setSelection } = usePromptPlaygroundSelection(detail?.id, {
+    projectId: initialProject,
+    appId: initialApp,
+  })
+  const { projectId, appId } = selection
+
+  const selectedProjectScopes = (consumer?.scopes ?? []).filter(
+    (scope) => scope.project_id === projectId,
+  )
+  const hasProjectWideScope = selectedProjectScopes.some((scope) => !scope.app_id)
+  const scopedApps = Array.from(
+    new Set(
+      selectedProjectScopes
+        .map((scope) => scope.app_id)
+        .filter((scopedAppId): scopedAppId is string => Boolean(scopedAppId)),
+    ),
+  ).sort()
+  const requiresProject = scopedProjects.length > 1
+  const requiresApp = Boolean(projectId) && !hasProjectWideScope && scopedApps.length > 1
+  const scopeReady = (!requiresProject || Boolean(projectId)) && (!requiresApp || Boolean(appId))
+  const historyQuery = usePromptTestHistory(detail?.id, projectId, appId)
+  const history = historyQuery.data ?? []
+
+  function selectProject(nextProject: string) {
+    const nextScopes = (consumer?.scopes ?? []).filter(
+      (scope) => scope.project_id === nextProject,
+    )
+    const nextApps = Array.from(
+      new Set(
+        nextScopes
+          .map((scope) => scope.app_id)
+        .filter((scopedAppId): scopedAppId is string => Boolean(scopedAppId)),
+      ),
+    )
+    setSelection({
+      projectId: nextProject,
+      appId:
+        nextScopes.some((scope) => !scope.app_id) || nextApps.length !== 1
+          ? ''
+          : nextApps[0] ?? '',
+    })
+    resetTest()
+  }
 
   const versions = useMemo(
     () => [...(versionsQuery.data ?? [])].sort((a, b) => b.version - a.version),
@@ -94,7 +155,7 @@ export function PromptPlaygroundPage() {
   const adhocContent = adhoc ?? detail?.content ?? ''
 
   function run() {
-    if (!detail || test.isPending) return
+    if (!detail || testPending || !scopeReady) return
     const parsed = parseSampleInput(sampleInput)
     if (!parsed.ok) {
       setInputError(parsed.message)
@@ -109,20 +170,19 @@ export function PromptPlaygroundPage() {
           : 'active version'
     test.mutate(
       {
-        ...(mode === 'adhoc' ? { content: adhocContent } : { version_id: versionId || activeId }),
-        sample_input: parsed.value,
-      },
-      {
-        onSuccess: (accepted) => {
-          setHistory((prev) => [
-            {
-              runId: accepted.run_id,
-              threadId: accepted.thread_id ?? null,
-              at: new Date().toISOString(),
-              label,
-            },
-            ...prev,
-          ])
+        request: {
+          ...(mode === 'adhoc'
+            ? { content: adhocContent }
+            : { version_id: versionId || activeId }),
+          sample_input: parsed.value,
+          ...(projectId ? { project_id: projectId } : {}),
+          ...(appId ? { app_id: appId } : {}),
+        },
+        history: {
+          promptId: detail.id,
+          projectId,
+          appId,
+          label,
         },
       },
     )
@@ -137,7 +197,7 @@ export function PromptPlaygroundPage() {
       </section>
     )
   }
-  if (detailQuery.isError || !detail) {
+  if (!detail) {
     return (
       <section className="prompts-page animate-enter">
         <ProblemCard
@@ -153,6 +213,15 @@ export function PromptPlaygroundPage() {
 
   return (
     <section className="prompts-page animate-enter">
+      {detailQuery.isError && (
+        <CachedDataWarning error={detailQuery.error} onRetry={() => void detailQuery.refetch()} />
+      )}
+      {versionsQuery.isError && versionsQuery.data && (
+        <CachedDataWarning
+          error={versionsQuery.error}
+          onRetry={() => void versionsQuery.refetch()}
+        />
+      )}
       <header className="prompt-detail-header glass-panel">
         <nav className="prompt-breadcrumb" aria-label="Breadcrumb">
           <Link to={`/prompts?ns=${encodeURIComponent(ns)}`}>{ns}</Link>
@@ -208,6 +277,48 @@ export function PromptPlaygroundPage() {
             </div>
           )}
 
+          {requiresProject && (
+            <label className="prompt-field">
+              <span className="prompt-field-label">Project scope</span>
+              <select
+                className="field-select"
+                aria-label="Playground project"
+                value={projectId}
+                disabled={testPending}
+                onChange={(event) => selectProject(event.target.value)}
+              >
+                <option value="">Select a project…</option>
+                {scopedProjects.map((scopedProjectId) => (
+                  <option key={scopedProjectId} value={scopedProjectId}>
+                    {scopedProjectId}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {requiresApp && (
+            <label className="prompt-field">
+              <span className="prompt-field-label">Application scope</span>
+              <select
+                className="field-select"
+                aria-label="Playground application"
+                value={appId}
+                disabled={testPending}
+                onChange={(event) => {
+                  setSelection({ projectId, appId: event.target.value })
+                  resetTest()
+                }}
+              >
+                <option value="">Select an application…</option>
+                {scopedApps.map((scopedAppId) => (
+                  <option key={scopedAppId} value={scopedAppId}>
+                    {scopedAppId}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label className="prompt-field">
             <span className="prompt-field-label">Sample input (JSON)</span>
             <textarea
@@ -240,9 +351,9 @@ export function PromptPlaygroundPage() {
                 type="button"
                 className="btn btn-primary"
                 onClick={run}
-                disabled={test.isPending}
+                disabled={testPending || !scopeReady}
               >
-                {test.isPending ? 'Submitting…' : 'Run test'}
+                {testPending ? 'Submitting…' : 'Run test'}
               </button>
             </div>
           </RequireRole>

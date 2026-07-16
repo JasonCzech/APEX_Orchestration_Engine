@@ -44,6 +44,8 @@ from apex.services.work_tracking import (
     get_work_tracking_resolver,
 )
 
+DEFAULT_CONNECTION_ID = "dev-work-tracking-fake"
+
 # ── Fakes ────────────────────────────────────────────────────────────────────
 
 
@@ -205,21 +207,42 @@ class FakeResolver:
             raise self.raises
         return self.adapter
 
+    async def resolve_with_connection_id(
+        self,
+        kind: PortKind,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[Any, str]:
+        adapter = await self.resolve(
+            kind,
+            connection_id=connection_id,
+            project_id=project_id,
+        )
+        return adapter, connection_id or DEFAULT_CONNECTION_ID
+
 
 class MetadataResolver:
     """Separates metadata selection from adapter construction for replay tests."""
 
     def __init__(self, adapter: Any) -> None:
         self.adapter = adapter
+        self.metadata_calls: list[tuple[PortKind, str | None, str | None]] = []
         self.build_calls = 0
         self.fail_build = False
-        self.built_connection_id = "dev-work-tracking-fake"
+        self.metadata_connection_id = DEFAULT_CONNECTION_ID
+        self.built_connection_id = DEFAULT_CONNECTION_ID
         self.built_persisted = False
         self.built_connection_version: datetime | None = None
 
-    async def resolve_metadata(self, *_args: Any, **_kwargs: Any) -> Any:
+    async def resolve_metadata(
+        self,
+        kind: PortKind,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+    ) -> Any:
+        self.metadata_calls.append((kind, connection_id, project_id))
         return SimpleNamespace(
-            config=SimpleNamespace(id="dev-work-tracking-fake", provider="fake"),
+            config=SimpleNamespace(id=self.metadata_connection_id, provider="fake"),
             persisted=False,
             connection_version=None,
         )
@@ -331,7 +354,11 @@ def make_app(
 
 
 def saved_query_row(
-    row_id: str, name: str, project_id: str | None, provider: str = "jira"
+    row_id: str,
+    name: str,
+    project_id: str | None,
+    provider: str = "jira",
+    connection_id: str | None = None,
 ) -> SavedQuery:
     now = datetime.now(UTC)
     return SavedQuery(
@@ -340,6 +367,7 @@ def saved_query_row(
         project_id=project_id,
         provider=provider,
         query="project = PHX",
+        connection_id=connection_id,
         created_at=now,
         updated_at=now,
     )
@@ -356,6 +384,7 @@ def test_translate_resolves_with_scoped_project() -> None:
     body = response.json()
     assert body["provider"] == "fake"
     assert body["query"] == 'text ~ "open bugs"'
+    assert body["connection_id"] == DEFAULT_CONNECTION_ID
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, "p1")]
     adapter = resolver.adapter
     assert adapter.translate_calls[0][1].project_id == "p1"  # QueryContext carries the scope
@@ -383,16 +412,151 @@ def test_translate_uses_external_project_hint_after_internal_binding() -> None:
     assert context.hints == {"project": "PHX"}
 
 
-def test_translate_body_connection_id_wins_over_query_param() -> None:
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/v1/work-tracking/query/translate",
+            {"text": "open bugs", "connection_id": "from-body"},
+        ),
+        (
+            "/v1/work-tracking/query/execute",
+            {
+                "query": {"provider": "fake", "query": "project = PHX"},
+                "connection_id": "from-body",
+            },
+        ),
+    ],
+)
+def test_query_rejects_conflicting_body_and_query_connection_ids(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
     app, resolver, _ = make_app(identity())
     with TestClient(app) as client:
         response = client.post(
-            "/v1/work-tracking/query/translate",
+            path,
             params={"connection_id": "from-query"},
-            json={"text": "open bugs", "connection_id": "from-body"},
+            json=payload,
         )
+    assert response.status_code == 409
+    assert response.json()["title"] == "conflicting work-tracking connection ids"
+    assert resolver.calls == []
+
+
+def test_binding_returns_exact_authorized_connection_identity() -> None:
+    app, resolver, _ = make_app(identity())
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/work-tracking/binding",
+            params={"connection_id": "tracker-p1"},
+        )
+
     assert response.status_code == 200
-    assert resolver.calls[0][1] == "from-body"
+    assert response.json() == {
+        "connection_id": "tracker-p1",
+        "provider": "fake",
+    }
+    assert resolver.calls == [(PortKind.WORK_TRACKING, "tracker-p1", "p1")]
+    assert resolver.adapter.close_calls == 1
+
+
+def test_translate_response_can_execute_directly_with_its_nested_binding() -> None:
+    app, resolver, _ = make_app(identity())
+
+    with TestClient(app) as client:
+        translated = client.post(
+            "/v1/work-tracking/query/translate",
+            json={"text": "open bugs"},
+        )
+        executed = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": translated.json()},
+        )
+
+    assert translated.status_code == 200
+    assert executed.status_code == 200
+    assert resolver.calls == [
+        (PortKind.WORK_TRACKING, None, "p1"),
+        (PortKind.WORK_TRACKING, DEFAULT_CONNECTION_ID, "p1"),
+    ]
+
+
+def test_binding_fails_closed_when_legacy_resolver_cannot_report_selected_id() -> None:
+    adapter = FakeWorkTrackingAdapter()
+
+    class ResolveOnlyResolver:
+        async def resolve(
+            self,
+            _kind: PortKind,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+        ) -> Any:
+            raise AssertionError(
+                f"unbound legacy resolution must not run: {connection_id=} {project_id=}"
+            )
+
+    app, _, _ = make_app(identity(), resolver=cast(Any, ResolveOnlyResolver()))
+
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/binding")
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "work-tracking connection conflict"
+    assert adapter.close_calls == 0
+
+
+def test_binding_rejects_credential_shaped_provider_without_reflection() -> None:
+    provider = "Bearer opaque-provider-canary"
+    app, resolver, _ = make_app(
+        identity(),
+        resolver=FakeResolver(FakeWorkTrackingAdapter(provider=provider)),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/work-tracking/binding",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
+        )
+
+    assert response.status_code == 409
+    assert provider not in response.text
+    assert resolver.adapter.close_calls == 1
+
+
+def test_read_resolver_must_return_the_exact_requested_connection_id() -> None:
+    adapter = FakeWorkTrackingAdapter()
+
+    class MismatchedReadResolver:
+        async def resolve_with_metadata(
+            self,
+            _kind: PortKind,
+            *,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+        ) -> Any:
+            assert connection_id == "requested-connection"
+            assert project_id == "p1"
+            return SimpleNamespace(
+                adapter=adapter,
+                connection_id="different-connection",
+                persisted=False,
+                connection_version=None,
+            )
+
+    app, _, _ = make_app(identity(), resolver=cast(Any, MismatchedReadResolver()))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/translate",
+            json={"text": "open bugs", "connection_id": "requested-connection"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "invalid work-tracking connection"
+    assert adapter.translate_calls == []
+    assert adapter.close_calls == 1
 
 
 def test_translate_multi_project_requires_project() -> None:
@@ -486,6 +650,8 @@ def test_execute_query_pages_through_adapter() -> None:
     assert [item["key"] for item in body["items"]] == ["PHX-2"]
     assert body["total"] == 2
     assert body["page"] == {"offset": 1, "limit": 1}
+    assert body["connection_id"] == DEFAULT_CONNECTION_ID
+    assert body["provider"] == "fake"
     assert resolver.calls == [(PortKind.WORK_TRACKING, None, None)]  # unscoped admin
 
 
@@ -1106,9 +1272,25 @@ def test_get_work_item_found_and_missing() -> None:
         missing = client.get("/v1/work-tracking/items/PHX-404")
     assert found.status_code == 200
     assert found.json()["title"] == "First"
+    assert found.json()["connection_id"] == DEFAULT_CONNECTION_ID
+    assert found.json()["provider"] == "fake"
     assert missing.status_code == 404
     assert missing.json()["title"] == "work item not found"
     assert "PHX-404" not in missing.text
+
+
+def test_get_work_item_rejects_a_different_provider_key() -> None:
+    adapter = FakeWorkTrackingAdapter()
+    adapter.items["PHX-1"] = adapter.items["PHX-1"].model_copy(
+        update={"key": "PHX-2"}
+    )
+    app, _, _ = make_app(identity(), resolver=FakeResolver(adapter))
+
+    with TestClient(app) as client:
+        response = client.get("/v1/work-tracking/items/PHX-1")
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "work tracker upstream failure"
 
 
 def test_get_work_item_redacts_descriptive_provider_credentials() -> None:
@@ -1219,6 +1401,8 @@ def test_list_work_items_passes_filters_and_connection_id() -> None:
             },
         )
     assert response.status_code == 200
+    assert response.json()["connection_id"] == "jira-acme"
+    assert response.json()["provider"] == "fake"
     assert resolver.calls == [(PortKind.WORK_TRACKING, "jira-acme", "p1")]
     filters, page = resolver.adapter.list_calls[0]
     assert filters == WorkItemFilters(status="open", kind="bug", text="checkout")
@@ -1350,6 +1534,7 @@ def test_scoped_real_provider_routes_require_external_project_binding(
         response = client.request(
             method,
             path,
+            params=({"connection_id": DEFAULT_CONNECTION_ID} if method == "POST" else None),
             json=json_body,
             headers=headers,
         )
@@ -1376,6 +1561,7 @@ def test_create_work_item_requires_operator() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "New story"},
             headers={"Idempotency-Key": "create-viewer"},
         )
@@ -1387,17 +1573,57 @@ def test_create_work_item_created() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "New story", "kind": "story"},
             headers={"Idempotency-Key": "create-new-story"},
         )
     assert response.status_code == 201
     assert response.json()["key"] == "PHX-900"
+    assert response.json()["connection_id"] == DEFAULT_CONNECTION_ID
+    assert response.json()["provider"] == "fake"
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/v1/work-tracking/items", {"title": "No connection"}),
+        (
+            "/v1/work-tracking/items/PHX-1/enrich",
+            {"comment": "No connection"},
+        ),
+    ],
+)
+def test_work_item_mutations_require_exact_connection_id(
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    app, resolver, _ = make_app(identity())
+
+    with TestClient(app) as client:
+        response = client.post(
+            path,
+            json=payload,
+            headers={"Idempotency-Key": "missing-exact-connection"},
+        )
+
+    assert response.status_code == 422
+    assert any(
+        error["type"] == "missing" and error["loc"][0] == "query"
+        for error in response.json()["errors"]
+    )
+    assert resolver.calls == []
+    assert resolver.adapter.created_by_marker == {}
+    assert resolver.adapter.enrich_calls == []
 
 
 def test_create_work_item_requires_idempotency_key() -> None:
     app, resolver, _ = make_app(identity())
     with TestClient(app) as client:
-        response = client.post("/v1/work-tracking/items", json={"title": "No key"})
+        response = client.post(
+            "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
+            json={"title": "No key"},
+        )
 
     assert response.status_code == 422
     assert resolver.adapter.created_by_marker == {}
@@ -1409,16 +1635,19 @@ def test_create_work_item_replays_and_rejects_key_payload_conflict() -> None:
     with TestClient(app) as client:
         created = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Stable payload"},
             headers=headers,
         )
         replay = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Stable payload"},
             headers=headers,
         )
         conflict = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Different payload"},
             headers=headers,
         )
@@ -1447,6 +1676,7 @@ def test_create_work_item_surfaces_ambiguous_dispatch_for_operator_reconciliatio
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Ambiguous"},
             headers={"Idempotency-Key": "ambiguous-dispatch"},
         )
@@ -1469,12 +1699,14 @@ def test_completed_create_replays_before_adapter_construction() -> None:
     with TestClient(app) as client:
         created = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Replay without provider"},
             headers=headers,
         )
         resolver.fail_build = True
         replay = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Replay without provider"},
             headers=headers,
         )
@@ -1495,6 +1727,7 @@ def test_mutation_adapter_must_match_preselected_connection_identity() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Must not dispatch"},
             headers={"Idempotency-Key": "connection-identity-mismatch"},
         )
@@ -1503,6 +1736,26 @@ def test_mutation_adapter_must_match_preselected_connection_identity() -> None:
     assert response.json()["title"] == "work tracker upstream failure"
     assert resolver.adapter.created_by_marker == {}
     assert resolver.adapter.close_calls == 1
+
+
+def test_mutation_metadata_must_match_the_exact_requested_connection_id() -> None:
+    resolver = MetadataResolver(FakeWorkTrackingAdapter())
+    resolver.metadata_connection_id = "different-connection"
+    app, _, _ = make_app(identity(), resolver=resolver)  # type: ignore[arg-type]
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
+            json={"title": "Must not build"},
+            headers={"Idempotency-Key": "metadata-identity-mismatch"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "invalid work-tracking connection"
+    assert resolver.metadata_calls == [(PortKind.WORK_TRACKING, DEFAULT_CONNECTION_ID, "p1")]
+    assert resolver.build_calls == 0
+    assert resolver.adapter.created_by_marker == {}
 
 
 def test_mutation_resolver_surface_failure_is_stable_503() -> None:
@@ -1518,6 +1771,7 @@ def test_mutation_resolver_surface_failure_is_stable_503() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"title": "Must not resolve"},
             headers={"Idempotency-Key": "resolver-surface-failure"},
         )
@@ -1543,6 +1797,7 @@ def test_app_only_operator_cannot_mutate_project_wide_work_items_before_resoluti
     with TestClient(app) as client:
         response = client.post(
             path,
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json=payload,
             headers={"Idempotency-Key": "app-only-forbidden"},
         )
@@ -1567,7 +1822,12 @@ def test_create_work_item_rejects_oversized_payload_before_adapter(
     app, resolver, _ = make_app(identity())
 
     with TestClient(app) as client:
-        response = client.post("/v1/work-tracking/items", json=payload)
+        response = client.post(
+            "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
+            json=payload,
+            headers={"Idempotency-Key": "invalid-create-payload"},
+        )
 
     assert response.status_code == 422
     assert resolver.adapter.create_calls == []
@@ -1578,10 +1838,13 @@ def test_enrich_work_item_roles_and_payload() -> None:
     with TestClient(app) as client:
         ok = client.post(
             "/v1/work-tracking/items/PHX-1/enrich",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"comment": "triaged", "fields": {"System.Tags": "perf"}},
             headers={"Idempotency-Key": "enrich-phx-1"},
         )
     assert ok.status_code == 200
+    assert ok.json()["connection_id"] == DEFAULT_CONNECTION_ID
+    assert ok.json()["provider"] == "fake"
     assert len(resolver.adapter.enrich_calls) == 2
     fields_key, fields_enrichment = resolver.adapter.enrich_calls[0]
     comment_key, comment_enrichment = resolver.adapter.enrich_calls[1]
@@ -1593,6 +1856,7 @@ def test_enrich_work_item_roles_and_payload() -> None:
     with TestClient(viewer_app) as client:
         denied = client.post(
             "/v1/work-tracking/items/PHX-1/enrich",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
             json={"comment": "x"},
             headers={"Idempotency-Key": "enrich-viewer"},
         )
@@ -1673,6 +1937,16 @@ def seeded_repo() -> FakeSavedQueriesRepository:
     return repo
 
 
+def scoped_jira_resolver() -> FakeResolver:
+    return FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="jira",
+            project_id="PHX",
+            internal_project_id="p1",
+        )
+    )
+
+
 def test_list_saved_queries_scoped_sees_own_and_global() -> None:
     app, _, _ = make_app(identity(), repo=seeded_repo())
     with TestClient(app) as client:
@@ -1703,7 +1977,8 @@ def test_list_saved_queries_admin_sees_all_and_filters_by_provider() -> None:
 
 def test_create_saved_query_scoping_and_conflict() -> None:
     repo = seeded_repo()
-    app, _, _ = make_app(identity(), repo=repo)
+    resolver = scoped_jira_resolver()
+    app, _, _ = make_app(identity(), resolver=resolver, repo=repo)
     with TestClient(app) as client:
         created = client.post(
             "/v1/work-tracking/saved-queries",
@@ -1712,22 +1987,72 @@ def test_create_saved_query_scoping_and_conflict() -> None:
                 "provider": "jira",
                 "query": "status = Open",
                 "project_id": "p1",
+                "connection_id": "jira-p1",
             },
         )
         out_of_scope = client.post(
             "/v1/work-tracking/saved-queries",
-            json={"name": "p2 opens", "provider": "jira", "query": "q", "project_id": "p2"},
+            json={
+                "name": "p2 opens",
+                "provider": "jira",
+                "query": "q",
+                "project_id": "p2",
+                "connection_id": "jira-p2",
+            },
         )
         duplicate = client.post(
             "/v1/work-tracking/saved-queries",
-            json={"name": "alpha p1", "provider": "jira", "query": "q", "project_id": "p1"},
+            json={
+                "name": "alpha p1",
+                "provider": "jira",
+                "query": "q",
+                "project_id": "p1",
+                "connection_id": "jira-p1",
+            },
         )
     assert created.status_code == 201
     body = created.json()
     assert body["created_by"] == "op"
+    assert body["connection_id"] == "jira-p1"
     assert body["id"] in repo.rows
+    assert repo.rows[body["id"]].connection_id == "jira-p1"
     assert out_of_scope.status_code == 403
     assert duplicate.status_code == 409
+
+
+def test_project_saved_query_requires_matching_exact_connection() -> None:
+    repo = seeded_repo()
+    resolver = scoped_jira_resolver()
+    app, _, _ = make_app(identity(), resolver=resolver, repo=repo)
+
+    with TestClient(app) as client:
+        missing = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={
+                "name": "missing binding",
+                "provider": "jira",
+                "query": "status = Open",
+                "project_id": "p1",
+            },
+        )
+        mismatch = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={
+                "name": "wrong provider",
+                "provider": "ado",
+                "query": "SELECT [System.Id] FROM WorkItems",
+                "project_id": "p1",
+                "connection_id": "jira-p1",
+            },
+        )
+
+    assert missing.status_code == 422
+    assert missing.json()["title"] == ("project saved queries require a work-tracking connection")
+    assert mismatch.status_code == 409
+    assert mismatch.json()["title"] == (
+        "saved query provider does not match the work-tracking connection"
+    )
+    assert set(repo.rows) == {"s1", "s2", "s3"}
 
 
 def test_create_saved_query_viewer_is_403() -> None:
@@ -1770,6 +2095,45 @@ def test_global_saved_query_mutations_require_unscoped_admin() -> None:
     assert created.status_code == 201
     assert updated.status_code == 200
     assert deleted.status_code == 204
+
+
+def test_global_saved_query_is_an_unbound_template() -> None:
+    repo = seeded_repo()
+    resolver = FakeResolver(FakeWorkTrackingAdapter(provider="jira"))
+    app, _, _ = make_app(
+        identity(role=Role.ADMIN, scopes=[]),
+        resolver=resolver,
+        repo=repo,
+    )
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={
+                "name": "global template",
+                "provider": "jira",
+                "query": "status = Open",
+            },
+        )
+        pinned = client.post(
+            "/v1/work-tracking/saved-queries",
+            json={
+                "name": "invalid pinned global",
+                "provider": "jira",
+                "query": "status = Open",
+                "connection_id": "jira-global",
+            },
+        )
+
+    assert created.status_code == 201
+    assert created.json()["project_id"] is None
+    assert created.json()["connection_id"] is None
+    assert repo.rows[created.json()["id"]].connection_id is None
+    assert pinned.status_code == 422
+    assert pinned.json()["title"] == (
+        "global saved queries must not pin a work-tracking connection"
+    )
+    assert resolver.calls == []
 
 
 def test_app_only_scope_cannot_mutate_project_wide_saved_queries() -> None:
@@ -1822,6 +2186,38 @@ def test_update_saved_query_patches_fields_and_conflicts() -> None:
     assert repo.locked_gets == ["s1", "s3"]
     assert global_update.status_code == 403
     assert repo.rows["s3"].project_id is None
+
+
+def test_legacy_project_saved_query_can_only_rebind_explicitly() -> None:
+    repo = seeded_repo()
+    assert repo.rows["s1"].connection_id is None
+    resolver = scoped_jira_resolver()
+    app, _, _ = make_app(identity(), resolver=resolver, repo=repo)
+
+    with TestClient(app) as client:
+        harmless = client.patch(
+            "/v1/work-tracking/saved-queries/s1",
+            json={"description": "legacy row retained until repair"},
+        )
+        provider_without_binding = client.patch(
+            "/v1/work-tracking/saved-queries/s1",
+            json={"provider": "jira"},
+        )
+        repaired = client.patch(
+            "/v1/work-tracking/saved-queries/s1",
+            json={"connection_id": "jira-p1"},
+        )
+
+    assert harmless.status_code == 200
+    assert harmless.json()["connection_id"] is None
+    assert provider_without_binding.status_code == 422
+    assert provider_without_binding.json()["title"] == (
+        "project saved queries require a work-tracking connection"
+    )
+    assert repaired.status_code == 200
+    assert repaired.json()["connection_id"] == "jira-p1"
+    assert repo.rows["s1"].connection_id == "jira-p1"
+    assert resolver.calls == [(PortKind.WORK_TRACKING, "jira-p1", "p1")]
 
 
 def test_update_saved_query_rejects_ignored_ownership_fields() -> None:
@@ -1912,6 +2308,7 @@ def test_saved_query_legacy_credential_text_is_redacted_from_output() -> None:
     row.name = credential
     row.provider = credential
     row.query = credential
+    row.connection_id = credential
     row.description = credential
     row.created_by = credential
     app, _, _ = make_app(identity(), repo=repo)
@@ -1922,7 +2319,15 @@ def test_saved_query_legacy_credential_text_is_redacted_from_output() -> None:
     assert response.status_code == 200
     assert credential.encode() not in response.content
     body = response.json()
-    for field in ("id", "name", "provider", "query", "description", "created_by"):
+    for field in (
+        "id",
+        "name",
+        "provider",
+        "query",
+        "connection_id",
+        "description",
+        "created_by",
+    ):
         assert body[field] == "[REDACTED]"
 
     row.project_id = credential
@@ -1934,13 +2339,22 @@ def test_saved_query_malformed_legacy_text_is_bounded_and_quarantined() -> None:
     row.name = ""
     row.provider = "p" * 65
     row.query = cast(Any, {"unexpected": "shape"})
+    row.connection_id = "c" * 33
     row.description = "unsafe\x00description"
     row.project_id = "p" * 256
     row.created_by = "actor" * 52
 
     output = SavedQueryOut.model_validate(row)
 
-    for field in ("name", "provider", "query", "description", "project_id", "created_by"):
+    for field in (
+        "name",
+        "provider",
+        "query",
+        "connection_id",
+        "description",
+        "project_id",
+        "created_by",
+    ):
         assert getattr(output, field) == "[REDACTED]"
 
 

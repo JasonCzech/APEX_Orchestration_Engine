@@ -222,6 +222,12 @@
   gap: 6px;
 }
 
+.runs-result-window-note {
+  margin: 0;
+  color: var(--warning-text);
+  font-size: 12px;
+}
+
 .runs-pagination-buttons .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;

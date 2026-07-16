@@ -61,6 +61,7 @@ async def start_context_summary(
     work_item_keys: list[str] | None = None,
     document_packets: list[dict[str, Any]] | None = None,
     project_id: str | None = None,
+    work_tracking_connection_id: str | None = None,
 ) -> dict[str, str]:
     """Launch a durable background run on the `context` assistant.
 
@@ -73,12 +74,18 @@ async def start_context_summary(
             "work_item_keys": [] if work_item_keys is None else work_item_keys,
             "document_packets": [] if document_packets is None else document_packets,
             "project_id": project_id,
+            "work_tracking_connection_id": work_tracking_connection_id,
         }
     )
     metadata = {
         "kind": "context_summary",
         "title": validated.subject,
         **({"project_id": validated.project_id} if validated.project_id is not None else {}),
+        **(
+            {"work_tracking_connection_id": validated.work_tracking_connection_id}
+            if validated.work_tracking_connection_id is not None
+            else {}
+        ),
     }
     run_input = {
         "subject": validated.subject,
@@ -88,6 +95,7 @@ async def start_context_summary(
             for packet in validated.document_packets
         ],
         "project_id": validated.project_id,
+        "work_tracking_connection_id": validated.work_tracking_connection_id,
     }
     if contains_credential_material({"metadata": metadata, "input": run_input}):
         raise ValueError("context summary must not contain credential material")

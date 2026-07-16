@@ -61,11 +61,13 @@ describe('Dialog', () => {
     )
 
     const behind = screen.getByText('Behind page')
-    expect(behind).toHaveAttribute('aria-hidden', 'true')
-    expect(behind.inert).toBe(true)
+    expect(container).toHaveAttribute('aria-hidden', 'true')
+    expect(container.inert).toBe(true)
 
-    const overlay = container.querySelector<HTMLElement>('.test-overlay')
+    const overlay = document.body.querySelector<HTMLElement>('.test-overlay')
     expect(overlay).not.toBeNull()
+    expect(overlay?.parentElement).toHaveAttribute('id', 'apex-dialog-portal')
+    expect(overlay?.parentElement).toHaveStyle({ zIndex: '1000' })
     fireEvent.mouseDown(overlay!)
     expect(screen.getByRole('button', { name: 'First' })).toHaveFocus()
     expect(onClose).not.toHaveBeenCalled()
@@ -76,6 +78,41 @@ describe('Dialog', () => {
     expect(screen.getByRole('button', { name: 'First' })).toHaveFocus()
 
     unmount()
-    expect(behind.inert).not.toBe(true)
+    expect(container.inert).not.toBe(true)
+  })
+
+  it('keeps background dialogs inert and sends Escape only to the top dialog', () => {
+    const closeFirst = vi.fn()
+    const closeSecond = vi.fn()
+    const { unmount } = render(
+      <>
+        <Dialog
+          overlayClassName="first-overlay"
+          className="test-panel"
+          ariaLabel="First dialog"
+          onClose={closeFirst}
+        >
+          <button type="button">First action</button>
+        </Dialog>
+        <Dialog
+          overlayClassName="second-overlay"
+          className="test-panel"
+          ariaLabel="Second dialog"
+          onClose={closeSecond}
+        >
+          <button type="button">Second action</button>
+        </Dialog>
+      </>,
+    )
+
+    expect(document.body.querySelector('.first-overlay')).toHaveAttribute('aria-hidden', 'true')
+    expect(document.body.querySelector<HTMLElement>('.first-overlay')?.inert).toBe(true)
+    expect(document.body.querySelector('.second-overlay')).not.toHaveAttribute('aria-hidden')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(closeFirst).not.toHaveBeenCalled()
+    expect(closeSecond).toHaveBeenCalledTimes(1)
+
+    unmount()
   })
 })

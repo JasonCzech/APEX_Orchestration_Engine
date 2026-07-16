@@ -12,6 +12,30 @@ let memoryOnly = false
 let storageListenerAttached = false
 const sessionListeners = new Set<() => void>()
 
+/**
+ * Browser-only drafts below these prefixes contain principal-scoped payloads
+ * and idempotency keys. They may survive a component unmount, but they must
+ * never survive an API-key transition in the same tab (for example, operator
+ * A signing out before operator B signs in). A same-key role/scope refresh is
+ * still the same server principal and must retain mutation recovery state.
+ */
+const SESSION_BOUND_STORAGE_PREFIXES = ['apex.work-items.', 'apex.idempotency.'] as const
+
+function purgeSessionBoundStorage(): void {
+  try {
+    const storage = window.sessionStorage
+    // Walk backwards because removeItem compacts the numeric key indexes.
+    for (let index = storage.length - 1; index >= 0; index -= 1) {
+      const key = storage.key(index)
+      if (key && SESSION_BOUND_STORAGE_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+        storage.removeItem(key)
+      }
+    }
+  } catch {
+    // Session invalidation remains authoritative when storage is unavailable.
+  }
+}
+
 function safeStorage(): Storage | null {
   try {
     return window.localStorage
@@ -41,6 +65,8 @@ export function getApiKey(): string | null {
 }
 
 export function setApiKey(key: string): void {
+  const unchanged = getApiKey() === key
+  if (!unchanged) purgeSessionBoundStorage()
   memoryKey = key
   try {
     const storage = safeStorage()
@@ -51,11 +77,13 @@ export function setApiKey(key: string): void {
     // Keep the in-memory revision/listener transition usable when persistence is blocked.
     memoryOnly = true
   }
+  if (unchanged) return
   keyRevision += 1
   notify(key)
 }
 
 export function clearApiKey(): void {
+  purgeSessionBoundStorage()
   memoryKey = null
   try {
     const storage = safeStorage()
@@ -121,6 +149,7 @@ function handleStorageChange(event: StorageEvent): void {
         ? event.newValue
         : null
         : getApiKey()
+  purgeSessionBoundStorage()
   memoryKey = key
   memoryOnly = false
   keyRevision += 1

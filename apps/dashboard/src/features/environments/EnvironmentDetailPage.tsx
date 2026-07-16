@@ -8,16 +8,18 @@
  * message — they render as an inline danger card with a retry (probe-style;
  * deliberately NOT a toast).
  */
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
 import {
+  environmentWriteMutationKey,
   useApplicationsIndex,
   useEnvironment,
   useUpdateEnvironment,
   type Environment,
   type EnvironmentUpdate,
 } from '@/api/hooks/useEnvironments'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import {
   useEnvironmentInventory,
   useRescanEnvironment,
@@ -25,6 +27,7 @@ import {
 } from '@/api/hooks/useInventory'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { formatRelative } from '@/utils/time'
@@ -95,9 +98,10 @@ function EditEnvironmentForm({
 }: {
   environment: Environment
   canApproveTarget: boolean
-  onDone: () => void
+  onDone: (environmentId: string) => void
 }) {
-  const update = useUpdateEnvironment()
+  const update = useUpdateEnvironment(environment.id)
+  const writeCount = usePendingMutationCount(environmentWriteMutationKey(environment.id))
   const [baseUrl, setBaseUrl] = useState(environment.base_url ?? '')
   const [kind, setKind] = useState(environment.kind ?? '')
   const [hosts, setHosts] = useState<HostDraft[]>(() => hostsToDrafts(environment.hosts))
@@ -109,7 +113,7 @@ function EditEnvironmentForm({
   const hasReservedOptions =
     optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
   const canSave =
-    optionsParse.ok && (canApproveTarget || !hasReservedOptions) && !update.isPending
+    optionsParse.ok && (canApproveTarget || !hasReservedOptions) && writeCount === 0
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -128,7 +132,7 @@ function EditEnvironmentForm({
           return body
         })(),
       },
-      { onSuccess: onDone },
+      { onSuccess: () => onDone(environment.id) },
     )
   }
 
@@ -201,7 +205,7 @@ function EditEnvironmentForm({
         <button
           type="button"
           className="btn btn-ghost btn-sm"
-          onClick={onDone}
+          onClick={() => onDone(environment.id)}
           disabled={update.isPending}
         >
           Cancel
@@ -254,10 +258,12 @@ function InventoryPanel({
   environmentId,
   canMutate,
   rescan,
+  writePending,
 }: {
   environmentId: string
   canMutate: boolean
   rescan: ReturnType<typeof useRescanEnvironment>
+  writePending: boolean
 }) {
   const inventory = useEnvironmentInventory(environmentId)
 
@@ -282,8 +288,8 @@ function InventoryPanel({
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              onClick={() => rescan.mutate(environmentId)}
-              disabled={rescan.isPending}
+              onClick={() => rescan.mutate()}
+              disabled={writePending}
             >
               Retry
             </button>
@@ -291,11 +297,15 @@ function InventoryPanel({
         </div>
       )}
 
+      {inventory.isError && inventory.data && (
+        <CachedDataWarning error={inventory.error} onRetry={() => void inventory.refetch()} />
+      )}
+
       {inventory.isPending ? (
         <div role="status" aria-label="Loading inventory" className="env-muted">
           Loading inventory…
         </div>
-      ) : inventory.isError ? (
+      ) : inventory.isError && !inventory.data ? (
         <div className="env-inline-error" role="alert">
           <span>{inventory.error.message}</span>
           <button
@@ -316,8 +326,8 @@ function InventoryPanel({
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={() => rescan.mutate(environmentId)}
-              disabled={rescan.isPending}
+              onClick={() => rescan.mutate()}
+              disabled={writePending}
             >
               {rescan.isPending ? 'Scanning…' : 'Rescan'}
             </button>
@@ -334,13 +344,23 @@ export function EnvironmentDetailPage() {
   const { id = '' } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
   const environment = useEnvironment(id)
+  const writeCount = usePendingMutationCount(environmentWriteMutationKey(id))
   const applications = useApplicationsIndex()
-  const rescan = useRescanEnvironment()
+  const rescan = useRescanEnvironment(id)
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
   const canApproveTarget = isGlobalAdmin(consumer)
   // ?edit=1 lets the list's row menu land directly in edit mode.
-  const [editing, setEditing] = useState(searchParams.get('edit') === '1')
+  const editRequested = canMutate && searchParams.get('edit') === '1'
+  const [editing, setEditing] = useState(editRequested)
+  const activeEnvironmentIdRef = useRef(id)
+  activeEnvironmentIdRef.current = id
+  const resetRescan = rescan.reset
+
+  useEffect(() => {
+    setEditing(editRequested)
+    resetRescan()
+  }, [id, editRequested, resetRescan])
 
   if (environment.isPending) {
     return (
@@ -356,11 +376,11 @@ export function EnvironmentDetailPage() {
     )
   }
 
-  if (environment.isError) {
+  if (!environment.data) {
     return (
       <ProblemCard
         title="Environment unavailable"
-        message={environment.error.message}
+        message={environment.error?.message ?? 'The environment could not be loaded.'}
         onRetry={() => void environment.refetch()}
       />
     )
@@ -371,6 +391,9 @@ export function EnvironmentDetailPage() {
 
   return (
     <section className="env-page animate-enter">
+      {environment.isError && (
+        <CachedDataWarning error={environment.error} onRetry={() => void environment.refetch()} />
+      )}
       <header className="env-detail-header glass-panel">
         <div className="env-detail-heading">
           <nav className="env-breadcrumb" aria-label="Breadcrumb">
@@ -397,14 +420,15 @@ export function EnvironmentDetailPage() {
               className="btn btn-secondary btn-sm"
               aria-pressed={editing}
               onClick={() => setEditing((value) => !value)}
+              disabled={writeCount > 0}
             >
               {editing ? 'Close editor' : 'Edit'}
             </button>
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              onClick={() => rescan.mutate(env.id)}
-              disabled={rescan.isPending}
+              onClick={() => rescan.mutate()}
+              disabled={writeCount > 0}
             >
               {rescan.isPending ? 'Scanning…' : 'Rescan'}
             </button>
@@ -413,16 +437,24 @@ export function EnvironmentDetailPage() {
       </header>
 
       <div className="env-detail-panels">
-        {editing ? (
+        {editing && canMutate ? (
           <EditEnvironmentForm
+            key={env.id}
             environment={env}
             canApproveTarget={canApproveTarget}
-            onDone={() => setEditing(false)}
+            onDone={(completedEnvironmentId) => {
+              if (activeEnvironmentIdRef.current === completedEnvironmentId) setEditing(false)
+            }}
           />
         ) : (
           <ReferenceCard environment={env} />
         )}
-        <InventoryPanel environmentId={env.id} canMutate={canMutate} rescan={rescan} />
+        <InventoryPanel
+          environmentId={env.id}
+          canMutate={canMutate}
+          rescan={rescan}
+          writePending={writeCount > 0}
+        />
       </div>
     </section>
   )

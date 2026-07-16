@@ -956,6 +956,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/work-tracking/binding": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Work Tracking Binding */
+        get: operations["getWorkTrackingBinding"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/work-tracking/items": {
         parameters: {
             query?: never;
@@ -1568,6 +1585,8 @@ export interface components {
             subject: string;
             /** Work Item Keys */
             work_item_keys?: string[];
+            /** Work Tracking Connection Id */
+            work_tracking_connection_id?: string | null;
         };
         /** CreatePromptRequest */
         CreatePromptRequest: {
@@ -1840,6 +1859,23 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * ExecutableTranslatedQuery
+         * @description Provider query with the optional binding returned by translation.
+         */
+        ExecutableTranslatedQuery: {
+            /**
+             * Confidence
+             * @default 1
+             */
+            confidence: number;
+            /** Connection Id */
+            connection_id?: string | null;
+            /** Provider */
+            provider: string;
+            /** Query */
+            query: string;
+        };
         /** ExecuteQueryRequest */
         ExecuteQueryRequest: {
             /** Connection Id */
@@ -1854,7 +1890,7 @@ export interface components {
              * @default 0
              */
             offset: number;
-            query: components["schemas"]["TranslatedQuery"];
+            query: components["schemas"]["ExecutableTranslatedQuery"];
         };
         /**
          * ExternalResults
@@ -2254,6 +2290,63 @@ export interface components {
             /** Run Id */
             run_id: string;
         };
+        /** ResolvedTranslatedQuery */
+        ResolvedTranslatedQuery: {
+            /**
+             * Confidence
+             * @default 1
+             */
+            confidence: number;
+            /** Connection Id */
+            connection_id: string;
+            /** Provider */
+            provider: string;
+            /** Query */
+            query: string;
+        };
+        /** ResolvedWorkItem */
+        ResolvedWorkItem: {
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @default story
+             */
+            kind: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Status
+             * @default open
+             */
+            status: string;
+            /** Title */
+            title: string;
+            /** Url */
+            url?: string | null;
+        };
+        /** ResolvedWorkItemPage */
+        ResolvedWorkItemPage: {
+            /** Connection Id */
+            connection_id: string;
+            /** Items */
+            items?: components["schemas"]["WorkItem"][];
+            page?: components["schemas"]["Page"];
+            /** Provider */
+            provider: string;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+        };
         /** ResumeGateRequest */
         ResumeGateRequest: {
             /** Action */
@@ -2301,6 +2394,8 @@ export interface components {
         };
         /** SavedQueryCreate */
         SavedQueryCreate: {
+            /** Connection Id */
+            connection_id?: string | null;
             /** Description */
             description?: string | null;
             /** Name */
@@ -2323,6 +2418,8 @@ export interface components {
         };
         /** SavedQueryOut */
         SavedQueryOut: {
+            /** Connection Id */
+            connection_id?: string | null;
             /** Created At */
             created_at?: string | null;
             /** Created By */
@@ -2344,6 +2441,8 @@ export interface components {
         };
         /** SavedQueryUpdate */
         SavedQueryUpdate: {
+            /** Connection Id */
+            connection_id?: string | null;
             /** Description */
             description?: string | null;
             /** Name */
@@ -2513,18 +2612,6 @@ export interface components {
             /** Text */
             text: string;
         };
-        /** TranslatedQuery */
-        TranslatedQuery: {
-            /**
-             * Confidence
-             * @default 1
-             */
-            confidence: number;
-            /** Provider */
-            provider: string;
-            /** Query */
-            query: string;
-        };
         /** UsageAnalyticsResponse */
         UsageAnalyticsResponse: {
             /** Buckets */
@@ -2672,16 +2759,12 @@ export interface components {
             /** Title */
             title: string;
         };
-        /** WorkItemPage */
-        WorkItemPage: {
-            /** Items */
-            items?: components["schemas"]["WorkItem"][];
-            page?: components["schemas"]["Page"];
-            /**
-             * Total
-             * @default 0
-             */
-            total: number;
+        /** WorkTrackingBindingOut */
+        WorkTrackingBindingOut: {
+            /** Connection Id */
+            connection_id: string;
+            /** Provider */
+            provider: string;
         };
     };
     responses: never;
@@ -5132,6 +5215,40 @@ export interface operations {
             };
         };
     };
+    getWorkTrackingBinding: {
+        parameters: {
+            query?: {
+                /** @description Explicit work-tracking connection id (default: resolved) */
+                connection_id?: string | null;
+                /** @description Project used to resolve scoped work-tracking connections */
+                project?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkTrackingBindingOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listWorkItems: {
         parameters: {
             query?: {
@@ -5157,7 +5274,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkItemPage"];
+                    "application/json": components["schemas"]["ResolvedWorkItemPage"];
                 };
             };
             /** @description Validation Error */
@@ -5173,9 +5290,9 @@ export interface operations {
     };
     createWorkItem: {
         parameters: {
-            query?: {
-                /** @description Explicit work-tracking connection id (default: resolved) */
-                connection_id?: string | null;
+            query: {
+                /** @description Exact work-tracking connection id. Required for mutations so an ambiguous retry cannot follow a changed default connection. */
+                connection_id: string;
                 /** @description Project used to resolve scoped work-tracking connections */
                 project?: string | null;
             };
@@ -5198,7 +5315,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkItem"];
+                    "application/json": components["schemas"]["ResolvedWorkItem"];
                 };
             };
             /** @description Validation Error */
@@ -5234,7 +5351,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkItem"];
+                    "application/json": components["schemas"]["ResolvedWorkItem"];
                 };
             };
             /** @description Validation Error */
@@ -5250,9 +5367,9 @@ export interface operations {
     };
     enrichWorkItem: {
         parameters: {
-            query?: {
-                /** @description Explicit work-tracking connection id (default: resolved) */
-                connection_id?: string | null;
+            query: {
+                /** @description Exact work-tracking connection id. Required for mutations so an ambiguous retry cannot follow a changed default connection. */
+                connection_id: string;
                 /** @description Project used to resolve scoped work-tracking connections */
                 project?: string | null;
             };
@@ -5277,7 +5394,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkItem"];
+                    "application/json": components["schemas"]["ResolvedWorkItem"];
                 };
             };
             /** @description Validation Error */
@@ -5315,7 +5432,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkItemPage"];
+                    "application/json": components["schemas"]["ResolvedWorkItemPage"];
                 };
             };
             /** @description Validation Error */
@@ -5353,7 +5470,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TranslatedQuery"];
+                    "application/json": components["schemas"]["ResolvedTranslatedQuery"];
                 };
             };
             /** @description Validation Error */

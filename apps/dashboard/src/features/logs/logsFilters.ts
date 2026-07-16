@@ -9,6 +9,8 @@
 import type { LogSearchInput } from '@/api/hooks/useLogs'
 
 export const LOGS_PAGE_SIZE = 50
+/** Shared provider Page contract caps offsets at 1,000. */
+export const LOGS_MAX_OFFSET = 1_000
 
 /** Conventional severity chips; the backend stores levels as plain strings. */
 export const LOG_LEVELS = ['ERROR', 'WARN', 'INFO', 'DEBUG'] as const

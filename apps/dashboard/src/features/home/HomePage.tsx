@@ -5,6 +5,7 @@ import { useUsageAnalytics } from '@/api/hooks/useAnalytics'
 import { useDraftsList } from '@/api/hooks/useDrafts'
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
 import { isApiError } from '@/api/errors'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { useTopbarContribution } from '@/components/layout/TopbarContributionProvider'
 import { ProblemCard } from '@/components/ProblemCard'
 import { useApprovalsInbox, type ApprovalItem } from '@/features/approvals/useApprovalsInbox'
@@ -30,6 +31,25 @@ function errorMessage(error: unknown): string {
   if (isApiError(error)) return error.message
   if (error instanceof Error) return error.message
   return 'The dashboard could not be loaded.'
+}
+
+function QueryErrorNotice({
+  title,
+  error,
+  onRetry,
+}: {
+  title: string
+  error: unknown
+  onRetry: () => void
+}) {
+  return (
+    <div className="tonal-card danger" role="alert">
+      <strong>{title}</strong>: {errorMessage(error)}{' '}
+      <button type="button" className="btn btn-ghost btn-sm" onClick={onRetry}>
+        Retry
+      </button>
+    </div>
+  )
 }
 
 function MetricCard({
@@ -133,6 +153,7 @@ export function HomePage() {
   const active = activeRuns(items)
   const recent = recentRuns(items)
   const draftItems = drafts.data ?? []
+  const pendingApprovalsValue = inbox.isLoading || inbox.error ? '—' : inbox.count
 
   if (fleet.isPending) {
     return (
@@ -154,7 +175,12 @@ export function HomePage() {
     )
   }
 
-  if (items.length === 0 && !drafts.isPending && draftItems.length === 0) {
+  if (
+    items.length === 0 &&
+    !drafts.isPending &&
+    !drafts.isError &&
+    draftItems.length === 0
+  ) {
     return (
       <section className="home-page animate-enter">
         <div className="dash-empty home-hero" data-testid="home-hero">
@@ -215,7 +241,7 @@ export function HomePage() {
             </div>
             <div>
               <span className="home-health-stat-label">Pending approvals</span>
-              <strong className="home-health-stat-value">{inbox.count}</strong>
+              <strong className="home-health-stat-value">{pendingApprovalsValue}</strong>
             </div>
             <div>
               <span className="home-health-stat-label">Phases succeeded</span>
@@ -253,7 +279,24 @@ export function HomePage() {
             Open queue
           </Link>
         </div>
-        <ApprovalQueue gates={gates} />
+        {inbox.isLoading ? (
+          <div role="status" aria-busy="true">
+            Loading pending approvals…
+          </div>
+        ) : inbox.error ? (
+          <QueryErrorNotice
+            title="Approvals unavailable"
+            error={inbox.error}
+            onRetry={inbox.refetch}
+          />
+        ) : (
+          <>
+            {inbox.refreshError && (
+              <CachedDataWarning error={inbox.refreshError} onRetry={inbox.refetch} />
+            )}
+            <ApprovalQueue gates={gates} />
+          </>
+        )}
       </section>
 
       <section className="glass-panel home-recent" aria-label="Recent runs" data-testid="home-recent">
@@ -287,19 +330,35 @@ export function HomePage() {
         )}
       </section>
 
-      {draftItems.length > 0 && (
+      {(drafts.isError || draftItems.length > 0) && (
         <section className="glass-panel home-drafts" data-testid="home-drafts">
           <div className="home-section-head">
             <h3 className="home-section-title">Resume Drafts</h3>
           </div>
-          <div className="home-draft-row-list">
-            {draftItems.slice(0, 3).map((draft) => (
-              <Link key={draft.id} to={`/runs/new?draft=${draft.id}`} className="home-draft-row">
-                <span className="home-draft-title">{draft.title || 'Untitled draft'}</span>
-                <span className="home-draft-updated">{formatRelative(draft.updated_at)}</span>
-              </Link>
-            ))}
-          </div>
+          {drafts.isError && !drafts.data ? (
+            <QueryErrorNotice
+              title="Saved drafts unavailable"
+              error={drafts.error}
+              onRetry={() => void drafts.refetch()}
+            />
+          ) : (
+            <>
+              {drafts.isError && drafts.data && (
+                <CachedDataWarning
+                  error={drafts.error}
+                  onRetry={() => void drafts.refetch()}
+                />
+              )}
+              <div className="home-draft-row-list">
+                {draftItems.slice(0, 3).map((draft) => (
+                  <Link key={draft.id} to={`/runs/new?draft=${draft.id}`} className="home-draft-row">
+                    <span className="home-draft-title">{draft.title || 'Untitled draft'}</span>
+                    <span className="home-draft-updated">{formatRelative(draft.updated_at)}</span>
+                  </Link>
+                ))}
+              </div>
+            </>
+          )}
         </section>
       )}
 

@@ -75,12 +75,19 @@ export interface WizardConfig {
   golden_configurable?: Record<string, unknown> | null
 }
 
+export interface WizardWorkItemRef {
+  key: string
+  connection_id: string | null
+  provider: string | null
+}
+
 export interface WizardDraft {
+  /** Legacy serialized field; launches derive their key from canonical intent. */
   launch_idempotency_key: string
   title: string
   request: string
   scope: WizardScope
-  work_item_keys: string[]
+  work_items: WizardWorkItemRef[]
   document_ids: string[]
   context_summary_ids: string[]
   config: WizardConfig
@@ -88,16 +95,19 @@ export interface WizardDraft {
   prompt_override_removals: string[]
 }
 
+export function createLaunchIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export function emptyDraft(): WizardDraft {
   return {
-    launch_idempotency_key:
-      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-        ? crypto.randomUUID()
-        : `launch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    launch_idempotency_key: createLaunchIdempotencyKey(),
     title: '',
     request: '',
     scope: { project_id: 'demo', app_id: null, environment_id: null },
-    work_item_keys: [],
+    work_items: [],
     document_ids: [],
     context_summary_ids: [],
     config: {
@@ -129,6 +139,46 @@ function stringOrNull(value: unknown): string | null {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+function parseWorkItemRefs(payload: Record<string, unknown>): WizardWorkItemRef[] {
+  const refs: WizardWorkItemRef[] = []
+  if (Array.isArray(payload['work_items'])) {
+    for (const value of payload['work_items']) {
+      if (!isRecord(value)) continue
+      const key = stringOrNull(value['key'])
+      if (!key) continue
+      refs.push({
+        key,
+        connection_id: stringOrNull(value['connection_id']),
+        provider: stringOrNull(value['provider']),
+      })
+    }
+  } else {
+    refs.push(
+      ...stringArray(payload['work_item_keys']).map((key) => ({
+        key,
+        connection_id: null,
+        provider: null,
+      })),
+    )
+  }
+  const seen = new Set<string>()
+  return refs.filter((ref) => {
+    if (
+      ref.connection_id === null &&
+      refs.some(
+        (candidate) =>
+          candidate.key === ref.key && candidate.connection_id !== null,
+      )
+    ) {
+      return false
+    }
+    const identity = `${ref.connection_id ?? ''}\u0000${ref.key}`
+    if (seen.has(identity)) return false
+    seen.add(identity)
+    return true
+  })
 }
 
 function isPhaseName(value: unknown): value is PhaseName {
@@ -191,7 +241,7 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
       app_id: stringOrNull(scope['app_id']),
       environment_id: stringOrNull(scope['environment_id']),
     },
-    work_item_keys: stringArray(payload['work_item_keys']),
+    work_items: parseWorkItemRefs(payload),
     document_ids: stringArray(payload['document_ids']),
     context_summary_ids: stringArray(payload['context_summary_ids']),
     config: {
@@ -294,7 +344,7 @@ export const DEFAULT_MAX_CONTEXT_PACKETS = 32
 export function contextPacketCount(draft: WizardDraft): number {
   return (
     draft.document_ids.length +
-    draft.work_item_keys.length +
+    draft.work_items.length +
     draft.context_summary_ids.length
   )
 }
@@ -312,8 +362,20 @@ export function stepIssues(
       if (draft.scope.project_id.trim().length === 0) issues.push('Project is required')
       break
     }
-    case 'work-items':
-      break // optional (skip allowed)
+    case 'work-items': {
+      if (draft.work_items.some((item) => !item.connection_id || !item.provider)) {
+        issues.push('Revalidate legacy work items before launch')
+      }
+      const connections = new Set(
+        draft.work_items
+          .map((item) => item.connection_id)
+          .filter((connectionId): connectionId is string => Boolean(connectionId)),
+      )
+      if (connections.size > 1) {
+        issues.push('Selected work items must use one work-tracking connection')
+      }
+      break
+    }
     case 'context': {
       const count = contextPacketCount(draft)
       if (count > maxContextPackets) {
@@ -400,6 +462,20 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
         }
       : {}),
   }
+  const selectedWorkTrackingConnections = new Set(
+    draft.work_items
+      .map((item) => item.connection_id)
+      .filter((connectionId): connectionId is string => Boolean(connectionId)),
+  )
+  if (selectedWorkTrackingConnections.size === 1) {
+    const inheritedConnections = isRecord(inherited['connections'])
+      ? inherited['connections']
+      : {}
+    configurable['connections'] = {
+      ...inheritedConnections,
+      work_tracking: [...selectedWorkTrackingConnections][0],
+    }
+  }
   if (Object.keys(effectiveOverrides).length === 0) delete configurable['prompt_overrides']
 
   // The compact scope/phase controls are authoritative even when they clear a
@@ -431,6 +507,6 @@ export function buildLaunchPreview(draft: WizardDraft): LaunchPreview {
     input: { title: draft.title.trim(), request: draft.request.trim() },
     configurable: buildConfigurable(draft),
     document_ids: [...draft.document_ids],
-    work_item_keys: [...draft.work_item_keys],
+    work_item_keys: draft.work_items.map((item) => item.key),
   }
 }

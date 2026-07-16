@@ -14,10 +14,18 @@ from collections.abc import Mapping
 from string import Formatter
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
 
 from apex.domain.diagnostics import contains_credential_material
-from apex.domain.input_limits import ScopeId, validation_error_summary
+from apex.domain.input_limits import RecordId, ScopeId, validation_error_summary
 from apex.domain.pipeline import (
     MAX_CONTEXT_ID_CHARS,
     MAX_CONTEXT_REF_CHARS,
@@ -40,7 +48,14 @@ MAX_WORK_ITEM_KEYS_HARD = 100
 MAX_STATELESS_MAPPING_KEY_CHARS = 256
 
 CONTEXT_RUN_INPUT_KEYS = frozenset(
-    {"app_id", "document_packets", "project_id", "subject", "work_item_keys"}
+    {
+        "app_id",
+        "document_packets",
+        "project_id",
+        "subject",
+        "work_item_keys",
+        "work_tracking_connection_id",
+    }
 )
 PLAYGROUND_RUN_INPUT_KEYS = frozenset({"app_id", "project_id", "prompt", "sample_input"})
 _FORMAT_NUMBER_RE = re.compile(r"\d+")
@@ -107,6 +122,25 @@ class ContextRunInput(_StrictRunInputModel):
     document_packets: list[ContextDocumentPacket] = Field(default_factory=list, max_length=64)
     project_id: ScopeId | None = None
     app_id: ScopeId | None = None
+    work_tracking_connection_id: RecordId | None = None
+
+    @model_validator(mode="after")
+    def require_exact_work_tracking_affinity(self) -> ContextRunInput:
+        connection_id = self.work_tracking_connection_id
+        if connection_id is not None and (
+            connection_id != connection_id.strip()
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in connection_id)
+        ):
+            raise ValueError("work_tracking_connection_id is invalid")
+        if self.work_item_keys and connection_id is None:
+            raise ValueError(
+                "work_tracking_connection_id is required when work_item_keys are present"
+            )
+        if not self.work_item_keys and connection_id is not None:
+            raise ValueError(
+                "work_tracking_connection_id requires at least one work_item_key"
+            )
+        return self
 
 
 class PlaygroundPrompt(_StrictRunInputModel):
@@ -137,6 +171,7 @@ PUBLIC_RUN_INPUT_KEYS = frozenset(
         "subject",
         "title",
         "work_item_keys",
+        "work_tracking_connection_id",
     }
 )
 

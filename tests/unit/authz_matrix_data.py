@@ -73,6 +73,7 @@ MIN_ROLE: dict[str, str] = {
     # ── work tracking ───────────────────────────────────────────────────────
     # EXCEPTION: POST verbs with pure read semantics (query translation /
     # execution passthrough) — any authenticated consumer may query.
+    "getWorkTrackingBinding": "viewer",
     "translateWorkQuery": "viewer",
     "executeWorkQuery": "viewer",
     "listWorkItems": "viewer",
@@ -178,6 +179,7 @@ SCOPE: dict[str, str] = {
     "getEngineRuns": "project",
     "abortEngineRun": "project",
     # ── work tracking ───────────────────────────────────────────────────────
+    "getWorkTrackingBinding": "project",
     "translateWorkQuery": "provider_project",
     "executeWorkQuery": "provider_project",
     "listWorkItems": "provider_project",
@@ -274,6 +276,7 @@ SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
     },
     "listDrafts": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "createDraft": {"json": {"title": "matrix-draft", "project_id": OUT_OF_SCOPE_PROJECT}},
+    "getWorkTrackingBinding": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "searchLogs": {"json": {"query": {"filters": {"project_id": OUT_OF_SCOPE_PROJECT}}}},
     "listPipelines": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "createPipelineRun": {"json": {"title": "matrix-run", "project_id": OUT_OF_SCOPE_PROJECT}},

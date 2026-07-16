@@ -10,6 +10,14 @@ import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 export type PhasePromptReview = components['schemas']['PhasePromptReview']
 type PhasePromptReviewUpdate = components['schemas']['PhasePromptReviewUpdate']
 
+export function promptReviewWriteMutationKey(threadId: string) {
+  return ['threads', threadId, 'prompt-review', 'write'] as const
+}
+
+export function promptReviewWriteMutationScopeId(threadId: string): string {
+  return `threads:${threadId}:prompt-review:write`
+}
+
 async function fetchPromptReview(threadId: string, phase: PhaseName): Promise<PhasePromptReview> {
   const { data, error, response } = await getApexClient().GET(
     '/v1/pipelines/{thread_id}/phases/{phase}/prompt-review',
@@ -62,7 +70,7 @@ export function usePromptReview(threadId: string | undefined, phase: PhaseName |
   })
 }
 
-export function useUpdatePromptReview(): UseMutationResult<
+export function useUpdatePromptReview(threadId: string): UseMutationResult<
   PhasePromptReview,
   Error,
   {
@@ -73,6 +81,8 @@ export function useUpdatePromptReview(): UseMutationResult<
 > {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: promptReviewWriteMutationKey(threadId),
+    scope: { id: promptReviewWriteMutationScopeId(threadId) },
     mutationFn: patchPromptReview,
     onSuccess: (data, variables) => {
       queryClient.setQueryData(

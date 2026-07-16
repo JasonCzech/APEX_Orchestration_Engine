@@ -49,6 +49,22 @@ describe('ConnectionsPage', () => {
     expect(screen.queryByRole('region', { name: 'Kind Secrets' })).not.toBeInTheDocument()
   })
 
+  it('exposes connection details through a keyboard-focusable link', async () => {
+    server.use(...connectionsReadHandlers())
+    const user = userEvent.setup()
+    const { router } = renderList()
+
+    const link = await screen.findByRole('link', { name: 'jira-prod' })
+    expect(link).toHaveAttribute('href', '/admin/connections/conn-jira')
+
+    link.focus()
+    await user.keyboard('{Enter}')
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe('/admin/connections/conn-jira'),
+    )
+  })
+
   it('surfaces the 422 registered-provider list inline when create is rejected', async () => {
     const create = createConnectionHandler({ registered: ['jira', 'azure_devops'] })
     server.use(...connectionsReadHandlers(), create.handler)
@@ -75,6 +91,66 @@ describe('ConnectionsPage', () => {
     expect(create.captured[0]).toMatchObject({ kind: 'work_tracking', provider: 'rally' })
     // The panel stays open for a corrected retry.
     expect(screen.getByRole('form', { name: 'New connection' })).toBeInTheDocument()
+  })
+
+  it('lets a scoped admin submit an authorized public base URL without exposing secrets', async () => {
+    const create = createConnectionHandler()
+    server.use(...connectionsReadHandlers([]), create.handler)
+    const user = userEvent.setup()
+    renderApp({
+      initialEntries: ['/admin/connections'],
+      authState: authenticatedState('admin', 'Scoped Admin', [
+        { project_id: 'proj-alpha', app_id: null },
+      ]),
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    expect(within(panel).queryByRole('textbox', { name: 'Secret ref' })).not.toBeInTheDocument()
+    await user.type(within(panel).getByRole('textbox', { name: 'Provider' }), 'jira')
+    await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'jira-project')
+    await user.selectOptions(within(panel).getByRole('combobox', { name: 'Project' }), 'proj-alpha')
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Base URL' }),
+      'https://jira.project.example.com',
+    )
+    await user.click(within(panel).getByRole('button', { name: 'Create connection' }))
+
+    await waitFor(() => expect(create.captured).toHaveLength(1))
+    expect(create.captured[0]).toMatchObject({
+      project_id: 'proj-alpha',
+      base_url: 'https://jira.project.example.com',
+      secret_ref: null,
+    })
+  })
+
+  it('blocks scoped Kubernetes in-cluster identity before create', async () => {
+    server.use(...connectionsReadHandlers([]))
+    const user = userEvent.setup()
+    renderApp({
+      initialEntries: ['/admin/connections'],
+      authState: authenticatedState('admin', 'Scoped Admin', [
+        { project_id: 'proj-alpha', app_id: null },
+      ]),
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    await user.selectOptions(
+      within(panel).getByRole('combobox', { name: 'Kind' }),
+      'cluster_inventory',
+    )
+    await user.type(within(panel).getByRole('textbox', { name: 'Provider' }), 'kubernetes')
+    await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'in-cluster')
+    await user.selectOptions(within(panel).getByRole('combobox', { name: 'Project' }), 'proj-alpha')
+    const options = within(panel).getByRole('textbox', { name: 'Options JSON' })
+    await user.clear(options)
+    await user.paste('{"auth_mode":"in_cluster"}')
+
+    expect(within(panel).getByRole('alert')).toHaveTextContent(
+      'Kubernetes in-cluster authentication requires a global administrator.',
+    )
+    expect(within(panel).getByRole('button', { name: 'Create connection' })).toBeDisabled()
   })
 
   it('flips the card toggle pill through the disable endpoint', async () => {

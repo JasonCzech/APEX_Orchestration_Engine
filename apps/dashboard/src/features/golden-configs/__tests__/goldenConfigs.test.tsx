@@ -8,7 +8,7 @@
  * The LangGraph SDK boundary is vi.mocked per house pattern (see
  * features/new-test/__tests__/config.test.tsx) — msw only sees /v1 traffic.
  */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
@@ -130,20 +130,22 @@ describe('GoldenConfigsPage', () => {
     const card = await screen.findByTestId('gc-card-asst-gold')
     expect(assistantsSearch).toHaveBeenLastCalledWith({
       graphId: 'pipeline',
-      limit: 5,
+      limit: 100,
       offset: 0,
       select: [
         'assistant_id',
         'graph_id',
         'name',
         'description',
+        'config',
         'created_at',
         'updated_at',
+        'metadata',
         'version',
       ],
+      signal: expect.any(AbortSignal),
     })
-    expect(assistantsGet).toHaveBeenCalledWith('asst-gold')
-    expect(assistantsGet).toHaveBeenCalledWith('asst-sys')
+    expect(assistantsGet).not.toHaveBeenCalled()
     expect(within(card).getByText('Nightly checkout soak')).toBeInTheDocument()
     expect(within(card).getByText('Pinned engine + custom gates')).toBeInTheDocument()
     expect(within(card).getByText('LoadRunner')).toBeInTheDocument()
@@ -300,5 +302,91 @@ describe('GoldenConfigDetailPage', () => {
     // Back on the read view, with the bumped version from the response.
     expect(await screen.findByTestId('gc-gate-matrix')).toBeInTheDocument()
     expect(screen.getByText('v4')).toBeInTheDocument()
+  })
+
+  it('keeps the same assistant locked after a route remount while its save is pending', async () => {
+    assistantsUpdate.mockClear()
+    assistantsGet.mockImplementation((assistantId: string) =>
+      Promise.resolve(assistantId === SYSTEM_DEFAULT.assistant_id ? SYSTEM_DEFAULT : GOLDEN),
+    )
+    assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
+    let markSaveStarted!: () => void
+    const saveStarted = new Promise<void>((resolve) => {
+      markSaveStarted = resolve
+    })
+    let releaseSave!: () => void
+    const saveRelease = new Promise<void>((resolve) => {
+      releaseSave = resolve
+    })
+    assistantsUpdate.mockImplementationOnce(async () => {
+      markSaveStarted()
+      await saveRelease
+      return {
+        ...GOLDEN,
+        version: 4,
+        config: { configurable: { engine: 'sim' } },
+      }
+    })
+    const user = userEvent.setup()
+    const { router } = renderApp({
+      initialEntries: ['/golden-configs/asst-gold'],
+      authState: authenticatedState('admin', 'Dash Ops', []),
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'Edit JSON' }))
+    const editor = screen.getByRole('textbox', { name: 'Configurable JSON' })
+    await user.clear(editor)
+    await user.paste('{"engine":"sim"}')
+    await user.click(screen.getByRole('button', { name: 'Save new version' }))
+    await saveStarted
+
+    await act(async () => router.navigate('/golden-configs/asst-sys'))
+    await screen.findByRole('heading', { name: 'pipeline' })
+    expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeEnabled()
+
+    await act(async () => router.navigate('/golden-configs'))
+    await screen.findByTestId('gc-card-asst-gold')
+    await act(async () => router.navigate('/golden-configs/asst-gold'))
+
+    expect(await screen.findByText('saving…')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeDisabled()
+    expect(assistantsUpdate).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      releaseSave()
+      await saveRelease
+    })
+
+    await waitFor(() => expect(screen.getByText('v4')).toBeInTheDocument())
+    expect(screen.queryByText('saving…')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeEnabled()
+  })
+
+  it('drops the JSON draft when a cached assistant route replaces the editor', async () => {
+    assistantsGet.mockImplementation((assistantId: string) =>
+      Promise.resolve(assistantId === SYSTEM_DEFAULT.assistant_id ? SYSTEM_DEFAULT : GOLDEN),
+    )
+    const user = userEvent.setup()
+    const { router } = renderApp({
+      initialEntries: ['/golden-configs/asst-sys'],
+      authState: authenticatedState('admin', 'Dash Ops', []),
+    })
+
+    await screen.findByRole('heading', { name: 'pipeline' })
+    await act(async () => router.navigate('/golden-configs/asst-gold'))
+    await screen.findByRole('heading', { name: 'Nightly checkout soak' })
+    await user.click(screen.getByRole('button', { name: 'Edit JSON' }))
+    const editor = screen.getByRole('textbox', { name: 'Configurable JSON' })
+    await user.clear(editor)
+    await user.paste('{"engine":"A-only"}')
+
+    await act(async () => router.navigate('/golden-configs/asst-sys'))
+    await screen.findByRole('heading', { name: 'pipeline' })
+    expect(screen.queryByRole('textbox', { name: 'Configurable JSON' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Edit JSON' }))
+    expect(screen.getByRole('textbox', { name: 'Configurable JSON' })).toHaveValue('{}')
   })
 })

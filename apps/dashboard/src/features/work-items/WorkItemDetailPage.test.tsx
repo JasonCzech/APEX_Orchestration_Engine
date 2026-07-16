@@ -1,11 +1,12 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { http, HttpResponse } from 'msw'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
-import { ITEM_PAYMENT, enrichHandler, getItemHandler } from './workItemsTestHandlers'
+import { ITEM_BUG, ITEM_PAYMENT, enrichHandler, getItemHandler } from './workItemsTestHandlers'
 
 function renderDetail(path = '/work-items/jira/PHX-101', role: 'operator' | 'viewer' = 'operator') {
   return renderApp({
@@ -64,9 +65,112 @@ describe('WorkItemDetailPage', () => {
       ]),
     )
     expect(enrich.idempotencyKeys[0]).toMatch(/^enrich-/)
+    expect(enrich.connectionIds).toEqual(['conn-jira'])
     // The 200 body replaces the cached detail — status chip refreshes.
     expect(await screen.findByText('blocked')).toHaveClass('status-badge')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('refreshes a generic tracker detail route after enrichment', async () => {
+    const enrich = enrichHandler({ ...ITEM_PAYMENT, status: 'blocked' })
+    server.use(getItemHandler([ITEM_PAYMENT]), enrich.handler)
+    const user = userEvent.setup()
+    renderDetail('/work-items/tracker/PHX-101?connection_id=conn-jira')
+
+    await screen.findByRole('heading', { name: ITEM_PAYMENT.title })
+    expect(screen.getByText('open')).toHaveClass('status-badge')
+    await user.click(screen.getByRole('button', { name: 'Enrich' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Enrich PHX-101' })
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Enrich comment' }),
+      'Refresh the generic route',
+    )
+    await user.click(within(dialog).getByRole('button', { name: 'Enrich item' }))
+
+    expect(await screen.findByText('blocked')).toHaveClass('status-badge')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('locks enrichment across route remounts and clears the durable attempt after success', async () => {
+    let markEnrichStarted!: () => void
+    const enrichStarted = new Promise<void>((resolve) => {
+      markEnrichStarted = resolve
+    })
+    let releaseEnrich!: () => void
+    const enrichRelease = new Promise<void>((resolve) => {
+      releaseEnrich = resolve
+    })
+    server.use(
+      getItemHandler([ITEM_PAYMENT, ITEM_BUG]),
+      http.post('*/v1/work-tracking/items/PHX-101/enrich', async () => {
+        markEnrichStarted()
+        await enrichRelease
+        return HttpResponse.json({
+          ...ITEM_PAYMENT,
+          status: 'blocked',
+          connection_id: 'conn-jira',
+          provider: 'jira',
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    const { router } = renderDetail()
+
+    await screen.findByRole('heading', { name: ITEM_PAYMENT.title })
+    await user.click(screen.getByRole('button', { name: 'Enrich' }))
+    await user.type(
+      screen.getByRole('textbox', { name: 'Enrich comment' }),
+      'Deferred update',
+    )
+    await user.click(screen.getByRole('button', { name: 'Enrich item' }))
+    await enrichStarted
+
+    await act(async () => {
+      await router.navigate('/work-items/jira/PHX-102')
+      await router.navigate('/work-items/jira/PHX-101')
+    })
+    await screen.findByRole('heading', { name: ITEM_PAYMENT.title })
+    expect(screen.getByRole('button', { name: 'Enrich' })).toBeDisabled()
+
+    releaseEnrich()
+    expect(await screen.findByText('blocked')).toHaveClass('status-badge')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Enrich' })).toBeEnabled())
+    await waitFor(() =>
+      expect(
+        Object.keys(window.sessionStorage).filter((key) =>
+          key.startsWith('apex.work-items.enrich.v2'),
+        ),
+      ).toHaveLength(0),
+    )
+  })
+
+  it('blocks enrichment before the request when safe retry storage is unavailable', async () => {
+    const enrich = enrichHandler({ ...ITEM_PAYMENT, status: 'blocked' })
+    server.use(getItemHandler([ITEM_PAYMENT]), enrich.handler)
+    const user = userEvent.setup()
+    renderDetail()
+
+    await screen.findByRole('heading', { name: ITEM_PAYMENT.title })
+    await user.click(screen.getByRole('button', { name: 'Enrich' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Enrich PHX-101' })
+    await user.type(
+      within(dialog).getByRole('textbox', { name: 'Enrich comment' }),
+      'Must be safely retryable',
+    )
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => undefined)
+
+    try {
+      const submit = within(dialog).getByRole('button', { name: 'Enrich item' })
+      await user.click(submit)
+
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+        'Enrich blocked: Safe retry storage is unavailable',
+      )
+      expect(enrich.captured).toEqual([])
+      expect(submit).toBeDisabled()
+    } finally {
+      setItem.mockRestore()
+    }
   })
 
   it('renders the Item not found empty state on 404', async () => {
@@ -111,5 +215,26 @@ describe('WorkItemDetailPage', () => {
       name: 'Checkout retries drop payments',
     })
     expect(screen.queryByRole('button', { name: 'Enrich' })).not.toBeInTheDocument()
+  })
+
+  it('closes and reinitializes enrichment when a cached item route replaces it', async () => {
+    server.use(getItemHandler([ITEM_PAYMENT, ITEM_BUG]))
+    const user = userEvent.setup()
+    const { router } = renderDetail('/work-items/jira/PHX-102')
+
+    await screen.findByRole('heading', { name: ITEM_BUG.title })
+    await act(async () => router.navigate('/work-items/jira/PHX-101'))
+    await screen.findByRole('heading', { name: ITEM_PAYMENT.title })
+    await user.click(screen.getByRole('button', { name: 'Enrich' }))
+    await user.type(screen.getByRole('textbox', { name: 'Enrich comment' }), 'A-only draft')
+
+    await act(async () => router.navigate('/work-items/jira/PHX-102'))
+    await screen.findByRole('heading', { name: ITEM_BUG.title })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Enrich' }))
+    const dialog = screen.getByRole('dialog', { name: 'Enrich PHX-102' })
+    expect(within(dialog).getByRole('textbox', { name: 'Fields JSON' })).toHaveValue('{}')
+    expect(within(dialog).getByRole('textbox', { name: 'Enrich comment' })).toHaveValue('')
   })
 })

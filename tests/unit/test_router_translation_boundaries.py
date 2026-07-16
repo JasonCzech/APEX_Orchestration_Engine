@@ -168,6 +168,7 @@ async def test_context_input_translation_drops_validator_exception_context(
             cast(Any, object()),
             cast(Any, object()),
             cast(Any, object()),
+            cast(Any, object()),
         )
 
     assert raised.value.status_code == 422
@@ -193,6 +194,7 @@ async def test_context_runtime_translation_drops_loopback_exception_context(
     with pytest.raises(HTTPException) as raised:
         await context_router.create_context_summary(
             context_router.ContextSummaryRequest(subject="safe subject"),
+            cast(Any, object()),
             cast(Any, object()),
             cast(Any, object()),
             cast(Any, object()),

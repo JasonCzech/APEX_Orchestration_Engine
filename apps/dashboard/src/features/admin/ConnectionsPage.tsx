@@ -7,43 +7,48 @@
  * panel surfaces that message verbatim as an inline error, never a toast.
  */
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 
 import {
   PORT_KINDS,
+  connectionWriteMutationKey,
   useConnectionsIndex,
   useCreateConnection,
   useSetConnectionEnabled,
   type Connection,
   type PortKind,
 } from '@/api/hooks/useConnections'
-import { ProblemCard } from '@/components/ProblemCard'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
 import { hasFullProjectScope, isGlobalAdmin } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
+import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
 import { groupConnectionsByKind, kindLabel, parseJsonObject } from './adminLogic'
 import { AdminGate, TogglePill } from './adminShared'
+import { scopedConnectionPolicyIssue } from './connectionPolicy'
 import './admin.css'
 
 const SKELETON_CARDS = 4
 
 function ConnectionCard({ connection }: { connection: Connection }) {
-  const navigate = useNavigate()
-  const setEnabled = useSetConnectionEnabled()
+  const setEnabled = useSetConnectionEnabled(connection.id)
+  const writeCount = usePendingMutationCount(connectionWriteMutationKey(connection.id))
 
   return (
-    <div
-      className="adm-card glass-panel"
-      data-testid={`conn-card-${connection.id}`}
-      onClick={() => void navigate(`/admin/connections/${connection.id}`)}
-    >
+    <div className="adm-card glass-panel" data-testid={`conn-card-${connection.id}`}>
       <div className="adm-card-top">
-        <span className="adm-card-name">{connection.name}</span>
+        <Link
+          className="adm-card-name adm-card-link"
+          to={`/admin/connections/${connection.id}`}
+        >
+          {connection.name}
+        </Link>
         <TogglePill
           enabled={connection.enabled}
           label={`Toggle ${connection.name}`}
-          pending={setEnabled.isPending}
+          pending={writeCount > 0}
           onToggle={() =>
             setEnabled.mutate({ connectionId: connection.id, enabled: !connection.enabled })
           }
@@ -85,13 +90,15 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
   const [secretRef, setSecretRef] = useState('')
 
   const optionsParse = parseJsonObject(optionsText)
-  const hasReservedOptions =
-    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
+  const policyIssue =
+    !globalAdmin && optionsParse.ok
+      ? scopedConnectionPolicyIssue(kind, provider, optionsParse.value)
+      : null
   const canSubmit =
     provider.trim() !== '' &&
     name.trim() !== '' &&
     optionsParse.ok &&
-    (globalAdmin || (projectScopes.includes(project) && !hasReservedOptions)) &&
+    (globalAdmin || (projectScopes.includes(project) && policyIssue === null)) &&
     !create.isPending
 
   function submit(event: FormEvent) {
@@ -103,7 +110,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
         provider: provider.trim(),
         name: name.trim(),
         project_id: project.trim() || null,
-        base_url: globalAdmin ? baseUrl.trim() || null : null,
+        base_url: baseUrl.trim() || null,
         options: optionsParse.value,
         secret_ref: globalAdmin ? secretRef.trim() || null : null,
       },
@@ -172,7 +179,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             {projectScopes.map((projectId) => <option key={projectId} value={projectId}>{projectId}</option>)}
           </select>}
         </label>
-        {globalAdmin && <label className="adm-field">
+        <label className="adm-field">
           <span className="adm-field-label">Base URL (optional)</span>
           <input
             type="text"
@@ -182,7 +189,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
-        </label>}
+        </label>
         {globalAdmin && <label className="adm-field">
           <span className="adm-field-label">Secret ref</span>
           <input
@@ -212,9 +219,9 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
           {optionsParse.message}
         </p>
       )}
-      {!globalAdmin && hasReservedOptions && (
+      {policyIssue && (
         <p className="adm-form-error" role="alert">
-          Options beginning with _apex_ require a global administrator.
+          {policyIssue}
         </p>
       )}
       {create.isError && (
@@ -262,6 +269,10 @@ function ConnectionsContent() {
 
       {creating && <CreateConnectionPanel onClose={() => setCreating(false)} />}
 
+      {connections.isError && connections.data && (
+        <CachedDataWarning error={connections.error} onRetry={() => void connections.refetch()} />
+      )}
+
       {connections.isPending ? (
         <div
           className="adm-skeleton"
@@ -273,7 +284,7 @@ function ConnectionsContent() {
             <div key={i} className="glass-panel adm-skeleton-card" />
           ))}
         </div>
-      ) : connections.isError ? (
+      ) : connections.isError && !connections.data ? (
         <ProblemCard
           title="Connections unavailable"
           message={connections.error.message}

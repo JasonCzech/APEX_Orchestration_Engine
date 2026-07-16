@@ -5,14 +5,17 @@ import { Link } from 'react-router'
 import type { PhaseName, PipelineState } from '@apex/pipeline-events'
 
 import {
+  promptReviewWriteMutationKey,
   usePromptReview,
   useUpdatePromptReview,
   type PhasePromptReview,
 } from '@/api/hooks/usePromptReview'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 
 import { promptPath } from '../prompts/promptPaths'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { PHASE_LABELS } from './runDisplay'
 import { PromptTabsEditor, type PromptTabField, type PromptTabValues } from './PromptTabsEditor'
 
@@ -113,7 +116,9 @@ export function PromptReviewSection({
 }) {
   const snapshotReview = useMemo(() => reviewFromState(state, phase, appId), [state, phase, appId])
   const query = usePromptReview(threadId, phase)
-  const update = useUpdatePromptReview()
+  const update = useUpdatePromptReview(threadId)
+  const writeCount = usePendingMutationCount(promptReviewWriteMutationKey(threadId))
+  const writePending = writeCount > 0
   const resetUpdate = update.reset
   const consumer = useOptionalConsumer()
   const canEdit = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
@@ -123,7 +128,7 @@ export function PromptReviewSection({
   const [saved, setSaved] = useState(false)
   const [userTouched, setUserTouched] = useState(false)
   const [activeTab, setActiveTab] = useState<PromptTabField>('system')
-  const identityRef = useRef(`${threadId}:${phase}`)
+  const identityRef = useRef(JSON.stringify([threadId, phase]))
   const saveAttemptRef = useRef(0)
   const dirty = !sameValues(draft, baselineValues)
   const catalogLink = catalogLinkFor(activeTab, phase, appId)
@@ -133,7 +138,7 @@ export function PromptReviewSection({
   }, [baselineValues, userTouched])
 
   useEffect(() => {
-    identityRef.current = `${threadId}:${phase}`
+    identityRef.current = JSON.stringify([threadId, phase])
     saveAttemptRef.current += 1
     resetUpdate()
     setSaved(false)
@@ -143,8 +148,8 @@ export function PromptReviewSection({
   const appAvailable = Boolean(appId)
 
   function save() {
-    if (!canEdit || !draft || !dirty || update.isPending) return
-    const identity = `${threadId}:${phase}`
+    if (!canEdit || !draft || !dirty || writePending) return
+    const identity = JSON.stringify([threadId, phase])
     const attempt = ++saveAttemptRef.current
     update.mutate(
       {
@@ -204,7 +209,7 @@ export function PromptReviewSection({
           {canEdit && <button
             type="button"
             className="btn btn-ghost btn-sm"
-            disabled={!dirty || update.isPending}
+            disabled={!dirty || writePending}
             onClick={revert}
           >
             Revert
@@ -212,7 +217,7 @@ export function PromptReviewSection({
           {canEdit && <button
             type="button"
             className="btn btn-primary btn-sm"
-            disabled={!dirty || update.isPending || !draft}
+            disabled={!dirty || writePending || !draft}
             onClick={save}
           >
             {update.isPending ? 'Saving…' : 'Save to run'}
@@ -226,6 +231,10 @@ export function PromptReviewSection({
         </div>
       )}
 
+      {query.isError && baseline && (
+        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+      )}
+
       {update.isError && (
         <div className="tonal-card danger" role="alert">
           {update.error instanceof Error ? update.error.message : 'Prompt review could not be saved.'}
@@ -235,7 +244,7 @@ export function PromptReviewSection({
       {draft ? (
         <PromptTabsEditor
           values={draft}
-          editable={canEdit && !update.isPending}
+          editable={canEdit && !writePending}
           appAvailable={appAvailable}
           active={activeTab}
           onActiveChange={setActiveTab}

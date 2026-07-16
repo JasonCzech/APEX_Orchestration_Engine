@@ -1,4 +1,5 @@
 import { render } from '@testing-library/react'
+import { flushSync } from 'react-dom'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -67,7 +68,12 @@ export function renderApp({
             <ThemeProvider>
               <TopbarContributionProvider>
                 <ApiKeyGate>
-                  <RouterProvider router={router} />
+                  <RouterProvider
+                    router={router}
+                    flushSync={(callback) => {
+                      flushSync(callback)
+                    }}
+                  />
                 </ApiKeyGate>
               </TopbarContributionProvider>
             </ThemeProvider>

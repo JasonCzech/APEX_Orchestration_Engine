@@ -522,7 +522,9 @@ class WorkItemMutationService:
 
         # This read follows provider writes. Any failure, including malformed
         # provider data, remains retryable so the completed writes are reconciled.
-        item = await adapter.get_item(key)
+        item = validated_provider_work_item(await adapter.get_item(key))
+        if item.key != key:
+            raise RuntimeError("work tracker returned a mismatched enrichment target")
         return await self._complete(repository, row.id, claim_token, item)
 
     async def _complete(
@@ -907,6 +909,8 @@ def _stored_result(row: WorkItemMutation) -> WorkItem:
         pass
     if result is None:
         raise RuntimeError("completed work-item mutation has an invalid durable result")
+    if row.operation == "enrich" and result.key != row.target_key:
+        raise RuntimeError("completed enrichment result does not match its target")
     return result
 
 

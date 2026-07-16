@@ -8,6 +8,7 @@
 import { Link } from 'react-router'
 
 import { useGoldenConfigsIndex, type GoldenConfigEntry } from '@/api/hooks/useAssistants'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
@@ -65,6 +66,10 @@ export function GoldenConfigsPage() {
         </p>
       </header>
 
+      {configs.isError && configs.data && (
+        <CachedDataWarning error={configs.error} onRetry={() => void configs.refetch()} />
+      )}
+
       {configs.isPending ? (
         <div
           className="gc-skeleton"
@@ -76,13 +81,13 @@ export function GoldenConfigsPage() {
             <div key={i} className="glass-panel gc-skeleton-card" />
           ))}
         </div>
-      ) : configs.isError ? (
+      ) : configs.isError && !configs.data ? (
         <ProblemCard
           title="Golden configs unavailable"
           message={configs.error.message}
           onRetry={() => void configs.refetch()}
         />
-      ) : configs.data.length === 0 ? (
+      ) : (configs.data ?? []).length === 0 ? (
         <div className="dash-empty">
           <h2>No golden configs yet</h2>
           <p className="dash-empty-hint">
@@ -92,7 +97,7 @@ export function GoldenConfigsPage() {
         </div>
       ) : (
         <div className="gc-grid">
-          {configs.data.map((entry) => (
+          {(configs.data ?? []).map((entry) => (
             <GoldenConfigCard key={entry.assistantId} entry={entry} />
           ))}
         </div>

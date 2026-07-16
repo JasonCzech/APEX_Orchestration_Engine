@@ -107,13 +107,22 @@ export function ReviewStep({
         </ReviewCard>
 
         <ReviewCard title="Work items" step="work-items" onEdit={onEditStep}>
-          {draft.work_item_keys.length === 0 ? (
+          {draft.work_items.length === 0 ? (
             <p className="wizard-caption">None linked (optional)</p>
           ) : (
             <div className="wizard-chip-row">
-              {draft.work_item_keys.map((key) => (
-                <span key={key} className="wizard-chip">
-                  {key}
+              {draft.work_items.map((item) => (
+                <span
+                  key={`${item.connection_id ?? 'legacy'}:${item.key}`}
+                  className="wizard-chip"
+                  title={
+                    item.connection_id
+                      ? `${item.provider ?? 'unknown'} · ${item.connection_id}`
+                      : 'Legacy selection requires revalidation'
+                  }
+                >
+                  {item.key}
+                  {!item.connection_id || !item.provider ? ' · revalidate' : ''}
                 </span>
               ))}
             </div>

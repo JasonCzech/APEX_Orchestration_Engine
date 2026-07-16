@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setApiKey } from '@/auth/keyStorage'
+import { onUnauthorized } from '@/api/apexClient'
+import { bumpSessionRevision, setApiKey } from '@/auth/keyStorage'
 
 import {
   ARTIFACT_READ_ERROR,
@@ -27,10 +28,26 @@ describe('artifactKeyFromUri', () => {
     )
   })
 
+  it('decodes canonical durable artifact keys exactly once', () => {
+    expect(
+      artifactKeyFromUri(
+        'apex-artifact:///transcripts/thread-1/story%20analysis/attempt-1.txt',
+      ),
+    ).toBe('transcripts/thread-1/story analysis/attempt-1.txt')
+    expect(artifactKeyFromUri('apex-artifact:///reports/literal%252Fsegment.json')).toBe(
+      'reports/literal%2Fsegment.json',
+    )
+  })
+
   it('rejects malformed and unsupported uris', () => {
     expect(artifactKeyFromUri('memory://')).toBeNull()
     expect(artifactKeyFromUri('s3://bucket-only')).toBeNull()
     expect(artifactKeyFromUri('s3://bucket/')).toBeNull()
+    expect(artifactKeyFromUri('apex-artifact:///')).toBeNull()
+    expect(artifactKeyFromUri('apex-artifact:///bad%escape')).toBeNull()
+    expect(artifactKeyFromUri('apex-artifact:///key?query')).toBeNull()
+    expect(artifactKeyFromUri('apex-artifact:///key#fragment')).toBeNull()
+    expect(artifactKeyFromUri('apex-artifact:///key%0Anewline')).toBeNull()
     expect(artifactKeyFromUri('file:///tmp/whatever')).toBeNull()
     expect(artifactKeyFromUri('https://example.com/x')).toBeNull()
     expect(artifactKeyFromUri(undefined)).toBeNull()
@@ -47,11 +64,21 @@ describe('artifactProxyUrl', () => {
     expect(artifactProxyUrl('s3://apex-artifacts/reports/r-1.json')).toBe(
       `${window.location.origin}/v1/artifacts/reports/r-1.json`,
     )
+    expect(
+      artifactProxyUrl(
+        'apex-artifact:///transcripts/thread-1/story%20analysis/attempt-1.txt',
+      ),
+    ).toBe(
+      `${window.location.origin}/v1/artifacts/transcripts/thread-1/story%20analysis/attempt-1.txt`,
+    )
   })
 
   it('percent-encodes within segments but never the separators', () => {
     expect(artifactProxyUrl('memory://reports/with space/file.json')).toBe(
       `${window.location.origin}/v1/artifacts/reports/with%20space/file.json`,
+    )
+    expect(artifactProxyUrl('apex-artifact:///reports/literal%252Fsegment.json')).toBe(
+      `${window.location.origin}/v1/artifacts/reports/literal%252Fsegment.json`,
     )
   })
 
@@ -172,6 +199,72 @@ describe('artifact response boundary', () => {
       const pending = fetchArtifactBytes('/v1/artifacts/stalled', controller.signal)
       const rejected = expect(pending).rejects.toThrow(ARTIFACT_READ_ERROR)
       controller.abort()
+      await rejected
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('notifies authentication when the current credential receives a 401', async () => {
+    setApiKey('apex_expired_artifact_key')
+    const unauthorized = vi.fn()
+    const unsubscribe = onUnauthorized(unauthorized)
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 401 }))
+
+    try {
+      await expect(fetchArtifactBytes('/v1/artifacts/expired')).rejects.toThrow(
+        'Artifact request failed (401)',
+      )
+      expect(unauthorized).toHaveBeenCalledTimes(1)
+    } finally {
+      unsubscribe()
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('discards an artifact request when the API key changes in flight', async () => {
+    setApiKey('apex_artifact_principal_a')
+    let resolveFetch!: (response: Response) => void
+    const transport = new Promise<Response>((resolve) => {
+      resolveFetch = resolve
+    })
+    let cancelled = false
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => transport)
+
+    try {
+      const pending = fetchArtifactBytes('/v1/artifacts/principal-a')
+      const rejected = expect(pending).rejects.toThrow(ARTIFACT_READ_ERROR)
+      setApiKey('apex_artifact_principal_b')
+      await rejected
+      resolveFetch(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              cancelled = true
+            },
+          }),
+        ),
+      )
+      await transport
+      await Promise.resolve()
+      expect(cancelled).toBe(true)
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
+
+  it('discards an artifact request when the semantic session changes in flight', async () => {
+    setApiKey('apex_artifact_shared_key')
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(() => new Promise<Response>(() => undefined))
+
+    try {
+      const pending = fetchArtifactBytes('/v1/artifacts/old-scope')
+      const rejected = expect(pending).rejects.toThrow(ARTIFACT_READ_ERROR)
+      bumpSessionRevision()
       await rejected
     } finally {
       fetchMock.mockRestore()

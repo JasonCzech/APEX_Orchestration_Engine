@@ -88,18 +88,19 @@ function renderModal(initialSelection?: Parameters<typeof PreflightModal>[0]['in
     ],
     { initialEntries: ['/'] },
   )
-  render(
+  const view = render(
     <QueryClientProvider client={createTestQueryClient()}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
-  return { router, onClose }
+  return { router, onClose, ...view }
 }
 
 const toggleByName = (name: string) => screen.getByRole('button', { name, pressed: true })
 
 describe('PreflightModal', () => {
   beforeEach(() => {
+    window.sessionStorage.clear()
     rerunBodies = []
     server.use(pipelineDetailHandler(DETAIL_IDLE))
     server.use(
@@ -220,5 +221,30 @@ describe('PreflightModal', () => {
     expect(alert).toHaveTextContent('Re-run failed: multitask reject')
     expect(screen.getByRole('dialog', { name: 'Re-run phases' })).toBeInTheDocument()
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('reuses an ambiguous rerun attempt after the modal component reloads', async () => {
+    server.use(
+      http.post('*/v1/pipelines/:threadId/rerun', async ({ request }) => {
+        rerunBodies.push((await request.json()) as CapturedRerun)
+        return rerunBodies.length === 1
+          ? HttpResponse.json({ detail: 'ambiguous outage' }, { status: 503 })
+          : HttpResponse.json({ run_id: 'run-recovered' }, { status: 202 })
+      }),
+    )
+    const user = userEvent.setup()
+    const first = renderModal(['story_analysis'])
+
+    await screen.findByRole('group', { name: 'Phases to run' })
+    await user.click(screen.getByRole('button', { name: 'Start phases' }))
+    await screen.findByRole('alert')
+    first.unmount()
+
+    renderModal(['story_analysis'])
+    await screen.findByRole('group', { name: 'Phases to run' })
+    await user.click(screen.getByRole('button', { name: 'Start phases' }))
+
+    await waitFor(() => expect(rerunBodies).toHaveLength(2))
+    expect(rerunBodies[1]?.idempotency_key).toBe(rerunBodies[0]?.idempotency_key)
   })
 })

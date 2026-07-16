@@ -1654,7 +1654,12 @@ def ensure_run_controls(
         )
         PipelineConfigurable.model_validate(application_config)
         validate_public_run_input(input_payload)
-        context_keys = {"subject", "work_item_keys", "document_packets"}
+        context_keys = {
+            "subject",
+            "work_item_keys",
+            "document_packets",
+            "work_tracking_connection_id",
+        }
         playground_keys = {"prompt", "sample_input"}
         if assistant_id == "context" or context_keys.intersection(input_payload):
             validate_context_run_input(input_payload)

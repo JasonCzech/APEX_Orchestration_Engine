@@ -68,7 +68,6 @@
   gap: 8px;
   padding: 12px;
   border-radius: var(--radius);
-  cursor: pointer;
 }
 
 .adm-card-top {
@@ -84,6 +83,18 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.adm-card-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.adm-card-link:hover,
+.adm-card-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .adm-card-chips {
@@ -533,4 +544,22 @@
   height: 120px;
   border-radius: var(--radius);
   animation: pulse 1.8s ease-in-out infinite;
+}
+
+.adm-key-lifecycle-status {
+  position: fixed;
+  z-index: 80;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  display: grid;
+  gap: 0.2rem;
+  max-width: min(24rem, calc(100vw - 2.5rem));
+  padding: 0.8rem 1rem;
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: var(--shadow-lg);
+}
+
+.adm-key-lifecycle-status span {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
 }

@@ -11,7 +11,7 @@
  *     interrupt={interrupt}          // from useThreadState().interrupts
  *     compact                       // inbox preview density
  *     onOutcome={...}                // terminal notification, once per instance
- *     handleRef={gateHandleRef}      // keyboard layer (a/m/s/x + Enter)
+ *     handleRef={gateHandleRef}      // safe keyboard focus/arming (m/x + Enter)
  *   />
  *   keyed by interrupt.interrupt_id — a changed id remounts a fresh module;
  *   LangGraph may reuse the id, in which case useGate reopens on the refreshed
@@ -28,10 +28,11 @@
  *        row ('actioned elsewhere'), auto-advance.
  *
  * Keyboard delegation (handleRef):
- *   a/s   -> invoke('approve' | 'skip_phase')            — submit decisions
  *   x     -> invoke('abort')                             — arm typed confirmation
  *   m     -> invoke('modify')                            — modify-FOCUS only
  *   Enter -> focus()
+ *   approve/skip_phase remain explicit gate-control actions; the document
+ *   keyboard layer never delegates bare letters to those mutations.
  *   All gated on isActionable() (machine 'open' with a parsed action contract); invoke() additionally
  *   no-ops (returns false) when the gate kind/payload does not offer the
  *   action. The resume itself stays pessimistic inside the machine.

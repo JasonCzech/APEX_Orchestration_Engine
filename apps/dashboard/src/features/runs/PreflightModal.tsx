@@ -16,6 +16,7 @@ import { useNavigate } from 'react-router'
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 
 import { assessPlan, lastPlanSelection, type ReadinessRow } from './preflight'
@@ -34,9 +35,16 @@ export interface PreflightModalProps {
   /** Pre-checked phases; omitted = the thread's last resolved plan on load. */
   initialSelection?: PhaseName[]
   onClose: () => void
+  /** Route owners use this to reject a completion from a no-longer-current thread. */
+  isCurrent?: (threadId: string) => boolean
 }
 
-export function PreflightModal({ threadId, initialSelection, onClose }: PreflightModalProps) {
+export function PreflightModal({
+  threadId,
+  initialSelection,
+  onClose,
+  isCurrent = () => true,
+}: PreflightModalProps) {
   const navigate = useNavigate()
   const query = useThreadState(threadId)
   const rerun = useRerun()
@@ -74,6 +82,7 @@ export function PreflightModal({ threadId, initialSelection, onClose }: Prefligh
       },
       {
         onSuccess: () => {
+          if (!isCurrent(threadId)) return
           onClose()
           void navigate(`/runs/${threadId}?tab=log`)
         },
@@ -101,17 +110,20 @@ export function PreflightModal({ threadId, initialSelection, onClose }: Prefligh
         thread.
       </p>
 
-      {query.isPending ? (
+      {query.isPending && !query.data ? (
         <div className="preflight-loading" role="status" aria-label="Loading thread state">
           Loading thread state…
         </div>
-      ) : query.isError ? (
+      ) : query.isError && !query.data ? (
         <div className="tonal-card danger" role="alert">
           Thread state failed to load:{' '}
           {query.error instanceof Error ? query.error.message : 'unknown error'}
         </div>
       ) : (
         <>
+          {query.isError && (
+            <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+          )}
           <div className="preflight-phase-strip" role="group" aria-label="Phases to run">
             {PHASE_NAMES.map((phase) => (
               <button
@@ -195,6 +207,7 @@ function ReadinessItem({ row }: { row: ReadinessRow }) {
 export interface OverflowMenuItem {
   label: string
   onSelect: () => void
+  disabled?: boolean
 }
 
 export interface OverflowMenuProps {
@@ -225,11 +238,17 @@ export function OverflowMenu({ label, items, trigger = '⋯', className = '' }: 
 
   // Focus the first item when the menu opens (menu-button pattern).
   useEffect(() => {
-    if (open) listRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus()
+    if (open) {
+      listRef.current
+        ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+        ?.focus()
+    }
   }, [open])
 
   function moveFocus(delta: 1 | -1) {
-    const nodes = listRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')
+    const nodes = listRef.current?.querySelectorAll<HTMLButtonElement>(
+      '[role="menuitem"]:not(:disabled)',
+    )
     if (!nodes || nodes.length === 0) return
     const list = Array.from(nodes)
     const index = list.indexOf(document.activeElement as HTMLButtonElement)
@@ -279,7 +298,9 @@ export function OverflowMenu({ label, items, trigger = '⋯', className = '' }: 
               type="button"
               role="menuitem"
               className="overflow-menu-item"
+              disabled={item.disabled}
               onClick={() => {
+                if (item.disabled) return
                 setOpen(false)
                 item.onSelect()
               }}

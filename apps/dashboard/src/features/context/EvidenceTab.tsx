@@ -7,6 +7,7 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 
 import { useEvidence } from '@/api/hooks/useContextApi'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 
 import { groupEvidence } from './contextLogic'
@@ -54,13 +55,17 @@ export function EvidenceTab() {
         </button>
       </form>
 
+      {evidence.isError && evidence.data && (
+        <CachedDataWarning error={evidence.error} onRetry={() => void evidence.refetch()} />
+      )}
+
       {evidence.isPending ? (
         <div className="ctx-skeleton" role="status" aria-busy="true" aria-label="Loading evidence">
           {Array.from({ length: SKELETON_ROWS }, (_, i) => (
             <div key={i} className="glass-panel ctx-skeleton-row" />
           ))}
         </div>
-      ) : evidence.isError ? (
+      ) : evidence.isError && !evidence.data ? (
         <ProblemCard
           title="Evidence unavailable"
           message={evidence.error.message}

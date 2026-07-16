@@ -1057,12 +1057,32 @@ async def test_threads_create_run_rejects_context_provider_fanout() -> None:
         "input": {
             "subject": "incident",
             "work_item_keys": [f"ITEM-{index}" for index in range(51)],
+            "work_tracking_connection_id": "conn-work-a",
         },
     }
     with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
         await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
     assert excinfo.value.status_code == 422
     assert "work_item_keys exceeds" in str(excinfo.value.detail)
+
+
+async def test_threads_create_run_rejects_context_keys_without_connection_affinity() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "context",
+        "thread_id": None,
+        "input": {
+            "subject": "incident",
+            "work_item_keys": ["ITEM-1"],
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert excinfo.value.status_code == 422
+    assert "context run input is invalid" in str(excinfo.value.detail)
+    assert "work_tracking_connection_id" not in str(excinfo.value.detail)
 
 
 async def test_threads_create_run_rejects_deep_playground_sample() -> None:

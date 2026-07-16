@@ -37,6 +37,30 @@ function renderAnalytics(search = '') {
 }
 
 describe('AnalyticsPage', () => {
+  it('builds date grouping as one Total trend instead of one series per date', async () => {
+    const dateData = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      series: [
+        {
+          ...AGENT_ANALYTICS_FIXTURE.series[0]!,
+          key: '2026-06-05T00:00:00Z',
+        },
+        {
+          ...AGENT_ANALYTICS_FIXTURE.series[2]!,
+          key: '2026-06-06T00:00:00Z',
+        },
+      ],
+    }
+    const analytics = agentAnalyticsHandler(dateData)
+    server.use(analytics.handler)
+    renderAnalytics('?group=date')
+
+    const chart = await screen.findByTestId('analytics-agent-series-chart')
+    expect(within(chart).getByText('Total')).toBeInTheDocument()
+    expect(chart).toHaveTextContent('Tokens over time')
+    expect(chart).not.toHaveTextContent('Tokens over time by date')
+  })
+
   it('round-trips agent URL filters into the request and controls', async () => {
     const analytics = agentAnalyticsHandler()
     server.use(analytics.handler)
@@ -148,6 +172,21 @@ describe('AnalyticsPage', () => {
     const series = await screen.findByTestId('analytics-agent-series-chart')
     expect(within(series).getByText('claude-3-5-sonnet-latest')).toBeInTheDocument()
     expect(within(series).getByText('gpt-4o-mini')).toBeInTheDocument()
+  })
+
+  it('clamps deep-linked pagination at the backend result-window boundary', async () => {
+    const capped = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      page: { limit: 20, offset: 10_000, total: 10_021 },
+    }
+    const analytics = agentAnalyticsHandler(capped)
+    server.use(analytics.handler)
+    renderAnalytics('?offset=999999')
+
+    await screen.findByTestId('analytics-breakdown-table')
+    expect(analytics.captured[0]?.get('offset')).toBe('10000')
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByText(/Reached the analytics result-window limit/)).toBeInTheDocument()
   })
 
   it('hides cost UI when cost_visible is false', async () => {

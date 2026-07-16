@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router'
 import { PHASE_NAMES, type PipelineState } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 
 import {
@@ -103,7 +104,7 @@ export function TimelinePage() {
       </div>
     )
   }
-  if (query.isError) {
+  if (query.isError && !query.data) {
     return (
       <ProblemCard
         title="Timeline failed to load"
@@ -118,6 +119,9 @@ export function TimelinePage() {
 
   return (
     <>
+      {query.isError && (
+        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+      )}
       <header className="run-detail-header">
         <h2 className="run-detail-title">{detail.title ?? detail.thread_id} — timeline</h2>
         <span className="spacer" />

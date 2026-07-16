@@ -14,10 +14,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.auth.identity import ConsumerIdentity, Role
 from apex.auth.service import extract_api_key
-from apex.domain.input_limits import NoNulStr, ResourceId, ScopeId
+from apex.domain.input_limits import NoNulStr, RecordId, ResourceId, ScopeId
 from apex.persistence.db import release_read_transactions
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.routers.work_tracking import select_work_tracking_project
+from apex.routers.work_tracking import (
+    resolve_work_tracking_connection_identity,
+    select_work_tracking_project,
+)
+from apex.services.connections import ConnectionResolver
 from apex.services.context import (
     ContextRunStartError,
     collect_context_evidence,
@@ -35,6 +39,7 @@ from apex.services.run_validation import (
     ContextRunInput,
     validate_context_run_input,
 )
+from apex.services.work_tracking import get_work_tracking_resolver
 from apex.settings import get_settings
 
 router = APIRouter(prefix="/context", tags=["context"])
@@ -56,6 +61,7 @@ def _loopback_client_after_scope(request: Request) -> Any:
 LoopbackClient = Annotated[Any, Depends(get_loopback_client)]
 OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
 DocumentsRepo = Annotated[DocumentsRepository, Depends(get_documents_repository)]
+WorkTrackingResolver = Annotated[ConnectionResolver, Depends(get_work_tracking_resolver)]
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -76,6 +82,7 @@ class ContextSummaryRequest(BaseModel):
     )
     document_ids: list[ContextDocumentId] = Field(default_factory=list, max_length=64)
     project_id: ScopeId | None = None
+    work_tracking_connection_id: RecordId | None = None
 
 
 class ContextSummaryAccepted(BaseModel):
@@ -104,9 +111,20 @@ async def create_context_summary(
     identity: OperatorIdentity,
     request: Request,
     documents: DocumentsRepo,
+    resolver: WorkTrackingResolver,
 ) -> ContextSummaryAccepted:
     selected_project = select_work_tracking_project(identity, body.project_id)
     limits = get_settings().runs
+    if len(body.work_item_keys) > limits.max_work_item_keys:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "work_item_keys exceeds the deployment limit "
+                f"({limits.max_work_item_keys})"
+            ),
+        )
+    if len(set(body.work_item_keys)) != len(body.work_item_keys):
+        raise HTTPException(status_code=422, detail="work_item_keys must not contain duplicates")
     if len(body.document_ids) > limits.max_context_packets:
         raise HTTPException(
             status_code=422,
@@ -114,6 +132,20 @@ async def create_context_summary(
         )
     if len(set(body.document_ids)) != len(body.document_ids):
         raise HTTPException(status_code=422, detail="document_ids must not contain duplicates")
+    resolved_work_tracking_connection_id: str | None = None
+    if body.work_item_keys:
+        binding = await resolve_work_tracking_connection_identity(
+            resolver,
+            identity,
+            body.work_tracking_connection_id,
+            selected_project,
+        )
+        resolved_work_tracking_connection_id = binding.connection_id
+    elif body.work_tracking_connection_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="work_tracking_connection_id requires at least one work_item_key",
+        )
     request_error: HTTPException | None = None
     validated: ContextRunInput | None = None
     try:
@@ -123,6 +155,7 @@ async def create_context_summary(
                 "work_item_keys": body.work_item_keys,
                 "document_packets": [],
                 "project_id": selected_project,
+                "work_tracking_connection_id": resolved_work_tracking_connection_id,
             }
         )
     except ValueError:
@@ -149,6 +182,7 @@ async def create_context_summary(
                 "work_item_keys": validated.work_item_keys,
                 "document_packets": document_packets,
                 "project_id": validated.project_id,
+                "work_tracking_connection_id": validated.work_tracking_connection_id,
             }
         )
     except ValueError:
@@ -170,6 +204,7 @@ async def create_context_summary(
                 for packet in validated.document_packets
             ],
             project_id=validated.project_id,
+            work_tracking_connection_id=validated.work_tracking_connection_id,
         )
     except ValueError:
         request_error = HTTPException(status_code=422, detail="invalid context summary request")

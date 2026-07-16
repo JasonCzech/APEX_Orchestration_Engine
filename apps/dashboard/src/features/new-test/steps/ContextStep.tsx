@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState, type DragEvent } from 'react'
 
 import { useDocumentsList, useUploadDocument, type DocumentOut } from '@/api/hooks/useDocuments'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 
 import {
   ACCEPTED_CONTEXT_ATTR,
@@ -27,7 +29,14 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
   return <span className={`wizard-badge wizard-badge--${badge.tone}`}>{badge.label}</span>
 }
 
-export function ContextStep({ draft, onChange }: StepProps) {
+export function ContextStep({
+  draft,
+  onChange,
+  disabled = false,
+  draftGeneration = 0,
+  isDraftGenerationCurrent = () => true,
+  onPendingStart,
+}: StepProps) {
   const upload = useUploadDocument()
   const documents = useDocumentsList(
     draft.scope.project_id.trim() || undefined,
@@ -38,10 +47,14 @@ export function ContextStep({ draft, onChange }: StepProps) {
   // Documents uploaded in this session (the list query may lag behind).
   const [uploaded, setUploaded] = useState<DocumentOut[]>([])
   const [dragOver, setDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [uploadErrors, setUploadErrors] = useState<string[]>([])
   const projectRef = useRef(draft.scope.project_id.trim())
   const appRef = useRef(draft.scope.app_id)
   const generationRef = useRef(0)
+  const disabledRef = useRef(disabled)
+  const uploadBatchRef = useRef(false)
+  disabledRef.current = disabled
   useEffect(() => {
     const nextProject = draft.scope.project_id.trim()
     const nextApp = draft.scope.app_id
@@ -74,47 +87,81 @@ export function ContextStep({ draft, onChange }: StepProps) {
   }
 
   async function uploadFiles(files: FileList | File[]) {
+    if (disabledRef.current || uploadBatchRef.current) return
+    uploadBatchRef.current = true
+    setUploading(true)
+    const finishPending = onPendingStart?.() ?? (() => undefined)
+    const keyRevision = getApiKeyRevision()
+    const sessionRevision = getSessionRevision()
+    const operationDraftGeneration = draftGeneration
+    const belongsToCurrentDraft = () =>
+      isDraftGenerationCurrent(operationDraftGeneration)
+    const belongsToCurrentSession = () =>
+      !disabledRef.current &&
+      keyRevision === getApiKeyRevision() &&
+      sessionRevision === getSessionRevision()
     const generation = generationRef.current
     const project = projectRef.current || undefined
     const appId = appRef.current || undefined
-    setUploadErrors([])
-    const errors: string[] = []
-    for (const file of Array.from(files)) {
-      const invalid = validateContextFile(file)
-      if (invalid) {
-        errors.push(invalid)
-        continue
-      }
-      try {
-        const doc = await upload.mutateAsync({
-          file,
-          projectId: project,
-          appId,
-        })
+    const belongsToCurrentScope = () =>
+      generation === generationRef.current &&
+      project === (projectRef.current || undefined) &&
+      appId === (appRef.current || undefined)
+    try {
+      setUploadErrors([])
+      const errors: string[] = []
+      for (const file of Array.from(files)) {
         if (
-          generation === generationRef.current &&
-          project === (projectRef.current || undefined) &&
-          appId === (appRef.current || undefined)
-        ) {
+          !belongsToCurrentDraft() ||
+          !belongsToCurrentSession() ||
+          !belongsToCurrentScope()
+        ) return
+        const invalid = validateContextFile(file)
+        if (invalid) {
+          errors.push(invalid)
+          continue
+        }
+        try {
+          const doc = await upload.mutateAsync({
+            file,
+            projectId: project,
+            appId,
+          })
+          if (
+            !belongsToCurrentDraft() ||
+            !belongsToCurrentSession() ||
+            !belongsToCurrentScope()
+          ) return
           setUploaded((prev) => [...prev, doc])
           addDocument(doc.id)
-        }
-      } catch (error) {
-        if (
-          generation === generationRef.current &&
-          project === (projectRef.current || undefined) &&
-          appId === (appRef.current || undefined)
-        ) {
+        } catch (error) {
+          if (
+            !belongsToCurrentDraft() ||
+            !belongsToCurrentSession() ||
+            !belongsToCurrentScope()
+          ) return
           errors.push(error instanceof Error ? error.message : `Upload of ${file.name} failed`)
         }
       }
+      if (
+        belongsToCurrentDraft() &&
+        belongsToCurrentSession() &&
+        belongsToCurrentScope() &&
+        errors.length > 0
+      ) {
+        setUploadErrors(errors)
+      }
+    } finally {
+      uploadBatchRef.current = false
+      if (belongsToCurrentDraft()) setUploading(false)
+      finishPending()
     }
-    if (generation === generationRef.current && errors.length > 0) setUploadErrors(errors)
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault()
     setDragOver(false)
+    if (disabledRef.current) return
     if (event.dataTransfer.files.length > 0) void uploadFiles(event.dataTransfer.files)
   }
 
@@ -129,9 +176,10 @@ export function ContextStep({ draft, onChange }: StepProps) {
       <div
         className={`glass-panel wizard-dropzone${dragOver ? ' wizard-dropzone--active' : ''}`}
         data-testid="document-dropzone"
+        aria-disabled={disabled || uploading}
         onDragOver={(event) => {
           event.preventDefault()
-          setDragOver(true)
+          if (!disabledRef.current && !uploadBatchRef.current) setDragOver(true)
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
@@ -141,6 +189,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
         <button
           type="button"
           className="btn btn-secondary"
+          disabled={disabled || uploading}
           onClick={() => inputRef.current?.click()}
         >
           Choose files
@@ -152,6 +201,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
           accept={ACCEPTED_CONTEXT_ATTR}
           aria-label="Upload documents"
           className="wizard-file-input"
+          disabled={disabled || uploading}
           onChange={(event) => {
             if (event.target.files && event.target.files.length > 0) {
               void uploadFiles(event.target.files)
@@ -160,7 +210,7 @@ export function ContextStep({ draft, onChange }: StepProps) {
           }}
         />
         <p className="wizard-caption">Accepted: {ACCEPTED_CONTEXT_LABEL}</p>
-        {upload.isPending && <p className="wizard-caption">Uploading…</p>}
+        {uploading && <p className="wizard-caption">Uploading…</p>}
         {uploadErrors.length > 0 && (
           <ul className="wizard-upload-errors" role="alert" data-testid="upload-errors">
             {uploadErrors.map((message) => (
@@ -226,7 +276,10 @@ export function ContextStep({ draft, onChange }: StepProps) {
 
       <div className="wizard-field">
         <span className="wizard-label">Existing documents</span>
-        {documents.isError ? (
+        {documents.isError && documents.data && (
+          <CachedDataWarning error={documents.error} onRetry={() => void documents.refetch()} />
+        )}
+        {documents.isError && !documents.data ? (
           <p className="wizard-caption wizard-caption--danger">Documents failed to load</p>
         ) : pickerDocs.length === 0 ? (
           <p className="wizard-caption">

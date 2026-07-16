@@ -9,10 +9,12 @@ export function PromptEditor({
   value,
   onChange,
   ariaLabel,
+  disabled = false,
 }: {
   value: string
   onChange: (value: string) => void
   ariaLabel: string
+  disabled?: boolean
 }) {
   return (
     <div className="code-viewer prompt-editor">
@@ -20,6 +22,8 @@ export function PromptEditor({
         value={value}
         onChange={onChange}
         aria-label={ariaLabel}
+        editable={!disabled}
+        readOnly={disabled}
         basicSetup={{
           lineNumbers: true,
           foldGutter: false,

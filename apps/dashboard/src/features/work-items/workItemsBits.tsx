@@ -1,5 +1,7 @@
 /** Tiny shared presentational bits for the work-items screens. */
 
+import { safeExternalHttpUrl } from '@/utils/safeExternalUrl'
+
 import { statusTone } from './workItemsLogic'
 
 /** Kind chip (story/task/bug…) — same primitive the environments KindChip uses. */
@@ -14,14 +16,16 @@ export function StatusBadge({ status }: { status: string }) {
 
 /** External tracker link (↗) — only rendered when the item carries a URL. */
 export function ExternalLink({ url, itemKey }: { url: string; itemKey: string }) {
+  const safeUrl = safeExternalHttpUrl(url)
+  if (!safeUrl) return null
   return (
     <a
       className="wi-ext-link"
-      href={url}
+      href={safeUrl}
       target="_blank"
       rel="noreferrer"
       aria-label={`Open ${itemKey} in tracker`}
-      title={url}
+      title={safeUrl}
     >
       ↗
     </a>

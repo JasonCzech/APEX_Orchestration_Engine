@@ -1575,6 +1575,20 @@
             "maxItems": 100,
             "title": "Work Item Keys",
             "type": "array"
+          },
+          "work_tracking_connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Work Tracking Connection Id"
           }
         },
         "required": [
@@ -2520,6 +2534,53 @@
         "title": "EvidencePacket",
         "type": "object"
       },
+      "ExecutableTranslatedQuery": {
+        "additionalProperties": false,
+        "description": "Provider query with the optional binding returned by translation.",
+        "properties": {
+          "confidence": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "query"
+        ],
+        "title": "ExecutableTranslatedQuery",
+        "type": "object"
+      },
       "ExecuteQueryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2552,7 +2613,7 @@
             "type": "integer"
           },
           "query": {
-            "$ref": "#/components/schemas/TranslatedQuery"
+            "$ref": "#/components/schemas/ExecutableTranslatedQuery"
           }
         },
         "required": [
@@ -3919,6 +3980,162 @@
         "title": "RerunPipelineResponse",
         "type": "object"
       },
+      "ResolvedTranslatedQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "query",
+          "connection_id"
+        ],
+        "title": "ResolvedTranslatedQuery",
+        "type": "object"
+      },
+      "ResolvedWorkItem": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 20000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Description",
+            "type": "string"
+          },
+          "key": {
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
+            "title": "Key",
+            "type": "string"
+          },
+          "kind": {
+            "default": "story",
+            "maxLength": 64,
+            "pattern": "^[^\\x00]*$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "status": {
+            "default": "open",
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "pattern": "^[^\\x00]*$",
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "connection_id",
+          "provider"
+        ],
+        "title": "ResolvedWorkItem",
+        "type": "object"
+      },
+      "ResolvedWorkItemPage": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkItem"
+            },
+            "maxItems": 200,
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          },
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "total": {
+            "default": 0,
+            "maximum": 9.223372036854776e+18,
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connection_id",
+          "provider"
+        ],
+        "title": "ResolvedWorkItemPage",
+        "type": "object"
+      },
       "ResumeGateRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4084,6 +4301,20 @@
       "SavedQueryCreate": {
         "additionalProperties": false,
         "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
           "description": {
             "anyOf": [
               {
@@ -4169,6 +4400,17 @@
       },
       "SavedQueryOut": {
         "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -4255,6 +4497,20 @@
       "SavedQueryUpdate": {
         "additionalProperties": false,
         "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
           "description": {
             "anyOf": [
               {
@@ -4832,38 +5088,6 @@
         "title": "TranslateQueryRequest",
         "type": "object"
       },
-      "TranslatedQuery": {
-        "additionalProperties": false,
-        "properties": {
-          "confidence": {
-            "default": 1.0,
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Confidence",
-            "type": "number"
-          },
-          "provider": {
-            "maxLength": 64,
-            "minLength": 1,
-            "pattern": "^[^\\x00]*$",
-            "title": "Provider",
-            "type": "string"
-          },
-          "query": {
-            "maxLength": 20000,
-            "minLength": 1,
-            "pattern": "^[^\\x00]*$",
-            "title": "Query",
-            "type": "string"
-          }
-        },
-        "required": [
-          "provider",
-          "query"
-        ],
-        "title": "TranslatedQuery",
-        "type": "object"
-      },
       "UsageAnalyticsResponse": {
         "properties": {
           "buckets": {
@@ -5214,29 +5438,29 @@
         "title": "WorkItemDraft",
         "type": "object"
       },
-      "WorkItemPage": {
+      "WorkTrackingBindingOut": {
         "additionalProperties": false,
         "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/WorkItem"
-            },
-            "maxItems": 200,
-            "title": "Items",
-            "type": "array"
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
           },
-          "page": {
-            "$ref": "#/components/schemas/Page"
-          },
-          "total": {
-            "default": 0,
-            "maximum": 9.223372036854776e+18,
-            "minimum": 0.0,
-            "title": "Total",
-            "type": "integer"
+          "provider": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Provider",
+            "type": "string"
           }
         },
-        "title": "WorkItemPage",
+        "required": [
+          "connection_id",
+          "provider"
+        ],
+        "title": "WorkTrackingBindingOut",
         "type": "object"
       }
     }
@@ -9601,6 +9825,81 @@
         ]
       }
     },
+    "/v1/work-tracking/binding": {
+      "get": {
+        "operationId": "getWorkTrackingBinding",
+        "parameters": [
+          {
+            "description": "Explicit work-tracking connection id (default: resolved)",
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Explicit work-tracking connection id (default: resolved)",
+              "title": "Connection Id"
+            }
+          },
+          {
+            "description": "Project used to resolve scoped work-tracking connections",
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Project used to resolve scoped work-tracking connections",
+              "title": "Project"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkTrackingBindingOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Work Tracking Binding",
+        "tags": [
+          "work-tracking"
+        ]
+      }
+    },
     "/v1/work-tracking/items": {
       "get": {
         "operationId": "listWorkItems",
@@ -9731,7 +10030,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkItemPage"
+                  "$ref": "#/components/schemas/ResolvedWorkItemPage"
                 }
               }
             },
@@ -9757,24 +10056,17 @@
         "operationId": "createWorkItem",
         "parameters": [
           {
-            "description": "Explicit work-tracking connection id (default: resolved)",
+            "description": "Exact work-tracking connection id. Required for mutations so an ambiguous retry cannot follow a changed default connection.",
             "in": "query",
             "name": "connection_id",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 32,
-                  "minLength": 1,
-                  "pattern": "^[^\\x00]*$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Explicit work-tracking connection id (default: resolved)",
-              "title": "Connection Id"
+              "description": "Exact work-tracking connection id. Required for mutations so an ambiguous retry cannot follow a changed default connection.",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
             }
           },
           {
@@ -9828,7 +10120,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkItem"
+                  "$ref": "#/components/schemas/ResolvedWorkItem"
                 }
               }
             },
@@ -9915,7 +10207,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkItem"
+                  "$ref": "#/components/schemas/ResolvedWorkItem"
                 }
               }
             },
@@ -9955,24 +10247,17 @@
             }
           },
           {
-            "description": "Explicit work-tracking connection id (default: resolved)",
+            "description": "Exact work-tracking connection id. Required for mutations so an ambiguous retry cannot follow a changed default connection.",
             "in": "query",
             "name": "connection_id",
-            "required": false,
+            "required": true,
             "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 32,
-                  "minLength": 1,
-                  "pattern": "^[^\\x00]*$",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Explicit work-tracking connection id (default: resolved)",
-              "title": "Connection Id"
+              "description": "Exact work-tracking connection id. Required for mutations so an ambiguous retry cannot follow a changed default connection.",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
             }
           },
           {
@@ -10026,7 +10311,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkItem"
+                  "$ref": "#/components/schemas/ResolvedWorkItem"
                 }
               }
             },
@@ -10111,7 +10396,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WorkItemPage"
+                  "$ref": "#/components/schemas/ResolvedWorkItemPage"
                 }
               }
             },
@@ -10196,7 +10481,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TranslatedQuery"
+                  "$ref": "#/components/schemas/ResolvedTranslatedQuery"
                 }
               }
             },

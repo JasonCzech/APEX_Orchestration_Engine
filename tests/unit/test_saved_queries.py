@@ -41,6 +41,7 @@ async def test_update_rejects_unknown_fields_without_touching_db() -> None:
         ("name", None),
         ("provider", 1),
         ("query", ""),
+        ("connection_id", "x" * 33),
         ("project_id", "x" * 256),
         ("description", "bad\x00description"),
         ("created_by", "ghp_0123456789abcdefghijklmnopqrstuvwxyz"),
@@ -54,6 +55,7 @@ async def test_add_rejects_invalid_or_credential_bearing_complete_rows_before_io
         name="triage",
         provider="jira",
         query="project = PHX",
+        connection_id="jira-project-1",
         project_id="project-1",
         description="open issues",
         created_by="operator",
@@ -79,6 +81,30 @@ async def test_add_assigns_and_validates_a_safe_id_before_io() -> None:
     assert type(row.id) is str
     assert len(row.id) == 32
     session.add.assert_called_once_with(row)
+
+
+async def test_update_accepts_an_exact_connection_binding() -> None:
+    session = Mock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    row = SavedQuery(
+        id="saved-query-1",
+        name="triage",
+        provider="jira",
+        query="project = PHX",
+        project_id="project-1",
+        connection_id=None,
+    )
+
+    updated = await SavedQueriesRepository(session).update(
+        row,
+        {"connection_id": "jira-project-1"},
+    )
+
+    assert updated is row
+    assert row.connection_id == "jira-project-1"
+    session.commit.assert_awaited_once()
+    session.refresh.assert_awaited_once_with(row)
 
 
 async def test_update_validates_the_complete_effective_row_before_mutation() -> None:
@@ -210,6 +236,7 @@ async def test_saved_query_crud_roundtrip() -> None:
                     project_id=project_id,
                     provider="jira",
                     query='project = PHX AND statusCategory = "To Do"',
+                    connection_id="jira-project-it",
                     description="triage view",
                     created_by="it-bot",
                 )
@@ -224,6 +251,8 @@ async def test_saved_query_crud_roundtrip() -> None:
             )
             try:
                 assert scoped.id and scoped.created_at is not None
+                assert scoped.connection_id == "jira-project-it"
+                assert global_row.connection_id is None
 
                 # duplicate names use a dedicated conflict, not generic validation failure
                 with pytest.raises(SavedQueryNameConflictError, match="already exists"):
@@ -245,9 +274,15 @@ async def test_saved_query_crud_roundtrip() -> None:
 
                 first_updated_at = scoped.updated_at
                 updated = await repo.update(
-                    scoped, {"query": "project = PHX", "description": "narrowed"}
+                    scoped,
+                    {
+                        "query": "project = PHX",
+                        "connection_id": "jira-project-it-v2",
+                        "description": "narrowed",
+                    },
                 )
                 assert updated.query == "project = PHX"
+                assert updated.connection_id == "jira-project-it-v2"
                 assert updated.description == "narrowed"
                 assert updated.updated_at >= first_updated_at
 

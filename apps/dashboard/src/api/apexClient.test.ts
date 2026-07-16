@@ -1,13 +1,13 @@
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 
-import { setApiKey } from '@/auth/keyStorage'
+import { bumpSessionRevision, setApiKey } from '@/auth/keyStorage'
 import { server } from '@/test/server'
 
 import { getApexClient, onUnauthorized } from './apexClient'
 
 describe('Apex client authentication middleware', () => {
-  it('ignores a 401 response sent with a superseded credential generation', async () => {
+  it('rejects a response sent with a superseded credential generation', async () => {
     let requestStarted!: () => void
     let releaseResponse!: () => void
     const started = new Promise<void>((resolve) => {
@@ -32,12 +32,42 @@ describe('Apex client authentication middleware', () => {
       await started
       setApiKey('apex_new_key')
       releaseResponse()
-      await response
+      await expect(response).rejects.toThrow(
+        'Authentication changed while the request was in flight.',
+      )
 
       expect(unauthorized).not.toHaveBeenCalled()
     } finally {
       unsubscribe()
     }
+  })
+
+  it('rejects a successful response after the semantic session changes', async () => {
+    let requestStarted!: () => void
+    let releaseResponse!: () => void
+    const started = new Promise<void>((resolve) => {
+      requestStarted = resolve
+    })
+    const release = new Promise<void>((resolve) => {
+      releaseResponse = resolve
+    })
+    server.use(
+      http.get('*/v1/system/info', async () => {
+        requestStarted()
+        await release
+        return HttpResponse.json({ version: 'stale-session' })
+      }),
+    )
+    setApiKey('apex_same_key')
+
+    const response = getApexClient().GET('/v1/system/info')
+    await started
+    bumpSessionRevision()
+    releaseResponse()
+
+    await expect(response).rejects.toThrow(
+      'Authentication changed while the request was in flight.',
+    )
   })
 
   it('reports a 401 for the current credential generation', async () => {

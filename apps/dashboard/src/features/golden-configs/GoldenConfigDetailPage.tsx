@@ -17,13 +17,16 @@ import { useNavigate, useParams } from 'react-router'
 import { PHASE_NAMES } from '@apex/pipeline-events'
 
 import {
+  goldenConfigWriteMutationKey,
   useGoldenConfig,
   useUpdateGoldenConfig,
   type GoldenConfigEntry,
 } from '@/api/hooks/useAssistants'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin } from '@/auth/RequireRole'
 import { roleAtLeast } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
@@ -166,17 +169,25 @@ function ReadSections({ entry }: { entry: GoldenConfigEntry }) {
   )
 }
 
-function EditPanel({ entry, onClose }: { entry: GoldenConfigEntry; onClose: () => void }) {
-  const update = useUpdateGoldenConfig()
+function EditPanel({
+  entry,
+  onClose,
+}: {
+  entry: GoldenConfigEntry
+  onClose: (assistantId: string) => void
+}) {
+  const update = useUpdateGoldenConfig(entry.assistantId)
+  const writeCount = usePendingMutationCount(goldenConfigWriteMutationKey(entry.assistantId))
+  const writePending = writeCount > 0
   const [text, setText] = useState(() => JSON.stringify(entry.configurable, null, 2))
   const parse = parseConfigurableJson(text)
-  const canSave = parse.ok && !update.isPending
+  const canSave = parse.ok && !writePending
 
   function save() {
-    if (!parse.ok) return
+    if (!parse.ok || writePending) return
     update.mutate(
-      { assistantId: entry.assistantId, configurable: parse.value },
-      { onSuccess: onClose },
+      { configurable: parse.value },
+      { onSuccess: () => onClose(entry.assistantId) },
     )
   }
 
@@ -193,6 +204,7 @@ function EditPanel({ entry, onClose }: { entry: GoldenConfigEntry; onClose: () =
         rows={16}
         spellCheck={false}
         value={text}
+        disabled={writePending}
         onChange={(event) => setText(event.target.value)}
       />
       {!parse.ok && (
@@ -209,26 +221,27 @@ function EditPanel({ entry, onClose }: { entry: GoldenConfigEntry; onClose: () =
         <button
           type="button"
           className="btn btn-ghost btn-sm"
-          onClick={onClose}
-          disabled={update.isPending}
+          onClick={() => onClose(entry.assistantId)}
+          disabled={writePending}
         >
           Cancel
         </button>
         <button type="button" className="btn btn-primary btn-sm" disabled={!canSave} onClick={save}>
-          {update.isPending ? 'Saving…' : 'Save new version'}
+          {writePending ? 'Saving…' : 'Save new version'}
         </button>
       </div>
     </section>
   )
 }
 
-export function GoldenConfigDetailPage() {
-  const { assistantId = '' } = useParams()
+function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
   const navigate = useNavigate()
   const consumer = useConsumer()
   const canEdit = isGlobalAdmin(consumer)
   const canStartRun = consumer ? roleAtLeast(consumer.role, 'operator') : false
   const query = useGoldenConfig(assistantId)
+  const writeCount = usePendingMutationCount(goldenConfigWriteMutationKey(assistantId))
+  const writePending = writeCount > 0
   const [editing, setEditing] = useState(false)
 
   if (query.isPending) {
@@ -240,11 +253,11 @@ export function GoldenConfigDetailPage() {
     )
   }
 
-  if (query.isError) {
+  if (!query.data) {
     return (
       <ProblemCard
         title="Golden config unavailable"
-        message={query.error.message}
+        message={query.error?.message ?? 'The golden config could not be loaded.'}
         onRetry={() => void query.refetch()}
       />
     )
@@ -254,6 +267,9 @@ export function GoldenConfigDetailPage() {
 
   return (
     <section className="gc-page animate-enter">
+      {query.isError && (
+        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+      )}
       <header className="gc-detail-header glass-panel">
         <div className="gc-detail-title-block">
           <h2 className="gc-page-title">{entry.name}</h2>
@@ -271,8 +287,16 @@ export function GoldenConfigDetailPage() {
           {entry.description && <p className="gc-card-description">{entry.description}</p>}
         </div>
         <div className="gc-actions-row">
+          {writePending && <span className="topbar-meta-chip warning">saving…</span>}
           {canEdit && !editing && (
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={writePending}
+              onClick={() => {
+                if (!writePending) setEditing(true)
+              }}
+            >
               Edit JSON
             </button>
           )}
@@ -280,6 +304,7 @@ export function GoldenConfigDetailPage() {
             <button
               type="button"
               className="btn btn-primary btn-sm"
+              disabled={writePending}
               onClick={() =>
                 void navigate(`/runs/new?step=config&golden=${encodeURIComponent(entry.assistantId)}`)
               }
@@ -291,10 +316,19 @@ export function GoldenConfigDetailPage() {
       </header>
 
       {editing ? (
-        <EditPanel entry={entry} onClose={() => setEditing(false)} />
+        <EditPanel
+          entry={entry}
+          onClose={() => setEditing(false)}
+        />
       ) : (
         <ReadSections entry={entry} />
       )}
     </section>
   )
+}
+
+export function GoldenConfigDetailPage() {
+  const { assistantId = '' } = useParams()
+  // Reset edit state and resource-bound hooks whenever the route identity changes.
+  return <GoldenConfigDetail key={assistantId} assistantId={assistantId} />
 }

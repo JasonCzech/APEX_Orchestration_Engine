@@ -15,6 +15,7 @@ import { QueryClientProvider } from '@tanstack/react-query'
 
 import type { components } from '@apex/api-client'
 
+import { AuthProvider, type AuthState } from '@/auth/AuthProvider'
 import { NewRunWizardPage } from '@/features/new-test/NewRunWizard'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
@@ -147,7 +148,7 @@ export function installWizardHandlers(existingDrafts: DraftRead[] = []) {
 }
 
 /** Mounts the wizard on a memory router with a probe for the post-launch route. */
-export function renderWizard(initialEntry = '/runs/new') {
+export function renderWizard(initialEntry = '/runs/new', authState?: AuthState) {
   const router = createMemoryRouter(
     [
       { path: '/runs/new', element: <NewRunWizardPage /> },
@@ -156,9 +157,10 @@ export function renderWizard(initialEntry = '/runs/new') {
     { initialEntries: [initialEntry] },
   )
   const queryClient = createTestQueryClient()
+  const routed = <RouterProvider router={router} />
   const result = render(
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      {authState ? <AuthProvider staticState={authState}>{routed}</AuthProvider> : routed}
     </QueryClientProvider>,
   )
   return { ...result, router, queryClient }

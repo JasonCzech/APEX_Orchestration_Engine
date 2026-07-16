@@ -12,7 +12,8 @@
  *    its OWN useGate over the same thread-state cache entry, notifies terminal
  *    terminal outcomes exactly once per gate instance ('resumed' for terminal
  *    202 decisions, 'superseded' on 409-conflict/actioned-elsewhere), and exposes the imperative handle
- *    for the inbox keyboard layer (a/m/s/x + Enter).
+ *    for the inbox's safe focus/arming shortcuts (m/x + Enter). Approval and
+ *    skip submissions remain on the module's explicit controls.
  *
  * Render by machine state:
  *   open       -> kind-specific panel + action bar
@@ -216,7 +217,7 @@ export function GateModuleView({
 
       <RequireRole role="operator">
         <GateActionBar
-          key={`${gate.interrupt_id}:${JSON.stringify(gate.payload)}`}
+          key={JSON.stringify([gate.interrupt_id, gate.payload])}
           kind={gate.kind}
           actions={payload?.actions ?? []}
           draft={draft}
@@ -239,7 +240,7 @@ export type GateOutcome =
   | { type: 'resumed'; action: GateAction; runId?: string }
   | { type: 'superseded' }
 
-/** Imperative surface for the inbox keyboard layer (a/m/s/x + Enter). */
+/** Imperative surface used by the inbox for safe focus/arming shortcuts. */
 export interface GateModuleHandle {
   isActionable(): boolean
   invoke(action: GateAction): boolean

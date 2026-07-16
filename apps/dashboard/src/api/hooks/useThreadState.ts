@@ -28,10 +28,18 @@ export interface ThreadStateSnapshot {
   stateParseFailed: boolean
 }
 
-/** Thread statuses that keep the 10s snapshot poll alive. */
+/** Thread statuses that keep the fast snapshot poll alive. */
 const ACTIVE_THREAD_STATUSES = new Set(['busy', 'interrupted'])
 
 export const THREAD_STATE_REFETCH_MS = 10_000
+/** Terminal threads still poll so externally started reruns become visible. */
+export const TERMINAL_THREAD_STATE_REFETCH_MS = 30_000
+
+export function threadStateRefetchInterval(status: string | null | undefined): number {
+  return status && ACTIVE_THREAD_STATUSES.has(status)
+    ? THREAD_STATE_REFETCH_MS
+    : TERMINAL_THREAD_STATE_REFETCH_MS
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -111,7 +119,8 @@ async function fetchThreadState(threadId: string): Promise<ThreadStateSnapshot> 
 /**
  * Snapshot of a pipeline thread (summary + values + interrupts).
  * staleTime 0 (plan: thread state is always refetched on mount); polls every
- * 10s while the thread is busy/interrupted, off otherwise.
+ * 10s while busy/interrupted and every 30s while terminal so an open page
+ * notices a rerun launched by another operator.
  */
 export function useThreadState(threadId: string | undefined) {
   return useQuery({
@@ -121,7 +130,8 @@ export function useThreadState(threadId: string | undefined) {
     staleTime: STALE_TIMES.threadState,
     refetchInterval: (query) => {
       const status = query.state.data?.detail.thread_status
-      return status && ACTIVE_THREAD_STATUSES.has(status) ? THREAD_STATE_REFETCH_MS : false
+      return threadStateRefetchInterval(status)
     },
+    refetchIntervalInBackground: false,
   })
 }

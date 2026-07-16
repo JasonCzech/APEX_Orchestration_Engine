@@ -16,17 +16,20 @@ from apex.persistence.repositories._conflicts import (
 )
 from apex.services.connection_credentials import reject_credential_text
 
-_MUTABLE_FIELDS = frozenset({"name", "provider", "query", "description"})
+_MUTABLE_FIELDS = frozenset({"name", "provider", "query", "connection_id", "description"})
 _TEXT_BOUNDS = {
     "id": (1, 32),
     "name": (1, 255),
     "provider": (1, 64),
     "query": (1, 20_000),
+    "connection_id": (1, 32),
     "project_id": (1, MAX_SCOPE_ID_CHARS),
     "description": (0, MAX_DESCRIPTION_CHARS),
     "created_by": (1, 255),
 }
-_NULLABLE_TEXT_FIELDS = frozenset({"project_id", "description", "created_by"})
+_NULLABLE_TEXT_FIELDS = frozenset(
+    {"project_id", "connection_id", "description", "created_by"}
+)
 
 
 class SavedQueryNameConflictError(ValueError):
@@ -56,6 +59,9 @@ def _saved_query_values(row: SavedQuery, changes: dict[str, Any] | None = None) 
         "name": changes["name"] if "name" in changes else row.name,
         "provider": changes["provider"] if "provider" in changes else row.provider,
         "query": changes["query"] if "query" in changes else row.query,
+        "connection_id": (
+            changes["connection_id"] if "connection_id" in changes else row.connection_id
+        ),
         "project_id": row.project_id,
         "description": (changes["description"] if "description" in changes else row.description),
         "created_by": row.created_by,

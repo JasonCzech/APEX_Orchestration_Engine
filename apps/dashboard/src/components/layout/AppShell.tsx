@@ -1,5 +1,7 @@
 import { Outlet } from 'react-router'
 
+import { ConsumerKeyLifecycle } from '@/features/admin/ConsumerKeyLifecycle'
+
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import './AppShell.css'
@@ -17,6 +19,7 @@ export function AppShell() {
         <Topbar />
         <Outlet />
       </main>
+      <ConsumerKeyLifecycle />
     </div>
   )
 }

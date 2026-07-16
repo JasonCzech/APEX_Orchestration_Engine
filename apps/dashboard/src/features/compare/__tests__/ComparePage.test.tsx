@@ -1,10 +1,12 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
+import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
+import { queryKeys } from '@/api/queryKeys'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -24,7 +26,10 @@ function LocationProbe({ label }: { label: string }) {
 }
 
 /** Mounts the page on a memory router with probes for its navigation targets. */
-function renderCompare(initialEntry: string) {
+function renderCompare(
+  initialEntry: string,
+  queryClient = createTestQueryClient(),
+) {
   const router = createMemoryRouter(
     [
       { path: '/runs/compare', element: <ComparePage /> },
@@ -34,7 +39,7 @@ function renderCompare(initialEntry: string) {
     { initialEntries: [initialEntry] },
   )
   render(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
@@ -177,6 +182,32 @@ describe('ComparePage', () => {
     )
     expect(await screen.findByTestId(`compare-col-${RUN_C_ID}`)).toBeInTheDocument()
     expect(screen.getByText('3 runs')).toBeInTheDocument()
+  })
+
+  it('keeps cached recent runs available when the picker refresh fails', async () => {
+    server.use(compareDetailHandler(), compareListHandler())
+    const queryClient = createTestQueryClient()
+    const user = userEvent.setup()
+    renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`, queryClient)
+
+    await screen.findByTestId(`compare-col-${RUN_A_ID}`)
+    await user.click(screen.getByRole('button', { name: 'Add run' }))
+    const panel = within(await screen.findByLabelText('Add a run to compare'))
+    expect(await panel.findByText('Throughput probe')).toBeInTheDocument()
+
+    server.use(
+      http.get('*/v1/pipelines', () =>
+        HttpResponse.json({ detail: 'recent runs temporarily unavailable' }, { status: 503 }),
+      ),
+    )
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.lists() })
+    })
+
+    expect(await panel.findByText(/Showing cached data/)).toHaveTextContent(
+      'recent runs temporarily unavailable',
+    )
+    expect(panel.getByText('Throughput probe')).toBeInTheDocument()
   })
 
   it('marks a failed snapshot column without blanking loaded ones', async () => {

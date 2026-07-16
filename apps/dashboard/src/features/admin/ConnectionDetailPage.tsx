@@ -8,10 +8,14 @@
  * Config tab PATCHes the mutable fields (kind shown immutable); host-mappings
  * tab PUTs the FULL mapping list on save.
  */
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
+import { useMutationState } from '@tanstack/react-query'
+
 import {
+  connectionProbeMutationKey,
+  connectionWriteMutationKey,
   useConnection,
   useDeleteConnection,
   useHostMappings,
@@ -22,13 +26,19 @@ import {
   type Connection,
   type HostMappingOut,
 } from '@/api/hooks/useConnections'
+import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
 import { hasFullProjectScope, isGlobalAdmin } from '@/auth/RequireRole'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
 import { kindLabel, parseJsonObject } from './adminLogic'
 import { AdminGate, TogglePill } from './adminShared'
+import {
+  isRuntimeIdentityKind,
+  scopedConnectionPolicyIssue,
+} from './connectionPolicy'
 import './admin.css'
 
 const TABS = ['config', 'host-mappings'] as const
@@ -82,7 +92,8 @@ function ConfigTab({ connection }: { connection: Connection }) {
         .map((scope) => scope.project_id),
     ),
   )
-  const update = useUpdateConnection()
+  const update = useUpdateConnection(connection.id)
+  const writeCount = usePendingMutationCount(connectionWriteMutationKey(connection.id))
   const [name, setName] = useState(connection.name)
   const [provider, setProvider] = useState(connection.provider)
   const [project, setProject] = useState(connection.project_id ?? '')
@@ -92,21 +103,30 @@ function ConfigTab({ connection }: { connection: Connection }) {
     JSON.stringify(connection.options, null, 2),
   )
 
+  const runtimeIdentity = isRuntimeIdentityKind(connection.kind)
   const optionsParse = parseJsonObject(optionsText)
-  const hasReservedOptions =
-    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
-  const projectAllowed = globalAdmin || projectScopes.includes(project)
+  const policyIssue =
+    !globalAdmin && !runtimeIdentity && optionsParse.ok
+      ? scopedConnectionPolicyIssue(connection.kind, provider, optionsParse.value)
+      : null
+  const projectAllowed = runtimeIdentity || globalAdmin || projectScopes.includes(project)
   const canSave =
     name.trim() !== '' &&
-    provider.trim() !== '' &&
-    optionsParse.ok &&
-    projectAllowed &&
-    (globalAdmin || !hasReservedOptions) &&
-    !update.isPending
+    (runtimeIdentity ||
+      (provider.trim() !== '' &&
+        optionsParse.ok &&
+        projectAllowed &&
+        (globalAdmin || policyIssue === null))) &&
+    writeCount === 0
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (!canSave || !optionsParse.ok) return
+    if (!canSave) return
+    if (runtimeIdentity) {
+      update.mutate({ connectionId: connection.id, body: { name: name.trim() } })
+      return
+    }
+    if (!optionsParse.ok) return
     update.mutate({
       connectionId: connection.id,
       body: {
@@ -134,9 +154,12 @@ function ConfigTab({ connection }: { connection: Connection }) {
             className="field-input"
             aria-label="Provider"
             value={provider}
+            readOnly={runtimeIdentity}
             onChange={(event) => setProvider(event.target.value)}
           />
-          <span className="adm-field-help">must be a registered provider</span>
+          {!runtimeIdentity && (
+            <span className="adm-field-help">must be a registered provider</span>
+          )}
         </label>
         <label className="adm-field">
           <span className="adm-field-label">Name</span>
@@ -150,7 +173,13 @@ function ConfigTab({ connection }: { connection: Connection }) {
         </label>
         <label className="adm-field">
           <span className="adm-field-label">Project (optional)</span>
-          {globalAdmin ? <input
+          {runtimeIdentity ? <input
+            type="text"
+            className="field-input"
+            aria-label="Project"
+            value={project || 'global'}
+            readOnly
+          /> : globalAdmin ? <input
             type="text"
             className="field-input"
             aria-label="Project"
@@ -175,6 +204,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             className="field-input"
             aria-label="Base URL"
             value={baseUrl}
+            readOnly={runtimeIdentity}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
         </label>
@@ -186,6 +216,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             aria-label="Secret ref"
             placeholder="env:JIRA_API_TOKEN"
             value={secretRef}
+            readOnly={runtimeIdentity}
             onChange={(event) => setSecretRef(event.target.value)}
           />
           <span className="adm-field-help">env:NAME — references only, never raw secrets</span>
@@ -199,17 +230,24 @@ function ConfigTab({ connection }: { connection: Connection }) {
           rows={6}
           spellCheck={false}
           value={optionsText}
+          readOnly={runtimeIdentity}
           onChange={(event) => setOptionsText(event.target.value)}
         />
       </label>
-      {!optionsParse.ok && (
+      {runtimeIdentity && (
+        <p className="adm-field-help">
+          Runtime identity fields are immutable. Create a replacement connection to change its
+          provider, project, endpoint, secret, or options.
+        </p>
+      )}
+      {!runtimeIdentity && !optionsParse.ok && (
         <p className="adm-form-error" role="alert">
           {optionsParse.message}
         </p>
       )}
-      {!globalAdmin && hasReservedOptions && (
+      {policyIssue && (
         <p className="adm-form-error" role="alert">
-          Options beginning with _apex_ require a global administrator.
+          {policyIssue}
         </p>
       )}
       {update.isError && (
@@ -240,11 +278,21 @@ function HostMappingsEditor({
   connectionId: string
   initial: HostMappingOut[]
 }) {
-  const put = usePutHostMappings()
+  const put = usePutHostMappings(connectionId)
+  const writeCount = usePendingMutationCount(connectionWriteMutationKey(connectionId))
+  const writePending = writeCount > 0
+  const generationRef = useRef<string | null>(connectionId)
   const [rows, setRows] = useState<MappingDraft[]>(() =>
     initial.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })),
   )
   const [isDirty, setIsDirty] = useState(false)
+
+  useEffect(
+    () => () => {
+      generationRef.current = null
+    },
+    [],
+  )
 
   useEffect(() => {
     // Connection lifecycle mutations invalidate the broad connections cache.
@@ -288,7 +336,7 @@ function HostMappingsEditor({
                       className="field-input"
                       aria-label={`Mapping ${index + 1} pattern`}
                       value={row.pattern}
-                      disabled={put.isPending}
+                      disabled={writePending}
                       onChange={(event) => patchRow(index, { pattern: event.target.value })}
                     />
                   </td>
@@ -298,7 +346,7 @@ function HostMappingsEditor({
                       className="field-input"
                       aria-label={`Mapping ${index + 1} target`}
                       value={row.target}
-                      disabled={put.isPending}
+                      disabled={writePending}
                       onChange={(event) => patchRow(index, { target: event.target.value })}
                     />
                   </td>
@@ -307,7 +355,7 @@ function HostMappingsEditor({
                       type="checkbox"
                       aria-label={`Mapping ${index + 1} enabled`}
                       checked={row.enabled}
-                      disabled={put.isPending}
+                      disabled={writePending}
                       onChange={(event) => patchRow(index, { enabled: event.target.checked })}
                     />
                   </td>
@@ -320,7 +368,7 @@ function HostMappingsEditor({
                         setIsDirty(true)
                         setRows((current) => current.filter((_, i) => i !== index))
                       }}
-                      disabled={put.isPending}
+                      disabled={writePending}
                     >
                       Remove
                     </button>
@@ -344,14 +392,14 @@ function HostMappingsEditor({
             setIsDirty(true)
             setRows((current) => [...current, { pattern: '', target: '', enabled: true }])
           }}
-          disabled={put.isPending}
+          disabled={writePending}
         >
           Add mapping
         </button>
         <button
           type="button"
           className="btn btn-primary btn-sm"
-          disabled={!canSave || put.isPending}
+          disabled={!canSave || writePending}
           onClick={() =>
             put.mutate({
               connectionId,
@@ -362,6 +410,7 @@ function HostMappingsEditor({
               })),
             }, {
               onSuccess: (saved) => {
+                if (generationRef.current !== connectionId) return
                 setRows(
                   saved.map(({ pattern, target, enabled }) => ({ pattern, target, enabled })),
                 )
@@ -387,16 +436,23 @@ function HostMappingsTab({ connectionId }: { connectionId: string }) {
       </div>
     )
   }
-  if (mappings.isError) {
+  if (!mappings.data) {
     return (
       <ProblemCard
         title="Host mappings unavailable"
-        message={mappings.error.message}
+        message={mappings.error?.message ?? 'Host mappings could not be loaded.'}
         onRetry={() => void mappings.refetch()}
       />
     )
   }
-  return <HostMappingsEditor connectionId={connectionId} initial={mappings.data} />
+  return (
+    <>
+      {mappings.isError && (
+        <CachedDataWarning error={mappings.error} onRetry={() => void mappings.refetch()} />
+      )}
+      <HostMappingsEditor connectionId={connectionId} initial={mappings.data} />
+    </>
+  )
 }
 
 /** Type-to-confirm delete modal (mirrors the environments pattern). */
@@ -408,9 +464,18 @@ function DeleteConnectionModal({
   onClose: () => void
 }) {
   const navigate = useNavigate()
-  const remove = useDeleteConnection()
+  const remove = useDeleteConnection(connection.id)
+  const writeCount = usePendingMutationCount(connectionWriteMutationKey(connection.id))
+  const generationRef = useRef<string | null>(connection.id)
   const [confirmation, setConfirmation] = useState('')
-  const canDelete = confirmation === connection.name && !remove.isPending
+  const canDelete = confirmation === connection.name && writeCount === 0
+
+  useEffect(
+    () => () => {
+      generationRef.current = null
+    },
+    [],
+  )
 
   function close() {
     if (remove.isPending) return
@@ -457,7 +522,9 @@ function DeleteConnectionModal({
             disabled={!canDelete}
             onClick={() =>
               remove.mutate(connection.id, {
-                onSuccess: () => void navigate('/admin/connections'),
+                onSuccess: () => {
+                  if (generationRef.current === connection.id) void navigate('/admin/connections')
+                },
               })
             }
           >
@@ -468,12 +535,29 @@ function DeleteConnectionModal({
   )
 }
 
-function ConnectionDetailContent() {
-  const { id = '' } = useParams<{ id: string }>()
+function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
+  const id = connectionId
   const [searchParams, setSearchParams] = useSearchParams()
   const connection = useConnection(id)
-  const setEnabled = useSetConnectionEnabled()
-  const probe = useTestConnection()
+  const setEnabled = useSetConnectionEnabled(id)
+  const writeCount = usePendingMutationCount(connectionWriteMutationKey(id))
+  const writeMutationIds = useMutationState({
+    filters: { mutationKey: connectionWriteMutationKey(id) },
+    select: (mutation) => mutation.mutationId,
+  })
+  const probeMutationIds = useMutationState({
+    filters: { mutationKey: connectionProbeMutationKey(id) },
+    select: (mutation) => mutation.mutationId,
+  })
+  const latestWriteMutationIdRef = useRef(0)
+  latestWriteMutationIdRef.current = Math.max(
+    latestWriteMutationIdRef.current,
+    0,
+    ...writeMutationIds,
+  )
+  const latestProbeMutationId = Math.max(0, ...probeMutationIds)
+  const probeIsCurrent = latestProbeMutationId > latestWriteMutationIdRef.current
+  const probe = useTestConnection(id)
   const [deleting, setDeleting] = useState(false)
 
   const rawTab = searchParams.get('tab')
@@ -499,11 +583,11 @@ function ConnectionDetailContent() {
     )
   }
 
-  if (connection.isError) {
+  if (!connection.data) {
     return (
       <ProblemCard
         title="Connection unavailable"
-        message={connection.error.message}
+        message={connection.error?.message ?? 'The connection could not be loaded.'}
         onRetry={() => void connection.refetch()}
       />
     )
@@ -513,6 +597,9 @@ function ConnectionDetailContent() {
 
   return (
     <section className="adm-page animate-enter">
+      {connection.isError && (
+        <CachedDataWarning error={connection.error} onRetry={() => void connection.refetch()} />
+      )}
       <header className="adm-detail-header glass-panel">
         <div className="adm-detail-heading">
           <nav className="adm-breadcrumb" aria-label="Breadcrumb">
@@ -528,7 +615,7 @@ function ConnectionDetailContent() {
             <TogglePill
               enabled={conn.enabled}
               label={`Toggle ${conn.name}`}
-              pending={setEnabled.isPending}
+              pending={writeCount > 0}
               onToggle={() => setEnabled.mutate({ connectionId: conn.id, enabled: !conn.enabled })}
             />
           </div>
@@ -537,8 +624,8 @@ function ConnectionDetailContent() {
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            onClick={() => probe.mutate(conn.id)}
-            disabled={probe.isPending}
+            onClick={() => probe.mutate()}
+            disabled={probe.isPending || writeCount > 0}
           >
             {probe.isPending ? 'Testing…' : 'Test connection'}
           </button>
@@ -546,13 +633,14 @@ function ConnectionDetailContent() {
             type="button"
             className="btn btn-danger btn-sm"
             onClick={() => setDeleting(true)}
+            disabled={writeCount > 0}
           >
             Delete
           </button>
         </div>
       </header>
 
-      <ProbePanel probe={probe} />
+      {probeIsCurrent && <ProbePanel probe={probe} />}
 
       <div className="adm-tabs" role="tablist" aria-label="Connection sections">
         {TABS.map((entry) => (
@@ -571,20 +659,31 @@ function ConnectionDetailContent() {
 
       {tab === 'config' ? (
         // ConfigTab preserves dirty edits while lifecycle mutations refetch.
-        <ConfigTab connection={conn} />
+        <ConfigTab key={`config:${conn.id}`} connection={conn} />
       ) : (
-        <HostMappingsTab connectionId={conn.id} />
+        <HostMappingsTab key={`mappings:${conn.id}`} connectionId={conn.id} />
       )}
 
-      {deleting && <DeleteConnectionModal connection={conn} onClose={() => setDeleting(false)} />}
+      {deleting && (
+        <DeleteConnectionModal
+          key={`delete:${conn.id}`}
+          connection={conn}
+          onClose={() => setDeleting(false)}
+        />
+      )}
     </section>
   )
+}
+
+function ConnectionDetailRoute() {
+  const { id = '' } = useParams<{ id: string }>()
+  return <ConnectionDetailContent key={id} connectionId={id} />
 }
 
 export function ConnectionDetailPage() {
   return (
     <AdminGate>
-      <ConnectionDetailContent />
+      <ConnectionDetailRoute />
     </AdminGate>
   )
 }

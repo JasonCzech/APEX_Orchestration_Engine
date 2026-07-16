@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
@@ -108,6 +108,55 @@ describe('PromptReviewSection', () => {
       }),
     )
     expect(await within(section).findByText('saved')).toBeInTheDocument()
+  })
+
+  it('locks prompt-review editing across phase routes while a thread write is pending', async () => {
+    const captured: { body?: unknown } = {}
+    server.use(pipelineDetailHandler(), ...promptReviewHandlers(captured))
+    let markSaveStarted!: () => void
+    const saveStarted = new Promise<void>((resolve) => {
+      markSaveStarted = resolve
+    })
+    let releaseSave!: () => void
+    const saveRelease = new Promise<void>((resolve) => {
+      releaseSave = resolve
+    })
+    server.use(
+      http.patch('*/v1/pipelines/:threadId/phases/:phase/prompt-review', async ({ request }) => {
+        const body = (await request.json()) as Record<string, unknown>
+        markSaveStarted()
+        await saveRelease
+        return HttpResponse.json({
+          ...body,
+          source: { origin: 'run_override' },
+          updated_at: '2026-06-01T00:01:00+00:00',
+          updated_by: 'operator',
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    const { router } = renderRunRoutes([
+      `/runs/${THREAD_ID}/phases/story_analysis?tab=details`,
+    ])
+
+    const firstSection = await screen.findByTestId('prompt-review-section')
+    const firstEditor = await within(firstSection).findByLabelText('System Prompt')
+    await waitFor(() => expect(firstEditor).toHaveValue('Server system for story_analysis'))
+    await user.type(firstEditor, ' pending')
+    await user.click(within(firstSection).getByRole('button', { name: 'Save to run' }))
+    await saveStarted
+
+    await act(async () => {
+      await router.navigate(`/runs/${THREAD_ID}/phases/test_planning?tab=details`)
+    })
+    const nextSection = await screen.findByTestId('prompt-review-section')
+    const nextEditor = await within(nextSection).findByLabelText('System Prompt')
+    await waitFor(() => expect(nextEditor).toHaveValue('Server system for test_planning'))
+    expect(nextEditor).toHaveAttribute('readonly')
+    expect(within(nextSection).getByRole('button', { name: 'Save to run' })).toBeDisabled()
+
+    releaseSave()
+    await waitFor(() => expect(nextEditor).not.toHaveAttribute('readonly'))
   })
 
   it('suppresses the standalone section while a prompt-review gate owns the editor', async () => {

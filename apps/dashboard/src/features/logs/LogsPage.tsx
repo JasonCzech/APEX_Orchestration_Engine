@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router'
 
 import { useLogSearch, type LogEntry } from '@/api/hooks/useLogs'
 import { isApiError } from '@/api/errors'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { WindowPresets } from '@/components/controls/WindowPresets'
 import { DAY_MS, HOUR_MS, type WindowPreset } from '@/components/controls/timeWindow'
@@ -13,6 +14,7 @@ import {
   hasLogsFilters,
   levelTone,
   LOG_LEVELS,
+  LOGS_MAX_OFFSET,
   LOGS_PAGE_SIZE,
   parseLogsFilters,
   serializeLogsFilters,
@@ -126,7 +128,7 @@ export function LogsPage() {
     setOffset(0)
   }, [committedKey])
 
-  const { data, error, isPending, isError, refetch } = useLogSearch(
+  const { data, error, isPending, isError, isPlaceholderData, refetch } = useLogSearch(
     submitted ? { ...submitted, offset } : null,
   )
 
@@ -153,14 +155,53 @@ export function LogsPage() {
   const total = data?.total
   const prevDisabled = offset === 0
   const nextDisabled =
-    total !== undefined ? offset + LOGS_PAGE_SIZE >= total : entries.length < LOGS_PAGE_SIZE
+    offset >= LOGS_MAX_OFFSET ||
+    (total !== undefined ? offset + LOGS_PAGE_SIZE >= total : entries.length < LOGS_PAGE_SIZE)
   const rangeCaption =
     entries.length > 0
       ? `${offset + 1}–${offset + entries.length}${total !== undefined ? ` of ${total}` : ''} entries`
       : 'No entries'
+  const hasCurrentData = data !== undefined && !isPlaceholderData
+  const reachedResultWindow =
+    offset >= LOGS_MAX_OFFSET &&
+    total !== undefined &&
+    offset + entries.length < total
 
   const queryRejected = isError && isApiError(error) && error.status === 422
   const upstreamDown = isError && isApiError(error) && error.status === 502
+  const paginationFooter =
+    entries.length > 0 || offset > 0 ? (
+      <>
+        {reachedResultWindow && (
+          <p className="logs-result-window-note" role="status">
+            Reached the provider result-window limit. Narrow the search to inspect later matches.
+          </p>
+        )}
+        <footer className="logs-pagination">
+          <span className="logs-pagination-caption">{rangeCaption}</span>
+          <div className="logs-pagination-buttons">
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={prevDisabled}
+              onClick={() => setOffset((value) => Math.max(0, value - LOGS_PAGE_SIZE))}
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              disabled={nextDisabled}
+              onClick={() =>
+                setOffset((value) => Math.min(LOGS_MAX_OFFSET, value + LOGS_PAGE_SIZE))
+              }
+            >
+              Next
+            </button>
+          </div>
+        </footer>
+      </>
+    ) : null
 
   return (
     <section className="logs-page animate-enter">
@@ -223,73 +264,67 @@ export function LogsPage() {
             Set a window and filters, then press Search — nothing runs on keystrokes.
           </p>
         </div>
-      ) : queryRejected ? (
-        <section className="glass-panel logs-query-error" role="alert">
-          <h2>Query rejected</h2>
-          <p>{error.message}</p>
-        </section>
-      ) : upstreamDown ? (
-        <ProblemCard
-          title="Log search connection problem"
-          message={error.message}
-          onRetry={() => refetch()}
-        />
-      ) : isError ? (
-        <ProblemCard
-          title="Log search failed"
-          message={error instanceof Error ? error.message : 'The log search could not be run.'}
-          onRetry={() => refetch()}
-        />
-      ) : isPending ? (
+      ) : queryRejected && !hasCurrentData ? (
+        <>
+          <section className="glass-panel logs-query-error" role="alert">
+            <h2>Query rejected</h2>
+            <p>{error.message}</p>
+          </section>
+          {paginationFooter}
+        </>
+      ) : upstreamDown && !hasCurrentData ? (
+        <>
+          <ProblemCard
+            title="Log search connection problem"
+            message={error.message}
+            onRetry={() => refetch()}
+          />
+          {paginationFooter}
+        </>
+      ) : isError && !hasCurrentData ? (
+        <>
+          <ProblemCard
+            title="Log search failed"
+            message={error instanceof Error ? error.message : 'The log search could not be run.'}
+            onRetry={() => refetch()}
+          />
+          {paginationFooter}
+        </>
+      ) : isPending || isPlaceholderData ? (
         <LogsSkeleton />
-      ) : entries.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No log entries in this window</h2>
-          <p className="dash-empty-hint">Widen the time window or relax the filters.</p>
-        </div>
       ) : (
         <>
-          <div className="data-table-wrap">
-            <table className="data-table striped logs-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Level</th>
-                  <th>Service</th>
-                  <th>Message</th>
-                  <th className="log-expand-cell">
-                    <span className="sr-only">Fields</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {entries.map((entry, index) => (
-                  <LogRow key={`${offset}-${index}-${entry.at}`} entry={entry} />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <footer className="logs-pagination">
-            <span className="logs-pagination-caption">{rangeCaption}</span>
-            <div className="logs-pagination-buttons">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={prevDisabled}
-                onClick={() => setOffset((value) => Math.max(0, value - LOGS_PAGE_SIZE))}
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={nextDisabled}
-                onClick={() => setOffset((value) => value + LOGS_PAGE_SIZE)}
-              >
-                Next
-              </button>
+          {isError && (
+            <CachedDataWarning error={error} onRetry={() => void refetch()} />
+          )}
+          {entries.length === 0 ? (
+            <div className="dash-empty">
+              <h2>No log entries in this window</h2>
+              <p className="dash-empty-hint">Widen the time window or relax the filters.</p>
             </div>
-          </footer>
+          ) : (
+            <div className="data-table-wrap">
+              <table className="data-table striped logs-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Level</th>
+                    <th>Service</th>
+                    <th>Message</th>
+                    <th className="log-expand-cell">
+                      <span className="sr-only">Fields</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {entries.map((entry, index) => (
+                    <LogRow key={`${offset}-${index}-${entry.at}`} entry={entry} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {paginationFooter}
         </>
       )}
     </section>

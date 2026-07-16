@@ -8,6 +8,7 @@ import { useThreadState } from '@/api/hooks/useThreadState'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
 import { isApiError } from '@/api/errors'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { formatRelative } from '@/utils/time'
@@ -19,6 +20,7 @@ import { OverflowMenu, PreflightModal } from './PreflightModal'
 import {
   hasActiveFilters,
   parseRunsFilters,
+  RUNS_MAX_OFFSET,
   serializeRunsFilters,
   THREAD_STATUSES,
   isThreadStatus,
@@ -263,13 +265,21 @@ export function RunsListPage() {
   const total = data?.total
   const prevDisabled = filters.offset === 0 || isPlaceholderData
   const nextDisabled =
-    total !== undefined
+    filters.offset >= RUNS_MAX_OFFSET ||
+    (total !== undefined
       ? filters.offset + filters.limit >= total
-      : items.length < filters.limit || isPlaceholderData
+      : items.length < filters.limit || isPlaceholderData)
+  const reachedResultWindow =
+    filters.offset >= RUNS_MAX_OFFSET &&
+    (total !== undefined
+      ? filters.offset + items.length < total
+      : items.length === filters.limit)
   const rangeCaption =
     items.length > 0
       ? `${filters.offset + 1}–${filters.offset + items.length}${total !== undefined ? ` of ${total}` : ''}`
-      : 'No runs'
+      : filters.offset > 0
+        ? 'No more runs'
+        : 'No runs'
 
   const clearFilters = () => {
     setSearch('')
@@ -283,6 +293,41 @@ export function RunsListPage() {
       current && PHASE_NAMES.includes(current as (typeof PHASE_NAMES)[number]) ? current : phase,
     )
   }, [inspector.data])
+
+  const paginationFooter = (
+    <>
+      {reachedResultWindow && (
+        <p className="runs-result-window-note" role="status">
+          Reached the runs result-window limit. Refine the filters to inspect later matches.
+        </p>
+      )}
+      <footer className="runs-pagination">
+        <span className="runs-pagination-caption">{rangeCaption}</span>
+        <div className="runs-pagination-buttons">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={prevDisabled}
+            onClick={() => applyFilters({ offset: Math.max(0, filters.offset - filters.limit) })}
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            disabled={nextDisabled || isPlaceholderData}
+            onClick={() =>
+              applyFilters({
+                offset: Math.min(RUNS_MAX_OFFSET, filters.offset + filters.limit),
+              })
+            }
+          >
+            Next
+          </button>
+        </div>
+      </footer>
+    </>
+  )
 
   return (
     <section className="runs-page animate-enter">
@@ -328,29 +373,34 @@ export function RunsListPage() {
         <LaunchRunButton />
       </header>
 
-      {isPending ? (
-        <RunsSkeleton />
-      ) : isError && !data ? (
+      {isError && (!data || isPlaceholderData) ? (
         <ProblemCard title="Runs unavailable" message={errorMessage(error)} onRetry={() => refetch()} />
+      ) : isPending || isPlaceholderData ? (
+        <RunsSkeleton />
       ) : items.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No runs found</h2>
-          {hasActiveFilters(filters) ? (
-            <>
-              <p className="dash-empty-hint">No runs match the current filters.</p>
-              <button type="button" className="btn btn-secondary" onClick={clearFilters}>
-                Clear filters
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="dash-empty-hint">Launch your first pipeline run to see it here.</p>
-              <Link to="/runs/new" className="btn btn-primary runs-empty-cta">
-                Start a new run
-              </Link>
-            </>
-          )}
-        </div>
+        <>
+          <div className="dash-empty">
+            <h2>{filters.offset > 0 ? 'No more runs' : 'No runs found'}</h2>
+            {filters.offset > 0 ? (
+              <p className="dash-empty-hint">Return to the previous page to continue browsing.</p>
+            ) : hasActiveFilters(filters) ? (
+              <>
+                <p className="dash-empty-hint">No runs match the current filters.</p>
+                <button type="button" className="btn btn-secondary" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="dash-empty-hint">Launch your first pipeline run to see it here.</p>
+                <Link to="/runs/new" className="btn btn-primary runs-empty-cta">
+                  Start a new run
+                </Link>
+              </>
+            )}
+          </div>
+          {filters.offset > 0 && paginationFooter}
+        </>
       ) : (
         <>
           {isError && (
@@ -426,12 +476,18 @@ export function RunsListPage() {
               </div>
               {inspector.isPending ? (
                 <p className="runs-muted">Loading run details…</p>
-              ) : inspector.isError ? (
+              ) : inspector.isError && !inspector.data ? (
                 <p className="runs-refresh-error" role="alert">
                   Inspect failed: {errorMessage(inspector.error)}
                 </p>
               ) : inspector.data ? (
                 <>
+                  {inspector.isError && (
+                    <CachedDataWarning
+                      error={inspector.error}
+                      onRetry={() => void inspector.refetch()}
+                    />
+                  )}
                   <div className="runs-inspector-phases">
                     {PHASE_NAMES.map((phase) => {
                       const status = inspector.data.state.phase_results?.[phase]?.status
@@ -463,29 +519,7 @@ export function RunsListPage() {
               ) : null}
             </section>
           )}
-          <footer className="runs-pagination">
-            <span className="runs-pagination-caption">{rangeCaption}</span>
-            <div className="runs-pagination-buttons">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={prevDisabled}
-                onClick={() =>
-                  applyFilters({ offset: Math.max(0, filters.offset - filters.limit) })
-                }
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={nextDisabled || isPlaceholderData}
-                onClick={() => applyFilters({ offset: filters.offset + filters.limit })}
-              >
-                Next
-              </button>
-            </div>
-          </footer>
+          {paginationFooter}
         </>
       )}
       {rerunThreadId && (

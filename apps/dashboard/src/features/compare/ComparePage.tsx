@@ -6,6 +6,7 @@ import { PHASE_NAMES, type PhaseResultEntry, type TestResultSummary } from '@ape
 import { usePipelines } from '@/api/hooks/usePipelines'
 import { useThreadState, type ThreadStateSnapshot } from '@/api/hooks/useThreadState'
 import { isApiError } from '@/api/errors'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import type { UseQueryResult } from '@tanstack/react-query'
 
 import {
@@ -104,14 +105,17 @@ function AddRunPicker({ ids, onAdd }: { ids: string[]; onAdd: (id: string) => vo
 }
 
 function AddRunPanel({ exclude, onAdd }: { exclude: string[]; onAdd: (id: string) => void }) {
-  const { data, isPending, isError } = usePipelines({ limit: 10 })
-  const items = (data?.items ?? []).filter((run) => !exclude.includes(run.thread_id))
+  const query = usePipelines({ limit: 10 })
+  const items = (query.data?.items ?? []).filter((run) => !exclude.includes(run.thread_id))
   return (
     <div className="compare-picker-panel glass-panel" aria-label="Add a run to compare">
       <span className="compare-picker-title">Recent runs</span>
-      {isPending ? (
+      {query.isError && query.data && (
+        <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
+      )}
+      {query.isPending ? (
         <span className="compare-picker-hint">Loading…</span>
-      ) : isError ? (
+      ) : query.isError && !query.data ? (
         <span className="compare-picker-hint">Recent runs could not be loaded.</span>
       ) : items.length === 0 ? (
         <span className="compare-picker-hint">No other recent runs.</span>
@@ -162,7 +166,7 @@ function ColumnHeader({
         </button>
       </div>
       <div className="compare-col-meta">
-        {run.query.isError ? (
+        {run.query.isError && !run.query.data ? (
           <span className="status-badge danger" title={errorMessage(run.query.error)}>
             load failed
           </span>
@@ -242,6 +246,17 @@ export function ComparePage() {
           Back to runs
         </Link>
       </header>
+
+      {runs.some((run) => run.query.isError && run.query.data) && (
+        <CachedDataWarning
+          error={runs.find((run) => run.query.isError && run.query.data)?.query.error}
+          onRetry={() => {
+            for (const run of runs) {
+              if (run.query.isError) void run.query.refetch()
+            }
+          }}
+        />
+      )}
 
       <div className="data-table-wrap compare-table-wrap">
         <table className="data-table compare-table">

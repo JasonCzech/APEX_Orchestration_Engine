@@ -12,6 +12,7 @@ import type { PhaseName } from '@apex/pipeline-events'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
+import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 
@@ -24,23 +25,35 @@ type PromptDetail = components['schemas']['PromptDetail']
 const PHASE_NAMESPACE = 'phase'
 const APPLICATION_NAMESPACE = 'application'
 
-async function fetchPromptList(namespace: string): Promise<PromptSummary[]> {
-  const { data, error, response } = await getApexClient().GET('/v1/prompts', {
-    params: { query: { namespace } },
+const PROMPT_PAGE_SIZE = 200
+
+async function fetchPromptList(namespace: string, signal?: AbortSignal): Promise<PromptSummary[]> {
+  return fetchAllOffsetPages({
+    label: 'Wizard prompt list',
+    pageSize: PROMPT_PAGE_SIZE,
+    fetchPage: async (limit, offset) => {
+      const { data, error, response } = await getApexClient().GET('/v1/prompts', {
+        params: {
+          query: { namespace, limit, offset },
+        },
+        signal,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Prompt list failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
   })
-  if (!response.ok || !data) {
-    throw new ApiError(
-      response.status,
-      errorMessageOf(error, `Prompt list failed (${response.status})`),
-      error,
-    )
-  }
-  return data
 }
 
-async function fetchPromptDetail(promptId: string): Promise<PromptDetail> {
+async function fetchPromptDetail(promptId: string, signal?: AbortSignal): Promise<PromptDetail> {
   const { data, error, response } = await getApexClient().GET('/v1/prompts/{prompt_id}', {
     params: { path: { prompt_id: promptId } },
+    signal,
   })
   if (!response.ok || !data) {
     throw new ApiError(
@@ -66,21 +79,26 @@ function useCatalogPrompt(
   const summary = enabled && key ? summaries?.find((entry) => entry.key === key) : undefined
   const detail = useQuery({
     queryKey: queryKeys.prompts.byId(summary?.id ?? 'missing'),
-    queryFn: () => fetchPromptDetail(summary?.id ?? ''),
+    queryFn: ({ signal }) => fetchPromptDetail(summary?.id ?? '', signal),
     enabled: enabled && Boolean(summary),
     staleTime: STALE_TIMES.prompts,
   })
   if (!enabled || !key) return { prompt: null, loading: false, error: null }
   if (!summary) return { prompt: null, loading: summaries === undefined, error: null }
-  if (detail.isError) return { prompt: null, loading: false, error: detail.error }
-  if (!detail.data) return { prompt: null, loading: detail.isLoading, error: null }
+  if (!detail.data) {
+    return {
+      prompt: null,
+      loading: detail.isLoading,
+      error: detail.isError ? detail.error : null,
+    }
+  }
   return {
     prompt: {
       content: detail.data.content ?? '',
       version: detail.data.active_version?.version ?? null,
     },
     loading: false,
-    error: null,
+    error: detail.isError ? detail.error : null,
   }
 }
 
@@ -133,6 +151,12 @@ function PromptBlock({
         )}
       </div>
 
+      {!override && error && prompt && (
+        <p className="wizard-caption wizard-caption--danger" role="alert">
+          Showing the cached catalog prompt because its latest refresh failed.
+        </p>
+      )}
+
       {override ? (
         <div className="code-viewer editable">
           <CodeMirror
@@ -148,10 +172,6 @@ function PromptBlock({
             onChange={(next: string) => onEdit(next)}
           />
         </div>
-      ) : error ? (
-        <p className="wizard-caption wizard-caption--danger" role="alert">
-          Catalog prompt could not be loaded. Retry or use an explicit override.
-        </p>
       ) : loading ? (
         <p className="wizard-caption">Loading…</p>
       ) : prompt ? (
@@ -168,6 +188,10 @@ function PromptBlock({
             }}
           />
         </div>
+      ) : error ? (
+        <p className="wizard-caption wizard-caption--danger" role="alert">
+          Catalog prompt could not be loaded. Retry or use an explicit override.
+        </p>
       ) : (
         <p className="wizard-caption">{emptyText}</p>
       )}
@@ -191,12 +215,12 @@ export function PromptsStep({ draft, onChange }: StepProps) {
   const appId = draft.scope.app_id
   const phaseList = useQuery({
     queryKey: queryKeys.prompts.listNamespace(PHASE_NAMESPACE),
-    queryFn: () => fetchPromptList(PHASE_NAMESPACE),
+    queryFn: ({ signal }) => fetchPromptList(PHASE_NAMESPACE, signal),
     staleTime: STALE_TIMES.prompts,
   })
   const applicationList = useQuery({
     queryKey: queryKeys.prompts.listNamespace(APPLICATION_NAMESPACE),
-    queryFn: () => fetchPromptList(APPLICATION_NAMESPACE),
+    queryFn: ({ signal }) => fetchPromptList(APPLICATION_NAMESPACE, signal),
     // Application namespace is intentionally unavailable to scoped
     // identities; avoid a guaranteed 403 and explain that limitation below.
     enabled: Boolean(appId) && (consumer === undefined || (consumer != null && consumer.scopes.length === 0)),

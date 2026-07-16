@@ -9,6 +9,8 @@
 export const RUNS_PAGE_SIZE = 25
 /** Backend limit ceiling (GET /v1/pipelines `limit` is 1..100). */
 export const RUNS_MAX_LIMIT = 100
+/** Backend database-list offset ceiling. */
+export const RUNS_MAX_OFFSET = 10_000
 
 /** thread_status values surfaced by GET /v1/pipelines (LangGraph thread statuses). */
 export const THREAD_STATUSES = ['idle', 'busy', 'interrupted', 'error'] as const
@@ -46,7 +48,7 @@ export function parseRunsFilters(params: URLSearchParams): RunsFilters {
     ...(q ? { q } : {}),
     ...(project ? { project } : {}),
     limit,
-    offset: parseBoundedInt(params.get('offset'), 0, 0, Number.MAX_SAFE_INTEGER),
+    offset: parseBoundedInt(params.get('offset'), 0, 0, RUNS_MAX_OFFSET),
   }
 }
 

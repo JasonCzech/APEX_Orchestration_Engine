@@ -1,5 +1,6 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { delay, http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
@@ -15,6 +16,47 @@ function renderLogs(search = '') {
 }
 
 describe('LogsPage', () => {
+  it('does not label the previous response as results for a newly submitted search', async () => {
+    server.use(
+      http.post('*/v1/logs/search', async ({ request }) => {
+        const body = (await request.json()) as {
+          query?: { text?: string }
+          limit: number
+          offset: number
+        }
+        const text = body.query?.text ?? 'empty'
+        if (text === 'second') await delay(150)
+        return HttpResponse.json({
+          entries: [
+            {
+              at: '2026-06-12T10:00:00Z',
+              level: 'INFO',
+              service: 'apex-api',
+              message: `${text} result`,
+              fields: {},
+            },
+          ],
+          total: 1,
+          limit: body.limit,
+          offset: body.offset,
+          window: { from: null, to: null },
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    renderLogs('?q=first')
+
+    expect(await screen.findByText('first result')).toBeInTheDocument()
+    const input = screen.getByRole('searchbox', { name: 'Log query' })
+    await user.clear(input)
+    await user.type(input, 'second')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+
+    expect(await screen.findByRole('status', { name: 'Searching logs' })).toBeInTheDocument()
+    expect(screen.queryByText('first result')).not.toBeInTheDocument()
+    expect(await screen.findByText('second result')).toBeInTheDocument()
+  })
+
   it('searches only on explicit submit — typing fires no requests', async () => {
     const logs = logsHandler()
     server.use(logs.handler)
@@ -131,6 +173,69 @@ describe('LogsPage', () => {
     await waitFor(() => expect(logs.captured).toHaveLength(2))
     expect(logs.captured[1]!.offset).toBe(50)
     expect(logs.captured[1]!.query?.text).toBe('anything')
+  })
+
+  it('retains cached results and pagination when a background refresh fails', async () => {
+    const logs = logsHandler(makeEntries(120))
+    server.use(logs.handler)
+    const { queryClient } = renderLogs('?q=anything')
+
+    expect(await screen.findByText('log line 0')).toBeInTheDocument()
+    server.use(logsErrorHandler(502, 'provider unavailable').handler)
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['logs'] })
+    })
+
+    expect(await screen.findByText(/Showing cached data/)).toBeInTheDocument()
+    expect(screen.getByText('log line 0')).toBeInTheDocument()
+    expect(screen.getByText('1–50 of 120 entries')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
+  })
+
+  it('keeps Previous available when loading a later page fails', async () => {
+    server.use(
+      http.post('*/v1/logs/search', async ({ request }) => {
+        const body = (await request.json()) as { limit: number; offset: number }
+        if (body.offset > 0) {
+          return HttpResponse.json({ detail: 'provider unavailable' }, { status: 502 })
+        }
+        return HttpResponse.json({
+          entries: makeEntries(50),
+          total: 120,
+          limit: body.limit,
+          offset: body.offset,
+          window: { from: null, to: null },
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    renderLogs('?q=anything')
+
+    expect(await screen.findByText('log line 0')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+
+    expect(await screen.findByText('Log search connection problem')).toBeInTheDocument()
+    const previous = screen.getByRole('button', { name: 'Previous' })
+    expect(previous).toBeEnabled()
+    await user.click(previous)
+    expect(await screen.findByText('log line 0')).toBeInTheDocument()
+  })
+
+  it('stops at the provider result-window boundary and explains the limit', async () => {
+    const logs = logsHandler(makeEntries(1_100))
+    server.use(logs.handler)
+    const user = userEvent.setup()
+    renderLogs('?q=anything')
+
+    await screen.findByText('1–50 of 1100 entries')
+    for (let page = 1; page <= 20; page += 1) {
+      await user.click(screen.getByRole('button', { name: 'Next' }))
+      await screen.findByText(`${page * 50 + 1}–${page * 50 + 50} of 1100 entries`)
+    }
+
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByText(/Reached the provider result-window limit/)).toBeInTheDocument()
+    expect(logs.captured.at(-1)?.offset).toBe(1_000)
   })
 
   it('re-runs the URL-committed search on browser Back navigation', async () => {

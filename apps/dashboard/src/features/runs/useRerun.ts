@@ -4,7 +4,6 @@
  * changes only phase/gate selection. The browser never round-trips connection,
  * environment, prompt, or provider-affinity state.
  */
-import { useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -12,6 +11,12 @@ import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
 import { queryKeys } from '@/api/queryKeys'
+import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
+import {
+  getDurableIdempotencyKey,
+  PIPELINE_RERUN_IDEMPOTENCY_STORAGE_KEY,
+  retireDurableIdempotencyKey,
+} from '@/utils/durableIdempotency'
 
 /** Gates mode for the pre-flight modal's segmented control. */
 export type GatesMode = 'inherit' | 'gated' | 'auto'
@@ -46,8 +51,22 @@ function createRerunIdempotencyKey(): string {
 
 async function rerunPhases(
   { threadId, phases, gatesMode }: RerunInput,
-  idempotencyKey: string,
 ): Promise<RerunResult> {
+  const keyRevision = getApiKeyRevision()
+  const sessionRevision = getSessionRevision()
+  const requestPayload = {
+    thread_id: threadId,
+    phases,
+    gates_mode: gatesMode,
+  }
+  const idempotencyKey = await getDurableIdempotencyKey(
+    PIPELINE_RERUN_IDEMPOTENCY_STORAGE_KEY,
+    requestPayload,
+    createRerunIdempotencyKey,
+  )
+  if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) {
+    throw new Error('Credentials changed while preparing the rerun; please retry.')
+  }
   const { data, error, response } = await getApexClient().POST(
     '/v1/pipelines/{thread_id}/rerun',
     {
@@ -59,6 +78,9 @@ async function rerunPhases(
       },
     },
   )
+  if (keyRevision !== getApiKeyRevision() || sessionRevision !== getSessionRevision()) {
+    throw new Error('Credentials changed while rerunning the pipeline; retry to recover its result.')
+  }
   if (!response.ok || !data) {
     throw new ApiError(
       response.status,
@@ -66,6 +88,11 @@ async function rerunPhases(
       error,
     )
   }
+  await retireDurableIdempotencyKey(
+    PIPELINE_RERUN_IDEMPOTENCY_STORAGE_KEY,
+    requestPayload,
+    idempotencyKey,
+  )
   return { threadId, runId: data.run_id }
 }
 
@@ -77,17 +104,9 @@ async function rerunPhases(
  */
 export function useRerun() {
   const queryClient = useQueryClient()
-  const idempotencyKeys = useRef(new Map<string, string>())
   return useMutation<RerunResult, Error, RerunInput>({
-    mutationFn: (input) => {
-      const signature = JSON.stringify([input.threadId, input.phases, input.gatesMode])
-      const key = idempotencyKeys.current.get(signature) ?? createRerunIdempotencyKey()
-      idempotencyKeys.current.set(signature, key)
-      return rerunPhases(input, key)
-    },
+    mutationFn: rerunPhases,
     onSuccess: (_data, variables) => {
-      const signature = JSON.stringify([variables.threadId, variables.phases, variables.gatesMode])
-      idempotencyKeys.current.delete(signature)
       void queryClient.invalidateQueries({
         queryKey: queryKeys.threads.state(variables.threadId),
       })

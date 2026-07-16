@@ -6,6 +6,7 @@ import { PHASE_NAMES, type ArtifactRef, type PipelineState } from '@apex/pipelin
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { queryKeys } from '@/api/queryKeys'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
@@ -28,7 +29,9 @@ export function findArtifact(state: PipelineState, artifactId: string): Artifact
   return undefined
 }
 
-type RenderKind = 'json' | 'text' | 'binary'
+type RenderKind = 'json' | 'text' | 'binary' | 'download'
+
+export const MAX_ARTIFACT_INLINE_PREVIEW_BYTES = 1024 * 1024
 
 function renderKindOf(mediaType: string): RenderKind {
   const normalized = mediaType.toLowerCase()
@@ -57,8 +60,11 @@ function downloadBlob(blob: Blob, filename: string) {
   const anchor = document.createElement('a')
   anchor.href = url
   anchor.download = filename
+  anchor.style.display = 'none'
+  document.body.append(anchor)
   anchor.click()
-  URL.revokeObjectURL(url)
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 /**
@@ -77,16 +83,24 @@ export function ArtifactViewerPage() {
     queryKey: queryKeys.threads.artifact(threadId, name),
     enabled: url !== null,
     staleTime: Infinity, // artifact bytes are immutable once written
+    // Artifact blobs can be tens of MiB. Release an inactive viewer entry
+    // immediately instead of retaining several prior downloads in the default
+    // five-minute query cache.
+    gcTime: 0,
     queryFn: async ({ signal }): Promise<LoadedArtifact> => {
       const bytes = await fetchArtifactBytes(url as string, signal)
       const mediaType = bytes.mediaType || ref?.media_type || ''
-      const kind = renderKindOf(mediaType)
+      const detectedKind = renderKindOf(mediaType)
+      const kind =
+        detectedKind !== 'binary' && bytes.size > MAX_ARTIFACT_INLINE_PREVIEW_BYTES
+          ? 'download'
+          : detectedKind
       return {
         kind,
         blob: bytes.blob,
         mediaType,
         size: bytes.size,
-        text: kind === 'binary' ? undefined : await bytes.blob.text(),
+        text: kind === 'json' || kind === 'text' ? await bytes.blob.text() : undefined,
       }
     },
   })
@@ -100,7 +114,7 @@ export function ArtifactViewerPage() {
       />
     )
   }
-  if (threadQuery.isError) {
+  if (threadQuery.isError && !threadQuery.data) {
     return (
       <ProblemCard
         title="Artifact failed to load"
@@ -126,6 +140,12 @@ export function ArtifactViewerPage() {
 
   return (
     <>
+      {threadQuery.isError && (
+        <CachedDataWarning
+          error={threadQuery.error}
+          onRetry={() => void threadQuery.refetch()}
+        />
+      )}
       <header className="artifact-viewer-header glass-panel">
         <span className="artifact-viewer-name">{ref.name ?? ref.id}</span>
         <span className="kind-chip">{ref.kind ?? 'artifact'}</span>
@@ -145,6 +165,13 @@ export function ArtifactViewerPage() {
         </button>
       </header>
 
+      {artifactQuery.isError && loaded && (
+        <CachedDataWarning
+          error={artifactQuery.error}
+          onRetry={() => void artifactQuery.refetch()}
+        />
+      )}
+
       {url === null ? (
         <div className="dash-empty artifact-download-card">
           <h2>Not proxyable</h2>
@@ -158,7 +185,7 @@ export function ArtifactViewerPage() {
           data-testid="artifact-skeleton"
           aria-busy="true"
         />
-      ) : artifactQuery.isError ? (
+      ) : artifactQuery.isError && !loaded ? (
         <ProblemCard
           title="Artifact bytes failed to load"
           message={
@@ -175,13 +202,20 @@ export function ArtifactViewerPage() {
           <CodeViewer value={loaded.text ?? ''} ariaLabel={`${ref.name ?? ref.id} contents`} />
         </div>
       ) : (
-        <div className="dash-empty artifact-download-card" data-testid="binary-download-card">
-          <h2>Binary artifact</h2>
+        <div
+          className="dash-empty artifact-download-card"
+          data-testid={loaded?.kind === 'download' ? 'large-artifact-download-card' : 'binary-download-card'}
+        >
+          <h2>{loaded?.kind === 'download' ? 'Preview unavailable' : 'Binary artifact'}</h2>
           <div className="artifact-download-facts">
             <span>{loaded?.mediaType || 'application/octet-stream'}</span>
             <span>{loaded ? formatBytes(loaded.size) : ''}</span>
           </div>
-          <p>No inline preview for this media type — download to inspect.</p>
+          <p>
+            {loaded?.kind === 'download'
+              ? 'This artifact is too large for a safe inline preview — download to inspect.'
+              : 'No inline preview for this media type — download to inspect.'}
+          </p>
           <button
             type="button"
             className="btn btn-primary"
