@@ -57,7 +57,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: true
@@ -81,7 +81,7 @@ jobs:
   verify-dashboard:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
@@ -117,7 +117,7 @@ jobs:
     outputs:
       plan_sha256: ${{ steps.plan.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load pinned infrastructure tool versions
         id: tool_versions
         run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
@@ -225,7 +225,7 @@ jobs:
       backup_service_account: ${{ steps.tf.outputs.backup_service_account }}
       database_credential_generation: ${{ steps.tf.outputs.database_credential_generation }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load pinned infrastructure tool versions
         id: tool_versions
         run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
@@ -309,7 +309,7 @@ jobs:
     outputs:
       plan_sha256: ${{ steps.plan.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load pinned infrastructure tool versions
         id: tool_versions
         run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
@@ -398,7 +398,7 @@ jobs:
     outputs:
       storage_account: ${{ steps.tf.outputs.storage_account }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load pinned infrastructure tool versions
         id: tool_versions
         run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
@@ -462,7 +462,7 @@ jobs:
       backend_digest: ${{ steps.images.outputs.backend_digest }}
       dashboard_digest: ${{ steps.images.outputs.dashboard_digest }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -543,7 +543,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Load pinned infrastructure tool versions
         id: tool_versions
         run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
