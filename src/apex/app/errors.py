@@ -5,11 +5,12 @@ from typing import Any
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.exceptions import HTTPException as FastAPIHTTPException
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
 from apex.domain.input_limits import safe_validation_message
 
 logger = structlog.get_logger(__name__)
@@ -25,6 +26,13 @@ MAX_PROBLEM_TITLE_CHARS = 1_024
 MAX_PROBLEM_DETAIL_CHARS = 4_096
 MAX_ROUTE_TEMPLATE_CHARS = 512
 _VALIDATION_LOCATION_SOURCES = frozenset({"body", "cookie", "header", "path", "query"})
+_HTTP_METHODS = frozenset(
+    {"CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
+)
+_MAX_RETRY_AFTER_SECONDS = 86_400
+_MAX_HTTP_EXCEPTION_HEADERS = 16
+_MAX_HTTP_EXCEPTION_HEADER_NAME_CHARS = 32
+_MAX_HTTP_EXCEPTION_HEADER_VALUE_CHARS = 256
 
 
 def _safe_route_template(request: Request) -> str:
@@ -116,13 +124,79 @@ def problem(
     return JSONResponse(body, status_code=status, media_type=PROBLEM_MEDIA_TYPE)
 
 
+def _sanitized_http_exception_headers(
+    raw_headers: Any,
+    *,
+    status_code: int,
+) -> dict[str, str]:
+    """Copy only response-control headers with a narrow server-owned grammar.
+
+    ``HTTPException.headers`` is an arbitrary mapping.  Forwarding it wholesale
+    can expose provider credentials/cookies or let a malformed value break the
+    error response itself.  APEX exceptions currently need only numeric retry
+    hints; Starlette's router additionally supplies ``Allow`` for 405 responses.
+    """
+
+    if type(raw_headers) is not dict or len(raw_headers) > _MAX_HTTP_EXCEPTION_HEADERS:
+        return {}
+    sanitized: dict[str, str] = {}
+    for raw_name, raw_value in raw_headers.items():
+        if type(raw_name) is not str or type(raw_value) is not str:
+            continue
+        if (
+            not 1 <= len(raw_name) <= _MAX_HTTP_EXCEPTION_HEADER_NAME_CHARS
+            or len(raw_value) > _MAX_HTTP_EXCEPTION_HEADER_VALUE_CHARS
+        ):
+            continue
+        name = raw_name.casefold()
+        if name == "retry-after":
+            if (
+                1 <= len(raw_value) <= 5
+                and raw_value.isascii()
+                and raw_value.isdecimal()
+                and 0 <= int(raw_value) <= _MAX_RETRY_AFTER_SECONDS
+            ):
+                sanitized["Retry-After"] = str(int(raw_value))
+            continue
+        if name != "allow" or status_code != 405:
+            continue
+        methods = [part.strip().upper() for part in raw_value.split(",")]
+        if (
+            methods
+            and len(methods) <= len(_HTTP_METHODS)
+            and len(methods) == len(set(methods))
+            and all(method in _HTTP_METHODS for method in methods)
+        ):
+            sanitized["Allow"] = ", ".join(methods)
+    return sanitized
+
+
+def _safe_http_exception_response(exc: StarletteHTTPException) -> JSONResponse:
+    """Normalize a native HTTP exception without invoking hostile protocols."""
+
+    # An arbitrary subclass can override attribute access.  Only the two native
+    # concrete exception types are safe to inspect at this global boundary.
+    exception_type = type(exc)
+    if exception_type is not StarletteHTTPException and exception_type is not FastAPIHTTPException:
+        return problem(500, "Internal server error")
+    status_code = exc.status_code
+    if type(status_code) is not int or not 400 <= status_code <= 599:
+        return problem(500, "Internal server error")
+    detail = exc.detail
+    title = detail if type(detail) is str else "Request failed"
+    response = problem(status_code, title)
+    for name, value in _sanitized_http_exception_headers(
+        exc.headers,
+        status_code=status_code,
+    ).items():
+        response.headers[name] = value
+    return response
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(StarletteHTTPException)
     async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        response = problem(exc.status_code, str(exc.detail))
-        if exc.headers:
-            response.headers.update(exc.headers)
-        return response
+        return _safe_http_exception_response(exc)
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
@@ -143,6 +217,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             "apex.unhandled_error",
             route=_safe_route_template(request),
             method=request.method,
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(exc),
         )
         return problem(500, "Internal server error")

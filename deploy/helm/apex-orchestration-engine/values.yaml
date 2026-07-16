@@ -339,10 +339,13 @@ databaseRoleProvisioning:
 # admin key comes from a Secret via adminKeySecret. OFF by default.
 bootstrap:
   enabled: false
-  # Defaults to the runtime APEX URI/auth Secret. CSI deployments use distinct
-  # hook-synthesized names unless explicitly overridden.
+  # Defaults to the runtime database/auth Secrets. CSI deployments use distinct
+  # hook-synthesized names unless explicitly overridden. Both database aliases
+  # are injected because locked settings validate the APEX and LangGraph DSNs.
   databaseSecret: ""
   databaseKey: ""
+  langgraphDatabaseSecret: ""
+  langgraphDatabaseKey: ""
   authSecret: ""
   # Inline JSON/YAML document rendered into a ConfigMap and mounted at /bootstrap.
   document: {}
@@ -382,13 +385,17 @@ secretBackend:
       backoffLimit: 2
       activeDeadlineSeconds: 300
       # Keep the completed pod mounted until ordinary workload pods take over;
-      # the CSI driver removes synced K8s Secrets when the final mount disappears.
+      # the post-rollout cleanup hook then removes the privileged sync mount.
       hookDeletePolicy: before-hook-creation
     cleanup:
       # Opt in only for CSI installations; leave enabled for the first upgrade
       # that switches away from CSI so stale hook mounts are removed.
       enabled: false
       image: registry.k8s.io/kubectl:v1.31.6@sha256:75b960cfcc884965aa204619ff5eb9f9d50c7174827a867db8d24dff319a0272
+      # Exact former hook Secret names to remove during the first upgrade that
+      # adopts the automatic prior-name ledger while also renaming a Secret.
+      # Leave empty for ordinary upgrades; remove entries after one success.
+      previousHookSecretNames: []
     # KV object name -> the K8s secret + key the deployment expects.
     objects:
       - { objectName: database-uri, secretName: apex-database, key: DATABASE_URI }
@@ -400,6 +407,7 @@ secretBackend:
     # public server Deployment. The generic defaults reuse the same DB/pepper;
     # the Azure overlay replaces this list with dedicated-role secrets.
     hookObjects:
+      - { objectName: database-uri, secretName: apex-database-bootstrap, key: DATABASE_URI }
       - { objectName: apex-database-uri, secretName: apex-database-bootstrap, key: APEX_DATABASE__URI }
       - { objectName: api-key-hash-pepper, secretName: apex-hook-auth, key: APEX_AUTH__API_KEY_HASH_PEPPER }
       - { objectName: database-role-claim, secretName: apex-database-role-claim, key: APEX_DATABASE_ROLE_CLAIM_KEY }
@@ -500,6 +508,9 @@ dashboard:
   # SPA backend discovery. Leave origins empty + set backendUpstream to reverse-
   # proxy API paths in-pod (same origin, SSE-safe). Or set origins to point the SPA
   # straight at the server/langgraph (then CORS must allow the dashboard origin).
+  # Values are complete HTTP(S) origins only: no userinfo, path, query, or fragment.
+  # Explicit origins must use HTTPS outside local/development/test environments.
+  # Enabling the dashboard requires backendUpstream or both explicit origins.
   config:
     apexOrigin: ""
     langgraphOrigin: ""

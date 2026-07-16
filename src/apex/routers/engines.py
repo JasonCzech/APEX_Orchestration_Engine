@@ -11,12 +11,13 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, require_role
 from apex.auth.identity import Role
 from apex.auth.service import extract_api_key
+from apex.domain.diagnostics import contains_credential_material
 from apex.domain.input_limits import MAX_DB_LIST_OFFSET, NoNulStr, ResourceId
 from apex.domain.pipeline import (
     ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
@@ -100,6 +101,13 @@ class AbortEngineRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: NoNulStr | None = Field(default=None, max_length=1024)
+
+    @field_validator("reason")
+    @classmethod
+    def reject_credential_reason(cls, value: str | None) -> str | None:
+        if value is not None and contains_credential_material(value):
+            raise ValueError("abort reason must not contain credential material")
+        return value
 
 
 class AbortEngineRunResponse(BaseModel):
@@ -195,63 +203,68 @@ async def abort_engine_run(
     and checkpoint the terminal execution state. 404 when no engine handle is
     discoverable from thread state or the projection.
     """
+    abort_error: HTTPException | None = None
+    result = None
     try:
         result = await service.abort(thread_id, reason=body.reason if body is not None else None)
     except EngineRunNotFoundError:
-        raise HTTPException(status_code=404, detail="engine run not found") from None
+        abort_error = HTTPException(status_code=404, detail="engine run not found")
     except EngineConnectionAffinityMissingError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=409,
             detail=ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
-        ) from None
+        )
     except EngineAbortConfirmationPendingError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=503,
             detail="external engine is still stopping; retry abort to confirm termination",
             headers={"Retry-After": "1"},
-        ) from None
+        )
     except EngineProvisioningAbortPendingError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=503,
             detail="engine provisioning is still establishing an abort handle; retry abort",
             headers={"Retry-After": "1"},
-        ) from None
+        )
     except EngineGraphFinalizationPendingError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=503,
             detail=(
                 "external engine stopped but graph finalization is pending recovery; "
                 "resume the pipeline"
             ),
             headers={"Retry-After": "1"},
-        ) from None
+        )
     except EngineProjectionFinalizationPendingError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=503,
             detail=(
                 "external engine stopped but provider cleanup or durable projection is "
                 "pending; retry abort"
             ),
             headers={"Retry-After": "1"},
-        ) from None
+        )
     except EngineProviderAbortError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=502,
             detail="engine provider abort failed",
-        ) from None
+        )
     except ActiveRunSnapshotUnstableError:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=409,
             detail="active graph runs changed throughout the abort snapshot; retry",
-        ) from None
+        )
     except TooManyActiveRunsError as exc:
-        raise HTTPException(
+        abort_error = HTTPException(
             status_code=409,
             detail=(
-                f"thread {thread_id!r} exceeds the bounded abort limit ({exc.limit}); "
+                f"the engine thread exceeds the bounded abort limit ({exc.limit}); "
                 "use the operator cleanup runbook"
             ),
-        ) from None
+        )
+    if abort_error is not None:
+        raise abort_error
+    assert result is not None
     return AbortEngineRunResponse(
         thread_id=result.thread_id,
         engine=result.engine,

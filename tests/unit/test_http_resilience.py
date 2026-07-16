@@ -13,7 +13,10 @@ from apex.adapters.http_resilience import (
     InvalidJsonResponseError,
     ResponseTooLargeError,
     RetryPolicy,
+    parse_json_bytes,
     parse_json_response,
+    read_bounded_response,
+    read_stream_error_preview,
     resilient_request,
     resilient_stream_request,
     retry_policy,
@@ -92,6 +95,55 @@ async def test_resilient_request_caps_streamed_response_body() -> None:
 
     assert stream.iterated is True
     assert stream.closed is True
+
+
+async def test_repeated_cancellation_cannot_orphan_response_stream_cleanup() -> None:
+    read_started = asyncio.Event()
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    class BlockingStream(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            read_started.set()
+            await asyncio.Event().wait()
+            yield b"unreachable"
+
+        async def aclose(self) -> None:
+            close_started.set()
+            await allow_close.wait()
+            close_finished.set()
+
+    request = httpx.Request("GET", "https://provider.example/report")
+    response = httpx.Response(200, stream=BlockingStream(), request=request)
+    consumer = asyncio.create_task(read_bounded_response(response, max_bytes=1_024))
+    await asyncio.wait_for(read_started.wait(), timeout=1)
+
+    consumer.cancel()
+    await asyncio.wait_for(close_started.wait(), timeout=1)
+    consumer.cancel()
+    await asyncio.sleep(0)
+    assert consumer.done() is False
+
+    with pytest.raises(asyncio.CancelledError):
+        allow_close.set()
+        await asyncio.wait_for(consumer, timeout=1)
+
+    assert close_finished.is_set()
+    assert response.is_closed is True
+
+
+@pytest.mark.parametrize("max_bytes", [True, 0, 16 * 1024 * 1024 + 1, 1.5])
+async def test_direct_response_readers_reject_unbounded_or_noninteger_budgets(
+    max_bytes: Any,
+) -> None:
+    request = httpx.Request("GET", "https://provider.example/report")
+    response = httpx.Response(200, content=b"ok", request=request)
+
+    with pytest.raises(ValueError, match="max_bytes must be between"):
+        await read_bounded_response(response, max_bytes=max_bytes)
+    with pytest.raises(ValueError, match="max_bytes must be between"):
+        await read_stream_error_preview(response, max_bytes=max_bytes)
 
 
 async def test_resilient_request_rejects_compressed_decompression_bomb() -> None:
@@ -410,6 +462,30 @@ async def test_resilient_stream_request_retries_transport_error_without_bufferin
     assert calls == 2
 
 
+async def test_terminal_transport_failure_detaches_request_and_diagnostics() -> None:
+    canary = "Bearer resilient-transport-secret-canary"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(canary, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test",
+        headers={"Authorization": canary},
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(httpx.TransportError, match="provider transport") as excinfo:
+            await resilient_request(
+                client,
+                "GET",
+                "/private",
+                retry=RetryPolicy(attempts=1),
+            )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
+
+
 async def test_resilient_stream_request_closes_transient_response_before_retry() -> None:
     class TrackingStream(httpx.AsyncByteStream):
         def __init__(self, data: bytes) -> None:
@@ -444,6 +520,47 @@ async def test_resilient_stream_request_closes_transient_response_before_retry()
         assert first_stream.closed is True
         assert first_stream.iterated is False
         assert final_stream.iterated is False
+        assert await response.aread() == b"ok"
+        await response.aclose()
+
+    assert calls == 2
+
+
+async def test_invalid_retry_after_cannot_leak_transient_response() -> None:
+    class TrackingStream(httpx.AsyncByteStream):
+        def __init__(self, data: bytes) -> None:
+            self.data = data
+            self.closed = False
+
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield self.data
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    calls = 0
+    first_stream = TrackingStream(b"retry")
+    final_stream = TrackingStream(b"ok")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                503,
+                headers={"Retry-After": "Mon, 01 Jan 999999999999 00:00:00 GMT"},
+                stream=first_stream,
+                request=request,
+            )
+        return httpx.Response(200, stream=final_stream, request=request)
+
+    async with httpx.AsyncClient(
+        base_url="https://upstream.test", transport=httpx.MockTransport(handler)
+    ) as client:
+        response = await resilient_stream_request(
+            client, "GET", "/report", sleep_fn=_noop_sleep, random_fn=lambda: 0.0
+        )
+        assert first_stream.closed is True
         assert await response.aread() == b"ok"
         await response.aclose()
 
@@ -528,6 +645,52 @@ def test_parse_json_response_rejects_ambiguous_or_unsafe_json(body: bytes) -> No
 
     with pytest.raises(InvalidJsonResponseError, match="invalid JSON"):
         parse_json_response(response, context="provider response")
+
+
+@pytest.mark.parametrize("as_response", [False, True])
+def test_json_parse_failure_does_not_retain_raw_provider_payload(as_response: bool) -> None:
+    canary = "bare-json-provider-secret-canary"
+    payload = f'{{"value":"{canary}"'.encode()
+
+    with pytest.raises(InvalidJsonResponseError, match="invalid JSON") as excinfo:
+        if as_response:
+            parse_json_response(
+                httpx.Response(
+                    200,
+                    content=payload,
+                    headers={"Content-Type": "application/json"},
+                ),
+                context="provider response",
+            )
+        else:
+            parse_json_bytes(payload, context="provider response")
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("as_response", [False, True])
+def test_json_decode_failure_does_not_retain_raw_provider_bytes(as_response: bool) -> None:
+    canary = b"bare-json-byte-secret-canary"
+    payload = b"\xff" + canary
+
+    with pytest.raises(InvalidJsonResponseError, match="non-UTF-8 JSON") as excinfo:
+        if as_response:
+            parse_json_response(
+                httpx.Response(
+                    200,
+                    content=payload,
+                    headers={"Content-Type": "application/json"},
+                ),
+                context="provider response",
+            )
+        else:
+            parse_json_bytes(payload, context="provider response")
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary.decode() not in str(excinfo.value)
 
 
 def test_parse_json_response_rejects_duplicate_content_type_headers() -> None:

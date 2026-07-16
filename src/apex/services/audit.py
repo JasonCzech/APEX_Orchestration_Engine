@@ -13,13 +13,15 @@ import secrets
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any, TypeVar
+from inspect import getattr_static
+from typing import Any, TypeVar, cast
 
 import structlog
 from sqlalchemy import delete, desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from apex.auth.identity import ConsumerIdentity
+from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
 from apex.domain.durable_evidence import sanitize_durable_object, sanitize_durable_text
 from apex.persistence.audit_lock import AUDIT_CHAIN_LOCK_KEY
 from apex.persistence.models import AuditLog
@@ -43,6 +45,12 @@ _AUDIT_TEXT_LIMITS = {
 }
 _AUDIT_REASON_LIMIT = 4096
 AUDIT_EXPORT_PAGE_SIZE = 250
+_UNMATCHED_ROUTE = "<unmatched-route>"
+_AUDIT_HEADER_SCAN_LIMIT = 256
+_AUDIT_HEADERS = {
+    b"x-request-id": _AUDIT_TEXT_LIMITS["request_id"],
+    b"user-agent": _AUDIT_TEXT_LIMITS["user_agent"],
+}
 
 _PageValue = TypeVar("_PageValue")
 
@@ -499,7 +507,7 @@ async def append_audit_event_best_effort(event: AuditEvent) -> None:
             category=event.category,
             action=event.action,
             decision=event.decision,
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(exc),
         )
 
 
@@ -510,12 +518,31 @@ def request_audit_event(
     reason: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> AuditEvent:
-    headers = _headers(scope)
-    client = scope.get("client")
-    identity = _identity_from_scope(scope)
+    safe_scope: Mapping[str, Any] = scope if type(scope) is dict else {}
+    headers = _headers(safe_scope)
+    client = safe_scope.get("client")
+    identity = _identity_from_scope(safe_scope)
+    route_template = _safe_audit_route_template(safe_scope)
+    operation_id = _safe_audit_operation_id(safe_scope)
+    method = safe_scope.get("method")
+    request_method = (
+        method
+        if type(method) is str
+        and len(method) <= _AUDIT_TEXT_LIMITS["request_method"]
+        and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in method)
+        else ""
+    )
+    client_host = client[0] if type(client) is tuple and client else None
+    ip_address = (
+        client_host
+        if type(client_host) is str
+        and len(client_host) <= _AUDIT_TEXT_LIMITS["ip_address"]
+        and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in client_host)
+        else None
+    )
     return AuditEvent(
         category="authz_decision",
-        action=str(getattr(scope.get("route"), "operation_id", None) or scope.get("path") or ""),
+        action=operation_id or route_template,
         decision=_decision_for_status(status_code),
         reason=reason,
         principal_id=identity.consumer_id if identity else None,
@@ -524,14 +551,51 @@ def request_audit_event(
         principal_scopes={"scopes": [s.model_dump(mode="json") for s in identity.scopes]}
         if identity
         else {},
-        request_method=str(scope.get("method") or ""),
-        request_path=str(scope.get("path") or ""),
+        request_method=request_method,
+        request_path=route_template,
         request_id=headers.get("x-request-id"),
-        ip_address=str(client[0]) if isinstance(client, tuple) and client else None,
+        ip_address=ip_address,
         user_agent=headers.get("user-agent"),
         status_code=status_code,
-        extra=extra or {},
+        extra=extra if type(extra) is dict else {},
     )
+
+
+def _safe_audit_route_template(scope: Mapping[str, Any]) -> str:
+    """Return only server-owned routing metadata for durable request attribution."""
+
+    route = scope.get("route")
+    for attribute in ("path", "path_format"):
+        try:
+            value = getattr_static(route, attribute, None)
+        except Exception:
+            value = None
+        if (
+            type(value) is str
+            and value.startswith("/")
+            and len(value) <= _AUDIT_TEXT_LIMITS["request_path"]
+            and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        ):
+            return value
+    # Middleware-generated rejections can occur before either FastAPI or the
+    # native LangGraph router has matched the request.  The concrete scope path
+    # is caller-controlled, so an opaque marker is the only safe fallback.
+    return _UNMATCHED_ROUTE
+
+
+def _safe_audit_operation_id(scope: Mapping[str, Any]) -> str | None:
+    try:
+        value = getattr_static(scope.get("route"), "operation_id", None)
+    except Exception:
+        value = None
+    if (
+        type(value) is str
+        and value
+        and len(value) <= _AUDIT_TEXT_LIMITS["action"]
+        and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        return value
+    return None
 
 
 def _event_hash(event: AuditEvent, previous_hash: str | None) -> str:
@@ -663,15 +727,33 @@ def _row_cef(row: AuditLog) -> str:
 
 
 def _cef_escape(value: Any) -> str:
-    return (
-        str(value).replace("\\", "\\\\").replace("=", "\\=").replace("\n", "\\n").replace("\r", "")
-    )
+    return _cef_escape_scalar(value, delimiter="=")
 
 
 def _cef_header_escape(value: Any) -> str:
-    return (
-        str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", "\\n").replace("\r", "")
-    )
+    return _cef_escape_scalar(value, delimiter="|")
+
+
+def _cef_escape_scalar(value: Any, *, delimiter: str) -> str:
+    """Render one bounded CEF scalar without hooks or framing controls."""
+
+    rendered = bounded_diagnostic(value, max_chars=4_096)
+    escaped: list[str] = []
+    for character in rendered:
+        codepoint = ord(character)
+        if character == "\\":
+            escaped.append("\\\\")
+        elif character == delimiter:
+            escaped.append(f"\\{delimiter}")
+        elif character == "\n":
+            escaped.append("\\n")
+        elif character == "\r":
+            escaped.append("\\r")
+        elif codepoint < 0x20 or codepoint == 0x7F or 0x80 <= codepoint <= 0x9F:
+            escaped.append("?")
+        else:
+            escaped.append(character)
+    return "".join(escaped)
 
 
 def _cef_severity(row: AuditLog) -> int:
@@ -704,12 +786,17 @@ def _decision_for_status(status_code: int) -> str:
 
 
 def _identity_from_scope(scope: Mapping[str, Any]) -> ConsumerIdentity | None:
+    if type(scope) is not dict:
+        return None
     state = scope.get("state")
     identity: Any = None
-    if isinstance(state, Mapping):
+    if type(state) is dict:
         identity = state.get("identity")
     else:
-        identity = getattr(state, "identity", None)
+        try:
+            identity = getattr_static(state, "identity", None)
+        except Exception:
+            identity = None
     return identity if isinstance(identity, ConsumerIdentity) else None
 
 
@@ -721,13 +808,35 @@ def _dialect_name(session: AsyncSession) -> str | None:
 
 
 def _headers(scope: Mapping[str, Any]) -> dict[str, str]:
+    """Extract only bounded audit headers without coercing caller-owned objects."""
+
     out: dict[str, str] = {}
-    for raw_key, raw_value in scope.get("headers") or []:
-        try:
-            key = raw_key.decode("latin-1").lower()
-            value = raw_value.decode("latin-1")
-        except AttributeError:
-            key = str(raw_key).lower()
-            value = str(raw_value)
-        out[key] = value
+    if type(scope) is not dict:
+        return out
+    headers = scope.get("headers")
+    if type(headers) not in {list, tuple}:
+        return out
+    bounded_headers = cast("list[Any] | tuple[Any, ...]", headers)
+    seen: set[bytes] = set()
+    for index, item in enumerate(bounded_headers):
+        if index >= _AUDIT_HEADER_SCAN_LIMIT:
+            break
+        if type(item) is not tuple or len(item) != 2:
+            continue
+        raw_key, raw_value = item
+        if type(raw_key) is not bytes or len(raw_key) > 64:
+            continue
+        key = raw_key.lower()
+        limit = _AUDIT_HEADERS.get(key)
+        if limit is None:
+            continue
+        # Duplicate security-attribution fields are ambiguous. Omit them rather
+        # than allowing ordering differences between proxies to rewrite an event.
+        if key in seen:
+            out.pop(key.decode("ascii"), None)
+            continue
+        seen.add(key)
+        if type(raw_value) is not bytes or len(raw_value) > limit:
+            continue
+        out[key.decode("ascii")] = raw_value.decode("latin-1")
     return out

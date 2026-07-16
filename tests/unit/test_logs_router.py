@@ -1,10 +1,12 @@
 """/logs/search routes: window defaulting, scoping, connection selection, errors."""
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from apex.adapters.elk.log_search import ElkLogEntry
@@ -53,12 +55,16 @@ class FakeLogSearchAdapter:
         self.result = result
         self.error = error
         self.calls: list[tuple[LogQuery, TimeWindow, Page]] = []
+        self.close_calls = 0
 
     async def search(self, query: LogQuery, *, window: TimeWindow, page: Page) -> LogSearchResult:
         self.calls.append((query, window, page))
         if self.error is not None:
             raise self.error
         return self.result
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
 
 
 class FakeResolver:
@@ -124,6 +130,7 @@ def test_search_maps_entries_total_and_extras_for_any_authenticated_role() -> No
     (query, _, page) = adapter.calls[0]
     assert query.query == "timeout" and query.filters == {"project_id": "p1"}
     assert (page.offset, page.limit) == (0, 50)
+    assert adapter.close_calls == 1
 
 
 def test_search_redacts_provider_credentials_from_messages_and_extras() -> None:
@@ -174,6 +181,151 @@ def test_search_rejects_adapter_result_larger_than_requested_page() -> None:
     )
 
     assert response.status_code == 502
+
+
+def test_search_rejects_hostile_provider_entry_list_without_traversal() -> None:
+    class HostileEntries(list[LogEntry]):
+        called = False
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("provider list length must not be called")
+
+        def __iter__(self) -> Iterator[LogEntry]:
+            self.called = True
+            raise AssertionError("provider list iteration must not be called")
+
+        def __getitem__(self, index: Any) -> Any:
+            self.called = True
+            raise AssertionError("provider list indexing must not be called")
+
+    entries = HostileEntries([LogEntry(at="2026-06-10T11:59:59Z", message="safe")])
+    result = LogSearchResult.model_construct(entries=entries, total=1)
+
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "log search upstream failure"
+    assert entries.called is False
+
+
+def test_search_rejects_arbitrary_entry_without_reading_spoofed_class() -> None:
+    class HostileEntry:
+        class_called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).class_called = True
+                raise AssertionError("provider __class__ descriptor must not be called")
+            return object.__getattribute__(self, name)
+
+    entry = HostileEntry()
+    result = LogSearchResult.model_construct(entries=[entry], total=1)
+
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {},
+    )
+
+    assert response.status_code == 502
+    assert entry.class_called is False
+
+
+def test_search_reconstructs_log_subclass_without_invoking_field_descriptors() -> None:
+    class DescriptorLogEntry(LogEntry):
+        called: ClassVar[bool] = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name in {"at", "level", "service", "message", "fields"}:
+                type(self).called = True
+                raise AssertionError("provider field descriptor must not be invoked")
+            return super().__getattribute__(name)
+
+    entry = DescriptorLogEntry.model_construct(
+        at="2026-06-10T11:59:59Z",
+        level="INFO",
+        service="checkout",
+        message="safe",
+    )
+    DescriptorLogEntry.called = False
+    result = LogSearchResult.model_construct(entries=[entry], total=1)
+
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["entries"][0]["message"] == "safe"
+    assert DescriptorLogEntry.called is False
+
+
+def test_search_rejects_hostile_log_fields_mapping_without_traversal() -> None:
+    class HostileFields(dict[str, Any]):
+        called = False
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("provider mapping length must not be called")
+
+        def items(self) -> Any:
+            self.called = True
+            raise AssertionError("provider mapping items must not be called")
+
+        def __iter__(self) -> Iterator[str]:
+            self.called = True
+            raise AssertionError("provider mapping iteration must not be called")
+
+    class ExtendedLogEntry(LogEntry):
+        fields: dict[str, Any]
+
+    fields = HostileFields(safe="value")
+    entry = ExtendedLogEntry.model_construct(
+        at="2026-06-10T11:59:59Z",
+        level="INFO",
+        service="checkout",
+        message="safe",
+        fields=fields,
+    )
+    result = LogSearchResult.model_construct(entries=[entry], total=1)
+
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "log search upstream failure"
+    assert fields.called is False
+
+
+def test_search_rejects_forged_result_key_before_rehashing_it() -> None:
+    class HostileKey(str):
+        hash_calls = 0
+
+        def __hash__(self) -> int:
+            self.hash_calls += 1
+            if self.hash_calls > 1:
+                raise AssertionError("forged provider key must not be rehashed")
+            return str.__hash__(self)
+
+    result = LogSearchResult(entries=[], total=0)
+    state = cast(dict[Any, Any], result.__dict__)
+    state.pop("total")
+    key = HostileKey("total")
+    state[key] = 0
+
+    response = post_search(
+        make_app(FakeResolver(FakeLogSearchAdapter(result)), identity()),
+        {},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "log search upstream failure"
+    assert key.hash_calls == 1
 
 
 def test_search_defaults_window_to_last_hour_and_echoes_it() -> None:
@@ -326,6 +478,14 @@ def test_effective_window_mixes_naive_and_aware_bounds() -> None:
     assert window.start == "2026-06-01T00:00:00"
 
 
+def test_effective_window_detaches_invalid_timestamp_exception() -> None:
+    with pytest.raises(ValueError, match="ISO-8601") as raised:
+        effective_window("caller-controlled-timestamp", None)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
 def test_search_limit_above_500_fails_validation() -> None:
     response = post_search(
         make_app(FakeResolver(FakeLogSearchAdapter()), identity()), {"limit": 501}
@@ -438,6 +598,23 @@ def test_app_scope_rejects_sibling_app_before_adapter_resolution() -> None:
     )
 
     assert response.status_code == 403
+    assert response.json()["title"] == "app is outside this consumer's scopes"
+    assert resolver.calls == []
+
+
+def test_app_scope_denial_does_not_reflect_filter_identifiers() -> None:
+    canary = "log-filter-secret-canary"
+    resolver = FakeResolver(FakeLogSearchAdapter())
+    who = identity(scopes=[ScopeRef(project_id="p1", app_id="app-a")])
+
+    response = post_search(
+        make_app(resolver, who),
+        {"query": {"filters": {"project_id": "p1", "app_id": canary}}},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["title"] == "app is outside this consumer's scopes"
+    assert canary not in response.text
     assert resolver.calls == []
 
 
@@ -478,6 +655,20 @@ def test_disabled_connection_valueerror_is_422_problem() -> None:
     assert post_search(make_app(resolver, identity()), {}).status_code == 422
 
 
+def test_arbitrary_resolver_error_is_stable_503_without_reflection() -> None:
+    secret = "log-resolver-secret-canary"
+    resolver = FakeResolver(
+        FakeLogSearchAdapter(),
+        error=HTTPException(status_code=418, detail=secret),
+    )
+
+    response = post_search(make_app(resolver, identity()), {})
+
+    assert response.status_code == 503
+    assert response.json()["title"] == "log-search connection unavailable"
+    assert secret not in response.text
+
+
 def test_provider_rejected_query_is_422_without_upstream_reason() -> None:
     adapter = FakeLogSearchAdapter(
         error=ValueError("elasticsearch rejected the query: Failed to parse query [service:(]")
@@ -497,6 +688,34 @@ def test_upstream_runtime_error_is_502_problem() -> None:
     assert response.status_code == 502
     assert response.json()["title"] == "log search upstream failure"
     assert "elasticsearch" not in response.text
+
+
+def test_arbitrary_provider_http_error_is_stable_502_without_reflection() -> None:
+    secret = "log-provider-http-secret-canary"
+    adapter = FakeLogSearchAdapter(error=HTTPException(status_code=418, detail=secret))
+
+    response = post_search(make_app(FakeResolver(adapter), identity()), {})
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "log search upstream failure"
+    assert secret not in response.text
+
+
+def test_log_adapter_cleanup_failure_does_not_replace_success() -> None:
+    secret = "log-adapter-close-secret-canary"
+
+    class CloseFailureAdapter(FakeLogSearchAdapter):
+        async def aclose(self) -> None:
+            self.close_calls += 1
+            raise HTTPException(status_code=418, detail=secret)
+
+    adapter = CloseFailureAdapter()
+    response = post_search(make_app(FakeResolver(adapter), identity()), {})
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 42
+    assert secret not in response.text
+    assert adapter.close_calls == 1
 
 
 def test_malformed_successful_provider_payload_is_sanitized_502_problem() -> None:

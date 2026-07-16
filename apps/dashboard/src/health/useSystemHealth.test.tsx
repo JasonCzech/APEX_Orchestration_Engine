@@ -7,7 +7,7 @@ import { server } from '@/test/server'
 
 describe('system health status dot', () => {
   it('shows ok when system/info responds', async () => {
-    renderApp({ authState: authenticatedState() })
+    renderApp({ authState: authenticatedState(), seedSystemInfo: false })
 
     const dot = await screen.findByTestId('connection-status-dot')
     await waitFor(() => expect(dot).toHaveAttribute('data-state', 'ok'))
@@ -15,7 +15,7 @@ describe('system health status dot', () => {
 
   it('shows unreachable on network error', async () => {
     server.use(http.get('*/v1/system/info', () => HttpResponse.error()))
-    renderApp({ authState: authenticatedState() })
+    renderApp({ authState: authenticatedState(), seedSystemInfo: false })
 
     const dot = await screen.findByTestId('connection-status-dot')
     await waitFor(() => expect(dot).toHaveAttribute('data-state', 'unreachable'))
@@ -27,7 +27,7 @@ describe('system health status dot', () => {
         HttpResponse.json({ detail: 'down' }, { status: 503 }),
       ),
     )
-    renderApp({ authState: authenticatedState() })
+    renderApp({ authState: authenticatedState(), seedSystemInfo: false })
 
     const dot = await screen.findByTestId('connection-status-dot')
     await waitFor(() => expect(dot).toHaveAttribute('data-state', 'degraded'))

@@ -162,8 +162,14 @@ def validate_json_object(
 ) -> dict[str, Any]:
     """Validate a finite JSON object without recursively walking attacker input."""
 
+    if min(max_bytes, max_nodes, max_depth, max_key_chars) < 1:
+        raise ValueError("JSON validation limits must be positive")
+    if type(value) is not dict:
+        raise ValueError(f"{label} must be a JSON object")
     stack: list[tuple[Any, int]] = [(value, 0)]
+    seen_containers: set[int] = set()
     nodes = 0
+    total_chars = 0
     while stack:
         current, depth = stack.pop()
         nodes += 1
@@ -171,35 +177,55 @@ def validate_json_object(
             raise ValueError(f"{label} exceeds the {max_nodes} node limit")
         if depth > max_depth:
             raise ValueError(f"{label} exceeds the {max_depth} level nesting limit")
-        if isinstance(current, dict):
+        if type(current) is dict:
+            identity = id(current)
+            if identity in seen_containers:
+                raise ValueError(f"{label} contains a repeated or circular container")
+            seen_containers.add(identity)
             remaining = max_nodes - nodes - len(stack)
             if len(current) > remaining:
                 raise ValueError(f"{label} exceeds the {max_nodes} node limit")
             for key, nested in current.items():
-                if not isinstance(key, str):
+                if type(key) is not str:
                     raise ValueError(f"{label} keys must be strings")
                 if not key or len(key) > max_key_chars:
                     raise ValueError(f"{label} keys must be 1-{max_key_chars} characters")
+                if len(key) > max_bytes - total_chars:
+                    raise ValueError(f"{label} exceeds the {max_bytes} byte limit")
+                total_chars += len(key)
                 if "\x00" in key:
                     raise ValueError(f"{label} keys must not contain U+0000")
                 stack.append((nested, depth + 1))
-        elif isinstance(current, list):
+        elif type(current) is list:
+            identity = id(current)
+            if identity in seen_containers:
+                raise ValueError(f"{label} contains a repeated or circular container")
+            seen_containers.add(identity)
             remaining = max_nodes - nodes - len(stack)
             if len(current) > remaining:
                 raise ValueError(f"{label} exceeds the {max_nodes} node limit")
             for nested in current:
                 stack.append((nested, depth + 1))
-        elif isinstance(current, str):
+        elif type(current) is str:
+            if len(current) > max_bytes - total_chars:
+                raise ValueError(f"{label} exceeds the {max_bytes} byte limit")
+            total_chars += len(current)
             if "\x00" in current:
                 raise ValueError(f"{label} strings must not contain U+0000")
-        elif current is None or isinstance(current, bool | int):
+        elif current is None or type(current) is bool:
             continue
-        elif isinstance(current, float):
+        elif type(current) is int:
+            if current.bit_length() > 256:
+                raise ValueError(f"{label} integers must not exceed 256 bits")
+        elif type(current) is float:
             if not math.isfinite(current):
                 raise ValueError(f"{label} numbers must be finite")
         else:
-            raise ValueError(f"{label} contains unsupported {type(current).__name__} values")
+            # Do not interpolate type metadata or coerce an unsupported value:
+            # hostile subclasses may attach arbitrary metaclass/string hooks.
+            raise ValueError(f"{label} contains unsupported values")
 
+    encoded: bytes | None = None
     try:
         encoded = json.dumps(
             value,
@@ -207,8 +233,10 @@ def validate_json_object(
             allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8")
-    except (OverflowError, RecursionError, TypeError, ValueError) as exc:
-        raise ValueError(f"{label} must contain finite JSON values") from exc
+    except (OverflowError, RecursionError, TypeError, ValueError):
+        pass
+    if encoded is None:
+        raise ValueError(f"{label} must contain finite JSON values")
     if len(encoded) > max_bytes:
         raise ValueError(f"{label} exceeds the {max_bytes} byte limit")
     return value

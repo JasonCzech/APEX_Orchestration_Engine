@@ -17,17 +17,27 @@ project-scoped row (when the consumer is scoped to exactly one project), then
 the global row, then the static stub.
 """
 
-from typing import Annotated, Any
+import math
+from typing import Annotated, Any, cast
 
 import httpx
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from apex.app.dependencies import CurrentIdentity
 from apex.domain.diagnostics import bounded_diagnostic
 from apex.domain.durable_evidence import sanitize_durable_object
-from apex.domain.input_limits import NoNulStr, RecordId, validate_json_object
+from apex.domain.input_limits import (
+    MAX_JSON_DEPTH,
+    MAX_JSON_KEY_CHARS,
+    MAX_JSON_NODES,
+    NoNulStr,
+    RecordId,
+    validate_json_object,
+)
 from apex.domain.integrations import LogEntry, LogQuery, LogSearchResult, Page
+from apex.services.connections import close_adapter
 from apex.services.log_search import (
     LogSearchResolver,
     effective_window,
@@ -35,6 +45,7 @@ from apex.services.log_search import (
 )
 
 router = APIRouter(prefix="/logs", tags=["logs"])
+logger = structlog.get_logger(__name__)
 
 MAX_LOG_FILTERS = 12
 MAX_LOG_FILTER_VALUE_LENGTH = 512
@@ -70,6 +81,15 @@ ALLOWED_LOG_FILTERS = frozenset(
 def get_log_search_resolver() -> LogSearchResolver:
     """Override point for tests; production resolves through connection rows."""
     return resolve_log_search_adapter
+
+
+async def _close_log_adapter(adapter: Any) -> None:
+    """Settle cleanup without replacing a stable error or successful response."""
+
+    try:
+        await close_adapter(adapter)
+    except Exception:
+        logger.warning("apex.logs.adapter_close_failed")
 
 
 ResolverDep = Annotated[LogSearchResolver, Depends(get_log_search_resolver)]
@@ -184,7 +204,7 @@ class LogSearchResponse(BaseModel):
 def _public_log_text(value: Any, *, max_chars: int, default: str) -> str:
     """Return one bounded, credential-redacted provider string."""
 
-    if not isinstance(value, str) or len(value) > max_chars or "\x00" in value:
+    if type(value) is not str or len(value) > max_chars or "\x00" in value:
         return default
     return bounded_diagnostic(value, max_chars=max(1, len(value)))
 
@@ -192,55 +212,171 @@ def _public_log_text(value: Any, *, max_chars: int, default: str) -> str:
 def _public_log_fields(value: Any) -> dict[str, Any]:
     """Project provider extras through fixed JSON and credential budgets."""
 
-    if not isinstance(value, dict) or len(value) > MAX_PUBLIC_LOG_FIELDS:
-        return {}
-    try:
-        validate_json_object(
-            value,
-            label="log response fields",
-            max_bytes=MAX_PUBLIC_LOG_FIELDS_BYTES,
-        )
-    except (RecursionError, TypeError, ValueError):
-        return {}
-    return sanitize_durable_object(value)
+    if type(value) is not dict or len(value) > MAX_PUBLIC_LOG_FIELDS:
+        raise ValueError("invalid log fields")
+    # Clone only exact JSON built-ins before invoking shared validators. This
+    # prevents provider-owned dict/list subclasses from lying about cardinality
+    # or executing custom iteration while preserving ordinary ELK extras.
+    cloned = _clone_exact_json(value)
+    if type(cloned) is not dict:
+        raise ValueError("invalid log fields")
+    validate_json_object(
+        cloned,
+        label="log response fields",
+        max_bytes=MAX_PUBLIC_LOG_FIELDS_BYTES,
+    )
+    return sanitize_durable_object(cloned)
 
 
-def _public_log_result(result: Any, *, requested_limit: int) -> tuple[list[LogEntryOut], int]:
-    """Revalidate an adapter result before it crosses the HTTP boundary."""
+def _clone_exact_json(value: Any) -> Any:
+    """Copy one finite exact-built-in JSON value under the public log budget."""
 
-    if not isinstance(result, LogSearchResult):
-        raise ValueError("invalid log result")
-    entries = result.entries
-    total = result.total
+    nodes = 0
+    text_bytes = 0
+
+    def clone(current: Any, *, depth: int) -> Any:
+        nonlocal nodes, text_bytes
+        nodes += 1
+        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+            raise ValueError("log fields exceed the JSON structure budget")
+        if current is None or type(current) is bool:
+            return current
+        if type(current) is int:
+            if current.bit_length() > 256:
+                raise ValueError("log fields contain an oversized integer")
+            return current
+        if type(current) is float:
+            if not math.isfinite(current):
+                raise ValueError("log fields contain a non-finite number")
+            return current
+        if type(current) is str:
+            if "\x00" in current or len(current) > MAX_PUBLIC_LOG_FIELDS_BYTES:
+                raise ValueError("log fields contain an invalid string")
+            text_bytes += len(current.encode("utf-8"))
+            if text_bytes > MAX_PUBLIC_LOG_FIELDS_BYTES:
+                raise ValueError("log fields exceed the text budget")
+            return current
+        if type(current) is list:
+            if len(current) > MAX_JSON_NODES - nodes:
+                raise ValueError("log fields exceed the JSON node budget")
+            return [clone(child, depth=depth + 1) for child in current]
+        if type(current) is dict:
+            if len(current) > MAX_JSON_NODES - nodes:
+                raise ValueError("log fields exceed the JSON node budget")
+            copied: dict[str, Any] = {}
+            for key, child in current.items():
+                if type(key) is not str or not 1 <= len(key) <= MAX_JSON_KEY_CHARS or "\x00" in key:
+                    raise ValueError("log fields contain an invalid key")
+                text_bytes += len(key.encode("utf-8"))
+                if text_bytes > MAX_PUBLIC_LOG_FIELDS_BYTES:
+                    raise ValueError("log fields exceed the text budget")
+                copied[key] = clone(child, depth=depth + 1)
+            return copied
+        raise ValueError("log fields contain a non-JSON value")
+
+    return clone(value, depth=0)
+
+
+def _model_state(value: BaseModel) -> dict[str, Any]:
+    """Read BaseModel storage without invoking subclass field descriptors."""
+
+    state_descriptor = cast(Any, BaseModel.__dict__["__dict__"])
+    extra_descriptor = cast(Any, BaseModel.__dict__["__pydantic_extra__"])
+    state = state_descriptor.__get__(value, type(value))
+    extras = extra_descriptor.__get__(value, type(value))
+    if type(state) is not dict or extras is not None:
+        raise ValueError("invalid provider model state")
+    return cast(dict[str, Any], state)
+
+
+def _log_entry_values(entry: Any) -> tuple[str, str, str, str, dict[str, Any]]:
+    # Avoid ``isinstance`` here: after an exact-type miss it may read a hostile
+    # provider object's spoofed ``__class__`` descriptor.
+    if not issubclass(type(entry), LogEntry):
+        raise ValueError("invalid log entry")
+    raw = _model_state(entry)
+    required = {"at", "level", "message", "service"}
+    allowed = required | {"fields"}
+    if len(raw) > len(allowed):
+        raise ValueError("invalid log entry")
+    if any(type(key) is not str for key in raw):
+        raise ValueError("invalid log entry")
+    keys = set(raw)
+    if not required <= keys or not keys <= allowed:
+        raise ValueError("invalid log entry")
+    at = raw["at"]
+    level = raw["level"]
+    service = raw["service"]
+    message = raw["message"]
     if (
-        not isinstance(entries, list)
+        type(at) is not str
+        or len(at) > 128
+        or "\x00" in at
+        or type(level) is not str
+        or len(level) > 64
+        or "\x00" in level
+        or type(service) is not str
+        or len(service) > 255
+        or "\x00" in service
+        or type(message) is not str
+        or len(message) > 20_000
+        or "\x00" in message
+    ):
+        raise ValueError("invalid log entry")
+    fields = _public_log_fields(raw.get("fields", {}))
+    return at, level, service, message, fields
+
+
+def _project_public_log_result(
+    result: Any, *, requested_limit: int
+) -> tuple[list[LogEntryOut], int]:
+    if type(result) is not LogSearchResult:
+        raise ValueError("invalid log result")
+    raw = _model_state(result)
+    if any(type(key) is not str for key in raw):
+        raise ValueError("invalid log result")
+    if len(raw) != 2 or set(raw) != {"entries", "total"}:
+        raise ValueError("invalid log result")
+    entries = raw["entries"]
+    total = raw["total"]
+    if (
+        type(entries) is not list
         or len(entries) > requested_limit
-        or isinstance(total, bool)
-        or not isinstance(total, int)
+        or type(total) is not int
         or not 0 <= total <= 9_223_372_036_854_775_807
     ):
         raise ValueError("invalid log result")
 
     projected: list[LogEntryOut] = []
     for entry in entries:
-        normalized = LogEntry.model_validate(
-            {
-                "at": getattr(entry, "at", None),
-                "level": getattr(entry, "level", None),
-                "service": getattr(entry, "service", None),
-                "message": getattr(entry, "message", None),
-            }
-        )
+        at, level, service, message, fields = _log_entry_values(entry)
         projected.append(
             LogEntryOut(
-                at=_public_log_text(normalized.at, max_chars=128, default=""),
-                level=_public_log_text(normalized.level, max_chars=64, default="INFO"),
-                service=_public_log_text(normalized.service, max_chars=255, default=""),
-                message=_public_log_text(normalized.message, max_chars=20_000, default=""),
-                fields=_public_log_fields(getattr(entry, "fields", None)),
+                at=_public_log_text(at, max_chars=128, default=""),
+                level=_public_log_text(level, max_chars=64, default="INFO"),
+                service=_public_log_text(service, max_chars=255, default=""),
+                message=_public_log_text(message, max_chars=20_000, default=""),
+                fields=fields,
             )
         )
     return projected, total
+
+
+def _public_log_result(result: Any, *, requested_limit: int) -> tuple[list[LogEntryOut], int]:
+    """Revalidate an adapter result before it crosses the HTTP boundary."""
+
+    invalid = False
+    try:
+        return _project_public_log_result(result, requested_limit=requested_limit)
+    except Exception:
+        invalid = True
+    # Provider models and fields can contain secret-bearing values. Drop the
+    # provider object and raise after its handler so neither an exception chain
+    # nor this stable error's traceback retains the hostile projection object.
+    result = None
+    if invalid:
+        raise ValueError("invalid log result")
+    raise AssertionError("log projection failure was not recorded")  # pragma: no cover
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -254,36 +390,62 @@ async def search_logs(
     connection_id: ConnectionIdParam = None,
 ) -> LogSearchResponse:
     """Search logs through the configured LOG_SEARCH connection (any authenticated role)."""
+    window_error: HTTPException | None = None
+    window = None
     try:
         window = effective_window(
             body.window.from_ if body.window is not None else None,
             body.window.to if body.window is not None else None,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid log search window") from exc
+    except ValueError:
+        window_error = HTTPException(status_code=422, detail="invalid log search window")
+    if window_error is not None:
+        raise window_error
+    assert window is not None
 
     filters = dict(body.query.filters)
     project_id = _effective_project_filter(identity, filters)
+    resolver_error: HTTPException | None = None
+    adapter: Any = None
     try:
         adapter = await resolver(connection_id or body.connection_id, project_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="log-search connection not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="log-search connection is invalid") from exc
+    except KeyError:
+        resolver_error = HTTPException(status_code=404, detail="log-search connection not found")
+    except ValueError:
+        resolver_error = HTTPException(status_code=422, detail="log-search connection is invalid")
+    except Exception:
+        resolver_error = HTTPException(status_code=503, detail="log-search connection unavailable")
+    if resolver_error is not None:
+        raise resolver_error
+    assert adapter is not None
 
     query = LogQuery(query=body.query.text or "", filters=filters)
     page = Page(offset=body.offset, limit=body.limit)
+    search_error: HTTPException | None = None
+    result: Any = None
+    entries: list[LogEntryOut] | None = None
+    total: int | None = None
     try:
-        result = await adapter.search(query, window=window, page=page)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="log provider rejected the query") from exc
-    except (RuntimeError, httpx.HTTPError) as exc:
-        raise HTTPException(status_code=502, detail="log search upstream failure") from exc
+        try:
+            result = await adapter.search(query, window=window, page=page)
+        except ValueError:
+            search_error = HTTPException(status_code=422, detail="log provider rejected the query")
+        except (RuntimeError, httpx.HTTPError):
+            search_error = HTTPException(status_code=502, detail="log search upstream failure")
+        except Exception:
+            search_error = HTTPException(status_code=502, detail="log search upstream failure")
 
-    try:
-        entries, total = _public_log_result(result, requested_limit=body.limit)
-    except (AttributeError, TypeError, ValueError, ValidationError) as exc:
-        raise HTTPException(status_code=502, detail="log search upstream failure") from exc
+        if search_error is None:
+            try:
+                entries, total = _public_log_result(result, requested_limit=body.limit)
+            except ValueError:
+                result = None
+                search_error = HTTPException(status_code=502, detail="log search upstream failure")
+    finally:
+        await _close_log_adapter(adapter)
+    if search_error is not None:
+        raise search_error
+    assert entries is not None and total is not None
     return LogSearchResponse(
         entries=entries,
         total=total,
@@ -321,10 +483,7 @@ def _effective_project_filter(identity: Any, filters: dict[str, str]) -> str | N
         if not identity.allows_scope(project_id=project_id, app_id=requested_app):
             raise HTTPException(
                 status_code=403,
-                detail=(
-                    f"App '{requested_app}' in project '{project_id}' is outside "
-                    "this consumer's scopes"
-                ),
+                detail="app is outside this consumer's scopes",
             )
         return project_id
 

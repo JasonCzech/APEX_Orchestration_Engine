@@ -1,10 +1,11 @@
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 import pytest
 
+from apex.app import security as security_module
 from apex.app.distributed_limits import LimitBackendUnavailable, StreamLease
 from apex.app.security import (
     AuthAuditMiddleware,
@@ -320,7 +321,7 @@ async def test_rate_limit_disables_unbounded_thread_event_stream() -> None:
         reached = True
 
     app = RateLimitMiddleware(inner, RateLimitSettings())
-    messages = await call_app(app, path="/threads/thread-1/stream")
+    messages = await call_app(app, path="/threads/thread-1/stream/")
 
     assert reached is False
     assert messages[0]["status"] == 404
@@ -469,7 +470,7 @@ async def test_sse_admission_is_held_until_stream_closes_and_then_released(
             sse_credential_concurrency=1,
         ),
     )
-    path = "/threads/thread-1/runs/run-1/stream"
+    path = "/threads/thread-1/runs/run-1/stream/"
 
     first_task = asyncio.create_task(call_app(app, path=path, key="stream-key"))
     await entered.wait()
@@ -514,6 +515,101 @@ async def test_sse_admission_is_shared_across_middleware_instances() -> None:
     release.set()
     assert (await first_task)[0]["status"] == 200
     assert (await call_app(second_pod, path=path, key="stream-key"))[0]["status"] == 200
+
+
+async def test_sse_renewal_failure_detaches_backend_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "redis-renewal-credential-canary"
+    real_sleep = asyncio.sleep
+
+    class FailingRenewBackend(SharedLimitBackend):
+        async def renew_stream(self, lease: StreamLease, *, lease_ttl_s: int) -> bool:
+            del lease, lease_ttl_s
+            try:
+                raise RuntimeError(canary)
+            except RuntimeError as exc:
+                raise LimitBackendUnavailable("backend renewal failed") from exc
+
+    async def yield_immediately(_delay: float) -> None:
+        await real_sleep(0)
+
+    async def streaming_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        del scope, receive
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(security_module.asyncio, "sleep", yield_immediately)
+    app = RateLimitMiddleware(
+        streaming_app,
+        RateLimitSettings(requests=100, sse_lease_ttl_s=5),
+        backend=FailingRenewBackend(),
+    )
+
+    with pytest.raises(LimitBackendUnavailable, match="lease was lost") as raised:
+        await call_app(app, path="/threads/thread-1/runs/run-1/stream", key="stream-key")
+
+    assert canary not in repr(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+async def test_distributed_sse_release_survives_repeated_caller_cancellation() -> None:
+    class BlockingReleaseBackend(SharedLimitBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.release_entered = asyncio.Event()
+            self.allow_release = asyncio.Event()
+
+        async def release_stream(self, lease: StreamLease) -> None:
+            self.release_entered.set()
+            await self.allow_release.wait()
+            await super().release_stream(lease)
+
+    backend = BlockingReleaseBackend()
+    stream_started = asyncio.Event()
+    block_stream = True
+
+    async def streaming_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        del scope, receive
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        stream_started.set()
+        if block_stream:
+            await asyncio.Event().wait()
+        await send({"type": "http.response.body", "body": b""})
+
+    app = RateLimitMiddleware(
+        streaming_app,
+        RateLimitSettings(
+            requests=100,
+            sse_global_concurrency=1,
+            sse_source_concurrency=1,
+            sse_credential_concurrency=1,
+            sse_lease_ttl_s=30,
+        ),
+        backend=backend,
+    )
+    path = "/threads/thread-1/runs/run-1/stream"
+
+    stream_task = asyncio.create_task(call_app(app, path=path, key="stream-key"))
+    await stream_started.wait()
+    stream_task.cancel()
+    await backend.release_entered.wait()
+
+    # A server shutdown/disconnect race may cancel the ASGI task again while its
+    # first cancellation is already unwinding through the distributed release.
+    stream_task.cancel()
+    await asyncio.sleep(0)
+    stream_task.cancel()
+    await asyncio.sleep(0)
+    backend.allow_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await stream_task
+    assert backend.stream_counts == {}
+    assert backend.stream_leases == {}
+    block_stream = False
+    assert (await call_app(app, path=path, key="stream-key"))[0]["status"] == 200
 
 
 @pytest.mark.parametrize("trusted_loopback", [False, True])
@@ -979,6 +1075,69 @@ async def test_auth_audit_ignores_forwarded_client_from_untrusted_peer(
     assert "ip:203.0.113.5" in app._lockouts  # noqa: SLF001
 
 
+def test_forwarded_source_parsing_is_bounded_and_never_coerces_header_objects() -> None:
+    class HostileHeaderPart:
+        called = False
+
+        def __str__(self) -> str:
+            self.called = True
+            raise AssertionError("untrusted header coercion must not run")
+
+    networks = security_module._proxy_networks(  # noqa: SLF001
+        RateLimitSettings(trusted_proxy_cidrs=["10.0.0.0/8"])
+    )
+    hostile_name = HostileHeaderPart()
+    hostile_value = HostileHeaderPart()
+    scope = {
+        "client": ("10.0.0.5", 12345),
+        "headers": [
+            (hostile_name, hostile_value),
+            (b"x-unrelated", hostile_value),
+            (b"x-forwarded-for", b"198.51.100.10, 10.1.0.8"),
+        ],
+    }
+
+    assert security_module._source_rate_key(scope, networks) == "ip:198.51.100.10"  # noqa: SLF001
+    assert hostile_name.called is False
+    assert hostile_value.called is False
+
+    scope["headers"] = [(b"x-forwarded-for", b"1" * 4_097)]
+    assert security_module._source_rate_key(scope, networks) == "ip:10.0.0.5"  # noqa: SLF001
+    scope["headers"] = [(b"x-forwarded-for", b"198.51.100.10")] * 5
+    assert security_module._source_rate_key(scope, networks) == "ip:10.0.0.5"  # noqa: SLF001
+
+
+def test_request_header_guards_never_coerce_relevant_or_unrelated_objects() -> None:
+    class HostileHeaderPart:
+        called = False
+
+        def __str__(self) -> str:
+            self.called = True
+            raise AssertionError("untrusted header coercion must not run")
+
+    hostile = HostileHeaderPart()
+    mutation_scope = {
+        "method": "POST",
+        "headers": [
+            (b"x-unrelated", hostile),
+            (b"content-type", hostile),
+        ],
+    }
+    assert security_module._is_json_mutation_request(mutation_scope) is True  # noqa: SLF001
+    assert security_module._content_length(mutation_scope["headers"]) is None  # noqa: SLF001
+    assert security_module._scope_is_trusted_loopback(mutation_scope) is False  # noqa: SLF001
+    assert (
+        security_module._last_event_id_error(  # noqa: SLF001
+            {"headers": [(b"last-event-id", hostile)]}
+        )
+        == "Last-Event-ID must be a bounded Redis stream ID"
+    )
+    assert hostile.called is False
+
+    mutation_scope["headers"] = [(b"content-type", b"x" * 1_025)]
+    assert security_module._is_json_mutation_request(mutation_scope) is True  # noqa: SLF001
+
+
 @pytest.mark.asyncio
 async def test_auth_audit_failure_bucket_count_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
@@ -1169,6 +1328,55 @@ async def test_bearer_authenticated_response_is_private_no_store() -> None:
     headers = dict(messages[0]["headers"])
     assert headers[b"cache-control"] == b"private, no-store"
     assert headers[b"pragma"] == b"no-cache"
+
+
+@pytest.mark.parametrize("headers_kind", ["hostile", "malformed", "oversized"])
+async def test_security_headers_reject_hostile_or_unbounded_inner_header_containers(
+    headers_kind: str,
+) -> None:
+    class HostileHeaders:
+        calls = 0
+
+        def _called(self) -> Never:
+            type(self).calls += 1
+            raise AssertionError("hostile response-header protocol was invoked")
+
+        def __iter__(self) -> Never:
+            return self._called()
+
+        def __len__(self) -> int:
+            return self._called()
+
+        def __repr__(self) -> str:
+            return self._called()
+
+    if headers_kind == "hostile":
+        raw_headers: Any = HostileHeaders()
+    elif headers_kind == "malformed":
+        raw_headers = [HostileHeaders()]
+    else:
+        raw_headers = [(b"x-provider", b"value")] * (
+            security_module._MAX_PROJECTED_RESPONSE_HEADERS + 1
+        )
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": raw_headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+
+    messages = await call_app(
+        SecurityHeadersMiddleware(inner, SecurityHeadersSettings()),
+    )
+
+    headers = dict(messages[0]["headers"])
+    assert headers[b"x-content-type-options"] == b"nosniff"
+    assert b"x-provider" not in headers
+    assert HostileHeaders.calls == 0
 
 
 @pytest.mark.asyncio
@@ -1540,7 +1748,11 @@ async def test_direct_langgraph_deep_json_is_bounded_without_content_type() -> N
         "/threads/thread-1/state/checkpoint",
     ],
 )
-async def test_body_middleware_disables_expensive_native_thread_primitives(path: str) -> None:
+@pytest.mark.parametrize("trailing_slash", [False, True])
+async def test_body_middleware_disables_expensive_native_thread_primitives(
+    path: str,
+    trailing_slash: bool,
+) -> None:
     reached = False
 
     async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
@@ -1560,9 +1772,42 @@ async def test_body_middleware_disables_expensive_native_thread_primitives(path:
         {
             "type": "http",
             "method": "POST",
-            "path": path,
+            "path": f"{path}/" if trailing_slash else path,
             "headers": [],
         },
+        receive,
+        send,
+    )
+
+    assert reached is False
+    assert messages[0]["status"] == 404
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/runs/crons/",
+        "/runs/crons/schedule-1/",
+        "/threads/thread-1/runs/crons/",
+    ],
+)
+async def test_body_middleware_disables_native_cron_aliases(path: str) -> None:
+    reached = False
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        reached = True
+
+    async def receive() -> dict[str, Any]:
+        raise AssertionError("disabled native cron must not consume a request body")
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    await app(
+        {"type": "http", "method": "POST", "path": path, "headers": []},
         receive,
         send,
     )
@@ -1937,7 +2182,12 @@ async def test_body_middleware_allows_bounded_last_event_id(last_event_id: bytes
         ("POST", "/assistants/assistant-1/latest"),
     ],
 )
-async def test_public_native_unsafe_state_operations_are_hidden(method: str, path: str) -> None:
+@pytest.mark.parametrize("trailing_slash", [False, True])
+async def test_public_native_unsafe_state_operations_are_hidden(
+    method: str,
+    path: str,
+    trailing_slash: bool,
+) -> None:
     reached = False
     messages: list[dict[str, Any]] = []
 
@@ -1953,7 +2203,12 @@ async def test_public_native_unsafe_state_operations_are_hidden(method: str, pat
 
     app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
     await app(
-        {"type": "http", "method": method, "path": path, "headers": []},
+        {
+            "type": "http",
+            "method": method,
+            "path": f"{path}/" if trailing_slash else path,
+            "headers": [],
+        },
         receive,
         send,
     )
@@ -1998,6 +2253,231 @@ async def test_trusted_loopback_can_read_native_checkpoint_state(
 
 
 @pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        (
+            "POST",
+            "/threads/",
+            {"metadata": {"note": "Authorization: Bearer body-secret-canary"}},
+        ),
+        (
+            "PATCH",
+            "/threads/thread-1",
+            {"metadata": {"note": "password=body-secret-canary"}},
+        ),
+        (
+            "POST",
+            "/threads/thread-1/state",
+            {"values": {"prompt_reviews": {"phase": {"privateKey": "body-secret-canary"}}}},
+        ),
+        (
+            "PATCH",
+            "/threads/thread-1/state",
+            {"values": {"dialogue": ["Authorization: Bearer body-secret-canary"]}},
+        ),
+        (
+            "POST",
+            "/assistants",
+            {"graph_id": "pipeline", "config": {"note": "dsn=body-secret-canary"}},
+        ),
+        (
+            "POST",
+            "/runs/stream",
+            {
+                "assistant_id": "pipeline",
+                "stream_mode": "custom",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/runs",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/runs",
+            {
+                "assistant_id": "pipeline",
+                "input": {"secretKey": "body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/runs/",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/runs/wait",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/runs/wait/",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/runs/stream/",
+            {
+                "assistant_id": "pipeline",
+                "stream_mode": "custom",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/threads/thread-1/runs/",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/threads/thread-1/runs/",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/threads/thread-1/runs/wait",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/threads/thread-1/runs/wait/",
+            {
+                "assistant_id": "pipeline",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/threads/thread-1/runs/stream",
+            {
+                "assistant_id": "pipeline",
+                "stream_mode": "custom",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+        (
+            "POST",
+            "/threads/thread-1/runs/stream/",
+            {
+                "assistant_id": "pipeline",
+                "stream_mode": "custom",
+                "input": {"request": "password=body-secret-canary"},
+            },
+        ),
+    ],
+)
+async def test_trusted_loopback_durable_bodies_cannot_persist_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    path: str,
+    payload: dict[str, Any],
+) -> None:
+    reached = False
+    body = json.dumps(payload).encode()
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        await receive()
+        reached = True
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr("apex.app.security._scope_is_trusted_loopback", lambda _scope: True)
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=4096))
+    await app(
+        {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "query_string": b"",
+            "headers": [(b"content-length", str(len(body)).encode())],
+        },
+        receive,
+        send,
+    )
+
+    assert reached is False
+    assert messages[0]["status"] == 422
+    assert b"body-secret-canary" not in messages[1]["body"]
+
+
+async def test_trusted_loopback_safe_state_update_still_reaches_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reached = False
+    body = json.dumps(
+        {
+            "values": {
+                "prompt_reviews": {
+                    "reporting": {"system": "safe", "phase_prompt": "summarize results"}
+                }
+            },
+            "as_node": "plan_resolver",
+        }
+    ).encode()
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        await receive()
+        reached = True
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr("apex.app.security._scope_is_trusted_loopback", lambda _scope: True)
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=4096))
+    await app(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/threads/thread-1/state",
+            "query_string": b"",
+            "headers": [(b"content-length", str(len(body)).encode())],
+        },
+        receive,
+        send,
+    )
+
+    assert reached is True
+    assert messages[0]["status"] == 204
+
+
+@pytest.mark.parametrize(
     "query_string",
     [
         b"delete_threads=true",
@@ -2037,6 +2517,181 @@ async def test_public_assistant_delete_cannot_cascade_to_threads(
 
     assert reached is False
     assert messages[0]["status"] == 422
+
+
+@pytest.mark.parametrize(
+    ("path", "query_string"),
+    [
+        ("/assistants/assistant-1/graph", b"xray=true"),
+        ("/assistants/assistant-1/graph", b"xray=True"),
+        ("/assistants/assistant-1/graph", b"xray=0"),
+        ("/assistants/assistant-1/graph", b"xray=4"),
+        ("/assistants/assistant-1/graph", b"xray=1&xray=2"),
+        ("/assistants/assistant-1/graph", b"xray=1&unknown=true"),
+        ("/assistants/assistant-1/subgraphs", b"recurse=true"),
+        ("/assistants/assistant-1/subgraphs/ns", b"recurse=True"),
+        ("/assistants/assistant-1/subgraphs", b"recurse=false&recurse=false"),
+        ("/assistants/assistant-1/subgraphs", b"unknown=true"),
+        ("/assistants/assistant-1/schemas", b"xray=1"),
+        (f"/assistants/assistant-1/subgraphs/{'n' * 256}", b""),
+        ("/assistants/assistant-1/graph", b"q=" + b"x" * 20_001),
+        (
+            "/assistants/assistant-1/graph",
+            b"&".join(f"field{index}=x".encode() for index in range(65)),
+        ),
+    ],
+)
+async def test_public_assistant_structural_reads_reject_unbounded_controls(
+    path: str,
+    query_string: bytes,
+) -> None:
+    reached = False
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        reached = True
+
+    async def receive() -> dict[str, Any]:
+        raise AssertionError("unbounded structural read must be rejected before routing")
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "query_string": query_string,
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+
+    assert reached is False
+    assert messages[0]["status"] == 422
+
+
+@pytest.mark.parametrize(
+    ("path", "query_string"),
+    [
+        ("/assistants/assistant-1/graph", b""),
+        ("/assistants/assistant-1/graph", b"xray=false"),
+        ("/assistants/assistant-1/graph", b"xray=False"),
+        ("/assistants/assistant-1/graph", b"xray=1"),
+        ("/assistants/assistant-1/graph", b"xray=3"),
+        ("/assistants/assistant-1/schemas", b""),
+        ("/assistants/assistant-1/subgraphs", b""),
+        ("/assistants/assistant-1/subgraphs", b"recurse=false"),
+        ("/assistants/assistant-1/subgraphs/ns", b"recurse=False"),
+    ],
+)
+async def test_public_assistant_structural_reads_allow_bounded_controls(
+    path: str,
+    query_string: bytes,
+) -> None:
+    reached = False
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        reached = True
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b'{"nodes":[]}'})
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "query_string": query_string,
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+
+    assert reached is True
+    assert messages[0]["status"] == 200
+    assert json.loads(messages[1]["body"]) == {"nodes": []}
+
+
+async def test_public_assistant_structural_response_is_bounded_and_credential_safe() -> None:
+    canary = "assistant-structure-secret-canary"
+    payload = {
+        "nodes": [
+            {
+                "id": "node-1",
+                "data": {
+                    "note": f"Authorization: Bearer {canary}",
+                    "privateKey": canary,
+                },
+            }
+        ]
+    }
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"x-native-secret", canary.encode()),
+                ],
+                "trailers": True,
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": json.dumps(payload).encode(),
+                "more_body": False,
+            }
+        )
+        await send(
+            {
+                "type": "http.response.trailers",
+                "headers": [(b"x-native-secret", canary.encode())],
+                "more_trailers": False,
+            }
+        )
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/assistants/assistant-1/graph",
+            "query_string": b"xray=1",
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+
+    projected = json.loads(messages[1]["body"])
+    assert canary not in repr(messages)
+    assert projected["nodes"][0]["data"] == {"note": "Authorization: [REDACTED]"}
+    assert messages[0]["headers"] == [(b"content-type", b"application/json")]
+    assert all(message["type"] != "http.response.trailers" for message in messages)
 
 
 @pytest.mark.parametrize(
@@ -2287,6 +2942,317 @@ async def test_public_custom_stream_drops_raw_state_and_sanitizes_errors(
     assert secret not in repr(messages).encode()
 
 
+async def test_public_custom_stream_rejects_complete_oversized_event_before_sanitizing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[dict[str, Any]] = []
+    sanitized_events: list[bytes] = []
+    original_sanitizer = security_module._sanitize_public_sse_event
+    oversized = (
+        b'event: custom\ndata: {"safe":"'
+        + b"x" * (security_module._MAX_PUBLIC_STREAM_EVENT_BYTES + 1)
+        + b'"}\n\n'
+    )
+    small = b'event: custom\ndata: {"safe":"kept"}\n\n'
+
+    def guarded_sanitizer(event: bytes) -> bytes:
+        assert len(event) <= security_module._MAX_PUBLIC_STREAM_EVENT_BYTES
+        sanitized_events.append(event)
+        return original_sanitizer(event)
+
+    monkeypatch.setattr(security_module, "_sanitize_public_sse_event", guarded_sanitizer)
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        await send({"type": "http.response.body", "body": oversized + small})
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/runs/run-1/stream",
+            "query_string": b"stream_mode=custom",
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+
+    body = b"".join(message.get("body", b"") for message in messages)
+    assert sanitized_events == [small.removesuffix(b"\n\n")]
+    assert body.count(b"inspect the pipeline snapshot") == 1
+    assert b'"safe":"kept"' in body
+    assert len(body) < 1_024
+
+
+async def _project_public_stream_chunks(
+    chunks: list[tuple[Any, bool]],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/event-stream")],
+            }
+        )
+        for body, more_body in chunks:
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": more_body,
+                }
+            )
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1_024))
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/runs/run-1/stream",
+            "query_string": b"stream_mode=custom",
+            "headers": [],
+        },
+        receive,
+        send,
+    )
+    return messages
+
+
+async def test_public_stream_huge_single_chunk_is_bounded_and_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = 128
+    retained_sizes: list[int] = []
+    original_parser = security_module._BoundedPublicSSEParser
+
+    class TrackingParser(original_parser):
+        def feed(self, body: bytes):  # noqa: ANN202
+            for event in super().feed(body):
+                retained_sizes.append(len(self._buffer))
+                yield event
+            retained_sizes.append(len(self._buffer))
+
+        def finish(self):  # noqa: ANN202
+            yield from super().finish()
+            retained_sizes.append(len(self._buffer))
+
+    monkeypatch.setattr(security_module, "_MAX_PUBLIC_STREAM_EVENT_BYTES", limit)
+    monkeypatch.setattr(security_module, "_BoundedPublicSSEParser", TrackingParser)
+    valid = b'event: custom\ndata: {"safe":"after-huge"}\n\n'
+    huge = b'event: custom\ndata: {"safe":"' + b"x" * 2_000_000 + b'"}\n\n'
+
+    messages = await _project_public_stream_chunks([(huge + valid, False)])
+    body = b"".join(message.get("body", b"") for message in messages)
+
+    assert max(retained_sizes, default=0) <= limit
+    assert body.count(b"inspect the pipeline snapshot") == 1
+    assert b'"safe":"after-huge"' in body
+    assert len(body) < 1_024
+
+
+async def test_public_stream_huge_split_event_discards_through_delimiter_then_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(security_module, "_MAX_PUBLIC_STREAM_EVENT_BYTES", 128)
+    valid = b'event: custom\ndata: {"safe":"recovered"}\n\n'
+    messages = await _project_public_stream_chunks(
+        [
+            (b'event: custom\ndata: {"safe":"' + b"x" * 129, True),
+            (b"x" * 2_000_000, True),
+            (b"\n", True),
+            (b"\n" + valid, False),
+        ]
+    )
+    body = b"".join(message.get("body", b"") for message in messages)
+
+    assert body.count(b"inspect the pipeline snapshot") == 1
+    assert b'"safe":"recovered"' in body
+    assert len(body) < 1_024
+
+
+async def test_public_stream_preserves_crlf_lf_boundaries_and_final_incomplete_event() -> None:
+    messages = await _project_public_stream_chunks(
+        [
+            (b'event: custom\r\ndata: {"safe":"crlf"}\r\n', True),
+            (b'\r\nevent: custom\ndata: {"safe":"lf"}\n', True),
+            (b'\nevent: custom\ndata: {"safe":"terminal"}', False),
+        ]
+    )
+    body = b"".join(message.get("body", b"") for message in messages)
+
+    assert body.count(b"event: custom\n") == 3
+    assert b'"safe":"crlf"' in body
+    assert b'"safe":"lf"' in body
+    assert b'"safe":"terminal"' in body
+    assert messages[-1].get("body") == b""
+    assert messages[-1].get("more_body") is False
+
+
+@pytest.mark.parametrize("separator", [b"\n\n", b"\r\n\r\n"])
+async def test_public_stream_exact_limit_event_accepts_split_delimiter(
+    monkeypatch: pytest.MonkeyPatch,
+    separator: bytes,
+) -> None:
+    prefix = b'event: custom\ndata: {"safe":"'
+    suffix = b'"}'
+    limit = 128
+    event = prefix + b"x" * (limit - len(prefix) - len(suffix)) + suffix
+    assert len(event) == limit
+    monkeypatch.setattr(security_module, "_MAX_PUBLIC_STREAM_EVENT_BYTES", limit)
+
+    messages = await _project_public_stream_chunks(
+        [(event + separator[:-1], True), (separator[-1:], False)]
+    )
+    body = b"".join(message.get("body", b"") for message in messages)
+
+    assert b"inspect the pipeline snapshot" not in body
+    assert body.count(b"event: custom\n") == 1
+
+
+async def test_public_stream_non_bytes_body_fails_closed_and_recovers() -> None:
+    class HostileBody:
+        calls = 0
+
+        def _called(self) -> Never:
+            type(self).calls += 1
+            raise AssertionError("hostile response body protocol was invoked")
+
+        def __bytes__(self) -> bytes:
+            return self._called()
+
+        def __iter__(self) -> Never:
+            return self._called()
+
+        def __len__(self) -> int:
+            return self._called()
+
+        def __repr__(self) -> str:
+            return self._called()
+
+        def __str__(self) -> str:
+            return self._called()
+
+    invalid = "provider-secret-response-body"
+    valid = b'\n\nevent: custom\ndata: {"safe":"recovered"}\n\n'
+    messages = await _project_public_stream_chunks(
+        [(invalid, True), (HostileBody(), True), (valid, False)]
+    )
+    body = b"".join(message.get("body", b"") for message in messages)
+
+    assert invalid not in repr(messages)
+    assert HostileBody.calls == 0
+    assert body.count(b"inspect the pipeline snapshot") == 1
+    assert b'"safe":"recovered"' in body
+
+
+def test_public_stream_event_name_uses_strict_noninjectable_ascii_grammar() -> None:
+    injected = security_module._sanitize_public_sse_event(
+        b'event: custom|safe\rid: 123\ndata: {"safe":"not-emitted"}'
+    )
+    valid = security_module._sanitize_public_sse_event(
+        b'event: custom|node_1:run-2\ndata: {"safe":"emitted"}'
+    )
+
+    assert injected == b""
+    assert valid.startswith(b"event: custom|node_1:run-2\n")
+    assert b'"safe":"emitted"' in valid
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        b'event: custom\nevent: values\ndata: {"safe":"must-not-emit"}',
+        b'event: custom\nevent: error\ndata: {"safe":"must-not-emit"}',
+        b'event: custom \ndata: {"safe":"must-not-emit"}',
+        b'event: custom\nid: 1-0\nid: 2-0\ndata: {"safe":"must-not-emit"}',
+        b'event: custom\nretry: 1\ndata: {"safe":"must-not-emit"}',
+        b'event: custom\n: provider comment\ndata: {"safe":"must-not-emit"}',
+    ],
+)
+def test_public_stream_rejects_semantically_ambiguous_sse_envelopes(event: bytes) -> None:
+    assert security_module._sanitize_public_sse_event(event) == b""
+
+
+def test_public_stream_omits_non_ascii_event_id_without_lossy_normalization() -> None:
+    projected = security_module._sanitize_public_sse_event(
+        b'event: custom\nid: 1-\xc2\xa00\ndata: {"safe":"emitted"}'
+    )
+
+    assert projected.startswith(b"event: custom\n")
+    assert b"\nid:" not in projected
+    assert b'"safe":"emitted"' in projected
+
+
+@pytest.mark.parametrize("projection", ["json", "stream"])
+@pytest.mark.parametrize("headers_kind", ["hostile", "malformed", "oversized"])
+def test_public_projection_rejects_hostile_or_unbounded_response_header_containers(
+    projection: str,
+    headers_kind: str,
+) -> None:
+    class HostileHeaders:
+        calls = 0
+
+        def _called(self) -> Never:
+            type(self).calls += 1
+            raise AssertionError("hostile response-header protocol was invoked")
+
+        def __bool__(self) -> bool:
+            return self._called()
+
+        def __iter__(self) -> Never:
+            return self._called()
+
+        def __len__(self) -> int:
+            return self._called()
+
+        def __repr__(self) -> str:
+            return self._called()
+
+    if headers_kind == "hostile":
+        headers: Any = HostileHeaders()
+    elif headers_kind == "malformed":
+        headers = [HostileHeaders()]
+    else:
+        headers = [(b"content-location", b"/runs/run-1")] * (
+            security_module._MAX_PROJECTED_RESPONSE_HEADERS + 1
+        )
+
+    message = {"type": "http.response.start", "status": 200, "headers": headers}
+    if projection == "json":
+        projected = security_module._safe_projected_json_start(
+            message,
+            preserve_run_location=True,
+        )
+        assert projected["headers"] == [(b"content-type", b"application/json")]
+    else:
+        projected = security_module._safe_public_stream_start(message)
+        assert projected["headers"] == [(b"content-type", b"text/event-stream")]
+    assert HostileHeaders.calls == 0
+
+
 async def test_public_native_error_response_never_reflects_rejected_input() -> None:
     secret = b"native-validation-secret-canary"
     messages: list[dict[str, Any]] = []
@@ -2410,6 +3376,51 @@ async def test_public_thread_metadata_update_never_returns_native_state() -> Non
     assert secret not in repr(messages).encode()
 
 
+async def test_public_json_projection_preflights_oversized_body_before_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[dict[str, Any]] = []
+    oversized = b"x" * (security_module._MAX_NATIVE_PROJECTION_JSON_BYTES + 1)
+    builtin_bytearray = bytearray
+
+    class GuardedBytearray(bytearray):
+        def extend(self, value: Any) -> None:
+            assert len(self) + len(value) <= security_module._MAX_NATIVE_PROJECTION_JSON_BYTES
+            super().extend(value)
+
+    monkeypatch.setattr(security_module, "bytearray", GuardedBytearray, raising=False)
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send({"type": "http.response.body", "body": oversized})
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    await app(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/threads",
+            "headers": [(b"content-length", b"0")],
+        },
+        receive,
+        send,
+    )
+
+    assert builtin_bytearray(b"".join(message.get("body", b"") for message in messages)) == b"{}"
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -2457,7 +3468,7 @@ async def test_public_thread_create_rejects_caller_identity_and_collision_contro
     [
         (
             "POST",
-            "/threads",
+            "/threads/",
             b"",
             {},
             {
@@ -2497,7 +3508,7 @@ async def test_public_thread_create_rejects_caller_identity_and_collision_contro
         ),
         (
             "POST",
-            "/threads/thread-1/runs",
+            "/threads/thread-1/runs/",
             b"",
             {"assistant_id": "pipeline", "input": {}},
             {
@@ -2516,7 +3527,7 @@ async def test_public_thread_create_rejects_caller_identity_and_collision_contro
         ),
         (
             "GET",
-            "/threads/thread-1/runs",
+            "/threads/thread-1/runs/",
             b"limit=1&select=run_id&select=status",
             None,
             [
@@ -2544,7 +3555,7 @@ async def test_public_thread_create_rejects_caller_identity_and_collision_contro
         ),
         (
             "POST",
-            "/assistants/search",
+            "/assistants/search/",
             b"",
             {"limit": 1, "select": ["assistant_id", "name"]},
             [
@@ -2628,7 +3639,8 @@ async def test_public_native_successes_use_strict_server_owned_projections(
     assert json.loads(response_body) == expected
     assert secret not in repr(messages).encode()
     expected_headers = [(b"content-type", b"application/json")]
-    if method == "POST" and (path == "/runs" or path.endswith("/runs")):
+    normalized_path = path.rstrip("/")
+    if method == "POST" and (normalized_path == "/runs" or normalized_path.endswith("/runs")):
         expected_headers.append(
             (
                 b"content-location",
@@ -2642,7 +3654,7 @@ async def test_public_native_successes_use_strict_server_owned_projections(
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("GET", "/assistants/assistant-1"),
+        ("GET", "/assistants/assistant-1/"),
         ("PATCH", "/assistants/assistant-1"),
         ("POST", "/assistants"),
     ],
@@ -2897,7 +3909,7 @@ async def test_body_middleware_rejects_unbounded_thread_run_list(
         {
             "type": "http",
             "method": "GET",
-            "path": "/threads/thread-1/runs",
+            "path": "/threads/thread-1/runs/",
             "query_string": query_string,
             "headers": [],
         },
@@ -3267,6 +4279,183 @@ async def test_body_middleware_allows_bounded_langsmith_metadata() -> None:
 
     assert reached is True
     assert messages[0]["status"] == 204
+
+
+def test_langsmith_header_scan_ignores_unrelated_hostile_values() -> None:
+    class HostileHeaderPart:
+        called = False
+
+        def __str__(self) -> str:
+            self.called = True
+            raise AssertionError("untrusted header coercion must not run")
+
+    hostile_name = HostileHeaderPart()
+    hostile_value = HostileHeaderPart()
+    error = security_module._langsmith_baggage_error(  # noqa: SLF001
+        {
+            "headers": [
+                (hostile_name, hostile_value),
+                (b"authorization", hostile_value),
+                (b"langsmith-trace", b"trace-id"),
+            ]
+        }
+    )
+
+    assert error is None
+    assert hostile_name.called is False
+    assert hostile_value.called is False
+
+    error = security_module._langsmith_baggage_error(  # noqa: SLF001
+        {
+            "headers": [
+                (b"langsmith-trace", b"trace-id"),
+                (b"baggage", hostile_value),
+            ]
+        }
+    )
+    assert error == "LangSmith baggage must contain bounded text headers"
+    assert hostile_value.called is False
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        [(b"langsmith-trace", b"t" * 4_097)],
+        [
+            (b"langsmith-trace", b"trace-id"),
+            (b"baggage", b"x" * 100_001),
+        ],
+        [(b"langsmith-trace", b"trace-id")]
+        + [(b"baggage", b"langsmith-project=p") for _ in range(17)],
+    ],
+)
+def test_langsmith_header_scan_rejects_oversized_or_excessive_values(
+    headers: list[tuple[bytes, bytes]],
+) -> None:
+    assert security_module._langsmith_baggage_error({"headers": headers}) is not None  # noqa: SLF001
+
+
+_RUN_CREATION_PATHS = (
+    "/runs",
+    "/runs/",
+    "/runs/wait",
+    "/runs/wait/",
+    "/runs/stream",
+    "/runs/stream/",
+    "/threads/thread-1/runs",
+    "/threads/thread-1/runs/",
+    "/threads/thread-1/runs/wait",
+    "/threads/thread-1/runs/wait/",
+    "/threads/thread-1/runs/stream",
+    "/threads/thread-1/runs/stream/",
+)
+
+
+@pytest.mark.parametrize("path", _RUN_CREATION_PATHS)
+@pytest.mark.parametrize(
+    "tracing_headers",
+    [
+        [(b"langsmith-trace", b"password=trace-header-secret-canary")],
+        [
+            (b"langsmith-trace", b"trace-id"),
+            (
+                b"baggage",
+                b"langsmith-metadata=%7B%22database_uri%22%3A%22metadata-secret-canary%22%7D",
+            ),
+        ],
+        [
+            (b"langsmith-trace", b"trace-id"),
+            (b"baggage", b"langsmith-tags=password%3Dtag-secret-canary"),
+        ],
+        [
+            (b"langsmith-trace", b"trace-id"),
+            (b"baggage", b"langsmith-project=password%3Dproject-secret-canary"),
+        ],
+    ],
+)
+async def test_trusted_run_routes_reject_credential_tracing_before_encryption(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    tracing_headers: list[tuple[bytes, bytes]],
+) -> None:
+    reached = False
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        reached = True
+
+    async def receive() -> dict[str, Any]:
+        raise AssertionError("credential tracing must be rejected before the runtime")
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr("apex.app.security._scope_is_trusted_loopback", lambda _scope: True)
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=4_096))
+    await app(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "query_string": b"",
+            "headers": tracing_headers,
+        },
+        receive,
+        send,
+    )
+
+    assert reached is False
+    assert messages[0]["status"] == 400
+    assert b"secret-canary" not in messages[1]["body"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/runs",
+        "/runs/",
+        "/runs/stream",
+        "/runs/stream/",
+        "/threads/thread-1/runs",
+        "/threads/thread-1/runs/",
+        "/threads/thread-1/runs/stream",
+        "/threads/thread-1/runs/stream/",
+    ],
+)
+async def test_public_run_routes_reject_credential_tracing_before_encryption(path: str) -> None:
+    reached = False
+    messages: list[dict[str, Any]] = []
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        reached = True
+
+    async def receive() -> dict[str, Any]:
+        raise AssertionError("credential tracing must be rejected before the runtime")
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=4_096))
+    await app(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "query_string": b"",
+            "headers": [
+                (b"langsmith-trace", b"trace-id"),
+                (b"baggage", b"langsmith-project=password%3Dpublic-secret-canary"),
+            ],
+        },
+        receive,
+        send,
+    )
+
+    assert reached is False
+    assert messages[0]["status"] == 400
+    assert b"public-secret-canary" not in messages[1]["body"]
 
 
 @pytest.mark.asyncio

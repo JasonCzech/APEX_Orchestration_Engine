@@ -16,6 +16,7 @@ import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from posixpath import splitext
+from typing import Any
 
 from apex.domain.diagnostics import bounded_diagnostic
 
@@ -44,6 +45,11 @@ _PDF_WORKER_CPU_SECONDS = 15
 _PDF_WORKER_WALL_SECONDS = 20.0
 _PDF_WORKER_REAP_SECONDS = 2.0
 _WORKER_ERROR_BYTES = 1_000
+_WORKER_ERROR_PARSER = "parser_failure"
+_WORKER_ERROR_SAFETY_LIMIT = "safety_limit"
+_WORKER_ERROR_PASSWORD_PROTECTED = "password_protected"
+_WORKER_ERROR_INPUT_LIMIT = "input_limit"
+_WORKER_ERROR_CONFIGURATION = "configuration_failure"
 
 _MAX_DOCX_ENTRIES = 2_048
 _MAX_DOCX_INPUT_BYTES = 25 * 1024 * 1024
@@ -86,6 +92,14 @@ class ExtractionResult:
 class _BoundedText:
     text: str
     char_count: int
+
+
+class _ExtractionPolicyError(ValueError):
+    """Server-owned worker failure with a stable cross-process error code."""
+
+    def __init__(self, worker_code: str, message: str) -> None:
+        self.worker_code = worker_code
+        super().__init__(message)
 
 
 class _NormalizedTextBuilder:
@@ -344,17 +358,34 @@ def _configure_pypdf_limits() -> None:
 def _extract_pdf_in_worker(data: bytes, *, max_chars: int) -> _BoundedText:
     """Parse one PDF inside the resource-limited child process."""
 
-    from pypdf import PdfReader
+    from pypdf import PasswordType, PdfReader
 
     _configure_pypdf_limits()
     reader = PdfReader(BytesIO(data))
     if reader.is_encrypted:
+        decrypt_result: Any = None
         try:
-            reader.decrypt("")
+            decrypt_result = reader.decrypt("")
         except Exception:
-            raise ValueError("PDF is password-protected") from None
+            pass
+        # pypdf returns PasswordType.NOT_DECRYPTED (integer value 0) for a
+        # wrong password; it does not consistently raise. Accept the library's
+        # two successful enum values plus exact positive built-ins used by
+        # compatible releases/mocks, without coercing an arbitrary result.
+        decrypt_succeeded = (
+            type(decrypt_result) is PasswordType
+            and decrypt_result in {PasswordType.USER_PASSWORD, PasswordType.OWNER_PASSWORD}
+        ) or (type(decrypt_result) in {bool, int} and decrypt_result > 0)
+        if not decrypt_succeeded:
+            raise _ExtractionPolicyError(
+                _WORKER_ERROR_PASSWORD_PROTECTED,
+                "PDF is password-protected",
+            )
     if len(reader.pages) > _MAX_PDF_PAGES:
-        raise ValueError(f"PDF exceeds the {_MAX_PDF_PAGES}-page extraction limit")
+        raise _ExtractionPolicyError(
+            _WORKER_ERROR_SAFETY_LIMIT,
+            f"PDF exceeds the {_MAX_PDF_PAGES}-page extraction limit",
+        )
 
     budget = _complex_format_budget(max_chars)
     builder = _NormalizedTextBuilder(budget)
@@ -364,7 +395,10 @@ def _extract_pdf_in_worker(data: bytes, *, max_chars: int) -> _BoundedText:
         if contents is not None:
             decoded_content_bytes += len(contents.get_data())
             if decoded_content_bytes > _MAX_PDF_DECODED_CONTENT_BYTES:
-                raise ValueError("PDF decoded page content exceeds the extraction memory limit")
+                raise _ExtractionPolicyError(
+                    _WORKER_ERROR_SAFETY_LIMIT,
+                    "PDF decoded page content exceeds the extraction memory limit",
+                )
         if page_number:
             builder.feed("\n\n")
         builder.feed(page.extract_text() or "")
@@ -373,13 +407,33 @@ def _extract_pdf_in_worker(data: bytes, *, max_chars: int) -> _BoundedText:
     return builder.finish()
 
 
+def _worker_failure_message(payload: bytes, *, label: str) -> str:
+    """Map an untrusted worker payload to a stable server-owned diagnostic."""
+
+    try:
+        code = payload[1 : 1 + _WORKER_ERROR_BYTES].decode("ascii")
+    except UnicodeDecodeError:
+        code = ""
+    if code == _WORKER_ERROR_SAFETY_LIMIT:
+        return f"{label} extraction exceeded a safety limit"
+    if code == _WORKER_ERROR_INPUT_LIMIT:
+        return f"{label} extraction input exceeds its hard limit"
+    if code == _WORKER_ERROR_CONFIGURATION:
+        return f"{label} extraction worker configuration failed"
+    if code == _WORKER_ERROR_PASSWORD_PROTECTED and label == "PDF":
+        return "PDF is password-protected"
+    # Unknown codes and parser failures are intentionally indistinguishable.
+    # Parser exception text can contain arbitrary attacker-controlled document
+    # content and must never cross into ExtractionResult or durable parse_error.
+    return f"{label} extraction failed"
+
+
 def _decode_pdf_worker_response(payload: bytes, *, max_chars: int) -> _BoundedText:
     if not payload:
         raise ValueError("PDF extraction worker exited without a result")
     status = payload[:1]
     if status == b"E":
-        detail = payload[1 : 1 + _WORKER_ERROR_BYTES].decode("utf-8", errors="replace")
-        raise ValueError(detail or "PDF extraction failed")
+        raise ValueError(_worker_failure_message(payload, label="PDF"))
     if status != b"S" or len(payload) < 9:
         raise ValueError("PDF extraction worker returned a malformed result")
 
@@ -389,9 +443,14 @@ def _decode_pdf_worker_response(payload: bytes, *, max_chars: int) -> _BoundedTe
     if len(text_bytes) > budget * 4:
         raise ValueError("PDF extraction worker exceeded its output limit")
     try:
-        text = text_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("PDF extraction worker returned invalid UTF-8") from exc
+        text: str | None = text_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        # UnicodeDecodeError retains the complete worker buffer on ``.object``.
+        # Raise only after leaving the handler so neither cause nor context can
+        # carry extracted document content across the service boundary.
+        text = None
+    if text is None:
+        raise ValueError("PDF extraction worker returned invalid UTF-8")
     if len(text) > budget or char_count < len(text):
         raise ValueError("PDF extraction worker returned inconsistent bounds")
     return _BoundedText(text=text, char_count=char_count)
@@ -419,9 +478,10 @@ def _extract_pdf(data: bytes, *, max_chars: int) -> _BoundedText:
         stderr=subprocess.DEVNULL,
         env=_extraction_worker_environment(),
     )
+    timed_out = False
     try:
         stdout, _stderr = process.communicate(input=data, timeout=_PDF_WORKER_WALL_SECONDS)
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         process.kill()
         try:
             process.communicate(timeout=_PDF_WORKER_REAP_SECONDS)
@@ -430,9 +490,12 @@ def _extract_pdf(data: bytes, *, max_chars: int) -> _BoundedText:
             # call is harmless and communicate() reaps as soon as the kernel does.
             process.kill()
             process.communicate()
-        raise ValueError(
-            f"PDF extraction exceeded the {_PDF_WORKER_WALL_SECONDS:g}-second limit"
-        ) from exc
+        timed_out = True
+        stdout = b""
+    if timed_out:
+        # TimeoutExpired can retain partial worker stdout on ``.output``.  Do
+        # not chain it into the stable extraction failure.
+        raise ValueError(f"PDF extraction exceeded the {_PDF_WORKER_WALL_SECONDS:g}-second limit")
     if process.returncode != 0:
         raise ValueError("PDF extraction exceeded its CPU or memory limit")
     return _decode_pdf_worker_response(stdout, max_chars=max_chars)
@@ -446,22 +509,34 @@ def _extract_docx_in_worker(data: bytes, *, max_chars: int) -> _BoundedText:
     with zipfile.ZipFile(BytesIO(data)) as archive:
         members = archive.infolist()
         if len(members) > _MAX_DOCX_ENTRIES:
-            raise ValueError("DOCX contains too many archive entries")
+            raise _ExtractionPolicyError(
+                _WORKER_ERROR_SAFETY_LIMIT,
+                "DOCX contains too many archive entries",
+            )
         expanded_limit = min(
             _MAX_DOCX_EXPANDED_BYTES,
             max(8 * 1024 * 1024, max_chars * 32 if max_chars > 0 else 0),
         )
         expanded = sum(member.file_size for member in members)
         if expanded > expanded_limit:
-            raise ValueError("DOCX expanded content exceeds the extraction limit")
+            raise _ExtractionPolicyError(
+                _WORKER_ERROR_SAFETY_LIMIT,
+                "DOCX expanded content exceeds the extraction limit",
+            )
         for member in members:
             if member.file_size > 0 and member.compress_size == 0:
-                raise ValueError("DOCX contains an invalid compressed entry")
+                raise _ExtractionPolicyError(
+                    _WORKER_ERROR_SAFETY_LIMIT,
+                    "DOCX contains an invalid compressed entry",
+                )
             if (
                 member.compress_size > 0
                 and member.file_size / member.compress_size > _MAX_DOCX_COMPRESSION_RATIO
             ):
-                raise ValueError("DOCX archive compression ratio exceeds the safety limit")
+                raise _ExtractionPolicyError(
+                    _WORKER_ERROR_SAFETY_LIMIT,
+                    "DOCX archive compression ratio exceeds the safety limit",
+                )
 
     document = DocxDocument(BytesIO(data))
     builder = _NormalizedTextBuilder(_complex_format_budget(max_chars))
@@ -493,8 +568,7 @@ def _decode_docx_worker_response(payload: bytes, *, max_chars: int) -> _BoundedT
         raise ValueError("DOCX extraction worker exited without a result")
     status = payload[:1]
     if status == b"E":
-        detail = payload[1 : 1 + _WORKER_ERROR_BYTES].decode("utf-8", errors="replace")
-        raise ValueError(detail or "DOCX extraction failed")
+        raise ValueError(_worker_failure_message(payload, label="DOCX"))
     if status != b"S" or len(payload) < 9:
         raise ValueError("DOCX extraction worker returned a malformed result")
 
@@ -504,9 +578,11 @@ def _decode_docx_worker_response(payload: bytes, *, max_chars: int) -> _BoundedT
     if len(text_bytes) > budget * 4:
         raise ValueError("DOCX extraction worker exceeded its output limit")
     try:
-        text = text_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("DOCX extraction worker returned invalid UTF-8") from exc
+        text: str | None = text_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        text = None
+    if text is None:
+        raise ValueError("DOCX extraction worker returned invalid UTF-8")
     if len(text) > budget or char_count < len(text):
         raise ValueError("DOCX extraction worker returned inconsistent bounds")
     return _BoundedText(text=text, char_count=char_count)
@@ -534,18 +610,20 @@ def _extract_docx(data: bytes, *, max_chars: int) -> _BoundedText:
         stderr=subprocess.DEVNULL,
         env=_extraction_worker_environment(),
     )
+    timed_out = False
     try:
         stdout, _stderr = process.communicate(input=data, timeout=_DOCX_WORKER_WALL_SECONDS)
-    except subprocess.TimeoutExpired as exc:
+    except subprocess.TimeoutExpired:
         process.kill()
         try:
             process.communicate(timeout=_DOCX_WORKER_REAP_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
             process.communicate()
-        raise ValueError(
-            f"DOCX extraction exceeded the {_DOCX_WORKER_WALL_SECONDS:g}-second limit"
-        ) from exc
+        timed_out = True
+        stdout = b""
+    if timed_out:
+        raise ValueError(f"DOCX extraction exceeded the {_DOCX_WORKER_WALL_SECONDS:g}-second limit")
     if process.returncode != 0:
         raise ValueError("DOCX extraction exceeded its CPU or memory limit")
     return _decode_docx_worker_response(stdout, max_chars=max_chars)

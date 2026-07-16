@@ -46,7 +46,7 @@ from apex.adapters.http_resilience import parse_json_response, resilient_request
 from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.options import coerce_bool, require_bounded_credential
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
 from apex.domain.input_limits import validate_json_object
 from apex.domain.integrations import (
     LogEntry,
@@ -242,12 +242,14 @@ def _require_complete_response(payload: Mapping[str, Any]) -> None:
     failed = shards.get("failed", 0)
     if isinstance(failed, bool):
         raise RuntimeError("elasticsearch search response has malformed failed-shard count")
+    malformed_failed_count = False
+    failed_count = 0
     try:
         failed_count = int(failed)
     except (TypeError, ValueError):
-        raise RuntimeError(
-            "elasticsearch search response has malformed failed-shard count"
-        ) from None
+        malformed_failed_count = True
+    if malformed_failed_count:
+        raise RuntimeError("elasticsearch search response has malformed failed-shard count")
     if failed_count < 0:
         raise RuntimeError("elasticsearch search response has malformed failed-shard count")
     if failed_count:
@@ -328,6 +330,8 @@ class ElasticsearchLogSearchAdapter:
     async def search(self, query: LogQuery, *, window: TimeWindow, page: Page) -> LogSearchResult:
         body = build_search_body(query, window, page)
         client = self._get_client()
+        response: httpx.Response | None = None
+        transport_failure: RuntimeError | None = None
         try:
             response = await resilient_request(
                 client,
@@ -338,12 +342,16 @@ class ElasticsearchLogSearchAdapter:
             )
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            transport_failure = RuntimeError(
                 bounded_diagnostic(
-                    f"elasticsearch search request failed ({exc.__class__.__name__}): "
+                    f"elasticsearch search request failed ({safe_type_name(exc)}): "
                     f"{detail}; check the connection's base_url and network reachability"
                 )
-            ) from exc
+            )
+        if transport_failure is not None:
+            raise transport_failure
+        if response is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("elasticsearch search completed without a response")
         if response.status_code == 400:
             # Bad query_string / malformed body — caller-correctable.
             raise ValueError(f"elasticsearch rejected the query: {_error_reason(response)}")
@@ -357,12 +365,14 @@ class ElasticsearchLogSearchAdapter:
                 f"elasticsearch search failed (status {response.status_code}): "
                 f"{_error_reason(response)}"
             )
+        payload: Any = None
+        invalid_json = False
         try:
             payload = parse_json_response(response, context="elasticsearch search response")
-        except RuntimeError as exc:
-            raise RuntimeError(
-                "elasticsearch returned a non-JSON or invalid JSON search response"
-            ) from exc
+        except RuntimeError:
+            invalid_json = True
+        if invalid_json:
+            raise RuntimeError("elasticsearch returned a non-JSON or invalid JSON search response")
         if not isinstance(payload, Mapping):
             raise RuntimeError("elasticsearch search response must be a JSON object")
         _require_complete_response(payload)
@@ -380,11 +390,18 @@ class ElasticsearchLogSearchAdapter:
             )
         if not all(isinstance(hit, Mapping) for hit in raw_hits):
             raise RuntimeError("elasticsearch search response has non-object entries in hits.hits")
+        result: LogSearchResult | None = None
+        invalid_log_data = False
         try:
             entries: list[LogEntry] = [map_hit(hit) for hit in raw_hits]
-            return LogSearchResult(entries=entries, total=_parse_total(hits_obj))
-        except (ValidationError, ValueError) as exc:
-            raise RuntimeError("elasticsearch search response contains invalid log data") from exc
+            result = LogSearchResult(entries=entries, total=_parse_total(hits_obj))
+        except (ValidationError, ValueError):
+            invalid_log_data = True
+        if invalid_log_data:
+            raise RuntimeError("elasticsearch search response contains invalid log data")
+        if result is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("elasticsearch search response contains invalid log data")
+        return result
 
     # ── client bootstrap ──────────────────────────────────────────────────────
 

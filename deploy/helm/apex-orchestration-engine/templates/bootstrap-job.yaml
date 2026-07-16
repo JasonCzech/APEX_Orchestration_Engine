@@ -43,11 +43,9 @@ spec:
             # Validate bootstrap under the same locked-down, TLS/CORS/auth
             # policy as the runtime without depending on a non-hook ConfigMap
             # that does not exist yet during pre-install.
-            {{- range $key, $value := .Values.apexSettings }}
-            - name: {{ $key }}
-              value: {{ $value | quote }}
-            {{- end }}
+            {{- include "apex.hookSettingsEnv" . | nindent 12 }}
             {{- include "apex.bootstrapDbEnv" . | nindent 12 }}
+            {{- include "apex.bootstrapRedisEnv" . | nindent 12 }}
             {{- include "apex.bootstrapAuthEnv" . | nindent 12 }}
             {{- if .Values.bootstrap.adminKeySecret.existingSecret }}
             - name: APEX_BOOTSTRAP_ADMIN_KEY

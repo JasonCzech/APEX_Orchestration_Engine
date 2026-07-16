@@ -8,6 +8,7 @@ from sqlalchemy import ColumnElement, Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.auth.identity import ScopeRef
+from apex.domain.diagnostics import bounded_diagnostic
 from apex.persistence.models import AgentEvent
 from apex.services.analytics_scope import analytics_scope_filter
 
@@ -33,6 +34,7 @@ AgentBucket = Literal["day", "hour"]
 # Cap on distinct series keys for non-date group-bys so a high-cardinality
 # dimension (e.g. test) can't emit a series row per key per bucket (review R5).
 SERIES_KEY_CAP = 12
+MAX_ANALYTICS_KEY_CHARS = 255
 
 # Measure order shared by the SELECT list and _row_to_metrics (kept in lockstep).
 _METRIC_ORDER = (
@@ -80,7 +82,14 @@ def _key_string(value: Any) -> str:
         return value.isoformat()
     if value is None or value == "":
         return "unknown"
-    return str(value)
+    # Rows created before current write validation (or repaired directly in the
+    # database) are still untrusted at this public projection boundary.  Render
+    # only safe built-ins, redact credential signatures, and cap response size.
+    return bounded_diagnostic(value, max_chars=MAX_ANALYTICS_KEY_CHARS)
+
+
+def _thread_id_string(value: Any) -> str | None:
+    return None if value is None else _key_string(value)
 
 
 def _escape_like(value: str) -> str:
@@ -157,7 +166,10 @@ class AgentAnalyticsRepository:
         )
         breakdown_rows = (await self._session.execute(grouped)).all()
         breakdown = [
-            {"key": _key_string(row[0]), "thread_id": row[0] if group_by == "test" else None}
+            {
+                "key": _key_string(row[0]),
+                "thread_id": _thread_id_string(row[0]) if group_by == "test" else None,
+            }
             | self._row_to_metrics(row[1:])
             for row in breakdown_rows
         ]

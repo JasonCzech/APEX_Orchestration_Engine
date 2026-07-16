@@ -15,14 +15,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apex.auth.identity import ScopeRef
+from apex.domain.input_limits import MAX_DESCRIPTION_CHARS, MAX_SCOPE_ID_CHARS
 from apex.persistence.models import (
     Application,
     Environment,
     EnvironmentHost,
     EnvironmentSnapshot,
 )
+from apex.persistence.repositories._conflicts import (
+    bounded_driver_message,
+    driver_constraint_name,
+)
 from apex.services.connection_credentials import (
     environment_target_requires_repair,
+    reject_credential_text,
     reject_raw_secret_options,
 )
 from apex.services.connections import (
@@ -38,6 +44,7 @@ class DuplicateNameError(Exception):
 _ENVIRONMENT_MUTABLE_FIELDS = frozenset(
     {"name", "kind", "base_url", "options", "target_approved", "target_version"}
 )
+_APPLICATION_MUTABLE_FIELDS = frozenset({"name", "description"})
 _MAX_ENVIRONMENT_HOSTS = 256
 
 
@@ -52,16 +59,16 @@ def _bounded_text(
     if value is None and allow_none:
         return None
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or len(value) < min_chars
         or len(value) > max_chars
         or "\x00" in value
     ):
         optional = " or null" if allow_none else ""
         raise ValueError(
-            f"{label} must be a {min_chars}-{max_chars} character string{optional} "
-            "without U+0000"
+            f"{label} must be a {min_chars}-{max_chars} character string{optional} without U+0000"
         )
+    reject_credential_text(value, label=label)
     return value
 
 
@@ -72,18 +79,16 @@ def _validate_environment_target_metadata(
     target_approved: Any,
     target_version: Any,
 ) -> dict[str, Any]:
-    if not isinstance(options, dict):
+    if type(options) is not dict:
         raise ValueError("environment options must be an object")
-    normalized_options = dict(options)
     reject_raw_secret_options(
-        normalized_options,
+        options,
         label="environment options",
         reference="a managed connection secret_ref",
     )
+    normalized_options = dict(options)
     if environment_target_requires_repair(base_url, normalized_options):
-        raise ValueError(
-            "environment target contains unsafe credential-bearing configuration"
-        )
+        raise ValueError("environment target contains unsafe credential-bearing configuration")
     if base_url is not None:
         _bounded_text(base_url, label="environment base_url", max_chars=1_024)
         validate_adapter_base_url(
@@ -92,13 +97,9 @@ def _validate_environment_target_metadata(
                 normalized_options.get(TRUSTED_PRIVATE_HOST_OPTION) is True or None
             ),
         )
-    if not isinstance(target_approved, bool):
+    if type(target_approved) is not bool:
         raise ValueError("environment target_approved must be a boolean")
-    if (
-        isinstance(target_version, bool)
-        or not isinstance(target_version, int)
-        or not 0 <= target_version <= 2_147_483_647
-    ):
+    if type(target_version) is not int or not 0 <= target_version <= 2_147_483_647:
         raise ValueError("environment target_version must be an integer between 0 and 2147483647")
     if target_approved and (base_url is None or target_version < 1):
         raise ValueError("an approved environment target requires a URL and positive version")
@@ -111,13 +112,23 @@ def _environment_query() -> Select[tuple[Environment]]:
     )
 
 
-def _build_hosts(hosts: Sequence[dict[str, Any]]) -> list[EnvironmentHost]:
+def _build_hosts(hosts: list[dict[str, Any]]) -> list[EnvironmentHost]:
+    if type(hosts) is not list:
+        raise ValueError("environment hosts must be a list")
     if len(hosts) > _MAX_ENVIRONMENT_HOSTS:
         raise ValueError(f"environment may contain at most {_MAX_ENVIRONMENT_HOSTS} hosts")
     built: list[EnvironmentHost] = []
     for host in hosts:
-        if not isinstance(host, dict):
-            raise ValueError("environment hosts must be objects")
+        if (
+            type(host) is not dict
+            or len(host) not in {1, 2}
+            or any(
+                type(field) is not str or field not in {"hostname", "role"}
+                for field in dict.keys(host)
+            )
+            or "hostname" not in host
+        ):
+            raise ValueError("environment host must contain only hostname and role")
         hostname = _bounded_text(
             host.get("hostname"), label="environment hostname", max_chars=1_024
         )
@@ -167,18 +178,46 @@ class CatalogRepository:
     async def create_application(
         self, *, project_id: str, name: str, description: str | None = None
     ) -> Application:
+        _bounded_text(project_id, label="application project_id", max_chars=MAX_SCOPE_ID_CHARS)
+        _bounded_text(name, label="application name", max_chars=255)
+        _bounded_text(
+            description,
+            label="application description",
+            max_chars=MAX_DESCRIPTION_CHARS,
+            min_chars=0,
+            allow_none=True,
+        )
         app = Application(project_id=project_id, name=name, description=description)
         self._session.add(app)
         await self._commit_and_refresh(app)
         return app
 
     async def update_application(self, app: Application, changes: dict[str, Any]) -> Application:
+        if type(changes) is not dict or len(changes) > len(_APPLICATION_MUTABLE_FIELDS):
+            raise ValueError("unsupported application fields")
+        if any(
+            type(field) is not str or field not in _APPLICATION_MUTABLE_FIELDS
+            for field in dict.keys(changes)
+        ):
+            raise ValueError("unsupported application fields")
+        if "name" in changes:
+            _bounded_text(changes["name"], label="application name", max_chars=255)
+        if "description" in changes:
+            _bounded_text(
+                changes["description"],
+                label="application description",
+                max_chars=MAX_DESCRIPTION_CHARS,
+                min_chars=0,
+                allow_none=True,
+            )
         for field, value in changes.items():
             setattr(app, field, value)
         await self._commit_and_refresh(app)
         return app
 
     async def set_application_archived(self, app: Application, archived: bool) -> Application:
+        if type(archived) is not bool:
+            raise ValueError("application archived state must be a boolean")
         app.archived_at = datetime.now(UTC) if archived else None
         await self._commit_and_refresh(app)
         return app
@@ -238,20 +277,18 @@ class CatalogRepository:
         target_approved: bool = False,
         target_version: int = 0,
         options: dict[str, Any] | None = None,
-        hosts: Sequence[dict[str, Any]] = (),
+        hosts: list[dict[str, Any]] | None = None,
     ) -> Environment:
         _bounded_text(application_id, label="environment application_id", max_chars=32)
         _bounded_text(name, label="environment name", max_chars=255)
-        _bounded_text(
-            kind, label="environment kind", max_chars=64, min_chars=0, allow_none=True
-        )
+        _bounded_text(kind, label="environment kind", max_chars=64, min_chars=0, allow_none=True)
         normalized_options = _validate_environment_target_metadata(
             base_url=base_url,
             options={} if options is None else options,
             target_approved=target_approved,
             target_version=target_version,
         )
-        built_hosts = _build_hosts(hosts)
+        built_hosts = _build_hosts([] if hosts is None else hosts)
         env = Environment(
             application_id=application_id,
             name=name,
@@ -270,12 +307,16 @@ class CatalogRepository:
         self,
         env: Environment,
         changes: dict[str, Any],
-        hosts: Sequence[dict[str, Any]] | None = None,
+        hosts: list[dict[str, Any]] | None = None,
     ) -> Environment:
         """Patch scalar fields; when `hosts` is given the full list is replaced."""
-        unknown = sorted(set(changes).difference(_ENVIRONMENT_MUTABLE_FIELDS))
-        if unknown:
-            raise ValueError(f"unsupported environment fields: {', '.join(unknown)}")
+        if type(changes) is not dict or len(changes) > len(_ENVIRONMENT_MUTABLE_FIELDS):
+            raise ValueError("unsupported environment fields")
+        if any(
+            type(field) is not str or field not in _ENVIRONMENT_MUTABLE_FIELDS
+            for field in dict.keys(changes)
+        ):
+            raise ValueError("unsupported environment fields")
         effective_name = changes.get("name", env.name)
         effective_kind = changes.get("kind", env.kind)
         effective_base_url = changes.get("base_url", env.base_url)
@@ -322,11 +363,17 @@ class CatalogRepository:
     # ── internals ───────────────────────────────────────────────────────────
 
     async def _commit(self) -> None:
+        duplicate_name = False
         try:
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
-            raise DuplicateNameError(str(exc.orig)) from exc
+            if _is_duplicate_catalog_name(exc):
+                duplicate_name = True
+            else:
+                raise
+        if duplicate_name:
+            raise DuplicateNameError("catalog name already exists")
 
     async def _commit_and_refresh(self, instance: Application) -> None:
         await self._commit()
@@ -338,6 +385,24 @@ class CatalogRepository:
         if env is None:  # pragma: no cover — row was just committed
             raise RuntimeError(f"environment {environment_id!r} vanished after commit")
         return env
+
+
+def _is_duplicate_catalog_name(exc: IntegrityError) -> bool:
+    constraint_name = driver_constraint_name(exc.orig)
+    duplicate_constraints = {
+        "uq_applications_project_id",
+        "uq_environments_application_id",
+    }
+    if constraint_name in duplicate_constraints:
+        return True
+    message = bounded_driver_message(exc.orig)
+    return any(name in message for name in duplicate_constraints) or (
+        "unique constraint failed" in message
+        and (
+            ("applications.project_id" in message and "applications.name" in message)
+            or ("environments.application_id" in message and "environments.name" in message)
+        )
+    )
 
 
 def _application_scope_filter(scopes: Sequence[ScopeRef]) -> Any | None:

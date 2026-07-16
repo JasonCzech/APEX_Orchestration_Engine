@@ -2,6 +2,10 @@
 {{- $authEnabled := ne (lower (toString (get .Values.apexSettings "APEX_AUTH__ENABLED"))) "false" -}}
 {{- $unlocked := has $environment (list "local" "development" "dev" "test" "testing" "compose") -}}
 {{- $rateBackend := lower (toString (get .Values.apexSettings "APEX_RATE_LIMIT__BACKEND")) -}}
+{{- $secretBackendMode := toString .Values.secretBackend.mode -}}
+{{- if not (has $secretBackendMode (list "existingSecret" "secretsStoreCSI" "externalSecrets")) -}}
+{{- fail "secretBackend.mode must be one of existingSecret, secretsStoreCSI, or externalSecrets" -}}
+{{- end -}}
 {{- $canRunMultipleReplicas := or (gt (int .Values.replicaCount) 1) (and .Values.autoscaling.enabled (gt (int .Values.autoscaling.maxReplicas) 1)) -}}
 {{- if and $canRunMultipleReplicas (ne $rateBackend "redis") -}}
 {{- fail "apexSettings.APEX_RATE_LIMIT__BACKEND=redis is required when the chart can run more than one replica" -}}
@@ -11,6 +15,18 @@
 {{- end -}}
 {{- if and $authEnabled (not $unlocked) (empty .Values.auth.existingSecret) -}}
 {{- fail "auth.existingSecret is required when authentication is enabled in a locked environment" -}}
+{{- end -}}
+{{- if and (not $unlocked) (empty .Values.database.existingSecret) -}}
+{{- fail "database.existingSecret is required in locked environments" -}}
+{{- end -}}
+{{- if and (not $unlocked) (empty .Values.database.uriKey) -}}
+{{- fail "database.uriKey is required for DATABASE_URI in locked environments" -}}
+{{- end -}}
+{{- if and (not $unlocked) (empty .Values.database.apexUriKey) -}}
+{{- fail "database.apexUriKey is required for APEX_DATABASE__URI in locked environments" -}}
+{{- end -}}
+{{- if and (not $unlocked) (empty .Values.redis.uriKey) -}}
+{{- fail "redis.uriKey is required for REDIS_URI in locked environments" -}}
 {{- end -}}
 {{- $secretSettings := list "DATABASE_URI" "REDIS_URI" "LANGGRAPH_CLOUD_LICENSE_KEY" "APEX_DATABASE__URI" "APEX_AUTH__API_KEY_HASH_PEPPER" "APEX_AUTH__PREVIOUS_API_KEY_HASH_PEPPERS" "APEX_AUTH__DEV_API_KEY" "APEX_BOOTSTRAP_ADMIN_KEY" -}}
 {{- $normalizedSecretSettings := list "DATABASEURI" "DATABASEURL" "POSTGRESURL" "POSTGRESQLURL" "MONGODBURI" "REDISURI" "REDISURL" "AWSACCESSKEYID" "AWSSECRETACCESSKEY" "GOOGLEAPPLICATIONCREDENTIALS" "LANGGRAPHCLOUDLICENSEKEY" "APEXDATABASEURI" "APEXAUTHAPIKEYHASHPEPPER" "APEXAUTHPREVIOUSAPIKEYHASHPEPPERS" "APEXAUTHDEVAPIKEY" "APEXBOOTSTRAPADMINKEY" -}}
@@ -40,26 +56,10 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if kindIs "map" .Values.bootstrap.document -}}
-{{- $document := .Values.bootstrap.document -}}
-{{- range $section := list "connections" "environments" -}}
-{{- $entries := get $document $section | default (list) -}}
-{{- if kindIs "slice" $entries -}}
-{{- range $index, $entry := $entries -}}
-{{- if kindIs "map" $entry -}}
-{{- $options := get $entry "options" | default (dict) -}}
-{{- include "apex.assertSecretFreeOptions" (dict "value" $options "label" (printf "bootstrap.document.%s[%d].options" $section $index)) -}}
-{{- if eq $section "connections" -}}
-{{- $secretRef := get $entry "secret_ref" | default "" | toString -}}
-{{- if and $secretRef (not (regexMatch "^env:[A-Za-z_][A-Za-z0-9_]{0,254}$" $secretRef)) -}}
-{{- fail (printf "bootstrap.document.connections[%d].secret_ref must use the supported env:NAME reference format" $index) -}}
+{{- if not (kindIs "map" .Values.bootstrap.document) -}}
+{{- fail "bootstrap.document must be a map" -}}
 {{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
+{{- include "apex.assertSecretFreeOptions" (dict "value" .Values.bootstrap.document "label" "bootstrap.document") -}}
 {{- if and .Release.IsInstall (eq .Values.secretBackend.mode "externalSecrets") (or .Values.migrations.enabled .Values.bootstrap.enabled .Values.databaseRoleProvisioning.enabled) -}}
 {{- fail "secretBackend.mode=externalSecrets cannot be combined with pre-install database-role/migration/bootstrap hooks: install once with all three hooks disabled, wait for ExternalSecrets to become Ready, then upgrade with the hooks enabled" -}}
 {{- end -}}
@@ -75,11 +75,143 @@
 {{- if and (not $unlocked) .Values.dashboard.enabled (empty .Values.dashboard.image.digest) -}}
 {{- fail "dashboard.image.digest is required when the dashboard is enabled in a locked environment" -}}
 {{- end -}}
+{{- if .Values.dashboard.enabled -}}
+{{- $originPattern := "^$|^https?://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:[0-9]{1,5})?/?$" -}}
+{{- $upstreamPattern := "^https?://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:[0-9]{1,5})?$" -}}
+{{- $apexOrigin := .Values.dashboard.config.apexOrigin -}}
+{{- $langgraphOrigin := .Values.dashboard.config.langgraphOrigin -}}
+{{- $backendUpstream := .Values.dashboard.backendUpstream -}}
+{{- if or (not (kindIs "string" $apexOrigin)) (not (regexMatch $originPattern $apexOrigin)) -}}
+{{- fail "dashboard.config.apexOrigin must be empty or a complete HTTP(S) origin without userinfo, a path, query, or fragment" -}}
+{{- end -}}
+{{- if or (not (kindIs "string" $langgraphOrigin)) (not (regexMatch $originPattern $langgraphOrigin)) -}}
+{{- fail "dashboard.config.langgraphOrigin must be empty or a complete HTTP(S) origin without userinfo, a path, query, or fragment" -}}
+{{- end -}}
+{{- if and (not $unlocked) $apexOrigin (not (hasPrefix "https://" $apexOrigin)) -}}
+{{- fail "dashboard.config.apexOrigin must use https:// in locked environments" -}}
+{{- end -}}
+{{- if and (not $unlocked) $langgraphOrigin (not (hasPrefix "https://" $langgraphOrigin)) -}}
+{{- fail "dashboard.config.langgraphOrigin must use https:// in locked environments" -}}
+{{- end -}}
+{{- if not (kindIs "string" $backendUpstream) -}}
+{{- fail "dashboard.backendUpstream must be empty or a complete HTTP(S) origin without userinfo, a path, query, or fragment" -}}
+{{- else if and $backendUpstream (not (regexMatch $upstreamPattern $backendUpstream)) -}}
+{{- fail "dashboard.backendUpstream must be empty or a complete HTTP(S) origin without userinfo, a path, query, or fragment" -}}
+{{- end -}}
+{{- range $label, $origin := dict "dashboard.config.apexOrigin" $apexOrigin "dashboard.config.langgraphOrigin" $langgraphOrigin "dashboard.backendUpstream" $backendUpstream -}}
+{{- $portMatch := regexFind ":[0-9]{1,5}/?$" $origin -}}
+{{- if $portMatch -}}
+{{- $port := int (trimPrefix ":" (trimSuffix "/" $portMatch)) -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail (printf "%s contains a TCP port outside 1..65535" $label) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (empty $backendUpstream) (or (empty $apexOrigin) (empty $langgraphOrigin)) -}}
+{{- fail "dashboard requires backendUpstream or both explicit API origins; empty origins without the reverse proxy make the deployed UI nonfunctional" -}}
+{{- end -}}
+{{- end -}}
 {{- if and (not $unlocked) .Values.tests.enabled (not (regexMatch "@sha256:[a-f0-9]{64}$" .Values.tests.image)) -}}
 {{- fail "tests.image must be pinned by @sha256:<64 lowercase hex> in locked environments" -}}
 {{- end -}}
 {{- if and (not $unlocked) .Values.secretBackend.csi.cleanup.enabled (not (regexMatch "@sha256:[a-f0-9]{64}$" .Values.secretBackend.csi.cleanup.image)) -}}
 {{- fail "secretBackend.csi.cleanup.image must be pinned by @sha256:<64 lowercase hex> in locked environments" -}}
+{{- end -}}
+{{- if and (not $unlocked) (eq .Values.secretBackend.mode "secretsStoreCSI") (not .Values.secretBackend.csi.cleanup.enabled) -}}
+{{- fail "secretBackend.csi.cleanup.enabled=true is required for secretsStoreCSI in locked environments so privileged hook credentials do not persist after rollout" -}}
+{{- end -}}
+{{- if or (eq .Values.secretBackend.mode "secretsStoreCSI") .Values.secretBackend.csi.cleanup.enabled -}}
+{{- range $collectionName := list "objects" "hookObjects" -}}
+{{- $objects := get $.Values.secretBackend.csi $collectionName -}}
+{{- if not (kindIs "slice" $objects) -}}
+{{- fail (printf "secretBackend.csi.%s must be a list" $collectionName) -}}
+{{- end -}}
+{{- range $index, $entry := $objects -}}
+{{- if not (kindIs "map" $entry) -}}
+{{- fail (printf "secretBackend.csi.%s[%d] must be an object" $collectionName $index) -}}
+{{- end -}}
+{{- $secretNameValue := get $entry "secretName" -}}
+{{- $objectNameValue := get $entry "objectName" -}}
+{{- $keyValue := get $entry "key" -}}
+{{- if not (kindIs "string" $secretNameValue) -}}
+{{- fail (printf "secretBackend.csi.%s[%d].secretName must be a string" $collectionName $index) -}}
+{{- end -}}
+{{- if not (kindIs "string" $objectNameValue) -}}
+{{- fail (printf "secretBackend.csi.%s[%d].objectName must be a string" $collectionName $index) -}}
+{{- end -}}
+{{- if not (kindIs "string" $keyValue) -}}
+{{- fail (printf "secretBackend.csi.%s[%d].key must be a string" $collectionName $index) -}}
+{{- end -}}
+{{- $secretName := toString $secretNameValue -}}
+{{- $objectName := toString $objectNameValue -}}
+{{- $key := toString $keyValue -}}
+{{- if or (gt (len $secretName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $secretName)) -}}
+{{- fail (printf "secretBackend.csi.%s[%d].secretName must be a valid 1-253 character Kubernetes DNS subdomain" $collectionName $index) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9-]{1,127}$" $objectName) -}}
+{{- fail (printf "secretBackend.csi.%s[%d].objectName must be a valid 1-127 character Azure Key Vault secret name" $collectionName $index) -}}
+{{- end -}}
+{{- if not (regexMatch "^[A-Za-z0-9._-]{1,253}$" $key) -}}
+{{- fail (printf "secretBackend.csi.%s[%d].key must be a valid 1-253 character Kubernetes Secret data key" $collectionName $index) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $runtimeSecretNames := dict -}}
+{{- range .Values.secretBackend.csi.objects -}}
+{{- $_ := set $runtimeSecretNames .secretName true -}}
+{{- end -}}
+{{- range $name := list .Values.database.existingSecret .Values.redis.existingSecret .Values.auth.existingSecret .Values.license.existingSecret -}}
+{{- if $name -}}
+{{- $_ := set $runtimeSecretNames (toString $name) true -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if kindIs "map" . -}}
+{{- $valueFrom := get . "valueFrom" -}}
+{{- if kindIs "map" $valueFrom -}}
+{{- $secretKeyRef := get $valueFrom "secretKeyRef" -}}
+{{- if kindIs "map" $secretKeyRef -}}
+{{- $name := get $secretKeyRef "name" -}}
+{{- if and (kindIs "string" $name) $name -}}
+{{- $_ := set $runtimeSecretNames $name true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- range $name := keys $runtimeSecretNames -}}
+{{- if or (gt (len $name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $name)) -}}
+{{- fail "runtime Secret references must use valid 1-253 character Kubernetes DNS subdomains" -}}
+{{- end -}}
+{{- end -}}
+{{- range $index, $entry := .Values.secretBackend.csi.hookObjects -}}
+{{- if hasKey $runtimeSecretNames .secretName -}}
+{{- fail (printf "secretBackend.csi.hookObjects[%d].secretName must not reuse a runtime Secret name; privileged hook material must remain independently removable" $index) -}}
+{{- end -}}
+{{- end -}}
+{{- $runtimeServiceAccountName := include "apex.serviceAccountName" . -}}
+{{- $hookServiceAccountName := include "apex.defaultHookServiceAccountName" . -}}
+{{- if or (gt (len $hookServiceAccountName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $hookServiceAccountName)) -}}
+{{- fail "hookServiceAccountName must resolve to a valid 1-253 character Kubernetes DNS subdomain" -}}
+{{- end -}}
+{{- if eq $hookServiceAccountName $runtimeServiceAccountName -}}
+{{- fail "hookServiceAccountName must be distinct from the runtime service account so the privileged hook identity can be removed safely" -}}
+{{- end -}}
+{{- if not (kindIs "slice" .Values.secretBackend.csi.cleanup.previousHookSecretNames) -}}
+{{- fail "secretBackend.csi.cleanup.previousHookSecretNames must be a list" -}}
+{{- end -}}
+{{- range $index, $nameValue := .Values.secretBackend.csi.cleanup.previousHookSecretNames -}}
+{{- if not (kindIs "string" $nameValue) -}}
+{{- fail (printf "secretBackend.csi.cleanup.previousHookSecretNames[%d] must be a string" $index) -}}
+{{- end -}}
+{{- $name := toString $nameValue -}}
+{{- if or (gt (len $name) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $name)) -}}
+{{- fail (printf "secretBackend.csi.cleanup.previousHookSecretNames[%d] must be a valid 1-253 character Kubernetes DNS subdomain" $index) -}}
+{{- end -}}
+{{- if hasKey $runtimeSecretNames $name -}}
+{{- fail (printf "secretBackend.csi.cleanup.previousHookSecretNames[%d] must not reuse a current runtime Secret name" $index) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.databaseRoleProvisioning.enabled -}}
 {{- $runtimeOwner := toString .Values.databaseRoleProvisioning.runtimeOwnerRole -}}

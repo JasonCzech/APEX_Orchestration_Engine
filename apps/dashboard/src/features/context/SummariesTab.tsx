@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 
 import { notifyUnauthorized } from '@/api/apexClient'
+import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 import { getApiKey, getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { threadIdFromStreamUrl, useCreateSummary } from '@/api/hooks/useContextApi'
@@ -20,6 +21,63 @@ interface SummaryRun {
   streamUrl: string
   at: string
   subject: string
+}
+
+const MAX_SUMMARY_STREAM_BYTES = 4 * 1024 * 1024
+export const MAX_SUMMARY_STREAM_CHUNKS = 16_384
+const MAX_SUMMARY_TEXT_CHARS = 256 * 1024
+const SUMMARY_STREAM_ERROR = 'Unable to read the summary stream.'
+export const SUMMARY_STREAM_IDLE_MS = 30_000
+
+export function withSummaryStreamIdleDeadline<T>(
+  operation: Promise<T>,
+  controller: AbortController,
+  onTimeout: () => void,
+  timeoutMs = SUMMARY_STREAM_IDLE_MS,
+): Promise<T> {
+  if (controller.signal.aborted) return Promise.reject(new Error(SUMMARY_STREAM_ERROR))
+  return new Promise((resolve, reject) => {
+    const rejectFromAbort = (): void => {
+      clearTimeout(timer)
+      controller.signal.removeEventListener('abort', rejectFromAbort)
+      reject(new Error(SUMMARY_STREAM_ERROR))
+    }
+    const timer = setTimeout(() => {
+      onTimeout()
+      controller.abort()
+      rejectFromAbort()
+    }, timeoutMs)
+    controller.signal.addEventListener('abort', rejectFromAbort, { once: true })
+    void operation.then(
+      (value) => {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', rejectFromAbort)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', rejectFromAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+export function nextSummaryStreamChunkCount(current: number): number {
+  if (!Number.isSafeInteger(current) || current < 0 || current >= MAX_SUMMARY_STREAM_CHUNKS) {
+    throw new Error(SUMMARY_STREAM_ERROR)
+  }
+  return current + 1
+}
+
+function responseMediaType(response: Response): string {
+  return (response.headers.get('content-type') ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? ''
+}
+
+function cancelResponseBody(response: Response): void {
+  // A rejected response must surface immediately even if its transport never
+  // acknowledges cancellation. The AbortController still owns teardown.
+  void response.body?.cancel().catch(() => undefined)
 }
 
 function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
@@ -37,69 +95,162 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
     const apiKey = getApiKey()
     const keyRevision = getApiKeyRevision()
     const sessionRevision = getSessionRevision()
+    let timedOut = false
     try {
       const base = new URL(resolveLanggraphBaseUrl() || window.location.origin, window.location.origin)
       const url = new URL(streamUrl, base)
-      if (url.origin !== base.origin) throw new Error('Summary stream URL must use the LangGraph origin')
-      const response = await fetch(url, {
-        headers: { ...(apiKey ? { 'x-api-key': apiKey } : {}) },
-        signal: controller.signal,
-      })
+      if (
+        url.origin !== base.origin ||
+        url.username !== '' ||
+        url.password !== '' ||
+        url.href.length > 4_096
+      ) {
+        throw new Error(SUMMARY_STREAM_ERROR)
+      }
+      const response = await withSummaryStreamIdleDeadline(
+        fetchWithoutRedirects(url, {
+          headers: { ...(apiKey ? { 'x-api-key': apiKey } : {}) },
+          signal: controller.signal,
+        }),
+        controller,
+        () => {
+          timedOut = true
+        },
+      )
+      if (
+        controllerRef.current !== controller ||
+        controller.signal.aborted ||
+        keyRevision !== getApiKeyRevision() ||
+        sessionRevision !== getSessionRevision()
+      ) {
+        cancelResponseBody(response)
+        return
+      }
       if (response.status === 401 && keyRevision === getApiKeyRevision()) notifyUnauthorized()
-      if (!response.ok || !response.body) throw new Error(`Stream request failed (${response.status})`)
+      if (!response.ok) {
+        cancelResponseBody(response)
+        throw new Error(SUMMARY_STREAM_ERROR)
+      }
+      if (!response.body) throw new Error(SUMMARY_STREAM_ERROR)
+      if (responseMediaType(response) !== 'text/event-stream') {
+        cancelResponseBody(response)
+        throw new Error(SUMMARY_STREAM_ERROR)
+      }
       const reader = response.body.getReader()
-      const decoder = new TextDecoder()
+      const decoder = new TextDecoder('utf-8', { fatal: true })
       let buffer = ''
       let summary = ''
-      const consume = (block: string) => {
-          const lines = block.split(/\r?\n/)
-          const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
-          const data = lines
-            .filter((line) => line.startsWith('data:'))
-            .map((line) => line.slice(5).trim())
-            .join('\n')
-          if (!data) return
-          if (event === 'error') throw new Error(data)
-          try {
-            const parsed: unknown = JSON.parse(data)
-            const record = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {}
-            const candidate = record['data'] ?? record['value'] ?? parsed
-            const value = candidate && typeof candidate === 'object' ? candidate as Record<string, unknown> : {}
-            const nested = value['values'] && typeof value['values'] === 'object' ? value['values'] as Record<string, unknown> : value
-            if (typeof nested['summary'] === 'string') summary = nested['summary']
-          } catch {
-            // Ignore non-JSON keep-alives and let the stream continue.
-          }
+      let receivedBytes = 0
+      let receivedChunks = 0
+      const stopStream = (): void => {
+        void reader.cancel().catch(() => undefined)
       }
-      while (true) {
-        const chunk = await reader.read()
-        if (chunk.done) break
-        buffer += decoder.decode(chunk.value, { stream: true })
-        for (;;) {
-          const boundary = /\r?\n\r?\n/.exec(buffer)
-          if (!boundary || boundary.index === undefined) break
-          consume(buffer.slice(0, boundary.index))
-          buffer = buffer.slice(boundary.index + boundary[0].length)
+      const consume = (block: string) => {
+        const lines = block.split(/\r?\n/)
+        const event = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
+        const data = lines
+          .filter((line) => line.startsWith('data:'))
+          .map((line) => line.slice(5).trim())
+          .join('\n')
+        if (!data) return
+        if (event === 'error') {
+          stopStream()
+          throw new Error(SUMMARY_STREAM_ERROR)
+        }
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(data)
+        } catch {
+          // Ignore non-JSON keep-alives and let the stream continue.
+          return
+        }
+        const record =
+          parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {}
+        const candidate = record['data'] ?? record['value'] ?? parsed
+        const value =
+          candidate && typeof candidate === 'object'
+            ? (candidate as Record<string, unknown>)
+            : {}
+        const nested =
+          value['values'] && typeof value['values'] === 'object'
+            ? (value['values'] as Record<string, unknown>)
+            : value
+        if (typeof nested['summary'] === 'string') {
+          if (nested['summary'].length > MAX_SUMMARY_TEXT_CHARS) {
+            stopStream()
+            throw new Error(SUMMARY_STREAM_ERROR)
+          }
+          summary = nested['summary']
+        }
+      }
+      try {
+        while (true) {
+          const chunk = await withSummaryStreamIdleDeadline(
+            reader.read(),
+            controller,
+            () => {
+              timedOut = true
+            },
+          )
+          if (chunk.done) break
+          receivedChunks = nextSummaryStreamChunkCount(receivedChunks)
+          receivedBytes += chunk.value.byteLength
+          if (receivedBytes > MAX_SUMMARY_STREAM_BYTES) {
+            stopStream()
+            throw new Error(SUMMARY_STREAM_ERROR)
+          }
+          buffer += decoder.decode(chunk.value, { stream: true })
+          for (;;) {
+            const boundary = /\r?\n\r?\n/.exec(buffer)
+            if (!boundary || boundary.index === undefined) break
+            consume(buffer.slice(0, boundary.index))
+            buffer = buffer.slice(boundary.index + boundary[0].length)
+          }
+        }
+      } catch {
+        stopStream()
+        throw new Error(SUMMARY_STREAM_ERROR)
+      } finally {
+        try {
+          reader.releaseLock()
+        } catch {
+          // A hostile pending read may retain the lock until abort settles.
         }
       }
       buffer += decoder.decode()
       if (buffer.trim()) consume(buffer)
       if (
+        controllerRef.current !== controller ||
         controller.signal.aborted ||
         keyRevision !== getApiKeyRevision() ||
         sessionRevision !== getSessionRevision()
       ) return
       setState({ status: 'done', text: summary || 'Stream completed without a summary payload.' })
-    } catch (error) {
-      if (controller.signal.aborted) return
-      setState({ status: 'error', text: error instanceof Error ? error.message : 'Unable to read the summary stream.' })
+    } catch {
+      if (
+        controllerRef.current !== controller ||
+        (controller.signal.aborted && !timedOut)
+      ) return
+      setState({ status: 'error', text: SUMMARY_STREAM_ERROR })
+    } finally {
+      if (controllerRef.current === controller) controllerRef.current = null
     }
   }, [streamUrl])
 
+  const cancel = useCallback(() => {
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    setState({ status: 'idle' })
+  }, [])
+
   return (
     <span className="ctx-stream-result">
-      <button type="button" className="btn btn-secondary btn-sm" onClick={() => void open()} disabled={state.status === 'loading'}>
-        {state.status === 'loading' ? 'Loading…' : 'Open live stream'}
+      <button
+        type="button"
+        className="btn btn-secondary btn-sm"
+        onClick={() => (state.status === 'loading' ? cancel() : void open())}
+      >
+        {state.status === 'loading' ? 'Cancel stream' : 'Open live stream'}
       </button>
       {state.text && <pre className={`ctx-stream-output${state.status === 'error' ? ' danger' : ''}`}>{state.text}</pre>}
     </span>

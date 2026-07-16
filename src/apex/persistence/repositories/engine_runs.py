@@ -48,7 +48,16 @@ def _visibility_filter(
         if project_wide:
             clauses.append(EngineRun.project_id.in_(sorted(project_wide)))
         clauses.extend(
-            and_(EngineRun.project_id == scope.project_id, EngineRun.app_id == scope.app_id)
+            and_(
+                EngineRun.project_id == scope.project_id,
+                EngineRun.app_id == scope.app_id,
+                # App-scoped reads must never trust a row that
+                # migration/rolling-write provenance deliberately quarantined.
+                # A project-wide administrator can still inspect and remediate
+                # ambiguous rows for the whole project.
+                EngineRun.ownership_known.is_(True),
+                EngineRun.scope_ownership_known.is_(True),
+            )
             for scope in allowed_scopes
             if scope.app_id is not None and scope.project_id not in project_wide
         )
@@ -92,7 +101,12 @@ def _mutation_filter(
         if project_wide:
             clauses.append(EngineRun.project_id.in_(sorted(project_wide)))
         clauses.extend(
-            and_(EngineRun.project_id == scope.project_id, EngineRun.app_id == scope.app_id)
+            and_(
+                EngineRun.project_id == scope.project_id,
+                EngineRun.app_id == scope.app_id,
+                EngineRun.ownership_known.is_(True),
+                EngineRun.scope_ownership_known.is_(True),
+            )
             for scope in allowed_scopes
             if scope.app_id is not None and scope.project_id not in project_wide
         )

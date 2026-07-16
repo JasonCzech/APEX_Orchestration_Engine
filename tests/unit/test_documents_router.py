@@ -17,6 +17,7 @@ from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.models import Document
+from apex.routers import documents as documents_router
 from apex.routers.documents import (
     get_catalog_repository,
     get_document_repository_factory,
@@ -280,6 +281,10 @@ def test_extract_boundary_variants() -> None:
     assert extract_boundary("application/json") is None
     assert extract_boundary("text/plain; x=multipart/form-data; boundary=xyz") is None
     assert extract_boundary("multipart/form-data; xboundary=xyz") is None
+    assert extract_boundary("multipart/form-data; boundary=first; boundary=second") is None
+    assert extract_boundary('multipart/form-data; boundary="unterminated') is None
+    assert extract_boundary('multipart/form-data; boundary=" padded "') is None
+    assert extract_boundary("multipart/form-data; boundary=xyz; charset=utf-8") is None
     assert extract_boundary(None) is None
     assert extract_boundary(f"multipart/form-data; boundary={'x' * 71}") is None
 
@@ -341,6 +346,85 @@ def test_parse_multipart_rejects_excess_parts_and_oversized_headers() -> None:
     )
     with pytest.raises(MultipartParseError, match="headers are too large"):
         parse_multipart(huge_header, "BOUND")
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        b'Content-Disposition: form-data; x-name="project_id"',
+        b'Content-Disposition: form-data; name="file"; x-filename="a.txt"',
+        b'Content-Disposition: form-data; name="project_id"; name="app_id"',
+        b'Content-Disposition: attachment; name="project_id"',
+        b'Content-Disposition: form-data; name="project_id"\r\nMalformed-Header',
+    ],
+)
+def test_parse_multipart_rejects_ambiguous_disposition_parameters_and_headers(
+    headers: bytes,
+) -> None:
+    body = b"--BOUND\r\n" + headers + b"\r\n\r\nvalue\r\n--BOUND--\r\n"
+
+    with pytest.raises(MultipartParseError):
+        parse_multipart(body, "BOUND")
+
+
+def test_multipart_decode_errors_do_not_retain_caller_input() -> None:
+    boundary_canary = "bare-boundary-canary-\U0001f600"
+    with pytest.raises(MultipartParseError, match="not latin-1") as boundary_error:
+        parse_multipart(b"", boundary_canary)
+
+    assert boundary_error.value.__cause__ is None
+    assert boundary_error.value.__context__ is None
+    assert "bare-boundary-canary" not in str(boundary_error.value)
+
+    content_canary = b"bare-multipart-content-canary"
+    body = (
+        b"--BOUND\r\n"
+        b'Content-Disposition: form-data; name="summary"\r\n\r\n'
+        + b"\xff"
+        + content_canary
+        + b"\r\n--BOUND--\r\n"
+    )
+    with pytest.raises(MultipartParseError, match="not valid UTF-8") as content_error:
+        parse_multipart(body, "BOUND")
+
+    assert content_error.value.__cause__ is None
+    assert content_error.value.__context__ is None
+    assert content_canary.decode() not in str(content_error.value)
+
+
+@pytest.mark.asyncio
+async def test_upload_route_detaches_multipart_parser_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "bare-multipart-parser-canary"
+
+    class FakeRequest:
+        headers = {"content-type": "multipart/form-data; boundary=BOUND"}
+
+        async def stream(self) -> AsyncIterator[bytes]:
+            yield b"body"
+
+    def fail_parse(_body: bytes, _boundary: str) -> None:
+        try:
+            raise ValueError(canary)
+        except ValueError as exc:
+            raise MultipartParseError("stable parser failure") from exc
+
+    monkeypatch.setattr(documents_router, "parse_multipart", fail_parse)
+
+    with pytest.raises(HTTPException, match="malformed multipart body") as excinfo:
+        await documents_router.upload_document(
+            cast(Any, FakeRequest()),
+            None,
+            cast(Any, object()),
+            cast(Any, object()),
+            cast(Any, object()),
+            cast(Any, object()),
+        )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
 
 
 @pytest.mark.asyncio
@@ -460,6 +544,44 @@ async def test_document_body_read_has_one_non_resetting_deadline() -> None:
         await read_body_capped(drip_then_stall(), 1024, timeout_s=0.01)
 
 
+async def test_affinity_probe_iterator_close_survives_repeated_cancellation() -> None:
+    class Iterator:
+        def __init__(self) -> None:
+            self.close_entered = asyncio.Event()
+            self.allow_close = asyncio.Event()
+            self.closed = False
+
+        def __aiter__(self) -> AsyncIterator[bytes]:
+            return self
+
+        async def __anext__(self) -> bytes:
+            return b"found"
+
+        async def aclose(self) -> None:
+            self.close_entered.set()
+            await self.allow_close.wait()
+            self.closed = True
+
+    iterator = Iterator()
+
+    class Store:
+        def iter_bytes(self, _key: str) -> Iterator:
+            return iterator
+
+    task = asyncio.create_task(documents_router._artifact_key_exists(Store(), "document-key"))
+    await iterator.close_entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    iterator.allow_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert iterator.closed is True
+
+
 @pytest.mark.asyncio
 async def test_document_body_cap_rejects_one_oversized_frame_before_copying() -> None:
     async def one_frame() -> AsyncIterator[bytes]:
@@ -526,6 +648,40 @@ async def test_upload_cleans_object_after_lost_put_acknowledgement() -> None:
             uploaded_by="c1",
         )
 
+    assert MemoryArtifactStore._objects == {}
+
+
+@pytest.mark.parametrize(
+    "metadata_update",
+    [
+        {"key": "documents/attacker/redirected.txt"},
+        {"size": 999},
+        {"uri": "memory://different/object"},
+    ],
+)
+async def test_upload_rejects_inconsistent_store_ack_before_finalizing(
+    metadata_update: dict[str, object],
+) -> None:
+    class InconsistentStore(MemoryArtifactStore):
+        async def put(self, *args: Any, **kwargs: Any) -> Any:
+            stored = await super().put(*args, **kwargs)
+            return stored.model_copy(update=metadata_update)
+
+    repository = FakeDocumentsRepository()
+    with pytest.raises(RuntimeError, match="invalid object metadata") as raised:
+        await DocumentsService(repository, InconsistentStore()).upload(
+            filename="provider-contract.txt",
+            content_type="text/plain",
+            data=b"payload",
+            artifact_connection_id="artifacts-p1",
+            project_id="p1",
+            app_id=None,
+            summary=None,
+            uploaded_by="c1",
+        )
+
+    assert raised.value.__cause__ is None
+    assert repository.rows == {}
     assert MemoryArtifactStore._objects == {}
 
 
@@ -782,6 +938,65 @@ async def test_upload_runs_and_stops_durable_intent_lease_heartbeat(
 
 
 @pytest.mark.asyncio
+async def test_upload_heartbeat_shutdown_preserves_cancellation_and_settles_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    allow_cleanup = asyncio.Event()
+    cleanup_completed = False
+
+    async def slow_heartbeat(_document_id: str, _stop: asyncio.Event) -> None:
+        nonlocal cleanup_completed
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await allow_cleanup.wait()
+            cleanup_completed = True
+            raise
+
+    class WaitForHeartbeatStore(MemoryArtifactStore):
+        async def put(self, *args: Any, **kwargs: Any) -> Any:
+            await started.wait()
+            return await super().put(*args, **kwargs)
+
+    repository = FakeDocumentsRepository()
+    monkeypatch.setattr("apex.services.documents.DocumentsRepository", FakeDocumentsRepository)
+    monkeypatch.setattr(
+        "apex.services.documents._renew_document_upload_lease",
+        slow_heartbeat,
+    )
+    task = asyncio.create_task(
+        DocumentsService(repository, WaitForHeartbeatStore()).upload(
+            filename="heartbeat-cleanup.txt",
+            content_type="text/plain",
+            data=b"payload",
+            artifact_connection_id="artifacts-p1",
+            project_id="p1",
+            app_id=None,
+            summary=None,
+            uploaded_by="c1",
+        )
+    )
+    await cleanup_started.wait()
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    assert cleanup_completed is False
+    allow_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert cleanup_completed is True
+    (document,) = repository.rows.values()
+    assert document.upload_pending_at is None
+
+
+@pytest.mark.asyncio
 async def test_stale_precommitted_upload_intent_is_reconciled_after_interruption() -> None:
     repo = FakeDocumentsRepository()
     document = make_document("interrupted", "p1", "interrupted.txt")
@@ -898,6 +1113,112 @@ async def test_locked_cleanup_does_not_guess_legacy_document_store(
     assert document.deletion_pending_at is not None
 
 
+@pytest.mark.asyncio
+async def test_document_cleanup_rejects_resolver_affinity_drift_before_delete() -> None:
+    repository = FakeDocumentsRepository()
+    document = make_document("affinity-drift", "p1")
+    document.artifact_connection_id = "store-1"
+    repository.rows[document.id] = document
+    await repository.mark_deletion_pending(document)
+    deletes = 0
+
+    class WrongStore:
+        async def delete(self, _key: str) -> None:
+            nonlocal deletes
+            deletes += 1
+
+    class WrongResolver:
+        async def resolve_with_connection_id(
+            self,
+            *_args: object,
+            **_kwargs: object,
+        ) -> tuple[WrongStore, str]:
+            return WrongStore(), "store-2"
+
+    with pytest.raises(RuntimeError, match="document affinity"):
+        await purge_document_tombstone(
+            document,
+            repository,  # type: ignore[arg-type]
+            WrongResolver(),
+        )
+
+    assert deletes == 0
+    assert repository.rows[document.id] is document
+    assert document.deletion_pending_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_refuses_resolver_store_affinity_mismatch() -> None:
+    class TrackingStore:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def delete(self, key: str) -> None:
+            self.deleted.append(key)
+
+    expected_store = TrackingStore()
+    wrong_store = TrackingStore()
+    expected_connection_id = "a" * 32
+    wrong_connection_id = "b" * 32
+
+    class MismatchedResolver:
+        async def resolve_with_connection_id(self, *_args: object, **_kwargs: object) -> Any:
+            return wrong_store, wrong_connection_id
+
+    repository = FakeDocumentsRepository()
+    document = make_document("affinity-mismatch", "p1")
+    document.artifact_connection_id = expected_connection_id
+    await repository.add(document)
+    await repository.mark_deletion_pending(document)
+
+    with pytest.raises(RuntimeError, match="did not honor document affinity"):
+        await purge_document_tombstone(
+            document,
+            repository,  # type: ignore[arg-type]
+            MismatchedResolver(),
+        )
+
+    assert expected_store.deleted == []
+    assert wrong_store.deleted == []
+    assert document.id in repository.rows
+    assert document.deletion_pending_at is not None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_invoke_polymorphic_resolver_id_comparison() -> None:
+    hooks: list[str] = []
+
+    class HostileId(str):
+        def __eq__(self, _other: object) -> bool:
+            hooks.append("eq")
+            return True
+
+        def __ne__(self, _other: object) -> bool:
+            hooks.append("ne")
+            return False
+
+    class TrackingStore:
+        async def delete(self, _key: str) -> None:
+            raise AssertionError("invalid resolver metadata must fail before deletion")
+
+    class Resolver:
+        async def resolve_with_connection_id(self, *_args: object, **_kwargs: object) -> Any:
+            return TrackingStore(), HostileId("forged-store")
+
+    repository = FakeDocumentsRepository()
+    document = make_document("affinity-hostile", "p1")
+    document.artifact_connection_id = "a" * 32
+
+    with pytest.raises(RuntimeError, match="invalid connection id"):
+        await purge_document_tombstone(
+            document,
+            repository,  # type: ignore[arg-type]
+            Resolver(),
+        )
+
+    assert hooks == []
+
+
 # ── Upload ───────────────────────────────────────────────────────────────────
 
 
@@ -923,6 +1244,119 @@ def test_upload_document_stores_bytes_and_metadata() -> None:
     assert MemoryArtifactStore._objects[body["artifact_key"]][0] == b"# Spec\nbody"
     assert body["id"] in repo.rows
     assert repo.rows[body["id"]].artifact_connection_id == "artifacts-p1"
+
+
+def test_upload_detaches_arbitrary_resolver_failure() -> None:
+    canary = "document-resolver-secret-canary"
+
+    class ProviderFault(Exception):
+        pass
+
+    class FailingResolver(FakeArtifactResolver):
+        async def resolve_with_connection_id(
+            self,
+            _kind: object,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+            **_kwargs: object,
+        ) -> tuple[Any, str]:
+            raise ProviderFault(canary)
+
+    repo = FakeDocumentsRepository()
+    with TestClient(
+        make_app(
+            repo,
+            identity(scopes=[ScopeRef(project_id="p1")]),
+            resolver=FailingResolver(),
+        )
+    ) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("spec.md", b"payload", "text/markdown")},
+            data={"project_id": "p1"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["title"] == "artifact store unavailable"
+    assert canary not in response.text
+    assert repo.rows == {}
+
+
+def test_upload_detaches_arbitrary_store_failure() -> None:
+    canary = "document-store-secret-canary"
+
+    class ProviderFault(Exception):
+        pass
+
+    class FailingStore:
+        async def put(self, *_args: object, **_kwargs: object) -> None:
+            raise ProviderFault(canary)
+
+        async def delete(self, _key: str) -> None:
+            return None
+
+    repo = FakeDocumentsRepository()
+    with TestClient(
+        make_app(
+            repo,
+            identity(scopes=[ScopeRef(project_id="p1")]),
+            resolver=FakeArtifactResolver(FailingStore()),
+        )
+    ) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("spec.md", b"payload", "text/markdown")},
+            data={"project_id": "p1"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["title"] == "document upload failed"
+    assert canary not in response.text
+    assert repo.rows == {}
+
+
+def test_upload_rejects_invalid_resolver_affinity_and_closes_store() -> None:
+    class TrackingStore:
+        def __init__(self) -> None:
+            self.closed = False
+            self.put_called = False
+
+        async def put(self, *_args: object, **_kwargs: object) -> None:
+            self.put_called = True
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    store = TrackingStore()
+
+    class InvalidAffinityResolver(FakeArtifactResolver):
+        async def resolve_with_connection_id(
+            self,
+            _kind: object,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+            **_kwargs: object,
+        ) -> tuple[Any, str]:
+            return store, "x" * 33
+
+    repo = FakeDocumentsRepository()
+    with TestClient(
+        make_app(
+            repo,
+            identity(scopes=[ScopeRef(project_id="p1")]),
+            resolver=InvalidAffinityResolver(),
+        )
+    ) as client:
+        response = client.post(
+            "/v1/documents",
+            files={"file": ("spec.md", b"payload", "text/markdown")},
+            data={"project_id": "p1"},
+        )
+
+    assert response.status_code == 503
+    assert store.closed is True
+    assert store.put_called is False
+    assert repo.rows == {}
 
 
 def test_upload_document_rejects_invalid_filename_before_store_io() -> None:
@@ -1014,6 +1448,40 @@ async def test_upload_sanitizes_nul_in_all_persisted_document_text(
     assert "\x00" not in "".join(
         (document.summary or "", document.extracted_text or "", document.parse_error or "")
     )
+
+
+@pytest.mark.asyncio
+async def test_upload_does_not_persist_arbitrary_complex_parser_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import apex.services.text_extraction as extraction_module
+
+    canary = "bare-durable-parser-exception-canary-bc89f2"
+
+    class FailedProcess:
+        returncode = 0
+
+        def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+            return b"E" + canary.encode(), b""
+
+    monkeypatch.setattr(extraction_module.subprocess, "Popen", lambda *_a, **_k: FailedProcess())
+    repository = FakeDocumentsRepository()
+
+    document = await DocumentsService(repository, MemoryArtifactStore()).upload(
+        filename="hostile.pdf",
+        content_type="application/pdf",
+        data=b"attacker-controlled-pdf",
+        artifact_connection_id="artifacts-p1",
+        project_id="p1",
+        app_id=None,
+        summary=None,
+        uploaded_by="c1",
+    )
+
+    persisted = repository.rows[document.id]
+    assert persisted.parse_status == "failed"
+    assert persisted.parse_error == "ValueError: PDF extraction failed"
+    assert canary not in repr(persisted)
 
 
 def test_upload_parses_text_and_populates_fields() -> None:
@@ -1205,6 +1673,40 @@ def test_legacy_affinity_rejects_candidate_store_without_exact_artifact() -> Non
         )
 
     assert response.status_code == 409
+    assert document.artifact_connection_id is None
+
+
+def test_legacy_affinity_does_not_trust_resolver_http_exception() -> None:
+    canary = "document-affinity-resolver-secret-canary"
+    repo = FakeDocumentsRepository()
+    document = make_document("legacy-provider-error", "p1")
+    repo.rows[document.id] = document
+
+    class FailingResolver(FakeArtifactResolver):
+        async def resolve_with_connection_id(
+            self,
+            _kind: object,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+            **_kwargs: object,
+        ) -> tuple[Any, str]:
+            raise HTTPException(status_code=418, detail=canary)
+
+    with TestClient(
+        make_app(
+            repo,
+            identity(role=Role.ADMIN, scopes=[ScopeRef(project_id="p1")]),
+            resolver=FailingResolver(),
+        )
+    ) as client:
+        response = client.put(
+            f"/v1/documents/{document.id}/artifact-connection",
+            json={"connection_id": "a" * 32},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["title"] == "artifact store unavailable"
+    assert canary not in response.text
     assert document.artifact_connection_id is None
 
 

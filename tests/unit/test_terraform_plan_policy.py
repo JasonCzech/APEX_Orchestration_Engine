@@ -1,19 +1,30 @@
 from __future__ import annotations
 
+import io
+from pathlib import Path
+
 import pytest
+from scripts import terraform_plan_policy
 from scripts.terraform_plan_policy import (
+    _load_plan,
     destructive_protected_changes,
     enforce_plan_policy,
 )
 
 
-def _plan(resource_type: str, actions: list[str]) -> dict[str, object]:
+def _plan(
+    resource_type: str,
+    actions: list[str],
+    *,
+    resource_name: str = "main",
+) -> dict[str, object]:
     return {
         "format_version": "1.2",
         "resource_changes": [
             {
-                "address": f"{resource_type}.main",
+                "address": f"{resource_type}.{resource_name}",
                 "type": resource_type,
+                "name": resource_name,
                 "change": {
                     "actions": actions,
                     # A policy failure must never render these sensitive values.
@@ -59,7 +70,11 @@ def test_locked_environment_allows_nondestructive_stateful_update() -> None:
 def test_locked_environment_rejects_non_atomic_minio_root_secret_rotation(
     address: str,
 ) -> None:
-    plan = _plan("azurerm_key_vault_secret", ["update"])
+    plan = _plan(
+        "azurerm_key_vault_secret",
+        ["update"],
+        resource_name="artifact_secret_key",
+    )
     plan["resource_changes"][0]["address"] = address  # type: ignore[index]
 
     with pytest.raises(ValueError, match="artifact_secret_key"):
@@ -91,7 +106,7 @@ def test_locked_environment_rejects_ordinary_database_claim_key_rotation(
     address: str,
     actions: list[str],
 ) -> None:
-    plan = _plan(resource_type, actions)
+    plan = _plan(resource_type, actions, resource_name="database_role_claim")
     plan["resource_changes"][0]["address"] = address  # type: ignore[index]
 
     with pytest.raises(ValueError, match="database_role_claim"):
@@ -99,7 +114,7 @@ def test_locked_environment_rejects_ordinary_database_claim_key_rotation(
 
 
 def test_locked_environment_allows_initial_database_claim_key_creation() -> None:
-    plan = _plan("random_password", ["create"])
+    plan = _plan("random_password", ["create"], resource_name="database_role_claim")
     plan["resource_changes"][0]["address"] = (  # type: ignore[index]
         "random_password.database_role_claim"
     )
@@ -136,13 +151,14 @@ def test_locked_environment_rejects_removing_deletion_lock() -> None:
 @pytest.mark.parametrize(
     "resource_type",
     [
+        "azurerm_container_registry",
         "azurerm_key_vault_secret",
         "azurerm_log_analytics_workspace",
         "azurerm_postgresql_flexible_server_database",
         "azurerm_storage_management_policy",
     ],
 )
-def test_locked_environment_protects_credential_and_retention_state(
+def test_locked_environment_protects_additional_state_and_retention_controls(
     resource_type: str,
 ) -> None:
     with pytest.raises(ValueError, match=resource_type):
@@ -158,6 +174,37 @@ def test_malformed_actions_cannot_be_rendered_into_policy_output() -> None:
         enforce_plan_policy(plan, "prod")
 
     assert "do-not-leak" not in str(caught.value)
+
+
+def test_policy_diagnostics_never_echo_instance_keys_or_controls() -> None:
+    canary = "resource-address-secret-canary"
+    plan = _plan("azurerm_storage_account", ["delete"])
+    plan["resource_changes"][0]["address"] = (  # type: ignore[index]
+        f'module.storage["{canary}\n\x1b[31m"].azurerm_storage_account.main["instance"]'
+    )
+
+    with pytest.raises(ValueError) as caught:
+        enforce_plan_policy(plan, "prod")
+
+    rendered = str(caught.value)
+    assert canary not in rendered
+    assert rendered.count("\n") == 2
+    assert "\x1b" not in rendered
+    assert "azurerm_storage_account.main" in rendered
+
+
+def test_policy_rejects_malformed_resource_type_without_reflection() -> None:
+    canary = "resource-type-secret-canary"
+    plan = _plan("azurerm_storage_account", ["delete"])
+    plan["resource_changes"][0]["type"] = f"bad\n\x1b[31m{canary}"  # type: ignore[index]
+
+    with pytest.raises(ValueError) as caught:
+        enforce_plan_policy(plan, "prod")
+
+    rendered = str(caught.value)
+    assert canary not in rendered
+    assert "\x1b" not in rendered
+    assert "resource type is absent or invalid" in rendered
 
 
 @pytest.mark.parametrize(
@@ -183,3 +230,52 @@ def test_locked_policy_fails_closed_for_unknown_plan_shapes(plan: dict[str, obje
 def test_locked_policy_rejects_future_unknown_actions() -> None:
     with pytest.raises(ValueError, match="unsupported change action"):
         enforce_plan_policy(_plan("azurerm_storage_account", ["replace"]), "prod")
+
+
+def test_plan_loader_rejects_oversized_stdin_before_json_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(terraform_plan_policy, "MAX_PLAN_JSON_BYTES", 16)
+    monkeypatch.setattr(terraform_plan_policy.sys, "stdin", io.StringIO("x" * 17))
+
+    with pytest.raises(ValueError, match="exceeds the size limit") as caught:
+        _load_plan("-")
+
+    assert caught.value.__cause__ is None
+
+
+def test_plan_loader_translates_file_and_json_errors_without_reflection(
+    tmp_path: Path,
+) -> None:
+    canary = "credential-bearing-plan-name\n\x1b[31m"
+    missing = tmp_path / canary
+
+    with pytest.raises(ValueError, match="JSON is unavailable") as unavailable:
+        _load_plan(str(missing))
+    assert canary not in str(unavailable.value)
+    assert unavailable.value.__cause__ is None
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_bytes(b'{"secret-canary":')
+    with pytest.raises(ValueError, match="JSON is invalid") as invalid:
+        _load_plan(str(malformed))
+    assert "secret-canary" not in str(invalid.value)
+    assert invalid.value.__cause__ is None
+
+
+def test_policy_caps_resource_count_and_rendered_violations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _plan("azurerm_storage_account", ["delete"])["resource_changes"][0]  # type: ignore[index]
+    second = _plan("azurerm_postgresql_flexible_server", ["delete"])["resource_changes"][0]  # type: ignore[index]
+    plan = {"format_version": "1.2", "resource_changes": [first, second]}
+
+    monkeypatch.setattr(terraform_plan_policy, "MAX_RESOURCE_CHANGES", 1)
+    with pytest.raises(ValueError, match="too many resource changes"):
+        enforce_plan_policy(plan, "prod")
+
+    monkeypatch.setattr(terraform_plan_policy, "MAX_RESOURCE_CHANGES", 2)
+    monkeypatch.setattr(terraform_plan_policy, "MAX_REPORTED_VIOLATIONS", 1)
+    with pytest.raises(ValueError) as caught:
+        enforce_plan_policy(plan, "prod")
+    assert "1 additional protected mutations omitted" in str(caught.value)

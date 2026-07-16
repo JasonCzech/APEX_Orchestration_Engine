@@ -193,18 +193,20 @@ def identity_from_user(user: Any) -> ConsumerIdentity:
         raise Auth.exceptions.HTTPException(status_code=401, detail="Malformed auth identity")
 
     scopes = field("scopes") or []
+    parsed_identity: ConsumerIdentity | None = None
     try:
-        return ConsumerIdentity(
+        parsed_identity = ConsumerIdentity(
             consumer_id=str(identity),
             name=str(field("name") or field("display_name") or identity),
             consumer_type=ConsumerType(consumer_type),
             role=Role(role),
             scopes=[ScopeRef.model_validate(dict(scope)) for scope in scopes],
         )
-    except Exception as exc:
-        raise Auth.exceptions.HTTPException(
-            status_code=401, detail="Malformed auth identity"
-        ) from exc
+    except Exception:
+        pass
+    if parsed_identity is None:
+        raise Auth.exceptions.HTTPException(status_code=401, detail="Malformed auth identity")
+    return parsed_identity
 
 
 def _authz_action(ctx: Auth.types.AuthContext) -> str:
@@ -258,8 +260,6 @@ def _schedule_auth_decision(
 
 async def _ensure_catalog_app_scope(identity: ConsumerIdentity, value: Mapping[str, Any]) -> None:
     """Bind explicit LangGraph app IDs to the authoritative catalog project."""
-    if identity.is_unscoped:
-        return
     config = value.get("config") if isinstance(value.get("config"), Mapping) else {}
     kwargs_value = value.get("kwargs")
     kwargs: Mapping[str, Any] = kwargs_value if isinstance(kwargs_value, Mapping) else {}
@@ -769,6 +769,7 @@ def _validate_persisted_json_field(
             action=action,
             detail=f"{label} must be a JSON object",
         )
+    invalid_detail: str | None = None
     try:
         validate_json_object(
             dict(value),
@@ -777,10 +778,12 @@ def _validate_persisted_json_field(
             max_nodes=max_nodes,
         )
     except ValueError as exc:
+        invalid_detail = bounded_diagnostic(exc, max_chars=1_024)
+    if invalid_detail is not None:
         _reject_invalid_persisted_input(
             identity,
             action=action,
-            detail=bounded_diagnostic(exc, max_chars=1_024),
+            detail=invalid_detail,
         )
 
 
@@ -876,7 +879,7 @@ def _validate_run_persisted_inputs(
         action=action,
         label="run metadata",
     )
-    if not trusted_loopback and payload.get("metadata") is not None:
+    if payload.get("metadata") is not None:
         _reject_persisted_credential_material(
             identity,
             payload["metadata"],
@@ -890,63 +893,94 @@ def _validate_run_persisted_inputs(
         action=action,
         label="run input",
     )
-    if not trusted_loopback and run_args.get("input") is not None:
+    if run_args.get("input") is not None:
         _reject_persisted_credential_material(
             identity,
             run_args["input"],
             action=action,
             label="run input",
         )
-    if "config" not in run_args or run_args["config"] is None:
-        return
-    config = run_args["config"]
-    if not isinstance(config, Mapping):
-        _reject_invalid_persisted_input(
-            identity,
-            action=action,
-            detail="run config must be a JSON object",
-        )
-    config_for_validation = dict(config)
-    configurable = config_for_validation.get("configurable")
-    if isinstance(configurable, Mapping):
-        configurable_for_validation = dict(configurable)
-        runtime_user = configurable_for_validation.get("langgraph_auth_user")
-        if runtime_user is not None:
-            # LangGraph's ProxyUser implements mapping-style methods without
-            # registering as a Mapping, so the generic JSON walker cannot inspect
-            # it. This value is injected from our own authenticated user response;
-            # use that bounded JSON representation in the validation copy, then
-            # verify the live object against ``identity`` in ensure_run_controls.
-            configurable_for_validation["langgraph_auth_user"] = user_payload(identity)
-        if "__pregel_node_finished" in configurable_for_validation:
-            # This server-owned callback is never persisted as JSON. Preserve a
-            # scalar placeholder only in the validation copy so the surrounding
-            # attacker-controlled config still receives the normal budget walk.
-            configurable_for_validation["__pregel_node_finished"] = "runtime-callback"
-        config_for_validation["configurable"] = configurable_for_validation
-    try:
-        validate_json_object(
-            config_for_validation,
-            label="run config",
-            max_bytes=_MAX_LANGGRAPH_JSON_BYTES,
-            max_nodes=_MAX_LANGGRAPH_JSON_NODES,
-        )
-    except ValueError as exc:
-        _reject_invalid_persisted_input(
-            identity,
-            action=action,
-            detail=bounded_diagnostic(exc, max_chars=1_024),
-        )
-    if not trusted_loopback:
+    if "config" in run_args and run_args["config"] is not None:
+        config = run_args["config"]
+        if not isinstance(config, Mapping):
+            _reject_invalid_persisted_input(
+                identity,
+                action=action,
+                detail="run config must be a JSON object",
+            )
+        config_for_validation = dict(config)
+        configurable = config_for_validation.get("configurable")
+        if isinstance(configurable, Mapping):
+            configurable_for_validation = dict(configurable)
+            runtime_user = configurable_for_validation.get("langgraph_auth_user")
+            if runtime_user is not None:
+                # LangGraph's ProxyUser implements mapping-style methods without
+                # registering as a Mapping, so the generic JSON walker cannot inspect
+                # it. This value is injected from our own authenticated user response;
+                # use that bounded JSON representation in the validation copy, then
+                # verify the live object against ``identity`` in ensure_run_controls.
+                configurable_for_validation["langgraph_auth_user"] = user_payload(identity)
+            if "__pregel_node_finished" in configurable_for_validation:
+                # This server-owned callback is never persisted as JSON. Preserve a
+                # scalar placeholder only in the validation copy so the surrounding
+                # attacker-controlled config still receives the normal budget walk.
+                configurable_for_validation["__pregel_node_finished"] = "runtime-callback"
+            config_for_validation["configurable"] = configurable_for_validation
+        invalid_detail = None
+        try:
+            validate_json_object(
+                config_for_validation,
+                label="run config",
+                max_bytes=_MAX_LANGGRAPH_JSON_BYTES,
+                max_nodes=_MAX_LANGGRAPH_JSON_NODES,
+            )
+        except ValueError as exc:
+            invalid_detail = bounded_diagnostic(exc, max_chars=1_024)
+        if invalid_detail is not None:
+            _reject_invalid_persisted_input(
+                identity,
+                action=action,
+                detail=invalid_detail,
+            )
         configurable_for_scan = _mapping(config_for_validation.get("configurable"))
         for runtime_key in _LANGGRAPH_CREDENTIAL_SCAN_EXEMPT_KEYS:
-            configurable_for_scan.pop(runtime_key, None)
+            marker = object()
+            runtime_value = configurable_for_scan.pop(runtime_key, marker)
+            if (
+                runtime_value is not marker
+                and runtime_key not in {"langgraph_auth_user", "__pregel_node_finished"}
+                and contains_credential_material(runtime_value)
+            ):
+                _reject_invalid_persisted_input(
+                    identity,
+                    action=action,
+                    detail="run config must not contain credential material",
+                )
         config_for_validation["configurable"] = configurable_for_scan
         _reject_persisted_credential_material(
             identity,
             config_for_validation,
             action=action,
             label="run config",
+        )
+    # Commands, webhooks, checkpoint selectors, and other run controls live
+    # alongside input/config in kwargs. Scan them as well; only the verified
+    # runtime auth/callback fields removed above are exempt.
+    run_controls = {
+        key: nested for key, nested in run_args.items() if key not in {"config", "input"}
+    }
+    top_level_controls = {
+        key: nested
+        for key, nested in payload.items()
+        if key not in {"config", "input", "kwargs", "metadata"}
+    }
+    if contains_credential_material(
+        {"run_controls": run_controls, "top_level_controls": top_level_controls}
+    ):
+        _reject_invalid_persisted_input(
+            identity,
+            action=action,
+            detail="run controls must not contain credential material",
         )
 
 
@@ -1047,19 +1081,15 @@ def ensure_run_scope(
         _project_id(metadata.get("app_id")),
         _project_id(config_metadata.get("app_id")),
     ]
-    if identity.is_unscoped:
-        return None
     explicit_projects = [project for project in explicit if project is not None]
-    for project_id in explicit_projects:
-        if not identity.allows_project(project_id):
-            _deny_authz(
-                identity,
-                action=action,
-                detail=f"Project '{project_id}' is outside this consumer's scopes",
-            )
-
     unique_projects = sorted(set(explicit_projects))
     if len(unique_projects) > 1:
+        if identity.is_unscoped:
+            _reject_invalid_request_input(
+                identity,
+                action=action,
+                detail="conflicting project_id values are not allowed for runs",
+            )
         _deny_authz(
             identity,
             action=action,
@@ -1069,12 +1099,51 @@ def ensure_run_scope(
     effective_project = unique_projects[0] if unique_projects else None
     unique_apps = sorted({app_id for app_id in explicit_apps if app_id is not None})
     if len(unique_apps) > 1:
+        if identity.is_unscoped:
+            _reject_invalid_request_input(
+                identity,
+                action=action,
+                detail="conflicting app_id values are not allowed for runs",
+            )
         _deny_authz(
             identity,
             action=action,
             detail="Conflicting app_id values are not allowed for scoped runs",
         )
     effective_app = unique_apps[0] if unique_apps else None
+
+    if identity.is_unscoped:
+        if effective_project is None:
+            if effective_app is not None:
+                _reject_invalid_request_input(
+                    identity,
+                    action=action,
+                    detail="project_id is required when app_id is provided for runs",
+                )
+            # A platform operation that deliberately has no tenant identifiers
+            # remains global. Once any project is supplied, however, every
+            # durable surface and the existing-thread filter must agree.
+            return None
+        _stamp_run_scope(
+            payload,
+            run_args,
+            input_payload,
+            config_payload,
+            configurable,
+            metadata,
+            config_metadata,
+            project_id=effective_project,
+            app_id=effective_app,
+        )
+        return cast("Auth.types.FilterType", _metadata_filter(effective_project, effective_app))
+
+    for project_id in explicit_projects:
+        if not identity.allows_project(project_id):
+            _deny_authz(
+                identity,
+                action=action,
+                detail=f"Project '{project_id}' is outside this consumer's scopes",
+            )
 
     if effective_project is None:
         projects = identity.scoped_project_ids()
@@ -1172,6 +1241,7 @@ async def ensure_run_environment(
     if environment_id is not None:
         project_id = _project_id(configurable.get("project_id"))
         app_id = _project_id(configurable.get("app_id"))
+        environment_lookup_failed = False
         try:
             target, version, target_app_id = await _load_run_environment_target(
                 environment_id, project_id, app_id
@@ -1210,15 +1280,17 @@ async def ensure_run_environment(
                 project_id=project_id,
                 app_id=authoritative_app_id,
             )
-        except LookupError as exc:
+        except LookupError:
+            environment_lookup_failed = True
+        if environment_lookup_failed:
             raise Auth.exceptions.HTTPException(
                 status_code=404,
                 detail="Environment target not found",
-            ) from exc
+            )
 
     config_payload["configurable"] = configurable
     run_args["config"] = config_payload
-    if environment_id is None or identity.is_unscoped:
+    if environment_id is None:
         return None
     project_id = _project_id(configurable.get("project_id"))
     target_app_id = _project_id(configurable.get("app_id"))
@@ -1263,6 +1335,61 @@ def _validate_runtime_text_sequence(
         )
 
 
+def _runtime_auth_user_payload(value: Any) -> dict[str, Any]:
+    """Materialize the server-injected auth user so extra fields cannot hide.
+
+    Production receives LangGraph's ``ProxyUser`` while tests use a small
+    mapping-style proxy. Both are enumerable; anything opaque fails closed.
+    """
+
+    if isinstance(value, Mapping):
+        return dict(value)
+    for method_name in ("model_dump", "dict"):
+        inspection_failed = False
+        try:
+            method = getattr(value, method_name, None)
+        except Exception:  # noqa: BLE001 - auth values must be inspectable
+            inspection_failed = True
+            method = None
+        if inspection_failed:
+            raise ValueError("langgraph_auth_user is not inspectable")
+        if not callable(method):
+            continue
+        rendering_failed = False
+        try:
+            try:
+                rendered = method(mode="json")
+            except TypeError:
+                rendered = method()
+        except Exception:  # noqa: BLE001 - auth values must be inspectable
+            rendering_failed = True
+            rendered = None
+        if rendering_failed:
+            raise ValueError("langgraph_auth_user is not inspectable")
+        if isinstance(rendered, Mapping):
+            return dict(rendered)
+        raise ValueError("langgraph_auth_user must render as an object")
+    enumeration_failed = False
+    try:
+        keys = list(iter(value))
+    except Exception:  # noqa: BLE001 - auth values must be enumerable
+        enumeration_failed = True
+        keys = []
+    if enumeration_failed:
+        raise ValueError("langgraph_auth_user is not enumerable")
+    if len(keys) > 32 or any(not isinstance(key, str) for key in keys):
+        raise ValueError("langgraph_auth_user contains invalid fields")
+    materialization_failed = False
+    try:
+        rendered_user = {key: value[key] for key in keys}
+    except Exception:  # noqa: BLE001 - auth values must be enumerable
+        materialization_failed = True
+        rendered_user = {}
+    if materialization_failed:
+        raise ValueError("langgraph_auth_user is not enumerable")
+    return rendered_user
+
+
 def _validate_runtime_run_configurable(
     identity: ConsumerIdentity,
     runtime: Mapping[str, Any],
@@ -1284,10 +1411,22 @@ def _validate_runtime_run_configurable(
         raise ValueError(f"config.configurable contains {unknown_count} unsupported field(s)")
 
     if "langgraph_auth_user" in runtime:
+        runtime_user_payload = _runtime_auth_user_payload(runtime["langgraph_auth_user"])
+        expected_user = user_payload(identity, trusted_loopback=trusted_loopback)
+        expected_proxy_user = {**expected_user, "is_authenticated": True}
+        if runtime_user_payload != expected_user and runtime_user_payload != expected_proxy_user:
+            raise ValueError(
+                "langgraph_auth_user does not match the authenticated consumer "
+                "or contains non-canonical fields"
+            )
+        malformed_user = False
         try:
             runtime_identity = identity_from_user(runtime["langgraph_auth_user"])
-        except Auth.exceptions.HTTPException as exc:
-            raise ValueError("langgraph_auth_user is malformed") from exc
+        except Auth.exceptions.HTTPException:
+            malformed_user = True
+            runtime_identity = None
+        if malformed_user:
+            raise ValueError("langgraph_auth_user is malformed")
         if runtime_identity != identity:
             raise ValueError("langgraph_auth_user does not match the authenticated consumer")
 
@@ -1408,6 +1547,8 @@ def ensure_run_controls(
     input_payload = _mapping(run_args.get("input"))
     config_payload = _mapping(run_args.get("config"))
     configurable = _mapping(config_payload.get("configurable"))
+    invalid_controls = False
+    invalid_controls_detail = ""
     try:
         requested_action = payload.get("action") or run_args.get("action")
         multitask_strategy = payload.get("multitask_strategy") or run_args.get("multitask_strategy")
@@ -1527,6 +1668,7 @@ def ensure_run_controls(
                 )
             validate_gate_payload(command)
     except (ValidationError, ValueError) as exc:
+        invalid_controls = True
         _schedule_auth_decision(
             identity,
             action=action,
@@ -1541,9 +1683,12 @@ def ensure_run_controls(
             # but still apply the shared response cap and credential redaction
             # instead of reflecting an exception verbatim.
             detail = bounded_diagnostic(exc, max_chars=1_024)
+        invalid_controls_detail = detail
+    if invalid_controls:
         raise Auth.exceptions.HTTPException(
-            status_code=422, detail=f"Invalid run controls: {detail}"
-        ) from exc
+            status_code=422,
+            detail=f"Invalid run controls: {invalid_controls_detail}",
+        )
 
 
 def _scoped_store_prefix(project_id: str, app_id: str | None) -> tuple[str, ...]:
@@ -1725,12 +1870,16 @@ async def authenticate(
     headers: dict[bytes, bytes],
     scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    store_unavailable = False
     try:
         identity = await get_default_resolver().resolve(extract_api_key(headers))
-    except AuthStoreUnavailableError as exc:
-        raise Auth.exceptions.HTTPException(
-            status_code=503, detail="API key store is unavailable"
-        ) from exc
+    except AuthStoreUnavailableError:
+        store_unavailable = True
+        identity = None
+    if store_unavailable:
+        # Leave the catch before translating the failure. Otherwise the opaque
+        # HTTP exception retains the resolver's driver cause for tracing code.
+        raise Auth.exceptions.HTTPException(status_code=503, detail="API key store is unavailable")
     if identity is None:
         detail = "Invalid or missing API key"
         _schedule_auth_decision(
@@ -1763,7 +1912,7 @@ async def on_threads_create(
     )
     metadata = _mapping(payload.get("metadata"))
     trusted_loopback = _is_trusted_loopback_user(ctx.user)
-    if not trusted_loopback and payload.get("metadata") is not None:
+    if payload.get("metadata") is not None:
         _reject_persisted_credential_material(
             identity,
             metadata,
@@ -1939,7 +2088,7 @@ async def on_threads_update(
         action=action,
         label="thread metadata",
     )
-    if not trusted_loopback and payload.get("metadata") is not None:
+    if payload.get("metadata") is not None:
         _reject_persisted_credential_material(
             identity,
             metadata,
@@ -2014,6 +2163,12 @@ async def on_assistants_write(ctx: Auth.types.AuthContext, value: Any) -> Auth.t
                 action=action,
                 label=label,
             )
+    _reject_persisted_credential_material(
+        identity,
+        payload,
+        action=action,
+        label="assistant",
+    )
     ensure_metadata_scope(identity, value, action=action)
     # On update, constrain the existing resource as well as stamping the new
     # metadata; otherwise a scoped admin could take over a sibling assistant by id.

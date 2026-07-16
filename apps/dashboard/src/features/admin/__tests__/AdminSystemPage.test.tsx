@@ -7,6 +7,7 @@ function renderSystem(role: 'admin' | 'viewer' = 'admin') {
   return renderApp({
     initialEntries: ['/admin/system'],
     authState: authenticatedState(role),
+    seedSystemInfo: false,
   })
 }
 

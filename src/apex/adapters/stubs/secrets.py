@@ -20,17 +20,19 @@ class EnvSecretsAdapter:
         self._conn = conn
 
     async def resolve(self, secret_ref: str) -> SecretValue:
+        invalid_ref = False
         try:
             validate_secret_ref(secret_ref)
-        except ValueError as exc:
-            raise ValueError(f"unsupported secret_ref {secret_ref!r}; expected 'env:NAME'") from exc
+        except ValueError:
+            invalid_ref = True
+        if invalid_ref:
+            # Invalid references may themselves be raw credentials. Do not
+            # reflect the value or retain the validator exception in the chain.
+            raise ValueError("unsupported secret_ref; expected 'env:NAME'")
         _, _, name = secret_ref.partition(":")
         prefixes = tuple(get_settings().env_secret_prefixes)
         if prefixes and not name.startswith(prefixes):
             raise ValueError(f"environment variable {name!r} is not allowed by env_secret_prefixes")
-        try:
-            return SecretValue(value=os.environ[name])
-        except KeyError:
-            raise KeyError(
-                f"environment variable {name!r} is not set (secret_ref {secret_ref!r})"
-            ) from None
+        if name not in os.environ:
+            raise KeyError(f"environment variable {name!r} is not set (secret_ref {secret_ref!r})")
+        return SecretValue(value=os.environ[name])

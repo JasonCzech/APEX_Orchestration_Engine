@@ -11,6 +11,7 @@ from sqlalchemy import and_, false, func, not_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apex.adapters.registry import ConnectionConfig, PortKind
 from apex.persistence.models import (
     ArtifactReference,
     ArtifactUploadIntent,
@@ -20,16 +21,34 @@ from apex.persistence.models import (
     HostMapping,
     WorkItemMutation,
 )
+from apex.persistence.repositories._conflicts import (
+    bounded_driver_message,
+    driver_constraint_name,
+)
 from apex.services.connection_credentials import (
     connection_options_require_repair,
     connection_url_requires_repair,
+    reject_credential_text,
     reject_raw_secret_options,
     validate_secret_ref,
 )
+from apex.services.connections import validate_scoped_work_tracking_config
 
 _TERMINAL_ENGINE_STATUSES = ("completed", "failed", "aborted")
 _CONNECTION_TEXT_FIELDS = frozenset(
     {"kind", "provider", "name", "project_id", "base_url", "secret_ref"}
+)
+_NULLABLE_CONNECTION_TEXT_FIELDS = frozenset({"project_id", "base_url", "secret_ref"})
+_CONNECTION_TEXT_BOUNDS = {
+    "kind": (1, 64),
+    "provider": (1, 64),
+    "name": (1, 255),
+    "project_id": (1, 255),
+    "base_url": (1, 1_024),
+    "secret_ref": (1, 259),
+}
+_CONNECTION_MUTABLE_FIELDS = frozenset(
+    {"provider", "name", "project_id", "base_url", "options", "secret_ref", "enabled"}
 )
 _RUNTIME_CONFIGURATION_FIELDS = frozenset(
     {"kind", "provider", "project_id", "base_url", "options", "secret_ref", "enabled"}
@@ -41,17 +60,28 @@ def _validate_persisted_connection_values(values: dict[str, Any]) -> None:
 
     for field in _CONNECTION_TEXT_FIELDS.intersection(values):
         value = values[field]
-        if isinstance(value, str) and "\x00" in value:
-            raise ValueError(f"connection {field} must not contain U+0000")
+        if value is None and field in _NULLABLE_CONNECTION_TEXT_FIELDS:
+            continue
+        if type(value) is not str:
+            raise ValueError(f"connection {field} must be a string")
+        minimum, maximum = _CONNECTION_TEXT_BOUNDS[field]
+        if not minimum <= len(value) <= maximum or "\x00" in value:
+            raise ValueError(
+                f"connection {field} must be a {minimum}-{maximum} character string without U+0000"
+            )
+        reject_credential_text(value, label=f"connection {field}")
     if "options" in values:
         options = values["options"]
-        if not isinstance(options, dict):
+        if type(options) is not dict:
             raise ValueError("connection options must be a JSON object")
         reject_raw_secret_options(options)
         if connection_options_require_repair(options):
             raise ValueError(
                 "connection options contain unsafe credential-bearing transport configuration"
             )
+
+    if "enabled" in values and type(values["enabled"]) is not bool:
+        raise ValueError("connection enabled must be a boolean")
 
     if "base_url" in values and connection_url_requires_repair(values["base_url"]):
         raise ValueError("connection base_url contains unsafe credential-bearing configuration")
@@ -61,6 +91,52 @@ def _validate_persisted_connection_values(values: dict[str, Any]) -> None:
         if secret_ref is not None and not isinstance(secret_ref, str):
             raise ValueError("connection secret_ref must be a string or null")
         validate_secret_ref(secret_ref)
+
+
+def _validate_scoped_work_tracking_values(values: dict[str, Any]) -> None:
+    """Apply the provider project boundary to one complete effective row."""
+
+    kind: PortKind | None = None
+    try:
+        kind = PortKind(values["kind"])
+    except ValueError:
+        pass
+    if kind is None:
+        raise ValueError("connection kind is unsupported")
+    options = dict(values["options"])
+    base_url = values["base_url"]
+    if base_url is not None:
+        options.setdefault("base_url", base_url)
+    validate_scoped_work_tracking_config(
+        ConnectionConfig(
+            id="repository-validation",
+            kind=kind,
+            provider=values["provider"],
+            name=values["name"],
+            options=options,
+            secret_ref=values["secret_ref"],
+        ),
+        internal_project_id=values["project_id"],
+    )
+
+
+def _effective_connection_values(
+    conn: Connection, changes: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    changes = {} if changes is None else changes
+    return {
+        field: changes[field] if field in changes else getattr(conn, field)
+        for field in (
+            "kind",
+            "provider",
+            "name",
+            "project_id",
+            "base_url",
+            "options",
+            "secret_ref",
+            "enabled",
+        )
+    }
 
 
 class DuplicateConnectionNameError(Exception):
@@ -133,17 +209,18 @@ class ConnectionsRepository:
         secret_ref: str | None = None,
     ) -> Connection:
         normalized_options = {} if options is None else options
-        _validate_persisted_connection_values(
-            {
-                "kind": kind,
-                "provider": provider,
-                "name": name,
-                "project_id": project_id,
-                "base_url": base_url,
-                "options": normalized_options,
-                "secret_ref": secret_ref,
-            }
-        )
+        values = {
+            "kind": kind,
+            "provider": provider,
+            "name": name,
+            "project_id": project_id,
+            "base_url": base_url,
+            "options": normalized_options,
+            "secret_ref": secret_ref,
+            "enabled": True,
+        }
+        _validate_persisted_connection_values(values)
+        _validate_scoped_work_tracking_values(values)
         conn = Connection(
             kind=kind,
             provider=provider,
@@ -158,7 +235,20 @@ class ConnectionsRepository:
         return conn
 
     async def update(self, conn: Connection, changes: dict[str, Any]) -> Connection:
+        if type(changes) is not dict or len(changes) > len(_CONNECTION_MUTABLE_FIELDS):
+            raise ValueError("unsupported connection fields")
+        if any(
+            type(field) is not str or field not in _CONNECTION_MUTABLE_FIELDS
+            for field in dict.keys(changes)
+        ):
+            raise ValueError("unsupported connection fields")
+        # Reject an invalid supplied field before consulting the existing row.
+        # Besides keeping errors deterministic, this avoids touching row-shaped
+        # objects at all when a direct writer's patch is already unsafe.
         _validate_persisted_connection_values(changes)
+        effective_values = _effective_connection_values(conn, changes)
+        _validate_persisted_connection_values(effective_values)
+        _validate_scoped_work_tracking_values(effective_values)
         for field, value in changes.items():
             setattr(conn, field, value)
         if _RUNTIME_CONFIGURATION_FIELDS.intersection(changes):
@@ -170,17 +260,15 @@ class ConnectionsRepository:
         # Availability is part of the runtime generation. Durable-reference
         # guards prevent a normal disable from stranding active work; any
         # out-of-band toggle must invalidate cached/reserved adapters explicitly.
+        if type(enabled) is not bool:
+            raise ValueError("connection enabled must be a boolean")
         if enabled:
             # Repository callers can also encounter rows created before the
             # secret-free persistence contract.  Never re-enable one without
             # first repairing its complete credential-bearing target.
-            _validate_persisted_connection_values(
-                {
-                    "base_url": conn.base_url,
-                    "options": conn.options,
-                    "secret_ref": conn.secret_ref,
-                }
-            )
+            effective_values = _effective_connection_values(conn, {"enabled": True})
+            _validate_persisted_connection_values(effective_values)
+            _validate_scoped_work_tracking_values(effective_values)
         await self._session.execute(
             update(Connection)
             .where(Connection.id == conn.id)
@@ -270,24 +358,57 @@ class ConnectionsRepository:
         self, conn: Connection, mappings: Sequence[dict[str, Any]]
     ) -> Connection:
         """PUT semantics: the provided list fully replaces the existing one."""
+        if type(mappings) is not list or len(mappings) > 256:
+            raise ValueError("host mappings must be a list of at most 256 items")
         for mapping in mappings:
+            if (
+                type(mapping) is not dict
+                or len(mapping) not in {2, 3}
+                or any(
+                    type(field) is not str or field not in {"pattern", "target", "enabled"}
+                    for field in dict.keys(mapping)
+                )
+                or "pattern" not in mapping
+                or "target" not in mapping
+            ):
+                raise ValueError("host mapping must contain only pattern, target, and enabled")
             for field in ("pattern", "target"):
                 value = mapping.get(field)
-                if isinstance(value, str) and "\x00" in value:
-                    raise ValueError(f"host mapping {field} must not contain U+0000")
+                if type(value) is not str:
+                    raise ValueError(f"host mapping {field} must be a string")
+                if not 1 <= len(value) <= 1_024 or "\x00" in value:
+                    raise ValueError(
+                        f"host mapping {field} must be a 1-1024 character string without U+0000"
+                    )
+                reject_credential_text(value, label=f"host mapping {field}")
+            if "enabled" in mapping and type(mapping["enabled"]) is not bool:
+                raise ValueError("host mapping enabled must be a boolean")
         conn.host_mappings = [
-            HostMapping(
-                pattern=m["pattern"], target=m["target"], enabled=bool(m.get("enabled", True))
-            )
+            HostMapping(pattern=m["pattern"], target=m["target"], enabled=m.get("enabled", True))
             for m in mappings
         ]
         await self._commit_and_refresh(conn)
         return conn
 
     async def _commit_and_refresh(self, conn: Connection) -> None:
+        duplicate_name = False
         try:
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
-            raise DuplicateConnectionNameError(str(exc.orig)) from exc
+            if _is_duplicate_connection_name(exc):
+                duplicate_name = True
+            else:
+                raise
+        if duplicate_name:
+            raise DuplicateConnectionNameError("connection name already exists")
         await self._session.refresh(conn)
+
+
+def _is_duplicate_connection_name(exc: IntegrityError) -> bool:
+    constraint_name = driver_constraint_name(exc.orig)
+    message = bounded_driver_message(exc.orig)
+    return constraint_name == "uq_connections_name" or (
+        "uq_connections_name" in message
+        or ("unique constraint failed" in message and "connections.name" in message)
+    )

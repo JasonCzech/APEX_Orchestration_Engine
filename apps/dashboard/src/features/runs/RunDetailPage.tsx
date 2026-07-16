@@ -137,7 +137,8 @@ export function RunDetailPage() {
         )}
         <span className="spacer" />
         <RequireRole role="operator">
-          {hitl.state.tag === 'open' || hitl.state.tag === 'failed' ? (
+          {(hitl.state.tag === 'open' || hitl.state.tag === 'failed') &&
+          hitl.gate?.payload?.actions.some((action) => action === 'abort') ? (
             // Header abort drives the SAME machine as the gate action bar
             // (same type-to-confirm arm step, action 'abort').
             <AbortConfirm key={`${threadId}:${hitl.gate?.interrupt_id ?? 'gate'}`} onConfirm={() => hitl.submit('abort')} />

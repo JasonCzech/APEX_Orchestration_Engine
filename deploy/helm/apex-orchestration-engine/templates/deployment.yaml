@@ -59,6 +59,11 @@ spec:
             - configMapRef:
                 name: {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "settings") }}
           env:
+            - name: DATABASE_URI
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret | quote }}
+                  key: {{ required "database.uriKey is required" .Values.database.uriKey | quote }}
             - name: APEX_DATABASE__URI
               valueFrom:
                 secretKeyRef:
@@ -93,7 +98,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.database.existingSecret | quote }}
-                  key: {{ .Values.database.uriKey | quote }}
+                  key: {{ required "database.uriKey is required" .Values.database.uriKey | quote }}
             # APEX domain schema (asyncpg URI; usually the same database).
             - name: APEX_DATABASE__URI
               valueFrom:

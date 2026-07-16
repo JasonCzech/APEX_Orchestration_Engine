@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
 
 import httpx
@@ -102,6 +103,7 @@ class FakeThreads:
     ) -> None:
         self.threads = threads or {}
         self.states = states or {}
+        self.state_calls: list[str] = []
 
     async def get(self, thread_id: str) -> dict[str, Any]:
         try:
@@ -110,6 +112,7 @@ class FakeThreads:
             raise _not_found() from None
 
     async def get_state(self, thread_id: str) -> dict[str, Any]:
+        self.state_calls.append(thread_id)
         try:
             return self.states[thread_id]
         except KeyError:
@@ -149,10 +152,23 @@ class FakeConnectionResolver:
         connection_id: str | None = None,
         project_id: str | None = None,
     ) -> Any:
+        store, _resolved_connection_id = await self.resolve_with_connection_id(
+            kind,
+            connection_id=connection_id,
+            project_id=project_id,
+        )
+        return store
+
+    async def resolve_with_connection_id(
+        self,
+        kind: PortKind,
+        connection_id: str | None = None,
+        project_id: str | None = None,
+    ) -> tuple[Any, str]:
         self.calls.append((kind, connection_id, project_id))
         if connection_id is not None and connection_id in self.stores:
-            return self.stores[connection_id]
-        return self.default
+            return self.stores[connection_id], connection_id
+        return self.default, connection_id or "dev-artifact-store-memory"
 
 
 @pytest.fixture(autouse=True)
@@ -219,12 +235,13 @@ def document_row(
     *,
     app_id: str | None = None,
     artifact_connection_id: str | None = None,
+    size_bytes: int = 1,
 ) -> Document:
     return Document(
         id=doc_id,
         name=key.rsplit("/", 1)[-1],
         media_type=media_type,
-        size_bytes=1,
+        size_bytes=size_bytes,
         artifact_key=key,
         artifact_connection_id=artifact_connection_id,
         project_id=project_id,
@@ -272,6 +289,8 @@ def artifact_reference_row(
     project_id: str | None,
     app_id: str | None = None,
     ownership_known: bool = True,
+    size_bytes: int | None = None,
+    content_sha256: str | None = None,
 ) -> ArtifactReference:
     return ArtifactReference(
         id=f"ref-{len(key)}",
@@ -282,6 +301,8 @@ def artifact_reference_row(
         project_id=project_id,
         app_id=app_id,
         ownership_known=ownership_known,
+        size_bytes=size_bytes,
+        content_sha256=content_sha256,
     )
 
 
@@ -289,7 +310,9 @@ def test_get_artifact_streams_document_bytes_with_row_media_type() -> None:
     key = "documents/d1/report.html"
     put(key, b"<html>report</html>", content_type="text/html")
     repo = FakeDocumentsRepository()
-    repo.rows["d1"] = document_row("d1", key, "text/html", project_id=None)
+    repo.rows["d1"] = document_row(
+        "d1", key, "text/html", project_id=None, size_bytes=len(b"<html>report</html>")
+    )
     app = make_app(repo, identity())
     with TestClient(app) as client:
         response = client.get(f"/v1/artifacts/{key}")
@@ -307,7 +330,9 @@ def test_get_artifact_sanitizes_legacy_document_media_type(media_type: str) -> N
     key = "documents/d1/legacy.bin"
     put(key, b"payload")
     repo = FakeDocumentsRepository()
-    repo.rows["d1"] = document_row("d1", key, media_type, project_id=None)
+    repo.rows["d1"] = document_row(
+        "d1", key, media_type, project_id=None, size_bytes=len(b"payload")
+    )
     app = make_app(repo, identity())
 
     with TestClient(app) as client:
@@ -334,6 +359,7 @@ def test_get_artifact_uses_document_persisted_store_affinity() -> None:
         "application/json",
         "p1",
         artifact_connection_id="artifacts-p1",
+        size_bytes=len(b'{"source":"selected"}'),
     )
     app = make_app(repo, identity([ScopeRef(project_id="p1")]), resolver=resolver)
     with TestClient(app) as client:
@@ -341,6 +367,84 @@ def test_get_artifact_uses_document_persisted_store_affinity() -> None:
     assert response.status_code == 200
     assert response.json() == {"source": "selected"}
     assert resolver.calls == [(PortKind.ARTIFACT_STORE, "artifacts-p1", "p1")]
+
+
+def test_get_artifact_rejects_resolver_affinity_drift_before_streaming() -> None:
+    key = "documents/d1/report.json"
+    store = IsolatedArtifactStore()
+    store.objects[key] = b'{"source":"wrong-store"}'
+
+    class DriftingResolver(FakeConnectionResolver):
+        async def resolve_with_connection_id(
+            self,
+            kind: PortKind,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+        ) -> tuple[Any, str]:
+            self.calls.append((kind, connection_id, project_id))
+            return store, "artifacts-p2"
+
+    resolver = DriftingResolver()
+    repo = FakeDocumentsRepository()
+    repo.rows["d1"] = document_row(
+        "d1",
+        key,
+        "application/json",
+        "p1",
+        artifact_connection_id="artifacts-p1",
+    )
+
+    with TestClient(
+        make_app(repo, identity([ScopeRef(project_id="p1")]), resolver=resolver)
+    ) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+
+    assert response.status_code == 503
+    assert resolver.calls == [(PortKind.ARTIFACT_STORE, "artifacts-p1", "p1")]
+
+
+def test_get_artifact_rejects_hostile_resolver_affinity_without_equality_hook() -> None:
+    key = "documents/d1/report.json"
+    store = IsolatedArtifactStore()
+    store.objects[key] = b'{"source":"wrong-store"}'
+
+    class HostileConnectionId(str):
+        called = False
+
+        def __eq__(self, other: object) -> bool:
+            del other
+            self.called = True
+            return True
+
+    hostile_id = HostileConnectionId("artifacts-p2")
+
+    class DriftingResolver(FakeConnectionResolver):
+        async def resolve_with_connection_id(
+            self,
+            kind: PortKind,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+        ) -> tuple[Any, str]:
+            self.calls.append((kind, connection_id, project_id))
+            return store, hostile_id
+
+    resolver = DriftingResolver()
+    repo = FakeDocumentsRepository()
+    repo.rows["d1"] = document_row(
+        "d1",
+        key,
+        "application/json",
+        "p1",
+        artifact_connection_id="artifacts-p1",
+    )
+
+    with TestClient(
+        make_app(repo, identity([ScopeRef(project_id="p1")]), resolver=resolver)
+    ) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+
+    assert response.status_code == 503
+    assert hostile_id.called is False
 
 
 def test_locked_runtime_fails_closed_for_legacy_document_without_store_affinity(
@@ -453,6 +557,7 @@ def test_locked_runtime_rejects_legacy_transcript_without_store_affinity(
     assert response.status_code == 503
     assert "operator repair" in response.json()["title"]
     assert resolver.calls == []
+    assert threads.state_calls == []
 
 
 def test_get_artifact_transcript_requires_exact_checkpoint_ref(
@@ -550,6 +655,41 @@ def test_get_artifact_404_does_not_reflect_arbitrary_path_material() -> None:
     assert canary not in response.text
 
 
+def test_get_artifact_detaches_arbitrary_resolver_failure() -> None:
+    canary = "artifact-resolver-secret-canary"
+    key = "documents/d1/report.json"
+    repo = FakeDocumentsRepository()
+    repo.rows["d1"] = document_row(
+        "d1",
+        key,
+        "application/json",
+        "p1",
+        artifact_connection_id="artifacts-p1",
+    )
+
+    class FailingResolver(FakeConnectionResolver):
+        async def resolve_with_connection_id(
+            self,
+            kind: PortKind,
+            connection_id: str | None = None,
+            project_id: str | None = None,
+        ) -> tuple[Any, str]:
+            raise RuntimeError(canary)
+
+    with TestClient(
+        make_app(
+            repo,
+            identity([ScopeRef(project_id="p1")]),
+            resolver=FailingResolver(),
+        )
+    ) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+
+    assert response.status_code == 503
+    assert response.json()["title"] == "artifact store unavailable"
+    assert canary not in response.text
+
+
 async def test_authorization_session_closes_before_queued_stream_preflight() -> None:
     key = "documents/d1/queued.bin"
     documents = FakeDocumentsRepository()
@@ -559,6 +699,7 @@ async def test_authorization_session_closes_before_queued_stream_preflight() -> 
         "application/octet-stream",
         project_id="p1",
         artifact_connection_id="artifacts-p1",
+        size_bytes=len(b"payload"),
     )
     session_closed = asyncio.Event()
     stream_queued = asyncio.Event()
@@ -605,18 +746,18 @@ async def test_authorization_session_closes_before_queued_stream_preflight() -> 
             return iterator
 
     class Resolver:
-        async def resolve(
+        async def resolve_with_connection_id(
             self,
             kind: PortKind,
             connection_id: str | None = None,
             project_id: str | None = None,
-        ) -> Store:
+        ) -> tuple[Store, str]:
             assert kind is PortKind.ARTIFACT_STORE
             assert connection_id == "artifacts-p1"
             assert project_id == "p1"
             assert session_closed.is_set()
             lifecycle.append("resolved")
-            return Store()
+            return Store(), "artifacts-p1"
 
     task = asyncio.create_task(
         artifacts_router.get_artifact(
@@ -694,6 +835,214 @@ async def test_artifact_stream_busy_fails_fast_and_closes_provider_iterator() ->
     assert excinfo.value.status_code == 503
     assert excinfo.value.headers == {"Retry-After": "1"}
     assert iterator.closed is True
+
+
+async def test_artifact_stream_preflight_detaches_arbitrary_provider_failure() -> None:
+    canary = "artifact-provider-preflight-secret-canary"
+
+    class FailingIterator:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __aiter__(self) -> "FailingIterator":
+            return self
+
+        async def __anext__(self) -> bytes:
+            raise RuntimeError(canary)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    iterator = FailingIterator()
+
+    class Store:
+        def iter_bytes(self, _key: str) -> FailingIterator:
+            return iterator
+
+    with pytest.raises(HTTPException) as caught:
+        await artifacts_router._open_stream(Store(), "documents/d1/file.bin")
+
+    assert caught.value.status_code == 502
+    assert caught.value.detail == "artifact store read failed"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert canary not in str(caught.value)
+    assert iterator.closed is True
+
+
+async def test_artifact_stream_midread_detaches_arbitrary_provider_failure() -> None:
+    canary = "artifact-provider-midstream-secret-canary"
+
+    class FailingIterator:
+        def __init__(self) -> None:
+            self.reads = 0
+            self.closed = False
+
+        def __aiter__(self) -> "FailingIterator":
+            return self
+
+        async def __anext__(self) -> bytes:
+            self.reads += 1
+            if self.reads == 1:
+                return b"prefetched"
+            raise RuntimeError(canary)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    iterator = FailingIterator()
+
+    class Store:
+        def iter_bytes(self, _key: str) -> FailingIterator:
+            return iterator
+
+    stream = await artifacts_router._open_stream(Store(), "documents/d1/file.bin")
+    assert await anext(stream) == b"prefetched"
+
+    with pytest.raises(artifacts_router._ArtifactStreamReadError) as caught:
+        await anext(stream)
+
+    assert str(caught.value) == "artifact stream read failed"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert canary not in str(caught.value)
+    assert iterator.closed is True
+
+
+async def test_artifact_stream_preflight_rejects_non_bytes_without_coercion() -> None:
+    class HostileChunk:
+        len_called = False
+
+        def __len__(self) -> int:
+            self.len_called = True
+            raise AssertionError("malformed chunks must not be coerced")
+
+    hostile = HostileChunk()
+
+    class MalformedIterator:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __aiter__(self) -> "MalformedIterator":
+            return self
+
+        async def __anext__(self) -> Any:
+            return hostile
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    iterator = MalformedIterator()
+
+    class Store:
+        def iter_bytes(self, _key: str) -> MalformedIterator:
+            return iterator
+
+    with pytest.raises(HTTPException) as exc_info:
+        await artifacts_router._open_stream(Store(), "documents/d1/file.bin")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert hostile.len_called is False
+    assert iterator.closed is True
+
+
+async def test_artifact_stream_midread_rejects_oversized_chunk_and_closes() -> None:
+    class OversizedIterator:
+        def __init__(self) -> None:
+            self.reads = 0
+            self.closed = False
+
+        def __aiter__(self) -> "OversizedIterator":
+            return self
+
+        async def __anext__(self) -> bytes:
+            self.reads += 1
+            if self.reads == 1:
+                return b"first"
+            return b"x" * (artifacts_router._MAX_ARTIFACT_STREAM_CHUNK_BYTES + 1)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    iterator = OversizedIterator()
+
+    class Store:
+        def iter_bytes(self, _key: str) -> OversizedIterator:
+            return iterator
+
+    stream = await artifacts_router._open_stream(Store(), "documents/d1/file.bin")
+    assert await anext(stream) == b"first"
+    with pytest.raises(artifacts_router._ArtifactStreamReadError) as exc_info:
+        await anext(stream)
+
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert iterator.closed is True
+
+
+@pytest.mark.parametrize(
+    ("expected_size", "expected_digest"),
+    [
+        (4, None),
+        (2, sha256(b"different").hexdigest()),
+    ],
+)
+async def test_artifact_stream_requires_exact_durable_content_identity(
+    expected_size: int,
+    expected_digest: str | None,
+) -> None:
+    class TruncatedOrReplacedIterator:
+        def __init__(self) -> None:
+            self.sent = False
+            self.closed = False
+
+        def __aiter__(self) -> "TruncatedOrReplacedIterator":
+            return self
+
+        async def __anext__(self) -> bytes:
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return b"ok"
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    iterator = TruncatedOrReplacedIterator()
+
+    class Store:
+        def iter_bytes(self, _key: str) -> TruncatedOrReplacedIterator:
+            return iterator
+
+    stream = await artifacts_router._open_stream(
+        Store(),
+        "engine-runs/key/result.bin",
+        expected_size=expected_size,
+        expected_sha256=expected_digest,
+    )
+    assert await anext(stream) == b"ok"
+    with pytest.raises(artifacts_router._ArtifactStreamReadError):
+        await anext(stream)
+
+    assert iterator.closed is True
+
+
+async def test_legacy_artifact_stream_has_hard_total_byte_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(artifacts_router, "_MAX_LEGACY_ARTIFACT_STREAM_BYTES", 3)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"ab"
+        yield b"cd"
+
+    iterator = chunks()
+    stream = artifacts_router._OwnedStream(iterator, await anext(iterator))
+    assert await anext(stream) == b"ab"
+    with pytest.raises(artifacts_router._ArtifactStreamReadError):
+        await anext(stream)
 
 
 async def test_prefetched_artifact_stream_can_close_before_first_body_iteration() -> None:
@@ -813,6 +1162,71 @@ async def test_artifact_response_send_failure_closes_provider_iterator() -> None
             send,
         )
 
+    assert iterator.closed is True
+
+
+@pytest.mark.parametrize("initial_outcome", ["cancelled", "error"])
+async def test_artifact_response_close_survives_repeated_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    initial_outcome: str,
+) -> None:
+    response_entered = asyncio.Event()
+    close_entered = asyncio.Event()
+    allow_close = asyncio.Event()
+
+    class StreamError(RuntimeError):
+        pass
+
+    class BlockingCloseIterator:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __aiter__(self) -> "BlockingCloseIterator":
+            return self
+
+        async def __anext__(self) -> bytes:
+            raise AssertionError("the response body is replaced by this focused test")
+
+        async def aclose(self) -> None:
+            close_entered.set()
+            await allow_close.wait()
+            self.closed = True
+
+    async def response_call(
+        _response: Any,
+        _scope: Any,
+        _receive: Any,
+        _send: Any,
+    ) -> None:
+        response_entered.set()
+        if initial_outcome == "error":
+            raise StreamError("send failed")
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(artifacts_router.StreamingResponse, "__call__", response_call)
+    iterator = BlockingCloseIterator()
+    response = artifacts_router._OwnedStreamingResponse(
+        artifacts_router._OwnedStream(iterator, b"prefetched"),
+        media_type="application/octet-stream",
+    )
+    response_task = asyncio.create_task(response({}, None, None))
+    await response_entered.wait()
+    if initial_outcome == "cancelled":
+        response_task.cancel()
+    await close_entered.wait()
+
+    # Deliver cancellation while the original cancellation/error is unwinding
+    # through provider cleanup, as can happen during disconnect plus shutdown.
+    response_task.cancel()
+    await asyncio.sleep(0)
+    response_task.cancel()
+    await asyncio.sleep(0)
+    assert response_task.done() is False
+    allow_close.set()
+
+    expected = asyncio.CancelledError if initial_outcome == "cancelled" else StreamError
+    with pytest.raises(expected):
+        await response_task
     assert iterator.closed is True
 
 
@@ -1067,6 +1481,7 @@ def test_locked_runtime_rejects_legacy_engine_checkpoint_without_store_affinity(
     assert response.status_code == 503
     assert "operator repair" in response.json()["title"]
     assert resolver.calls == []
+    assert threads.state_calls == []
 
 
 def test_get_engine_artifact_uses_exact_durable_reference_after_thread_retention() -> None:
@@ -1092,6 +1507,8 @@ def test_get_engine_artifact_uses_exact_durable_reference_after_thread_retention
         thread_id="t-retained",
         project_id="p1",
         app_id="app-a",
+        size_bytes=len(b"durable"),
+        content_sha256=sha256(b"durable").hexdigest(),
     )
     app = make_app(
         FakeDocumentsRepository(),
@@ -1299,6 +1716,42 @@ def test_get_engine_artifact_sanitizes_checkpoint_media_type(
     assert response.headers["content-type"].startswith("application/octet-stream")
 
 
+def test_get_engine_artifact_detaches_arbitrary_loopback_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "artifact-loopback-secret-canary"
+    run = engine_run_row("t-1", "run-p1-a1", "p1")
+    key = f"{run.artifact_namespace}/results.json"
+
+    class FailingThreads(FakeThreads):
+        async def get(self, thread_id: str) -> dict[str, Any]:
+            assert thread_id == "t-1"
+            raise RuntimeError(canary)
+
+    monkeypatch.setattr(
+        artifacts_router,
+        "loopback_client",
+        lambda _api_key: FakeLoopbackClient(FailingThreads()),
+    )
+    engine_repo = FakeEngineRunsRepository()
+    engine_repo.rows.append(run)
+    resolver = FakeConnectionResolver()
+    app = make_app(
+        FakeDocumentsRepository(),
+        identity([ScopeRef(project_id="p1")]),
+        engine_repo,
+        resolver,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "pipeline state unavailable"
+    assert canary not in response.text
+    assert resolver.calls == []
+
+
 def test_get_artifact_missing_is_404_problem() -> None:
     repo = FakeDocumentsRepository()
     key = "documents/d1/missing.txt"
@@ -1351,3 +1804,32 @@ def test_checkpoint_artifact_scan_has_a_hard_fanout_budget() -> None:
     values[-1] = {"kind": "transcript", "key": key}
 
     assert artifacts_router._find_artifact_ref(values, key) is None
+
+
+def test_checkpoint_artifact_scan_rejects_hostile_scalar_subclasses_without_hooks() -> None:
+    class HostileString(str):
+        compared = False
+
+        def __eq__(self, other: object) -> bool:
+            self.compared = True
+            raise AssertionError("provider scalar comparison must not run")
+
+    candidate = HostileString("transcripts/t-1/execution/attempt-1.txt")
+    state = {"kind": "transcript", "key": candidate}
+
+    assert artifacts_router._find_artifact_ref(state, str(candidate)) is None
+    assert candidate.compared is False
+
+
+def test_checkpoint_artifact_affinity_rejects_hostile_scalar_without_hooks() -> None:
+    class HostileConnectionId(str):
+        called = False
+
+        def strip(self, *_args: Any, **_kwargs: Any) -> str:
+            self.called = True
+            raise AssertionError("checkpoint scalar hooks must not run")
+
+    candidate = HostileConnectionId("artifacts-p1")
+
+    assert artifacts_router._connection_id(candidate) is None
+    assert candidate.called is False

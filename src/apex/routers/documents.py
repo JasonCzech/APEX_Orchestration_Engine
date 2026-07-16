@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,7 +36,7 @@ from apex.persistence.db import get_session, get_sessionmaker, release_read_tran
 from apex.persistence.models import Document
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.services.connections import ConnectionResolver, get_connection_resolver
+from apex.services.connections import ConnectionResolver, close_adapter, get_connection_resolver
 from apex.services.documents import (
     MAX_DOCUMENT_BYTES,
     MAX_UPLOAD_BODY_BYTES,
@@ -54,6 +55,7 @@ from apex.services.documents import (
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+logger = structlog.get_logger(__name__)
 
 RepositoryDep = Annotated[DocumentsRepository, Depends(get_documents_repository)]
 
@@ -254,9 +256,23 @@ async def _artifact_key_exists(store: Any, key: str) -> bool:
     except (KeyError, FileNotFoundError):
         return False
     finally:
-        close = getattr(iterator, "aclose", None)
-        if close is not None:
-            await close()
+        await close_adapter(iterator)
+    return True
+
+
+async def _close_artifact_store(store: Any, *, operation: str) -> bool:
+    """Settle provider cleanup without letting diagnostics cross the HTTP boundary."""
+
+    try:
+        await close_adapter(store)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.warning(
+            "documents.artifact_store_close_failed",
+            operation=operation,
+        )
+        return False
     return True
 
 
@@ -299,6 +315,9 @@ async def upload_document(
     boundary = extract_boundary(request.headers.get("content-type"))
     if boundary is None:
         raise HTTPException(status_code=415, detail="expected a multipart/form-data request")
+    upload = None
+    malformed_multipart = False
+    upload_error: HTTPException | None = None
     try:
         body = await read_body_capped(request.stream(), MAX_UPLOAD_BODY_BYTES)
         # Parsing performs delimiter scans and copies the file slice. Keep it off
@@ -309,16 +328,21 @@ async def upload_document(
         )
         upload = await await_task_definitively(parse_task)
         del body
-    except TimeoutError as exc:
-        raise HTTPException(status_code=408, detail="document upload body timed out") from exc
+    except TimeoutError:
+        upload_error = HTTPException(status_code=408, detail="document upload body timed out")
     except DocumentTooLargeError as exc:
-        raise HTTPException(
+        upload_error = HTTPException(
             status_code=413, detail=f"document exceeds the {exc.limit} byte limit"
-        ) from exc
-    except MultipartParseError as exc:
-        # Parser diagnostics can contain caller-controlled field/header names.
-        # Keep the response stable instead of reflecting multipart input.
-        raise HTTPException(status_code=422, detail="malformed multipart body") from exc
+        )
+    except MultipartParseError:
+        # Leave the exception handler before raising. Even ``from None`` keeps
+        # the caught parser error in ``__context__``, where it could retain raw
+        # multipart input for tracing/exception consumers.
+        malformed_multipart = True
+    if upload_error is not None:
+        raise upload_error
+    if malformed_multipart or upload is None:
+        raise HTTPException(status_code=422, detail="malformed multipart body")
     if upload.file is None:
         raise HTTPException(status_code=422, detail="multipart body is missing a 'file' part")
     # Multipart framing has a small allowance beyond the document cap. Reject
@@ -357,10 +381,14 @@ async def upload_document(
         forbid_controls=True,
     )
     assert media_type is not None
+    filename: str | None = None
+    invalid_filename = False
     try:
         filename = safe_filename(upload.file.filename)
-    except InvalidDocumentFilenameError as exc:
-        raise HTTPException(status_code=422, detail="invalid document filename") from exc
+    except InvalidDocumentFilenameError:
+        invalid_filename = True
+    if invalid_filename or filename is None:
+        raise HTTPException(status_code=422, detail="invalid document filename")
     project_id, app_id = _resolve_upload_scope(
         identity,
         project_id=project_id,
@@ -377,32 +405,56 @@ async def upload_document(
 
     await release_read_transactions(catalog, repository)
 
+    store: Any | None = None
+    artifact_connection_id: str | None = None
+    store_unavailable = False
     try:
         store, artifact_connection_id = await resolver.resolve_with_connection_id(
             PortKind.ARTIFACT_STORE,
             project_id=project_id,
         )
-    except (KeyError, OSError, RuntimeError, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
+    except Exception:
+        store_unavailable = True
+    if (
+        store_unavailable
+        or store is None
+        or type(artifact_connection_id) is not str
+        or not 1 <= len(artifact_connection_id) <= 32
+        or "\x00" in artifact_connection_id
+    ):
+        if store is not None:
+            await _close_artifact_store(store, operation="upload_resolution")
+        raise HTTPException(status_code=503, detail="artifact store unavailable")
 
     service = DocumentsService(repository, store)
+    document = None
+    service_failure: HTTPException | None = None
     try:
-        document = await service.upload(
-            filename=filename,
-            content_type=media_type,
-            data=upload.file.data,
-            artifact_connection_id=artifact_connection_id,
-            project_id=project_id,
-            app_id=app_id,
-            summary=summary,
-            uploaded_by=identity.name,
-        )
-    except DocumentTooLargeError as exc:
-        raise HTTPException(
-            status_code=413, detail=f"document exceeds the {exc.limit} byte limit"
-        ) from exc
-    except InvalidDocumentFilenameError as exc:
-        raise HTTPException(status_code=422, detail="invalid document filename") from exc
+        try:
+            document = await service.upload(
+                filename=filename,
+                content_type=media_type,
+                data=upload.file.data,
+                artifact_connection_id=artifact_connection_id,
+                project_id=project_id,
+                app_id=app_id,
+                summary=summary,
+                uploaded_by=identity.name,
+            )
+        except DocumentTooLargeError as exc:
+            service_failure = HTTPException(
+                status_code=413, detail=f"document exceeds the {exc.limit} byte limit"
+            )
+        except InvalidDocumentFilenameError:
+            service_failure = HTTPException(status_code=422, detail="invalid document filename")
+        except Exception:
+            service_failure = HTTPException(status_code=503, detail="document upload failed")
+    finally:
+        await _close_artifact_store(store, operation="upload")
+    if service_failure is not None:
+        raise service_failure
+    if document is None:  # pragma: no cover - service contract invariant
+        raise HTTPException(status_code=503, detail="document upload returned no document")
     return document
 
 
@@ -470,22 +522,35 @@ async def assign_document_artifact_connection(
             )
         candidate = _legacy_affinity_candidate(document)
 
+    store: Any | None = None
+    exists = False
+    store_unavailable = False
+    affinity_mismatch = False
     try:
         store, resolved_connection_id = await resolver.resolve_with_connection_id(
             PortKind.ARTIFACT_STORE,
             connection_id=body.connection_id,
             project_id=candidate.project_id,
         )
-        if resolved_connection_id != body.connection_id:
-            raise HTTPException(
-                status_code=409,
-                detail="resolver did not select the requested artifact-store connection",
-            )
-        exists = await _artifact_key_exists(store, candidate.artifact_key)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
+        if type(resolved_connection_id) is not str or resolved_connection_id != body.connection_id:
+            affinity_mismatch = True
+        else:
+            exists = await _artifact_key_exists(store, candidate.artifact_key)
+    except Exception:
+        store_unavailable = True
+    finally:
+        if store is not None and not await _close_artifact_store(
+            store,
+            operation="affinity_verification",
+        ):
+            store_unavailable = True
+    if affinity_mismatch:
+        raise HTTPException(
+            status_code=409,
+            detail="resolver did not select the requested artifact-store connection",
+        )
+    if store_unavailable:
+        raise HTTPException(status_code=503, detail="artifact store unavailable")
     if not exists:
         raise HTTPException(
             status_code=409,
@@ -501,14 +566,17 @@ async def assign_document_artifact_connection(
                 status_code=409,
                 detail="document changed while artifact-store affinity was being verified",
             )
+        affinity_failure: HTTPException | None = None
         try:
             await repository.assign_artifact_connection(document, body.connection_id)
-        except ValueError as exc:
-            raise HTTPException(
+        except ValueError:
+            affinity_failure = HTTPException(
                 status_code=409, detail="document affinity update conflict"
-            ) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=503, detail="artifact store unavailable") from exc
+            )
+        except RuntimeError:
+            affinity_failure = HTTPException(status_code=503, detail="artifact store unavailable")
+        if affinity_failure is not None:
+            raise affinity_failure
 
 
 @router.delete(
@@ -526,17 +594,23 @@ async def delete_document(
     document = await repository.get(document_id)
     if document is None or not _writable(identity, document):
         raise HTTPException(status_code=404, detail="document not found")
+    persistence_failed = False
     try:
         # The committed tombstone hides metadata and retains store affinity
         # before any irreversible object deletion. A background reconciler can
         # safely resume every failure/cancellation point after this write.
         await repository.mark_deletion_pending(document)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="could not persist document deletion") from exc
+    except Exception:
+        persistence_failed = True
+    if persistence_failed:
+        raise HTTPException(status_code=503, detail="could not persist document deletion")
+    purge_failed = False
     try:
         await purge_document_tombstone(document, repository, resolver)
-    except Exception as exc:
+    except Exception:
+        purge_failed = True
+    if purge_failed:
         raise HTTPException(
             status_code=503,
             detail="document deletion is queued for retry",
-        ) from exc
+        )

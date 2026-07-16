@@ -26,7 +26,15 @@
  * via the stream/poll; a refreshed snapshot opens the next review even when
  * LangGraph derives the same interrupt_id for the repeated node.
  */
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -40,6 +48,7 @@ import {
   gateOf,
   gateReducer,
   GATE_MACHINE_INITIAL,
+  isActionAllowedForGate,
   type GateAction,
   type GateDraftPatch,
   type GateInstance,
@@ -49,7 +58,14 @@ import {
 import { useResumeGate } from './useResumeGate'
 
 function isGateKind(value: unknown): value is GateKind {
-  return value === 'prompt_review' || value === 'phase_review'
+  return (
+    value === 'prompt_review' ||
+    value === 'phase_review' ||
+    value === 'engine_provision_retry' ||
+    value === 'engine_cleanup_retry' ||
+    value === 'engine_collection_retry' ||
+    value === 'engine_collection_settle_retry'
+  )
 }
 
 /**
@@ -61,15 +77,23 @@ export function normalizeGateInterrupt(interrupt: GateInterrupt): GateInstance |
   if (!interrupt.interrupt_id || !isGateKind(interrupt.kind)) return null
   const payload = parseGateInterrupt(interrupt.payload, (drift) => {
     console.warn('[useGate] gate payload rejected by the zod contract', {
-      interruptId: interrupt.interrupt_id,
-      issues: drift.error.issues,
+      issueCount: drift.error.issues.length,
     })
   })
+  const envelopeMatchesPayload =
+    payload !== null &&
+    payload.kind === interrupt.kind &&
+    (interrupt.phase === null || interrupt.phase === undefined || interrupt.phase === payload.phase)
+  if (payload !== null && !envelopeMatchesPayload) {
+    // Never let a valid payload for one checkpoint authorize a different
+    // facade interrupt. Keep the gate visible, but fail closed with no actions.
+    console.warn('[useGate] gate payload did not match its interrupt envelope')
+  }
   return {
     interrupt_id: interrupt.interrupt_id,
     kind: interrupt.kind,
     phase: interrupt.phase ?? payload?.phase ?? 'unknown',
-    payload,
+    payload: envelopeMatchesPayload ? payload : null,
   }
 }
 
@@ -116,11 +140,19 @@ export interface UseGateResult {
 }
 
 function reopensGate(action: GateAction): boolean {
-  return action === 'modify' || action === 'discuss' || action === 'revise'
+  return action === 'modify' || action === 'discuss' || action === 'revise' || action === 'retry'
 }
 
 function gatePayloadSignature(gate: GateInstance | null): string {
   return JSON.stringify(gate?.payload ?? null)
+}
+
+interface ReopeningBaseline {
+  interruptId: string
+  baselineUpdatedAt: number
+  baselineServerUpdatedAt: string | null
+  baselinePayload: string
+  observedClear: boolean
 }
 
 export function useGate(threadId: string, options: UseGateOptions = {}): UseGateResult {
@@ -137,13 +169,11 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   // suppresses stale cache echoes until the refetched snapshot moves on.
   const settledGateIdRef = useRef<string | null>(null)
   const settledGatePayloadRef = useRef<string | null>(null)
-  const reopeningRef = useRef<{
-    interruptId: string
-    baselineUpdatedAt: number
-    baselineServerUpdatedAt: string | null
-    baselinePayload: string
-    observedClear: boolean
-  } | null>(null)
+  const reopeningRef = useRef<ReopeningBaseline | null>(null)
+  // Capture before the request starts. A poll can observe a same-id re-gate
+  // while the 202 response is still in flight; taking the baseline in
+  // onAccepted would mistake that new snapshot for the old generation.
+  const submittedReopeningBaselineRef = useRef<ReopeningBaseline | null>(null)
   const [lastAccepted, setLastAccepted] = useState<GateResolution | null>(null)
 
   const resume = useResumeGate({
@@ -152,21 +182,29 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         // LangGraph can reuse the same interrupt id when the same node calls
         // interrupt() again. Wait for a post-resume snapshot generation, then
         // explicitly reopen even when the id is unchanged.
-        reopeningRef.current = {
-          interruptId: variables.interruptId,
-          baselineUpdatedAt: thread.dataUpdatedAt,
-          baselineServerUpdatedAt: thread.data?.detail.updated_at ?? null,
-          baselinePayload: gatePayloadSignature(gateOf(stateRef.current)),
-          observedClear: false,
-        }
+        const submitted = submittedReopeningBaselineRef.current
+        reopeningRef.current =
+          submitted?.interruptId === variables.interruptId
+            ? submitted
+            : {
+                interruptId: variables.interruptId,
+                baselineUpdatedAt: thread.dataUpdatedAt,
+                baselineServerUpdatedAt: thread.data?.detail.updated_at ?? null,
+                baselinePayload: gatePayloadSignature(gateOf(stateRef.current)),
+                observedClear: false,
+              }
       } else {
         settledGateIdRef.current = variables.interruptId
         settledGatePayloadRef.current = gatePayloadSignature(gateOf(stateRef.current))
       }
+      submittedReopeningBaselineRef.current = null
       setLastAccepted({ interruptId: variables.interruptId, action: variables.body.action, runId })
       dispatch({ type: 'RESUME_ACCEPTED' })
     },
-    onRejected: (rejection) => dispatch({ type: 'RESUME_REJECTED', ...rejection }),
+    onRejected: (rejection) => {
+      submittedReopeningBaselineRef.current = null
+      dispatch({ type: 'RESUME_REJECTED', ...rejection })
+    },
   })
   const { mutate } = resume
 
@@ -177,6 +215,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       settledGateIdRef.current = null
       settledGatePayloadRef.current = null
       reopeningRef.current = null
+      submittedReopeningBaselineRef.current = null
       setLastAccepted(null)
       dispatch({ type: 'RESET' })
     }
@@ -185,9 +224,13 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
   const interrupts = thread.data?.interrupts
   const snapshotGate = useMemo(() => (interrupts ? firstGateOf(interrupts) : null), [interrupts])
 
-  // Discovery: idempotent dispatches; state.tag in deps lets a RESET (or an
-  // accepted resume that landed on no_gate) re-evaluate the cached snapshot.
-  useEffect(() => {
+  // Discovery must settle before paint. The run-detail workspace subscribes to
+  // the same query independently and can otherwise commit its loaded state one
+  // render before this reducer observes the interrupt, briefly showing the
+  // ordinary review UI in place of the authoritative gate. Idempotent
+  // dispatches keep the layout effect safe; state.tag in deps lets a RESET (or
+  // an accepted resume that landed on no_gate) re-evaluate the cached snapshot.
+  useLayoutEffect(() => {
     if (!interrupts) return
     if (snapshotGate) {
       const currentGate = gateOf(stateRef.current)
@@ -279,14 +322,34 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
       // Only an open or failed (retry) gate can submit; everything else is
       // either already in flight or has nothing to resume.
       if (current.tag !== 'open' && current.tag !== 'failed') return
-      dispatch({ type: 'SUBMIT', action })
+      if (!isActionAllowedForGate(current.gate.kind, action)) return
+      if (!current.gate.payload?.actions.some((advertised) => advertised === action)) return
+      const submitEvent = { type: 'SUBMIT', action } as const
+      const submitting = gateReducer(current, submitEvent)
+      if (submitting === current) return
+      if (reopensGate(action)) {
+        submittedReopeningBaselineRef.current = {
+          interruptId: current.gate.interrupt_id,
+          baselineUpdatedAt: thread.dataUpdatedAt,
+          baselineServerUpdatedAt: thread.data?.detail.updated_at ?? null,
+          baselinePayload: gatePayloadSignature(current.gate),
+          observedClear: false,
+        }
+      } else {
+        submittedReopeningBaselineRef.current = null
+      }
+      // Close the same-tick window before React commits the reducer update.
+      // Without this mirror, two click/keyboard submissions can issue two CAS
+      // requests for the same interrupt.
+      stateRef.current = submitting
+      dispatch(submitEvent)
       mutate({
         threadId,
         interruptId: current.gate.interrupt_id,
         body: buildResumeBody(action, current.draft),
       })
     },
-    [threadId, mutate],
+    [thread.data?.detail.updated_at, thread.dataUpdatedAt, threadId, mutate],
   )
 
   const reset = useCallback(() => dispatch({ type: 'RESET' }), [])

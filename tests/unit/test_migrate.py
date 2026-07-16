@@ -7,6 +7,12 @@ import pytest
 from apex.persistence import migrate
 
 
+@pytest.fixture(autouse=True)
+def _clear_database_role_claim_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in migrate._DATABASE_ROLE_CLAIM_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _compatibility_results(*results: bool) -> Iterator[bool]:
     yield from results
 
@@ -114,3 +120,31 @@ def test_migration_runner_verifies_claims_before_schema_ddl(
     assert migrate.main() == 1
     assert schema_checked is False
     assert secret not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "claim_environment",
+    [
+        {"APEX_DATABASE_ROLE_CLAIM_KEY": ""},
+        {"APEX_RUNTIME_OWNER_ROLE": "apex_runtime"},
+    ],
+)
+def test_partial_database_role_claim_environment_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    claim_environment: dict[str, str],
+) -> None:
+    unclaimed_path_called = False
+
+    def unexpected_unclaimed_path() -> bool:
+        nonlocal unclaimed_path_called
+        unclaimed_path_called = True
+        return True
+
+    for name, value in claim_environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(migrate, "_schema_is_compatible", unexpected_unclaimed_path)
+
+    assert migrate.main() == 1
+    assert unclaimed_path_called is False
+    assert capsys.readouterr().err == "APEX database ownership verification failed.\n"

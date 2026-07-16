@@ -121,6 +121,17 @@ export function GateActionBar({
         </label>
       )}
       <div className="gate-actions-row">
+        {kind.startsWith('engine_') && has('retry') && (
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            data-gate-action="retry"
+            disabled={disabled}
+            onClick={() => onSubmit('retry')}
+          >
+            {submitting ? 'Retrying…' : 'Retry provider operation'}
+          </button>
+        )}
         {kind === 'prompt_review' && has('approve') && (
           <button
             type="button"

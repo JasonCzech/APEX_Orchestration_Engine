@@ -5,7 +5,7 @@
  * resumable join surface. Custom events are demuxed:
  *   plan_resolved / phase_status / gate_opened → reducer dispatch + query
  *     cache patch (applyStreamEvent);
- *   tool_call / agent_* / engine_poll_error → reducer dispatch only (capped
+ *   tool_call / agent_* / engine_*_error → reducer dispatch only (capped
  *     feeds, low frequency);
  *   engine_poll → ring buffer ref ONLY, coalesced into state via a 50ms-floor
  *     rAF flush gate — never per-event renders, never the query cache.
@@ -168,10 +168,7 @@ export function usePipelineStream(
 
     const reportDrift: SchemaDriftReporter = (drift) => {
       console.warn('[usePipelineStream] schema drift on custom stream event', {
-        threadId: tid,
-        runId: rid,
-        data: drift.data,
-        issues: drift.error.issues,
+        issueCount: drift.error.issues.length,
       })
       dispatch({ type: 'drift' })
     }
@@ -179,8 +176,10 @@ export function usePipelineStream(
     /** Returns an Error when the part is the run's terminal `error` event. */
     const handlePart = (part: StreamPart): Error | null => {
       if (part.event === 'error') {
-        const message = typeof part.data === 'string' ? part.data : JSON.stringify(part.data)
-        return new Error(`Run stream reported an error: ${message}`)
+        // LangGraph error payloads can contain provider diagnostics, prompts,
+        // or credentials. The snapshot refetch supplies the operator-safe
+        // state; do not copy the raw stream body into UI state or devtools.
+        return new Error('Run stream reported an error.')
       }
       // Subgraph-scoped custom events arrive as "custom|<node>:<task>"
       // (verified in the backend M1 smoke).
@@ -193,15 +192,20 @@ export function usePipelineStream(
         flushGate.markDirty() // ring ref only — no dispatch, no cache write
         return null
       }
-      dispatch({ type: 'pipeline_event', event: parsed })
+      let accepted = true
       if (
         parsed.type !== 'tool_call' &&
         parsed.type !== 'agent_message' &&
         parsed.type !== 'agent_error' &&
-        parsed.type !== 'engine_poll_error'
+        parsed.type !== 'engine_poll_error' &&
+        parsed.type !== 'engine_provision_error' &&
+        parsed.type !== 'engine_collection_error' &&
+        parsed.type !== 'engine_collection_index_error' &&
+        parsed.type !== 'engine_collection_settle_error'
       ) {
-        applyStreamEvent(queryClient, tid, parsed)
+        accepted = applyStreamEvent(queryClient, tid, parsed)
       }
+      if (accepted) dispatch({ type: 'pipeline_event', event: parsed })
       return null
     }
 
@@ -223,7 +227,7 @@ export function usePipelineStream(
             receivedPart = true
             attempt = 0
             dispatch({ type: 'live' }) // no-op (same state ref) while already live
-            if (part.id) resumeStore.set(tid, rid, part.id)
+            if (typeof part.id === 'string') resumeStore.set(tid, rid, part.id)
             runError = handlePart(part)
             if (runError) break
           }

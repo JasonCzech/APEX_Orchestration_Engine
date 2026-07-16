@@ -18,6 +18,7 @@ Connection options: {"duration_s": float} overrides the spec duration (fast test
 import hashlib
 import json
 import math
+import re
 import time
 from typing import Any
 
@@ -44,10 +45,18 @@ _RAMP_FRACTION = 0.2  # vusers ramp over the first 20% of the run
 _TPS_PER_VUSER = 2.4
 _BASE_ERROR_RATE = 0.004
 _BASE_P95_MS = 180.0
+_SIM_RUN_ID = re.compile(r"^sim-[0-9a-f]{16}$")
 
 
 def _derive_run_id(idempotency_key: str) -> str:
     return "sim-" + hashlib.sha256(idempotency_key.encode()).hexdigest()[:16]
+
+
+def _run_id(handle: EngineHandle) -> str:
+    run_id = handle.external_run_id
+    if type(run_id) is not str or _SIM_RUN_ID.fullmatch(run_id) is None:
+        raise ValueError("sim handle has an invalid external_run_id; call provision() first")
+    return run_id
 
 
 def _bounded_float(
@@ -67,10 +76,14 @@ def _bounded_float(
         value = text
     elif not isinstance(value, int | float):
         raise ValueError(f"{label} must be a finite number")
+    parsed = 0.0
+    invalid_number = False
     try:
         parsed = float(value)
     except (TypeError, ValueError, OverflowError):
-        raise ValueError(f"{label} must be a finite number") from None
+        invalid_number = True
+    if invalid_number:
+        raise ValueError(f"{label} must be a finite number")
     minimum_ok = parsed >= minimum if minimum_inclusive else parsed > minimum
     if not math.isfinite(parsed) or not minimum_ok or parsed > maximum:
         relation = ">=" if minimum_inclusive else ">"
@@ -85,12 +98,7 @@ def _bounded_int(value: object, *, label: str, minimum: int, maximum: int) -> in
         parsed = value
     elif isinstance(value, str):
         text = value.strip()
-        if (
-            not text
-            or len(text) > _MAX_NUMERIC_CHARS
-            or not text.isascii()
-            or not text.isdecimal()
-        ):
+        if not text or len(text) > _MAX_NUMERIC_CHARS or not text.isascii() or not text.isdecimal():
             raise ValueError(f"{label} must be an integer")
         parsed = int(text)
     else:
@@ -101,6 +109,11 @@ def _bounded_int(value: object, *, label: str, minimum: int, maximum: int) -> in
 
 
 def _parse_extras(handle: EngineHandle) -> tuple[float, float, int, float | None]:
+    _run_id(handle)
+    missing_key: object | None = None
+    started_at: float | None = None
+    duration_s: float | None = None
+    vusers: int | None = None
     try:
         started_at = _bounded_float(
             handle.extras["started_at"],
@@ -122,10 +135,14 @@ def _parse_extras(handle: EngineHandle) -> tuple[float, float, int, float | None
             maximum=_MAX_VUSERS,
         )
     except KeyError as exc:
+        missing_key = exc.args[0] if exc.args else "required field"
+    if missing_key is not None:
         raise ValueError(
-            f"handle for run {handle.external_run_id!r} was not provisioned by the sim "
-            f"engine (missing extras[{exc.args[0]!r}]); call provision() first"
-        ) from None
+            "handle was not provisioned by the sim "
+            f"engine (missing extras[{missing_key!r}]); call provision() first"
+        )
+    if started_at is None or duration_s is None or vusers is None:  # pragma: no cover
+        raise ValueError("sim handle is missing required provisioned state")
     fail_raw = handle.extras.get("fail_at_pct")
     fail_at_pct = (
         _bounded_float(
@@ -280,6 +297,7 @@ class SimExecutionEngine:
         )
 
     async def abort(self, handle: EngineHandle, *, reason: str) -> None:
+        run_id = _run_id(handle)
         started_at, duration_s, _, _ = _parse_extras(handle)
         elapsed = max(0.0, time.time() - started_at)
         progress = 100.0 if duration_s <= 0 else min(100.0, elapsed / duration_s * 100.0)
@@ -288,7 +306,7 @@ class SimExecutionEngine:
         handle.extras["abort_reason_recorded"] = "true"
         logger.info(
             "sim_engine.aborted",
-            external_run_id=handle.external_run_id,
+            external_run_id=run_id,
             reason_present=bool(reason),
             reason_length=min(len(reason), 1_024),
         )
@@ -296,10 +314,11 @@ class SimExecutionEngine:
     async def collect_artifacts(
         self, handle: EngineHandle, store: ArtifactStorePort
     ) -> list[dict[str, Any]]:
+        run_id = _run_id(handle)
         summary = await self.fetch_summary(handle)
         payload = {
             "engine": "sim",
-            "external_run_id": handle.external_run_id,
+            "external_run_id": run_id,
             "passed": summary.passed,
             "kpis": summary.kpis,
             "sla_breaches": summary.sla_breaches,
@@ -313,7 +332,7 @@ class SimExecutionEngine:
             uri=stored.uri,
             key=stored.key,
             media_type="application/json",
-            summary=f"Simulated engine results for {handle.external_run_id}",
+            summary=f"Simulated engine results for {run_id}",
         )
         return [ref.model_dump(mode="json")]
 
@@ -342,4 +361,7 @@ class SimExecutionEngine:
         )
 
     async def teardown(self, handle: EngineHandle) -> None:
-        logger.debug("sim_engine.teardown_noop", external_run_id=handle.external_run_id)
+        logger.debug(
+            "sim_engine.teardown_noop",
+            external_run_id_present=bool(handle.external_run_id),
+        )

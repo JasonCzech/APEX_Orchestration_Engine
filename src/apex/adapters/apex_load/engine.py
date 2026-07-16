@@ -69,6 +69,7 @@ import structlog
 from apex.adapters.http_resilience import (
     CircuitBreaker,
     CircuitOpenError,
+    close_response_definitively,
     parse_json_bytes,
     parse_json_response,
     read_bounded_response,
@@ -81,7 +82,7 @@ from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_
 from apex.adapters.options import require_bounded_credential
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.remote_idempotency import remote_create_guard
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.integrations import (
     LoadTestSpec,
     SecretValue,
@@ -206,7 +207,7 @@ def _is_inline_ref(ref: str) -> bool:
 
 
 def _is_safe_named_ref(ref: str) -> bool:
-    return _NAMED_SCRIPT_REF.fullmatch(ref) is not None
+    return _NAMED_SCRIPT_REF.fullmatch(ref) is not None and not contains_credential_material(ref)
 
 
 async def _read_bounded_json_object(
@@ -219,7 +220,9 @@ async def _read_bounded_json_object(
                 raise ValueError(f"{context} exceeds maximum size of {max_bytes} bytes")
             payload.extend(chunk)
     finally:
-        await response.aclose()
+        await close_response_definitively(response)
+    data: Any = None
+    invalid_json = False
     try:
         buffered = httpx.Response(
             response.status_code,
@@ -227,8 +230,10 @@ async def _read_bounded_json_object(
             content=bytes(payload),
         )
         data = parse_json_response(buffered, context=context)
-    except RuntimeError as exc:
-        raise ValueError(f"{context} returned invalid JSON") from exc
+    except RuntimeError:
+        invalid_json = True
+    if invalid_json:
+        raise ValueError(f"{context} returned invalid JSON")
     if not isinstance(data, dict):
         raise ValueError(f"{context} returned a non-object JSON payload")
     return data
@@ -310,6 +315,7 @@ def _revalidate_spec(spec: LoadTestSpec) -> LoadTestSpec:
 
     if not isinstance(spec, LoadTestSpec):
         raise ValueError("apex_load requires a valid LoadTestSpec")
+    validated: LoadTestSpec | None = None
     try:
         payload = spec.model_dump(mode="python", round_trip=True, warnings="error")
         validated = LoadTestSpec.model_validate(payload)
@@ -319,9 +325,11 @@ def _revalidate_spec(spec: LoadTestSpec) -> LoadTestSpec:
             max_bytes=256,
             header_token=True,
         )
-        return validated
-    except Exception as exc:  # noqa: BLE001 - a corrupt model must fail before provider I/O
-        raise ValueError("apex_load load test specification failed structural validation") from exc
+    except Exception:  # noqa: BLE001 - a corrupt model must fail before provider I/O
+        validated = None
+    if validated is None:
+        raise ValueError("apex_load load test specification failed structural validation")
+    return validated
 
 
 # ── remote -> domain helpers ──────────────────────────────────────────────────
@@ -397,6 +405,8 @@ def _provider_status(data: dict[str, Any], context: str) -> str:
             f"apex load {context} field 'status' must be a safe non-empty string of at most "
             f"{_MAX_PROVIDER_STATUS_CHARS} characters"
         )
+    if contains_credential_material(raw):
+        raise RuntimeError(f"apex load {context} field 'status' contains unsafe material")
     return raw.upper()
 
 
@@ -493,12 +503,15 @@ def _progress_pct(test: dict[str, Any], phase: EngineRunPhase) -> float:
         or "\x00" in started_raw
     ):
         raise RuntimeError("apex load test field 'started_at' must be a bounded timestamp string")
+    started: datetime | None = None
     try:
         started = datetime.fromisoformat(started_raw)
-    except ValueError as exc:
+    except ValueError:
+        pass
+    if started is None:
         raise RuntimeError(
             "apex load test field 'started_at' must be an ISO-8601 timestamp"
-        ) from exc
+        ) from None
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)
     elapsed = (datetime.now(UTC) - started).total_seconds()
@@ -552,11 +565,9 @@ def _kpis_from_report(report: dict[str, Any]) -> dict[str, float]:
         if by_action:
             weighted = 0.0
             total_tx = 0
-            for action, stats in by_action.items():
+            for stats in by_action.values():
                 if not isinstance(stats, dict):
-                    raise RuntimeError(
-                        f"apex load archive report action {str(action)[:64]!r} must be an object"
-                    )
+                    raise RuntimeError("apex load archive report action entry must be an object")
                 tx = _provider_integer(
                     stats.get("transactions", 0),
                     "archive action field 'transactions'",
@@ -633,10 +644,14 @@ def _error_text(response: httpx.Response) -> str:
 
 
 def _json_object(response: httpx.Response, context: str) -> dict[str, Any]:
+    data: Any = None
+    invalid_json = False
     try:
         data = parse_json_response(response, context=f"apex load {context} response")
-    except RuntimeError as exc:
-        raise RuntimeError(f"apex load {context} returned invalid JSON") from exc
+    except RuntimeError:
+        invalid_json = True
+    if invalid_json:
+        raise RuntimeError(f"apex load {context} returned invalid JSON")
     if not isinstance(data, dict):
         raise RuntimeError(f"apex load {context} returned non-object JSON")
     return data
@@ -667,7 +682,10 @@ def _provider_messages(data: dict[str, Any], field: str, context: str) -> list[s
                 f"apex load {context} response field {field!r}[{index}] must be a "
                 f"non-empty string of at most {_MAX_PROVIDER_MESSAGE_CHARS} characters"
             )
-        messages.append(message)
+        # Provider issue/breach strings become checkpointed domain output. Treat
+        # them as untrusted diagnostics before they cross that durable/public
+        # boundary; recognized credential material is redacted, not reflected.
+        messages.append(bounded_diagnostic(message, max_chars=_MAX_PROVIDER_MESSAGE_CHARS))
     return messages
 
 
@@ -774,6 +792,8 @@ class ApexLoadExecutionEngine:
         # Explicit per-attempt timeouts also become the absolute request budget;
         # the resilience layer carries it through retries and body consumption.
         retry = retry_policy(total_timeout_s=timeout_s) if timeout_s is not None else None
+        response: httpx.Response | None = None
+        request_failure: RuntimeError | None = None
         try:
             stream = await resilient_stream_request(
                 self._client(),
@@ -790,15 +810,19 @@ class ApexLoadExecutionEngine:
                 stream,
                 max_bytes=_MAX_JSON_RESPONSE_BYTES,
             )
-        except CircuitOpenError as exc:
-            raise RuntimeError(f"apex load request circuit is open for {method} {path}") from exc
+        except CircuitOpenError:
+            request_failure = RuntimeError(f"apex load request circuit is open for {method} {path}")
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise _TransportRequestError(
+            request_failure = _TransportRequestError(
                 bounded_diagnostic(
                     f"apex load request {method} {path} failed before a response arrived: {detail}"
                 )
-            ) from exc
+            )
+        if request_failure is not None:
+            raise request_failure
+        if response is None:  # pragma: no cover - resilience contract invariant
+            raise RuntimeError("apex load request completed without a response")
         if response.status_code == 404 and not_found is not None:
             raise EngineProviderRunNotFoundError(not_found)
         if response.status_code in (401, 403):
@@ -827,6 +851,8 @@ class ApexLoadExecutionEngine:
 
     async def _stream_download(self, path: str, *, not_found: str) -> httpx.Response:
         """Open a bounded-consumer streaming response; caller must ``aclose`` it."""
+        response: httpx.Response | None = None
+        request_failure: RuntimeError | None = None
         try:
             response = await resilient_stream_request(
                 self._client(),
@@ -836,21 +862,28 @@ class ApexLoadExecutionEngine:
                 retry=retry_policy(total_timeout_s=_DOWNLOAD_TOTAL_TIMEOUT_S),
                 breaker=self._breaker,
             )
-        except CircuitOpenError as exc:
-            raise RuntimeError(f"apex load request circuit is open for GET {path}") from exc
+        except CircuitOpenError:
+            request_failure = RuntimeError(f"apex load request circuit is open for GET {path}")
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            request_failure = RuntimeError(
                 bounded_diagnostic(
                     f"apex load request GET {path} failed before a response arrived: {detail}"
                 )
-            ) from exc
+            )
+        if request_failure is not None:
+            raise request_failure
+        if response is None:  # pragma: no cover - resilience contract invariant
+            raise RuntimeError("apex load download completed without a response")
         if response.status_code < 400:
+            unsupported_encoding = False
             try:
                 require_identity_content_encoding(response)
             except Exception:
-                await response.aclose()
-                raise
+                unsupported_encoding = True
+            if unsupported_encoding:
+                await close_response_definitively(response)
+                raise RuntimeError("apex load download used an unsupported content encoding")
             return response
         preview = await read_stream_error_preview(response)
         preview_response = httpx.Response(response.status_code, content=preview)
@@ -866,15 +899,105 @@ class ApexLoadExecutionEngine:
                 f"{_error_text(preview_response)}"
             )
         finally:
-            await response.aclose()
+            await close_response_definitively(response)
 
     def _run_id(self, handle: EngineHandle) -> str:
         if not handle.external_run_id:
             raise ValueError("apex_load handle has no external_run_id; call provision() first")
+        run_id: str | None = None
+        invalid_run_id = False
         try:
-            return _provider_identifier(handle.external_run_id, "handle external_run_id")
-        except RuntimeError as exc:
-            raise ValueError("apex_load handle has an invalid external_run_id") from exc
+            run_id = _provider_identifier(handle.external_run_id, "handle external_run_id")
+        except RuntimeError:
+            invalid_run_id = True
+        if invalid_run_id:
+            raise ValueError("apex_load handle has an invalid external_run_id")
+        if run_id is None:  # pragma: no cover - identifier contract invariant
+            raise ValueError("apex_load handle has an invalid external_run_id")
+        return run_id
+
+    def _require_test_identity(
+        self,
+        test: dict[str, Any],
+        *,
+        name: str,
+        context: str,
+    ) -> None:
+        """Prove a returned test belongs to this idempotency/project scope."""
+
+        if test.get("name") != name:
+            raise RuntimeError(f"apex load {context} returned an unexpected test name")
+        if self._project_id is not None and test.get("project_id") != self._project_id:
+            raise RuntimeError(f"apex load {context} returned a test from an unexpected project")
+
+    def _require_script_identity(
+        self,
+        script: dict[str, Any],
+        *,
+        name: str,
+        context: str,
+    ) -> None:
+        """Prove an uploaded/reconciled script is the content-bound resource."""
+
+        if script.get("name") != name:
+            raise RuntimeError(f"apex load {context} returned an unexpected script name")
+        if "project_id" in script and script.get("project_id") != self._project_id:
+            raise RuntimeError(f"apex load {context} returned a script from an unexpected project")
+
+    def _require_test_resource_identity(
+        self,
+        test: dict[str, Any],
+        *,
+        run_id: str,
+        context: str,
+        expected_name: str | None = None,
+    ) -> None:
+        """Prove a direct test-resource response matches its request target."""
+
+        returned_id = _provider_identifier(test.get("id"), f"{context} field 'id'")
+        if returned_id != run_id:
+            raise RuntimeError(f"apex load {context} returned an unexpected test id")
+        if expected_name is not None and test.get("name") != expected_name:
+            raise RuntimeError(f"apex load {context} returned an unexpected test name")
+        if self._project_id is not None and test.get("project_id") != self._project_id:
+            raise RuntimeError(f"apex load {context} returned a test from an unexpected project")
+
+    async def _require_owned_test(
+        self,
+        handle: EngineHandle,
+        *,
+        run_id: str,
+        context: str,
+    ) -> None:
+        """Prove a durable handle still targets its content-bound test."""
+
+        response = await self._request(
+            "GET",
+            f"/api/v1/tests/{run_id}",
+            not_found=f"apex load test {run_id!r} not found",
+        )
+        test = _json_object(response, f"GET /api/v1/tests/{run_id}")
+        self._require_test_resource_identity(
+            test,
+            run_id=run_id,
+            context=context,
+            expected_name=test_name_for(handle.idempotency_key),
+        )
+
+    @staticmethod
+    def _require_mutation_acknowledgement(
+        response: httpx.Response,
+        *,
+        run_id: str,
+        context: str,
+    ) -> None:
+        acknowledgement = _json_object(response, context)
+        returned_id = _provider_identifier(
+            acknowledgement.get("test_id"),
+            f"{context} field 'test_id'",
+        )
+        if returned_id != run_id:
+            raise RuntimeError(f"apex load {context} returned an unexpected test id")
 
     # ── port surface ──────────────────────────────────────────────────────────
 
@@ -950,9 +1073,7 @@ class ApexLoadExecutionEngine:
                 )
         for index, ref in named_refs:
             if not _is_safe_named_ref(ref):
-                issues.append(
-                    f"script_refs[{index}] is not a safe APEX Load script id"
-                )
+                issues.append(f"script_refs[{index}] is not a safe APEX Load script id")
                 continue
             try:
                 response = await self._request(
@@ -989,24 +1110,39 @@ class ApexLoadExecutionEngine:
         async with remote_create_guard(guard_key):
             test = await self._find_test_by_name(name)
             if test is None:
+                conflict = False
                 try:
                     test = await self._create_test(name, spec)
-                except _RemoteConflictError as exc:
+                except _RemoteConflictError:
+                    conflict = True
+                if conflict:
                     test = await self._find_test_after_conflict(name)
                     if test is None:
                         raise RuntimeError(
                             "apex load reserved the idempotency key but the winning test "
                             f"{name!r} did not become visible"
-                        ) from exc
+                        )
+                    external_run_id = _provider_identifier(
+                        test.get("id"), "conflict-adopted test response field 'id'"
+                    )
                     logger.info(
                         "apex_load.test_conflict_adopted",
-                        test_id=test.get("id"),
+                        test_id=external_run_id,
                         test_name=name,
                     )
                 else:
-                    logger.info("apex_load.test_created", test_id=test.get("id"), test_name=name)
+                    if test is None:  # pragma: no cover - create contract invariant
+                        raise RuntimeError("apex load test creation returned no test")
+                    external_run_id = _provider_identifier(
+                        test.get("id"), "created test response field 'id'"
+                    )
+                    logger.info("apex_load.test_created", test_id=external_run_id, test_name=name)
             else:
-                logger.info("apex_load.test_reused", test_id=test.get("id"), test_name=name)
+                external_run_id = _provider_identifier(
+                    test.get("id"), "reused test response field 'id'"
+                )
+                logger.info("apex_load.test_reused", test_id=external_run_id, test_name=name)
+        self._require_test_identity(test, name=name, context="provisioning")
         extras = {"test_name": name}
         if self._project_id:
             extras["project_id"] = self._project_id
@@ -1022,8 +1158,15 @@ class ApexLoadExecutionEngine:
     async def start(self, handle: EngineHandle) -> None:
         """POST /tests/{id}/start; tolerates the already-started rejection."""
         run_id = self._run_id(handle)
+        await self._require_owned_test(
+            handle,
+            run_id=run_id,
+            context="start preflight response",
+        )
+        start_error: ValueError | None = None
+        response: httpx.Response | None = None
         try:
-            await self._request(
+            response = await self._request(
                 "POST",
                 f"/api/v1/tests/{run_id}/start",
                 not_found=f"apex load test {run_id!r} not found",
@@ -1033,7 +1176,16 @@ class ApexLoadExecutionEngine:
             if _ALREADY_STARTED_MARKER in detail:
                 logger.info("apex_load.start_noop", external_run_id=run_id, detail=detail)
                 return
-            raise
+            start_error = ValueError(detail)
+        if start_error is not None:
+            raise start_error
+        if response is None:  # pragma: no cover - request contract invariant
+            raise RuntimeError("apex load start returned no acknowledgement")
+        self._require_mutation_acknowledgement(
+            response,
+            run_id=run_id,
+            context="start acknowledgement",
+        )
 
     async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
         """GET /tests/{id}: one cheap read per poll cycle."""
@@ -1044,6 +1196,13 @@ class ApexLoadExecutionEngine:
             not_found=f"apex load test {run_id!r} not found",
         )
         test = _json_object(response, f"GET /api/v1/tests/{run_id}")
+        expected_name = handle.extras.get("test_name")
+        self._require_test_resource_identity(
+            test,
+            run_id=run_id,
+            context="test status response",
+            expected_name=expected_name if type(expected_name) is str else None,
+        )
         raw_status = _provider_status(test, "test response")
         phase = _PHASE_BY_STATUS.get(raw_status)
         message = f"APEX Load test {run_id} is {raw_status or 'UNKNOWN'}"
@@ -1063,8 +1222,27 @@ class ApexLoadExecutionEngine:
         """POST /tests/{id}/abort; 400 (already terminal) and 404 (gone) are
         tolerated so abort stays idempotent."""
         run_id = self._run_id(handle)
+        missing = False
         try:
-            await self._request(
+            await self._require_owned_test(
+                handle,
+                run_id=run_id,
+                context="abort preflight response",
+            )
+        except KeyError:
+            missing = True
+        if missing:
+            logger.info(
+                "apex_load.abort_noop",
+                external_run_id=run_id,
+                reason_present=bool(reason),
+                reason_length=min(len(reason), 1_024),
+                detail="test not found",
+            )
+            return
+        response: httpx.Response | None = None
+        try:
+            response = await self._request(
                 "POST",
                 f"/api/v1/tests/{run_id}/abort",
                 not_found=f"apex load test {run_id!r} not found",
@@ -1079,6 +1257,13 @@ class ApexLoadExecutionEngine:
                 detail=detail,
             )
             return
+        if response is None:  # pragma: no cover - request contract invariant
+            raise RuntimeError("apex load abort returned no acknowledgement")
+        self._require_mutation_acknowledgement(
+            response,
+            run_id=run_id,
+            context="abort acknowledgement",
+        )
         logger.info(
             "apex_load.abort",
             external_run_id=run_id,
@@ -1091,11 +1276,18 @@ class ApexLoadExecutionEngine:
     ) -> list[dict[str, Any]]:
         """Collect under one aggregate deadline including object-store writes."""
 
+        artifacts: list[dict[str, Any]] | None = None
+        timed_out = False
         try:
             async with asyncio.timeout(_COLLECTION_TOTAL_TIMEOUT_S):
-                return await self._collect_artifacts(handle, store)
-        except TimeoutError as exc:
-            raise RuntimeError("APEX Load artifact collection exceeded its total deadline") from exc
+                artifacts = await self._collect_artifacts(handle, store)
+        except TimeoutError:
+            timed_out = True
+        if timed_out:
+            raise RuntimeError("APEX Load artifact collection exceeded its total deadline")
+        if artifacts is None:  # pragma: no cover - collection contract invariant
+            raise RuntimeError("APEX Load artifact collection returned no result")
+        return artifacts
 
     async def _collect_artifacts(
         self, handle: EngineHandle, store: ArtifactStorePort
@@ -1103,6 +1295,11 @@ class ApexLoadExecutionEngine:
         """Stream the archive report JSON into the artifact store. Runs aborted
         before start never archive: a 404 yields zero artifacts, not an error."""
         run_id = self._run_id(handle)
+        await self._require_owned_test(
+            handle,
+            run_id=run_id,
+            context="artifact collection preflight response",
+        )
         try:
             response = await self._stream_download(
                 f"/api/v1/tests/{run_id}/archive/report",
@@ -1120,7 +1317,7 @@ class ApexLoadExecutionEngine:
                 max_bytes=self._max_report_bytes,
             )
         finally:
-            await response.aclose()
+            await close_response_definitively(response)
         ref = ArtifactRef(
             kind="engine_report",
             name="apex-load-report.json",
@@ -1141,6 +1338,12 @@ class ApexLoadExecutionEngine:
             not_found=f"apex load test {run_id!r} not found",
         )
         sla = _json_object(sla_response, f"GET /api/v1/tests/{run_id}/sla-status")
+        returned_sla_test_id = _provider_identifier(
+            sla.get("test_id"),
+            "SLA status response field 'test_id'",
+        )
+        if returned_sla_test_id != run_id:
+            raise RuntimeError("apex load SLA status response returned an unexpected test id")
         status = _provider_status(sla, "SLA status response")
         breached = _provider_boolean(sla, "sla_breached", "SLA status response")
         breaches = _provider_messages(sla, "details", "SLA status")
@@ -1171,6 +1374,29 @@ class ApexLoadExecutionEngine:
                 kpis = await self._live_kpis(run_id)
                 notes += "; archive report invalid or oversized, KPIs from live metrics"
             else:
+                if "manifest" not in report:
+                    # Older APEX Load archives predate the manifest field. The
+                    # archive endpoint is still test-scoped, but prove that the
+                    # requested resource is this handle's content-bound test
+                    # before trusting KPI data that cannot identify itself.
+                    await self._require_owned_test(
+                        handle,
+                        run_id=run_id,
+                        context="legacy archive identity response",
+                    )
+                    notes += "; legacy archive identity verified from test resource"
+                else:
+                    manifest = report.get("manifest")
+                    if not isinstance(manifest, dict):
+                        raise RuntimeError("apex load archive report has no valid manifest")
+                    archive_test_id = _provider_identifier(
+                        manifest.get("test_id"),
+                        "archive report manifest field 'test_id'",
+                    )
+                    if archive_test_id != run_id:
+                        raise RuntimeError(
+                            "apex load archive report returned an unexpected test id"
+                        )
                 kpis = _kpis_from_report(report)
                 notes += "; KPIs from archive report"
 
@@ -1186,7 +1412,10 @@ class ApexLoadExecutionEngine:
     async def teardown(self, handle: EngineHandle) -> None:
         """Documented no-op: APEX Load tests are immutable archives; deleting
         them would destroy the result of record. Never raises (contract req. 4)."""
-        logger.debug("apex_load.teardown_noop", external_run_id=handle.external_run_id)
+        logger.debug(
+            "apex_load.teardown_noop",
+            external_run_id_present=bool(handle.external_run_id),
+        )
 
     async def _live_kpis(self, run_id: str) -> dict[str, float]:
         """Best-effort KPI fallback from the in-memory test record (no archive)."""
@@ -1198,11 +1427,18 @@ class ApexLoadExecutionEngine:
             )
         except KeyError:
             return {}
-        return _kpis_from_live(_json_object(response, f"GET /api/v1/tests/{run_id}"))
+        test = _json_object(response, f"GET /api/v1/tests/{run_id}")
+        self._require_test_resource_identity(
+            test,
+            run_id=run_id,
+            context="live metrics response",
+        )
+        return _kpis_from_live(test)
 
     # ── provisioning internals ────────────────────────────────────────────────
 
     async def _find_test_by_name(self, name: str) -> dict[str, Any] | None:
+        matches: list[dict[str, Any]] = []
         for offset in range(0, _MAX_TEST_RECONCILIATION_ROWS, _TEST_LIST_PAGE_SIZE):
             params: dict[str, Any] = {
                 "summary": True,
@@ -1224,14 +1460,23 @@ class ApexLoadExecutionEngine:
                 if not isinstance(test, dict):
                     raise RuntimeError("GET /api/v1/tests response contains a non-object test")
                 if test.get("name") == name:
-                    return test
+                    self._require_test_identity(
+                        test,
+                        name=name,
+                        context="test reconciliation",
+                    )
+                    matches.append(test)
             if not tests or len(tests) < _TEST_LIST_PAGE_SIZE:
-                return None
+                break
             if total is not None and offset + len(tests) >= total:
-                return None
-        raise RuntimeError(
-            "apex load test reconciliation exceeded the 5000-row provider scan budget"
-        )
+                break
+        else:
+            raise RuntimeError(
+                "apex load test reconciliation exceeded the 5000-row provider scan budget"
+            )
+        if len(matches) > 1:
+            raise RuntimeError("apex load idempotency name is attached to multiple tests")
+        return matches[0] if matches else None
 
     async def _find_test_after_conflict(self, name: str) -> dict[str, Any] | None:
         for attempt in range(_CONFLICT_RECHECK_ATTEMPTS):
@@ -1253,12 +1498,20 @@ class ApexLoadExecutionEngine:
             max_items=_MAX_SCRIPT_RECONCILIATION_ROWS,
         )
         _provider_total(data, len(scripts), "GET /api/v1/scripts response")
+        matches: list[dict[str, Any]] = []
         for script in scripts:
             if not isinstance(script, dict):
                 raise RuntimeError("GET /api/v1/scripts response contains a non-object script")
             if script.get("name") == name:
-                return script
-        return None
+                self._require_script_identity(
+                    script,
+                    name=name,
+                    context="script reconciliation",
+                )
+                matches.append(script)
+        if len(matches) > 1:
+            raise RuntimeError("apex load content-bound name is attached to multiple scripts")
+        return matches[0] if matches else None
 
     async def _find_script_after_uncertain_create(self, name: str) -> dict[str, Any] | None:
         for attempt in range(_CONFLICT_RECHECK_ATTEMPTS):
@@ -1280,6 +1533,9 @@ class ApexLoadExecutionEngine:
         payload: dict[str, Any] = {"script": script}
         if self._project_id:
             payload["project_id"] = self._project_id
+        response: httpx.Response | None = None
+        stored: dict[str, Any] | None = None
+        uncertain_error: _RemoteConflictError | _AmbiguousRequestError | None = None
         try:
             response = await self._request(
                 "POST",
@@ -1287,52 +1543,88 @@ class ApexLoadExecutionEngine:
                 json=payload,
                 headers={"Idempotency-Key": idempotency_key},
             )
-        except (_RemoteConflictError, _AmbiguousRequestError):
+        except (_RemoteConflictError, _AmbiguousRequestError) as exc:
+            uncertain_error = exc
+        if uncertain_error is not None:
             name = str(script.get("name") or "")
             stored = await self._find_script_after_uncertain_create(name) if name else None
             if stored is None:
-                raise
+                raise uncertain_error
+            stored_id = _provider_identifier(
+                stored.get("id"), "reconciled script response field 'id'"
+            )
             logger.warning(
                 "apex_load.script_create_reconciled",
-                script_id=stored.get("id"),
+                script_id=stored_id,
                 script_name=name,
             )
         else:
+            if response is None:  # pragma: no cover - request contract invariant
+                raise RuntimeError("apex load script creation returned no response")
+            invalid_response = False
             try:
                 stored = _json_object(response, "POST /api/v1/scripts")
+                self._require_script_identity(
+                    stored,
+                    name=str(script["name"]),
+                    context="script creation response",
+                )
             except RuntimeError:
+                invalid_response = True
+            if invalid_response:
                 name = str(script.get("name") or "")
                 stored = await self._find_script_after_uncertain_create(name) if name else None
                 if stored is None:
-                    raise
+                    raise RuntimeError(
+                        "apex load POST /api/v1/scripts returned an invalid acknowledgement "
+                        "and could not be reconciled"
+                    )
+        if stored is None:  # pragma: no cover - create/reconciliation contract invariant
+            raise RuntimeError("apex load script creation returned no stored script")
+        self._require_script_identity(
+            stored,
+            name=str(script["name"]),
+            context="script upload",
+        )
+        script_id: str | None = None
+        invalid_script_id = False
         try:
-            return _provider_identifier(stored.get("id"), "script response field 'id'")
-        except RuntimeError as exc:
+            script_id = _provider_identifier(stored.get("id"), "script response field 'id'")
+        except RuntimeError:
+            invalid_script_id = True
+        if invalid_script_id:
             name = str(script.get("name") or "")
             reconciled = await self._find_script_after_uncertain_create(name) if name else None
             if reconciled is None:
                 raise RuntimeError(
                     "apex load POST /api/v1/scripts returned an invalid script id; cannot "
                     "build the test"
-                ) from exc
+                )
             return _provider_identifier(
                 reconciled.get("id"),
                 "reconciled script response field 'id'",
             )
+        if script_id is None:  # pragma: no cover - identifier contract invariant
+            raise RuntimeError("apex load script response returned no script id")
+        return script_id
 
     async def _create_test(self, name: str, spec: LoadTestSpec) -> dict[str, Any]:
         script_ids: list[str] = []
         for index, ref in enumerate(spec.script_refs):
             if _is_inline_ref(ref):
+                parsed: Any = None
+                invalid_json = False
                 try:
                     parsed = parse_json_bytes(
                         ref,
                         context=f"script_refs[{index}]",
                     )
-                except RuntimeError as exc:
+                except RuntimeError:
+                    invalid_json = True
+                if invalid_json:
                     raise ValueError(
                         f"script_refs[{index}] must be valid JSON (APEX Load DSL script)"
-                    ) from exc
+                    )
                 if not isinstance(parsed, dict):
                     raise ValueError(
                         f"script_refs[{index}] must be a JSON object (APEX Load DSL script)"
@@ -1345,9 +1637,7 @@ class ApexLoadExecutionEngine:
                 )
             else:
                 if not _is_safe_named_ref(ref):
-                    raise ValueError(
-                        f"script_refs[{index}] is not a safe APEX Load script id"
-                    )
+                    raise ValueError(f"script_refs[{index}] is not a safe APEX Load script id")
                 script_ids.append(ref)
         if not script_ids:
             if not spec.target_environment:
@@ -1390,6 +1680,9 @@ class ApexLoadExecutionEngine:
             max_bytes=256,
             header_token=True,
         )
+        response: httpx.Response | None = None
+        test: dict[str, Any] | None = None
+        uncertain_error: _AmbiguousRequestError | None = None
         try:
             response = await self._request(
                 "POST",
@@ -1398,38 +1691,62 @@ class ApexLoadExecutionEngine:
                 headers={"Idempotency-Key": idempotency_key},
             )
         except _AmbiguousRequestError as exc:
+            uncertain_error = exc
+        if uncertain_error is not None:
             # The provider may have committed the idempotent create before the
             # response was lost or truncated. Adopt the named resource instead
             # of reporting failure and leaving an untracked remote test.
             test = await self._find_test_after_conflict(name)
             if test is None:
-                raise
+                raise uncertain_error
+            test_id = _provider_identifier(test.get("id"), "reconciled test response field 'id'")
             logger.warning(
                 "apex_load.test_create_reconciled",
-                test_id=test.get("id"),
+                test_id=test_id,
                 test_name=name,
-                error=bounded_diagnostic(exc),
+                error=bounded_diagnostic(uncertain_error),
             )
         else:
+            if response is None:  # pragma: no cover - request contract invariant
+                raise RuntimeError("apex load test creation returned no response")
+            invalid_response_error: str | None = None
             try:
                 test = _json_object(response, "POST /api/v1/tests")
+                self._require_test_identity(
+                    test,
+                    name=name,
+                    context="test creation response",
+                )
             except RuntimeError as exc:
+                invalid_response_error = bounded_diagnostic(exc)
+            if invalid_response_error is not None:
                 # A proxy/provider can commit the create and then truncate or
                 # replace the successful response body. Reconcile exactly as for a
                 # lost transport response before abandoning the remote resource.
                 test = await self._find_test_after_conflict(name)
                 if test is None:
-                    raise
+                    raise RuntimeError(
+                        "apex load POST /api/v1/tests returned an invalid acknowledgement "
+                        "and could not be reconciled"
+                    )
+                test_id = _provider_identifier(
+                    test.get("id"), "reconciled test response field 'id'"
+                )
                 logger.warning(
                     "apex_load.test_create_reconciled",
-                    test_id=test.get("id"),
+                    test_id=test_id,
                     test_name=name,
-                    error=bounded_diagnostic(exc),
+                    error=invalid_response_error,
                 )
 
+        if test is None:  # pragma: no cover - create/reconciliation contract invariant
+            raise RuntimeError("apex load test creation returned no test")
+        invalid_test_id = False
         try:
             _provider_identifier(test.get("id"), "test response field 'id'")
-        except RuntimeError as exc:
+        except RuntimeError:
+            invalid_test_id = True
+        if invalid_test_id:
             # A syntactically valid object without its durable id is equally
             # ambiguous. Adopt the canonical named test rather than checkpointing
             # an un-abortable handle.
@@ -1438,7 +1755,7 @@ class ApexLoadExecutionEngine:
                 raise RuntimeError(
                     "apex load POST /api/v1/tests returned an invalid test id; cannot track "
                     "the test"
-                ) from exc
+                )
             _provider_identifier(reconciled.get("id"), "reconciled test response field 'id'")
             test = reconciled
         return test

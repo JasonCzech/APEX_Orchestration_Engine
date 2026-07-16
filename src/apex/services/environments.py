@@ -47,31 +47,28 @@ async def resolve_environment_target(
         or application.project_id != project_id
         or (app_id is not None and env.application_id != app_id)
     ):
-        raise EnvironmentTargetNotFoundError(f"environment {environment_id!r} not found")
+        raise EnvironmentTargetNotFoundError("environment not found")
 
     # Environment rows predate the secret-free connection contract and can be
     # written outside the API. Treat the URL/options pair atomically: no approval
     # bit may make legacy credentials or malformed metadata executable.
     if environment_target_requires_repair(env.base_url, env.options):
-        raise EnvironmentTargetNotFoundError(
-            f"environment {environment_id!r} has no approved HTTP target"
-        )
+        raise EnvironmentTargetNotFoundError("environment has no approved HTTP target")
 
     base_url = str(env.base_url or "").strip()
     if not env.target_approved or not base_url:
-        raise EnvironmentTargetNotFoundError(
-            f"environment {environment_id!r} has no approved HTTP target"
-        )
+        raise EnvironmentTargetNotFoundError("environment has no approved HTTP target")
+    invalid_target = False
     try:
         validate_adapter_base_url(
             base_url,
             allow_private_hosts=(env.options or {}).get(TRUSTED_PRIVATE_HOST_OPTION) is True
             or None,
         )
-    except ValueError as exc:
-        raise EnvironmentTargetNotFoundError(
-            f"environment {environment_id!r} has no approved HTTP target"
-        ) from exc
+    except ValueError:
+        invalid_target = True
+    if invalid_target:
+        raise EnvironmentTargetNotFoundError("environment has no approved HTTP target")
     return EnvironmentTarget(
         environment_id=env.id,
         project_id=application.project_id,

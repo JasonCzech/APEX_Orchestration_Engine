@@ -106,10 +106,16 @@ environment. Before mounting, the app fetches `/config.json`
 - `langgraphOrigin` — origin serving the LangGraph Assistants/Threads/Runs API.
   Empty string = same origin.
 
-Missing, non-JSON, or schema-invalid responses fall back to same-origin
-defaults — a deploy without `config.json` behind a same-origin proxy just
-works. Template: [`public/config.example.json`](./public/config.example.json)
-(copy to `config.json` next to `index.html` in the deployed bundle).
+Missing or non-JSON responses fall back to same-origin defaults — a deploy
+without `config.json` behind a same-origin proxy just works. An explicit JSON
+response is deployment configuration and fails closed before the app mounts if
+its schema or either origin is invalid. Origins must be complete `http://` or
+`https://` origins without userinfo, paths, queries, or fragments. Template:
+[`public/config.example.json`](./public/config.example.json) (copy to
+`config.json` next to `index.html` in the deployed bundle). The container image
+generates an exact `connect-src` CSP from those validated origins. Static hosts
+using `public/_headers` default to same-origin only; explicitly allowlist both
+API origins there when serving them cross-origin.
 
 ## Architecture map
 

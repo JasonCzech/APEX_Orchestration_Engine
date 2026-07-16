@@ -32,10 +32,14 @@ def parse_bound(name: str, value: str | None) -> datetime | None:
     """ISO-8601 bound or None; never reflect the caller's value in errors."""
     if value is None:
         return None
+    parsed: datetime | None = None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except (OverflowError, ValueError):
-        raise ValueError(f"{name} must be an ISO-8601 timestamp") from None
+        pass
+    if parsed is None:
+        raise ValueError(f"{name} must be an ISO-8601 timestamp")
+    return parsed
 
 
 def _comparable(at: datetime) -> datetime:
@@ -54,33 +58,43 @@ def effective_window(
     """
     anchor = now if now is not None else datetime.now(UTC)
     if start is None and end is None:
+        default_start: datetime | None = None
         try:
             default_start = anchor - DEFAULT_WINDOW
         except OverflowError:
-            raise ValueError("log search window is outside the supported datetime range") from None
+            pass
+        if default_start is None:
+            raise ValueError("log search window is outside the supported datetime range")
         return TimeWindow(start=default_start.isoformat(), end=anchor.isoformat())
     start_at = parse_bound("window.from", start)
     end_at = parse_bound("window.to", end)
     if start_at is None:
         if end_at is None:  # defensive: handled by the default case above
             raise ValueError("log search window is missing both bounds")
+        derived_start: datetime | None = None
         try:
-            start_at = end_at - DEFAULT_WINDOW
+            derived_start = end_at - DEFAULT_WINDOW
         except OverflowError:
-            raise ValueError("log search window is outside the supported datetime range") from None
+            pass
+        if derived_start is None:
+            raise ValueError("log search window is outside the supported datetime range")
+        start_at = derived_start
         start = start_at.isoformat()
     if end_at is None:
         end_at = anchor
         end = end_at.isoformat()
     comparable_start = _comparable(start_at)
     comparable_end = _comparable(end_at)
+    outside_supported_range = False
     try:
         if comparable_start > comparable_end:
             raise ValueError("window.from must be earlier than or equal to window.to")
         if comparable_end - comparable_start > MAX_WINDOW:
             raise ValueError(f"log search window must not exceed {MAX_WINDOW.days} days")
     except OverflowError:
-        raise ValueError("log search window is outside the supported datetime range") from None
+        outside_supported_range = True
+    if outside_supported_range:
+        raise ValueError("log search window is outside the supported datetime range")
     return TimeWindow(start=start, end=end)
 
 

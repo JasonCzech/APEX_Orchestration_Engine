@@ -22,8 +22,9 @@
     "test:dashboard": "npm run -w @apex/dashboard test",
     "lint:dashboard": "npm run -w @apex/dashboard lint",
     "typecheck:dashboard": "npm run -w @apex/dashboard typecheck",
+    "check:contracts": "npm run -w @apex/api-client typecheck && npm run -w @apex/pipeline-events typecheck && npm run -w @apex/pipeline-events lint && npm run -w @apex/pipeline-events test",
     "build": "npm run build:dashboard",
-    "check": "npm run check:backend && npm run typecheck:dashboard && npm run lint:dashboard && npm run test:dashboard && npm run build:dashboard"
+    "check": "npm run check:backend && npm run check:contracts && npm run typecheck:dashboard && npm run lint:dashboard && npm run test:dashboard && npm run build:dashboard"
   },
   "workspaces": [
     "packages/*",

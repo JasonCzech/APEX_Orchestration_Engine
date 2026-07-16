@@ -28,6 +28,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 _INITIAL_WAIT_S = 0.001
@@ -125,7 +126,7 @@ async def _postgres_guard(key: str) -> AsyncIterator[None]:
     finally:
         try:
             if engine is not None:
-                await engine.dispose()
+                await dispose_engine_instance_definitively(engine)
         finally:
             _postgres_admission.release()
 

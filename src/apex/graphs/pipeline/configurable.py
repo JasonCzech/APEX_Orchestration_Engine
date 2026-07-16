@@ -11,9 +11,15 @@ from enum import StrEnum
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from apex.domain.input_limits import NoNulStr, ScopeId, validate_json_object
+from apex.domain.diagnostics import contains_credential_material
+from apex.domain.input_limits import (
+    NoNulStr,
+    ScopeId,
+    validate_json_object,
+    validation_error_summary,
+)
 from apex.domain.integrations import LoadTestSpec
 from apex.domain.pipeline import PHASE_ORDER, Phase
 from apex.services.run_validation import (
@@ -70,7 +76,7 @@ class PromptOverride(BaseModel):
 
 
 class PipelineConfigurable(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     # Assistant used to create the run. The graph itself does not branch on
     # this value, but persisting it lets later phase re-runs target the same
     # golden assistant instead of silently falling back to the base graph.
@@ -160,10 +166,13 @@ class PipelineConfigurable(BaseModel):
             label="load_test configuration",
             max_bytes=20_000,
         )
+        encoded: str | None = None
         try:
             encoded = json.dumps(self.load_test, ensure_ascii=False, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("load_test must contain finite JSON values") from exc
+        except (TypeError, ValueError):
+            pass
+        if encoded is None:
+            raise ValueError("load_test must contain finite JSON values")
         if len(encoded) > 20_000:
             raise ValueError("load_test configuration must not exceed 20000 characters")
 
@@ -179,11 +188,61 @@ class PipelineConfigurable(BaseModel):
         LoadTestSpec.model_validate(spec_payload)
         return self
 
+    @model_validator(mode="after")
+    def reject_credential_material(self) -> "PipelineConfigurable":
+        """Reject secrets inherited from legacy assistant config as well as run input."""
+
+        if contains_credential_material(self.model_dump(mode="json")):
+            raise ValueError("pipeline configuration must not contain credential material")
+        return self
+
     @classmethod
     def from_config(cls, config: RunnableConfig | None) -> "PipelineConfigurable":
-        configurable: dict[str, Any] = dict((config or {}).get("configurable") or {})
-        known = {k: v for k, v in configurable.items() if k in cls.model_fields}
-        parsed = cls.model_validate(known)
+        if config is not None and type(config) is not dict:
+            raise ValueError("pipeline run configuration is invalid")
+        configurable = (config if config is not None else {}).get("configurable")
+        if configurable is None:
+            configurable = {}
+        if type(configurable) is not dict:
+            raise ValueError("pipeline run configuration is invalid")
+        # Runnable config may carry framework-owned native objects alongside the
+        # JSON fields. Type-gate keys before membership so a hostile legacy key
+        # cannot run ``__eq__`` while we select the durable contract fields.
+        known = {
+            key: value
+            for key, value in configurable.items()
+            if type(key) is str and key in cls.model_fields
+        }
+        invalid_json = False
+        try:
+            validate_json_object(
+                known,
+                label="pipeline run configuration",
+                max_bytes=5_000_000,
+                max_nodes=20_000,
+            )
+        except ValueError:
+            invalid_json = True
+        if invalid_json:
+            raise ValueError("pipeline run configuration is invalid")
+        # Scan the raw bounded tree before Pydantic sees it.  Otherwise a secret
+        # that also violates a field constraint is retained on ValidationError's
+        # rejected-input chain even though the rendered public message is safe.
+        if contains_credential_material(
+            known,
+            max_nodes=20_000,
+            max_total_chars=5_000_000,
+        ):
+            raise ValueError("pipeline configuration must not contain credential material")
+        parsed: PipelineConfigurable | None = None
+        validation_summary: str | None = None
+        try:
+            parsed = cls.model_validate(known)
+        except ValidationError as exc:
+            validation_summary = validation_error_summary(exc)
+        if parsed is None:
+            detail = validation_summary or "validation failed"
+            raise ValueError(f"pipeline run configuration is invalid: {detail}")
         # HTTP and LangGraph authorization stamp these fields for new runs. Keep
         # the invariant here as well because a legacy checkpoint can resume
         # directly at poll/cleanup/collection without re-entering engine_reserve
@@ -195,6 +254,128 @@ class PipelineConfigurable(BaseModel):
         ):
             raise ValueError(
                 "environment-scoped pipeline configuration is missing authoritative ownership"
+            )
+        return parsed
+
+    @classmethod
+    def from_state(
+        cls,
+        state: Any,
+        config: RunnableConfig | None,
+    ) -> "PipelineConfigurable":
+        """Require live application config to match a checkpointed run contract.
+
+        New runs always carry the full snapshot. Missing snapshots remain readable
+        only for direct legacy/unit call sites; authenticated replay fails closed in
+        ``PipelineReadService`` before it can reach a model or provider node.
+        """
+
+        current = cls.from_config(config)
+        snapshot = state.get("run_config")
+        if snapshot is None:
+            return current
+        if type(snapshot) is not dict:
+            raise ValueError("checkpointed pipeline configuration is invalid")
+        invalid_json = False
+        try:
+            validate_json_object(
+                snapshot,
+                label="checkpointed pipeline configuration",
+                max_bytes=5_000_000,
+                max_nodes=20_000,
+            )
+        except ValueError:
+            invalid_json = True
+        if invalid_json:
+            raise ValueError("checkpointed pipeline configuration is invalid")
+        # As with live config, scan before Pydantic can retain rejected secret
+        # values in a ValidationError object reachable from the wrapper context.
+        if contains_credential_material(
+            snapshot,
+            max_nodes=20_000,
+            max_total_chars=5_000_000,
+        ):
+            raise ValueError(
+                "checkpointed pipeline configuration must not contain credential material"
+            )
+        if set(snapshot) != set(cls.model_fields):
+            raise ValueError("checkpointed pipeline configuration is incomplete")
+        durable: PipelineConfigurable | None = None
+        try:
+            durable = cls.model_validate(snapshot)
+        except (TypeError, ValueError):
+            pass
+        if durable is None:
+            raise ValueError("checkpointed pipeline configuration is invalid")
+        durable_snapshot = durable.snapshot()
+        canonical_snapshot = json.dumps(
+            snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        if (
+            json.dumps(
+                durable_snapshot,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            != canonical_snapshot
+        ):
+            raise ValueError("checkpointed pipeline configuration is not canonical")
+        if (
+            json.dumps(
+                current.snapshot(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            != canonical_snapshot
+        ):
+            raise ValueError("live pipeline configuration does not match its durable checkpoint")
+        return durable
+
+    @classmethod
+    def from_state_for_phase(
+        cls,
+        state: Any,
+        config: RunnableConfig | None,
+        phase: Phase,
+    ) -> "PipelineConfigurable":
+        """Validate replay config and prove the current phase belongs to its plan.
+
+        A durable config snapshot alone does not protect routing: a poisoned
+        ``phases_plan`` could otherwise send a valid config into an unselected
+        provider phase.  Legacy direct/unit call sites without ``run_config`` keep
+        the compatibility behavior of :meth:`from_state`; authenticated replay
+        already rejects those snapshots before graph execution.
+        """
+
+        parsed = cls.from_state(state, config)
+        snapshot = state.get("run_config")
+        if snapshot is None:
+            return parsed
+        plan = state.get("phases_plan")
+        expected = [selected.value for selected in parsed.selected_phases()]
+        if (
+            type(plan) is not list
+            or len(plan) != len(expected)
+            or any(
+                type(name) is not str
+                or not 1 <= len(name) <= 64
+                or "\x00" in name
+                or contains_credential_material(name)
+                for name in plan
+            )
+            or plan != expected
+            or phase.value not in expected
+        ):
+            raise ValueError(
+                "checkpointed pipeline phase plan does not match its durable configuration"
             )
         return parsed
 

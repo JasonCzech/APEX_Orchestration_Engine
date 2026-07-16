@@ -10,12 +10,13 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from string import Formatter
 from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
 
+from apex.domain.diagnostics import contains_credential_material
 from apex.domain.input_limits import ScopeId, validation_error_summary
 from apex.domain.pipeline import (
     MAX_CONTEXT_ID_CHARS,
@@ -30,6 +31,7 @@ from apex.domain.pipeline import (
 from apex.settings import ApexSettings, get_settings
 
 MAX_MODEL_NAME_CHARS = 200
+MAX_MODEL_PHASE_OVERRIDES = 32
 MAX_PROMPT_PART_CHARS_HARD = 100_000
 MAX_GATE_STRING_CHARS_HARD = 50_000
 MAX_STATELESS_SUBJECT_CHARS = 2_000
@@ -144,25 +146,32 @@ def validate_model_by_phase(
 ) -> None:
     """Reject model overrides outside the deployment-owned exact allow-list."""
 
-    selected = {str(model).strip() for model in model_by_phase.values()}
-    if any(not model or len(model) > MAX_MODEL_NAME_CHARS or "\x00" in model for model in selected):
-        raise ValueError("model_by_phase values must be 1-200 character model names")
+    if type(model_by_phase) is not dict or len(model_by_phase) > MAX_MODEL_PHASE_OVERRIDES:
+        raise ValueError("model_by_phase must be an object of model-name strings")
+    selected: set[str] = set()
+    for model in model_by_phase.values():
+        if (
+            type(model) is not str
+            or not 1 <= len(model) <= MAX_MODEL_NAME_CHARS
+            or model != model.strip()
+            or "\x00" in model
+        ):
+            raise ValueError("model_by_phase values must be 1-200 character model names")
+        selected.add(model)
     allowed = set((settings or get_settings()).llm.allowed_models)
     denied = sorted(selected - allowed)
     if denied:
-        raise ValueError(
-            "model_by_phase contains a model not allowed by APEX_LLM__ALLOWED_MODELS"
-        )
+        raise ValueError("model_by_phase contains a model not allowed by APEX_LLM__ALLOWED_MODELS")
 
 
 def validate_context_packets(
-    packets: Sequence[Any] | None, *, settings: ApexSettings | None = None
+    packets: list[Any] | None, *, settings: ApexSettings | None = None
 ) -> list[dict[str, Any]]:
     """Validate packet fields, unique ids, count, and complete serialized size."""
 
     if packets is None:
         return []
-    if isinstance(packets, str | bytes | bytearray) or not isinstance(packets, Sequence):
+    if type(packets) is not list:
         raise ValueError("context_packets must be a list")
     limits = (settings or get_settings()).runs
     if len(packets) > limits.max_context_packets:
@@ -173,13 +182,45 @@ def validate_context_packets(
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     rendered_chars = 2  # JSON list brackets
+    allowed_fields = {"id", "source", "title", "summary", "ref", "text"}
     for index, raw in enumerate(packets):
+        if type(raw) is not dict or any(
+            type(key) is not str or key not in allowed_fields for key in raw
+        ):
+            raise ValueError(f"context_packets[{index}] must be an object")
+        if any(value is not None and type(value) is not str for value in raw.values()):
+            raise ValueError(f"context_packets[{index}] contains an unsupported value")
+        # Inspect the raw bounded packet before model validation. A credential in
+        # a field that also violates a length constraint would otherwise survive
+        # on Pydantic's rejected-input exception chain.
+        if contains_credential_material(
+            raw,
+            max_nodes=16,
+            # The deployment's aggregate context budget may be lower than the
+            # sum of individually valid packet fields. Scan the complete bounded
+            # model envelope here; the rendered-size check below remains
+            # responsible for reporting a deployment-budget violation.
+            max_total_chars=max(
+                limits.max_context_chars_total,
+                MAX_CONTEXT_ID_CHARS
+                + MAX_CONTEXT_SOURCE_CHARS
+                + MAX_CONTEXT_TITLE_CHARS
+                + MAX_CONTEXT_SUMMARY_CHARS
+                + MAX_CONTEXT_REF_CHARS
+                + MAX_CONTEXT_TEXT_CHARS
+                + 256,
+            ),
+        ):
+            raise ValueError("context_packets must not contain credential material")
+        validation_summary: str | None = None
         try:
-            packet = raw if isinstance(raw, ContextPacket) else ContextPacket.model_validate(raw)
+            packet = ContextPacket.model_validate(raw, strict=True)
         except ValidationError as exc:
-            raise ValueError(
-                f"context_packets[{index}] is invalid: {validation_error_summary(exc)}"
-            ) from exc
+            validation_summary = validation_error_summary(exc)
+            packet = None
+        if validation_summary is not None:
+            raise ValueError(f"context_packets[{index}] is invalid: {validation_summary}")
+        assert packet is not None
         if packet.id in seen:
             raise ValueError("context_packets contains a duplicate id")
         seen.add(packet.id)
@@ -195,33 +236,82 @@ def validate_context_packets(
             "context_packets rendered payload exceeds the deployment limit "
             f"({limits.max_context_chars_total} characters)"
         )
+    if contains_credential_material(
+        normalized,
+        max_nodes=max(1, limits.max_context_packets * 8),
+        max_total_chars=max(1, limits.max_context_chars_total),
+    ):
+        raise ValueError("context_packets must not contain credential material")
     return normalized
 
 
 def validate_pipeline_input(input_payload: Mapping[str, Any]) -> None:
     """Validate run input that can contribute directly to model context/state."""
 
+    if type(input_payload) is not dict:
+        raise ValueError("run input must be a JSON object")
+    durable_input = {
+        key: input_payload[key]
+        for key in ("title", "request", "external_results", "context_packets")
+        if key in input_payload
+    }
+    raw_external = durable_input.get("external_results")
+    if type(raw_external) is dict:
+        raw_uri = raw_external.get("uri")
+        if type(raw_uri) is str:
+            invalid_external_uri = False
+            try:
+                ExternalResults.validate_uri(raw_uri)
+            except ValueError:
+                invalid_external_uri = True
+            if invalid_external_uri:
+                # Preserve a specific, capability-free contract error before the
+                # generic credential scanner rejects signed query parameters.
+                raise ValueError(
+                    "run input external_results is invalid: external results uri is invalid"
+                )
+    # This must precede every Pydantic/TypeAdapter call so rejected-input objects
+    # can never retain a credential on an exception chain.
+    if contains_credential_material(durable_input):
+        raise ValueError("pipeline run input must not contain credential material")
     if "title" in input_payload:
         title = input_payload.get("title")
-        if not isinstance(title, str) or not title.strip() or len(title) > 500 or "\x00" in title:
+        if type(title) is not str or not title.strip() or len(title) > 500 or "\x00" in title:
             raise ValueError("run input title must be a non-empty string of at most 500 characters")
     if "request" in input_payload:
         request = input_payload.get("request")
-        if not isinstance(request, str) or len(request) > 20_000 or "\x00" in request:
+        if type(request) is not str or len(request) > 20_000 or "\x00" in request:
             raise ValueError("run input request must be a string of at most 20000 characters")
     for field_name in ("project_id", "app_id"):
         value = input_payload.get(field_name)
         if value is not None:
+            if type(value) is not str:
+                raise ValueError(f"run input {field_name} is invalid")
+            scope_error_summary: str | None = None
             try:
                 _SCOPE_ID_ADAPTER.validate_python(value, strict=True)
             except ValidationError as exc:
-                raise ValueError(
-                    f"run input {field_name} is invalid: {validation_error_summary(exc)}"
-                ) from exc
-    if input_payload.get("external_results") is not None:
-        ExternalResults.model_validate(input_payload["external_results"])
-    if input_payload.get("context_packets") is not None:
-        validate_context_packets(input_payload["context_packets"])
+                scope_error_summary = validation_error_summary(exc)
+            if scope_error_summary is not None:
+                raise ValueError(f"run input {field_name} is invalid: {scope_error_summary}")
+    external_results = input_payload.get("external_results")
+    if external_results is not None:
+        if type(external_results) is not dict:
+            raise ValueError("run input external_results must be an object")
+        settings = get_settings()
+        _validate_json_tree(external_results, label="external_results", settings=settings)
+        external_error_summary: str | None = None
+        try:
+            ExternalResults.model_validate(external_results, strict=True)
+        except ValidationError as exc:
+            external_error_summary = validation_error_summary(exc)
+        if external_error_summary is not None:
+            raise ValueError(f"run input external_results is invalid: {external_error_summary}")
+    context_packets = input_payload.get("context_packets")
+    if context_packets is not None:
+        if type(context_packets) is not list:
+            raise ValueError("context_packets must be a list")
+        validate_context_packets(context_packets)
 
 
 def _validate_json_tree(
@@ -232,7 +322,7 @@ def _validate_json_tree(
 ) -> None:
     """Iteratively validate a strict JSON tree before any recursive parser sees it."""
 
-    if not isinstance(payload, dict):
+    if type(payload) is not dict:
         raise ValueError(f"{label} must be a JSON object")
 
     limits = settings.runs
@@ -248,14 +338,14 @@ def _validate_json_tree(
         if depth > limits.max_stateless_payload_depth:
             raise ValueError(f"{label} nesting exceeds {limits.max_stateless_payload_depth} levels")
 
-        if isinstance(value, dict):
+        if type(value) is dict:
             remaining = limits.max_stateless_payload_nodes - nodes - len(stack)
             if len(value) > remaining:
                 raise ValueError(
                     f"{label} exceeds the node limit ({limits.max_stateless_payload_nodes})"
                 )
             for key, item in value.items():
-                if not isinstance(key, str):
+                if type(key) is not str:
                     raise ValueError(f"{label} mapping keys must be strings")
                 if len(key) > MAX_STATELESS_MAPPING_KEY_CHARS:
                     raise ValueError(
@@ -265,7 +355,7 @@ def _validate_json_tree(
                 if "\x00" in key:
                     raise ValueError(f"{label} mapping keys must not contain U+0000")
                 stack.append((item, depth + 1))
-        elif isinstance(value, list):
+        elif type(value) is list:
             remaining = limits.max_stateless_payload_nodes - nodes - len(stack)
             if len(value) > remaining:
                 raise ValueError(
@@ -273,17 +363,27 @@ def _validate_json_tree(
                 )
             for item in value:
                 stack.append((item, depth + 1))
-        elif isinstance(value, str):
+        elif type(value) is str:
+            if len(value) > limits.max_stateless_payload_bytes:
+                raise ValueError(
+                    f"{label} serialized payload exceeds the deployment limit "
+                    f"({limits.max_stateless_payload_bytes} bytes)"
+                )
             if "\x00" in value:
                 raise ValueError(f"{label} strings must not contain U+0000")
-        elif value is None or isinstance(value, bool | int):
+        elif value is None or type(value) is bool:
             continue
-        elif isinstance(value, float):
+        elif type(value) is int:
+            if value.bit_length() > 256:
+                raise ValueError(f"{label} integers must not exceed 256 bits")
+        elif type(value) is float:
             if not math.isfinite(value):
                 raise ValueError(f"{label} numbers must be finite")
         else:
-            raise ValueError(f"{label} contains unsupported {type(value).__name__} value")
+            unsupported = "tuple" if type(value) is tuple else "value"
+            raise ValueError(f"{label} contains an unsupported {unsupported}")
 
+    serialized: bytes | None = None
     try:
         serialized = json.dumps(
             payload,
@@ -291,8 +391,10 @@ def _validate_json_tree(
             allow_nan=False,
             separators=(",", ":"),
         ).encode("utf-8")
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{label} must be serializable as finite JSON") from exc
+    except (TypeError, ValueError, OverflowError):
+        pass
+    if serialized is None:
+        raise ValueError(f"{label} must be serializable as finite JSON")
     if len(serialized) > limits.max_stateless_payload_bytes:
         raise ValueError(
             f"{label} serialized payload exceeds the deployment limit "
@@ -306,14 +408,21 @@ def validate_context_run_input(
     """Validate and normalize all caller-controlled context-graph input."""
 
     active_settings = settings or get_settings()
+    if type(input_payload) is not dict:
+        raise ValueError("context run input must be a JSON object")
+    _validate_json_tree(input_payload, label="context run input", settings=active_settings)
+    if contains_credential_material(input_payload):
+        raise ValueError("context run input must not contain credential material")
     payload = dict(input_payload)
-    _validate_json_tree(payload, label="context run input", settings=active_settings)
+    validation_summary: str | None = None
     try:
         validated = ContextRunInput.model_validate(payload, strict=True)
     except ValidationError as exc:
-        raise ValueError(
-            f"context run input is invalid: {validation_error_summary(exc)}"
-        ) from exc
+        validation_summary = validation_error_summary(exc)
+        validated = None
+    if validation_summary is not None:
+        raise ValueError(f"context run input is invalid: {validation_summary}")
+    assert validated is not None
 
     limits = active_settings.runs
     if len(validated.work_item_keys) > limits.max_work_item_keys:
@@ -341,14 +450,21 @@ def validate_playground_run_input(
     """Validate and normalize prompt-playground input as a bounded JSON tree."""
 
     active_settings = settings or get_settings()
+    if type(input_payload) is not dict:
+        raise ValueError("playground run input must be a JSON object")
+    _validate_json_tree(input_payload, label="playground run input", settings=active_settings)
+    if contains_credential_material(input_payload):
+        raise ValueError("playground run input must not contain credential material")
     payload = dict(input_payload)
-    _validate_json_tree(payload, label="playground run input", settings=active_settings)
+    validation_summary: str | None = None
     try:
         validated = PlaygroundRunInput.model_validate(payload, strict=True)
     except ValidationError as exc:
-        raise ValueError(
-            f"playground run input is invalid: {validation_error_summary(exc)}"
-        ) from exc
+        validation_summary = validation_error_summary(exc)
+        validated = None
+    if validation_summary is not None:
+        raise ValueError(f"playground run input is invalid: {validation_summary}")
+    assert validated is not None
     validate_prompt_parts(
         system=validated.prompt.system,
         user=validated.prompt.user,
@@ -408,12 +524,15 @@ def validate_playground_render_budget(
                     f"playground format width/precision exceeds the rendered limit ({limit})"
                 )
             raw_value = sample_input.get(field_name, "{" + field_name + "}")
+            converted_bound: int | None = None
             try:
                 # repr/ascii escaping and non-decimal integer formatting can be
                 # wider than str(); eight times is a deliberately conservative cap.
                 converted_bound = len(str(raw_value)) * 8 + 2
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError("playground sample value cannot be rendered safely") from exc
+            except (TypeError, ValueError, OverflowError):
+                pass
+            if converted_bound is None:
+                raise ValueError("playground sample value cannot be rendered safely")
             estimated_chars += max(converted_bound, *(widths or [0]))
             if estimated_chars > limit:
                 raise ValueError(
@@ -432,13 +551,15 @@ def validate_public_run_input(input_payload: Mapping[str, Any]) -> None:
     boundary. The union also covers the stateless context and playground graphs.
     """
 
-    unexpected = sorted(str(key) for key in input_payload if key not in PUBLIC_RUN_INPUT_KEYS)
+    if type(input_payload) is not dict:
+        raise ValueError("run input must be a JSON object")
+    if any(type(key) is not str for key in input_payload):
+        raise ValueError("run input mapping keys must be strings")
+    unexpected = sorted(key for key in input_payload if key not in PUBLIC_RUN_INPUT_KEYS)
     if unexpected:
         safe_names = [name for name in unexpected if name in _SAFE_SERVER_OWNED_RUN_FIELDS]
         suffix = f": {', '.join(safe_names)}" if safe_names else ""
-        raise ValueError(
-            "run input contains server-owned or unsupported field(s)" + suffix
-        )
+        raise ValueError("run input contains server-owned or unsupported field(s)" + suffix)
     validate_pipeline_input(input_payload)
 
 
@@ -463,10 +584,10 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
             )
         if depth > 16:
             raise ValueError("gate payload nesting exceeds 16 levels")
-        if isinstance(value, BaseModel):
-            stack.append((value.model_dump(mode="json", exclude_none=True), path, depth))
-            continue
-        if isinstance(value, str):
+        # This boundary accepts JSON, not arbitrary Python objects.  In particular,
+        # do not call provider/user supplied ``model_dump``/``str``/iterator hooks
+        # while deciding whether a native LangGraph resume is safe to checkpoint.
+        if type(value) is str:
             if "\x00" in value:
                 label = _safe_gate_path(path)
                 raise ValueError(f"gate payload {label} must not contain U+0000")
@@ -487,21 +608,23 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
                 label = _safe_gate_path(path)
                 raise ValueError(f"gate payload {label} exceeds {per_string_limit} characters")
             total_chars += len(value)
-        elif isinstance(value, Mapping):
+        elif type(value) is dict:
             remaining = limits.max_gate_payload_nodes - nodes - len(stack)
             if len(value) > remaining:
                 raise ValueError(
                     f"gate payload exceeds the node limit ({limits.max_gate_payload_nodes})"
                 )
             for key, item in value.items():
-                key_text = str(key)
+                if type(key) is not str:
+                    raise ValueError("gate payload mapping keys must be strings")
+                key_text = key
                 if len(key_text) > 256:
                     raise ValueError("gate payload mapping keys must not exceed 256 characters")
                 if "\x00" in key_text:
                     raise ValueError("gate payload mapping keys must not contain U+0000")
                 total_chars += len(key_text)
                 stack.append((item, (*path, key_text), depth + 1))
-        elif isinstance(value, Sequence) and not isinstance(value, bytes | bytearray):
+        elif type(value) is list:
             remaining = limits.max_gate_payload_nodes - nodes - len(stack)
             if len(value) > remaining:
                 raise ValueError(
@@ -509,11 +632,13 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
                 )
             for item in value:
                 stack.append((item, (*path, "[]"), depth + 1))
-        elif isinstance(value, float):
+        elif type(value) is float:
             if not math.isfinite(value):
                 raise ValueError("gate payload numbers must be finite")
-        elif value is not None and not isinstance(value, bool | int):
-            raise ValueError(f"gate payload contains unsupported {type(value).__name__} value")
+        elif value is not None and type(value) not in {bool, int}:
+            raise ValueError("gate payload contains an unsupported value")
+        elif type(value) is int and value.bit_length() > 256:
+            raise ValueError("gate payload integers must not exceed 256 bits")
         if total_chars > limits.max_gate_payload_chars:
             raise ValueError(
                 "gate payload exceeds the deployment limit "
@@ -524,10 +649,12 @@ def validate_gate_payload(payload: Any, *, settings: ApexSettings | None = None)
 def _safe_gate_path(path: tuple[str, ...]) -> str:
     """Describe gate fields without reflecting attacker-controlled mapping keys."""
 
-    return ".".join(
-        part if part in _SAFE_GATE_PATH_FIELDS or part == "[]" else "field"
-        for part in path
-    ) or "value"
+    return (
+        ".".join(
+            part if part in _SAFE_GATE_PATH_FIELDS or part == "[]" else "field" for part in path
+        )
+        or "value"
+    )
 
 
 def validate_prompt_parts(
@@ -548,6 +675,8 @@ def validate_prompt_parts(
         "additional_context": additional_context,
     }
     for name, value in parts.items():
+        if type(value) is not str:
+            raise ValueError(f"{name} must be a string")
         if "\x00" in value:
             raise ValueError(f"{name} must not contain U+0000")
         per_part = (
@@ -569,9 +698,22 @@ def validate_rendered_model_input(
 ) -> None:
     """Final defense after context evidence and revision instructions are rendered."""
 
+    if type(system) is not str or type(user) is not str:
+        raise ValueError("rendered model input must contain strings")
+    if "\x00" in system or "\x00" in user:
+        raise ValueError("rendered model input must not contain U+0000")
     limit = (settings or get_settings()).runs.max_model_input_chars
     if len(system) + len(user) > limit:
         raise ValueError(f"rendered model input exceeds the deployment limit ({limit} characters)")
+    if contains_credential_material(
+        {"system": system, "user": user},
+        max_nodes=4,
+        max_string_chars=limit,
+        # The scanner accounts for mapping keys as well as values. The model
+        # budget applies to rendered values only, so reserve fixed key overhead.
+        max_total_chars=limit + len("system") + len("user"),
+    ):
+        raise ValueError("rendered model input must not contain credential material")
 
 
 __all__ = [

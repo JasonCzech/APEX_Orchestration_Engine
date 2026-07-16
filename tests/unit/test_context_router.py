@@ -140,7 +140,9 @@ def test_create_summary_returns_202_with_run_id_and_stream_hint() -> None:
     assert call["thread_id"] == "thread-context-1"
     assert call["assistant_id"] == "context"
     assert call["input"]["project_id"] == "proj-a"
-    assert resolver.calls == [(PortKind.WORK_TRACKING, None, "proj-a")]
+    # Provider resolution belongs to the graph node so one HTTP preflight
+    # cannot leak a discarded checkout or race a later configuration rotation.
+    assert resolver.calls == []
 
 
 def test_create_summary_rejects_nul_before_provider_or_run_persistence() -> None:
@@ -246,7 +248,7 @@ def test_create_summary_out_of_scope_project_403() -> None:
     assert loopback.runs.calls == []
 
 
-def test_create_summary_rejects_work_adapter_bound_to_sibling_project() -> None:
+def test_create_summary_does_not_checkout_work_adapter_in_http_preflight() -> None:
     resolver = FakeResolver(FakeWorkAdapter(provider="jira", project_id="proj-b"))
     client, loopback, _ = make_client(SCOPED_OPERATOR, resolver=resolver)
     with client:
@@ -254,8 +256,9 @@ def test_create_summary_rejects_work_adapter_bound_to_sibling_project() -> None:
             "/v1/context/summaries",
             json={"subject": "x", "work_item_keys": ["PROJ-A-1"]},
         )
-    assert response.status_code == 403
-    assert loopback.runs.calls == []
+    assert response.status_code == 202
+    assert len(loopback.runs.calls) == 1
+    assert resolver.calls == []
 
 
 def test_create_summary_multi_project_scope_requires_selection() -> None:
@@ -339,6 +342,27 @@ def test_list_evidence_unknown_thread_404() -> None:
     with client:
         response = client.get("/v1/context/evidence", params={"thread_id": "missing"})
     assert response.status_code == 404
+
+
+def test_list_evidence_detaches_arbitrary_runtime_failure() -> None:
+    canary = "context-runtime-secret-canary"
+
+    class FailingThreads(FakeThreads):
+        async def search(
+            self, *, metadata: Any = None, limit: int = 10, **kwargs: Any
+        ) -> list[dict[str, Any]]:
+            raise OSError(canary)
+
+    loopback = FakeLoopbackClient()
+    loopback.threads = FailingThreads([])
+    client, _, _ = make_client(ADMIN, loopback)
+
+    with client:
+        response = client.get("/v1/context/evidence")
+
+    assert response.status_code == 502
+    assert response.json()["title"] == "context runtime unavailable"
+    assert canary not in response.text
 
 
 def test_list_evidence_out_of_scope_project_403() -> None:

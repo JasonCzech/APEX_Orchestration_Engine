@@ -19,25 +19,43 @@ from apex.persistence.database_role_claims import (
     claim_context_from_environment,
     verify_database_role_claims,
 )
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.persistence.schema_readiness import SchemaNotReadyError, validate_schema_head
-from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
+from apex.settings import (
+    database_asyncpg_uri,
+    database_ssl_connect_args,
+    database_uri_has_safe_transport,
+    get_settings,
+)
+
+_DATABASE_ROLE_CLAIM_ENV_NAMES = (
+    "APEX_DATABASE_ROLE_CLAIM_KEY",
+    "APEX_DATABASE_ROLE_OWNER_ID",
+    "APEX_RUNTIME_OWNER_ROLE",
+    "APEX_MIGRATION_OWNER_ROLE",
+    "APEX_RUNTIME_DATABASE_URI",
+    "APEX_MIGRATION_DATABASE_URI",
+)
 
 
-async def _schema_is_compatible_async() -> bool:
+async def _schema_is_compatible_async(database_uri: str | None = None) -> bool:
     """Check with a one-shot engine so separate CLI event loops never share a pool."""
 
     database = get_settings().database
+    uri = database.uri if database_uri is None else database_uri
+    if not database_uri_has_safe_transport(uri, database.ssl_mode):
+        raise ValueError("database transport must authenticate every remote server")
     engine = create_async_engine(
-        database_asyncpg_uri(database.uri),
+        database_asyncpg_uri(uri),
         poolclass=NullPool,
-        connect_args=database_ssl_connect_args(database.uri, database.ssl_mode),
+        connect_args=database_ssl_connect_args(uri, database.ssl_mode),
     )
     try:
         await validate_schema_head(engine)
     except SchemaNotReadyError:
         return False
     finally:
-        await engine.dispose()
+        await dispose_engine_instance_definitively(engine)
     return True
 
 
@@ -74,17 +92,28 @@ def _upgrade_to_packaged_head(connection: Connection | None = None) -> None:
 async def _run_claimed_migration() -> tuple[bool, bool]:
     """Verify, migrate, and revalidate while one DB session owns the role lock."""
 
+    setup_failed = False
+    context = None
+    engine = None
     try:
         context = claim_context_from_environment()
         database = get_settings().database
+        if not database_uri_has_safe_transport(context.migration_uri, database.ssl_mode):
+            raise ValueError("database transport must authenticate every remote server")
         engine = create_async_engine(
             database_asyncpg_uri(context.migration_uri),
             poolclass=NullPool,
             connect_args=database_ssl_connect_args(context.migration_uri, database.ssl_mode),
         )
-    except Exception as exc:
-        raise _OwnershipVerificationFailed from exc
+    except Exception:
+        setup_failed = True
+    if setup_failed:
+        raise _OwnershipVerificationFailed
+    assert context is not None
+    assert engine is not None
     claims_verified = False
+    terminal_failure: type[RuntimeError] | None = None
+    outcome: tuple[bool, bool] | None = None
     try:
         async with engine.connect() as connection:
             raw_connection = await connection.get_raw_connection()
@@ -96,38 +125,61 @@ async def _run_claimed_migration() -> tuple[bool, bool]:
             await verify_database_role_claims(driver_connection, context)
             claims_verified = True
 
+            compatibility_failed = False
             try:
-                initially_compatible = await _schema_is_compatible_async()
-            except Exception as exc:
-                raise _ClaimedCompatibilityCheckFailed from exc
+                initially_compatible = await _schema_is_compatible_async(context.migration_uri)
+            except Exception:
+                compatibility_failed = True
+                initially_compatible = False
+            if compatibility_failed:
+                raise _ClaimedCompatibilityCheckFailed
             if initially_compatible:
-                return True, True
+                outcome = (True, True)
+            else:
+                upgrade_failed = False
+                try:
+                    await connection.run_sync(_upgrade_to_packaged_head)
+                    await connection.commit()
+                except Exception:
+                    upgrade_failed = True
+                if upgrade_failed:
+                    raise _ClaimedUpgradeFailed
 
-            try:
-                await connection.run_sync(_upgrade_to_packaged_head)
-                await connection.commit()
-            except Exception as exc:
-                raise _ClaimedUpgradeFailed from exc
-
-            try:
-                finally_compatible = await _schema_is_compatible_async()
-            except Exception as exc:
-                raise _ClaimedCompatibilityCheckFailed from exc
-            return False, finally_compatible
+                compatibility_failed = False
+                try:
+                    finally_compatible = await _schema_is_compatible_async(context.migration_uri)
+                except Exception:
+                    compatibility_failed = True
+                    finally_compatible = False
+                if compatibility_failed:
+                    raise _ClaimedCompatibilityCheckFailed
+                outcome = (False, finally_compatible)
     except (_ClaimedCompatibilityCheckFailed, _ClaimedUpgradeFailed):
         raise
-    except Exception as exc:
+    except Exception:
         if claims_verified:
-            raise _ClaimedUpgradeFailed from exc
-        raise _OwnershipVerificationFailed from exc
+            terminal_failure = _ClaimedUpgradeFailed
+        else:
+            terminal_failure = _OwnershipVerificationFailed
     finally:
-        await engine.dispose()
+        dispose_failed = False
+        try:
+            await dispose_engine_instance_definitively(engine)
+        except Exception:
+            dispose_failed = True
+        if dispose_failed:
+            raise _ClaimedUpgradeFailed
+    if terminal_failure is not None:
+        raise terminal_failure
+    if outcome is None:
+        raise AssertionError("claimed migration ended without an outcome")
+    return outcome
 
 
 def main() -> int:
     """Upgrade behind schemas while treating a proven newer schema as a no-op."""
 
-    if os.environ.get("APEX_DATABASE_ROLE_CLAIM_KEY"):
+    if any(name in os.environ for name in _DATABASE_ROLE_CLAIM_ENV_NAMES):
         try:
             initially_compatible, finally_compatible = asyncio.run(_run_claimed_migration())
         except _OwnershipVerificationFailed:

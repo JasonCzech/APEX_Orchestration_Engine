@@ -7,7 +7,7 @@ Sim durations are tiny via the per-run "load_test" configurable override.
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
@@ -30,6 +30,7 @@ from apex.domain.integrations import (
 )
 from apex.domain.pipeline import (
     PHASE_ORDER,
+    ArtifactRef,
     EngineConnectionAffinityMissingError,
     EngineHandle,
     Phase,
@@ -39,8 +40,12 @@ from apex.domain.pipeline import (
 from apex.graphs.pipeline import execution_phase, phase_subgraph
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.graphs.pipeline.graph import builder
-from apex.graphs.pipeline.state import PipelineState
-from apex.ports.artifact_store import engine_artifact_namespace
+from apex.graphs.pipeline.state import PipelineState, merge_phase_results
+from apex.ports.artifact_store import (
+    StoredArtifact,
+    canonical_artifact_uri,
+    engine_artifact_namespace,
+)
 from apex.ports.execution_engine import EngineRunPhase, EngineRunStatus
 from apex.services import engine_runs
 from apex.services.connections import ConnectionResolver, ResolvedAdapter
@@ -218,6 +223,50 @@ def install_engine_spy(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
+def test_runtime_resolution_does_not_invoke_polymorphic_connection_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hooks: list[str] = []
+
+    class HostileId(str):
+        def __eq__(self, _other: object) -> bool:
+            hooks.append("eq")
+            return True
+
+        def __ne__(self, _other: object) -> bool:
+            hooks.append("ne")
+            return False
+
+    async def resolve(*_args: Any, **_kwargs: Any) -> ResolvedAdapter:
+        return ResolvedAdapter(
+            adapter=object(),
+            connection_id=HostileId("engine-a"),
+            connection_version=None,
+            persisted=False,
+        )
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", resolve)
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="engine-a",
+        idempotency_key="runtime-affinity",
+    )
+
+    with pytest.raises(RuntimeError, match="invalid connection id"):
+        asyncio.run(
+            execution_phase._resolve_engine_for_runtime_io(
+                PipelineConfigurable(engine="sim"),
+                {},
+                {},
+                handle,
+                connection_id="engine-a",
+                connection_version=None,
+            )
+        )
+
+    assert hooks == []
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -299,6 +348,33 @@ def custom_events(
         cast(dict[str, Any], event)
         for _ns, event in g.stream(inputs, cfg, stream_mode="custom", subgraphs=True)
     ]
+
+
+def checkpoint_command_update(
+    state: PipelineState,
+    entry: dict[str, Any],
+    command: Command[str],
+) -> None:
+    """Apply one direct-node command as LangGraph's checkpoint reducer would."""
+
+    assert command.update is not None
+    entry.update(command.update["phase_results"]["execution"])
+    if "artifacts" in command.update:
+        state["artifacts"] = command.update["artifacts"]
+
+
+def index_checkpointed_collection(
+    state: PipelineState,
+    entry: dict[str, Any],
+    collected: Command[str],
+    config: RunnableConfig,
+) -> Command[str]:
+    assert collected.goto == "engine_collection_index"
+    checkpoint_command_update(state, entry, collected)
+    indexed = execution_phase.engine_collection_index(state, config)
+    assert indexed.goto == "engine_collection_settle"
+    checkpoint_command_update(state, entry, indexed)
+    return indexed
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────
@@ -405,6 +481,7 @@ def test_failed_engine_artifact_index_blocks_after_checkpointed_exact_retries(
     projection_calls: list[dict[str, Any]],
 ) -> None:
     index_calls = 0
+    provider_calls = install_engine_spy(monkeypatch)
 
     async def fail_index(*args: Any, **kwargs: Any) -> None:
         nonlocal index_calls
@@ -419,7 +496,9 @@ def test_failed_engine_artifact_index_blocks_after_checkpointed_exact_retries(
     assert result["__interrupt__"]
 
     assert index_calls == execution_phase.MAX_ENGINE_COLLECTION_ATTEMPTS
-    assert [call["status"] for call in projection_calls[-3:]] == ["collecting"] * 3
+    assert provider_calls.count("collect_artifacts") == 1
+    assert provider_calls.count("fetch_summary") == 1
+    assert [call["status"] for call in projection_calls].count("collecting") == 1
     snapshot = subgraph_values(g, cfg)
     entry = snapshot["phase_results"]["execution"]
     assert entry["engine_collection_required"] is True
@@ -432,7 +511,41 @@ def test_failed_engine_artifact_index_blocks_after_checkpointed_exact_retries(
     # Do not delete after an ambiguous commit outcome. The deterministic object is
     # retained for the next exact-affinity batch retry, but this failed superstep
     # never checkpoints a graph-visible ArtifactRef.
-    key = f"{engine_artifact_namespace('exec-artifact-index-fails-execution-a1')}/results.json"
+    key = f"{engine_artifact_namespace('exec-artifact-index-fails-execution-a1')}/artifact-0000"
+    assert asyncio.run(MemoryArtifactStore().get(key))
+
+
+def test_ambiguous_engine_artifact_index_retry_never_recollects_or_rewrites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider_calls = install_engine_spy(monkeypatch)
+    batches: list[list[tuple[str, str]]] = []
+
+    async def ambiguous_then_succeed(references: Any, **_affinity: Any) -> None:
+        batch = [(reference.artifact_key, reference.kind) for reference in references]
+        batches.append(batch)
+        if len(batches) == 1:
+            # Model a committed ownership transaction whose acknowledgement was
+            # lost. The next node attempt must replay this exact staged batch.
+            raise RuntimeError("ownership commit acknowledgement lost")
+
+    monkeypatch.setattr(
+        execution_phase,
+        "record_artifact_references",
+        ambiguous_then_succeed,
+    )
+    thread_id = "exec-artifact-index-ambiguous"
+
+    result = compiled().invoke(public_inputs(), exec_config(thread_id))
+
+    assert "__interrupt__" not in result
+    assert len(batches) == 2
+    assert batches[0] == batches[1]
+    assert provider_calls.count("collect_artifacts") == 1
+    assert provider_calls.count("fetch_summary") == 1
+    assert provider_calls.count("teardown") == 1
+    [(key, kind)] = batches[0]
+    assert kind == "engine_results"
     assert asyncio.run(MemoryArtifactStore().get(key))
 
 
@@ -492,14 +605,14 @@ def test_collection_retry_defers_destructive_teardown_until_success(
     assert first.update is not None
     entry.update(first.update["phase_results"]["execution"])
 
-    second = execution_phase.engine_collect(state, exec_config("retry-collect"))
-    assert second.goto == "engine_collection_settle"
+    config = exec_config("retry-collect")
+    second = execution_phase.engine_collect(state, config)
+    indexed = index_checkpointed_collection(state, entry, second, config)
+    assert indexed.goto == "engine_collection_settle"
     assert calls == ["collect", "collect", "summary"]
     assert provider_results_available is True
-    assert second.update is not None
-    entry.update(second.update["phase_results"]["execution"])
 
-    settled = execution_phase.engine_collection_settle(state, exec_config("retry-collect"))
+    settled = execution_phase.engine_collection_settle(state, config)
     assert settled.goto == "open_output_gate"
     assert calls == ["collect", "collect", "summary", "teardown"]
     assert provider_results_available is False
@@ -734,7 +847,7 @@ def test_collection_isolates_summary_handle_from_collector_mutation(
 
     command = execution_phase.engine_collect(state, exec_config("trusted-collection"))
 
-    assert command.goto == "engine_collection_settle"
+    assert command.goto == "engine_collection_index"
     assert len(summary_handles) == 1
     assert summary_handles[0] == handle
 
@@ -959,16 +1072,13 @@ def test_aborted_engine_collection_sets_top_level_run_abort(
     phase_results = state.get("phase_results")
     assert phase_results is not None
     entry = phase_results["execution"]
-    staged = execution_phase.engine_collect(state, config)
-
-    assert staged.goto == "engine_collection_settle"
+    collected = execution_phase.engine_collect(state, config)
+    staged = index_checkpointed_collection(state, entry, collected, config)
     assert staged.update is not None
     staged_entry = staged.update["phase_results"]["execution"]
     assert staged_entry["status"] == "running"
     assert staged_entry["engine_collection_final_status"] == "aborted"
     assert "run_aborted" not in staged.update
-    entry.update(staged_entry)
-
     settled = execution_phase.engine_collection_settle(state, config)
     assert settled.goto == "finalize"
     assert settled.update is not None
@@ -1046,15 +1156,16 @@ def test_collection_checkpoints_artifact_store_affinity_before_provider_io(
 
     # Simulate a project/global default changing after the affinity checkpoint.
     default_connection_id = "artifact-store-b"
-    collected = execution_phase.engine_collect(state, exec_config("pin-collect"))
+    config = exec_config("pin-collect")
+    collected = execution_phase.engine_collect(state, config)
 
-    assert collected.goto == "engine_collection_settle"
+    assert collected.goto == "engine_collection_index"
     assert store_resolution_calls == [None, "artifact-store-a"]
     assert provider_calls == ["collect", "summary"]
-    assert collected.update is not None
-    entry.update(collected.update["phase_results"]["execution"])
+    indexed = index_checkpointed_collection(state, entry, collected, config)
+    assert indexed.goto == "engine_collection_settle"
 
-    settled = execution_phase.engine_collection_settle(state, exec_config("pin-collect"))
+    settled = execution_phase.engine_collection_settle(state, config)
     assert settled.goto == "open_output_gate"
     assert provider_calls == ["collect", "summary", "teardown"]
 
@@ -1173,7 +1284,8 @@ def test_collection_terminal_projection_response_loss_replays_from_staged_checkp
         },
     )
 
-    staged = execution_phase.engine_collect(state, config)
+    collected = execution_phase.engine_collect(state, config)
+    staged = index_checkpointed_collection(state, entry, collected, config)
     assert staged.goto == "engine_collection_settle"
     assert staged.update is not None
     staged_entry = staged.update["phase_results"]["execution"]
@@ -1181,8 +1293,6 @@ def test_collection_terminal_projection_response_loss_replays_from_staged_checkp
     assert staged_entry["test_summary"]["passed"] is summary_passed
     assert staged_entry["artifact_ids"] == ["execution-a1-engine-artifact-0"]
     assert calls == ["collect", "summary"]
-    entry.update(staged_entry)
-    state["artifacts"] = staged.update["artifacts"]
     assert execution_phase.route_execution_entry(state) == "engine_collection_settle"
 
     with pytest.raises(RuntimeError, match="response lost after commit"):
@@ -1430,6 +1540,569 @@ def test_engine_artifact_validation_caps_reference_count() -> None:
         )
 
 
+@pytest.mark.parametrize("server_field", ["id", "artifact_connection_id", "created_at"])
+@pytest.mark.parametrize("as_model", [False, True])
+def test_engine_artifact_validation_discards_provider_owned_server_fields(
+    server_field: str,
+    as_model: bool,
+) -> None:
+    handle = EngineHandle(
+        engine="sim",
+        idempotency_key="artifact-server-fields-execution-a1",
+    )
+    key = f"{engine_artifact_namespace(handle.idempotency_key)}/result.json"
+    canary = f"Authorization: Bearer provider-{server_field}-secret"
+    raw: dict[str, Any] = {
+        "kind": "engine_results",
+        "name": "results",
+        "uri": canonical_artifact_uri(key),
+        "key": key,
+        "media_type": "application/json",
+        server_field: canary,
+    }
+    provider_ref: Any = ArtifactRef.model_construct(**raw) if as_model else raw
+
+    normalized = execution_phase._validated_engine_artifacts([provider_ref], handle)
+
+    assert server_field not in normalized[0]
+    assert canary not in repr(normalized)
+
+
+def test_engine_collection_index_rejects_noncanonical_staged_uri_before_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_calls = 0
+
+    async def record(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal index_calls
+        index_calls += 1
+
+    monkeypatch.setattr(execution_phase, "record_artifact_references", record)
+    thread_id = "staged-uri-tamper"
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="sim-staged-uri-tamper",
+        idempotency_key=f"{thread_id}-execution-a1",
+    )
+    key = f"{engine_artifact_namespace(handle.idempotency_key)}/result.json"
+    entry: dict[str, Any] = {
+        "attempt": 1,
+        "engine_handle": handle.model_dump(mode="json"),
+        "engine_poll_last": {"status": EngineRunPhase.COMPLETED.value},
+        "artifact_store_connection_id": "dev-artifact-store-memory",
+        "engine_collection_pending_connection_id": "dev-artifact-store-memory",
+        "engine_collection_pending_refs": [
+            {
+                "kind": "engine_results",
+                "name": "results",
+                "uri": "https://provider.test/capability?token=opaque",
+                "key": key,
+                "media_type": "application/json",
+                "summary": None,
+            }
+        ],
+        "engine_collection_pending_summary": EngineTestResultSummary(
+            engine="sim", passed=True
+        ).model_dump(mode="json"),
+        "engine_collection_index_required": True,
+    }
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": handle.model_dump(mode="json"),
+            "phase_results": {"execution": entry},
+        },
+    )
+
+    command = execution_phase.engine_collection_index(state, exec_config(thread_id))
+
+    assert command.goto == "engine_collection_index"
+    assert command.update is not None
+    retry = command.update["phase_results"]["execution"]
+    assert retry["engine_collection_index_failures"] == 1
+    assert index_calls == 0
+    assert "provider.test" not in retry["engine_collection_index_last_error"]
+
+
+@pytest.mark.parametrize(
+    "acknowledgement",
+    [
+        lambda key: StoredArtifact(key=key, uri=f"memory://{key}", size=8),
+        lambda key: StoredArtifact(key=key, uri="memory://other/result.json", size=7),
+        lambda key: {"key": key, "uri": "javascript:alert(1)", "size": 7},
+        lambda key: {
+            "key": key,
+            "uri": f"memory://{key}",
+            "size": 7,
+            "provider_token": "engine-artifact-secret-canary",
+        },
+    ],
+)
+async def test_engine_artifact_store_rejects_inconsistent_provider_ack(
+    acknowledgement: Any,
+) -> None:
+    namespace = engine_artifact_namespace("artifact-ack-validation")
+    key = f"{namespace}/result.json"
+    storage_key = f"{namespace}/artifact-0000"
+
+    deleted: list[str] = []
+
+    class Store:
+        async def put(self, stored_key: str, *_args: Any, **_kwargs: Any) -> Any:
+            return acknowledgement(stored_key)
+
+        async def delete(self, deleted_key: str) -> None:
+            deleted.append(deleted_key)
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    with pytest.raises(RuntimeError, match="invalid object metadata") as raised:
+        await view.put(key, b"payload", content_type="application/json")
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert "engine-artifact-secret-canary" not in str(raised.value)
+    assert view.written == {}
+    assert deleted == [storage_key]
+
+
+async def test_engine_artifact_store_returns_only_canonical_uri() -> None:
+    namespace = engine_artifact_namespace("artifact-canonical-uri")
+    key = f"{namespace}/result.json"
+    storage_key = f"{namespace}/artifact-0000"
+
+    class Store:
+        async def put(self, stored_key: str, *_args: Any, **_kwargs: Any) -> StoredArtifact:
+            return StoredArtifact(
+                key=stored_key,
+                uri=f"s3://private-bucket/{stored_key}",
+                size=7,
+            )
+
+        async def delete(self, _key: str) -> None:
+            return None
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    stored = await view.put(key, b"payload", content_type="application/json")
+
+    assert stored.key == storage_key
+    assert stored.uri == f"apex-artifact:///{storage_key}"
+    assert view.written[storage_key][0].uri == stored.uri
+
+
+async def test_engine_artifact_put_cancellation_waits_for_definitive_cleanup() -> None:
+    namespace = engine_artifact_namespace("artifact-put-cancel")
+    key = f"{namespace}/result.json"
+    storage_key = f"{namespace}/artifact-0000"
+    put_started = asyncio.Event()
+    delete_started = asyncio.Event()
+    allow_delete = asyncio.Event()
+    objects: set[str] = set()
+
+    class Store:
+        async def put(self, stored_key: str, *_args: Any, **_kwargs: Any) -> StoredArtifact:
+            objects.add(stored_key)
+            put_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def delete(self, stored_key: str) -> None:
+            delete_started.set()
+            await allow_delete.wait()
+            objects.discard(stored_key)
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    task = asyncio.create_task(view.put(key, b"payload", content_type="application/json"))
+    await put_started.wait()
+    task.cancel()
+    await delete_started.wait()
+    task.cancel()  # repeated cancellation must not abandon the child cleanup
+    await asyncio.sleep(0)
+    assert not task.done()
+    assert storage_key in objects
+    allow_delete.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert storage_key not in objects
+
+
+async def test_engine_artifact_cancelled_cleanup_reports_fixed_failure() -> None:
+    namespace = engine_artifact_namespace("artifact-cancel-cleanup-failure")
+    key = f"{namespace}/result.json"
+    storage_key = f"{namespace}/artifact-0000"
+    put_started = asyncio.Event()
+    delete_started = asyncio.Event()
+    allow_delete = asyncio.Event()
+    objects: set[str] = set()
+
+    class Store:
+        async def put(self, stored_key: str, *_args: Any, **_kwargs: Any) -> StoredArtifact:
+            objects.add(stored_key)
+            put_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def delete(self, _stored_key: str) -> None:
+            delete_started.set()
+            await allow_delete.wait()
+            raise OSError("password=provider-cleanup-secret")
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    task = asyncio.create_task(view.put(key, b"payload", content_type="application/json"))
+    await put_started.wait()
+    task.cancel()
+    await delete_started.wait()
+    task.cancel()
+    allow_delete.set()
+
+    with pytest.raises(RuntimeError, match="could not compensate") as raised:
+        await task
+    assert raised.value.__cause__ is None
+    assert "provider-cleanup-secret" not in str(raised.value)
+    # Compensation failure is explicit; the ambiguous object is never reported
+    # as a successful provider write or silently abandoned under cancellation.
+    assert storage_key in objects
+    assert view.written == {}
+
+
+async def test_engine_artifact_stream_cancellation_compensates_ambiguous_write() -> None:
+    namespace = engine_artifact_namespace("artifact-stream-cancel")
+    key = f"{namespace}/result.bin"
+    storage_key = f"{namespace}/artifact-0000"
+    stream_started = asyncio.Event()
+    objects: set[str] = set()
+
+    class Store:
+        async def put_stream(self, stored_key: str, *_args: Any, **_kwargs: Any) -> StoredArtifact:
+            objects.add(stored_key)
+            stream_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def delete(self, stored_key: str) -> None:
+            objects.discard(stored_key)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"payload"
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    task = asyncio.create_task(
+        view.put_stream(
+            key,
+            chunks(),
+            content_type="application/octet-stream",
+            max_bytes=32,
+        )
+    )
+    await stream_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert storage_key not in objects
+
+
+async def test_collection_resource_closes_survive_repeated_cancellation() -> None:
+    first_started = asyncio.Event()
+    allow_first_close = asyncio.Event()
+    closed: list[str] = []
+
+    class FirstResource:
+        async def aclose(self) -> None:
+            first_started.set()
+            await allow_first_close.wait()
+            closed.append("first")
+
+    class SecondResource:
+        async def aclose(self) -> None:
+            closed.append("second")
+
+    task = asyncio.create_task(
+        execution_phase._close_resources_definitively(
+            FirstResource(),
+            SecondResource(),
+        )
+    )
+    await first_started.wait()
+    await asyncio.sleep(0)
+    assert "second" in closed
+
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    allow_first_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed == ["second", "first"]
+
+
+def test_engine_summary_cancellation_cleans_collected_objects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    thread_id = "summary-cancel-cleanup"
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="sim-summary-cancel",
+        idempotency_key=f"{thread_id}-execution-a1",
+    )
+    key = f"{engine_artifact_namespace(handle.idempotency_key)}/result.json"
+    storage_key = f"{engine_artifact_namespace(handle.idempotency_key)}/artifact-0000"
+    store = MemoryArtifactStore()
+
+    class Collector:
+        async def collect_artifacts(self, _handle: Any, scoped_store: Any) -> list[Any]:
+            stored = await scoped_store.put(key, b"{}", content_type="application/json")
+            return [
+                {
+                    "kind": "engine_results",
+                    "name": "results",
+                    "uri": stored.uri,
+                    "key": stored.key,
+                    "media_type": "application/json",
+                }
+            ]
+
+        async def fetch_summary(self, _handle: Any) -> Any:
+            raise asyncio.CancelledError
+
+    async def resolve_engine(*_args: Any, **_kwargs: Any) -> Collector:
+        return Collector()
+
+    async def resolve_store(
+        _cfg: PipelineConfigurable, *, connection_id: str | None = None
+    ) -> ResolvedAdapter:
+        return ResolvedAdapter(
+            adapter=store,
+            connection_id=connection_id or "dev-artifact-store-memory",
+            connection_version=None,
+            persisted=False,
+        )
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", resolve_engine)
+    monkeypatch.setattr(execution_phase, "_resolve_artifact_store", resolve_store)
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": handle.model_dump(mode="json"),
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "engine_handle": handle.model_dump(mode="json"),
+                    "engine_poll_last": {"status": EngineRunPhase.COMPLETED.value},
+                    "artifact_store_connection_id": "dev-artifact-store-memory",
+                }
+            },
+        },
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        execution_phase.engine_collect(state, exec_config(thread_id))
+    with pytest.raises(KeyError):
+        asyncio.run(store.get(storage_key))
+
+
+async def test_engine_artifact_store_enforces_write_count_before_provider_call() -> None:
+    namespace = engine_artifact_namespace("artifact-write-count")
+    calls: list[str] = []
+
+    class Store:
+        async def put(self, key: str, data: bytes, **_kwargs: Any) -> StoredArtifact:
+            calls.append(key)
+            return StoredArtifact(key=key, uri=f"memory://{key}", size=len(data))
+
+        async def delete(self, _key: str) -> None:
+            return None
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    for index in range(execution_phase.MAX_ENGINE_ARTIFACT_WRITES):
+        await view.put(
+            f"{namespace}/result-{index}.json",
+            b"x",
+            content_type="application/json",
+        )
+
+    with pytest.raises(ValueError, match="write count"):
+        await view.put(
+            f"{namespace}/overflow.json",
+            b"x",
+            content_type="application/json",
+        )
+    assert len(calls) == execution_phase.MAX_ENGINE_ARTIFACT_WRITES
+    assert calls == [
+        f"{namespace}/artifact-{index:04d}"
+        for index in range(execution_phase.MAX_ENGINE_ARTIFACT_WRITES)
+    ]
+
+
+async def test_engine_artifact_store_reserves_stream_hard_limits_before_provider_call() -> None:
+    namespace = engine_artifact_namespace("artifact-stream-hard-limits")
+    calls = 0
+
+    class Store:
+        async def put_stream(self, *_args: Any, **_kwargs: Any) -> StoredArtifact:
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("ambiguous provider failure")
+
+        async def delete(self, _key: str) -> None:
+            return None
+
+    async def empty() -> AsyncIterator[bytes]:
+        if False:  # pragma: no cover - establishes the async-generator shape
+            yield b""
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    for index in range(2):
+        with pytest.raises(RuntimeError, match="ambiguous provider failure"):
+            await view.put_stream(
+                f"{namespace}/part-{index}.bin",
+                empty(),
+                content_type="application/octet-stream",
+                max_bytes=execution_phase.MAX_ENGINE_ARTIFACT_BYTES_PER_OBJECT,
+            )
+    with pytest.raises(ValueError, match="aggregate byte limit"):
+        await view.put_stream(
+            f"{namespace}/overflow.bin",
+            empty(),
+            content_type="application/octet-stream",
+            max_bytes=1,
+        )
+    with pytest.raises(ValueError, match="per-object byte limit"):
+        await view.put_stream(
+            f"{namespace}/oversized.bin",
+            empty(),
+            content_type="application/octet-stream",
+            max_bytes=execution_phase.MAX_ENGINE_ARTIFACT_BYTES_PER_OBJECT + 1,
+        )
+    assert calls == 2
+
+
+async def test_engine_artifact_store_caps_regular_put_and_cleans_unreturned_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(execution_phase, "MAX_ENGINE_ARTIFACT_BYTES_PER_OBJECT", 4)
+    monkeypatch.setattr(execution_phase, "MAX_ENGINE_ARTIFACT_BYTES_TOTAL", 8)
+    namespace = engine_artifact_namespace("artifact-regular-budget")
+    key = f"{namespace}/result.bin"
+    storage_key = f"{namespace}/artifact-0000"
+    calls = 0
+    store = MemoryArtifactStore()
+    view = execution_phase._EngineArtifactStoreView(store, namespace)
+
+    with pytest.raises(ValueError, match="per-object byte limit"):
+        await view.put(key, b"12345", content_type="application/octet-stream")
+    with pytest.raises(KeyError):
+        await store.get(key)
+
+    stored = await view.put(key, b"1234", content_type="application/octet-stream")
+    calls += 1
+    assert stored.size == 4
+    assert await store.get(storage_key) == b"1234"
+    await view.cleanup_except(set())
+    with pytest.raises(KeyError):
+        await store.get(storage_key)
+    assert calls == 1
+
+
+async def test_engine_artifact_replay_converges_changed_keys_and_count_after_crash() -> None:
+    """Discarding a view models death before its graph-node update is checkpointed."""
+
+    namespace = engine_artifact_namespace("artifact-crash-replay")
+    store = MemoryArtifactStore()
+    first_process = execution_phase._EngineArtifactStoreView(store, namespace)
+
+    first_zero = await first_process.put(
+        f"{namespace}/provider-uuid-first-a.json",
+        b"stale-zero",
+        content_type="application/json",
+    )
+    first_one = await first_process.put(
+        f"{namespace}/provider-uuid-first-b.json",
+        b"stale-one",
+        content_type="application/json",
+    )
+    assert first_zero.key == f"{namespace}/artifact-0000"
+    assert first_one.key == f"{namespace}/artifact-0001"
+
+    # The process disappears here: neither cleanup nor a graph checkpoint can run.
+    retry_process = execution_phase._EngineArtifactStoreView(store, namespace)
+    current = await retry_process.put(
+        f"{namespace}/different-provider-uuid.json",
+        b"current",
+        content_type="application/json",
+    )
+    await retry_process.cleanup_except({current.key})
+
+    assert current.key == first_zero.key
+    assert await store.get(current.key) == b"current"
+    with pytest.raises(KeyError):
+        await store.get(first_one.key)
+
+
+@pytest.mark.parametrize(
+    ("consume", "size_delta", "message"),
+    [
+        ("all", 1, "invalid object metadata"),
+        ("one", 0, "did not consume the complete"),
+        ("none", 0, "did not consume the complete"),
+    ],
+)
+async def test_engine_artifact_stream_requires_full_consumption_and_exact_size(
+    consume: str,
+    size_delta: int,
+    message: str,
+) -> None:
+    namespace = engine_artifact_namespace("artifact-stream-validation")
+    key = f"{namespace}/stream.bin"
+    storage_key = f"{namespace}/artifact-0000"
+
+    deleted: list[str] = []
+
+    class Store:
+        async def put_stream(
+            self,
+            stored_key: str,
+            data: Any,
+            **_kwargs: Any,
+        ) -> StoredArtifact:
+            size = 0
+            if consume == "all":
+                async for chunk in data:
+                    size += len(chunk)
+            elif consume == "one":
+                async for chunk in data:
+                    size += len(chunk)
+                    break
+            return StoredArtifact(
+                key=stored_key,
+                uri=f"memory://{stored_key}",
+                size=size + size_delta,
+            )
+
+        async def delete(self, deleted_key: str) -> None:
+            deleted.append(deleted_key)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"abc"
+        yield b"de"
+
+    view = execution_phase._EngineArtifactStoreView(Store(), namespace)
+    with pytest.raises(RuntimeError, match=message):
+        await view.put_stream(
+            key,
+            chunks(),
+            content_type="application/octet-stream",
+            max_bytes=10,
+        )
+
+    assert view.written == {}
+    assert deleted == [storage_key]
+
+
 def test_provider_models_reject_nonfinite_and_oversized_checkpoint_data() -> None:
     with pytest.raises(ValueError):
         LoadTestSpec(title="load\x00test")
@@ -1466,6 +2139,160 @@ def test_provider_models_reject_nonfinite_and_oversized_checkpoint_data() -> Non
         EngineTestResultSummary(engine="sim", passed=False, notes="provider\x00notes")
 
 
+def test_provider_boundaries_never_invoke_arbitrary_model_dump() -> None:
+    class SerializerBomb:
+        calls = 0
+
+        def model_dump(self, *_args: Any, **_kwargs: Any) -> Any:
+            type(self).calls += 1
+            raise AssertionError("provider serializer must not run")
+
+    handle = EngineHandle(engine="sim", idempotency_key="serializer-bomb-execution-a1")
+    checks = (
+        lambda value: execution_phase._validated_engine_status(value),
+        lambda value: execution_phase._validated_engine_report(value),
+        lambda value: execution_phase._validated_engine_summary(value),
+        lambda value: execution_phase._validated_engine_handle(value),
+        lambda value: execution_phase._validated_engine_artifacts([value], handle),
+    )
+
+    for check in checks:
+        with pytest.raises(ValueError):
+            check(SerializerBomb())
+    assert SerializerBomb.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("validator", "value"),
+    [
+        (
+            execution_phase._validated_engine_status,
+            {"phase": "bare-provider-status-canary"},
+        ),
+        (
+            execution_phase._validated_engine_summary,
+            {
+                "engine": "sim",
+                "passed": "bare-provider-summary-canary",
+            },
+        ),
+        (
+            execution_phase._validated_engine_report,
+            {"ok": "bare-provider-report-canary"},
+        ),
+    ],
+)
+def test_provider_model_validation_does_not_retain_raw_values(
+    validator: Any,
+    value: dict[str, Any],
+) -> None:
+    canary = next(
+        item
+        for item in value.values()
+        if isinstance(item, str) and item.startswith("bare-provider-")
+    )
+
+    with pytest.raises(ValueError) as raised:
+        validator(value)
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert canary not in str(raised.value)
+
+
+def test_provider_boundaries_never_iterate_container_subclasses() -> None:
+    class MappingBomb(dict[str, Any]):
+        calls = 0
+
+        def __iter__(self) -> Any:
+            type(self).calls += 1
+            raise AssertionError("provider mapping iterator must not run")
+
+        def __getitem__(self, key: str) -> Any:
+            type(self).calls += 1
+            raise AssertionError("provider mapping item access must not run")
+
+    handle = EngineHandle(engine="sim", idempotency_key="mapping-bomb-execution-a1")
+    checks = (
+        lambda value: execution_phase._validated_engine_status(value),
+        lambda value: execution_phase._validated_engine_report(value),
+        lambda value: execution_phase._validated_engine_summary(value),
+        lambda value: execution_phase._validated_engine_handle(value),
+        lambda value: execution_phase._validated_engine_artifacts([value], handle),
+    )
+
+    for check in checks:
+        with pytest.raises(ValueError):
+            check(MappingBomb())
+    assert MappingBomb.calls == 0
+
+
+def test_engine_status_validation_never_reads_untrusted_class_descriptor() -> None:
+    calls: list[str] = []
+
+    class ClassBomb:
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                calls.append("class")
+                raise AssertionError("provider value __class__ must not be read")
+            return object.__getattribute__(self, name)
+
+    with pytest.raises(ValueError, match="engine status is invalid"):
+        execution_phase._validated_engine_status({"phase": ClassBomb()})
+    assert calls == []
+
+
+def test_provider_boundaries_reject_manufactured_oversized_models_before_copy() -> None:
+    with pytest.raises(ValueError, match="engine status is invalid"):
+        execution_phase._validated_engine_status(
+            EngineRunStatus.model_construct(
+                phase=EngineRunPhase.RUNNING,
+                progress_pct=0,
+                message="x" * 4_097,
+            )
+        )
+    with pytest.raises(ValueError, match="validation report is invalid"):
+        execution_phase._validated_engine_report(
+            ValidationReport.model_construct(ok=False, issues=["x"] * 129)
+        )
+    with pytest.raises(ValueError, match="engine summary is invalid"):
+        execution_phase._validated_engine_summary(
+            EngineTestResultSummary.model_construct(
+                engine="sim",
+                passed=True,
+                kpis={f"metric-{index}": 1 for index in range(65)},
+                sla_breaches=[],
+                notes=None,
+            )
+        )
+    with pytest.raises(ValueError, match="engine handle is invalid"):
+        execution_phase._validated_engine_handle(
+            EngineHandle.model_construct(
+                engine="sim",
+                connection_id=None,
+                external_run_id=None,
+                idempotency_key="manufactured-handle-execution-a1",
+                extras={f"field-{index}": "x" for index in range(33)},
+            )
+        )
+    handle = EngineHandle(engine="sim", idempotency_key="manufactured-ref-execution-a1")
+    key = f"{engine_artifact_namespace(handle.idempotency_key)}/result.json"
+    with pytest.raises(ValueError, match="engine artifact ref 0 is invalid"):
+        execution_phase._validated_engine_artifacts(
+            [
+                ArtifactRef.model_construct(
+                    kind="engine_results",
+                    name="x" * 513,
+                    uri=canonical_artifact_uri(key),
+                    key=key,
+                    media_type="application/json",
+                    summary=None,
+                )
+            ],
+            handle,
+        )
+
+
 def test_poll_sample_redacts_provider_diagnostics_before_checkpoint() -> None:
     secret = "poll-message-secret-canary"
     sample = execution_phase._poll_sample(
@@ -1482,20 +2309,262 @@ def test_poll_sample_redacts_provider_diagnostics_before_checkpoint() -> None:
     assert "[REDACTED]" in sample["message"]
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"external_run_id": "Authorization: Bearer engine-secret-canary"},
+        {"connection_id": "https://engine.test/?sig=engine-secret-canary"},
+    ],
+)
+def test_engine_handle_boundary_rejects_credential_identity_without_reflection(
+    value: dict[str, str],
+) -> None:
+    secret = "engine-secret-canary"
+    raw = {
+        "engine": "sim",
+        "idempotency_key": "safe-execution-a1",
+        **value,
+    }
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        execution_phase._validated_engine_handle(raw)
+
+    assert secret not in str(raised.value)
+
+
+def test_execution_rejects_inconsistent_top_level_and_phase_handles() -> None:
+    phase_handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="intended-run",
+        idempotency_key="handle-consistency-execution-a1",
+    ).model_dump(mode="json")
+    redirected = {
+        **phase_handle,
+        "external_run_id": "different-provider-run",
+    }
+    phase_entry = {
+        "attempt": 1,
+        "engine_handle": phase_handle,
+    }
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": redirected,
+            "phase_results": {"execution": phase_entry},
+        },
+    )
+
+    with pytest.raises(ValueError, match="handles are inconsistent"):
+        execution_phase._handle_from(state, phase_entry)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"notes": "Authorization: Bearer summary-secret-canary"},
+        {"sla_breaches": ["password=summary-secret-canary"]},
+    ],
+)
+def test_engine_summary_boundary_rejects_credentials_without_reflection(
+    summary: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="credential material") as raised:
+        execution_phase._validated_engine_summary(
+            {"engine": "sim", "passed": False, **summary},
+            expected_engine="sim",
+        )
+
+    assert "summary-secret-canary" not in str(raised.value)
+
+
+def test_engine_artifact_boundary_rejects_signed_uri_without_reflection() -> None:
+    secret = "artifact-uri-secret-canary"
+    handle = EngineHandle(engine="sim", idempotency_key="artifact-secret-execution-a1")
+    namespace = engine_artifact_namespace(handle.idempotency_key)
+    ref = {
+        "kind": "engine_report",
+        "name": "report.json",
+        "uri": f"https://objects.test/report.json?sig={secret}",
+        "key": f"{namespace}/report.json",
+    }
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        execution_phase._validated_engine_artifacts([ref], handle)
+
+    assert secret not in str(raised.value)
+
+
+@pytest.mark.parametrize("compensation_succeeds", [True, False])
+def test_unsafe_provision_handle_is_compensated_or_retried_without_durable_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    projection_calls: list[dict[str, Any]],
+    compensation_succeeds: bool,
+) -> None:
+    secret = "unsafe-provision-handle-secret-canary"
+    calls: list[str] = []
+    events: list[dict[str, Any]] = []
+
+    class UnsafeProvisioner:
+        async def validate(self, spec: LoadTestSpec) -> ValidationReport:
+            del spec
+            return ValidationReport(ok=True)
+
+        async def provision(self, spec: LoadTestSpec) -> EngineHandle:
+            calls.append("provision")
+            # Simulate an untrusted plugin bypassing normal model construction;
+            # the runtime boundary must still compensate the unsafe handle.
+            return EngineHandle.model_construct(
+                engine="provider-controlled",
+                connection_id="provider-controlled",
+                external_run_id=f"Authorization: Bearer {secret}",
+                idempotency_key=spec.idempotency_key,
+                extras={},
+            )
+
+        async def abort(self, handle: EngineHandle, *, reason: str) -> None:
+            assert secret in str(handle.external_run_id)
+            assert reason == "provider returned an unsafe durable handle"
+            calls.append("abort")
+            if not compensation_succeeds:
+                raise RuntimeError(f"abort failed for password={secret}")
+
+        async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
+            assert secret in str(handle.external_run_id)
+            calls.append("status")
+            return EngineRunStatus(phase=EngineRunPhase.ABORTED)
+
+        async def teardown(self, handle: EngineHandle) -> None:
+            assert secret in str(handle.external_run_id)
+            calls.append("teardown")
+
+    adapter = UnsafeProvisioner()
+
+    async def resolve(
+        _cfg: Any,
+        _options: dict[str, Any],
+        *,
+        connection_id: str | None = None,
+    ) -> ResolvedAdapter:
+        assert connection_id == "engine-a"
+        return ResolvedAdapter(
+            adapter=adapter,
+            connection_id="engine-a",
+            connection_version=None,
+            persisted=False,
+        )
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", resolve)
+    monkeypatch.setattr(execution_phase, "emit_event", events.append)
+    spec = LoadTestSpec(
+        idempotency_key="unsafe-provision-execution-a1",
+        title="unsafe provision",
+        vusers=1,
+        ramp_s=0,
+        duration_s=1,
+    )
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "load_test_spec": spec.model_dump(mode="json"),
+                    "engine_options": {},
+                    "engine_connection_id": "engine-a",
+                    "engine_connection_version": None,
+                    "engine_connection_persisted": False,
+                    "engine_connection_affinity_staged": True,
+                }
+            }
+        },
+    )
+
+    command = execution_phase.engine_provision(
+        state,
+        exec_config("unsafe-provision"),
+    )
+
+    if compensation_succeeds:
+        assert command.goto == "finalize"
+        assert calls == ["provision", "abort", "status", "teardown"]
+        assert [call["status"] for call in projection_calls] == [
+            EngineRunPhase.PROVISIONING.value,
+            EngineRunPhase.FAILED.value,
+        ]
+    else:
+        assert command.goto == "engine_provision"
+        assert calls == ["provision", "abort"]
+        assert [call["status"] for call in projection_calls] == [
+            EngineRunPhase.PROVISIONING.value,
+        ]
+    assert secret not in repr(command)
+    assert secret not in repr(projection_calls)
+    assert secret not in repr(events)
+
+
 def test_engine_poll_custom_events_streamed() -> None:
     g = compiled()
     cfg = exec_config("exec-events")
     events = custom_events(g, public_inputs(), cfg)
     polls = [e for e in events if e.get("type") == "engine_poll"]
-    assert len(polls) >= 2  # initial tick + at least one poll cycle
+    # A provider is allowed to finish before the first status observation. The
+    # initial read is still a counted/emitted poll; an intermediate RUNNING sample
+    # is not a portable execution-engine contract.
+    assert len(polls) >= 1
     assert all(e["phase"] == "execution" for e in polls)
     assert all(e["schema_version"] == 1 for e in polls)
-    assert polls[0]["status"] == "running"
+    assert polls[0]["status"] in {"running", "completed"}
     assert polls[-1]["status"] == "completed"  # terminal status is emitted
     assert {e["external_run_id"] for e in polls} == {polls[0]["external_run_id"]}
     running = [e for e in polls if e["status"] == "running"]
     assert all(set(e["live_stats"]) == {"vusers", "tps", "error_rate", "p95_ms"} for e in running)
     assert any(e["progress_pct"] > 0 for e in polls)
+
+
+def test_initial_terminal_status_is_counted_as_first_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class AlreadyCompletedEngine:
+        async def get_status(self, _handle: EngineHandle) -> EngineRunStatus:
+            return EngineRunStatus(
+                phase=EngineRunPhase.COMPLETED,
+                progress_pct=100.0,
+                message="completed before first observation",
+            )
+
+    async def resolve(*_args: Any, **_kwargs: Any) -> AlreadyCompletedEngine:
+        return AlreadyCompletedEngine()
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", resolve)
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="sim-already-completed",
+        idempotency_key="initial-terminal-execution-a1",
+    )
+    handle_json = handle.model_dump(mode="json")
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": handle_json,
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "engine_handle": handle_json,
+                    "engine_options": {},
+                }
+            },
+        },
+    )
+
+    observed = execution_phase.engine_status(state, exec_config("initial-terminal"))
+
+    assert observed.goto == "engine_collect"
+    assert observed.update is not None
+    entry = observed.update["phase_results"]["execution"]
+    assert entry["engine_poll_count"] == 1
+    assert entry["engine_poll_last"]["status"] == EngineRunPhase.COMPLETED.value
 
 
 def test_idempotency_key_deterministic_and_provision_stable() -> None:
@@ -2385,6 +3454,104 @@ def test_engine_resolution_verifies_selector_and_overlays_stored_connection(
     ]
 
 
+async def test_throwaway_resolution_closes_leaf_and_resolver_owned_generations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[str] = []
+    resolvers: list[Any] = []
+
+    class Leaf:
+        async def aclose(self) -> None:
+            closed.append(f"leaf-{len(closed)}")
+
+    class Resolver:
+        def __init__(self) -> None:
+            self.ordinal = len(resolvers)
+            resolvers.append(self)
+
+        async def resolve_with_metadata(self, kind: PortKind, **_kwargs: Any) -> ResolvedAdapter:
+            return ResolvedAdapter(
+                adapter=Leaf(),
+                connection_id=f"connection-{self.ordinal}-{kind.value}",
+                connection_version=None,
+                persisted=False,
+            )
+
+        async def close(self) -> None:
+            closed.append(f"resolver-{self.ordinal}")
+
+    monkeypatch.setattr(execution_phase, "_make_resolver", Resolver)
+    cfg = PipelineConfigurable(project_id="project-a", engine="sim")
+
+    engine = await execution_phase._resolve_engine(cfg, {})
+    store = await execution_phase._resolve_artifact_store(cfg)
+    await execution_phase._close_resources_definitively(engine, store)
+
+    assert len(resolvers) == 2
+    assert sum(item.startswith("leaf-") for item in closed) == 2
+    assert {item for item in closed if item.startswith("resolver-")} == {
+        "resolver-0",
+        "resolver-1",
+    }
+
+
+async def test_failed_adapter_build_closes_resolver_owned_nested_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[str] = []
+
+    class Resolver:
+        async def resolve_with_metadata(self, *_args: Any, **_kwargs: Any) -> ResolvedAdapter:
+            raise RuntimeError("provider build failed after nested secret resolution")
+
+        async def close(self) -> None:
+            closed.append("resolver")
+
+    monkeypatch.setattr(execution_phase, "_make_resolver", Resolver)
+
+    with pytest.raises(RuntimeError, match="provider build failed"):
+        await execution_phase._resolve_engine(PipelineConfigurable(engine="sim"), {})
+
+    assert closed == ["resolver"]
+
+
+async def test_cancelled_resolution_waits_for_resolver_owned_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolve_started = asyncio.Event()
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    closed: list[str] = []
+
+    class Resolver:
+        async def resolve_with_metadata(self, *_args: Any, **_kwargs: Any) -> ResolvedAdapter:
+            resolve_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def close(self) -> None:
+            close_started.set()
+            await allow_close.wait()
+            closed.append("resolver")
+
+    monkeypatch.setattr(execution_phase, "_make_resolver", Resolver)
+    task = asyncio.create_task(
+        execution_phase._resolve_engine(PipelineConfigurable(engine="sim"), {})
+    )
+    await resolve_started.wait()
+    task.cancel()
+    await close_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    allow_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert closed == ["resolver"]
+
+
 def test_start_checkpoints_handle_mutations_before_initial_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2499,6 +3666,70 @@ def test_start_exception_rejects_invalid_provider_handle_mutation(
     assert entry["engine_handle"] == trusted
     assert "invalid start handle" in entry["engine_cleanup_reason"]
     assert "\x00" not in entry["engine_cleanup_reason"]
+
+
+def test_credential_bearing_start_handle_is_compensated_without_durable_leak(
+    monkeypatch: pytest.MonkeyPatch,
+    projection_calls: list[dict[str, Any]],
+) -> None:
+    canary = "unsafe-start-handle-secret-canary"
+    calls: list[str] = []
+
+    class UnsafeMutatingEngine:
+        async def start(self, handle: EngineHandle) -> None:
+            calls.append("start")
+            handle.external_run_id = f"Authorization: Bearer {canary}"
+
+        async def abort(self, handle: EngineHandle, *, reason: str) -> None:
+            assert canary in str(handle.external_run_id)
+            assert reason == "provider returned an unsafe durable handle"
+            calls.append("abort")
+
+        async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
+            assert canary in str(handle.external_run_id)
+            calls.append("status")
+            return EngineRunStatus(phase=EngineRunPhase.ABORTED)
+
+        async def teardown(self, handle: EngineHandle) -> None:
+            assert canary in str(handle.external_run_id)
+            calls.append("teardown")
+
+    async def resolve(*_args: Any, **_kwargs: Any) -> UnsafeMutatingEngine:
+        return UnsafeMutatingEngine()
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", resolve)
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="trusted-reservation",
+        idempotency_key="unsafe-start-execution-a1",
+    )
+    trusted = handle.model_dump(mode="json")
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": trusted,
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "engine_handle": trusted,
+                    "engine_options": {},
+                }
+            },
+        },
+    )
+
+    command = execution_phase.engine_start(state, exec_config("unsafe-start"))
+
+    assert command.goto == "finalize"
+    assert command.update is not None
+    entry = command.update["phase_results"]["execution"]
+    assert entry["status"] == PhaseStatus.FAILED.value
+    assert entry["engine_handle"] == trusted
+    assert entry["engine_cleanup_required"] is False
+    assert calls == ["start", "abort", "status", "teardown"]
+    assert projection_calls[-1]["status"] == EngineRunPhase.FAILED.value
+    assert canary not in repr(command.update)
 
 
 def test_start_terminal_projection_race_is_rejected_before_provider_io(
@@ -2693,6 +3924,105 @@ def test_locked_legacy_recovery_nodes_reject_missing_execution_affinity_before_i
             execution_phase.engine_collection_settle(state, config)
 
     assert resolution_calls == []
+
+
+def test_locked_runtime_rejects_staged_unversioned_affinities_before_provider_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        execution_phase,
+        "get_settings",
+        lambda: SimpleNamespace(is_locked_down=True),
+    )
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="engine-connection",
+        external_run_id="42",
+        idempotency_key="locked-unversioned-execution-a1",
+    )
+    entry = {
+        "engine_connection_affinity_staged": True,
+        "engine_connection_id": "engine-connection",
+        "engine_connection_persisted": False,
+        "engine_connection_version": None,
+        "artifact_store_connection_persisted": False,
+        "artifact_store_connection_version": None,
+    }
+
+    with pytest.raises(EngineConnectionAffinityMissingError, match="out of band"):
+        execution_phase._connection_reservation_affinity(entry, handle)
+    with pytest.raises(RuntimeError, match="no durable connection generation"):
+        execution_phase._artifact_reservation_affinity(entry, "artifact-connection")
+
+
+@pytest.mark.parametrize("artifact", [False, True])
+def test_checkpointed_connection_versions_never_retain_credentials_on_error(
+    artifact: bool,
+) -> None:
+    canary = "connection-version-secret-canary"
+    raw_version = f"api_key={canary}"
+
+    if artifact:
+
+        def check() -> object:
+            return execution_phase._artifact_reservation_affinity(
+                {
+                    "artifact_store_connection_persisted": True,
+                    "artifact_store_connection_version": raw_version,
+                },
+                "artifact-store-a",
+            )
+    else:
+        handle = EngineHandle(
+            engine="sim",
+            connection_id="engine-a",
+            external_run_id="run-a",
+            idempotency_key="affinity-secret-test",
+        )
+
+        def check() -> object:
+            return execution_phase._connection_reservation_affinity(
+                {
+                    "engine_connection_affinity_staged": True,
+                    "engine_connection_id": "engine-a",
+                    "engine_connection_persisted": True,
+                    "engine_connection_version": raw_version,
+                },
+                handle,
+            )
+
+    with pytest.raises(RuntimeError) as raised:
+        check()
+
+    current: BaseException | None = raised.value
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        assert canary not in repr(current)
+        current = current.__cause__ or current.__context__
+
+
+def test_execution_resume_router_rejects_unselected_poisoned_phase() -> None:
+    durable = PipelineConfigurable(phases=[Phase.STORY_ANALYSIS])
+    state = cast(
+        PipelineState,
+        {
+            "run_config": durable.snapshot(),
+            "phases_plan": [Phase.EXECUTION.value],
+            "phase_results": {"execution": {"attempt": 1}},
+        },
+    )
+
+    with pytest.raises(ValueError, match="phase plan does not match"):
+        execution_phase.route_execution_entry(
+            state,
+            {
+                "configurable": {
+                    "thread_id": "unselected-execution-phase",
+                    **durable.snapshot(),
+                }
+            },
+        )
 
 
 def test_unlocked_legacy_status_keeps_static_default_compatibility(
@@ -3036,6 +4366,85 @@ def test_cleanup_retries_teardown_before_terminal_projection(
     assert [call["status"] for call in projection_calls] == [EngineRunPhase.ABORTED.value]
 
 
+def test_cleanup_exhaustion_checkpoints_a_publicly_resumable_retry_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    projection_calls: list[dict[str, Any]],
+) -> None:
+    class UnavailableCleanupEngine:
+        async def abort(self, handle: EngineHandle, *, reason: str) -> None:
+            del handle, reason
+            raise OSError("provider abort unavailable")
+
+    async def resolve(*_args: Any, **_kwargs: Any) -> UnavailableCleanupEngine:
+        return UnavailableCleanupEngine()
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", resolve)
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="cleanup-blocked-remote",
+        idempotency_key="cleanup-blocked-execution-a1",
+    )
+    entry: dict[str, Any] = {
+        "attempt": 1,
+        "status": PhaseStatus.RUNNING.value,
+        "engine_handle": handle.model_dump(mode="json"),
+        "engine_options": {},
+        "engine_cleanup_required": True,
+        "engine_cleanup_reason": "poll timeout",
+        "engine_cleanup_final_error": "poll timeout",
+        # poll_timeout / poll_interval is two; cleanup's minimum budget is three.
+        "engine_cleanup_failures": 2,
+    }
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": handle.model_dump(mode="json"),
+            "phase_results": {"execution": entry},
+        },
+    )
+    config = exec_config(
+        "cleanup-blocked",
+        limits={"poll_interval_s": 0.01, "poll_timeout_s": 0.02},
+    )
+
+    blocked = execution_phase.engine_cleanup(state, config)
+
+    assert blocked.goto == "engine_cleanup_blocked"
+    assert blocked.update is not None
+    blocked_entry = blocked.update["phase_results"]["execution"]
+    assert blocked_entry["engine_cleanup_required"] is True
+    assert blocked_entry["engine_cleanup_blocked"] is True
+    assert blocked_entry["engine_cleanup_failures"] == 3
+    assert projection_calls == []
+
+    payloads: list[dict[str, Any]] = []
+    monkeypatch.setattr(execution_phase, "interrupt", lambda payload: payloads.append(payload))
+    entry.update(blocked_entry)
+    resumed = execution_phase.engine_cleanup_blocked(state, config)
+
+    assert payloads == [
+        {
+            "schema_version": execution_phase.EVENT_SCHEMA_VERSION,
+            "kind": "engine_cleanup_retry",
+            "phase": "execution",
+            "attempt": 1,
+            "thread_id": "cleanup-blocked",
+            "actions": ["retry"],
+            "error": "OSError: provider abort unavailable",
+            "message": (
+                "Engine abort confirmation exhausted its retry budget. The exact "
+                "provider handle remains durable; resume to retry abort and teardown."
+            ),
+        }
+    ]
+    assert resumed.goto == "engine_cleanup"
+    assert resumed.update is not None
+    resumed_entry = resumed.update["phase_results"]["execution"]
+    assert resumed_entry["engine_cleanup_blocked"] is False
+    assert resumed_entry["engine_cleanup_failures"] == 0
+
+
 def test_cleanup_preserves_trusted_handle_identity_across_provider_mutation(
     monkeypatch: pytest.MonkeyPatch,
     projection_calls: list[dict[str, Any]],
@@ -3291,6 +4700,271 @@ def test_collection_fails_closed_without_confirmed_terminal_status(
     assert calls == []
 
 
+def test_collection_never_stringifies_malformed_checkpoint_status() -> None:
+    class HostileStatus:
+        called = False
+
+        def __str__(self) -> str:
+            self.called = True
+            raise AssertionError("checkpoint status must not be stringified")
+
+        def __repr__(self) -> str:
+            self.called = True
+            raise AssertionError("checkpoint status must not be reflected")
+
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="dev-engine-sim",
+        external_run_id="sim-malformed-status",
+        idempotency_key="malformed-status-execution-a1",
+    )
+    status = HostileStatus()
+    state = cast(
+        PipelineState,
+        {
+            "engine_handle": handle.model_dump(mode="json"),
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "engine_handle": handle.model_dump(mode="json"),
+                    "engine_poll_last": {"status": status},
+                }
+            },
+        },
+    )
+
+    command = execution_phase.engine_collect(state, exec_config("malformed-status"))
+
+    assert command.goto == "engine_cleanup"
+    assert status.called is False
+
+
+def test_elapsed_time_ignores_string_subclasses_without_invoking_them() -> None:
+    class HostileTimestamp(str):
+        def __bool__(self) -> bool:
+            raise AssertionError("timestamp truthiness must not execute")
+
+    assert execution_phase._elapsed_s(HostileTimestamp("2026-01-01T00:00:00+00:00")) is None
+
+
+def test_checkpoint_spec_rejects_coercion_hooks_and_credentials_before_replay() -> None:
+    calls: list[str] = []
+
+    class FloatBomb:
+        def __float__(self) -> float:
+            calls.append("float")
+            raise AssertionError("checkpoint numeric coercion must not execute")
+
+    base = {
+        "idempotency_key": "checkpoint-spec-execution-a1",
+        "title": "checkpoint spec",
+        "vusers": 1,
+        "ramp_s": 0.0,
+        "duration_s": 1.0,
+    }
+    with pytest.raises(ValueError, match="load-test spec"):
+        execution_phase._validated_checkpoint_spec({**base, "ramp_s": FloatBomb()})
+    with pytest.raises(ValueError, match="credential material") as raised:
+        execution_phase._validated_checkpoint_spec(
+            {**base, "title": "Authorization: Bearer spec-secret-canary"}
+        )
+
+    assert calls == []
+    assert "spec-secret-canary" not in str(raised.value)
+
+
+def test_execution_route_rejects_malformed_flags_without_truthiness_hooks() -> None:
+    calls: list[str] = []
+
+    class BoolBomb:
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError("checkpoint flag truthiness must not execute")
+
+    for value in (BoolBomb(), "false"):
+        state = cast(
+            PipelineState,
+            {"phase_results": {"execution": {"engine_cleanup_required": value}}},
+        )
+        with pytest.raises(ValueError, match="flag"):
+            execution_phase.route_execution_entry(state)
+    assert calls == []
+
+
+def test_collection_settle_validates_continuation_before_comparison() -> None:
+    calls: list[str] = []
+
+    class EqualityBomb:
+        def __eq__(self, _other: Any) -> bool:
+            calls.append("eq")
+            raise AssertionError("checkpoint continuation must not be compared")
+
+    state, entry = _staged_completed_collection_state("settle-continuation-boundary")
+    entry["engine_collection_next"] = EqualityBomb()
+
+    with pytest.raises(RuntimeError, match="continuation"):
+        execution_phase.engine_collection_settle(
+            state,
+            exec_config("settle-continuation-boundary"),
+        )
+    assert calls == []
+
+
+def test_checkpoint_started_timestamp_is_replaced_without_hooks_or_credentials() -> None:
+    calls: list[str] = []
+
+    class TimestampBomb(str):
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError("checkpoint timestamp truthiness must not execute")
+
+    hostile = execution_phase._checkpoint_timestamp_or_now(
+        TimestampBomb("2026-01-01T00:00:00+00:00")
+    )
+    credential = execution_phase._checkpoint_timestamp_or_now(
+        "Authorization: Bearer timestamp-secret-canary"
+    )
+
+    assert calls == []
+    assert hostile != "2026-01-01T00:00:00+00:00"
+    assert "timestamp-secret-canary" not in credential
+    datetime.fromisoformat(hostile)
+    datetime.fromisoformat(credential)
+
+
+def test_replayed_engine_options_enforce_provider_allowlist_before_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    async def fail_resolve(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("invalid option replay must not resolve a provider")
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", fail_resolve)
+    cfg = exec_config("option-scope-replay")
+    configurable = dict(cfg.get("configurable") or {})
+    cfg = cast(RunnableConfig, {**cfg, "configurable": {**configurable, "engine": "loadrunner"}})
+    spec = LoadTestSpec(
+        idempotency_key="option-scope-replay-execution-a1",
+        title="option replay",
+        vusers=1,
+        ramp_s=0,
+        duration_s=1,
+    )
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "load_test_spec": spec.model_dump(mode="json"),
+                    "engine_options": {"project": "other-provider-scope"},
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="unsupported load_test engine option"):
+        execution_phase.engine_provision(state, cfg)
+    assert called is False
+
+
+def test_invalid_checkpoint_connection_id_is_cleared_before_retry_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    async def fail_resolve(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal called
+        called = True
+        raise AssertionError("unsafe connection id must not reach resolution")
+
+    monkeypatch.setattr(execution_phase, "_resolve_engine", fail_resolve)
+    spec = LoadTestSpec(
+        idempotency_key="unsafe-connection-execution-a1",
+        title="unsafe connection",
+        vusers=1,
+        ramp_s=0,
+        duration_s=1,
+    )
+    old_entry: dict[str, Any] = {
+        "attempt": 1,
+        "load_test_spec": spec.model_dump(mode="json"),
+        "engine_options": {},
+        "engine_connection_id": "password=connection-secret-canary",
+        "engine_connection_version": "private_key=version-secret-canary",
+        "engine_connection_persisted": True,
+        "engine_connection_affinity_staged": True,
+    }
+    phase_results = {"execution": old_entry}
+    state = cast(PipelineState, {"phase_results": phase_results})
+
+    command = execution_phase.engine_provision(
+        state,
+        exec_config("unsafe-connection"),
+    )
+    assert command.update is not None
+    merged = merge_phase_results(
+        phase_results,
+        command.update["phase_results"],
+    )["execution"]
+
+    assert called is False
+    assert merged["engine_connection_id"] is None
+    assert merged["engine_connection_version"] is None
+    assert merged["engine_connection_persisted"] is False
+    assert merged["engine_connection_affinity_staged"] is False
+    assert "connection-secret-canary" not in repr(command)
+    assert "version-secret-canary" not in repr(command)
+
+
+def test_collection_retry_boundary_validates_flags_and_clears_stale_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    payloads: list[dict[str, Any]] = []
+
+    class BoolBomb:
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError("checkpoint diagnostic truthiness must not execute")
+
+    monkeypatch.setattr(execution_phase, "interrupt", lambda payload: payloads.append(payload))
+    phase_entry: dict[str, Any] = {
+        "attempt": 1,
+        "engine_collection_index_required": False,
+        "engine_collection_last_error": BoolBomb(),
+        "engine_collection_index_failures": 2,
+        "engine_collection_index_last_error": "password=stale-secret-canary",
+    }
+    state = cast(
+        PipelineState,
+        {"phase_results": {"execution": phase_entry}},
+    )
+
+    command = execution_phase.engine_collection_blocked(
+        state,
+        exec_config("collection-retry-boundary"),
+    )
+
+    assert calls == []
+    assert payloads[0]["error"] == "engine collection unavailable"
+    assert command.update is not None
+    entry = command.update["phase_results"]["execution"]
+    assert entry["engine_collection_index_failures"] == 0
+    assert entry["engine_collection_index_last_error"] is None
+    assert "stale-secret-canary" not in repr(command)
+
+    phase_entry["engine_collection_index_required"] = "false"
+    with pytest.raises(ValueError, match="flag"):
+        execution_phase.engine_collection_resume(
+            state,
+            exec_config("collection-retry-boundary"),
+        )
+
+
 def test_poll_timeout_aborts_engine_and_fails_phase(
     monkeypatch: pytest.MonkeyPatch, projection_calls: list[dict[str, Any]]
 ) -> None:
@@ -3411,7 +5085,7 @@ def test_poll_revalidates_nonfinite_adapter_status(
     assert command.update is not None
     entry = command.update["phase_results"]["execution"]
     assert entry["engine_poll_errors"] == 1
-    assert "finite number" in entry["engine_poll_error_last"]
+    assert "engine status is invalid" in entry["engine_poll_error_last"]
 
 
 def test_initial_status_diagnostic_is_nul_safe_and_bounded(

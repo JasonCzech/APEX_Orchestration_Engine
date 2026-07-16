@@ -11,6 +11,7 @@ from apex.persistence.repositories.prompts import DuplicatePromptKeyError
 from apex.services.prompts import (
     DuplicatePromptError,
     PromptCatalogService,
+    PromptCredentialMaterialError,
     PromptNotFoundError,
     PromptVersionMismatchError,
     PromptVersionNotFoundError,
@@ -136,6 +137,57 @@ async def test_create_prompt_makes_v1_and_points_active(catalog: PromptCatalogSe
     got, active = await catalog.get_prompt(prompt.id)
     assert got.id == prompt.id
     assert active is not None and active.content == "v1 content"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"content": "Authorization: Bearer prompt-secret-canary"},
+        {"content": "safe", "note": "password=prompt-secret-canary"},
+        {"content": "safe", "description": "private_key=prompt-secret-canary"},
+        {"content": "safe", "created_by": "https://user:prompt-secret-canary@example.test"},
+    ],
+)
+async def test_prompt_catalog_rejects_credentials_before_first_write(
+    catalog: PromptCatalogService,
+    repo: FakePromptRepository,
+    kwargs: dict[str, str],
+) -> None:
+    with pytest.raises(PromptCredentialMaterialError) as excinfo:
+        await catalog.create_prompt(namespace="phase", key="safe-key", **kwargs)
+
+    assert "prompt-secret-canary" not in str(excinfo.value)
+    assert repo.prompts == {}
+    assert repo.versions == {}
+
+
+async def test_prompt_version_rejects_credentials_before_write(
+    catalog: PromptCatalogService,
+    repo: FakePromptRepository,
+) -> None:
+    prompt, active = await catalog.create_prompt(namespace="phase", key="safe", content="safe")
+
+    with pytest.raises(PromptCredentialMaterialError):
+        await catalog.save_version(
+            prompt.id,
+            content="database_uri=prompt-version-secret-canary",
+        )
+
+    assert list(repo.versions) == [active.id]
+    assert prompt.active_version_id == active.id
+
+
+async def test_prompt_rollback_rejects_legacy_credential_version(
+    catalog: PromptCatalogService,
+) -> None:
+    prompt, legacy = await catalog.create_prompt(namespace="phase", key="safe", content="safe")
+    _, current = await catalog.save_version(prompt.id, content="current safe")
+    legacy.content = "Authorization: Bearer legacy-prompt-secret-canary"
+
+    with pytest.raises(PromptCredentialMaterialError):
+        await catalog.rollback(prompt.id, legacy.id)
+
+    assert prompt.active_version_id == current.id
 
 
 async def test_create_duplicate_key_raises(catalog: PromptCatalogService) -> None:

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Iterator
 from typing import cast
 
@@ -165,3 +166,31 @@ async def test_dispose_engine_closes_pool_and_resets_cached_factories() -> None:
     assert engine.disposed is True
     assert db._engine is None
     assert db._sessionmaker is None
+
+
+async def test_engine_disposal_survives_repeated_caller_cancellation() -> None:
+    class Engine:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+            self.disposed = False
+
+        async def dispose(self) -> None:
+            self.entered.set()
+            await self.release.wait()
+            self.disposed = True
+
+    engine = Engine()
+    task = asyncio.create_task(db.dispose_engine_instance_definitively(engine))
+    await engine.entered.wait()
+
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+    engine.release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert engine.disposed is True

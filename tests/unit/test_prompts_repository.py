@@ -48,9 +48,12 @@ async def test_duplicate_prompt_insert_rolls_back_and_raises_conflict() -> None:
     prompt = Prompt(id="p1", namespace="phase", key="story/system")
     version = PromptVersion(id="v1", prompt_id="p1", version=1, content="hello")
 
-    with pytest.raises(DuplicatePromptKeyError):
+    with pytest.raises(DuplicatePromptKeyError) as raised:
         await PromptRepository(session).add_prompt(prompt, version)
 
+    assert str(raised.value) == "prompt key already exists"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
     session.rollback.assert_awaited_once()
 
 

@@ -234,7 +234,11 @@ def render_jql(spec: WorkQuerySpec) -> str:
         elif status_terms:
             clauses.append("(" + " OR ".join(status_terms) + ")")
     if spec.kinds:
-        names = ", ".join(_JQL_ISSUE_TYPE.get(k, k.capitalize()) for k in spec.kinds)
+        # ``WorkItemFilters.kind`` is caller-controlled and custom Jira issue
+        # types are supported.  Always render issue-type names as JQL string
+        # data so a value containing grouping/operators cannot alter the query
+        # assembled under the connection's project boundary.
+        names = ", ".join(_jql_quote(_JQL_ISSUE_TYPE.get(k, k.capitalize())) for k in spec.kinds)
         clauses.append(f"issuetype in ({names})")
     if spec.assigned_to_me:
         clauses.append("assignee = currentUser()")
@@ -364,17 +368,23 @@ class JiraWorkTrackingAdapter:
         params: dict[str, Any] | None = None,
         not_found: str | None = None,
     ) -> httpx.Response:
+        response: httpx.Response | None = None
+        transport_failure: RuntimeError | None = None
         try:
             response = await resilient_request(
                 self._client(), method, path, json=json, params=params
             )
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            transport_failure = RuntimeError(
                 bounded_diagnostic(
                     f"jira request {method} {path} failed before a response arrived: {detail}"
                 )
-            ) from exc
+            )
+        if transport_failure is not None:
+            raise transport_failure
+        if response is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("jira request completed without a response")
         if response.status_code == 404 and not_found is not None:
             raise WorkTrackingMutationTargetNotFoundError(not_found)
         if response.status_code in (401, 403):
@@ -427,7 +437,7 @@ class JiraWorkTrackingAdapter:
             payload: dict[str, Any] = {
                 "jql": query.query,
                 "maxResults": min(_MAX_RESULTS_PER_REQUEST, target - len(fetched)),
-                "fields": _RECONCILIATION_ISSUE_FIELDS,
+                "fields": _ISSUE_FIELDS,
             }
             if token:
                 payload["nextPageToken"] = token
@@ -473,14 +483,27 @@ class JiraWorkTrackingAdapter:
         return WorkItemPage(items=fetched[page.offset : target], total=total, page=page)
 
     async def get_item(self, key: str) -> WorkItem:
+        _issue, item = await self._get_item_snapshot(key)
+        return item
+
+    async def _get_item_snapshot(
+        self,
+        key: str,
+        *,
+        fields: list[str] | None = None,
+    ) -> tuple[dict[str, Any], WorkItem]:
+        """Read and validate one project-owned issue with selected fields."""
+
         self._require_item_in_project(key)
+        selected_fields = _ISSUE_FIELDS if fields is None else fields
         response = await self._request(
             "GET",
             f"/rest/api/3/issue/{key}",
-            params={"fields": ",".join(_ISSUE_FIELDS)},
+            params={"fields": ",".join(selected_fields)},
             not_found=f"work item {key!r} not found in jira",
         )
-        return self._work_item_from_issue(_json_object(response, "work item"))
+        issue = _json_object(response, "work item")
+        return issue, self._work_item_from_issue(issue)
 
     async def list_items(self, filters: WorkItemFilters, *, page: Page) -> WorkItemPage:
         spec = WorkQuerySpec(
@@ -509,7 +532,7 @@ class JiraWorkTrackingAdapter:
                     f"project = {_jql_project(self._project_key)} AND labels = {_jql_quote(marker)}"
                 ),
                 "maxResults": 2,
-                "fields": _ISSUE_FIELDS,
+                "fields": _RECONCILIATION_ISSUE_FIELDS,
             },
         )
         data = _json_object(response, "idempotency marker search")
@@ -519,6 +542,11 @@ class JiraWorkTrackingAdapter:
         if any(not isinstance(issue, dict) for issue in raw_issues):
             raise RuntimeError("jira idempotency search response contains a non-object issue")
         issues = raw_issues
+        for issue in issues:
+            if not _contains_exact_label(issue, marker):
+                raise RuntimeError(
+                    "jira idempotency search returned an issue without the exact marker label"
+                )
         if len(issues) > 1:
             raise RuntimeError("jira idempotency marker is attached to multiple issues")
         return self._work_item_from_issue(issues[0]) if issues else None
@@ -580,6 +608,19 @@ class JiraWorkTrackingAdapter:
         created = _json_object(response, "created issue")
         key = str(created.get("key", ""))
         self._require_item_in_project(key)
+        if marker is not None:
+            issue, item = await self._get_item_snapshot(
+                key,
+                fields=_RECONCILIATION_ISSUE_FIELDS,
+            )
+            if not _contains_exact_label(issue, marker):
+                # Jira's create response only contains an id/key. Refetch the
+                # provider truth before treating the marker-fenced mutation as
+                # durably reconcilable.
+                raise RuntimeError(
+                    "jira create response did not acknowledge the idempotency marker"
+                )
+            return item
         return WorkItem(
             key=key,
             title=draft.title,
@@ -767,12 +808,14 @@ class JiraWorkTrackingAdapter:
             raise WorkTrackingMutationTargetNotFoundError(
                 f"work item {key!r} not found in configured jira project"
             )
+        item: WorkItem | None = None
+        invalid_item = False
         try:
             summary = fields.get("summary") or ""
             description = fields.get("description")
             if not isinstance(summary, str) or not isinstance(description, (dict, str, type(None))):
                 raise ValueError("jira issue response contains malformed content fields")
-            return WorkItem(
+            item = WorkItem(
                 key=key,
                 title=summary,
                 kind=issue_type.lower(),
@@ -780,8 +823,13 @@ class JiraWorkTrackingAdapter:
                 description=adf_to_text(description),
                 url=f"{self._base_url}/browse/{key}",
             )
-        except (ValidationError, ValueError) as exc:
-            raise RuntimeError("jira returned an invalid work item") from exc
+        except (ValidationError, ValueError):
+            invalid_item = True
+        if invalid_item:
+            raise RuntimeError("jira returned an invalid work item")
+        if item is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("jira returned an invalid work item")
+        return item
 
 
 def _error_text(response: httpx.Response) -> str:
@@ -813,3 +861,15 @@ def _json_object(response: httpx.Response, context: str) -> dict[str, Any]:
 
 def _comment_marker(marker: str) -> str:
     return f"[APEX-IDEMPOTENCY:{marker}]"
+
+
+def _contains_exact_label(issue: dict[str, Any], marker: str) -> bool:
+    """Validate and prove the marker label in a Jira reconciliation result."""
+
+    fields = issue.get("fields")
+    if not isinstance(fields, dict):
+        raise RuntimeError("jira issue response has malformed fields")
+    labels = fields.get("labels")
+    if not isinstance(labels, list) or any(not isinstance(label, str) for label in labels):
+        raise RuntimeError("jira issue response has malformed labels")
+    return marker in labels

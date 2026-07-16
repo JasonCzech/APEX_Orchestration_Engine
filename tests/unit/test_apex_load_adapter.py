@@ -116,6 +116,12 @@ def assert_all_calls_authed() -> None:
         assert call.request.headers["X-APEXLoad-API-Key"] == API_KEY
 
 
+def mock_owned_test(*, status: str = "RUNNING") -> respx.Route:
+    return respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status=status))
+    )
+
+
 # ── wire fixtures ─────────────────────────────────────────────────────────────
 
 
@@ -148,6 +154,25 @@ def managed_test_json(
     }
     test.update(extra)
     return test
+
+
+def created_script_response(script_id: str) -> Any:
+    """Echo the provider-owned script identity from one create request."""
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        script = payload["script"]
+        return httpx.Response(
+            201,
+            json={
+                "id": script_id,
+                "name": script["name"],
+                "protocol": script.get("protocol"),
+                **({"project_id": payload["project_id"]} if "project_id" in payload else {}),
+            },
+        )
+
+    return respond
 
 
 def live_metrics_json(**extra: Any) -> dict[str, Any]:
@@ -488,6 +513,26 @@ async def test_validate_propagates_remote_issues() -> None:
 
 
 @respx.mock
+async def test_validate_redacts_provider_credentials_before_domain_output() -> None:
+    canary = "ghp_" + ("A" * 24)
+    respx.post(f"{BASE}/api/v1/scripts/validate").mock(
+        return_value=httpx.Response(
+            200,
+            json=validation_response_json(
+                valid=False,
+                issues=[f"provider diagnostic included {canary}"],
+            ),
+        )
+    )
+
+    report = await make_adapter().validate(make_spec())
+
+    assert report.ok is False
+    assert canary not in repr(report)
+    assert "[REDACTED]" in report.issues[0]
+
+
+@respx.mock
 async def test_validate_rejects_non_list_remote_issues() -> None:
     respx.post(f"{BASE}/api/v1/scripts/validate").mock(
         return_value=httpx.Response(200, json={"valid": False, "issues": "unbounded text"})
@@ -544,9 +589,7 @@ async def test_provision_creates_script_and_test_when_absent() -> None:
         return_value=httpx.Response(200, json={"tests": [], "count": 0})
     )
     script_route = respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(
-            201, json={"id": "script-456", "name": f"{TEST_NAME} script", "protocol": "http"}
-        )
+        side_effect=created_script_response("script-456")
     )
     create_route = respx.post(f"{BASE}/api/v1/tests").mock(
         return_value=httpx.Response(201, json=managed_test_json(status="QUEUED"))
@@ -628,9 +671,7 @@ async def test_provision_adopts_provider_winner_after_idempotency_conflict() -> 
             httpx.Response(200, json={"tests": [managed_test_json()], "count": 1}),
         ]
     )
-    respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(201, json={"id": "script-loser"})
-    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(side_effect=created_script_response("script-loser"))
     create = respx.post(f"{BASE}/api/v1/tests").mock(
         return_value=httpx.Response(409, json={"error": "duplicate idempotency key"})
     )
@@ -653,7 +694,7 @@ async def test_provision_adopts_test_when_create_response_is_lost() -> None:
         ]
     )
     respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(201, json={"id": "script-committed"})
+        side_effect=created_script_response("script-committed")
     )
     create = respx.post(f"{BASE}/api/v1/tests").mock(
         side_effect=httpx.ReadTimeout("response lost after remote commit")
@@ -679,7 +720,7 @@ async def test_provision_reconciles_test_after_ambiguous_transient_response(
         ]
     )
     respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(201, json={"id": "script-committed"})
+        side_effect=created_script_response("script-committed")
     )
     create = respx.post(f"{BASE}/api/v1/tests").mock(
         return_value=httpx.Response(status_code, json={"error": "proxy failure after commit"})
@@ -706,7 +747,7 @@ async def test_provision_reconciles_ambiguous_successful_create_response(
         ]
     )
     respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(201, json={"id": "script-committed"})
+        side_effect=created_script_response("script-committed")
     )
     create_response = (
         httpx.Response(201, text="<html>proxy replaced the body</html>")
@@ -721,6 +762,54 @@ async def test_provision_reconciles_ambiguous_successful_create_response(
     assert create.call_count == 1
     assert create.calls.last.request.headers["Idempotency-Key"] == KEY
     assert_all_calls_authed()
+
+
+@pytest.mark.parametrize(
+    "wrong_identity",
+    [
+        {"id": "test-wrong", "name": "unrelated-test", "project_id": "proj-123"},
+        {"id": "test-wrong", "name": TEST_NAME, "project_id": "proj-other"},
+    ],
+)
+@respx.mock
+async def test_provision_reconciles_wrong_target_create_acknowledgement(
+    wrong_identity: dict[str, str],
+) -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        side_effect=[
+            httpx.Response(200, json={"tests": [], "count": 0}),
+            httpx.Response(200, json={"tests": [managed_test_json()], "count": 1}),
+        ]
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(
+        side_effect=created_script_response("script-committed")
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(201, json=managed_test_json(**wrong_identity))
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert create.call_count == 1
+    assert handle.external_run_id == TEST_ID
+
+
+@respx.mock
+async def test_provision_rejects_same_named_test_from_wrong_project() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tests": [managed_test_json(project_id="proj-other")],
+                "count": 1,
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected project"):
+        await make_adapter().provision(make_spec())
+
+    assert len(respx.calls) == 1
 
 
 @respx.mock
@@ -756,6 +845,55 @@ async def test_provision_adopts_script_when_upload_response_is_lost() -> None:
     body = json.loads(create_test.calls.last.request.content)
     assert body["groups"][0]["script_id"] == "script-committed"
     assert_all_calls_authed()
+
+
+@pytest.mark.parametrize("mismatch", ["name", "project"])
+@respx.mock
+async def test_provision_reconciles_wrong_target_script_acknowledgement(
+    mismatch: str,
+) -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    committed: dict[str, str] = {}
+
+    def wrong_acknowledgement(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        committed["name"] = payload["script"]["name"]
+        return httpx.Response(
+            201,
+            json={
+                "id": "script-wrong",
+                "name": "unrelated-script" if mismatch == "name" else committed["name"],
+                "project_id": "proj-other" if mismatch == "project" else "proj-123",
+            },
+        )
+
+    respx.post(f"{BASE}/api/v1/scripts").mock(side_effect=wrong_acknowledgement)
+    respx.get(f"{BASE}/api/v1/scripts").mock(
+        side_effect=lambda _request: httpx.Response(
+            200,
+            json={
+                "scripts": [
+                    {
+                        "id": "script-committed",
+                        "name": committed["name"],
+                        "project_id": "proj-123",
+                    }
+                ],
+                "count": 1,
+            },
+        )
+    )
+    create_test = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(201, json=managed_test_json())
+    )
+
+    handle = await make_adapter().provision(make_spec())
+
+    assert handle.external_run_id == TEST_ID
+    body = json.loads(create_test.calls.last.request.content)
+    assert body["groups"][0]["script_id"] == "script-committed"
 
 
 @respx.mock
@@ -810,7 +948,7 @@ async def test_provision_is_get_or_create_across_a_fresh_instance() -> None:
         return_value=httpx.Response(201, json=managed_test_json())
     )
     create_script = respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(201, json={"id": "script-456"})
+        side_effect=created_script_response("script-456")
     )
 
     fresh_adapter = make_adapter()  # no in-memory state carried over
@@ -819,6 +957,45 @@ async def test_provision_is_get_or_create_across_a_fresh_instance() -> None:
     assert not create_test.called, "re-provision must not create a second remote test"
     assert not create_script.called
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_provision_rejects_duplicate_idempotency_named_tests() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "tests": [
+                    managed_test_json(test_id="test-first"),
+                    managed_test_json(test_id="test-second"),
+                ],
+                "count": 2,
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="multiple tests"):
+        await make_adapter().provision(make_spec())
+
+
+@respx.mock
+async def test_script_reconciliation_rejects_duplicate_content_bound_names() -> None:
+    name = f"{TEST_NAME} script-deadbeefdeadbeef"
+    respx.get(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "scripts": [
+                    {"id": "script-first", "name": name},
+                    {"id": "script-second", "name": name},
+                ],
+                "count": 2,
+            },
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="multiple scripts"):
+        await make_adapter()._find_script_by_name(name)
 
 
 @respx.mock
@@ -840,6 +1017,48 @@ async def test_provision_rejects_an_unsafe_provider_test_id() -> None:
 
 
 @respx.mock
+async def test_provision_rejects_provider_token_id_before_handle_or_log() -> None:
+    canary = "ghp_" + ("B" * 24)
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(
+            200,
+            json={"tests": [managed_test_json(test_id=canary)], "count": 1},
+        )
+    )
+
+    with capture_logs() as logs, pytest.raises(RuntimeError, match="safe non-empty identifier"):
+        await make_adapter().provision(make_spec())
+
+    assert canary not in repr(logs)
+
+
+@respx.mock
+async def test_reconciled_script_token_id_is_rejected_before_log() -> None:
+    canary = "ghp_" + ("C" * 24)
+    committed: dict[str, str] = {}
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(
+        side_effect=lambda request: (
+            committed.update(name=json.loads(request.content)["script"]["name"])
+            or httpx.Response(503, json={"error": "commit acknowledgement lost"})
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scripts").mock(
+        side_effect=lambda _request: httpx.Response(
+            200,
+            json={"scripts": [{"id": canary, "name": committed["name"]}], "count": 1},
+        )
+    )
+
+    with capture_logs() as logs, pytest.raises(RuntimeError, match="safe non-empty identifier"):
+        await make_adapter().provision(make_spec())
+
+    assert canary not in repr(logs)
+
+
+@respx.mock
 async def test_provision_inline_and_named_refs_split_vusers() -> None:
     inline = json.dumps(
         {
@@ -853,7 +1072,7 @@ async def test_provision_inline_and_named_refs_split_vusers() -> None:
         return_value=httpx.Response(200, json={"tests": [], "count": 0})
     )
     script_route = respx.post(f"{BASE}/api/v1/scripts").mock(
-        return_value=httpx.Response(201, json={"id": "script-up-1"})
+        side_effect=created_script_response("script-up-1")
     )
     create_route = respx.post(f"{BASE}/api/v1/tests").mock(
         return_value=httpx.Response(201, json=managed_test_json())
@@ -900,6 +1119,9 @@ async def test_provision_default_workload_requires_target_environment() -> None:
 
 @respx.mock
 async def test_start_posts_start() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json())
+    )
     route = respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
         return_value=httpx.Response(
             200, json={"status": "started", "test_id": TEST_ID, "test": managed_test_json()}
@@ -913,6 +1135,9 @@ async def test_start_posts_start() -> None:
 @respx.mock
 async def test_start_tolerates_already_started() -> None:
     # startableTestStatusError wording from pkg/api/runner.go
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status="RUNNING"))
+    )
     respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
         return_value=httpx.Response(
             400,
@@ -928,6 +1153,9 @@ async def test_start_tolerates_already_started() -> None:
 
 @respx.mock
 async def test_start_raises_on_other_400() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json())
+    )
     respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
         return_value=httpx.Response(400, json={"error": "no generators configured"})
     )
@@ -937,10 +1165,48 @@ async def test_start_raises_on_other_400() -> None:
 
 @respx.mock
 async def test_start_missing_test_raises_keyerror() -> None:
-    respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
+    start = respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
+        return_value=httpx.Response(200, json={"status": "started", "test_id": TEST_ID})
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
         return_value=httpx.Response(404, json={"error": "test not found"})
     )
     with pytest.raises(KeyError):
+        await make_adapter().start(make_handle())
+    assert not start.called
+
+
+@pytest.mark.parametrize("mismatch", ["id", "name", "project"])
+@respx.mock
+async def test_start_rejects_wrong_target_preflight_without_starting(mismatch: str) -> None:
+    test = managed_test_json()
+    if mismatch == "id":
+        test["id"] = "test-other"
+    elif mismatch == "name":
+        test["name"] = "apex-orch:other-run"
+    else:
+        test["project_id"] = "proj-other"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(return_value=httpx.Response(200, json=test))
+    start = respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
+        return_value=httpx.Response(200, json={"status": "started", "test_id": TEST_ID})
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected (?:test|project)"):
+        await make_adapter().start(make_handle())
+
+    assert not start.called
+
+
+@respx.mock
+async def test_start_rejects_wrong_target_acknowledgement() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json())
+    )
+    respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/start").mock(
+        return_value=httpx.Response(200, json={"status": "started", "test_id": "test-other"})
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test id"):
         await make_adapter().start(make_handle())
 
 
@@ -979,6 +1245,29 @@ async def test_get_status_maps_every_remote_state(
     if expected_phase in (EngineRunPhase.COMPLETED, EngineRunPhase.FAILED, EngineRunPhase.ABORTED):
         assert status.progress_pct == 100.0
     assert_all_calls_authed()
+
+
+@pytest.mark.parametrize(
+    "identity_override",
+    [
+        {"id": "test-other"},
+        {"name": "apex-orch:another-key"},
+        {"project_id": "proj-other"},
+    ],
+)
+@respx.mock
+async def test_get_status_rejects_wrong_target_test_response(
+    identity_override: dict[str, str],
+) -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(
+            200,
+            json=managed_test_json(status="RUNNING", **identity_override),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test|unexpected project"):
+        await make_adapter().get_status(make_handle())
 
 
 @respx.mock
@@ -1053,6 +1342,19 @@ async def test_get_status_rejects_malformed_provider_status(status: Any) -> None
 
 
 @respx.mock
+async def test_get_status_rejects_provider_token_status_before_public_message() -> None:
+    canary = "sk_test_" + ("A" * 20)
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status=canary))
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe material") as raised:
+        await make_adapter().get_status(make_handle())
+
+    assert canary not in str(raised.value)
+
+
+@respx.mock
 async def test_get_status_rejects_boolean_duration_metadata() -> None:
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
         return_value=httpx.Response(
@@ -1063,6 +1365,24 @@ async def test_get_status_rejects_boolean_duration_metadata() -> None:
 
     with pytest.raises(RuntimeError, match="duration_ns"):
         await make_adapter().get_status(make_handle())
+
+
+@respx.mock
+async def test_get_status_invalid_timestamp_does_not_retain_provider_value() -> None:
+    canary = "bare-provider-timestamp-secret-canary"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(
+            200,
+            json=managed_test_json(status="RUNNING", started_at=canary),
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="ISO-8601 timestamp") as excinfo:
+        await make_adapter().get_status(make_handle())
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
 
 
 @respx.mock
@@ -1133,6 +1453,9 @@ def test_unsafe_persisted_handle_id_is_rejected_before_network_io() -> None:
 
 @respx.mock
 async def test_abort_posts_abort() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status="RUNNING"))
+    )
     route = respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
         return_value=httpx.Response(200, json={"status": "aborted", "test_id": TEST_ID})
     )
@@ -1144,6 +1467,9 @@ async def test_abort_posts_abort() -> None:
 @respx.mock
 async def test_abort_logs_only_non_content_reason_metadata() -> None:
     secret_reason = "opaque-api-key-value-that-redaction-cannot-recognize"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status="RUNNING"))
+    )
     respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
         return_value=httpx.Response(200, json={"status": "aborted", "test_id": TEST_ID})
     )
@@ -1160,16 +1486,51 @@ async def test_abort_logs_only_non_content_reason_metadata() -> None:
 @respx.mock
 async def test_abort_is_idempotent_on_terminal_or_missing_test() -> None:
     # Second abort of a finished run: the Go backend rejects with 400.
+    get = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status="FINISHED"))
+    )
     respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
         return_value=httpx.Response(400, json={"error": "test backend does not support stop"})
     )
     await make_adapter().abort(make_handle(), reason="retry")  # must not raise
 
-    respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
-        return_value=httpx.Response(404, json={"error": "test not found"})
-    )
+    get.mock(return_value=httpx.Response(404, json={"error": "test not found"}))
     await make_adapter().abort(make_handle(), reason="retry")  # must not raise
     assert_all_calls_authed()
+
+
+@pytest.mark.parametrize("mismatch", ["id", "name", "project"])
+@respx.mock
+async def test_abort_rejects_wrong_target_preflight_without_aborting(mismatch: str) -> None:
+    test = managed_test_json(status="RUNNING")
+    if mismatch == "id":
+        test["id"] = "test-other"
+    elif mismatch == "name":
+        test["name"] = "apex-orch:other-run"
+    else:
+        test["project_id"] = "proj-other"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(return_value=httpx.Response(200, json=test))
+    abort = respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
+        return_value=httpx.Response(200, json={"status": "aborted", "test_id": TEST_ID})
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected (?:test|project)"):
+        await make_adapter().abort(make_handle(), reason="poll timeout")
+
+    assert not abort.called
+
+
+@respx.mock
+async def test_abort_rejects_wrong_target_acknowledgement() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status="RUNNING"))
+    )
+    respx.post(f"{BASE}/api/v1/tests/{TEST_ID}/abort").mock(
+        return_value=httpx.Response(200, json={"status": "aborted", "test_id": "test-other"})
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test id"):
+        await make_adapter().abort(make_handle(), reason="poll timeout")
 
 
 # ── teardown (documented no-op) ───────────────────────────────────────────────
@@ -1185,6 +1546,7 @@ async def test_teardown_is_a_noop_and_never_raises() -> None:
 
 @respx.mock
 async def test_collect_artifacts_streams_archive_report() -> None:
+    mock_owned_test()
     report = archive_report_json()
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         return_value=httpx.Response(200, json=report)
@@ -1212,6 +1574,7 @@ async def test_collect_artifacts_streams_archive_report() -> None:
 
 @respx.mock
 async def test_collect_artifacts_retries_transient_stream_status() -> None:
+    mock_owned_test()
     report = archive_report_json()
     route = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         side_effect=[
@@ -1243,6 +1606,7 @@ async def test_collect_artifacts_caps_large_stream_error_preview() -> None:
         async def aclose(self) -> None:
             self.closed = True
 
+    mock_owned_test()
     stream = CountingStream()
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         return_value=httpx.Response(418, stream=stream)
@@ -1257,6 +1621,7 @@ async def test_collect_artifacts_caps_large_stream_error_preview() -> None:
 
 @respx.mock
 async def test_collect_artifact_enforces_configured_stream_limit() -> None:
+    mock_owned_test()
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         return_value=httpx.Response(200, content=b"too-large")
     )
@@ -1268,6 +1633,7 @@ async def test_collect_artifact_enforces_configured_stream_limit() -> None:
 
 @respx.mock
 async def test_collect_artifacts_tolerates_missing_archive() -> None:
+    mock_owned_test()
     respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         return_value=httpx.Response(404, json={"error": "archive not found"})
     )
@@ -1276,6 +1642,20 @@ async def test_collect_artifacts_tolerates_missing_archive() -> None:
     assert refs == []
     assert store.puts == []
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_collect_artifacts_rejects_wrong_target_before_archive_download() -> None:
+    wrong = managed_test_json(status="FINISHED", project_id="proj-other")
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(return_value=httpx.Response(200, json=wrong))
+    archive = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=archive_report_json())
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected project"):
+        await make_adapter().collect_artifacts(make_handle(), RecordingStore())
+
+    assert not archive.called
 
 
 # ── fetch_summary (contract req. 5: normalized KPIs + SLA verdict) ────────────
@@ -1298,6 +1678,96 @@ async def test_fetch_summary_passed_with_normalized_kpis() -> None:
     assert summary.kpis["error_rate"] == pytest.approx(0.01)  # 1.0% -> fraction
     assert summary.kpis["vusers_peak"] == 50.0
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_fetch_summary_rejects_wrong_target_sla_response_before_archive() -> None:
+    payload = sla_status_json()
+    payload["test_id"] = "test-other"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    archive = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=archive_report_json())
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test id"):
+        await make_adapter().fetch_summary(make_handle())
+
+    assert not archive.called
+
+
+@respx.mock
+async def test_fetch_summary_rejects_wrong_target_archive_manifest() -> None:
+    report = archive_report_json()
+    report["manifest"]["test_id"] = "test-other"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test id"):
+        await make_adapter().fetch_summary(make_handle())
+
+
+@respx.mock
+async def test_fetch_summary_supports_legacy_archive_after_independent_identity_check() -> None:
+    report = archive_report_json()
+    del report["manifest"]
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+    identity = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(status="COMPLETE"))
+    )
+
+    summary = await make_adapter().fetch_summary(make_handle())
+
+    assert summary.kpis == {
+        "tps_avg": 98.0,
+        "p95_ms": 450.0,
+        "error_rate": 0.01,
+        "vusers_peak": 50.0,
+    }
+    assert "legacy archive identity verified" in (summary.notes or "")
+    assert identity.call_count == 1
+
+
+@respx.mock
+async def test_fetch_summary_rejects_legacy_archive_when_test_identity_is_wrong() -> None:
+    report = archive_report_json()
+    del report["manifest"]
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+    wrong = managed_test_json(status="COMPLETE", name="apex-orch:other-run")
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(return_value=httpx.Response(200, json=wrong))
+
+    with pytest.raises(RuntimeError, match="unexpected test name"):
+        await make_adapter().fetch_summary(make_handle())
+
+
+@respx.mock
+async def test_fetch_summary_rejects_explicitly_malformed_archive_manifest() -> None:
+    report = archive_report_json()
+    report["manifest"] = None
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+
+    with pytest.raises(RuntimeError, match="no valid manifest"):
+        await make_adapter().fetch_summary(make_handle())
 
 
 @respx.mock
@@ -1389,6 +1859,25 @@ async def test_fetch_summary_rejects_malformed_archive_semantics(
 
     with pytest.raises(RuntimeError, match=match):
         await make_adapter().fetch_summary(make_handle())
+
+
+@respx.mock
+async def test_fetch_summary_does_not_reflect_malformed_provider_action_name() -> None:
+    canary = "bare-provider-action-secret-canary"
+    report = archive_report_json()
+    report["summary_timeline"] = []
+    report["by_action"] = {canary: "not-an-object"}
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+
+    with pytest.raises(RuntimeError, match="action entry") as excinfo:
+        await make_adapter().fetch_summary(make_handle())
+
+    assert canary not in str(excinfo.value)
 
 
 @respx.mock

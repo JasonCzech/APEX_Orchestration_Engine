@@ -22,6 +22,7 @@ from apex.settings import (
 )
 
 _ALLOWED_SCHEMES = ("https", "http")
+MAX_RESULTS_FETCH_BYTES = 10_000_000
 
 
 class FetchError(Exception):
@@ -31,6 +32,8 @@ class FetchError(Exception):
 def redact_fetch_url(url: str) -> str:
     """Return only a URL's scheme and host, never credentials/query/path tokens."""
 
+    if type(url) is not str or len(url) > 4_096:
+        return "<invalid-url>"
     try:
         parts = urlsplit(url)
         host = parts.hostname or ""
@@ -76,7 +79,7 @@ def validate_fetch_url(
 ) -> str:
     """Return the normalized host if `url` passes the SSRF guard, else raise FetchError."""
     if (
-        not isinstance(url, str)
+        type(url) is not str
         or not url
         or url != url.strip()
         or len(url) > 4_096
@@ -84,23 +87,30 @@ def validate_fetch_url(
         or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in url)
     ):
         raise FetchError("malformed results URL")
+    parts = None
     try:
         parts = urlsplit(url)
         # Accessing `.port` validates malformed/out-of-range ports eagerly.
         _ = parts.port
-    except ValueError as exc:
-        raise FetchError("malformed results URL") from exc
+    except ValueError:
+        parts = None
+    if parts is None:
+        raise FetchError("malformed results URL")
     if parts.scheme not in _ALLOWED_SCHEMES:
-        raise FetchError(f"unsupported URL scheme {parts.scheme or '(none)'!r}")
+        raise FetchError("results URL must use http or https")
     if require_https and parts.scheme != "https":
         raise FetchError("results URLs must use https in locked environments")
     if parts.username is not None or parts.password is not None:
         raise FetchError("results URLs must not contain embedded credentials")
+    host = None
     try:
         host = normalize_fetch_allowed_host(parts.hostname or "")
-    except ValueError as exc:
-        raise FetchError("URL has an invalid host") from exc
+    except ValueError:
+        pass
+    if host is None:
+        raise FetchError("URL has an invalid host")
     allowed: set[str] = set()
+    invalid_allowed_host = False
     for index, entry in enumerate(allowed_hosts):
         if index >= MAX_FETCH_ALLOWED_HOSTS:
             raise FetchError(
@@ -108,14 +118,17 @@ def validate_fetch_url(
             )
         try:
             allowed.add(normalize_fetch_allowed_host(entry))
-        except ValueError as exc:
-            raise FetchError("results-fetch allow-list contains an invalid host") from exc
+        except ValueError:
+            invalid_allowed_host = True
+            break
+    if invalid_allowed_host:
+        raise FetchError("results-fetch allow-list contains an invalid host")
     if not allowed:
         raise FetchError("results fetch is disabled (no allow-listed hosts configured)")
     if host not in allowed:
-        raise FetchError(f"host {host!r} is not in the results-fetch allow-list")
+        raise FetchError("results URL host is not in the allow-list")
     if not allow_private and _host_resolves_private(host):
-        raise FetchError(f"host {host!r} resolves to a private/loopback address")
+        raise FetchError("results URL host resolves to a private/loopback address")
     return host
 
 
@@ -139,12 +152,13 @@ def fetch_results_text(
         allow_private=allow_private,
         require_https=require_https,
     )
-    safe_url = redact_fetch_url(url)
-    if max_bytes < 1:
-        raise FetchError("max_bytes must be >= 1")
+    if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_RESULTS_FETCH_BYTES:
+        raise FetchError(f"max_bytes must be between 1 and {MAX_RESULTS_FETCH_BYTES}")
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         raise FetchError("timeout_s must be a finite value greater than zero")
     deadline = time.monotonic() + timeout_s
+    fetch_error_detail: str | None = None
+    content = bytearray()
     try:
         with safe_http_client(
             timeout=timeout_s,
@@ -152,7 +166,6 @@ def fetch_results_text(
             follow_redirects=False,
             allow_private_hosts=allow_private,
         ) as client:
-            content = bytearray()
             with client.stream("GET", url, headers={"Accept-Encoding": "identity"}) as response:
                 if time.monotonic() >= deadline:
                     raise httpx.ReadTimeout(
@@ -160,7 +173,7 @@ def fetch_results_text(
                         request=response.request,
                     )
                 if response.is_redirect:
-                    raise FetchError(f"refusing to follow redirect from {safe_url!r}")
+                    raise FetchError("results server redirects are disabled")
                 response.raise_for_status()
                 content_encoding = response.headers.get("content-encoding", "identity")
                 if content_encoding.strip().casefold() not in {"", "identity"}:
@@ -173,6 +186,9 @@ def fetch_results_text(
                         declared_length = -1
                     if declared_length > max_bytes:
                         raise FetchError(f"results response exceeds the {max_bytes}-byte limit")
+                # Preserve transport chunk boundaries so the wall deadline and
+                # early byte cap are checked before requesting another socket
+                # read. SafeHTTPTransport itself bounds each network read.
                 for chunk in response.iter_bytes():
                     if time.monotonic() >= deadline:
                         raise httpx.ReadTimeout(
@@ -191,14 +207,37 @@ def fetch_results_text(
                         request=response.request,
                     )
     except httpx.HTTPError as exc:
-        safe_detail = (
-            str(exc)
-            if str(exc)
-            in {
-                "private adapter hosts are disabled",
-                "adapter host could not be resolved",
-            }
-            else exc.__class__.__name__
-        )
-        raise FetchError(f"failed to fetch {safe_url!r} ({safe_detail})") from exc
+        fetch_error_detail = _safe_http_error_detail(exc)
+    if fetch_error_detail is not None:
+        raise FetchError(f"results fetch failed ({fetch_error_detail})")
     return bytes(content).decode("utf-8", errors="replace")
+
+
+def _safe_http_error_detail(exc: httpx.HTTPError) -> str:
+    """Classify a transport error without invoking provider-controlled hooks."""
+
+    args_descriptor = BaseException.__dict__["args"]
+    try:
+        args = args_descriptor.__get__(exc, type(exc))
+    except Exception:
+        args = ()
+    if type(args) is tuple and len(args) == 1 and type(args[0]) is str:
+        if args[0] in {
+            "private adapter hosts are disabled",
+            "adapter host could not be resolved",
+        }:
+            return args[0]
+    error_type = type(exc)
+    for expected_type, label in (
+        (httpx.ReadTimeout, "ReadTimeout"),
+        (httpx.WriteTimeout, "WriteTimeout"),
+        (httpx.ConnectTimeout, "ConnectTimeout"),
+        (httpx.PoolTimeout, "PoolTimeout"),
+        (httpx.TimeoutException, "TimeoutException"),
+        (httpx.HTTPStatusError, "HTTPStatusError"),
+        (httpx.ConnectError, "ConnectError"),
+        (httpx.NetworkError, "NetworkError"),
+    ):
+        if issubclass(error_type, expected_type):
+            return label
+    return "HTTPError"

@@ -46,7 +46,11 @@ def assert_all_calls_authed() -> None:
 
 
 def work_item_row(
-    item_id: int, state: str = "Active", project: str = "Phoenix"
+    item_id: int,
+    state: str = "Active",
+    project: str = "Phoenix",
+    *,
+    tags: object | None = None,
 ) -> dict[str, object]:
     return {
         "id": item_id,
@@ -59,6 +63,7 @@ def work_item_row(
             "System.WorkItemType": "User Story",
             "System.TeamProject": project,
             "System.Description": "<div>Watch <b>RSS</b> growth &amp; restarts</div>",
+            **({"System.Tags": tags} if tags is not None else {}),
         },
     }
 
@@ -501,21 +506,27 @@ async def test_custom_work_item_type_is_one_encoded_route_segment() -> None:
 
 
 @respx.mock
-async def test_find_idempotency_marker_caps_provider_results_and_detects_duplicate() -> None:
+async def test_find_idempotency_marker_fails_closed_when_candidate_budget_is_saturated() -> None:
+    from apex.adapters.ado.work_tracking import _IDEMPOTENCY_CANDIDATE_LIMIT
+
     route = respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
         return_value=httpx.Response(
             200,
-            json={"workItems": [{"id": 71}, {"id": 72}, {"id": 73}]},
+            json={
+                "workItems": [
+                    {"id": item_id} for item_id in range(1, _IDEMPOTENCY_CANDIDATE_LIMIT + 2)
+                ]
+            },
         )
     )
 
-    with pytest.raises(RuntimeError, match="multiple items"):
+    with pytest.raises(RuntimeError, match="candidate budget"):
         await make_adapter().find_item_by_idempotency_marker(
             "apex-idem-0123456789abcdef0123456789abcdef"
         )
 
     request = route.calls[0].request
-    assert request.url.params["$top"] == "2"
+    assert request.url.params["$top"] == str(_IDEMPOTENCY_CANDIDATE_LIMIT + 1)
     assert request.url.params["api-version"] == "7.1"
     body = json.loads(request.content)
     assert "System.Tags" in body["query"]
@@ -523,11 +534,81 @@ async def test_find_idempotency_marker_caps_provider_results_and_detects_duplica
 
 
 @respx.mock
-async def test_idempotent_create_adds_provider_marker_tag() -> None:
-    route = respx.post(f"{BASE}/Phoenix/_apis/wit/workitems/$Task").mock(
-        return_value=httpx.Response(200, json=work_item_row(78, state="New"))
+async def test_find_idempotency_marker_checks_past_substring_only_candidates() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(
+            200,
+            json={"workItems": [{"id": 71}, {"id": 72}, {"id": 73}]},
+        )
     )
+    tags_by_id = {
+        71: f"prefix-{marker}",
+        72: f"{marker}-suffix",
+        73: marker,
+    }
+    for item_id, tags in tags_by_id.items():
+        respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/{item_id}").mock(
+            return_value=httpx.Response(200, json=work_item_row(item_id, tags=tags))
+        )
+
+    item = await make_adapter().find_item_by_idempotency_marker(marker)
+
+    assert item is not None
+    assert item.key == "73"
+    assert_all_calls_authed()
+
+
+@pytest.mark.parametrize(
+    ("tags", "expected_key"),
+    [
+        ("performance; apex-idem-0123456789abcdef0123456789abcdef", "71"),
+        ("prefix-apex-idem-0123456789abcdef0123456789abcdef-suffix", None),
+    ],
+)
+@respx.mock
+async def test_find_idempotency_marker_requires_an_exact_hydrated_tag(
+    tags: str,
+    expected_key: str | None,
+) -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json={"workItems": [{"id": 71}]})
+    )
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/71").mock(
+        return_value=httpx.Response(200, json=work_item_row(71, tags=tags))
+    )
+
+    item = await make_adapter().find_item_by_idempotency_marker(marker)
+
+    assert (item.key if item is not None else None) == expected_key
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_find_idempotency_marker_rejects_multiple_exact_hydrated_tags() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.post(f"{BASE}/Phoenix/_apis/wit/wiql").mock(
+        return_value=httpx.Response(200, json={"workItems": [{"id": 71}, {"id": 72}]})
+    )
+    for item_id in (71, 72):
+        respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/{item_id}").mock(
+            return_value=httpx.Response(200, json=work_item_row(item_id, tags=marker))
+        )
+
+    with pytest.raises(RuntimeError, match="multiple items"):
+        await make_adapter().find_item_by_idempotency_marker(marker)
+
+
+@respx.mock
+async def test_idempotent_create_adds_provider_marker_tag() -> None:
     marker = "apex-idem-fedcba9876543210fedcba9876543210"
+    route = respx.post(f"{BASE}/Phoenix/_apis/wit/workitems/$Task").mock(
+        return_value=httpx.Response(
+            200,
+            json=work_item_row(78, state="New", tags=f"perf; {marker}"),
+        )
+    )
 
     await make_adapter().create_item_idempotent(
         WorkItemDraft(title="Marked", kind="task", fields={"System.Tags": "perf"}),
@@ -539,6 +620,31 @@ async def test_idempotent_create_adds_provider_marker_tag() -> None:
         "path": "/fields/System.Tags",
         "value": f"perf; {marker}",
     }
+
+
+@pytest.mark.parametrize(
+    ("tags", "message"),
+    [
+        (None, "did not acknowledge"),
+        ("prefix-apex-idem-fedcba9876543210fedcba9876543210", "did not acknowledge"),
+        (["apex-idem-fedcba9876543210fedcba9876543210"], "malformed tags"),
+    ],
+)
+@respx.mock
+async def test_idempotent_create_requires_exact_provider_marker_acknowledgement(
+    tags: object | None,
+    message: str,
+) -> None:
+    marker = "apex-idem-fedcba9876543210fedcba9876543210"
+    respx.post(f"{BASE}/Phoenix/_apis/wit/workitems/$Task").mock(
+        return_value=httpx.Response(200, json=work_item_row(78, state="New", tags=tags))
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter().create_item_idempotent(
+            WorkItemDraft(title="Marked", kind="task"),
+            marker=marker,
+        )
 
 
 async def test_create_item_rejects_unknown_bare_field() -> None:
@@ -696,6 +802,106 @@ async def test_enrich_item_checks_project_before_mutation() -> None:
         await make_adapter().enrich_item("42", Enrichment(fields={"status": "Active"}))
 
     assert not patch_route.called
+
+
+# ── idempotent comment reconciliation ───────────────────────────────────────
+
+
+@respx.mock
+async def test_comment_marker_reconciliation_follows_bounded_continuation_pages() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+    comments_route = respx.get(f"{BASE}/Phoenix/_apis/wit/workItems/42/comments").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={"comments": [{"text": "ordinary note"}]},
+                headers={"x-ms-continuationtoken": "page-2"},
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "value": [
+                        {"text": f"completed\n[APEX-IDEMPOTENCY:{marker}]"},
+                    ]
+                },
+            ),
+        ]
+    )
+
+    found = await make_adapter().has_comment_idempotency_marker("42", marker)
+
+    assert found is True
+    assert comments_route.calls[0].request.url.params["$top"] == "100"
+    assert "continuationToken" not in comments_route.calls[0].request.url.params
+    assert comments_route.calls[1].request.url.params["continuationToken"] == "page-2"
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_comment_marker_reconciliation_returns_false_at_provider_end() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workItems/42/comments").mock(
+        return_value=httpx.Response(200, json={"value": [{"text": "ordinary note"}]})
+    )
+
+    assert await make_adapter().has_comment_idempotency_marker("42", marker) is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({}, "no comments list"),
+        ({"comments": [None]}, "non-object row"),
+        ({"comments": [{}] * 101}, "page-size budget"),
+        (
+            {"comments": [{"text": "note"}], "continuationToken": 17},
+            "invalid comment continuation token",
+        ),
+        (
+            {"comments": [{"text": "note"}], "continuationToken": "x" * 2_049},
+            "invalid comment continuation token",
+        ),
+    ],
+)
+@respx.mock
+async def test_comment_marker_reconciliation_rejects_unbounded_provider_shapes(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workItems/42/comments").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter().has_comment_idempotency_marker("42", marker)
+
+
+@respx.mock
+async def test_add_comment_idempotent_checks_scope_and_writes_durable_marker() -> None:
+    marker = "apex-idem-fedcba9876543210fedcba9876543210"
+    respx.get(f"{BASE}/Phoenix/_apis/wit/workitems/42").mock(
+        return_value=httpx.Response(200, json=work_item_row(42))
+    )
+    comment_route = respx.post(f"{BASE}/Phoenix/_apis/wit/workItems/42/comments").mock(
+        return_value=httpx.Response(200, json={"id": 9})
+    )
+
+    await make_adapter().add_item_comment_idempotent("42", "analysis complete", marker=marker)
+
+    assert json.loads(comment_route.calls[0].request.content) == {
+        "text": f"analysis complete\n\n[APEX-IDEMPOTENCY:{marker}]"
+    }
+    assert_all_calls_authed()
 
 
 # ── translate_query (deterministic ruleset, WIQL rendering) ───────────────────

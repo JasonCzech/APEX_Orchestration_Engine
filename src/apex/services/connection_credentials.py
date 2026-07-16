@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from apex.adapters.options import normalize_host_port_endpoint
+from apex.domain.diagnostics import bounded_diagnostic, is_credential_field
 from apex.domain.input_limits import validate_json_object
 
 # The only registered SecretsPort provider is EnvSecretsAdapter. Persisting a
@@ -19,61 +20,9 @@ from apex.domain.input_limits import validate_json_object
 # can never be resolved. Expand this grammar only when a provider with that
 # scheme is shipped (and advertise its capability at this boundary).
 _SECRET_REF_RE = re.compile(r"env:[A-Za-z_][A-Za-z0-9_]{0,254}")
-_SECRET_NAME_MARKERS = {
-    "auth",
-    "basicauth",
-    "httpauth",
-    "password",
-    "token",
-    "secret",
-    "secretkey",
-    "apikey",
-    "clientsecret",
-    "bearertoken",
-    "privatekey",
-    "credential",
-    "pat",
-    "bearer",
-    "jwt",
-    "psk",
-    "sharedkey",
-    "accountkey",
-    "storagekey",
-    "subscriptionkey",
-    "sessionkey",
-    "sessionid",
-    "clientcertificate",
-    "clientcert",
-    "privatepem",
-    "pfx",
-    "pkcs12",
-    "keystore",
-    "signature",
-    "cookie",
-    "authheader",
-}
-_SECRET_NAME_SUBSTRINGS = (
-    "password",
-    "token",
-    "secret",
-    "apikey",
-    "credential",
-    "authorization",
-    "bearer",
-    "sharedkey",
-    "accountkey",
-    "storagekey",
-    "subscriptionkey",
-    "sessionkey",
-    "sessionid",
-    "clientcertificate",
-    "clientcert",
-    "privatepem",
-    "signature",
-    "cookie",
-    "authheader",
-)
-_SECRET_NAME_SUFFIXES = ("pat", "jwt", "psk", "pfx", "pkcs12", "keystore")
+_NON_SECRET_OPTION_NAMES = frozenset({"accesskey"})
+_NON_SECRET_OPTION_SUFFIXES = ("accesskeyid", "accesskeyidentifier")
+_TRANSPORT_OPTION_NAMES = frozenset({"baseurl", "endpoint"})
 _REDACTED = "[REDACTED]"
 _REPAIR_REQUIRED_OPTIONS = {"_apex_repair_required": True}
 
@@ -84,11 +33,49 @@ def _normalized_option_key(key: str) -> str:
 
 def _is_secret_option_key(key: str) -> bool:
     normalized = _normalized_option_key(key)
-    return (
-        normalized in _SECRET_NAME_MARKERS
-        or any(marker in normalized for marker in _SECRET_NAME_SUBSTRINGS)
-        or any(normalized.endswith(suffix) for suffix in _SECRET_NAME_SUFFIXES)
-    )
+    # Access-key IDs are identifiers, not the paired secret-access-key. The S3
+    # adapter historically calls that identifier simply ``access_key``; retain
+    # both spellings while rejecting every secret-bearing alias recognized by
+    # the shared diagnostic boundary.
+    if normalized in _NON_SECRET_OPTION_NAMES or any(
+        normalized.endswith(suffix) for suffix in _NON_SECRET_OPTION_SUFFIXES
+    ):
+        return False
+    # Keep connection/bootstrap classification identical to the shared
+    # diagnostic boundary. In particular, control metadata such as
+    # tokenCount/signatureAlgorithm/authenticationMode is not a credential,
+    # while terminal *Token/*Signature fields remain credential-bearing.
+    return is_credential_field(key)
+
+
+def _contains_credential_text(value: str) -> bool:
+    """Apply the shared diagnostic redactor as a bounded credential detector."""
+
+    # Callers validate the complete object against MAX_JSON_BYTES before this
+    # comparison. Matching output therefore means redaction, not truncation.
+    return bounded_diagnostic(value, max_chars=max(1, len(value))) != value
+
+
+def reject_credential_text(value: str | None, *, label: str) -> str | None:
+    """Reject credential material hidden in an otherwise ordinary text field."""
+
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise ValueError(f"{label} must be a string or null")
+    if _contains_credential_text(value):
+        raise ValueError(f"{label} must not contain credential material")
+    return value
+
+
+def sanitize_credential_text_for_output(value: Any) -> str | None:
+    """Project a scalar label without reflecting a credential-bearing legacy row."""
+
+    if value is None:
+        return None
+    if type(value) is not str or _contains_credential_text(value):
+        return _REDACTED
+    return value
 
 
 def connection_url_requires_repair(value: Any, *, allow_bare_host: bool = False) -> bool:
@@ -143,7 +130,10 @@ def connection_options_require_repair(options: Any) -> bool:
     stack: list[Any] = [options]
     while stack:
         value = stack.pop()
-        if isinstance(value, dict):
+        if isinstance(value, str):
+            if _contains_credential_text(value):
+                return True
+        elif isinstance(value, dict):
             for key, nested in value.items():
                 # This marker is emitted only by output sanitizers.  Treating a
                 # caller-supplied copy as ordinary configuration would let the
@@ -238,14 +228,22 @@ def reject_raw_secret_options(
     """Reject secret-looking keys at any depth and return validated options."""
 
     validate_json_object(options, label=label)
-    stack: list[Any] = [options]
+    stack: list[tuple[Any, bool]] = [(options, True)]
     while stack:
-        value = stack.pop()
-        if isinstance(value, dict):
+        value, inspect_text = stack.pop()
+        if isinstance(value, str):
+            if inspect_text and _contains_credential_text(value):
+                raise ValueError(f"{label} secrets must be supplied through {reference}")
+        elif isinstance(value, dict):
             for key, nested in value.items():
                 if _is_secret_option_key(key):
                     raise ValueError(f"{label} secrets must be supplied through {reference}")
-                stack.append(nested)
+                # Transport fields have dedicated URL/endpoint validators that
+                # reject userinfo and return a non-reflective semantic error.
+                # Let them preserve that safer response path; every other
+                # scalar is inspected here before model construction.
+                inspect_nested_text = _normalized_option_key(key) not in _TRANSPORT_OPTION_NAMES
+                stack.append((nested, inspect_nested_text))
         elif isinstance(value, list):
-            stack.extend(value)
+            stack.extend((nested, True) for nested in value)
     return options

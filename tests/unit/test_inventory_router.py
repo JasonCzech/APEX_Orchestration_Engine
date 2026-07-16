@@ -419,6 +419,27 @@ def test_rescan_adapter_timeout_is_controlled_502_without_persistence(
     assert repo.rows.get(env.id, []) == []
 
 
+def test_rescan_detaches_arbitrary_provider_exception(
+    repo: FakeSnapshotsRepository,
+) -> None:
+    canary = "inventory-provider-secret-canary"
+
+    class ProviderFault(Exception):
+        pass
+
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(error=ProviderFault(canary))
+
+    client, _ = make_client(repo, OPERATOR_DEMO, adapter=adapter)
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "environment rescan failed"
+    assert canary not in response.text
+    assert repo.rows.get(env.id, []) == []
+
+
 @pytest.mark.parametrize(
     "snapshot",
     [
@@ -429,6 +450,16 @@ def test_rescan_adapter_timeout_is_controlled_502_without_persistence(
         ),
         DomainSnapshot.model_construct(
             services=[ServiceInfo(name="service")] * (MAX_INVENTORY_SERVICES + 1),
+            scanned_at=NOW.isoformat(),
+        ),
+        DomainSnapshot.model_construct(
+            services=[
+                ServiceInfo.model_construct(
+                    name="service",
+                    replicas=1,
+                    image="x" * 100_000 + "inventory-oversized-secret-canary",
+                )
+            ],
             scanned_at=NOW.isoformat(),
         ),
     ],
@@ -446,6 +477,140 @@ def test_rescan_revalidates_provider_snapshot_before_persistence(
     assert response.status_code == 502
     assert response.json()["detail"] == "environment rescan failed"
     assert repo.rows.get(env.id, []) == []
+
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        ServiceInfo(
+            name="password=inventory-service-secret-canary",
+            replicas=1,
+            image="registry.internal/service:1",
+        ),
+        ServiceInfo(
+            name="checkout-api",
+            replicas=1,
+            image="registry.internal/service:1?token=inventory-image-secret-canary",
+        ),
+        ServiceInfo(
+            name="checkout-api",
+            replicas=1,
+            image="https://user:inventory-image-secret-canary@registry.internal/service:1",
+        ),
+    ],
+)
+def test_rescan_rejects_credential_bearing_inventory_before_persistence(
+    repo: FakeSnapshotsRepository,
+    service: ServiceInfo,
+) -> None:
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(
+        snapshot=DomainSnapshot(services=[service], scanned_at=NOW.isoformat())
+    )
+
+    client, _ = make_client(repo, OPERATOR_DEMO, adapter=adapter)
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "environment rescan failed"
+    assert "inventory-service-secret-canary" not in response.text
+    assert "inventory-image-secret-canary" not in response.text
+    assert repo.rows.get(env.id, []) == []
+
+
+def test_inventory_provider_exception_is_replaced_without_secret_chain(
+    repo: FakeSnapshotsRepository,
+) -> None:
+    secret = "inventory-model-dump-secret-canary"
+
+    class HostileSnapshot(DomainSnapshot):
+        def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            del args, kwargs
+            raise RuntimeError(secret)
+
+    env = make_environment()
+    repo.environments[env.id] = env
+    adapter = FakeClusterInventoryAdapter(snapshot=HostileSnapshot())
+
+    client, _ = make_client(repo, OPERATOR_DEMO, adapter=adapter)
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 502
+    assert secret not in response.text
+    assert repo.rows.get(env.id, []) == []
+
+
+def test_inventory_validation_detaches_secret_bearing_provider_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "inventory-provider-validation-secret-canary"
+
+    def explode(_snapshot: object) -> DomainSnapshot:
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(inventory_service, "_validated_provider_snapshot", explode)
+
+    with pytest.raises(RuntimeError, match="invalid snapshot") as exc_info:
+        inventory_service.validated_provider_snapshot(object())
+
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert secret not in repr(exc_info.value)
+
+
+def test_inventory_rejects_arbitrary_service_without_reading_spoofed_class(
+    repo: FakeSnapshotsRepository,
+) -> None:
+    class HostileService:
+        class_called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).class_called = True
+                raise AssertionError("provider __class__ descriptor must not be called")
+            return object.__getattribute__(self, name)
+
+    service = HostileService()
+    snapshot = DomainSnapshot.model_construct(services=[service], scanned_at=NOW.isoformat())
+    env = make_environment()
+    repo.environments[env.id] = env
+
+    client, _ = make_client(
+        repo,
+        OPERATOR_DEMO,
+        adapter=FakeClusterInventoryAdapter(snapshot=snapshot),
+    )
+    response = client.post(f"/inventory/environments/{env.id}/rescan")
+
+    assert response.status_code == 502
+    assert service.class_called is False
+    assert repo.rows.get(env.id, []) == []
+
+
+async def test_legacy_credential_inventory_fails_closed_on_read() -> None:
+    secret = "legacy-inventory-image-secret-canary"
+    repository = FakeSnapshotsRepository()
+    repository.rows["env-1"] = [
+        make_row(
+            "env-1",
+            NOW,
+            services=[
+                {
+                    "name": "checkout-api",
+                    "replicas": 1,
+                    "image": f"registry/service:1?token={secret}",
+                }
+            ],
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="invalid service data") as raised:
+        await InventoryService(cast(Any, repository)).latest_inventory("env-1")
+
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+    assert secret not in str(raised.value)
 
 
 def test_rescan_resolver_failure_is_502(repo: FakeSnapshotsRepository) -> None:

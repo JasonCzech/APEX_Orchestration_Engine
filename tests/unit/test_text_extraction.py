@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import docx
 import pytest
 from docx import Document as DocxDocument
+from pypdf import PasswordType
 
 import apex.services.text_extraction as extraction_module
 from apex.services.text_extraction import (
@@ -22,6 +23,7 @@ from apex.services.text_extraction import (
     PARSE_PARSED,
     PARSE_UNSUPPORTED,
     _extract_docx_in_worker,
+    _extract_pdf_in_worker,
     _kind,
     derive_summary,
     extract_text,
@@ -211,6 +213,28 @@ def test_extract_pdf_returns_text() -> None:
     assert "context" in result.text
 
 
+def test_pdf_nonraising_failed_decryption_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EncryptedReader:
+        is_encrypted = True
+
+        def __init__(self, _stream: object) -> None:
+            pass
+
+        def decrypt(self, _password: str) -> PasswordType:
+            return PasswordType.NOT_DECRYPTED
+
+        @property
+        def pages(self) -> object:
+            raise AssertionError("encrypted pages must not be inspected")
+
+    monkeypatch.setattr("pypdf.PdfReader", EncryptedReader)
+
+    with pytest.raises(extraction_module._ExtractionPolicyError, match="password-protected"):
+        _extract_pdf_in_worker(b"%PDF-encrypted", max_chars=100)
+
+
 def test_pdf_rejects_small_compressed_input_with_oversized_decoded_stream() -> None:
     decoded = b" " * (extraction_module._MAX_PDF_DECODED_STREAM_BYTES + 1)
     data = _make_pdf_stream(decoded, compressed=True)
@@ -365,6 +389,50 @@ def test_docx_timeout_kills_and_reaps_isolated_worker(
     ]
 
 
+@pytest.mark.parametrize(
+    ("extractor", "wall_seconds"),
+    [
+        (extraction_module._extract_pdf, extraction_module._PDF_WORKER_WALL_SECONDS),
+        (extraction_module._extract_docx, extraction_module._DOCX_WORKER_WALL_SECONDS),
+    ],
+)
+def test_complex_worker_timeout_does_not_retain_partial_document_output(
+    monkeypatch: pytest.MonkeyPatch,
+    extractor: object,
+    wall_seconds: float,
+) -> None:
+    canary = b"bare-document-timeout-canary"
+    calls = 0
+
+    class HungProcess:
+        returncode = -9
+
+        def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise subprocess.TimeoutExpired(
+                    cmd="worker",
+                    timeout=wall_seconds,
+                    output=canary,
+                )
+            return b"", b""
+
+        def kill(self) -> None:
+            return None
+
+    monkeypatch.setattr(extraction_module.subprocess, "Popen", lambda *_a, **_k: HungProcess())
+    run = extractor
+    assert callable(run)
+
+    with pytest.raises(ValueError, match="second limit") as excinfo:
+        run(b"document", max_chars=100)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary.decode() not in str(excinfo.value)
+
+
 def test_pdf_worker_response_rejects_output_beyond_retention_budget() -> None:
     payload = b"S" + (101).to_bytes(8, "big") + (b"x" * 101)
     with pytest.raises(ValueError, match="output limit"):
@@ -406,6 +474,33 @@ def test_extraction_failure_diagnostic_redacts_credentials(
     assert "[REDACTED]" in result.error
 
 
+@pytest.mark.parametrize(
+    ("filename", "data", "label"),
+    [("hostile.pdf", b"pdf", "PDF"), ("hostile.docx", b"docx", "DOCX")],
+)
+def test_complex_worker_arbitrary_parser_error_is_not_exposed(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    data: bytes,
+    label: str,
+) -> None:
+    canary = "bare-parser-exception-canary-4f01e85b"
+
+    class FailedProcess:
+        returncode = 0
+
+        def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+            return b"E" + canary.encode(), b""
+
+    monkeypatch.setattr(extraction_module.subprocess, "Popen", lambda *_a, **_k: FailedProcess())
+
+    result = extract_text(data, filename=filename, content_type=None, max_chars=100)
+
+    assert result.status == PARSE_FAILED
+    assert result.error == f"ValueError: {label} extraction failed"
+    assert canary not in repr(result)
+
+
 def test_truncation_applies_storage_cap_and_reports_full_length() -> None:
     body = "abcdefghij" * 10  # 100 chars
     result = extract_text(body.encode(), filename="big.txt", content_type=None, max_chars=25)
@@ -443,3 +538,335 @@ def test_derive_summary_caps_with_ellipsis() -> None:
 
 def test_derive_summary_none_for_blank() -> None:
     assert derive_summary("\n\n   \n\n", max_chars=280) is None
+
+
+def test_normalized_builder_handles_unlimited_pending_whitespace_and_terminal_cr() -> None:
+    builder = extraction_module._NormalizedTextBuilder(None)
+    builder.feed("")
+    builder.feed("  first  ")
+    builder.feed("\n   second\r")
+    # A terminal CR is resolved even when the next feed contains only its LF.
+    builder.feed("\n")
+    builder.feed("third")
+
+    result = builder.finish()
+
+    assert result.text == "first\n   second\nthird"
+    assert result.char_count == len(result.text)
+
+
+def test_normalized_builder_counts_content_after_retention_is_full() -> None:
+    builder = extraction_module._NormalizedTextBuilder(3)
+    builder.feed("abc   \nnext")
+
+    result = builder.finish()
+
+    assert result.text == "abc"
+    assert result.char_count == len("abc\nnext")
+
+
+def test_normalized_builder_empty_internal_segments_are_noops() -> None:
+    builder = extraction_module._NormalizedTextBuilder(0)
+    builder._add_outer_pending("")
+    builder._append_committed("")
+    builder._confirm_non_whitespace("   ")
+    builder._feed_chunk("")
+    assert builder.finish() == extraction_module._BoundedText(text="", char_count=0)
+
+
+def test_configure_pypdf_limits_enforces_stream_and_array_ceilings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pypdf import filters
+    from pypdf.generic import _data_structures
+
+    monkeypatch.setattr(filters, "FLATE_MAX_BUFFER_SIZE", 0)
+    monkeypatch.setattr(filters, "JBIG2_MAX_OUTPUT_LENGTH", 1)
+    monkeypatch.setattr(
+        _data_structures,
+        "CONTENT_STREAM_ARRAY_MAX_LENGTH",
+        extraction_module._MAX_PDF_CONTENT_STREAMS + 100,
+    )
+
+    extraction_module._configure_pypdf_limits()
+
+    assert filters.FLATE_MAX_BUFFER_SIZE == extraction_module._MAX_PDF_DECODED_STREAM_BYTES
+    assert filters.JBIG2_MAX_OUTPUT_LENGTH == 1
+    assert (
+        _data_structures.CONTENT_STREAM_ARRAY_MAX_LENGTH
+        == extraction_module._MAX_PDF_CONTENT_STREAMS
+    )
+
+
+def test_pdf_worker_parser_normalizes_multiple_pages_in_process() -> None:
+    extracted = extraction_module._extract_pdf_in_worker(
+        _make_pdf("in-process parser"), max_chars=10_000
+    )
+
+    assert "in-process parser" in extracted.text
+    assert extracted.char_count == len(extracted.text)
+
+
+def test_pdf_worker_rejects_encrypted_document_when_blank_decrypt_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pypdf
+
+    class EncryptedReader:
+        is_encrypted = True
+        pages: list[object] = []
+
+        def __init__(self, _stream: object) -> None:
+            pass
+
+        def decrypt(self, _password: str) -> None:
+            raise RuntimeError("secret details")
+
+    monkeypatch.setattr(pypdf, "PdfReader", EncryptedReader)
+
+    with pytest.raises(ValueError, match="password-protected"):
+        extraction_module._extract_pdf_in_worker(b"pdf", max_chars=100)
+
+
+def test_pdf_worker_enforces_page_and_decoded_content_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pypdf
+
+    class Contents:
+        def get_data(self) -> bytes:
+            return b"oversized"
+
+    class Page:
+        def get_contents(self) -> Contents:
+            return Contents()
+
+        def extract_text(self) -> str:
+            return "never retained"
+
+    class Reader:
+        is_encrypted = False
+
+        def __init__(self, _stream: object) -> None:
+            self.pages = [Page(), Page()]
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+    monkeypatch.setattr(extraction_module, "_MAX_PDF_PAGES", 1)
+    with pytest.raises(ValueError, match="page extraction limit"):
+        extraction_module._extract_pdf_in_worker(b"pdf", max_chars=100)
+
+    monkeypatch.setattr(extraction_module, "_MAX_PDF_PAGES", 2)
+    monkeypatch.setattr(extraction_module, "_MAX_PDF_DECODED_CONTENT_BYTES", 1)
+    with pytest.raises(ValueError, match="decoded page content"):
+        extraction_module._extract_pdf_in_worker(b"pdf", max_chars=100)
+
+
+def test_pdf_worker_separates_pages_and_stops_after_character_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import pypdf
+
+    class Page:
+        def __init__(self, text: str) -> None:
+            self._text = text
+
+        def get_contents(self) -> None:
+            return None
+
+        def extract_text(self) -> str:
+            return self._text
+
+    class Reader:
+        is_encrypted = False
+
+        def __init__(self, _stream: object) -> None:
+            self.pages = [Page("one"), Page("two"), Page("unvisited")]
+
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+
+    extracted = extraction_module._extract_pdf_in_worker(b"pdf", max_chars=5)
+
+    assert extracted.text == "one\n\n"
+    assert extracted.char_count == len("one\n\ntwo")
+
+
+@pytest.mark.parametrize(
+    ("decoder", "label"),
+    [
+        (extraction_module._decode_pdf_worker_response, "PDF"),
+        (extraction_module._decode_docx_worker_response, "DOCX"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"", "without a result"),
+        (b"E", "extraction failed"),
+        (b"Xshort", "malformed result"),
+        (b"S" + (401).to_bytes(8, "big") + (b"x" * 401), "output limit"),
+        (b"S" + (1).to_bytes(8, "big") + b"\xff", "invalid UTF-8"),
+        (b"S" + (0).to_bytes(8, "big") + b"x", "inconsistent bounds"),
+    ],
+)
+def test_worker_response_decoders_fail_closed(
+    decoder: object,
+    label: str,
+    payload: bytes,
+    message: str,
+) -> None:
+    decode = decoder
+    assert callable(decode)
+    with pytest.raises(ValueError, match=f"{label}.*{message}"):
+        decode(payload, max_chars=100)
+
+
+@pytest.mark.parametrize(
+    "decoder",
+    [
+        extraction_module._decode_pdf_worker_response,
+        extraction_module._decode_docx_worker_response,
+    ],
+)
+def test_worker_invalid_utf8_does_not_retain_extracted_document_bytes(
+    decoder: object,
+) -> None:
+    canary = b"bare-document-decode-canary"
+    payload = b"S" + (len(canary) + 1).to_bytes(8, "big") + b"\xff" + canary
+    decode = decoder
+    assert callable(decode)
+
+    with pytest.raises(ValueError, match="invalid UTF-8") as excinfo:
+        decode(payload, max_chars=100)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary.decode() not in str(excinfo.value)
+
+
+def test_docx_worker_parser_visits_paragraphs_tables_and_cells_in_process() -> None:
+    data = _make_docx(["paragraph"], table_rows=[["left", "right"]])
+
+    extracted = extraction_module._extract_docx_in_worker(data, max_chars=10_000)
+
+    assert extracted.text == "paragraph\nleft\tright"
+    assert extracted.char_count == len(extracted.text)
+
+
+@pytest.mark.parametrize(
+    ("member", "message"),
+    [
+        (SimpleNamespace(file_size=1, compress_size=0), "invalid compressed entry"),
+        (SimpleNamespace(file_size=101, compress_size=1), "compression ratio"),
+    ],
+)
+def test_docx_worker_rejects_unsafe_archive_members(
+    monkeypatch: pytest.MonkeyPatch,
+    member: SimpleNamespace,
+    message: str,
+) -> None:
+    class Archive:
+        def __enter__(self) -> "Archive":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def infolist(self) -> list[SimpleNamespace]:
+            return [member]
+
+    monkeypatch.setattr(extraction_module.zipfile, "ZipFile", lambda _stream: Archive())
+
+    with pytest.raises(ValueError, match=message):
+        extraction_module._extract_docx_in_worker(b"docx", max_chars=100)
+
+
+def test_docx_worker_rejects_entry_count_and_expanded_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _make_docx(["content"])
+    monkeypatch.setattr(extraction_module, "_MAX_DOCX_ENTRIES", 0)
+    with pytest.raises(ValueError, match="too many archive entries"):
+        extraction_module._extract_docx_in_worker(data, max_chars=100)
+
+    monkeypatch.setattr(extraction_module, "_MAX_DOCX_ENTRIES", 10_000)
+    monkeypatch.setattr(extraction_module, "_MAX_DOCX_EXPANDED_BYTES", 1)
+    with pytest.raises(ValueError, match="expanded content"):
+        extraction_module._extract_docx_in_worker(data, max_chars=100)
+
+
+@pytest.mark.parametrize(
+    ("extractor", "limit_name", "label"),
+    [
+        (extraction_module._extract_pdf, "_MAX_PDF_INPUT_BYTES", "PDF"),
+        (extraction_module._extract_docx, "_MAX_DOCX_INPUT_BYTES", "DOCX"),
+    ],
+)
+def test_complex_extractors_reject_oversized_input_before_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+    extractor: object,
+    limit_name: str,
+    label: str,
+) -> None:
+    monkeypatch.setattr(extraction_module, limit_name, 1)
+    extract = extractor
+    assert callable(extract)
+    with pytest.raises(ValueError, match=f"{label} exceeds the 1-byte"):
+        extract(b"xx", max_chars=100)
+
+
+@pytest.mark.parametrize(
+    ("filename", "data", "label"),
+    [("failed.pdf", b"pdf", "PDF"), ("failed.docx", b"docx", "DOCX")],
+)
+def test_complex_extractor_reports_nonzero_worker_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    data: bytes,
+    label: str,
+) -> None:
+    class FailedProcess:
+        returncode = 9
+
+        def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    monkeypatch.setattr(extraction_module.subprocess, "Popen", lambda *_a, **_k: FailedProcess())
+
+    result = extract_text(data, filename=filename, content_type=None, max_chars=100)
+
+    assert result.status == PARSE_FAILED
+    assert result.error is not None and f"{label} extraction exceeded" in result.error
+
+
+@pytest.mark.parametrize(
+    ("filename", "data"),
+    [("stuck.pdf", b"pdf"), ("stuck.docx", b"docx")],
+)
+def test_complex_extractor_retries_reap_after_second_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    filename: str,
+    data: bytes,
+) -> None:
+    calls: list[str] = []
+    communicate_attempts = 0
+
+    class StuckProcess:
+        returncode = -9
+
+        def communicate(self, **_kwargs: object) -> tuple[bytes, bytes]:
+            nonlocal communicate_attempts
+            communicate_attempts += 1
+            calls.append("communicate")
+            if communicate_attempts <= 2:
+                raise subprocess.TimeoutExpired(cmd="worker", timeout=1)
+            return b"", b""
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+    monkeypatch.setattr(extraction_module.subprocess, "Popen", lambda *_a, **_k: StuckProcess())
+
+    result = extract_text(data, filename=filename, content_type=None, max_chars=100)
+
+    assert result.status == PARSE_FAILED
+    assert calls == ["communicate", "kill", "communicate", "kill", "communicate"]

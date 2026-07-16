@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from apex.app.dependencies import get_current_identity
+from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.models import (
     Application,
@@ -19,6 +20,7 @@ from apex.persistence.models import (
 )
 from apex.persistence.repositories.catalog import CatalogRepository, DuplicateNameError
 from apex.routers.catalog import (
+    ApplicationOut,
     EnvironmentCreate,
     EnvironmentOut,
     get_catalog_repository,
@@ -33,6 +35,54 @@ def _now() -> datetime:
 def test_environment_create_rejects_nul_application_id() -> None:
     with pytest.raises(ValueError, match="string_pattern_mismatch"):
         EnvironmentCreate.model_validate({"application_id": "app\x00id", "name": "staging"})
+
+
+def test_catalog_api_rejects_credentials_in_scalar_labels_without_reflection(
+    repo: "FakeCatalogRepository",
+) -> None:
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router)
+    app.dependency_overrides[get_catalog_repository] = lambda: repo
+    app.dependency_overrides[get_current_identity] = lambda: ADMIN
+    client = TestClient(app)
+
+    unsafe_application = client.post(
+        "/catalog/applications",
+        json={"project_id": "demo", "name": credential},
+    )
+    safe_application = client.post(
+        "/catalog/applications",
+        json={"project_id": "demo", "name": "Checkout"},
+    )
+    app_id = safe_application.json()["id"]
+    unsafe_description = client.patch(
+        f"/catalog/applications/{app_id}", json={"description": credential}
+    )
+    unsafe_environment = client.post(
+        "/catalog/environments",
+        json={"application_id": app_id, "name": credential},
+    )
+    unsafe_host_role = client.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "staging",
+            "hosts": [{"hostname": "api.example.test", "role": credential}],
+        },
+    )
+
+    for response in (
+        unsafe_application,
+        unsafe_description,
+        unsafe_environment,
+        unsafe_host_role,
+    ):
+        assert response.status_code == 422
+        assert credential.encode() not in response.content
+    assert len(repo.applications) == 1
+    assert repo.environments == {}
 
 
 def _make_application(project_id: str, name: str, description: str | None = None) -> Application:
@@ -65,6 +115,27 @@ def _make_environment(app: Application, name: str, **kwargs: Any) -> Environment
     env.created_at = _now()
     env.updated_at = _now()
     return env
+
+
+def test_catalog_legacy_credential_labels_are_redacted_from_output() -> None:
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    app = _make_application("demo", credential, description=credential)
+    environment = _make_environment(
+        app,
+        credential,
+        kind=credential,
+        hosts=[{"hostname": credential, "role": credential}],
+    )
+
+    app_output = ApplicationOut.model_validate(app)
+    environment_output = EnvironmentOut.model_validate(environment)
+
+    assert app_output.name == "[REDACTED]"
+    assert app_output.description == "[REDACTED]"
+    assert environment_output.name == "[REDACTED]"
+    assert environment_output.kind == "[REDACTED]"
+    assert environment_output.hosts[0].hostname == "[REDACTED]"
+    assert environment_output.hosts[0].role == "[REDACTED]"
 
 
 class FakeCatalogRepository:
@@ -325,6 +396,29 @@ def test_update_application(repo: FakeCatalogRepository) -> None:
     assert patched.json()["name"] == "Checkout"  # untouched fields preserved
 
 
+def test_patch_rejects_null_nonnullable_names_before_repository_mutation(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    environment = client.post(
+        "/catalog/environments",
+        json={"application_id": app_id, "name": "staging"},
+    ).json()
+
+    app_response = client.patch(f"/catalog/applications/{app_id}", json={"name": None})
+    environment_response = client.patch(
+        f"/catalog/environments/{environment['id']}", json={"name": None}
+    )
+
+    assert app_response.status_code == 422
+    assert environment_response.status_code == 422
+    assert repo.applications[app_id].name == "Checkout"
+    assert repo.environments[environment["id"]].name == "staging"
+
+
 def test_archive_and_unarchive(repo: FakeCatalogRepository) -> None:
     client = make_client(repo, ADMIN)
     app_id = client.post(
@@ -515,6 +609,37 @@ def test_environment_writes_reject_raw_credentials_in_options(
     assert updated.status_code == 422
     assert "raw-secret" not in updated.text
     assert environment.options == {}
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhcGV4LXVzZXIifQ.c2lnbmF0dXJlLWNhbmFyeQ",
+        "-----BEGIN PRIVATE KEY-----\ncHJpdmF0ZS1rZXktY2FuYXJ5\n-----END PRIVATE KEY-----",
+    ],
+)
+def test_environment_api_rejects_standalone_credential_signatures(
+    repo: FakeCatalogRepository,
+    credential: str,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+
+    response = client.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "unsafe-signature",
+            "options": {"value": credential},
+        },
+    )
+
+    assert response.status_code == 422
+    assert credential not in response.text
+    assert repo.environments == {}
 
 
 def test_environment_writes_reject_server_owned_repair_marker(

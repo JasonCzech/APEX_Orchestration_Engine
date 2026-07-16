@@ -62,16 +62,15 @@ class AdapterRegistry:
     @classmethod
     async def build(cls, conn: ConnectionConfig, secrets: SecretsPort | None = None) -> Any:
         """Resolve conn.secret_ref (if any) through `secrets`, then build the adapter."""
-        try:
-            factory = cls._factories[(conn.kind, conn.provider)]
-        except KeyError:
+        factory = cls._factories.get((conn.kind, conn.provider))
+        if factory is None:
             registered = cls.providers_for(conn.kind)
             hint = ", ".join(registered) if registered else "none"
             raise KeyError(
                 f"no adapter registered for kind={conn.kind.value!r} "
                 f"provider={conn.provider!r}; registered providers for this kind: {hint} "
                 "(did you import apex.adapters.stubs / apex.adapters.sim_engine?)"
-            ) from None
+            )
 
         secret: SecretValue | None = None
         if conn.secret_ref is not None:

@@ -21,8 +21,9 @@ engine_reserve). Durability rules (plan "Durability & the execution phase"):
   cleanup intent is checkpointed before the kill is attempted. Provider failures
   remain non-terminal and retry from the same handle; only a successful abort may
   project ABORTED and finalize the phase.
-- engine_collect persists artifacts + summary into graph state; only the following
-  checkpoint-gated settle node may tear down the run and project it terminal.
+- engine_collect persists normalized artifacts + summary into graph state;
+  engine_collection_index then records exact ownership without provider/store I/O,
+  and only the checkpoint-gated settle node may tear down/project the run terminal.
 
 recursion_limit sizing: every poll cycle consumes one superstep inside the
 execution subgraph, so runs containing the execution phase must budget roughly
@@ -37,16 +38,20 @@ recommended_recursion_limit().
 import asyncio
 import math
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from inspect import isawaitable
+from types import GetSetDescriptorType, MemberDescriptorType
+from typing import Any, TypeGuard
 
 import structlog
 from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.graph import StateGraph
 from langgraph.types import Command, interrupt
+from pydantic import BaseModel
 
 from apex.adapters.registry import PortKind
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.integrations import LoadTestSpec, TestResultSummary, ValidationReport
 from apex.domain.pipeline import (
     ArtifactRef,
@@ -63,7 +68,12 @@ from apex.graphs.pipeline.configurable import (
 )
 from apex.graphs.pipeline.phase_subgraph import EVENT_SCHEMA_VERSION, emit_event
 from apex.graphs.pipeline.state import JsonDict, PipelineState
-from apex.ports.artifact_store import StoredArtifact, engine_artifact_namespace
+from apex.ports.artifact_store import (
+    StoredArtifact,
+    canonical_artifact_uri,
+    engine_artifact_namespace,
+    validate_stored_artifact_ack,
+)
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
     EngineProviderRunNotFoundError,
@@ -89,16 +99,21 @@ logger = structlog.get_logger(__name__)
 _PHASE = Phase.EXECUTION
 
 # Supersteps the execution subgraph consumes outside the poll loop (prepare, gate
-# nodes, agent alias, reserve/start/collect, finalize) plus parent-spine slack.
+# nodes, agent alias, reserve/start/collect/index/settle, finalize) plus parent-spine slack.
 # Includes execution/artifact-store affinity reservations, bounded provision and
 # collection retries, the durable collection-settle split, explicit blocked nodes,
 # and the resume paths used by later operator-triggered runs.
-SPINE_SUPERSTEPS = 34
+SPINE_SUPERSTEPS = 36
 MAX_CONSECUTIVE_POLL_ERRORS = 3
 MAX_ENGINE_PROVISION_ATTEMPTS = 3
 MAX_ENGINE_COLLECTION_ATTEMPTS = 3
 MAX_ENGINE_SETTLE_ATTEMPTS = 3
 MAX_ENGINE_ARTIFACT_REFS = 32
+MAX_ENGINE_ARTIFACT_WRITES = 32
+# Preserve the built-in LoadRunner contract (512 MiB per report, 1 GiB total)
+# while imposing a provider-independent hard ceiling at the graph boundary.
+MAX_ENGINE_ARTIFACT_BYTES_PER_OBJECT = 512 * 1024 * 1024
+MAX_ENGINE_ARTIFACT_BYTES_TOTAL = 1024 * 1024 * 1024
 _ENGINE_ARTIFACT_KINDS = frozenset({"engine_results", "engine_report"})
 
 
@@ -110,18 +125,139 @@ class _DefinitiveProvisionError(RuntimeError):
     """Provisioning cannot safely continue with the checkpointed reservation."""
 
 
+async def _await_cleanup_task_definitively(task: asyncio.Task[None]) -> None:
+    """Observe a cleanup task's final outcome despite repeated caller cancellation."""
+
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException:
+            break
+    error: BaseException | None = None
+    try:
+        task.result()
+    except BaseException as exc:  # retrieve every child outcome before returning
+        error = exc
+    if error is not None:
+        raise error
+    if cancelled:
+        raise asyncio.CancelledError from None
+
+
+async def _close_owned_resolution(adapter: Any | None, resolver: Any) -> None:
+    """Release a leaf checkout and every resolver-owned nested generation."""
+
+    async def close_resolver() -> None:
+        close = getattr(resolver, "close", None)
+        if not callable(close):
+            return
+        result = close()
+        if isawaitable(result):
+            await result
+
+    tasks = [asyncio.create_task(close_resolver(), name="execution-resolver-close")]
+    if adapter is not None:
+        tasks.insert(
+            0,
+            asyncio.create_task(
+                close_adapter(adapter),
+                name="execution-adapter-checkout-close",
+            ),
+        )
+    cancelled = False
+    error: BaseException | None = None
+    for task in tasks:
+        try:
+            await _await_cleanup_task_definitively(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException as exc:
+            if error is None:
+                error = exc
+    if error is not None:
+        raise error
+    if cancelled:
+        raise asyncio.CancelledError from None
+
+
+@dataclass(frozen=True)
+class _OwnedResolvedAdapter(ResolvedAdapter):
+    """Resolution metadata whose close owns both leaf and resolver cache."""
+
+    resolver: Any
+
+    async def close(self) -> None:
+        await _close_owned_resolution(self.adapter, self.resolver)
+
+    async def aclose(self) -> None:
+        await self.close()
+
+
+class _OwnedAdapter:
+    """Compatibility wrapper for resolvers that do not expose metadata."""
+
+    def __init__(self, adapter: Any, resolver: Any) -> None:
+        self.adapter = adapter
+        self.resolver = resolver
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.adapter, name)
+
+    async def close(self) -> None:
+        await _close_owned_resolution(self.adapter, self.resolver)
+
+    async def aclose(self) -> None:
+        await self.close()
+
+
+def _own_resolution(value: Any, resolver: Any) -> Any:
+    """Attach a throwaway resolver when it has an explicit close contract."""
+
+    if not callable(getattr(resolver, "close", None)):
+        return value
+    if isinstance(value, ResolvedAdapter):
+        return _OwnedResolvedAdapter(
+            adapter=value.adapter,
+            connection_id=value.connection_id,
+            connection_version=value.connection_version,
+            persisted=value.persisted,
+            resolver=resolver,
+        )
+    return _OwnedAdapter(value, resolver)
+
+
 class _EngineArtifactStoreView:
-    """Attempt-scoped, write-only facade for execution-engine artifact output."""
+    """Attempt-scoped, write-only facade for execution-engine artifact output.
+
+    Provider-selected names are logical hints only.  Physical object keys are
+    canonical ordinal slots beneath the attempt namespace.  A process can die
+    after an object-store acknowledgement but before the graph checkpoints the
+    returned refs; assigning the same finite slots on every replay prevents a
+    provider that changes names/order from stranding an unbounded set of keys.
+    """
 
     def __init__(self, store: Any, namespace: str) -> None:
         self._store = store
         self._namespace = namespace
         self._prefix = f"{namespace}/"
         self.written: dict[str, tuple[StoredArtifact, str]] = {}
+        self.attempted: dict[str, int] = {}
+        self._requested: set[str] = set()
+        self._compensated: set[str] = set()
+        self._reserved_bytes = 0
+
+    def _slot_key(self, slot: int) -> str:
+        return f"{self._namespace}/artifact-{slot:04d}"
+
+    def _all_slot_keys(self) -> tuple[str, ...]:
+        return tuple(self._slot_key(slot) for slot in range(MAX_ENGINE_ARTIFACT_WRITES))
 
     def _key(self, key: str) -> str:
         if (
-            not isinstance(key, str)
+            type(key) is not str
             or not key.startswith(self._prefix)
             or key == self._prefix
             or len(key) > 1_024
@@ -137,7 +273,7 @@ class _EngineArtifactStoreView:
     @staticmethod
     def _content_type(content_type: str) -> str:
         if (
-            not isinstance(content_type, str)
+            type(content_type) is not str
             or not content_type
             or len(content_type) > 255
             or any(char in content_type for char in ("\x00", "\r", "\n"))
@@ -145,20 +281,93 @@ class _EngineArtifactStoreView:
             raise ValueError("execution engine artifact content type is invalid")
         return content_type
 
-    async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
-        checked_key = self._key(key)
-        stored = StoredArtifact.model_validate(
-            _model_payload(
-                await self._store.put(
-                    checked_key,
-                    data,
-                    content_type=self._content_type(content_type),
-                )
-            )
+    def _reserve(self, requested_key: str, size: int) -> str:
+        if requested_key in self._requested:
+            raise ValueError("execution engine artifact keys may be attempted only once")
+        if len(self.attempted) >= MAX_ENGINE_ARTIFACT_WRITES:
+            raise ValueError("execution engine artifact write count exceeds the hard limit")
+        if size < 0 or size > MAX_ENGINE_ARTIFACT_BYTES_PER_OBJECT:
+            raise ValueError("execution engine artifact exceeds the per-object byte limit")
+        if size > MAX_ENGINE_ARTIFACT_BYTES_TOTAL - self._reserved_bytes:
+            raise ValueError("execution engine artifacts exceed the aggregate byte limit")
+        # Reserve count and logical bytes before provider IO. Ambiguous failures do
+        # not refund the reservation, so a plugin cannot catch errors and continue
+        # issuing unbounded writes through the same facade.
+        storage_key = self._slot_key(len(self.attempted))
+        self._requested.add(requested_key)
+        self.attempted[storage_key] = size
+        self._reserved_bytes += size
+        return storage_key
+
+    async def _cleanup_keys(self, keys: tuple[str, ...]) -> None:
+        delete: Any = getattr(self._store, "delete", None)
+        if not callable(delete):
+            raise RuntimeError("artifact store cannot compensate an incomplete engine write")
+        cleanup_failed = False
+        for key in keys:
+            try:
+                cleanup_result: Any = delete(key)
+                await cleanup_result
+            except (KeyError, FileNotFoundError):
+                pass
+            except BaseException:
+                cleanup_failed = True
+                continue
+            self._compensated.add(key)
+            self.written.pop(key, None)
+        if cleanup_failed:
+            raise RuntimeError(
+                "artifact store could not compensate an incomplete engine write"
+            ) from None
+
+    async def _cleanup_definitively(self, keys: tuple[str, ...]) -> None:
+        pending = tuple(key for key in keys if key not in self._compensated)
+        if not pending:
+            return
+        task = asyncio.create_task(
+            self._cleanup_keys(pending),
+            name="engine-artifact-compensation",
         )
-        if stored.key != checked_key:
-            raise ValueError("artifact store returned a key different from the requested key")
-        self.written[checked_key] = (stored.model_copy(deep=True), content_type)
+        await _await_cleanup_task_definitively(task)
+
+    async def _cleanup_key(self, key: str) -> None:
+        await self._cleanup_definitively((key,))
+
+    async def cleanup_except(self, retained_keys: set[str]) -> None:
+        """Delete every finite replay slot that cannot receive a durable reference.
+
+        Enumerating the whole bounded slot set also removes slots left by a prior
+        process that died before it could checkpoint its in-memory write manifest.
+        """
+
+        await self._cleanup_definitively(
+            tuple(key for key in self._all_slot_keys() if key not in retained_keys)
+        )
+
+    async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
+        requested_key = self._key(key)
+        checked_content_type = self._content_type(content_type)
+        if type(data) is not bytes:
+            raise ValueError("execution engine artifact data must be bytes")
+        storage_key = self._reserve(requested_key, len(data))
+        try:
+            acknowledgement = validate_stored_artifact_ack(
+                await self._store.put(
+                    storage_key,
+                    data,
+                    content_type=checked_content_type,
+                ),
+                storage_key,
+                expected_size=len(data),
+            )
+        except BaseException:
+            await self._cleanup_key(storage_key)
+            raise
+        stored = acknowledgement.model_copy(
+            update={"uri": canonical_artifact_uri(storage_key)},
+            deep=True,
+        )
+        self.written[storage_key] = (stored.model_copy(deep=True), checked_content_type)
         return stored
 
     async def put_stream(
@@ -169,22 +378,49 @@ class _EngineArtifactStoreView:
         content_type: str,
         max_bytes: int,
     ) -> StoredArtifact:
-        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        if type(max_bytes) is not int or max_bytes < 1:
             raise ValueError("execution engine artifact max_bytes must be a positive integer")
-        checked_key = self._key(key)
-        stored = StoredArtifact.model_validate(
-            _model_payload(
+        requested_key = self._key(key)
+        checked_content_type = self._content_type(content_type)
+        storage_key = self._reserve(requested_key, max_bytes)
+        consumed_bytes = 0
+        exhausted = False
+
+        async def counted_stream() -> AsyncIterator[bytes]:
+            nonlocal consumed_bytes, exhausted
+            async for chunk in data:
+                if type(chunk) is not bytes:
+                    raise ValueError("execution engine artifact stream must yield bytes")
+                if len(chunk) > max_bytes - consumed_bytes:
+                    raise ValueError("execution engine artifact stream exceeds max_bytes")
+                consumed_bytes += len(chunk)
+                yield chunk
+            exhausted = True
+
+        try:
+            acknowledgement = validate_stored_artifact_ack(
                 await self._store.put_stream(
-                    checked_key,
-                    data,
-                    content_type=self._content_type(content_type),
+                    storage_key,
+                    counted_stream(),
+                    content_type=checked_content_type,
                     max_bytes=max_bytes,
-                )
+                ),
+                storage_key,
+                expected_size=consumed_bytes,
+                max_size=max_bytes,
             )
+            if not exhausted:
+                raise RuntimeError("artifact store did not consume the complete artifact stream")
+        except BaseException:
+            await self._cleanup_key(storage_key)
+            raise
+        self._reserved_bytes -= max_bytes - consumed_bytes
+        self.attempted[storage_key] = consumed_bytes
+        stored = acknowledgement.model_copy(
+            update={"uri": canonical_artifact_uri(storage_key)},
+            deep=True,
         )
-        if stored.key != checked_key or stored.size < 0 or stored.size > max_bytes:
-            raise ValueError("artifact store returned an invalid streamed artifact")
-        self.written[checked_key] = (stored.model_copy(deep=True), content_type)
+        self.written[storage_key] = (stored.model_copy(deep=True), checked_content_type)
         return stored
 
     async def get(self, key: str) -> bytes:
@@ -246,11 +482,80 @@ def execution_idempotency_key(thread_id: str, attempt: int) -> str:
 
 
 def _entry(state: PipelineState) -> JsonDict:
-    return (state.get("phase_results") or {}).get(_PHASE.value) or {}
+    results = state.get("phase_results")
+    if results is None:
+        results = {}
+    if type(results) is not dict:
+        raise ValueError("checkpointed phase results are invalid")
+    entry = results.get(_PHASE.value)
+    if entry is None:
+        entry = {}
+    if type(entry) is not dict:
+        raise ValueError("checkpointed execution phase is invalid")
+    return entry
 
 
 def _attempt(entry: JsonDict) -> int:
-    return int(entry.get("attempt") or 1)
+    return _checkpoint_int(entry.get("attempt"), label="execution attempt", default=1, minimum=1)
+
+
+def _checkpoint_int(
+    value: Any,
+    *,
+    label: str,
+    default: int = 0,
+    minimum: int = 0,
+    maximum: int = 1_000_000,
+) -> int:
+    if value is None:
+        return default
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(f"checkpointed {label} is invalid")
+    return value
+
+
+def _checkpoint_flag(entry: JsonDict, field: str) -> bool:
+    value = entry.get(field)
+    if value is None:
+        return False
+    if type(value) is not bool:
+        raise ValueError(f"checkpointed {field} flag is invalid")
+    return value
+
+
+def _checkpoint_timestamp_or_now(value: Any) -> str:
+    """Reuse one bounded, credential-free ISO timestamp or replace it safely."""
+
+    if (
+        type(value) is str
+        and 1 <= len(value) <= 64
+        and "\x00" not in value
+        and not contains_credential_material(value)
+    ):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (OverflowError, ValueError):
+            pass
+        else:
+            if parsed.tzinfo is not None:
+                return value
+    return utcnow_iso()
+
+
+def _checkpoint_diagnostic_text(value: Any, *, default: str) -> str:
+    if type(value) is not str or not value:
+        return default
+    return bounded_diagnostic(value)
+
+
+def _safe_connection_id(value: Any) -> TypeGuard[str]:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 256
+        and value == value.strip()
+        and "\x00" not in value
+        and not contains_credential_material(value)
+    )
 
 
 def _update(attempt: int, **fields: Any) -> JsonDict:
@@ -259,30 +564,78 @@ def _update(attempt: int, **fields: Any) -> JsonDict:
 
 
 def _thread_id(config: RunnableConfig | None) -> str:
-    configurable = dict((config or {}).get("configurable") or {})
-    thread_id = str(configurable.get("thread_id") or "").strip()
-    if not thread_id:
+    if config is not None and type(config) is not dict:
+        raise ValueError("execution phase configuration is invalid")
+    configurable = (config if config is not None else {}).get("configurable")
+    if configurable is None:
+        configurable = {}
+    if type(configurable) is not dict:
+        raise ValueError("execution phase configuration is invalid")
+    thread_id = configurable.get("thread_id")
+    if (
+        type(thread_id) is not str
+        or not thread_id
+        or thread_id != thread_id.strip()
+        or len(thread_id) > 255
+        or "\x00" in thread_id
+        or contains_credential_material(thread_id)
+    ):
         raise ValueError(
-            "execution phase requires a durable thread_id; stateless execution is not allowed"
+            "execution phase requires a safe durable thread_id; stateless execution is not allowed"
         )
     return thread_id
 
 
-def _engine_options(entry: JsonDict) -> JsonDict:
-    return dict(entry.get("engine_options") or {})
+def _engine_options(entry: JsonDict, engine: str) -> JsonDict:
+    options = entry.get("engine_options")
+    if options is None:
+        options = {}
+    if (
+        type(options) is not dict
+        or len(options) > 16
+        or any(type(key) is not str or not 1 <= len(key) <= 64 or "\x00" in key for key in options)
+    ):
+        raise ValueError("checkpointed engine options are invalid")
+    for value in options.values():
+        if value is None or type(value) is bool:
+            continue
+        if type(value) is int and value.bit_length() <= 128:
+            continue
+        if type(value) is float and math.isfinite(value):
+            continue
+        if type(value) is str and len(value) <= 2_048 and "\x00" not in value:
+            continue
+        raise ValueError("checkpointed engine options are invalid")
+    if contains_credential_material(options, max_nodes=64, max_total_chars=32_768):
+        raise ValueError("checkpointed engine options contain credential material")
+    normalized = dict(options)
+    _validate_engine_options(engine, normalized)
+    return normalized
 
 
 def _handle_from(state: PipelineState, entry: JsonDict) -> EngineHandle:
-    raw = state.get("engine_handle") or entry.get("engine_handle")
-    if not raw:
+    top_level_raw = state.get("engine_handle")
+    entry_raw = entry.get("engine_handle")
+    if top_level_raw is None and entry_raw is None:
         raise ValueError(
             "execution phase: engine_handle missing from state (engine_start must run first)"
         )
-    return EngineHandle.model_validate(raw)
+    top_level = _validated_engine_handle(top_level_raw) if top_level_raw is not None else None
+    nested = _validated_engine_handle(entry_raw) if entry_raw is not None else None
+    if top_level is not None and nested is not None and top_level != nested:
+        # Both channels are written in the same execution superstep. A mismatch
+        # can only be a malformed/poisoned checkpoint; preferring either side
+        # could redirect poll/abort/collection to another provider-owned run.
+        raise ValueError("checkpointed execution handles are inconsistent")
+    if nested is not None:
+        return nested
+    if top_level is None:  # pragma: no cover - guarded by the missing check above
+        raise ValueError("checkpointed execution handle is missing")
+    return top_level
 
 
 def _elapsed_s(started_at_iso: str | None) -> float | None:
-    if not started_at_iso:
+    if type(started_at_iso) is not str or not started_at_iso:
         return None
     try:
         started = datetime.fromisoformat(started_at_iso)
@@ -298,7 +651,10 @@ def _connection_reservation_affinity(
 ) -> tuple[str | None, datetime | None]:
     """Revalidate the checkpointed execution affinity before provider I/O."""
 
-    if entry.get("engine_connection_affinity_staged") is not True:
+    affinity_staged = entry.get("engine_connection_affinity_staged")
+    if affinity_staged is not None and type(affinity_staged) is not bool:
+        raise RuntimeError("checkpointed execution affinity flag is invalid")
+    if affinity_staged is not True:
         if get_settings().is_locked_down:
             # A connection id alone is not a durable provider binding: operators
             # can edit that row to point at another endpoint while an old run is
@@ -311,20 +667,38 @@ def _connection_reservation_affinity(
         # the terminal-state CAS/lease; omitting affinity columns preserves it.
         return None, None
     connection_id = entry.get("engine_connection_id")
+    if connection_id is not None and not _safe_connection_id(connection_id):
+        raise RuntimeError("checkpointed execution connection id is invalid")
     if connection_id != handle.connection_id:
         raise RuntimeError("checkpointed execution handle does not match its connection affinity")
-    persisted = entry.get("engine_connection_persisted") is True
+    raw_persisted = entry.get("engine_connection_persisted")
+    if raw_persisted is not None and type(raw_persisted) is not bool:
+        raise RuntimeError("checkpointed execution persistence flag is invalid")
+    persisted = raw_persisted is True
+    if get_settings().is_locked_down and not persisted:
+        # Static/unversioned providers are a development compatibility seam. A
+        # locked deployment must be able to fence an in-place connection edit.
+        raise EngineConnectionAffinityMissingError
     raw_version = entry.get("engine_connection_version")
     if raw_version is None:
         if persisted:
             raise RuntimeError("persisted execution affinity has no checkpointed version")
         return handle.connection_id, None
-    if not persisted or not isinstance(raw_version, str):
+    if (
+        not persisted
+        or type(raw_version) is not str
+        or not 1 <= len(raw_version) <= 64
+        or "\x00" in raw_version
+        or contains_credential_material(raw_version)
+    ):
         raise RuntimeError("checkpointed execution connection version is inconsistent")
+    version: datetime | None = None
     try:
         version = datetime.fromisoformat(raw_version)
-    except ValueError as exc:
-        raise RuntimeError("checkpointed execution connection version is malformed") from exc
+    except (OverflowError, ValueError):
+        pass
+    if version is None:
+        raise RuntimeError("checkpointed execution connection version is malformed")
     if version.tzinfo is None:
         raise RuntimeError("checkpointed execution connection version has no timezone")
     return handle.connection_id, version
@@ -333,18 +707,37 @@ def _connection_reservation_affinity(
 def _artifact_reservation_affinity(entry: JsonDict, connection_id: str) -> datetime | None:
     """Return the checkpointed artifact-store runtime generation."""
 
-    persisted = entry.get("artifact_store_connection_persisted") is True
+    if not _safe_connection_id(connection_id):
+        raise RuntimeError("checkpointed artifact-store connection id is invalid")
+
+    raw_persisted = entry.get("artifact_store_connection_persisted")
+    if raw_persisted is not None and type(raw_persisted) is not bool:
+        raise RuntimeError("checkpointed artifact-store persistence flag is invalid")
+    persisted = raw_persisted is True
+    if get_settings().is_locked_down and not persisted:
+        raise RuntimeError(
+            "checkpointed artifact-store affinity has no durable connection generation"
+        )
     raw_version = entry.get("artifact_store_connection_version")
     if raw_version is None:
         if persisted:
             raise RuntimeError("persisted artifact-store affinity has no checkpointed version")
         return None
-    if not persisted or not isinstance(raw_version, str):
+    if (
+        not persisted
+        or type(raw_version) is not str
+        or not 1 <= len(raw_version) <= 64
+        or "\x00" in raw_version
+        or contains_credential_material(raw_version)
+    ):
         raise RuntimeError("checkpointed artifact-store connection version is inconsistent")
+    version: datetime | None = None
     try:
         version = datetime.fromisoformat(raw_version)
-    except ValueError as exc:
-        raise RuntimeError("checkpointed artifact-store connection version is malformed") from exc
+    except (OverflowError, ValueError):
+        pass
+    if version is None:
+        raise RuntimeError("checkpointed artifact-store connection version is malformed")
     if version.tzinfo is None:
         raise RuntimeError("checkpointed artifact-store connection version has no timezone")
     if not connection_id:
@@ -352,38 +745,284 @@ def _artifact_reservation_affinity(entry: JsonDict, connection_id: str) -> datet
     return version
 
 
-def _model_payload(value: Any) -> Any:
-    dump = getattr(value, "model_dump", None)
-    return dump(mode="python") if callable(dump) else value
+def _exact_provider_payload(
+    value: Any,
+    *,
+    model_type: type[Any],
+    allowed: frozenset[str],
+    required: frozenset[str],
+    label: str,
+) -> JsonDict:
+    """Read one tiny provider schema without invoking serializers or bulk copies."""
+
+    payload: JsonDict | None = None
+    try:
+        if type(value) is model_type:
+            state_descriptor = type.__getattribute__(BaseModel, "__dict__")["__dict__"]
+            extras_descriptor = type.__getattribute__(BaseModel, "__dict__")["__pydantic_extra__"]
+            if (
+                type(state_descriptor) is not GetSetDescriptorType
+                or type(extras_descriptor) is not MemberDescriptorType
+            ):
+                raise TypeError("provider model slots are unavailable")
+            source = state_descriptor.__get__(value, model_type)
+            extras = extras_descriptor.__get__(value, model_type)
+            if type(source) is not dict or (
+                extras is not None and (type(extras) is not dict or len(extras) > 0)
+            ):
+                raise ValueError("provider model has extras")
+        elif type(value) is dict:
+            source = value
+        else:
+            raise TypeError("provider value is not an object")
+        iterator = iter(source)
+        keys: list[str] = []
+        for _ in range(len(allowed) + 1):
+            try:
+                key = next(iterator)
+            except StopIteration:
+                break
+            if type(key) is not str or key not in allowed or key in keys:
+                raise ValueError("provider fields are invalid")
+            keys.append(key)
+        if len(keys) > len(allowed) or not required.issubset(keys):
+            raise ValueError("provider fields are invalid")
+        payload = {key: source[key] for key in keys}
+    except Exception:
+        pass
+    if payload is None:
+        raise ValueError(f"{label} is invalid")
+    return payload
+
+
+def _provider_text(value: Any, *, max_chars: int, optional: bool = False) -> bool:
+    return (optional and value is None) or (
+        type(value) is str and len(value) <= max_chars and "\x00" not in value
+    )
+
+
+def _provider_number(value: Any) -> bool:
+    if type(value) is int:
+        return value.bit_length() <= 128
+    return type(value) is float and math.isfinite(value)
+
+
+def _bounded_provider_mapping(
+    value: Any,
+    *,
+    max_items: int,
+    max_key_chars: int,
+    label: str,
+) -> JsonDict:
+    """Copy at most a fixed dynamic mapping window after bounded key inspection."""
+
+    payload: JsonDict | None = None
+    try:
+        if type(value) is not dict:
+            raise TypeError("provider field is not a mapping")
+        iterator = iter(value)
+        keys: list[str] = []
+        for _ in range(max_items + 1):
+            try:
+                key = next(iterator)
+            except StopIteration:
+                break
+            if (
+                type(key) is not str
+                or not key
+                or len(key) > max_key_chars
+                or "\x00" in key
+                or key in keys
+            ):
+                raise ValueError("provider mapping key is invalid")
+            keys.append(key)
+        if len(keys) > max_items:
+            raise ValueError("provider mapping is oversized")
+        payload = {key: value[key] for key in keys}
+    except Exception:
+        pass
+    if payload is None:
+        raise ValueError(f"{label} is invalid")
+    return payload
 
 
 def _validated_engine_status(value: Any) -> EngineRunStatus:
     """Revalidate even model instances returned by provider adapters."""
 
-    return EngineRunStatus.model_validate(_model_payload(value))
+    payload = _exact_provider_payload(
+        value,
+        model_type=EngineRunStatus,
+        allowed=frozenset({"phase", "progress_pct", "live_stats", "message"}),
+        required=frozenset({"phase"}),
+        label="engine status",
+    )
+    phase = payload.get("phase")
+    progress = payload.get("progress_pct", 0.0)
+    message = payload.get("message")
+    if (
+        not (type(phase) is EngineRunPhase or _provider_text(phase, max_chars=32))
+        or not _provider_number(progress)
+        or not _provider_text(message, max_chars=4_096, optional=True)
+    ):
+        raise ValueError("engine status is invalid") from None
+    live_stats = payload.get("live_stats")
+    if live_stats is not None:
+        stats = _exact_provider_payload(
+            live_stats,
+            model_type=LiveStats,
+            allowed=frozenset({"vusers", "tps", "error_rate", "p95_ms"}),
+            required=frozenset(),
+            label="engine status",
+        )
+        if any(not _provider_number(metric) for metric in stats.values()):
+            raise ValueError("engine status is invalid") from None
+        payload["live_stats"] = stats
+    if contains_credential_material(payload, max_nodes=16, max_total_chars=8_192):
+        raise ValueError("engine status must not contain credential material") from None
+    validated: EngineRunStatus | None = None
+    try:
+        validated = EngineRunStatus.model_validate(payload)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("engine status is invalid")
+    return validated
 
 
 def _validated_engine_summary(
     value: Any, *, expected_engine: str | None = None
 ) -> TestResultSummary:
-    summary = TestResultSummary.model_validate(_model_payload(value))
+    payload = _exact_provider_payload(
+        value,
+        model_type=TestResultSummary,
+        allowed=frozenset({"engine", "passed", "kpis", "sla_breaches", "notes"}),
+        required=frozenset({"engine", "passed"}),
+        label="engine summary",
+    )
+    if (
+        not _provider_text(payload.get("engine"), max_chars=64)
+        or type(payload.get("passed")) is not bool
+        or not _provider_text(payload.get("notes"), max_chars=20_000, optional=True)
+    ):
+        raise ValueError("engine summary is invalid") from None
+    kpis = _bounded_provider_mapping(
+        payload.get("kpis", {}),
+        max_items=64,
+        max_key_chars=64,
+        label="engine summary",
+    )
+    if any(not _provider_number(metric) for metric in kpis.values()):
+        raise ValueError("engine summary is invalid") from None
+    breaches = payload.get("sla_breaches", [])
+    if (
+        type(breaches) is not list
+        or len(breaches) > 128
+        or any(not _provider_text(breach, max_chars=2_048) for breach in breaches)
+    ):
+        raise ValueError("engine summary is invalid") from None
+    payload["kpis"] = kpis
+    payload["sla_breaches"] = list(breaches)
+    if contains_credential_material(payload, max_nodes=256, max_total_chars=300_000):
+        raise ValueError("engine summary must not contain credential material") from None
+    summary: TestResultSummary | None = None
+    try:
+        summary = TestResultSummary.model_validate(payload)
+    except Exception:
+        pass
+    if summary is None:
+        raise ValueError("engine summary is invalid")
     if expected_engine is not None and summary.engine != expected_engine:
         raise ValueError("engine summary provider does not match the checkpointed engine")
     return summary
 
 
-def _validated_engine_handle(value: Any) -> EngineHandle:
-    return EngineHandle.model_validate(_model_payload(value))
+def _validated_engine_handle(
+    value: Any, *, allow_credential_material: bool = False
+) -> EngineHandle:
+    payload = _exact_provider_payload(
+        value,
+        model_type=EngineHandle,
+        allowed=frozenset(
+            {"engine", "connection_id", "external_run_id", "idempotency_key", "extras"}
+        ),
+        required=frozenset({"engine"}),
+        label="engine handle",
+    )
+    if (
+        not _provider_text(payload.get("engine"), max_chars=64)
+        or not _provider_text(payload.get("connection_id"), max_chars=256, optional=True)
+        or not _provider_text(payload.get("external_run_id"), max_chars=255, optional=True)
+        or not _provider_text(payload.get("idempotency_key", ""), max_chars=256)
+    ):
+        raise ValueError("engine handle is invalid") from None
+    extras = _bounded_provider_mapping(
+        payload.get("extras", {}),
+        max_items=32,
+        max_key_chars=64,
+        label="engine handle",
+    )
+    if any(not _provider_text(item, max_chars=2_048) for item in extras.values()):
+        raise ValueError("engine handle is invalid") from None
+    payload["extras"] = extras
+    has_credentials = contains_credential_material(payload, max_nodes=64, max_total_chars=32_768)
+    if has_credentials and not allow_credential_material:
+        raise ValueError("engine handle must not contain credential material") from None
+    if has_credentials:
+        # Provision already created a remote side effect. Retain this bounded,
+        # structurally checked identity only in memory so compensation can target
+        # it; it must never cross a checkpoint/projection boundary.
+        return EngineHandle.model_construct(**payload)
+    validated: EngineHandle | None = None
+    try:
+        validated = EngineHandle.model_validate(payload)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("engine handle is invalid")
+    return validated
 
 
 def _validated_engine_report(value: Any) -> ValidationReport:
-    return ValidationReport.model_validate(_model_payload(value))
+    payload = _exact_provider_payload(
+        value,
+        model_type=ValidationReport,
+        allowed=frozenset({"ok", "issues"}),
+        required=frozenset(),
+        label="engine validation report",
+    )
+    issues = payload.get("issues", [])
+    if (
+        type(payload.get("ok", True)) is not bool
+        or type(issues) is not list
+        or len(issues) > 128
+        or any(not _provider_text(issue, max_chars=2_048) for issue in issues)
+    ):
+        raise ValueError("engine validation report is invalid") from None
+    payload["issues"] = list(issues)
+    if contains_credential_material(payload, max_nodes=160, max_total_chars=300_000):
+        raise ValueError("engine validation report must not contain credential material") from None
+    validated: ValidationReport | None = None
+    try:
+        validated = ValidationReport.model_validate(payload)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("engine validation report is invalid")
+    return validated
 
 
-def _validated_started_handle(value: Any, trusted: EngineHandle) -> EngineHandle:
+def _validated_started_handle(
+    value: Any,
+    trusted: EngineHandle,
+    *,
+    allow_credential_material: bool = False,
+) -> EngineHandle:
     """Accept bounded provider-owned start output without permitting affinity drift."""
 
-    candidate = _validated_engine_handle(value)
+    candidate = _validated_engine_handle(
+        value,
+        allow_credential_material=allow_credential_material,
+    )
     return candidate.model_copy(
         update={
             "engine": trusted.engine,
@@ -416,25 +1055,33 @@ async def _resolve_engine(
     those of the stored connection, so a later kill switch can resolve it.
     """
     resolver = _make_resolver()
-    resolve_with_metadata = getattr(resolver, "resolve_with_metadata", None)
-    if resolve_with_metadata is not None:
-        return await resolve_with_metadata(
+    try:
+        resolve_with_metadata = getattr(resolver, "resolve_with_metadata", None)
+        if resolve_with_metadata is not None:
+            resolved = await resolve_with_metadata(
+                PortKind.EXECUTION_ENGINE,
+                connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
+                project_id=cfg.project_id,
+                expected_provider=cfg.engine,
+                options_overlay=engine_options,
+            )
+            return _own_resolution(resolved, resolver)
+        # Compatibility seam for narrow test resolvers and downstream extensions that
+        # have not yet adopted structured resolution metadata.
+        adapter, _resolved_connection_id = await resolver.resolve_with_connection_id(
             PortKind.EXECUTION_ENGINE,
             connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
             project_id=cfg.project_id,
             expected_provider=cfg.engine,
             options_overlay=engine_options,
         )
-    # Compatibility seam for narrow test resolvers and downstream extensions that
-    # have not yet adopted structured resolution metadata.
-    adapter, _resolved_connection_id = await resolver.resolve_with_connection_id(
-        PortKind.EXECUTION_ENGINE,
-        connection_id=connection_id or cfg.connections.get(PortKind.EXECUTION_ENGINE.value),
-        project_id=cfg.project_id,
-        expected_provider=cfg.engine,
-        options_overlay=engine_options,
-    )
-    return adapter
+        return _own_resolution(adapter, resolver)
+    except BaseException:
+        # Adapter construction can already have resolved a nested SECRETS
+        # generation before a later provider build fails. The resolver remains
+        # the only owner capable of retiring that generation.
+        await _close_owned_resolution(None, resolver)
+        raise
 
 
 async def _resolve_engine_for_runtime_io(
@@ -461,12 +1108,17 @@ async def _resolve_engine_for_runtime_io(
     adapter = resolved.adapter if isinstance(resolved, ResolvedAdapter) else resolved
     try:
         expected_connection_id = connection_id or handle.connection_id
-        staged = entry.get("engine_connection_affinity_staged") is True
-        expected_persisted = entry.get("engine_connection_persisted") is True
+        if expected_connection_id is not None and not _safe_connection_id(expected_connection_id):
+            raise RuntimeError("checkpointed execution connection id is invalid")
+        staged = _checkpoint_flag(entry, "engine_connection_affinity_staged")
+        expected_persisted = _checkpoint_flag(entry, "engine_connection_persisted")
         if isinstance(resolved, ResolvedAdapter):
+            resolved_connection_id = resolved.connection_id
+            if not _safe_connection_id(resolved_connection_id):
+                raise RuntimeError("execution resolver returned an invalid connection id")
             if (
                 expected_connection_id is not None
-                and resolved.connection_id != expected_connection_id
+                and resolved_connection_id != expected_connection_id
             ):
                 raise RuntimeError(
                     "execution resolver did not honor checkpointed connection affinity"
@@ -484,6 +1136,8 @@ async def _resolve_engine_for_runtime_io(
             # for a persisted production generation.
             actual_connection_id = getattr(adapter, "_apex_resolved_connection_id", None)
             actual_connection_version = getattr(adapter, "_apex_resolved_connection_version", None)
+            if actual_connection_id is not None and not _safe_connection_id(actual_connection_id):
+                raise RuntimeError("execution resolver returned an invalid connection id")
             if (
                 actual_connection_id is not None
                 and expected_connection_id is not None
@@ -505,9 +1159,9 @@ async def _resolve_engine_for_runtime_io(
                 and (actual_connection_id is None or actual_connection_version is None)
             ):
                 raise RuntimeError("execution resolver returned no connection-generation metadata")
-        return adapter
+        return resolved
     except BaseException:
-        await _close_resource(adapter)
+        await _close_resources_definitively(resolved)
         raise
 
 
@@ -523,11 +1177,17 @@ def _config_for_handle(cfg: PipelineConfigurable, handle: EngineHandle) -> Pipel
 async def _resolve_artifact_store(
     cfg: PipelineConfigurable, *, connection_id: str | None = None
 ) -> ResolvedAdapter:
-    return await _make_resolver().resolve_with_metadata(
-        PortKind.ARTIFACT_STORE,
-        connection_id=connection_id or cfg.connections.get(PortKind.ARTIFACT_STORE.value),
-        project_id=cfg.project_id,
-    )
+    resolver = _make_resolver()
+    try:
+        resolved = await resolver.resolve_with_metadata(
+            PortKind.ARTIFACT_STORE,
+            connection_id=connection_id or cfg.connections.get(PortKind.ARTIFACT_STORE.value),
+            project_id=cfg.project_id,
+        )
+        return _own_resolution(resolved, resolver)
+    except BaseException:
+        await _close_owned_resolution(None, resolver)
+        raise
 
 
 async def _resolve_catalog_target(cfg: PipelineConfigurable) -> str | None:
@@ -586,6 +1246,30 @@ async def _close_resource(resource: Any) -> None:
         logger.warning("execution.adapter_close_failed", error=bounded_diagnostic(exc))
 
 
+async def _close_resources_definitively(*resources: Any) -> None:
+    """Retire every throwaway resource before propagating repeated cancellation."""
+
+    tasks = [
+        asyncio.create_task(_close_resource(resource), name="execution-adapter-close")
+        for resource in resources
+        if resource is not None
+    ]
+    cancelled = False
+    error: BaseException | None = None
+    for task in tasks:
+        try:
+            await _await_cleanup_task_definitively(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException as exc:
+            if error is None:
+                error = exc
+    if error is not None:
+        raise error
+    if cancelled:
+        raise asyncio.CancelledError from None
+
+
 async def _teardown_after_confirmed_abort(adapter: Any, handle: EngineHandle) -> None:
     """Release provider resources before the durable lease may become terminal.
 
@@ -595,6 +1279,34 @@ async def _teardown_after_confirmed_abort(adapter: Any, handle: EngineHandle) ->
     """
 
     await adapter.teardown(handle)
+
+
+async def _compensate_unsafe_provision(adapter: Any, handle: EngineHandle) -> None:
+    """Abort an unsafe post-create/start handle without ever making it durable.
+
+    The handle is structurally valid but contains credential-shaped executable
+    identity. It may be used only in memory to compensate the just-created run.
+    Every error is replaced with a fixed message so exception chains cannot retain
+    the provider value. A failed confirmation leaves the PROVISIONING reservation
+    retryable with the same idempotency key.
+    """
+
+    failed = False
+    try:
+        await adapter.abort(handle, reason="provider returned an unsafe durable handle")
+        try:
+            status = _validated_engine_status(
+                await adapter.get_status(handle.model_copy(deep=True))
+            )
+        except EngineProviderRunNotFoundError:
+            status = None
+        if status is not None and status.phase not in TERMINAL_ENGINE_PHASES:
+            raise RuntimeError("compensating abort did not reach a terminal state")
+        await adapter.teardown(handle)
+    except Exception:
+        failed = True
+    if failed:
+        raise RuntimeError("unsafe engine handle compensation could not be confirmed")
 
 
 async def _confirm_abort(
@@ -671,7 +1383,7 @@ def _validated_engine_artifacts(
 ) -> list[JsonDict]:
     """Validate adapter refs before granting them durable ownership/state visibility."""
 
-    if not isinstance(raw_refs, list):
+    if type(raw_refs) is not list:
         raise ValueError("engine artifact refs must be a list")
     if len(raw_refs) > MAX_ENGINE_ARTIFACT_REFS:
         raise ValueError(
@@ -682,16 +1394,75 @@ def _validated_engine_artifacts(
     validated: list[JsonDict] = []
     seen_keys: set[str] = set()
     for index, raw_ref in enumerate(raw_refs):
-        if not isinstance(raw_ref, dict):
-            raise ValueError(f"engine artifact ref {index} must be an object")
-        ref = ArtifactRef.model_validate(raw_ref)
+        payload = None
+        try:
+            payload = _exact_provider_payload(
+                raw_ref,
+                model_type=ArtifactRef,
+                allowed=frozenset(
+                    {
+                        "id",
+                        "kind",
+                        "name",
+                        "uri",
+                        "key",
+                        "artifact_connection_id",
+                        "media_type",
+                        "summary",
+                        "created_at",
+                    }
+                ),
+                required=frozenset({"kind", "name", "uri"}),
+                label="engine artifact ref",
+            )
+        except Exception:
+            pass
+        if payload is None:
+            raise ValueError(f"engine artifact ref {index} is invalid")
+        # Provider adapters never own durable IDs, store affinity, or timestamps.
+        # Ignore those fields even on manufactured Pydantic instances and stage
+        # only the bounded object identity/content that the server can revalidate.
+        payload = {
+            field: payload[field]
+            for field in ("kind", "name", "uri", "key", "media_type", "summary")
+            if field in payload
+        }
+        limits = {
+            "kind": (64, False),
+            "name": (512, False),
+            "uri": (4_096, False),
+            "key": (1_024, True),
+            "media_type": (255, False),
+            "summary": (4_000, True),
+        }
+        if any(
+            not _provider_text(
+                payload.get(field),
+                max_chars=max_chars,
+                optional=optional,
+            )
+            for field, (max_chars, optional) in limits.items()
+            if field in payload
+        ):
+            raise ValueError(f"engine artifact ref {index} is invalid") from None
+        if contains_credential_material(payload, max_nodes=16, max_total_chars=16_384):
+            raise ValueError(f"engine artifact ref {index} must not contain credential material")
+        ref: ArtifactRef | None = None
+        try:
+            ref = ArtifactRef.model_validate(payload)
+        except Exception:
+            pass
+        if ref is None:
+            raise ValueError(f"engine artifact ref {index} is invalid")
         if ref.kind not in _ENGINE_ARTIFACT_KINDS:
-            raise ValueError(f"engine artifact ref {index} has unsupported kind {ref.kind!r}")
+            raise ValueError(f"engine artifact ref {index} has an unsupported kind")
         key = ref.key
         if not key or not key.startswith(prefix) or key == prefix:
             raise ValueError(f"engine artifact ref {index} key must be beneath {namespace!r}")
+        if ref.uri != canonical_artifact_uri(key):
+            raise ValueError(f"engine artifact ref {index} URI does not match its canonical object")
         if key in seen_keys:
-            raise ValueError(f"engine artifact ref {index} duplicates key {key!r}")
+            raise ValueError(f"engine artifact ref {index} duplicates an artifact key")
         if written is not None:
             stored = written.get(key)
             if stored is None:
@@ -700,19 +1471,112 @@ def _validated_engine_artifacts(
                 )
             stored_artifact, content_type = stored
             if ref.uri != stored_artifact.uri:
-                raise ValueError(
-                    f"engine artifact ref {index} URI does not match the stored object"
-                )
+                raise ValueError(f"engine artifact ref {index} URI does not match its object")
             if ref.media_type != content_type:
                 raise ValueError(
-                    f"engine artifact ref {index} media type does not match the stored object"
+                    f"engine artifact ref {index} media type does not match its object"
                 )
         seen_keys.add(key)
-        validated.append(ref.model_dump(mode="json"))
+        normalized = ref.model_dump(mode="json")
+        validated.append(
+            {
+                field: normalized[field]
+                for field in ("kind", "name", "uri", "key", "media_type", "summary")
+            }
+        )
     return validated
 
 
 # ── nodes ──────────────────────────────────────────────────────────────────────
+
+
+def _validated_checkpoint_spec(value: Any) -> LoadTestSpec:
+    """Validate a replayed spec without invoking coercion or serializer hooks."""
+
+    def finite_number(number: Any) -> bool:
+        if type(number) is int:
+            return number.bit_length() <= 128
+        return type(number) is float and math.isfinite(number)
+
+    allowed = {
+        "idempotency_key",
+        "title",
+        "script_refs",
+        "vusers",
+        "ramp_s",
+        "duration_s",
+        "slas",
+        "target_environment",
+    }
+    if (
+        type(value) is not dict
+        or len(value) > len(allowed)
+        or any(type(key) is not str or key not in allowed for key in value)
+    ):
+        raise ValueError("checkpointed load-test spec is invalid")
+    title = value.get("title")
+    idempotency_key = value.get("idempotency_key")
+    script_refs = value.get("script_refs", [])
+    vusers = value.get("vusers", 10)
+    ramp_s = value.get("ramp_s", 5.0)
+    duration_s = value.get("duration_s", 2.0)
+    slas = value.get("slas", {})
+    target_environment = value.get("target_environment")
+    if (
+        type(title) is not str
+        or not 1 <= len(title) <= 1_000
+        or "\x00" in title
+        or type(idempotency_key) is not str
+        or not 1 <= len(idempotency_key) <= 256
+        or "\x00" in idempotency_key
+        or type(script_refs) is not list
+        or len(script_refs) > 100
+        or any(
+            type(ref) is not str or not 1 <= len(ref) <= 2_048 or not ref.strip() or "\x00" in ref
+            for ref in script_refs
+        )
+        or type(vusers) is not int
+        or not 1 <= vusers <= 10_000
+        or not finite_number(ramp_s)
+        or not 0 <= ramp_s <= 86_400
+        or not finite_number(duration_s)
+        or not 0 < duration_s <= 86_400
+        or type(slas) is not dict
+        or len(slas) > 32
+        or (
+            target_environment is not None
+            and (
+                type(target_environment) is not str
+                or len(target_environment) > 2_048
+                or "\x00" in target_environment
+            )
+        )
+    ):
+        raise ValueError("checkpointed load-test spec is invalid")
+    for name, threshold in slas.items():
+        if (
+            type(name) is not str
+            or not 1 <= len(name) <= 64
+            or not name.strip()
+            or "\x00" in name
+            or not finite_number(threshold)
+            or not 0 <= threshold <= 1_000_000_000_000
+        ):
+            raise ValueError("checkpointed load-test spec is invalid")
+    if contains_credential_material(
+        value,
+        max_nodes=256,
+        max_total_chars=300_000,
+    ):
+        raise ValueError("checkpointed load-test spec contains credential material")
+    validated: LoadTestSpec | None = None
+    try:
+        validated = LoadTestSpec.model_validate(value)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("checkpointed load-test spec is invalid")
+    return validated
 
 
 def _build_spec(
@@ -725,18 +1589,34 @@ def _build_spec(
 ) -> tuple[LoadTestSpec, JsonDict]:
     """Spec for this run: script_scenario output (or a default for standalone
     execution runs) + per-run "load_test" overrides + the authoritative key."""
-    upstream = (state.get("phase_results") or {}).get(Phase.SCRIPT_SCENARIO.value) or {}
+    results = state.get("phase_results")
+    if results is None:
+        results = {}
+    if type(results) is not dict:
+        raise ValueError("checkpointed phase results are invalid")
+    upstream = results.get(Phase.SCRIPT_SCENARIO.value)
+    if upstream is None:
+        upstream = {}
+    if type(upstream) is not dict:
+        raise ValueError("checkpointed script-scenario phase is invalid")
     raw = upstream.get("load_test_spec")
     base: JsonDict
-    if isinstance(raw, dict) and raw:
+    if raw is not None and type(raw) is not dict:
+        raise ValueError("checkpointed load-test spec is invalid")
+    if type(raw) is dict and len(raw) > 0:
         base = dict(raw)
     else:
+        title = state.get("title")
+        if title is None:
+            title = "untitled run"
+        if type(title) is not str or len(title) > 500 or "\x00" in title:
+            raise ValueError("checkpointed pipeline title is invalid")
         base = {
-            "title": f"{state.get('title') or 'untitled run'} load test",
+            "title": f"{title} load test",
             "vusers": 10,
             "ramp_s": 1.0,
         }
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     overrides = cfg.load_test
     spec_overrides = {k: v for k, v in overrides.items() if k in _SPEC_OVERRIDE_FIELDS}
     # `script_refs` is excluded from public overrides, but old trusted assistant
@@ -751,13 +1631,13 @@ def _build_spec(
     # The script-scenario phase is model-authored input. Provider workload IDs are
     # security-sensitive because their stored definitions may target other hosts.
     base.pop("script_refs", None)
-    if isinstance(legacy_script_refs, list):
+    if type(legacy_script_refs) is list:
         base["script_refs"] = legacy_script_refs
     # Ignore any caller-seeded upstream target; only the auth-resolved immutable
     # run target may reach an execution adapter.
     base["target_environment"] = target_environment
     base["idempotency_key"] = execution_idempotency_key(_thread_id(config), attempt)
-    spec = LoadTestSpec.model_validate(base)
+    spec = _validated_checkpoint_spec(base)
     if engine == "apex_load" and any(ref.lstrip().startswith("{") for ref in spec.script_refs):
         raise ValueError(
             "inline Apex Load script_refs are not allowed for pipeline runs; "
@@ -783,7 +1663,7 @@ def engine_reserve(state: PipelineState, config: RunnableConfig) -> Command[str]
     The superstep checkpoint commits this update before engine_provision runs, so
     any later crash/re-execution provisions with the same idempotency key.
     """
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     attempt = _attempt(_entry(state))
     try:
         target_environment = asyncio.run(_resolve_catalog_target(cfg))
@@ -825,15 +1705,21 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
     reservation and retry the same idempotency key instead of leaking a remotely
     created resource behind a terminal graph checkpoint.
     """
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     thread_id = _thread_id(config)
-    spec = LoadTestSpec.model_validate(entry.get("load_test_spec") or {})
-    engine_options = _engine_options(entry)
+    spec = _validated_checkpoint_spec(entry.get("load_test_spec"))
+    engine_options = _engine_options(entry, cfg.engine)
 
-    def _retry_provision(exc: Exception) -> Command[str]:
-        failures = int(entry.get("engine_provision_failures") or 0) + 1
+    def _retry_provision(exc: Exception, **checkpoint_fields: Any) -> Command[str]:
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_provision_failures"),
+                label="engine provision failure count",
+            )
+            + 1
+        )
         detail = bounded_diagnostic(exc, max_chars=2_048)
         message = bounded_diagnostic(
             f"engine provisioning failed ({failures}/{MAX_ENGINE_PROVISION_ATTEMPTS}): {detail}"
@@ -858,22 +1744,22 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
                 engine_provision_blocked=blocked,
                 engine_provision_failures=failures,
                 engine_provision_last_error=message,
+                **checkpoint_fields,
             ),
         )
 
     raw_connection_id = entry.get("engine_connection_id")
-    if raw_connection_id is not None and (
-        not isinstance(raw_connection_id, str)
-        or not raw_connection_id
-        or raw_connection_id != raw_connection_id.strip()
-        or len(raw_connection_id) > 256
-    ):
+    if raw_connection_id is not None and not _safe_connection_id(raw_connection_id):
         return _retry_provision(
-            _DefinitiveProvisionError("checkpointed execution connection id is malformed")
+            _DefinitiveProvisionError("checkpointed execution connection id is malformed"),
+            engine_connection_id=None,
+            engine_connection_version=None,
+            engine_connection_persisted=False,
+            engine_connection_affinity_staged=False,
         )
-    connection_id = raw_connection_id if isinstance(raw_connection_id, str) else None
+    connection_id = raw_connection_id if type(raw_connection_id) is str else None
 
-    if entry.get("engine_connection_affinity_staged") is not True:
+    if not _checkpoint_flag(entry, "engine_connection_affinity_staged"):
 
         async def _stage_connection_affinity() -> tuple[str, str | None, bool]:
             resolved = await _resolve_engine(
@@ -888,37 +1774,36 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
                     connection_version = resolved.connection_version
                     persisted = resolved.persisted
                 else:
-                    resolved_connection_id = (
-                        getattr(adapter, "_apex_resolved_connection_id", None)
-                        or connection_id
-                        or cfg.connections.get(PortKind.EXECUTION_ENGINE.value)
-                    )
+                    resolved_connection_id = getattr(adapter, "_apex_resolved_connection_id", None)
+                    if resolved_connection_id is None:
+                        resolved_connection_id = connection_id
+                    if resolved_connection_id is None:
+                        resolved_connection_id = cfg.connections.get(
+                            PortKind.EXECUTION_ENGINE.value
+                        )
                     connection_version = getattr(adapter, "_apex_resolved_connection_version", None)
                     persisted = connection_version is not None
-                if (
-                    not isinstance(resolved_connection_id, str)
-                    or not resolved_connection_id
-                    or resolved_connection_id != resolved_connection_id.strip()
-                    or len(resolved_connection_id) > 256
-                ):
+                if not _safe_connection_id(resolved_connection_id):
                     raise RuntimeError("resolved execution connection has no valid durable id")
                 if connection_id is not None and resolved_connection_id != connection_id:
                     raise RuntimeError(
                         "execution resolver did not honor checkpointed connection affinity"
                     )
-                if connection_version is not None and not isinstance(connection_version, datetime):
+                if connection_version is not None and type(connection_version) is not datetime:
                     raise RuntimeError("resolved execution connection has an invalid version")
                 if persisted and connection_version is None:
                     raise RuntimeError(
                         f"persisted execution connection {resolved_connection_id!r} has no version"
                     )
+                if get_settings().is_locked_down and not persisted:
+                    raise RuntimeError("locked execution requires a durable connection generation")
                 return (
                     resolved_connection_id,
                     connection_version.isoformat() if connection_version is not None else None,
                     persisted,
                 )
             finally:
-                await _close_resource(adapter)
+                await _close_resources_definitively(resolved)
 
         try:
             staged_connection_id, staged_version, staged_persisted = asyncio.run(
@@ -939,7 +1824,10 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
                 engine_connection_affinity_staged=True,
                 engine_provision_required=True,
                 engine_provision_blocked=False,
-                engine_provision_failures=int(entry.get("engine_provision_failures") or 0),
+                engine_provision_failures=_checkpoint_int(
+                    entry.get("engine_provision_failures"),
+                    label="engine provision failure count",
+                ),
             ),
         )
 
@@ -948,11 +1836,39 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
             _DefinitiveProvisionError("staged execution connection affinity is missing")
         )
     expected_version = entry.get("engine_connection_version")
-    if expected_version is not None and not isinstance(expected_version, str):
-        return _retry_provision(
-            _DefinitiveProvisionError("staged execution connection version is malformed")
+    if expected_version is not None:
+        valid_version = (
+            type(expected_version) is str
+            and 1 <= len(expected_version) <= 64
+            and "\x00" not in expected_version
+            and not contains_credential_material(expected_version)
         )
-    expected_persisted = entry.get("engine_connection_persisted") is True
+        if valid_version:
+            try:
+                parsed_version = datetime.fromisoformat(expected_version)
+            except (OverflowError, ValueError):
+                valid_version = False
+            else:
+                valid_version = parsed_version.tzinfo is not None
+        if not valid_version:
+            return _retry_provision(
+                _DefinitiveProvisionError("staged execution connection version is malformed"),
+                engine_connection_id=None,
+                engine_connection_version=None,
+                engine_connection_persisted=False,
+                engine_connection_affinity_staged=False,
+            )
+    expected_persisted = _checkpoint_flag(entry, "engine_connection_persisted")
+    if get_settings().is_locked_down and not expected_persisted:
+        return _retry_provision(
+            _DefinitiveProvisionError(
+                "locked execution affinity has no durable connection generation"
+            ),
+            engine_connection_id=None,
+            engine_connection_version=None,
+            engine_connection_persisted=False,
+            engine_connection_affinity_staged=False,
+        )
 
     async def _provision() -> tuple[list[str], EngineHandle | None, bool]:
         resolved = await _resolve_engine(
@@ -969,16 +1885,17 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
             else:
                 # Compatibility for test/during-upgrade resolvers. Production
                 # ConnectionResolver always returns structured metadata.
-                resolved_connection_id = (
-                    getattr(adapter, "_apex_resolved_connection_id", None) or connection_id
-                )
+                resolved_connection_id = getattr(adapter, "_apex_resolved_connection_id", None)
+                if resolved_connection_id is None:
+                    resolved_connection_id = connection_id
                 connection_version = getattr(adapter, "_apex_resolved_connection_version", None)
                 persisted = connection_version is not None
             actual_version = (
-                connection_version.isoformat() if isinstance(connection_version, datetime) else None
+                connection_version.isoformat() if type(connection_version) is datetime else None
             )
             if (
-                resolved_connection_id != connection_id
+                not _safe_connection_id(resolved_connection_id)
+                or resolved_connection_id != connection_id
                 or persisted is not expected_persisted
                 or actual_version != expected_version
             ):
@@ -1023,9 +1940,23 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
             report = _validated_engine_report(await adapter.validate(spec.model_copy(deep=True)))
             if not report.ok:
                 return list(report.issues), None, False
+            raw_provisioned = await adapter.provision(spec.model_copy(deep=True))
             provisioned = _validated_engine_handle(
-                await adapter.provision(spec.model_copy(deep=True))
+                raw_provisioned,
+                allow_credential_material=True,
             )
+            if contains_credential_material(provisioned.model_dump(mode="json")):
+                unsafe_handle = provisioned.model_copy(
+                    update={
+                        "engine": cfg.engine,
+                        "connection_id": connection_id,
+                        "idempotency_key": spec.idempotency_key,
+                    }
+                )
+                await _compensate_unsafe_provision(adapter, unsafe_handle)
+                raise _DefinitiveProvisionError(
+                    "execution engine returned an unsafe handle; remote run was compensated"
+                )
             # Identity/affinity fields come from the trusted resolver and the
             # checkpointed spec, never from a plugin response. Preserve only the
             # provider-issued run id/extras while preventing a handle from
@@ -1039,7 +1970,7 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
             )
             return [], handle, False
         finally:
-            await _close_resource(adapter)
+            await _close_resources_definitively(resolved)
 
     try:
         issues, handle, already_projected = asyncio.run(_provision())
@@ -1121,7 +2052,10 @@ def engine_provision_blocked(state: PipelineState, config: RunnableConfig) -> Co
 
     entry = _entry(state)
     detail = bounded_diagnostic(
-        entry.get("engine_provision_last_error") or "engine provisioning unavailable"
+        _checkpoint_diagnostic_text(
+            entry.get("engine_provision_last_error"),
+            default="engine provisioning unavailable",
+        )
     )
     interrupt(
         {
@@ -1130,6 +2064,7 @@ def engine_provision_blocked(state: PipelineState, config: RunnableConfig) -> Co
             "phase": _PHASE.value,
             "attempt": _attempt(entry),
             "thread_id": _thread_id(config),
+            "actions": ["retry"],
             "error": detail,
             "message": (
                 "Engine provisioning exhausted its retry budget. Resume to reconcile "
@@ -1170,11 +2105,11 @@ def engine_provision_resume(state: PipelineState, config: RunnableConfig) -> Com
 
 def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
     """Start a previously checkpointed handle, then checkpoint before status IO."""
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     handle = _handle_from(state, entry)
-    engine_options = _engine_options(entry)
+    engine_options = _engine_options(entry, cfg.engine)
     reservation_connection_id, connection_version = _connection_reservation_affinity(entry, handle)
     # Required pre-I/O lock: reject terminal/stale workers before provider start,
     # without overwriting a RUNNING handle whose DB commit acknowledgement was
@@ -1196,14 +2131,14 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
         update = _update(
             attempt,
             engine_handle=handle_json,
-            engine_started_at=entry.get("engine_started_at") or utcnow_iso(),
+            engine_started_at=_checkpoint_timestamp_or_now(entry.get("engine_started_at")),
         )
         update["engine_handle"] = handle_json
         return Command(goto="engine_status", update=update)
 
     trusted_handle_json = handle.model_dump(mode="json")
 
-    async def _start() -> tuple[str | None, JsonDict]:
+    async def _start() -> tuple[str | None, JsonDict, bool]:
         adapter = await _resolve_engine_for_runtime_io(
             cfg,
             engine_options,
@@ -1226,18 +2161,76 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
                 detail = bounded_diagnostic(
                     f"provider returned an invalid start handle: {mutation_error}"
                 )
+                try:
+                    unsafe_started = _validated_started_handle(
+                        provider_handle,
+                        handle,
+                        allow_credential_material=True,
+                    )
+                except Exception:
+                    unsafe_started = None
+                if unsafe_started is not None and contains_credential_material(
+                    unsafe_started.model_dump(mode="json")
+                ):
+                    try:
+                        await _compensate_unsafe_provision(adapter, unsafe_started)
+                    except Exception:
+                        compensation_detail = (
+                            "unsafe start handle compensation could not be confirmed"
+                        )
+                    else:
+                        compensation_detail = "unsafe start handle was compensated"
+                        if start_error is not None:
+                            detail = bounded_diagnostic(f"{start_error}; {detail}")
+                        return (
+                            bounded_diagnostic(f"{detail}; {compensation_detail}"),
+                            trusted_handle_json,
+                            True,
+                        )
+                    detail = bounded_diagnostic(f"{detail}; {compensation_detail}")
                 if start_error is not None:
                     detail = bounded_diagnostic(f"{start_error}; {detail}")
-                return detail, trusted_handle_json
-            return start_error, started.model_dump(mode="json")
+                return detail, trusted_handle_json, False
+            return start_error, started.model_dump(mode="json"), False
         finally:
-            await _close_resource(adapter)
+            await _close_resources_definitively(adapter)
 
     try:
-        error, handle_json = asyncio.run(_start())
+        error, handle_json, unsafe_start_compensated = asyncio.run(_start())
     except Exception as exc:  # resolver/build failures are also terminal
-        error, handle_json = bounded_diagnostic(exc), trusted_handle_json
+        error, handle_json, unsafe_start_compensated = (
+            bounded_diagnostic(exc),
+            trusted_handle_json,
+            False,
+        )
     handle = EngineHandle.model_validate(handle_json)
+    if unsafe_start_compensated:
+        detail = "execution engine returned an unsafe start handle; remote run was compensated"
+        engine_runs.record_engine_run_sync(
+            _thread_id(config),
+            attempt,
+            handle.engine,
+            handle_json,
+            EngineRunPhase.FAILED.value,
+            project_id=cfg.project_id,
+            app_id=cfg.app_id,
+            artifact_namespace=engine_artifact_namespace(handle.idempotency_key),
+            connection_id=reservation_connection_id,
+            connection_version=connection_version,
+            required=True,
+        )
+        update = _update(
+            attempt,
+            status=PhaseStatus.FAILED.value,
+            engine_handle=handle_json,
+            engine_cleanup_required=False,
+            engine_cleanup_reason=None,
+            engine_cleanup_final_error=None,
+            engine_cleanup_failures=0,
+            errors=[detail],
+        )
+        update["engine_handle"] = handle_json
+        return Command(goto="finalize", update=update)
     if error is not None:
         reason = bounded_diagnostic(f"start failed: {error}")
         update = _update(
@@ -1280,13 +2273,23 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
 
 
 def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
-    """Fetch initial status, checkpointing transient errors for the poll loop."""
-    cfg = PipelineConfigurable.from_config(config)
+    """Fetch and count the initial status observation before entering the poll loop.
+
+    A fast provider may already be terminal by the time this node runs.  Counting
+    this read here keeps the durable observation shape identical whether the run
+    completes before or after the first dedicated ``engine_poll`` superstep.
+    """
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     handle = _handle_from(state, entry)
-    engine_options = _engine_options(entry)
+    engine_options = _engine_options(entry, cfg.engine)
     reservation_connection_id, connection_version = _connection_reservation_affinity(entry, handle)
+    prior_poll_count = _checkpoint_int(
+        entry.get("engine_poll_count"),
+        label="engine poll count",
+        maximum=MAX_RECOMMENDED_RECURSION_LIMIT - 1,
+    )
 
     async def _status() -> EngineRunStatus:
         adapter = await _resolve_engine_for_runtime_io(
@@ -1300,12 +2303,18 @@ def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
         try:
             return _validated_engine_status(await adapter.get_status(handle.model_copy(deep=True)))
         finally:
-            await _close_resource(adapter)
+            await _close_resources_definitively(adapter)
 
     try:
         status = asyncio.run(_status())
     except Exception as exc:  # noqa: BLE001 - poll loop owns bounded recovery
-        failures = int(entry.get("engine_poll_errors") or 0) + 1
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_poll_errors"),
+                label="engine poll error count",
+            )
+            + 1
+        )
         detail = bounded_diagnostic(exc)
         message = bounded_diagnostic(
             "execution engine initial status failed "
@@ -1328,6 +2337,7 @@ def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
             goto="engine_poll",
             update=_update(
                 attempt,
+                engine_poll_count=prior_poll_count,
                 engine_poll_errors=failures,
                 engine_poll_error_last=message,
             ),
@@ -1346,6 +2356,7 @@ def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
     update = _update(
         attempt,
         engine_poll_last=_poll_sample(status),
+        engine_poll_count=prior_poll_count + 1,
         engine_poll_errors=0,
     )
     goto = "engine_collect" if status.phase in TERMINAL_ENGINE_PHASES else "engine_poll"
@@ -1355,14 +2366,15 @@ def engine_status(state: PipelineState, config: RunnableConfig) -> Command[str]:
 async def _engine_poll_async(state: PipelineState, config: RunnableConfig) -> Command[str]:
     """One poll cycle per superstep; self-loops until the engine is terminal.
 
-    The poll count rides the phase entry and is derived from the checkpointed
-    value, so node re-execution after a crash never double-counts a cycle.
+    The observation count rides the phase entry and is derived from the
+    checkpointed value, so node re-execution after a crash never double-counts a
+    successful provider read. ``engine_status`` records observation one.
     """
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     handle = _handle_from(state, entry)
-    engine_options = _engine_options(entry)
+    engine_options = _engine_options(entry, cfg.engine)
     reservation_connection_id, connection_version = _connection_reservation_affinity(entry, handle)
 
     async def _poll() -> EngineRunStatus:
@@ -1377,12 +2389,18 @@ async def _engine_poll_async(state: PipelineState, config: RunnableConfig) -> Co
         try:
             return _validated_engine_status(await adapter.get_status(handle.model_copy(deep=True)))
         finally:
-            await _close_resource(adapter)
+            await _close_resources_definitively(adapter)
 
     try:
         status = await _poll()
     except Exception as exc:  # noqa: BLE001 - bounded retry before remote cleanup
-        failures = int(entry.get("engine_poll_errors") or 0) + 1
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_poll_errors"),
+                label="engine poll error count",
+            )
+            + 1
+        )
         detail = bounded_diagnostic(exc)
         message = bounded_diagnostic(
             f"execution engine poll failed ({failures}/{MAX_CONSECUTIVE_POLL_ERRORS}): {detail}"
@@ -1420,7 +2438,14 @@ async def _engine_poll_async(state: PipelineState, config: RunnableConfig) -> Co
             ),
         )
 
-    poll_count = int(entry.get("engine_poll_count") or 0) + 1
+    poll_count = (
+        _checkpoint_int(
+            entry.get("engine_poll_count"),
+            label="engine poll count",
+            maximum=MAX_RECOMMENDED_RECURSION_LIMIT,
+        )
+        + 1
+    )
     emit_event(_poll_event(handle, status, attempt))
     sample = _poll_sample(status)
 
@@ -1485,12 +2510,15 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
     attempt, so a process restart resumes cleanup instead of losing the handle.
     """
 
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     handle = _handle_from(state, entry)
-    engine_options = _engine_options(entry)
-    reason = bounded_diagnostic(entry.get("engine_cleanup_reason") or "execution cleanup required")
+    engine_options = _engine_options(entry, cfg.engine)
+    reason = _checkpoint_diagnostic_text(
+        entry.get("engine_cleanup_reason"),
+        default="execution cleanup required",
+    )
     reservation_connection_id, connection_version = _connection_reservation_affinity(entry, handle)
 
     recovered_phase: EngineRunPhase | None = None
@@ -1529,12 +2557,19 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
             await _teardown_after_confirmed_abort(adapter, followup_handle)
             return observed_phase
         finally:
-            await _close_resource(adapter)
+            await _close_resources_definitively(adapter)
 
     try:
         observed_phase = recovered_phase if recovered_phase is not None else await _cleanup()
     except Exception as exc:  # noqa: BLE001 - durable retry is the safety contract
-        failures = int(entry.get("engine_cleanup_failures") or 0) + 1
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_cleanup_failures"),
+                label="engine cleanup failure count",
+                maximum=MAX_RECOMMENDED_RECURSION_LIMIT,
+            )
+            + 1
+        )
         detail = bounded_diagnostic(exc)
         logger.warning(
             "execution.cleanup_retry",
@@ -1547,10 +2582,17 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
             math.ceil(cfg.limits.poll_timeout_s / cfg.limits.poll_interval_s),
         )
         if failures >= cleanup_budget:
-            raise RuntimeError(
-                "external engine abort is still unconfirmed after the cleanup retry budget; "
-                "the durable handle remains checkpointed for operator resume"
-            ) from exc
+            return Command(
+                goto="engine_cleanup_blocked",
+                update=_update(
+                    attempt,
+                    status=PhaseStatus.RUNNING.value,
+                    engine_cleanup_required=True,
+                    engine_cleanup_blocked=True,
+                    engine_cleanup_failures=failures,
+                    engine_cleanup_last_error=detail,
+                ),
+            )
         await asyncio.sleep(cfg.limits.poll_interval_s)
         return Command(
             goto="engine_cleanup",
@@ -1558,6 +2600,7 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
                 attempt,
                 status=PhaseStatus.RUNNING.value,
                 engine_cleanup_required=True,
+                engine_cleanup_blocked=False,
                 engine_cleanup_failures=failures,
                 engine_cleanup_last_error=detail,
             ),
@@ -1583,7 +2626,10 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
             ),
             required=True,
         )
-    final_error = bounded_diagnostic(entry.get("engine_cleanup_final_error") or reason)
+    final_error = _checkpoint_diagnostic_text(
+        entry.get("engine_cleanup_final_error"),
+        default=reason,
+    )
     outcome = (
         "external engine abort confirmed"
         if observed_phase is EngineRunPhase.ABORTED
@@ -1596,6 +2642,7 @@ async def _engine_cleanup_async(state: PipelineState, config: RunnableConfig) ->
             status=PhaseStatus.FAILED.value,
             errors=[bounded_diagnostic(f"{final_error}; {outcome}")],
             engine_cleanup_required=False,
+            engine_cleanup_blocked=False,
             engine_cleanup_completed_at=utcnow_iso(),
             engine_cleanup_last_error=None,
         ),
@@ -1608,7 +2655,48 @@ def engine_cleanup(state: PipelineState, config: RunnableConfig) -> Command[str]
     return asyncio.run(_engine_cleanup_async(state, config))
 
 
-def route_execution_entry(state: PipelineState) -> str:
+def engine_cleanup_blocked(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Expose exhausted abort confirmation as an exact resumable interrupt."""
+
+    entry = _entry(state)
+    detail = bounded_diagnostic(
+        _checkpoint_diagnostic_text(
+            entry.get("engine_cleanup_last_error"),
+            default="external engine abort remains unconfirmed",
+        )
+    )
+    interrupt(
+        {
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "kind": "engine_cleanup_retry",
+            "phase": _PHASE.value,
+            "attempt": _attempt(entry),
+            "thread_id": _thread_id(config),
+            "actions": ["retry"],
+            "error": detail,
+            "message": (
+                "Engine abort confirmation exhausted its retry budget. The exact "
+                "provider handle remains durable; resume to retry abort and teardown."
+            ),
+        }
+    )
+    return Command(
+        goto="engine_cleanup",
+        update=_update(
+            _attempt(entry),
+            status=PhaseStatus.RUNNING.value,
+            engine_cleanup_required=True,
+            engine_cleanup_blocked=False,
+            engine_cleanup_failures=0,
+            engine_cleanup_last_error=None,
+        ),
+    )
+
+
+def route_execution_entry(
+    state: PipelineState,
+    config: RunnableConfig | None = None,
+) -> str:
     """Resume an unfinished kill before any gate or engine side effect.
 
     A cleanup self-loop can exhaust a run's recursion budget while the provider
@@ -1616,20 +2704,25 @@ def route_execution_entry(state: PipelineState) -> str:
     not pass through prompt gates or reserve/start another remote execution.
     """
 
-    if _entry(state).get("engine_cleanup_required"):
+    if config is not None:
+        PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
+    entry = _entry(state)
+    if _checkpoint_flag(entry, "engine_cleanup_required"):
         return "engine_cleanup"
-    if _entry(state).get("engine_collection_settle_required"):
+    if _checkpoint_flag(entry, "engine_collection_settle_required"):
         return "engine_collection_settle_resume"
-    if _entry(state).get("engine_collection_staged"):
+    if _checkpoint_flag(entry, "engine_collection_staged"):
         return "engine_collection_settle"
-    if _entry(state).get("engine_collection_settled"):
-        next_node = _entry(state).get("engine_collection_next")
-        if next_node in {"open_output_gate", "finalize"}:
-            return str(next_node)
+    if _checkpoint_flag(entry, "engine_collection_settled"):
+        next_node = entry.get("engine_collection_next")
+        if type(next_node) is str and next_node in {"open_output_gate", "finalize"}:
+            return next_node
         raise RuntimeError("settled engine collection has no valid continuation")
-    if _entry(state).get("engine_collection_required"):
+    if _checkpoint_flag(entry, "engine_collection_index_required"):
         return "engine_collection_resume"
-    if _entry(state).get("engine_provision_required"):
+    if _checkpoint_flag(entry, "engine_collection_required"):
+        return "engine_collection_resume"
+    if _checkpoint_flag(entry, "engine_provision_required"):
         return "engine_provision_resume"
     return "prepare"
 
@@ -1638,27 +2731,38 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     """Collect artifacts + summary with a checkpointed, bounded retry lifecycle.
 
     The node only stages collected output. A sync LangGraph checkpoint must commit
-    that output before ``engine_collection_settle`` can project a terminal engine
-    status, tear down provider resources, and continue to the gate/finalizer.
+    that output before ``engine_collection_index`` can grant durable ownership;
+    another checkpoint then gates terminal projection and provider teardown.
     """
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     handle = _handle_from(state, entry)
-    engine_options = _engine_options(entry)
-    last = dict(entry.get("engine_poll_last") or {})
+    engine_options = _engine_options(entry, cfg.engine)
+    raw_last = entry.get("engine_poll_last")
+    if raw_last is None:
+        raw_last = {}
+    last = raw_last if type(raw_last) is dict else {}
     state_errors: list[str] = []
     raw_engine_phase = last.get("status")
     invalid_collection_state = False
-    try:
-        engine_phase = EngineRunPhase(str(raw_engine_phase))
-    except ValueError:
+    if type(raw_engine_phase) is not str or len(raw_engine_phase) > 32:
         engine_phase = EngineRunPhase.FAILED
         invalid_collection_state = True
         state_errors.append(
             "execution collection state is invalid: a terminal engine status is missing "
-            f"or malformed (got {raw_engine_phase!r})"
+            "or malformed"
         )
+    else:
+        try:
+            engine_phase = EngineRunPhase(raw_engine_phase)
+        except ValueError:
+            engine_phase = EngineRunPhase.FAILED
+            invalid_collection_state = True
+            state_errors.append(
+                "execution collection state is invalid: a terminal engine status is missing "
+                "or malformed"
+            )
     if engine_phase not in TERMINAL_ENGINE_PHASES:
         invalid_collection_state = True
         state_errors.append(
@@ -1686,8 +2790,14 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         entry, handle
     )
 
-    def _retry_collection(exc: Exception) -> Command[str]:
-        failures = int(entry.get("engine_collection_failures") or 0) + 1
+    def _retry_collection(exc: Exception, **checkpoint_fields: Any) -> Command[str]:
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_collection_failures"),
+                label="engine collection failure count",
+            )
+            + 1
+        )
         detail = bounded_diagnostic(exc, max_chars=2_048)
         message = (
             f"engine collection failed ({failures}/{MAX_ENGINE_COLLECTION_ATTEMPTS}): {detail}"
@@ -1713,6 +2823,7 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
                 engine_collection_blocked=blocked,
                 engine_collection_failures=failures,
                 engine_collection_last_error=message,
+                **checkpoint_fields,
             ),
         )
 
@@ -1720,14 +2831,12 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     artifact_connection_id: str | None
     if raw_artifact_connection_id is None:
         artifact_connection_id = None
-    elif (
-        not isinstance(raw_artifact_connection_id, str)
-        or not raw_artifact_connection_id
-        or raw_artifact_connection_id != raw_artifact_connection_id.strip()
-        or len(raw_artifact_connection_id) > 256
-    ):
+    elif not _safe_connection_id(raw_artifact_connection_id):
         return _retry_collection(
-            ValueError("checkpointed artifact-store connection id is malformed")
+            ValueError("checkpointed artifact-store connection id is malformed"),
+            artifact_store_connection_id=None,
+            artifact_store_connection_version=None,
+            artifact_store_connection_persisted=False,
         )
     else:
         artifact_connection_id = raw_artifact_connection_id
@@ -1735,21 +2844,25 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     if artifact_connection_id is None:
 
         async def _reserve_artifact_store() -> tuple[str, str | None, bool]:
-            store: Any | None = None
+            resolved: Any | None = None
             try:
                 resolved = await _resolve_artifact_store(cfg)
-                store = resolved.adapter
                 resolved_connection_id = resolved.connection_id
-                if (
-                    not resolved_connection_id
-                    or resolved_connection_id != resolved_connection_id.strip()
-                    or len(resolved_connection_id) > 256
-                ):
+                if not _safe_connection_id(resolved_connection_id):
                     raise RuntimeError("resolved artifact-store connection has no valid durable id")
+                if (
+                    resolved.connection_version is not None
+                    and type(resolved.connection_version) is not datetime
+                ):
+                    raise RuntimeError("resolved artifact-store connection has an invalid version")
                 if resolved.persisted and resolved.connection_version is None:
                     raise RuntimeError(
                         f"persisted artifact-store connection {resolved_connection_id!r} "
                         "has no version"
+                    )
+                if get_settings().is_locked_down and not resolved.persisted:
+                    raise RuntimeError(
+                        "locked artifact collection requires a durable connection generation"
                     )
                 return (
                     resolved_connection_id,
@@ -1761,8 +2874,8 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
                     resolved.persisted,
                 )
             finally:
-                if store is not None:
-                    await _close_resource(store)
+                if resolved is not None:
+                    await _close_resources_definitively(resolved)
 
         try:
             (
@@ -1791,7 +2904,12 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     try:
         artifact_connection_version = _artifact_reservation_affinity(entry, artifact_connection_id)
     except Exception as exc:  # noqa: BLE001 - checkpointed affinity fails closed
-        return _retry_collection(exc)
+        return _retry_collection(
+            exc,
+            artifact_store_connection_id=None,
+            artifact_store_connection_version=None,
+            artifact_store_connection_persisted=False,
+        )
 
     async def _collect() -> tuple[list[JsonDict], TestResultSummary, str]:
         refs: list[JsonDict] = []
@@ -1799,6 +2917,7 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         adapter: Any | None = None
         store: Any | None = None
         resolved: Any | None = None
+        resolved_store: Any | None = None
         try:
             resolved = await _resolve_engine(_config_for_handle(cfg, handle), engine_options)
             adapter = resolved.adapter if isinstance(resolved, ResolvedAdapter) else resolved
@@ -1812,11 +2931,11 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
                         f"persisted execution connection {execution_connection_id!r} has no version"
                     )
             else:
-                execution_connection_id = (
-                    getattr(adapter, "_apex_resolved_connection_id", None) or handle.connection_id
-                )
+                execution_connection_id = getattr(adapter, "_apex_resolved_connection_id", None)
+                if execution_connection_id is None:
+                    execution_connection_id = handle.connection_id
                 connection_version = getattr(adapter, "_apex_resolved_connection_version", None)
-            if not execution_connection_id:
+            if not _safe_connection_id(execution_connection_id):
                 raise RuntimeError("resolved execution connection has no durable id")
 
             resolved_store = await _resolve_artifact_store(
@@ -1824,6 +2943,10 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
             )
             store = resolved_store.adapter
             resolved_artifact_connection_id = resolved_store.connection_id
+            if not _safe_connection_id(resolved_artifact_connection_id):
+                raise _RequiredArtifactIndexError(
+                    "artifact-store resolver returned an invalid connection id"
+                )
             if resolved_artifact_connection_id != artifact_connection_id:
                 raise _RequiredArtifactIndexError(
                     "artifact-store resolver did not honor checkpointed connection affinity"
@@ -1831,7 +2954,7 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
             if (
                 resolved_store.connection_version != artifact_connection_version
                 or resolved_store.persisted
-                is not (entry.get("artifact_store_connection_persisted") is True)
+                is not _checkpoint_flag(entry, "artifact_store_connection_persisted")
             ):
                 raise _RequiredArtifactIndexError(
                     "artifact-store connection changed after its checkpointed reservation"
@@ -1866,65 +2989,179 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
                 store,
                 engine_artifact_namespace(handle.idempotency_key),
             )
-            collected = await adapter.collect_artifacts(
-                provider_handle,
-                store_view,
-            )
-            refs = _validated_engine_artifacts(
-                collected,
-                handle,
-                written=store_view.written,
-            )
-            if refs:
-                try:
-                    await record_artifact_references(
-                        [
-                            ArtifactReferenceInput(
-                                artifact_key=str(ref["key"]),
-                                kind=str(ref["kind"]),
-                            )
-                            for ref in refs
-                        ],
-                        connection_id=resolved_artifact_connection_id,
-                        thread_id=_thread_id(config),
-                        project_id=cfg.project_id,
-                        app_id=cfg.app_id,
-                    )
-                except Exception as exc:
-                    # The ownership transaction may have committed before an
-                    # exception/cancellation was observed. Deterministic object keys
-                    # and idempotent batch indexing make retry the only safe action.
-                    raise _RequiredArtifactIndexError(
-                        "required engine artifact indexing failed"
-                    ) from exc
-            summary = _validated_engine_summary(
-                await adapter.fetch_summary(handle.model_copy(deep=True)),
-                expected_engine=handle.engine,
-            )
+            try:
+                collected = await adapter.collect_artifacts(
+                    provider_handle,
+                    store_view,
+                )
+                refs = _validated_engine_artifacts(
+                    collected,
+                    handle,
+                    written=store_view.written,
+                )
+                retained_keys = {ref["key"] for ref in refs}
+                await store_view.cleanup_except(retained_keys)
+                # Fetch/validate the summary before indexing. Once ownership may
+                # have committed, retries use the checkpointed normalized payload
+                # below and never rewrite or delete those live objects.
+                summary = _validated_engine_summary(
+                    await adapter.fetch_summary(handle.model_copy(deep=True)),
+                    expected_engine=handle.engine,
+                )
+            except BaseException:
+                await store_view.cleanup_except(set())
+                raise
         finally:
-            if adapter is not None:
-                await _close_resource(adapter)
-            if store is not None:
-                await _close_resource(store)
+            # The owned resolution closes the leaf checkout and its complete
+            # resolver tree (including nested SECRETS generations). Test seams
+            # that return a raw adapter remain compatible with the same helper.
+            await _close_resources_definitively(resolved, resolved_store)
         return refs, summary, resolved_artifact_connection_id
+
+    pending_refs_raw = entry.get("engine_collection_pending_refs")
+    pending_summary_raw = entry.get("engine_collection_pending_summary")
+    if pending_refs_raw is not None or pending_summary_raw is not None:
+        # A crash/retry after collection must resume at the exact staged index
+        # payload and never re-enter provider/store writes.
+        return Command(goto="engine_collection_index")
 
     try:
         refs, summary, artifact_connection_id = asyncio.run(_collect())
     except Exception as exc:  # noqa: BLE001 - checkpoint a bounded exact retry
         return _retry_collection(exc)
 
+    # Commit normalized refs + summary in their own sync checkpoint before the
+    # first ownership-index transaction. Index retries can then be exact and can
+    # never overwrite/delete an object whose commit acknowledgement was lost.
+    return Command(
+        goto="engine_collection_index",
+        update=_update(
+            attempt,
+            status=PhaseStatus.RUNNING.value,
+            engine_collection_pending_refs=refs,
+            engine_collection_pending_summary=summary.model_dump(mode="json"),
+            engine_collection_pending_connection_id=artifact_connection_id,
+            engine_collection_index_required=True,
+            engine_collection_index_failures=0,
+            engine_collection_index_last_error=None,
+        ),
+    )
+
+
+def engine_collection_index(state: PipelineState, config: RunnableConfig) -> Command[str]:
+    """Index one checkpointed collection batch without provider or object-store I/O."""
+
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
+    entry = _entry(state)
+    attempt = _attempt(entry)
+    handle = _handle_from(state, entry)
+
+    def _retry_index(exc: Exception) -> Command[str]:
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_collection_index_failures"),
+                label="engine collection index failure count",
+            )
+            + 1
+        )
+        detail = bounded_diagnostic(exc, max_chars=2_048)
+        message = (
+            f"engine artifact indexing failed "
+            f"({failures}/{MAX_ENGINE_COLLECTION_ATTEMPTS}): {detail}"
+        )
+        emit_event(
+            {
+                "schema_version": EVENT_SCHEMA_VERSION,
+                "type": "engine_collection_index_error",
+                "phase": _PHASE.value,
+                "attempt": attempt,
+                "external_run_id": handle.external_run_id,
+                "failure": failures,
+                "error": detail,
+            }
+        )
+        blocked = failures >= MAX_ENGINE_COLLECTION_ATTEMPTS
+        return Command(
+            goto="engine_collection_blocked" if blocked else "engine_collection_index",
+            update=_update(
+                attempt,
+                status=PhaseStatus.RUNNING.value,
+                engine_collection_required=True,
+                engine_collection_blocked=blocked,
+                # Preserve the public retry diagnostics while also separating the
+                # no-provider indexing stage for exact recovery routing.
+                engine_collection_failures=failures,
+                engine_collection_last_error=message,
+                engine_collection_index_required=True,
+                engine_collection_index_failures=failures,
+                engine_collection_index_last_error=message,
+            ),
+        )
+
+    try:
+        raw_refs = entry.get("engine_collection_pending_refs")
+        raw_summary = entry.get("engine_collection_pending_summary")
+        pending_connection_id = entry.get("engine_collection_pending_connection_id")
+        artifact_connection_id = entry.get("artifact_store_connection_id")
+        if not _safe_connection_id(pending_connection_id) or not _safe_connection_id(
+            artifact_connection_id
+        ):
+            raise ValueError("checkpointed engine artifact affinity is invalid")
+        if pending_connection_id != artifact_connection_id:
+            raise ValueError("checkpointed engine artifact affinity is invalid")
+        if type(raw_refs) is not list:
+            raise ValueError("checkpointed engine artifact refs are invalid")
+        refs = _validated_engine_artifacts(raw_refs, handle)
+        summary = _validated_engine_summary(raw_summary, expected_engine=handle.engine)
+        last = entry.get("engine_poll_last")
+        if type(last) is not dict:
+            raise ValueError("checkpointed engine terminal status is invalid")
+        raw_engine_phase = last.get("status")
+        if type(raw_engine_phase) is not str or len(raw_engine_phase) > 32:
+            raise ValueError("checkpointed engine terminal status is invalid")
+        engine_phase: EngineRunPhase | None = None
+        invalid_engine_phase = False
+        try:
+            engine_phase = EngineRunPhase(raw_engine_phase)
+        except ValueError:
+            invalid_engine_phase = True
+        if invalid_engine_phase or engine_phase is None:
+            raise ValueError("checkpointed engine terminal status is invalid")
+        if engine_phase not in TERMINAL_ENGINE_PHASES:
+            raise ValueError("checkpointed engine terminal status is invalid")
+    except Exception as exc:  # noqa: BLE001 - malformed durable stage enters bounded recovery
+        return _retry_index(exc)
+
+    async def _index() -> None:
+        await record_artifact_references(
+            [
+                ArtifactReferenceInput(
+                    artifact_key=ref["key"],
+                    kind=ref["kind"],
+                )
+                for ref in refs
+            ],
+            connection_id=pending_connection_id,
+            thread_id=_thread_id(config),
+            project_id=cfg.project_id,
+            app_id=cfg.app_id,
+        )
+
+    try:
+        asyncio.run(_index())
+    except Exception:  # noqa: BLE001 - exact idempotent batch retry is required
+        return _retry_index(_RequiredArtifactIndexError("required engine artifact indexing failed"))
+
     artifacts: list[JsonDict] = []
     for index, raw_ref in enumerate(refs):
-        ref = dict(raw_ref)
-        # Deterministic ids: re-execution after a crash must not duplicate refs
-        # under the append-unique-by-id artifacts reducer.
+        ref = ArtifactRef.model_validate(raw_ref).model_dump(mode="json")
         ref["id"] = f"{_PHASE.value}-a{attempt}-engine-artifact-{index}"
-        ref["artifact_connection_id"] = artifact_connection_id
+        ref["artifact_connection_id"] = pending_connection_id
         artifacts.append(ref)
 
     summary_json = summary.model_dump(mode="json")
     kpi_text = ", ".join(
-        f"{key}={value:g}" if isinstance(value, int | float) else f"{key}={value}"
+        f"{key}={value:g}" if type(value) in {int, float} else f"{key}={value}"
         for key, value in sorted(summary.kpis.items())
     )
     verdict = "passed" if summary.passed else "failed"
@@ -1939,11 +3176,17 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
         "test_summary": summary_json,
         "artifact_ids": [artifact["id"] for artifact in artifacts],
         "artifact_namespace": engine_artifact_namespace(handle.idempotency_key),
-        "artifact_store_connection_id": artifact_connection_id,
+        "artifact_store_connection_id": pending_connection_id,
         "engine_collection_required": False,
         "engine_collection_blocked": False,
         "engine_collection_failures": 0,
         "engine_collection_last_error": None,
+        "engine_collection_index_required": False,
+        "engine_collection_index_failures": 0,
+        "engine_collection_index_last_error": None,
+        "engine_collection_pending_refs": None,
+        "engine_collection_pending_summary": None,
+        "engine_collection_pending_connection_id": None,
         "engine_collection_completed_at": utcnow_iso(),
         "engine_collection_staged": True,
     }
@@ -1951,15 +3194,18 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     final_status: str | None = None
     if engine_phase is EngineRunPhase.ABORTED:
         final_status = PhaseStatus.ABORTED.value
-        fields["errors"] = [
-            f"engine run {handle.external_run_id} was aborted",
-        ]
+        fields["errors"] = [f"engine run {handle.external_run_id} was aborted"]
         goto = "finalize"
     elif engine_phase is EngineRunPhase.FAILED or not summary.passed:
         final_status = PhaseStatus.FAILED.value
         phase_errors = list(summary.sla_breaches)
-        if not phase_errors and not state_errors:
-            phase_errors = [bounded_diagnostic(last.get("message") or "engine run failed")]
+        if not phase_errors:
+            phase_errors = [
+                _checkpoint_diagnostic_text(
+                    last.get("message"),
+                    default="engine run failed",
+                )
+            ]
         fields["errors"] = phase_errors
         goto = "finalize"
 
@@ -1971,32 +3217,42 @@ def engine_collect(state: PipelineState, config: RunnableConfig) -> Command[str]
     fields["engine_collection_next"] = goto
     update = _update(attempt, **fields)
     update["artifacts"] = artifacts
-    # The sync LangGraph checkpoint between this node and settle is the durability
-    # boundary: terminal projection and potentially destructive teardown must not
-    # run until every collected output is recoverable from graph state.
     return Command(goto="engine_collection_settle", update=update)
 
 
 def engine_collection_settle(state: PipelineState, config: RunnableConfig) -> Command[str]:
     """Replay-safe terminal projection and teardown after the collection checkpoint."""
 
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
     entry = _entry(state)
     attempt = _attempt(entry)
     handle = _handle_from(state, entry)
-    engine_options = _engine_options(entry)
-    if entry.get("engine_collection_staged") is not True:
+    engine_options = _engine_options(entry, cfg.engine)
+    if not _checkpoint_flag(entry, "engine_collection_staged"):
         raise RuntimeError("engine collection settle requires checkpointed collection output")
 
+    raw_projected_phase = entry.get("engine_collection_projected_phase")
+    if type(raw_projected_phase) is not str or len(raw_projected_phase) > 32:
+        raise RuntimeError("staged engine collection has an invalid terminal phase")
+    projected_phase: EngineRunPhase | None = None
     try:
-        projected_phase = EngineRunPhase(str(entry.get("engine_collection_projected_phase")))
-    except ValueError as exc:
-        raise RuntimeError("staged engine collection has an invalid terminal phase") from exc
+        projected_phase = EngineRunPhase(raw_projected_phase)
+    except ValueError:
+        pass
+    if projected_phase is None:
+        raise RuntimeError("staged engine collection has an invalid terminal phase")
     if projected_phase not in TERMINAL_ENGINE_PHASES:
         raise RuntimeError("staged engine collection phase is not terminal")
 
     next_node = entry.get("engine_collection_next")
     final_status = entry.get("engine_collection_final_status")
+    if type(next_node) is not str or next_node not in {"finalize", "open_output_gate"}:
+        raise RuntimeError("staged engine collection has no continuation")
+    if final_status is not None and (
+        type(final_status) is not str
+        or final_status not in {PhaseStatus.ABORTED.value, PhaseStatus.FAILED.value}
+    ):
+        raise RuntimeError("staged engine collection has an invalid final status")
     expected: tuple[str | None, str]
     if projected_phase is EngineRunPhase.ABORTED:
         expected = (PhaseStatus.ABORTED.value, "finalize")
@@ -2006,20 +3262,13 @@ def engine_collection_settle(state: PipelineState, config: RunnableConfig) -> Co
         expected = (None, "open_output_gate")
     if (final_status, next_node) != expected:
         raise RuntimeError("staged engine collection outcome is inconsistent")
-    if not isinstance(next_node, str):  # narrowed for the typed Command destination
-        raise RuntimeError("staged engine collection has no continuation")
 
     summary = _validated_engine_summary(entry.get("test_summary"), expected_engine=handle.engine)
     artifact_connection_id = entry.get("artifact_store_connection_id")
-    if (
-        not isinstance(artifact_connection_id, str)
-        or not artifact_connection_id
-        or artifact_connection_id != artifact_connection_id.strip()
-        or len(artifact_connection_id) > 256
-    ):
+    if not _safe_connection_id(artifact_connection_id):
         raise RuntimeError("staged engine collection has no valid artifact-store affinity")
-    artifact_connection_version = _artifact_reservation_affinity(entry, artifact_connection_id)
     reservation_connection_id, connection_version = _connection_reservation_affinity(entry, handle)
+    artifact_connection_version = _artifact_reservation_affinity(entry, artifact_connection_id)
     completion_witness_available = (
         reservation_connection_id is not None and connection_version is not None
     ) or artifact_connection_version is not None
@@ -2056,14 +3305,20 @@ def engine_collection_settle(state: PipelineState, config: RunnableConfig) -> Co
         try:
             await adapter.teardown(handle.model_copy(deep=True))
         finally:
-            await _close_resource(adapter)
+            await _close_resources_definitively(adapter)
 
     try:
         if not recovered_terminal:
             asyncio.run(_teardown())
     except Exception as exc:  # noqa: BLE001 - collection is already durably recoverable
         detail = bounded_diagnostic(exc)
-        failures = int(entry.get("engine_collection_settle_failures") or 0) + 1
+        failures = (
+            _checkpoint_int(
+                entry.get("engine_collection_settle_failures"),
+                label="engine collection settle failure count",
+            )
+            + 1
+        )
         message = bounded_diagnostic(
             f"engine teardown failed ({failures}/{MAX_ENGINE_SETTLE_ATTEMPTS}): {detail}"
         )
@@ -2139,7 +3394,10 @@ def engine_collection_settle_blocked(state: PipelineState, config: RunnableConfi
 
     entry = _entry(state)
     detail = bounded_diagnostic(
-        entry.get("engine_collection_settle_last_error") or "engine teardown unavailable"
+        _checkpoint_diagnostic_text(
+            entry.get("engine_collection_settle_last_error"),
+            default="engine teardown unavailable",
+        )
     )
     interrupt(
         {
@@ -2148,6 +3406,7 @@ def engine_collection_settle_blocked(state: PipelineState, config: RunnableConfi
             "phase": _PHASE.value,
             "attempt": _attempt(entry),
             "thread_id": _thread_id(config),
+            "actions": ["retry"],
             "error": detail,
             "message": (
                 "Engine teardown exhausted its retry budget. Collected results and the "
@@ -2173,7 +3432,7 @@ def engine_collection_settle_resume(state: PipelineState, config: RunnableConfig
 
     del config
     entry = _entry(state)
-    if entry.get("engine_collection_staged") is not True:
+    if not _checkpoint_flag(entry, "engine_collection_staged"):
         raise RuntimeError("engine teardown resume requires staged collection output")
     return Command(
         goto="engine_collection_settle",
@@ -2192,8 +3451,15 @@ def engine_collection_blocked(state: PipelineState, config: RunnableConfig) -> C
     """Interrupt after bounded retries while preserving a resumable intent."""
 
     entry = _entry(state)
-    detail = bounded_diagnostic(
-        entry.get("engine_collection_last_error") or "engine collection unavailable"
+    indexing = _checkpoint_flag(entry, "engine_collection_index_required")
+    selected_error = (
+        entry.get("engine_collection_index_last_error")
+        if indexing
+        else entry.get("engine_collection_last_error")
+    )
+    detail = _checkpoint_diagnostic_text(
+        selected_error,
+        default="engine collection unavailable",
     )
     interrupt(
         {
@@ -2202,15 +3468,16 @@ def engine_collection_blocked(state: PipelineState, config: RunnableConfig) -> C
             "phase": _PHASE.value,
             "attempt": _attempt(entry),
             "thread_id": _thread_id(config),
+            "actions": ["retry"],
             "error": detail,
             "message": (
                 "Engine result collection exhausted its retry budget. Resume to retry "
-                "the same deterministic artifact keys and pinned connections."
+                "the exact checkpointed batch and pinned connections."
             ),
         }
     )
     return Command(
-        goto="engine_collect",
+        goto="engine_collection_index" if indexing else "engine_collect",
         update=_update(
             _attempt(entry),
             status=PhaseStatus.RUNNING.value,
@@ -2218,6 +3485,8 @@ def engine_collection_blocked(state: PipelineState, config: RunnableConfig) -> C
             engine_collection_blocked=False,
             engine_collection_failures=0,
             engine_collection_last_error=None,
+            engine_collection_index_failures=0,
+            engine_collection_index_last_error=None,
         ),
     )
 
@@ -2227,8 +3496,9 @@ def engine_collection_resume(state: PipelineState, config: RunnableConfig) -> Co
 
     del config
     entry = _entry(state)
+    indexing = _checkpoint_flag(entry, "engine_collection_index_required")
     return Command(
-        goto="engine_collect",
+        goto="engine_collection_index" if indexing else "engine_collect",
         update=_update(
             _attempt(entry),
             status=PhaseStatus.RUNNING.value,
@@ -2236,6 +3506,8 @@ def engine_collection_resume(state: PipelineState, config: RunnableConfig) -> Co
             engine_collection_blocked=False,
             engine_collection_failures=0,
             engine_collection_last_error=None,
+            engine_collection_index_failures=0,
+            engine_collection_index_last_error=None,
         ),
     )
 
@@ -2291,13 +3563,27 @@ def add_execution_engine_nodes(builder: StateGraph[PipelineState, Any, Any, Any]
     builder.add_node(
         "engine_cleanup",
         RunnableLambda(engine_cleanup, afunc=_engine_cleanup_async, name="engine_cleanup"),
-        destinations=("engine_cleanup", "finalize"),
+        destinations=("engine_cleanup", "engine_cleanup_blocked", "finalize"),
+    )
+    builder.add_node(
+        "engine_cleanup_blocked",
+        engine_cleanup_blocked,
+        destinations=("engine_cleanup",),
     )
     builder.add_node(
         "engine_collect",
         engine_collect,
         destinations=(
             "engine_collect",
+            "engine_collection_blocked",
+            "engine_collection_index",
+        ),
+    )
+    builder.add_node(
+        "engine_collection_index",
+        engine_collection_index,
+        destinations=(
+            "engine_collection_index",
             "engine_collection_blocked",
             "engine_collection_settle",
         ),
@@ -2325,12 +3611,12 @@ def add_execution_engine_nodes(builder: StateGraph[PipelineState, Any, Any, Any]
     builder.add_node(
         "engine_collection_blocked",
         engine_collection_blocked,
-        destinations=("engine_collect",),
+        destinations=("engine_collect", "engine_collection_index"),
     )
     builder.add_node(
         "engine_collection_resume",
         engine_collection_resume,
-        destinations=("engine_collect",),
+        destinations=("engine_collect", "engine_collection_index"),
     )
     builder.add_edge("agent", "engine_reserve")
 
@@ -2339,8 +3625,10 @@ __all__ = [
     "SPINE_SUPERSTEPS",
     "add_execution_engine_nodes",
     "engine_cleanup",
+    "engine_cleanup_blocked",
     "engine_collect",
     "engine_collection_blocked",
+    "engine_collection_index",
     "engine_collection_resume",
     "engine_collection_settle",
     "engine_collection_settle_blocked",

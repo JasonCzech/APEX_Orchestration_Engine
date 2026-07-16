@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 
-from apex.graphs.playground.graph import graph
+from apex.graphs.playground.graph import graph, stub_completion
 
 
 def test_graph_compiles_for_server_registration() -> None:
@@ -68,3 +68,21 @@ def test_graph_input_schema_drops_caller_owned_output_fields() -> None:
     )
     assert result["rendered_prompt"]["user"] == "real"
     assert result["completion"] != "forged"
+
+
+@pytest.mark.parametrize(
+    "rendered",
+    [
+        None,
+        {},
+        {"system": "safe"},
+        {"system": "safe", "user": "safe", "extra": "poison"},
+        {"system": "safe", "user": 1},
+        {"system": "api_key=checkpoint-secret-canary", "user": "safe"},
+    ],
+)
+def test_stub_completion_revalidates_checkpointed_render_output(rendered: object) -> None:
+    with pytest.raises(ValueError, match="rendered prompt|rendered model input") as raised:
+        stub_completion(cast(Any, {"rendered_prompt": rendered}))
+
+    assert "checkpoint-secret-canary" not in str(raised.value)

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from typing import Any
 
 import pytest
 
+from apex.persistence import database_role_claims as claims_module
 from apex.persistence.database_role_claims import (
     DatabaseRoleClaimContext,
     DatabaseRoleClaimError,
@@ -22,10 +24,12 @@ class FakeClaimConnection:
         roles: dict[str, dict[str, Any]],
         memberships: dict[str, set[str]],
         schema: dict[str, Any] | None,
+        admin_memberships: set[tuple[str, str]] | None = None,
     ) -> None:
         self.roles = roles
         self.memberships = memberships
         self.schema = schema
+        self.admin_memberships = set() if admin_memberships is None else admin_memberships
 
     async def execute(self, query: str, *args: object) -> None:
         return None
@@ -37,13 +41,16 @@ class FakeClaimConnection:
             return self.roles.get(str(args[0]))
         raise AssertionError(f"unexpected fetchrow query: {query}")
 
-    async def fetch(self, query: str, *args: object) -> list[dict[str, str]]:
+    async def fetch(self, query: str, *args: object) -> list[dict[str, Any]]:
         role_name = str(args[0])
         if "WHERE parent.rolname = $1" in query:
             return [{"rolname": child} for child in sorted(self.memberships.get(role_name, set()))]
         if "WHERE member.rolname = $1" in query:
             return [
-                {"rolname": parent}
+                {
+                    "rolname": parent,
+                    "admin_option": (parent, role_name) in self.admin_memberships,
+                }
                 for parent, children in sorted(self.memberships.items())
                 if role_name in children
             ]
@@ -138,6 +145,7 @@ async def test_database_role_claims_accept_only_exact_direct_claims() -> None:
         ("stale_generation_comment", "unsafe or forged"),
         ("transitive_generation_member", "unexpected members"),
         ("current_not_direct", "direct owner member"),
+        ("administrable_owner_membership", "administrable parent membership"),
     ],
 )
 async def test_database_role_claims_reject_adversarial_state(
@@ -148,6 +156,7 @@ async def test_database_role_claims_reject_adversarial_state(
     roles = deepcopy(original_roles)
     memberships = deepcopy(original_memberships)
     schema = deepcopy(original_schema)
+    admin_memberships: set[tuple[str, str]] = set()
 
     if mutation == "forged_schema_comment":
         schema["marker"] = "apex-role-claim-v2:apex-system/apex:schema:forged"
@@ -162,6 +171,8 @@ async def test_database_role_claims_reject_adversarial_state(
         memberships[context.runtime_login] = {"unrelated_login"}
     elif mutation == "current_not_direct":
         memberships[context.runtime_owner].remove(context.runtime_login)
+    elif mutation == "administrable_owner_membership":
+        admin_memberships.add((context.runtime_owner, context.runtime_login))
     else:  # pragma: no cover - parametrization guard
         raise AssertionError(mutation)
 
@@ -171,6 +182,7 @@ async def test_database_role_claims_reject_adversarial_state(
                 roles=roles,
                 memberships=memberships,
                 schema=schema,
+                admin_memberships=admin_memberships,
             ),
             context,
         )
@@ -193,6 +205,15 @@ def test_claim_context_requires_dedicated_stable_key_and_one_database() -> None:
     context = claim_context_from_environment(base)
     assert context.runtime_login == "apex_runtime_vcurrent"
 
+    unauthenticated_transport = base | {
+        "APEX_MIGRATION_DATABASE_URI": (
+            "postgresql+asyncpg://apex_migration_vcurrent:migration-secret@"
+            "db.internal/apex?sslmode=require"
+        )
+    }
+    with pytest.raises(DatabaseRoleClaimError, match="transport is unsafe"):
+        claim_context_from_environment(unauthenticated_transport)
+
     for mutation in (
         {"APEX_DATABASE_ROLE_CLAIM_KEY": "short"},
         {"APEX_DATABASE_ROLE_OWNER_ID": "apex-system:apex"},
@@ -201,7 +222,77 @@ def test_claim_context_requires_dedicated_stable_key_and_one_database() -> None:
                 "postgresql+asyncpg://apex_migration_vcurrent:migration-secret@other/apex"
             )
         },
+        {
+            "APEX_MIGRATION_DATABASE_URI": (
+                "postgresql+asyncpg://apex_migration_vcurrent:migration-secret@db.internal/apex/"
+            )
+        },
+        {
+            "APEX_MIGRATION_DATABASE_URI": (
+                "postgresql+asyncpg://apex_migration_vcurrent:migration-secret@db.internal:0/apex"
+            )
+        },
     ):
         invalid = base | mutation
         with pytest.raises(DatabaseRoleClaimError):
             claim_context_from_environment(invalid)
+
+    invalid_uri = base | {
+        "APEX_RUNTIME_DATABASE_URI": (
+            "postgresql+asyncpg://apex_runtime_vcurrent:uri-secret-canary@db.internal:bad/apex"
+        )
+    }
+    with pytest.raises(DatabaseRoleClaimError, match="URI is invalid") as raised:
+        claim_context_from_environment(invalid_uri)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+    invalid_key = base | {"APEX_DATABASE_ROLE_CLAIM_KEY": "\ud800" * 32}
+    with pytest.raises(DatabaseRoleClaimError, match="claim key") as raised:
+        claim_context_from_environment(invalid_key)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+async def test_privileged_claim_connection_close_survives_repeated_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    class FakeConnection:
+        async def execute(self, *_: object) -> None:
+            return None
+
+        async def close(self) -> None:
+            close_started.set()
+            try:
+                await allow_close.wait()
+            finally:
+                close_finished.set()
+
+    connection = FakeConnection()
+
+    async def connect(*_: object, **__: object) -> FakeConnection:
+        return connection
+
+    async def verify(*_: object) -> None:
+        return None
+
+    monkeypatch.setattr(claims_module, "claim_context_from_environment", lambda *_: _context())
+    monkeypatch.setattr(claims_module.asyncpg, "connect", connect)
+    monkeypatch.setattr(claims_module, "verify_database_role_claims", verify)
+
+    verifier = asyncio.create_task(claims_module.verify_database_role_claims_from_environment({}))
+    await close_started.wait()
+    verifier.cancel()
+    await asyncio.sleep(0)
+    verifier.cancel()
+    await asyncio.sleep(0)
+
+    assert not verifier.done()
+    allow_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await verifier
+    assert close_finished.is_set()

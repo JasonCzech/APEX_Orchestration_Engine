@@ -7,8 +7,10 @@ Key Vault CSI, managed NGINX). IaC: `deploy/terraform/`. Chart:
 
 ## Prerequisites
 - Azure subscription; rights to create resource groups + role assignments.
-- `az`, `kubectl`, `helm`, `terraform`, `uv`, Docker on PATH (or use the
-  `deploy-aks` GitHub workflow, which provides them).
+- `az`, `kubectl`, `helm`, `terraform`, `uv`, Docker, and Trivy **0.70.0** on
+  PATH (or use the `deploy-aks` GitHub workflow, which provides them). The local
+  path scans both images before push; staging/prod also require a clean Git
+  worktree so a commit-derived image identity cannot describe uncommitted code.
 - A Self-Hosted Enterprise **`LANGGRAPH_CLOUD_LICENSE_KEY`** (the server does not
   boot without it — ADR-0001/0005). Without it, stop and use the gateway fallback.
 - Chosen region and a strong Postgres admin password.

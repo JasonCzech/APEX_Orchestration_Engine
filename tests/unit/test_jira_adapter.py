@@ -52,7 +52,12 @@ def assert_all_calls_authed() -> None:
         assert call.request.headers["Authorization"] == EXPECTED_AUTH
 
 
-def issue_json(key: str, summary: str = "Issue summary") -> dict[str, object]:
+def issue_json(
+    key: str,
+    summary: str = "Issue summary",
+    *,
+    labels: object | None = None,
+) -> dict[str, object]:
     return {
         "id": "10241",
         "key": key,
@@ -65,6 +70,7 @@ def issue_json(key: str, summary: str = "Issue summary") -> dict[str, object]:
             },
             "issuetype": {"name": "Bug", "subtask": False},
             "project": {"key": key.rpartition("-")[0]},
+            **({"labels": labels} if labels is not None else {}),
             "description": {
                 "type": "doc",
                 "version": 1,
@@ -224,6 +230,29 @@ def test_adf_marker_search_is_iterative_and_matches_across_text_nodes() -> None:
     assert _adf_contains_text(node, "missing-marker") is False
 
 
+@pytest.mark.parametrize(
+    ("node", "message"),
+    [
+        (17, "non-node value"),
+        ({"type": 17}, "non-string node type"),
+        ({"type": "text", "text": 17}, "non-string value"),
+        ({"type": "mention", "attrs": [17]}, "malformed attrs"),
+        ({"type": "emoji", "attrs": {"shortName": 17}}, "non-string value"),
+        ({"type": "doc", "content": {}}, "malformed content"),
+    ],
+)
+def test_adf_to_text_rejects_malformed_provider_nodes(node: object, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        adf_to_text(node)
+
+
+def test_adf_to_text_rejects_provider_node_exhaustion() -> None:
+    from apex.adapters.jira.work_tracking import _MAX_ADF_NODES
+
+    with pytest.raises(ValueError, match="node limit"):
+        adf_to_text([None] * (_MAX_ADF_NODES + 1))
+
+
 def test_text_to_adf_round_trips_lines() -> None:
     doc = text_to_adf("line one\n\nline two")
     assert doc["type"] == "doc" and doc["version"] == 1
@@ -339,7 +368,6 @@ async def test_execute_query_follows_next_page_token() -> None:
             "issuetype",
             "description",
             "project",
-            "labels",
         ],
     }
     second_body = json.loads(route.calls[1].request.content)
@@ -497,8 +525,29 @@ async def test_list_items_builds_jql_from_filters() -> None:
     )
     body = json.loads(route.calls[0].request.content)
     assert body["jql"] == (
-        'project = PHX AND statusCategory = "To Do" AND issuetype in (Bug) '
+        'project = PHX AND statusCategory = "To Do" AND issuetype in ("Bug") '
         'AND text ~ "checkout" ORDER BY updated DESC'
+    )
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_list_items_quotes_custom_kind_as_jql_data() -> None:
+    from apex.domain.integrations import WorkItemFilters
+
+    route = respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": [], "isLast": True})
+    )
+    await make_adapter().list_items(
+        WorkItemFilters(kind='bug) OR project = CAT OR issuetype in ("task'),
+        page=Page(),
+    )
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["jql"] == (
+        "project = PHX AND issuetype in "
+        '("Bug) or project = cat or issuetype in (\\"task") '
+        "ORDER BY updated DESC"
     )
     assert_all_calls_authed()
 
@@ -541,8 +590,14 @@ async def test_idempotent_create_adds_marker_label_and_can_reconcile_it() -> Non
     create_route = respx.post(f"{BASE}/rest/api/3/issue").mock(
         return_value=httpx.Response(201, json={"id": "10501", "key": "PHX-901"})
     )
+    get_route = respx.get(f"{BASE}/rest/api/3/issue/PHX-901").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-901", labels=[marker]))
+    )
     search_route = respx.post(f"{BASE}/rest/api/3/search/jql").mock(
-        return_value=httpx.Response(200, json={"issues": [issue_json("PHX-901")]})
+        return_value=httpx.Response(
+            200,
+            json={"issues": [issue_json("PHX-901", labels=[marker])]},
+        )
     )
 
     created = await make_adapter().create_item_idempotent(
@@ -554,9 +609,44 @@ async def test_idempotent_create_adds_marker_label_and_can_reconcile_it() -> Non
     assert created.key == found.key == "PHX-901"  # type: ignore[union-attr]
     create_body = json.loads(create_route.calls[0].request.content)
     assert create_body["fields"]["labels"] == ["perf", marker]
+    assert get_route.calls[0].request.url.params["fields"] == ",".join(
+        ["summary", "status", "issuetype", "description", "project", "labels"]
+    )
     search_body = json.loads(search_route.calls[0].request.content)
     assert search_body["maxResults"] == 2
+    assert search_body["fields"] == [
+        "summary",
+        "status",
+        "issuetype",
+        "description",
+        "project",
+        "labels",
+    ]
     assert marker in search_body["jql"]
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        (None, "malformed labels"),
+        ("apex-idem-0123456789abcdef0123456789abcdef", "malformed labels"),
+        ([17], "malformed labels"),
+        (["prefix-apex-idem-0123456789abcdef0123456789abcdef"], "without the exact"),
+    ],
+)
+@respx.mock
+async def test_idempotency_lookup_requires_exact_returned_marker_label(
+    labels: object | None,
+    message: str,
+) -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    issue = issue_json("PHX-901", labels=labels)
+    respx.post(f"{BASE}/rest/api/3/search/jql").mock(
+        return_value=httpx.Response(200, json={"issues": [issue]})
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter().find_item_by_idempotency_marker(marker)
 
 
 @respx.mock
@@ -581,6 +671,9 @@ async def test_idempotent_create_reuses_case_variant_labels_field() -> None:
     route = respx.post(f"{BASE}/rest/api/3/issue").mock(
         return_value=httpx.Response(201, json={"id": "10501", "key": "PHX-901"})
     )
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-901").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-901", labels=[marker]))
+    )
 
     await make_adapter().create_item_idempotent(
         WorkItemDraft(title="Marked issue", fields={"Labels": ["perf"]}),
@@ -590,6 +683,34 @@ async def test_idempotent_create_reuses_case_variant_labels_field() -> None:
     fields = json.loads(route.calls[0].request.content)["fields"]
     assert fields["Labels"] == ["perf", marker]
     assert "labels" not in fields
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        (None, "malformed labels"),
+        (["prefix-apex-idem-0123456789abcdef0123456789abcdef"], "did not acknowledge"),
+        ([17], "malformed labels"),
+    ],
+)
+@respx.mock
+async def test_idempotent_create_requires_exact_provider_marker_acknowledgement(
+    labels: object | None,
+    message: str,
+) -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.post(f"{BASE}/rest/api/3/issue").mock(
+        return_value=httpx.Response(201, json={"id": "10501", "key": "PHX-901"})
+    )
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-901").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-901", labels=labels))
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter().create_item_idempotent(
+            WorkItemDraft(title="Marked issue"),
+            marker=marker,
+        )
 
 
 async def test_create_item_without_project_is_value_error() -> None:
@@ -668,6 +789,102 @@ async def test_enrich_item_rejects_project_change() -> None:
         await make_adapter().enrich_item("PHX-241", Enrichment(fields={"project": {"key": "CAT"}}))
 
 
+# ── idempotent comment reconciliation ───────────────────────────────────────
+
+
+@respx.mock
+async def test_comment_marker_reconciliation_follows_bounded_offset_pages() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-241"))
+    )
+    comments_route = respx.get(f"{BASE}/rest/api/3/issue/PHX-241/comment").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={
+                    "comments": [{"body": text_to_adf("ordinary note")}],
+                    "total": 2,
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "comments": [{"body": text_to_adf(f"completed\n[APEX-IDEMPOTENCY:{marker}]")}],
+                    "total": 2,
+                },
+            ),
+        ]
+    )
+
+    found = await make_adapter().has_comment_idempotency_marker("PHX-241", marker)
+
+    assert found is True
+    assert comments_route.calls[0].request.url.params["startAt"] == "0"
+    assert comments_route.calls[0].request.url.params["maxResults"] == "100"
+    assert comments_route.calls[1].request.url.params["startAt"] == "1"
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_comment_marker_reconciliation_returns_false_at_total() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-241"))
+    )
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241/comment").mock(
+        return_value=httpx.Response(
+            200,
+            json={"comments": [{"body": text_to_adf("ordinary note")}], "total": 1},
+        )
+    )
+
+    assert await make_adapter().has_comment_idempotency_marker("PHX-241", marker) is False
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"comments": [{}] * 101, "total": 101}, "page-size budget"),
+        ({"comments": [None], "total": 1}, "non-object comment"),
+        ({"comments": [], "total": "0"}, "must be an integer"),
+        ({"comments": [], "total": 10_001}, "outside the allowed range"),
+    ],
+)
+@respx.mock
+async def test_comment_marker_reconciliation_rejects_unbounded_provider_shapes(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-241"))
+    )
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241/comment").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await make_adapter().has_comment_idempotency_marker("PHX-241", marker)
+
+
+@respx.mock
+async def test_add_comment_idempotent_checks_scope_and_writes_adf_marker() -> None:
+    marker = "apex-idem-fedcba9876543210fedcba9876543210"
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-241"))
+    )
+    comment_route = respx.post(f"{BASE}/rest/api/3/issue/PHX-241/comment").mock(
+        return_value=httpx.Response(201, json={"id": "9"})
+    )
+
+    await make_adapter().add_item_comment_idempotent("PHX-241", "analysis complete", marker=marker)
+
+    body = json.loads(comment_route.calls[0].request.content)["body"]
+    assert adf_to_text(body) == f"analysis complete\n\n[APEX-IDEMPOTENCY:{marker}]"
+    assert_all_calls_authed()
+
+
 # ── translate_query (deterministic ruleset) ───────────────────────────────────
 
 
@@ -676,13 +893,13 @@ async def test_enrich_item_rejects_project_change() -> None:
     [
         (
             "open bugs",
-            'project = PHX AND statusCategory = "To Do" AND issuetype in (Bug) '
+            'project = PHX AND statusCategory = "To Do" AND issuetype in ("Bug") '
             "ORDER BY updated DESC",
             0.6,
         ),
         (
             "my open bugs",
-            'project = PHX AND statusCategory = "To Do" AND issuetype in (Bug) '
+            'project = PHX AND statusCategory = "To Do" AND issuetype in ("Bug") '
             "AND assignee = currentUser() ORDER BY updated DESC",
             0.75,
         ),
@@ -693,25 +910,25 @@ async def test_enrich_item_rejects_project_change() -> None:
         ),
         (
             "bugs closed this week in project APEX",
-            'project = APEX AND statusCategory = "Done" AND issuetype in (Bug) '
+            'project = APEX AND statusCategory = "Done" AND issuetype in ("Bug") '
             "AND created >= startOfWeek() ORDER BY updated DESC",
             0.9,
         ),
         (
             "stories in the current sprint",
-            "project = PHX AND issuetype in (Story) AND sprint in openSprints() "
+            'project = PHX AND issuetype in ("Story") AND sprint in openSprints() '
             "ORDER BY updated DESC",
             0.6,
         ),
         (
             "tasks assigned to me in sprint 42",
-            "project = PHX AND issuetype in (Task) AND assignee = currentUser() "
+            'project = PHX AND issuetype in ("Task") AND assignee = currentUser() '
             'AND sprint = "42" ORDER BY updated DESC',
             0.75,
         ),
         (
             "in progress stories",
-            'project = PHX AND statusCategory = "In Progress" AND issuetype in (Story) '
+            'project = PHX AND statusCategory = "In Progress" AND issuetype in ("Story") '
             "ORDER BY updated DESC",
             0.6,
         ),

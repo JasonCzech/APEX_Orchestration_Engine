@@ -12,8 +12,10 @@ random token never enters graph state or an API response. Destructive operations
 remain reachable only from facade code that invokes them after its own checks.
 """
 
+import asyncio
 import secrets
 from collections.abc import Mapping
+from typing import Any
 
 from langgraph_sdk import get_client
 from langgraph_sdk.client import LangGraphClient
@@ -24,6 +26,45 @@ RERUN_CLAIM_METADATA_KEY = "apex_rerun_claim"
 RERUN_FINGERPRINT_METADATA_KEY = "apex_rerun_fingerprint"
 _TRUSTED_LOOPBACK_HEADER = "x-apex-trusted-loopback"
 _TRUSTED_LOOPBACK_TOKEN = secrets.token_urlsafe(32)
+
+
+async def delete_native_thread_definitively(client: Any, thread_id: str) -> None:
+    """Settle an owned native-thread deletion before propagating cancellation.
+
+    Facade launch paths call this only after the run service definitively rejects
+    a freshly-created thread. A client disconnect or repeated shutdown
+    cancellation must not detach that deletion and leave a permanent orphan.
+    """
+
+    task = asyncio.create_task(
+        client.threads.delete(thread_id),
+        name="delete-rejected-native-thread",
+    )
+    interrupted = False
+    current = asyncio.current_task()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if current is not None and current.cancelling():
+                interrupted = True
+            if task.done():
+                break
+        except BaseException:
+            # The child is settled and its exact outcome is retrieved below.
+            # A caller cancellation already observed by this coordinator wins
+            # over a later cleanup failure without leaving either unobserved.
+            break
+
+    error: BaseException | None = None
+    try:
+        task.result()
+    except BaseException as exc:
+        error = exc
+    if interrupted:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
 
 
 def is_trusted_loopback(headers: Mapping[bytes, bytes]) -> bool:

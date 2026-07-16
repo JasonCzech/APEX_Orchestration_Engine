@@ -28,12 +28,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import PortKind
 from apex.auth.identity import ConsumerIdentity
+from apex.domain.diagnostics import contains_credential_material, safe_type_name
 from apex.domain.pipeline import MAX_CONTEXT_SUMMARY_CHARS, MAX_CONTEXT_TEXT_CHARS
 from apex.persistence.db import get_session, get_sessionmaker
 from apex.persistence.models import Document
 from apex.persistence.repositories.documents import DocumentsRepository, sanitize_document_text
-from apex.ports.artifact_store import ArtifactStorePort
-from apex.services.connections import get_connection_resolver
+from apex.ports.artifact_store import ArtifactStorePort, validate_stored_artifact_ack
+from apex.services.connections import close_adapter, get_connection_resolver
 from apex.services.text_extraction import (
     PARSE_PARSED,
     ExtractionResult,
@@ -63,6 +64,16 @@ _ACTIVE_DOCUMENT_UPLOADS = 0
 DOCUMENT_DELETION_RETRY_INTERVAL_S = 30.0
 STALE_DOCUMENT_UPLOAD_AGE = timedelta(hours=1)
 DOCUMENT_UPLOAD_LEASE_RENEW_INTERVAL_S = 5 * 60.0
+
+
+def _safe_connection_id(value: Any) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 255
+        and value == value.strip()
+        and "\x00" not in value
+        and not contains_credential_material(value)
+    )
 
 
 def _extract_text_bounded(*args: Any, **kwargs: Any) -> ExtractionResult:
@@ -100,6 +111,33 @@ async def await_task_definitively[TaskResult](
         raise
 
 
+async def cancel_task_definitively(task: asyncio.Task[Any]) -> None:
+    """Cancel one owned task, settle its cleanup, and preserve caller cancellation."""
+
+    if not task.done():
+        task.cancel()
+    interrupted = False
+    current = asyncio.current_task()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if current is not None and current.cancelling():
+                interrupted = True
+            if task.done():
+                break
+            continue
+        except BaseException:
+            break
+    if task.done():
+        try:
+            task.result()
+        except BaseException:
+            pass
+    if interrupted:
+        raise asyncio.CancelledError from None
+
+
 def _loop_limiter(
     registry: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore],
 ) -> asyncio.Semaphore:
@@ -133,15 +171,18 @@ async def document_upload_admission() -> AsyncIterator[None]:
 async def acquire_document_upload_slot() -> AsyncIterator[None]:
     """FastAPI yield dependency holding admission through upload finalization."""
 
+    busy = False
     try:
         async with document_upload_admission():
             yield
-    except DocumentUploadBusyError as exc:
+    except DocumentUploadBusyError:
+        busy = True
+    if busy:
         raise HTTPException(
             status_code=503,
             detail="document upload capacity is busy; retry shortly",
             headers={"Retry-After": "1"},
-        ) from exc
+        )
 
 
 # Stream cap: file cap + slack for multipart framing and small text fields.
@@ -149,9 +190,13 @@ MAX_UPLOAD_BODY_BYTES = MAX_DOCUMENT_BYTES + 1024 * 1024
 MAX_DOCUMENT_FILENAME_CHARS = 255
 MAX_DOCUMENT_FILENAME_BYTES = 512
 
-_BOUNDARY_RE = re.compile(r'(?:^|;)\s*boundary="?([^";]+)"?', re.IGNORECASE)
-_NAME_RE = re.compile(r'\bname="([^"]*)"')
-_FILENAME_RE = re.compile(r'\bfilename="([^"]*)"')
+_MULTIPART_CONTENT_TYPE_RE = re.compile(
+    r'\Amultipart/form-data\s*;\s*boundary=(?:"([^"\r\n]+)"|([^;"\s]+))\s*\Z',
+    re.IGNORECASE,
+)
+_DISPOSITION_PARAM_RE = re.compile(
+    r'\s*;\s*([!#$%&\'*+.^_`|~0-9A-Za-z-]+)\s*=\s*"((?:[^"\\\r\n]|\\[^\r\n])*)"'
+)
 
 
 class DocumentTooLargeError(Exception):
@@ -199,12 +244,15 @@ class ParsedUpload:
 
 def extract_boundary(content_type: str | None) -> str | None:
     """Boundary token from a multipart/form-data Content-Type header, else None."""
-    if not content_type or content_type.partition(";")[0].strip().lower() != "multipart/form-data":
+    if type(content_type) is not str or not 1 <= len(content_type) <= 512:
         return None
-    match = _BOUNDARY_RE.search(content_type)
+    match = _MULTIPART_CONTENT_TYPE_RE.fullmatch(content_type)
     if match is None:
         return None
-    boundary = match.group(1).strip()
+    raw_boundary = match.group(1) or match.group(2)
+    boundary = raw_boundary.strip()
+    if boundary != raw_boundary:
+        return None
     if not 1 <= len(boundary) <= MAX_MULTIPART_BOUNDARY_CHARS:
         return None
     if any(unicodedata.category(char).startswith("C") for char in boundary):
@@ -236,9 +284,13 @@ async def read_body_capped(
 def parse_multipart(body: bytes, boundary: str) -> ParsedUpload:
     """Parse a well-formed multipart/form-data body: first file part + text fields."""
     try:
-        delimiter = b"--" + boundary.encode("latin-1")
-    except UnicodeEncodeError as exc:
-        raise MultipartParseError("multipart boundary is not latin-1") from exc
+        delimiter: bytes | None = b"--" + boundary.encode("latin-1")
+    except UnicodeEncodeError:
+        # UnicodeEncodeError retains the complete caller-owned boundary on
+        # ``.object``.  Detach it before surfacing the stable parser error.
+        delimiter = None
+    if delimiter is None:
+        raise MultipartParseError("multipart boundary is not latin-1")
     if not body.startswith(delimiter):
         raise MultipartParseError("no multipart sections found")
 
@@ -271,19 +323,17 @@ def parse_multipart(body: bytes, boundary: str) -> ParsedUpload:
             raise MultipartParseError("multipart part headers are too large")
         content = body[content_start:boundary_start]
         headers = _parse_part_headers(header_blob)
-        disposition = headers.get("content-disposition", "")
-        name_match = _NAME_RE.search(disposition)
-        filename_match = _FILENAME_RE.search(disposition)
-        if name_match is None:
-            raise MultipartParseError("multipart part is missing a field name")
-        field_name = name_match.group(1)
-        if filename_match is not None:
+        disposition = headers.get("content-disposition")
+        if disposition is None:
+            raise MultipartParseError("multipart part is missing Content-Disposition")
+        field_name, filename = _parse_content_disposition(disposition)
+        if filename is not None:
             if field_name != "file":
                 raise MultipartParseError(f"unsupported multipart file field {field_name!r}")
             if parsed.file is not None:
                 raise MultipartParseError("multipart body contains duplicate file parts")
             parsed.file = UploadedFilePart(
-                filename=filename_match.group(1),
+                filename=filename,
                 content_type=headers.get("content-type") or "application/octet-stream",
                 data=content,
             )
@@ -296,11 +346,14 @@ def parse_multipart(body: bytes, boundary: str) -> ParsedUpload:
             if len(content) > limit:
                 raise MultipartParseError(f"multipart field {field_name!r} is too large")
             try:
-                parsed.fields[field_name] = content.decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise MultipartParseError(
-                    f"multipart field {field_name!r} is not valid UTF-8"
-                ) from exc
+                decoded: str | None = content.decode("utf-8")
+            except UnicodeDecodeError:
+                # UnicodeDecodeError retains raw multipart bytes.  Raise after
+                # leaving the handler so the parser error has no raw context.
+                decoded = None
+            if decoded is None:
+                raise MultipartParseError(f"multipart field {field_name!r} is not valid UTF-8")
+            parsed.fields[field_name] = decoded
         # Skip the CRLF that introduced the delimiter. The next iteration validates
         # whether this is another part or the closing `--` marker.
         cursor = boundary_start + 2 + len(delimiter)
@@ -328,12 +381,42 @@ def _parse_part_headers(blob: bytes) -> dict[str, str]:
     headers: dict[str, str] = {}
     for line in blob.split(b"\r\n"):
         name, sep, value = line.partition(b":")
-        if sep:
-            normalized = name.strip().lower().decode("latin-1")
-            if normalized in headers:
-                raise MultipartParseError(f"duplicate multipart header {normalized!r}")
-            headers[normalized] = value.strip().decode("latin-1")
+        if (
+            not sep
+            or not name
+            or name != name.strip()
+            or not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name)
+        ):
+            raise MultipartParseError("multipart part contains a malformed header")
+        normalized = name.lower().decode("ascii")
+        if normalized in headers:
+            raise MultipartParseError(f"duplicate multipart header {normalized!r}")
+        headers[normalized] = value.strip().decode("latin-1")
     return headers
+
+
+def _parse_content_disposition(value: str) -> tuple[str, str | None]:
+    """Parse the exact bounded form-data parameter grammar without substring matches."""
+
+    token, separator, _remainder = value.partition(";")
+    if token.strip().casefold() != "form-data":
+        raise MultipartParseError("multipart Content-Disposition must be form-data")
+    cursor = len(token)
+    parameters: dict[str, str] = {}
+    while cursor < len(value):
+        match = _DISPOSITION_PARAM_RE.match(value, cursor)
+        if match is None:
+            raise MultipartParseError("multipart Content-Disposition is malformed")
+        name = match.group(1).casefold()
+        if name not in {"name", "filename"}:
+            raise MultipartParseError("multipart Content-Disposition has an unsupported parameter")
+        if name in parameters:
+            raise MultipartParseError("multipart Content-Disposition has a duplicate parameter")
+        parameters[name] = re.sub(r"\\(.)", r"\1", match.group(2))
+        cursor = match.end()
+    if not separator or "name" not in parameters:
+        raise MultipartParseError("multipart part is missing a field name")
+    return parameters["name"], parameters.get("filename")
 
 
 def safe_filename(filename: str | None) -> str:
@@ -466,7 +549,12 @@ class DocumentsService:
                 self._store.put(key, data, content_type=content_type),
                 name=f"document-put-{document_id}",
             )
-            await await_task_definitively(put_task)
+            stored = await await_task_definitively(put_task)
+            validate_stored_artifact_ack(
+                stored,
+                key,
+                expected_size=len(data),
+            )
 
             # Parse the bytes into text the agent can actually read. Off-thread because
             # pypdf/python-docx are blocking; soft-fails (status set) never break the upload.
@@ -519,7 +607,7 @@ class DocumentsService:
                     logger.warning(
                         "documents.finalize_resolution_failed",
                         key=key,
-                        error_type=resolution_exc.__class__.__name__,
+                        error_type=safe_type_name(resolution_exc),
                     )
                 if resolution_failed:
                     # Preserve bytes on an ambiguous finalize. The database may
@@ -537,7 +625,7 @@ class DocumentsService:
                 logger.warning(
                     "documents.upload_tombstone_failed",
                     key=key,
-                    error_type=tombstone_exc.__class__.__name__,
+                    error_type=safe_type_name(tombstone_exc),
                 )
             object_absent = not write_started
             if tombstone is not None:
@@ -555,7 +643,7 @@ class DocumentsService:
                     logger.warning(
                         "documents.orphan_cleanup_failed",
                         key=key,
-                        error_type=cleanup_exc.__class__.__name__,
+                        error_type=safe_type_name(cleanup_exc),
                     )
             if tombstone is not None and object_absent:
                 try:
@@ -564,17 +652,13 @@ class DocumentsService:
                     logger.warning(
                         "documents.upload_intent_finalize_failed",
                         key=key,
-                        error_type=finalize_exc.__class__.__name__,
+                        error_type=safe_type_name(finalize_exc),
                     )
             raise
         finally:
             if heartbeat_stop is not None and heartbeat_task is not None:
                 heartbeat_stop.set()
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
+                await cancel_task_definitively(heartbeat_task)
 
 
 async def _renew_document_upload_lease(document_id: str, stop: asyncio.Event) -> None:
@@ -603,7 +687,7 @@ async def _renew_document_upload_lease(document_id: str, stop: asyncio.Event) ->
             logger.warning(
                 "documents.upload_lease_renewal_failed",
                 document_id=document_id,
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
 
 
@@ -622,21 +706,31 @@ async def purge_document_tombstone(
             "document artifact-store affinity must be mapped before deletion"
         )
 
-    store, _connection_id = await resolver.resolve_with_connection_id(
+    store, resolved_connection_id = await resolver.resolve_with_connection_id(
         PortKind.ARTIFACT_STORE,
         connection_id=document.artifact_connection_id,
         project_id=document.project_id,
     )
-    delete_object = getattr(store, "delete", None)
-    if delete_object is None:
-        raise RuntimeError("artifact store does not support object deletion")
     try:
-        await delete_object(document.artifact_key)
-    except (KeyError, FileNotFoundError):
-        # A prior attempt may have deleted the deterministic object before its
-        # metadata-finalization acknowledgement was lost.
-        pass
-    await repository.complete_deletion(document.id)
+        if not _safe_connection_id(resolved_connection_id):
+            raise RuntimeError("artifact-store resolver returned an invalid connection id")
+        if (
+            document.artifact_connection_id is not None
+            and resolved_connection_id != document.artifact_connection_id
+        ):
+            raise RuntimeError("artifact-store resolver did not honor document affinity")
+        delete_object = getattr(store, "delete", None)
+        if delete_object is None:
+            raise RuntimeError("artifact store does not support object deletion")
+        try:
+            await delete_object(document.artifact_key)
+        except (KeyError, FileNotFoundError):
+            # A prior attempt may have deleted the deterministic object before its
+            # metadata-finalization acknowledgement was lost.
+            pass
+        await repository.complete_deletion(document.id)
+    finally:
+        await close_adapter(store)
 
 
 async def purge_stale_upload_intent(
@@ -699,19 +793,19 @@ async def reconcile_pending_document_deletions_once(
                     "documents.deletion_reconcile_failed",
                     document_id=document_id,
                     artifact_key=artifact_key,
-                    error_type=exc.__class__.__name__,
+                    error_type=safe_type_name(exc),
                 )
                 await session.rollback()
                 try:
                     await repository.defer_cleanup(
                         document_id,
-                        error=exc.__class__.__name__,
+                        error=safe_type_name(exc),
                     )
                 except Exception as defer_exc:
                     logger.warning(
                         "documents.deletion_retry_schedule_failed",
                         document_id=document_id,
-                        error_type=defer_exc.__class__.__name__,
+                        error_type=safe_type_name(defer_exc),
                     )
                     await session.rollback()
 
@@ -733,19 +827,19 @@ async def reconcile_pending_document_deletions_once(
                     "documents.upload_intent_reconcile_failed",
                     document_id=document_id,
                     artifact_key=artifact_key,
-                    error_type=exc.__class__.__name__,
+                    error_type=safe_type_name(exc),
                 )
                 await session.rollback()
                 try:
                     await repository.defer_cleanup(
                         document_id,
-                        error=exc.__class__.__name__,
+                        error=safe_type_name(exc),
                     )
                 except Exception as defer_exc:
                     logger.warning(
                         "documents.upload_retry_schedule_failed",
                         document_id=document_id,
-                        error_type=defer_exc.__class__.__name__,
+                        error_type=safe_type_name(defer_exc),
                     )
                     await session.rollback()
 
@@ -764,7 +858,7 @@ async def run_document_deletion_reconciler(
         except Exception as exc:
             logger.warning(
                 "documents.deletion_reconciler_failed",
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
         if heartbeat is not None:
             heartbeat()
@@ -777,10 +871,13 @@ async def run_document_deletion_reconciler(
 # ── FastAPI dependency providers (shared by /documents and /artifacts) ──────
 
 
-async def get_artifact_store() -> ArtifactStorePort:
+async def get_artifact_store() -> AsyncIterator[ArtifactStorePort]:
     """Default artifact store via the connection resolver; override in tests."""
     store = await get_connection_resolver().resolve(PortKind.ARTIFACT_STORE)
-    return store
+    try:
+        yield store
+    finally:
+        await close_adapter(store)
 
 
 def get_documents_repository(

@@ -52,6 +52,7 @@ async def validate_schema_head(engine: Any | None = None) -> None:
 
     expected = packaged_schema_heads()
     packaged_graph = revision_graph(packaged_revision_lineage(packaged_schema_scripts()))
+    schema_error = False
     try:
         database = engine or get_engine()
         async with database.connect() as connection:
@@ -61,10 +62,14 @@ async def validate_schema_head(engine: Any | None = None) -> None:
             database_graph = revision_graph(
                 (str(row[0]), str(row[1])) for row in lineage_result.all()
             )
-    except (OSError, SQLAlchemyError, TypeError, ValueError) as exc:
+    except (OSError, SQLAlchemyError, TypeError, ValueError):
+        schema_error = True
+        current = frozenset()
+        database_graph = {}
+    if schema_error:
         raise SchemaNotReadyError(
             "APEX database schema is unavailable; run `alembic upgrade head` before rollout"
-        ) from exc
+        )
 
     if not database_heads_descend_from_packaged_heads(
         current_heads=current,
@@ -72,10 +77,9 @@ async def validate_schema_head(engine: Any | None = None) -> None:
         database_graph=database_graph,
         packaged_graph=packaged_graph,
     ):
-        current_label = ",".join(sorted(current)) if current else "missing"
         expected_label = ",".join(sorted(expected))
         raise SchemaNotReadyError(
-            f"APEX database schema is at {current_label}; packaged head is {expected_label}, "
+            f"APEX database schema is incompatible; packaged head is {expected_label}, "
             "but trusted descendant lineage could not be proven. Run `alembic upgrade head` "
             "from a trusted application image before rollout."
         )

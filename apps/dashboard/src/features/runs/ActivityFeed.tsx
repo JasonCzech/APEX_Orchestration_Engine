@@ -29,6 +29,10 @@ import { formatTimestamp, PHASE_LABELS, statusLabel, statusVisual, TONE_COLOR_VA
 
 export const ACTIVITY_FEED_MAX_ENTRIES = 500
 export const ENGINE_TICKS_PER_ROW = 10
+// The stream reducer retains at most 200 tool calls. Keeping a larger rolling
+// identity window preserves reconnect dedupe without retaining every id from a
+// multi-day run forever.
+const SEEN_TOOL_ID_CAP = 1_000
 /** px distance from the bottom within which the feed counts as "stuck". */
 const STICK_THRESHOLD_PX = 32
 
@@ -124,7 +128,7 @@ export function ActivityFeed({
   toolCalls?: readonly LiveToolCall[] | null
   /** Run-wide real-agent telemetry; filtered to this phase here. */
   agentEvents?: readonly LiveAgentEvent[] | null
-  /** Run-wide retryable engine poll failures; filtered to this phase here. */
+  /** Run-wide retryable engine operation failures; filtered to this phase here. */
   engineErrors?: readonly LiveEngineError[] | null
   /** Engine poll ring buffer; only meaningful for the execution phase. */
   engineSamples?: readonly LiveEngineSample[] | null
@@ -134,8 +138,9 @@ export function ActivityFeed({
   // Per-phase bookkeeping (component is keyed by phase, so refs reset with it).
   const seq = useRef(0)
   const seenTools = useRef(new Set<string>())
-  const seenAgentEvents = useRef(new Set<LiveAgentEvent>())
-  const seenEngineErrors = useRef(new Set<LiveEngineError>())
+  const seenToolOrder = useRef<string[]>([])
+  const seenAgentEvents = useRef(new WeakSet<LiveAgentEvent>())
+  const seenEngineErrors = useRef(new WeakSet<LiveEngineError>())
   const lastDividerSig = useRef<string | null>(null)
   const prevSampleLen = useRef(0)
   const prevSamples = useRef<readonly LiveEngineSample[]>([])
@@ -167,6 +172,11 @@ export function ActivityFeed({
     for (const call of toolCalls ?? []) {
       if (call.phase !== phase || seenTools.current.has(call.id)) continue
       seenTools.current.add(call.id)
+      seenToolOrder.current.push(call.id)
+      if (seenToolOrder.current.length > SEEN_TOOL_ID_CAP) {
+        const expired = seenToolOrder.current.shift()
+        if (expired !== undefined) seenTools.current.delete(expired)
+      }
       additions.push({
         kind: 'tool',
         key: seq.current++,
@@ -194,15 +204,19 @@ export function ActivityFeed({
       })
     }
 
-    // 4. Retryable engine poll failures stay visible without being mistaken
+    // 4. Retryable engine operation failures stay visible without being mistaken
     // for schema drift or a terminal phase failure.
     for (const event of engineErrors ?? []) {
       if (event.phase !== phase || seenEngineErrors.current.has(event)) continue
       seenEngineErrors.current.add(event)
+      const failureDetail =
+        event.type === 'engine_poll_error'
+          ? `consecutive failure ${event.consecutive_errors}`
+          : `failure ${event.failure}`
       additions.push({
         kind: 'engine_error',
         key: seq.current++,
-        detail: `${event.error} · consecutive failure ${event.consecutive_errors} · attempt ${event.attempt}`,
+        detail: `${event.error} · ${failureDetail} · attempt ${event.attempt}`,
         at: toolCallAt(event.at),
       })
     }

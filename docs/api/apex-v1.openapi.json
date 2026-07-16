@@ -3591,6 +3591,7 @@
           "content": {
             "anyOf": [
               {
+                "maxLength": 100000,
                 "type": "string"
               },
               {
@@ -3602,6 +3603,7 @@
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -3615,16 +3617,19 @@
             "type": "string"
           },
           "key": {
+            "maxLength": 255,
             "title": "Key",
             "type": "string"
           },
           "namespace": {
+            "maxLength": 255,
             "title": "Namespace",
             "type": "string"
           },
           "note": {
             "anyOf": [
               {
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -3681,6 +3686,7 @@
           "description": {
             "anyOf": [
               {
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -3694,10 +3700,12 @@
             "type": "string"
           },
           "key": {
+            "maxLength": 255,
             "title": "Key",
             "type": "string"
           },
           "namespace": {
+            "maxLength": 255,
             "title": "Namespace",
             "type": "string"
           },
@@ -3725,6 +3733,7 @@
       "PromptVersionDetail": {
         "properties": {
           "content": {
+            "maxLength": 100000,
             "title": "Content",
             "type": "string"
           },
@@ -3743,6 +3752,7 @@
           "created_by": {
             "anyOf": [
               {
+                "maxLength": 255,
                 "type": "string"
               },
               {
@@ -3758,6 +3768,7 @@
           "note": {
             "anyOf": [
               {
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -3807,6 +3818,7 @@
           "created_by": {
             "anyOf": [
               {
+                "maxLength": 255,
                 "type": "string"
               },
               {
@@ -3822,6 +3834,7 @@
           "note": {
             "anyOf": [
               {
+                "maxLength": 20000,
                 "type": "string"
               },
               {
@@ -4334,6 +4347,7 @@
         "type": "object"
       },
       "ServiceInfo": {
+        "additionalProperties": false,
         "properties": {
           "image": {
             "default": "",
@@ -5106,6 +5120,7 @@
         "type": "object"
       },
       "WorkItem": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "default": "",
@@ -5200,6 +5215,7 @@
         "type": "object"
       },
       "WorkItemPage": {
+        "additionalProperties": false,
         "properties": {
           "items": {
             "items": {
@@ -5214,6 +5230,7 @@
           },
           "total": {
             "default": 0,
+            "maximum": 9.223372036854776e+18,
             "minimum": 0.0,
             "title": "Total",
             "type": "integer"

@@ -22,8 +22,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
-from inspect import isawaitable, iscoroutinefunction
+from inspect import getattr_static, isawaitable, iscoroutinefunction
 from ipaddress import ip_address
+from types import AsyncGeneratorType, CoroutineType
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -31,9 +32,15 @@ import structlog
 from sqlalchemy import case, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from apex.adapters.network_safety import (
+    destination_address_allowed,
+    is_unconditionally_denied_host,
+)
 from apex.adapters.options import coerce_bool, normalize_host_port_endpoint
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
+from apex.domain.input_limits import validate_json_object
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.ports.secrets import SecretsPort
 from apex.services.connection_credentials import (
     connection_options_require_repair,
@@ -54,6 +61,78 @@ DENIED_ADAPTER_HOST_SUFFIXES = (".metadata.google.internal",)
 INTERNAL_PROJECT_BINDING_ATTR = "apex_project_id"
 TRUSTED_PRIVATE_HOST_OPTION = "_apex_trusted_private_host"
 NETWORK_TRUST_OPTION_KEYS = frozenset({"base_url", "endpoint", "secure", "verify_tls"})
+_MISSING_TYPE_ATTRIBUTE = object()
+_MAX_EXTERNAL_WORK_TRACKING_PROJECT_CHARS = 255
+
+
+async def _await_task_definitively[TaskResult](
+    task: asyncio.Task[TaskResult],
+) -> TaskResult:
+    """Settle one owned task despite every cancellation of its waiter."""
+
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    error: BaseException | None = None
+    try:
+        task.result()
+    except BaseException as exc:
+        error = exc
+    if interrupted:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
+    return task.result()
+
+
+def _safe_type_metadata(cls: type[Any], name: str, default: Any = None) -> Any:
+    """Read type metadata without invoking a custom metaclass descriptor."""
+
+    metaclass = type(cls)
+    if type(metaclass) is not type:
+        return default
+    try:
+        metaclass_mro = type.__getattribute__(metaclass, "__mro__")
+    except Exception:
+        return default
+    if type(metaclass_mro) is not tuple:
+        return default
+    for metaclass_base in metaclass_mro:
+        try:
+            namespace = type.__getattribute__(metaclass_base, "__dict__")
+        except Exception:
+            return default
+        if metaclass_base is not type and name in namespace:
+            return default
+    try:
+        return type.__getattribute__(cls, name)
+    except Exception:
+        return default
+
+
+def _safe_type_name(value: Any) -> str:
+    name = _safe_type_metadata(type(value), "__name__")
+    return name[:64] if type(name) is str and name else "unknown"
+
+
+def _safe_class_attribute(value: Any, name: str) -> Any:
+    """Resolve raw class metadata without executing an instance descriptor."""
+
+    mro = _safe_type_metadata(type(value), "__mro__")
+    if type(mro) is not tuple:
+        return _MISSING_TYPE_ATTRIBUTE
+    for base in mro:
+        namespace = _safe_type_metadata(base, "__dict__")
+        if namespace is None:
+            return _MISSING_TYPE_ATTRIBUTE
+        if name in namespace:
+            return namespace[name]
+    return _MISSING_TYPE_ATTRIBUTE
 
 
 def _throwaway_session_factory():  # noqa: ANN202 — (engine, sessionmaker) pair
@@ -169,6 +248,7 @@ class _ManagedAdapter:
         self.retired = False
         self.closed = False
         self._closing = False
+        self._close_task: asyncio.Task[None] | None = None
 
     def checkout(self) -> "_AdapterProxy":
         self.acquire()
@@ -235,15 +315,23 @@ class _ManagedAdapter:
         await self.release()
 
     async def _close_if_idle(self) -> None:
-        if not self.retired or self.active_calls or self.closed or self._closing:
+        if not self.retired or self.active_calls or self.closed:
             return
-        self._closing = True
+        if self._close_task is None:
+            self._closing = True
+            self._close_task = asyncio.create_task(self._close_retired_adapter())
+        # A request cancellation must not cancel or detach the only task capable
+        # of releasing a retired provider's sockets. The task owns ``self`` until
+        # completion, so resolver-cache eviction cannot orphan the cleanup.
+        await _await_task_definitively(self._close_task)
+
+    async def _close_retired_adapter(self) -> None:
         try:
             await close_adapter(self.adapter)
         except Exception as exc:
             logger.warning(
                 "apex.connections.retired_adapter_close_failed",
-                adapter_type=self.adapter.__class__.__name__,
+                adapter_type=_safe_type_name(self.adapter),
                 error=bounded_diagnostic(exc),
             )
         finally:
@@ -271,7 +359,7 @@ class _AdapterProxy:
         while calls still pass through the generation lease.
         """
 
-        return self._managed.adapter.__class__
+        return type(self._managed.adapter)
 
     def _ensure_open(self) -> None:
         if self._released:
@@ -298,22 +386,31 @@ class _AdapterProxy:
         def invoke_sync(*args: Any, **kwargs: Any) -> Any:
             self._ensure_open()
             result = attribute(*args, **kwargs)
-            if hasattr(result, "__aiter__"):
+            result_type = type(result)
+            if result_type is AsyncGeneratorType:
                 return _LeasedAsyncIterator(self._managed, result, self._loop)
-            if isawaitable(result):
+            if result_type is CoroutineType:
                 return self._managed.await_result(result, checkout=self)
+            if any(
+                _safe_class_attribute(result, method) is not _MISSING_TYPE_ATTRIBUTE
+                for method in ("__aiter__", "__await__")
+            ):
+                raise TypeError("adapter returned an unsupported asynchronous result")
             return result
 
         return invoke_sync
 
     async def aclose(self) -> None:
-        """Explicit proxy close retires this generation without racing callers."""
+        """Release this checkout; resolver rotation/shutdown owns retirement."""
 
         if self._released:
             return
         self._released = True
+        # A proxy is a lease on a cache-owned generation. Retiring here would let
+        # one request evict the shared adapter while sibling requests still use
+        # it. If the resolver already retired the generation, release() performs
+        # its definitive final close before propagating caller cancellation.
         await self._managed.release_checkout()
-        await self._managed.retire()
 
     def __del__(self) -> None:
         if self.__dict__.get("_released", True):
@@ -335,6 +432,7 @@ class _LeasedAsyncIterator:
         self._iterator = iterator.__aiter__()
         self._loop = loop
         self._closed = False
+        self._close_task: asyncio.Task[None] | None = None
         # Acquire synchronously when iter_bytes returns so rotation cannot close
         # the generation in the gap before the first pull.
         self._managed.acquire(allow_retired=True)
@@ -358,9 +456,17 @@ class _LeasedAsyncIterator:
             raise
 
     async def aclose(self) -> None:
-        if self._closed:
+        if self._close_task is not None:
+            await _await_task_definitively(self._close_task)
             return
         self._closed = True
+        self._close_task = asyncio.create_task(self._close_iterator_and_release())
+        self._close_task.add_done_callback(_observe_iterator_close_result)
+        # Iterator cleanup owns the adapter lease and therefore must outlive a
+        # disconnect/cancellation of the request consuming it.
+        await _await_task_definitively(self._close_task)
+
+    async def _close_iterator_and_release(self) -> None:
         try:
             close = getattr(self._iterator, "aclose", None)
             if close is not None:
@@ -397,6 +503,15 @@ async def _close_abandoned_iterator(managed: _ManagedAdapter, iterator: Any) -> 
         await managed.release()
 
 
+def _observe_iterator_close_result(task: asyncio.Task[None]) -> None:
+    """Retrieve background cleanup failures when the awaiting caller was cancelled."""
+
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
+
 @dataclass
 class _LoopCache:
     """Adapter instances and build locks owned by exactly one event loop."""
@@ -414,20 +529,49 @@ def connection_config_from_row(row: Any) -> ConnectionConfig:
     raw_options = row.options
     if raw_options is None:
         options: dict[str, Any] = {}
-    elif isinstance(raw_options, dict):
-        options = dict(raw_options)
+    elif type(raw_options) is dict:
+        # Pydantic and JSON validation both traverse mappings. Copy only an
+        # exact built-in JSON tree first so a corrupt/custom row value cannot
+        # execute mapping, descriptor, or scalar-subclass hooks during resolve.
+        options = _copy_exact_connection_options(raw_options)
     else:
         raise ValueError("stored connection options require repair")
-    if row.base_url:
-        options.setdefault("base_url", row.base_url)
+    base_url = row.base_url
+    if base_url is not None and type(base_url) is not str:
+        raise ValueError("stored connection URL requires repair")
+    if type(base_url) is str and base_url:
+        options.setdefault("base_url", base_url)
+    raw_kind = row.kind
+    if type(raw_kind) is not str:
+        raise ValueError("stored connection kind requires repair")
+    scalar_fields = {
+        "id": row.id,
+        "provider": row.provider,
+        "name": row.name,
+        "secret_ref": row.secret_ref,
+    }
+    if any(value is not None and type(value) is not str for value in scalar_fields.values()):
+        raise ValueError("stored connection text fields require repair")
     return ConnectionConfig(
-        id=row.id,
-        kind=PortKind(row.kind),
-        provider=row.provider,
-        name=row.name,
+        id=scalar_fields["id"],
+        kind=PortKind(raw_kind),
+        provider=scalar_fields["provider"],
+        name=scalar_fields["name"],
         options=options,
-        secret_ref=row.secret_ref,
+        secret_ref=scalar_fields["secret_ref"],
     )
+
+
+def _copy_exact_connection_options(raw: dict[str, Any]) -> dict[str, Any]:
+    """Copy one exact-builtins JSON object before any extensible validator sees it."""
+
+    # The shared validator rejects subclasses, cycles/repeated containers, deep
+    # trees, giant integers, and byte/text amplification before serialization.
+    validate_json_object(raw, label="stored connection options")
+    copied = json.loads(json.dumps(raw, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+    if type(copied) is not dict:  # pragma: no cover - json round-trip invariant
+        raise ValueError("stored connection options require repair")
+    return copied
 
 
 def validate_adapter_base_url(raw_url: Any, *, allow_private_hosts: bool | None = None) -> None:
@@ -435,7 +579,7 @@ def validate_adapter_base_url(raw_url: Any, *, allow_private_hosts: bool | None 
 
     if raw_url is None:
         return
-    if not isinstance(raw_url, str):
+    if type(raw_url) is not str:
         raise ValueError("adapter URL must be a string")
     if not raw_url or raw_url != raw_url.strip() or len(raw_url) > 4_096:
         raise ValueError("adapter URL must be a non-empty http(s) URL")
@@ -454,39 +598,59 @@ def validate_adapter_base_url(raw_url: Any, *, allow_private_hosts: bool | None 
         raise ValueError("adapter URL must be an http(s) URL without embedded credentials")
     try:
         port = parsed.port
-    except ValueError as exc:
-        raise ValueError("adapter URL has an invalid port") from exc
+    except ValueError:
+        # urllib's ValueError retains the caller-controlled port text. Raise
+        # after leaving the handler so it cannot survive in the public chain.
+        port = None
+        invalid_port = True
+    else:
+        invalid_port = False
+    if invalid_port:
+        raise ValueError("adapter URL has an invalid port")
     if port is not None and not 1 <= port <= 65_535:
         raise ValueError("adapter URL has an invalid port")
     settings = get_settings()
-    if allow_private_hosts is None:
-        allow_private_hosts = getattr(settings, "allow_private_adapter_hosts", False)
-    if parsed.scheme == "http" and settings.is_locked_down and not allow_private_hosts:
+    private_hosts_approved = _private_hosts_approval(settings, allow_private_hosts)
+    if parsed.scheme == "http" and settings.is_locked_down and not private_hosts_approved:
         raise ValueError(
             "adapter URL must use https in locked environments unless explicitly "
             "approved as a trusted private target"
         )
-    if allow_private_hosts:
-        return
-
     normalized = parsed.hostname.rstrip(".").lower()
+    if is_unconditionally_denied_host(normalized):
+        raise ValueError("adapter URL host is forbidden")
     if normalized in DENIED_ADAPTER_HOSTS or normalized.endswith(DENIED_ADAPTER_HOST_SUFFIXES):
-        raise ValueError("private adapter hosts are disabled")
+        if not private_hosts_approved:
+            raise ValueError("private adapter hosts are disabled")
 
     # Hostname resolution is deliberately deferred to the connect-time pinned
     # transports. Save/build validation runs on ASGI/graph event loops and must
     # never block them on libc DNS. Numeric destinations can be rejected here.
+    address = None
+    hostname = False
     try:
         address = ip_address(normalized)
     except ValueError:
-        if "." not in normalized:
+        hostname = True
+    if hostname:
+        if "." not in normalized and not private_hosts_approved:
             # Search-domain expansion makes single-label names both ambiguous and
             # capable of resolving into private infrastructure. Trusted private
             # connections return above and may deliberately use service names.
-            raise ValueError("adapter URL host must be fully qualified") from None
+            raise ValueError("adapter URL host must be fully qualified")
         return
-    if not address.is_global:
-        raise ValueError("private adapter hosts are disabled")
+    if address is None:  # pragma: no cover - ipaddress contract invariant
+        raise ValueError("adapter URL host is invalid")
+    if not destination_address_allowed(
+        address,
+        allow_private_hosts=private_hosts_approved,
+    ):
+        detail = (
+            "adapter URL host is forbidden"
+            if private_hosts_approved
+            else "private adapter hosts are disabled"
+        )
+        raise ValueError(detail)
 
 
 def validate_adapter_transport_options(
@@ -494,12 +658,13 @@ def validate_adapter_transport_options(
 ) -> None:
     """Keep stored adapter options from disabling TLS verification in production."""
 
+    if type(options) is not dict:
+        raise ValueError("adapter transport options must be an object")
     settings = get_settings()
-    if allow_private_hosts is None:
-        allow_private_hosts = getattr(settings, "allow_private_adapter_hosts", False)
+    private_hosts_approved = _private_hosts_approval(settings, allow_private_hosts)
     if (
         settings.is_locked_down
-        and not allow_private_hosts
+        and not private_hosts_approved
         and "verify_tls" in options
         and not coerce_bool(options.get("verify_tls"), default=True)
     ):
@@ -507,6 +672,13 @@ def validate_adapter_transport_options(
             "adapter TLS verification cannot be disabled in locked environments "
             "unless explicitly approved for a trusted private target"
         )
+
+
+def _private_hosts_approval(settings: Any, value: bool | None) -> bool:
+    candidate = getattr(settings, "allow_private_adapter_hosts", False) if value is None else value
+    if type(candidate) is not bool:
+        raise ValueError("private-host approval must be a boolean")
+    return candidate
 
 
 def validate_connection_config(config: ConnectionConfig) -> None:
@@ -542,12 +714,86 @@ def validate_connection_config(config: ConnectionConfig) -> None:
         raise ValueError("connection options contain unsafe credential-bearing configuration")
 
 
+def _validate_external_work_tracking_project(value: Any) -> None:
+    """Validate a provider project identifier without reflecting it in errors."""
+
+    invalid = (
+        type(value) is not str
+        or not value.strip()
+        or value != value.strip()
+        or len(value) > _MAX_EXTERNAL_WORK_TRACKING_PROJECT_CHARS
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    )
+    if not invalid:
+        try:
+            invalid = len(value.encode("utf-8")) > _MAX_EXTERNAL_WORK_TRACKING_PROJECT_CHARS
+        except UnicodeEncodeError:
+            invalid = True
+    if invalid:
+        raise ValueError("scoped real work-tracking connection requires a bounded external project")
+
+
+def validate_scoped_work_tracking_config(
+    config: ConnectionConfig,
+    *,
+    internal_project_id: str | None,
+) -> None:
+    """Reject scoped built-in tracker configs without an upstream project boundary.
+
+    The persisted ``project_id`` is an APEX ownership boundary. Jira and Azure
+    DevOps credentials can span several upstream projects, so a scoped row must
+    separately declare the provider project used for authenticated calls.
+    Global rows intentionally retain their unscoped administrative semantics.
+    """
+
+    provider = config.provider.casefold()
+    if (
+        config.kind is not PortKind.WORK_TRACKING
+        or internal_project_id is None
+        or provider in {"stub", "fake"}
+    ):
+        return
+    option_name = {"jira": "project_key", "ado": "project"}.get(provider)
+    if option_name is not None:
+        _validate_external_work_tracking_project(config.options.get(option_name))
+
+
+def validate_resolved_work_tracking_project(
+    adapter: Any,
+    *,
+    provider: str,
+    requested_project_id: str | None,
+) -> None:
+    """Require a built scoped real tracker checkout to expose its upstream project."""
+
+    if requested_project_id is None or provider.casefold() in {"stub", "fake"}:
+        return
+    external_project = None
+    project_lookup_failed = False
+    try:
+        external_project = getattr(adapter, "project_id", None)
+    except Exception:
+        project_lookup_failed = True
+    if project_lookup_failed:
+        raise ValueError("scoped real work-tracking connection requires a bounded external project")
+    _validate_external_work_tracking_project(external_project)
+
+
 def stored_connection_from_row(row: Any) -> StoredConnection:
+    project_id = row.project_id
+    enabled = row.enabled
+    runtime_version = row.runtime_version
+    if project_id is not None and type(project_id) is not str:
+        raise ValueError("stored connection project scope requires repair")
+    if type(enabled) is not bool:
+        raise ValueError("stored connection enabled flag requires repair")
+    if runtime_version is not None and type(runtime_version) is not datetime:
+        raise ValueError("stored connection runtime version requires repair")
     return StoredConnection(
         config=connection_config_from_row(row),
-        project_id=row.project_id,
-        enabled=bool(row.enabled),
-        runtime_version=row.runtime_version,
+        project_id=project_id,
+        enabled=enabled,
+        runtime_version=runtime_version,
     )
 
 
@@ -607,7 +853,7 @@ class DbConnectionStore:
                 row = await session.get(Connection, connection_id)
                 return stored_connection_from_row(row) if row is not None else None
         finally:
-            await engine.dispose()
+            await dispose_engine_instance_definitively(engine)
 
     async def find_default(self, kind: PortKind, project_id: str | None) -> StoredConnection | None:
         engine, session_factory = _throwaway_session_factory()
@@ -615,7 +861,7 @@ class DbConnectionStore:
             async with session_factory() as session:
                 row = await session.scalar(_default_connection_stmt(kind, project_id))
         finally:
-            await engine.dispose()
+            await dispose_engine_instance_definitively(engine)
         return stored_connection_from_row(row) if row is not None else None
 
 
@@ -742,6 +988,10 @@ class ConnectionResolver:
             internal_project_id=internal_project_id,
             requested_project_id=project_id,
         )
+        validate_scoped_work_tracking_config(
+            conn,
+            internal_project_id=internal_project_id,
+        )
         return ResolvedConnectionMetadata(
             config=conn,
             internal_project_id=internal_project_id,
@@ -760,26 +1010,47 @@ class ConnectionResolver:
         conn = metadata.config
         version = metadata.connection_version
         cache_key: str | None = None
+        validate_scoped_work_tracking_config(
+            conn,
+            internal_project_id=metadata.internal_project_id,
+        )
         if options_overlay:
-            forbidden_overlay_keys = sorted(
-                key
+            forbidden_overlay = any(
+                key in NETWORK_TRUST_OPTION_KEYS
+                or key.startswith("_apex_")
+                or conn.kind is PortKind.WORK_TRACKING
                 for key in options_overlay
-                if key in NETWORK_TRUST_OPTION_KEYS or key.startswith("_apex_")
             )
-            if forbidden_overlay_keys:
+            if forbidden_overlay:
                 raise ValueError(
-                    "connection options overlay cannot change network target or trust policy: "
-                    + ", ".join(forbidden_overlay_keys)
+                    "connection options overlay cannot change network target or trust policy "
+                    "or provider project boundary"
                 )
             conn = conn.model_copy(update={"options": {**conn.options, **options_overlay}})
             validate_connection_config(conn)
+            validate_scoped_work_tracking_config(
+                conn,
+                internal_project_id=metadata.internal_project_id,
+            )
             digest = hashlib.sha256(
                 json.dumps(options_overlay, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
             cache_key = f"{conn.id}:overlay:{digest}"
         adapter = await self._build_cached(conn, version, cache_key=cache_key)
-        if conn.kind is PortKind.WORK_TRACKING:
-            _expose_internal_connection_binding(adapter, metadata.internal_project_id)
+        try:
+            if conn.kind is PortKind.WORK_TRACKING:
+                _expose_internal_connection_binding(adapter, metadata.internal_project_id)
+                validate_resolved_work_tracking_project(
+                    adapter,
+                    provider=conn.provider,
+                    requested_project_id=metadata.internal_project_id,
+                )
+        except BaseException:
+            try:
+                await close_adapter(adapter)
+            except BaseException:
+                pass
+            raise
         return ResolvedAdapter(
             adapter=adapter,
             connection_id=conn.id,
@@ -794,6 +1065,7 @@ class ConnectionResolver:
     ) -> StoredConnection | None:
         if self._store is None:
             return None
+        store_unavailable = False
         try:
             if connection_id is not None:
                 stored = await self._store.get(connection_id)
@@ -812,13 +1084,15 @@ class ConnectionResolver:
                 "apex.connections.db_unavailable",
                 kind=kind.value,
                 connection_id=connection_id,
-                error=bounded_diagnostic(f"{exc.__class__.__name__}: {bounded_diagnostic(exc)}"),
+                error=bounded_diagnostic(f"{safe_type_name(exc)}: {bounded_diagnostic(exc)}"),
             )
-            if get_settings().is_locked_down:
-                raise RuntimeError(
-                    f"connection store unavailable while resolving {kind.value!r}"
-                ) from exc
-            return None
+            store_unavailable = get_settings().is_locked_down
+        if store_unavailable:
+            # SQLAlchemy/driver exceptions can retain SQL parameters and DSNs.
+            # The sanitized log above is the only diagnostic boundary; keep the
+            # graph-visible error chain server-owned.
+            raise RuntimeError(f"connection store unavailable while resolving {kind.value!r}")
+        return None
 
     @staticmethod
     def _check_usable(stored: StoredConnection, kind: PortKind, project_id: str | None) -> None:
@@ -837,21 +1111,20 @@ class ConnectionResolver:
 
     def _select_static(self, kind: PortKind, connection_id: str | None) -> ConnectionConfig:
         if connection_id is not None:
-            try:
-                conn = self._by_id[connection_id]
-            except KeyError:
+            conn = self._by_id.get(connection_id)
+            if conn is None:
                 raise KeyError(
                     f"unknown connection_id {connection_id!r}; known: {sorted(self._by_id)}"
-                ) from None
+                )
             if conn.kind is not kind:
                 raise ValueError(
                     f"connection {connection_id!r} is kind={conn.kind.value!r}, not {kind.value!r}"
                 )
             return conn
-        try:
-            return self._default_by_kind[kind]
-        except KeyError:
-            raise KeyError(f"no default connection configured for kind {kind.value!r}") from None
+        conn = self._default_by_kind.get(kind)
+        if conn is None:
+            raise KeyError(f"no default connection configured for kind {kind.value!r}")
+        return conn
 
     # ── building ────────────────────────────────────────────────────────────
 
@@ -879,10 +1152,28 @@ class ConnectionResolver:
             ):
                 return cached[1].checkout()
             secrets: SecretsPort | None = None
-            if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
-                secrets = await self.resolve(PortKind.SECRETS)
-            _ensure_builtin_adapters_registered()
-            adapter = await AdapterRegistry.build(conn, secrets)
+            adapter: Any | None = None
+            try:
+                if conn.secret_ref is not None and conn.kind is not PortKind.SECRETS:
+                    secrets = await self.resolve(PortKind.SECRETS)
+                _ensure_builtin_adapters_registered()
+                adapter = await AdapterRegistry.build(conn, secrets)
+            finally:
+                if secrets is not None:
+                    try:
+                        await close_adapter(secrets)
+                    except BaseException:
+                        # A factory may have returned a live client just before a
+                        # repeated cancellation reached secret-lease cleanup. Do
+                        # not orphan that uncached client on the exceptional path.
+                        if adapter is not None:
+                            try:
+                                await close_adapter(adapter)
+                            except BaseException:
+                                pass
+                        raise
+            if adapter is None:
+                raise RuntimeError("adapter factory returned no adapter")
             managed = _ManagedAdapter(adapter)
             cache.instances[key] = (version, managed)
             if cached is not None:
@@ -905,8 +1196,15 @@ class ConnectionResolver:
         instances = list(cache.instances.values())
         cache.instances.clear()
         cache.locks.clear()
-        for _, managed in instances:
-            await managed.retire()
+        # Cache removal is irreversible: if this waiter is cancelled midway
+        # through a sequential close, every later generation becomes
+        # unreachable and can keep provider sockets alive until process exit.
+        # Give one owned task the complete snapshot and shield it so repeated
+        # shutdown cancellation cannot strand the tail of the cache.
+        close_task = asyncio.create_task(
+            _retire_managed_adapters([managed for _, managed in instances])
+        )
+        await _await_task_definitively(close_task)
 
     async def __aenter__(self) -> "ConnectionResolver":
         return self
@@ -924,14 +1222,25 @@ class ConnectionResolver:
             return cache
 
 
+async def _retire_managed_adapters(adapters: list[_ManagedAdapter]) -> None:
+    """Retire a detached loop-cache snapshot without short-circuiting cleanup."""
+
+    await asyncio.gather(*(adapter.retire() for adapter in adapters), return_exceptions=True)
+
+
 async def close_adapter(adapter: Any) -> None:
-    """Close any adapter exposing an async or sync close method."""
-    close = getattr(adapter, "aclose", None) or getattr(adapter, "close", None)
-    if close is None:
-        return
-    result = close()
-    if isawaitable(result):
-        await result
+    """Close an adapter definitively despite repeated caller cancellation."""
+
+    async def close_owned() -> None:
+        close = getattr(adapter, "aclose", None) or getattr(adapter, "close", None)
+        if close is None:
+            return
+        result = close()
+        if isawaitable(result):
+            await result
+
+    close_task = asyncio.create_task(close_owned())
+    await _await_task_definitively(close_task)
 
 
 def _validate_internal_connection_binding(
@@ -959,15 +1268,23 @@ def _validate_internal_connection_binding(
 def _expose_internal_connection_binding(adapter: Any, internal_project_id: str | None) -> None:
     """Expose persisted APEX ownership for router defense-in-depth checks."""
 
+    failed = False
     try:
         setattr(adapter, INTERNAL_PROJECT_BINDING_ATTR, internal_project_id)
-    except (AttributeError, TypeError) as exc:
-        raise TypeError("resolved adapter cannot expose its internal APEX project binding") from exc
+    except (AttributeError, TypeError):
+        failed = True
+    if failed:
+        raise TypeError("resolved adapter cannot expose its internal APEX project binding")
 
 
 def internal_project_binding(adapter: Any) -> str | None:
-    value = getattr(adapter, INTERNAL_PROJECT_BINDING_ATTR, None)
-    return str(value) if value is not None else None
+    """Read only the resolver-stamped exact value, never adapter protocol hooks."""
+
+    try:
+        value = getattr_static(adapter, INTERNAL_PROJECT_BINDING_ATTR, None)
+    except Exception:
+        return None
+    return value if type(value) is str else None
 
 
 def _ensure_builtin_adapters_registered() -> None:

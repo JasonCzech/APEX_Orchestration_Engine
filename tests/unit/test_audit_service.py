@@ -859,6 +859,7 @@ def test_request_audit_event_extracts_decision_and_request_context() -> None:
         {
             "method": "POST",
             "path": "/threads",
+            "route": SimpleNamespace(path="/threads", operation_id=None),
             "headers": [(b"x-request-id", b"req-1"), (b"user-agent", b"pytest")],
             "client": ("203.0.113.10", 12345),
             "state": {"identity": identity},
@@ -879,3 +880,37 @@ def test_request_audit_event_extracts_decision_and_request_context() -> None:
     assert event.principal_type == "dashboard"
     assert event.principal_role == "viewer"
     assert event.principal_scopes == {"scopes": [{"project_id": "p1", "app_id": None}]}
+
+
+def test_request_audit_event_uses_route_template_not_parameter_value() -> None:
+    canary = "bare-secret-token-value"
+    event = request_audit_event(
+        {
+            "method": "GET",
+            "path": f"/v1/admin/consumers/{canary}",
+            "route": SimpleNamespace(
+                path="/v1/admin/consumers/{consumer_id}",
+                operation_id="getConsumer",
+            ),
+        },
+        status_code=403,
+    )
+
+    assert event.action == "getConsumer"
+    assert event.request_path == "/v1/admin/consumers/{consumer_id}"
+    assert canary not in repr(event)
+
+
+def test_request_audit_event_quarantines_unmatched_concrete_path() -> None:
+    canary = "bare-secret-token-value"
+    event = request_audit_event(
+        {
+            "method": "GET",
+            "path": f"/{canary}",
+        },
+        status_code=401,
+    )
+
+    assert event.action == "<unmatched-route>"
+    assert event.request_path == "<unmatched-route>"
+    assert canary not in repr(event)

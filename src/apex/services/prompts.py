@@ -30,8 +30,10 @@ from uuid import uuid4
 
 import structlog
 
+from apex.domain.diagnostics import contains_credential_material, safe_type_name
 from apex.domain.pipeline import PHASE_ORDER, Phase
 from apex.graphs.pipeline.configurable import PipelineConfigurable, PromptOverride
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.persistence.models import Prompt, PromptVersion
 from apex.persistence.repositories.prompts import DuplicatePromptKeyError
 from apex.settings import get_settings
@@ -60,6 +62,10 @@ class PromptError(Exception):
     """Base class for prompt catalog domain errors."""
 
 
+class PromptCatalogUnavailableError(RuntimeError):
+    """The approved prompt catalog could not be read in a locked deployment."""
+
+
 class PromptNotFoundError(PromptError):
     """No prompt with the given id (HTTP 404)."""
 
@@ -74,6 +80,10 @@ class DuplicatePromptError(PromptError):
 
 class PromptVersionMismatchError(PromptError):
     """The version exists but belongs to another prompt (HTTP 409)."""
+
+
+class PromptCredentialMaterialError(PromptError):
+    """A catalog mutation would persist credential-shaped material."""
 
 
 # ── Store protocols ──────────────────────────────────────────────────────────
@@ -195,6 +205,19 @@ class PromptCatalogService:
         note: str | None = None,
         created_by: str | None = None,
     ) -> tuple[Prompt, PromptVersion]:
+        if contains_credential_material(
+            {
+                "namespace": namespace,
+                "key": key,
+                "content": content,
+                "description": description,
+                "note": note,
+                "created_by": created_by,
+            }
+        ):
+            raise PromptCredentialMaterialError(
+                "prompt catalog entry must not contain credential material"
+            )
         if await self._store.get_by_key(namespace, key) is not None:
             raise DuplicatePromptError(f"prompt {namespace}/{key} already exists")
         now = _utcnow()
@@ -216,10 +239,13 @@ class PromptCatalogService:
             created_by=created_by,
             created_at=now,
         )
+        duplicate = False
         try:
             await self._store.add_prompt(prompt, version)
-        except DuplicatePromptKeyError as exc:
-            raise DuplicatePromptError(f"prompt {namespace}/{key} already exists") from exc
+        except DuplicatePromptKeyError:
+            duplicate = True
+        if duplicate:
+            raise DuplicatePromptError(f"prompt {namespace}/{key} already exists")
         return prompt, version
 
     async def save_version(
@@ -230,6 +256,12 @@ class PromptCatalogService:
         note: str | None = None,
         created_by: str | None = None,
     ) -> tuple[Prompt, PromptVersion]:
+        if contains_credential_material(
+            {"content": content, "note": note, "created_by": created_by}
+        ):
+            raise PromptCredentialMaterialError(
+                "prompt version must not contain credential material"
+            )
         prompt = await self._require(prompt_id)
         version = PromptVersion(
             id=uuid4().hex,
@@ -263,12 +295,15 @@ class PromptCatalogService:
         *,
         allow_application: bool = False,
     ) -> PromptVersion:
+        prompt_missing = False
         try:
             await self._require_readable(prompt_id, allow_application=allow_application)
-        except PromptNotFoundError as exc:
+        except PromptNotFoundError:
+            prompt_missing = True
+        if prompt_missing:
             raise PromptVersionNotFoundError(
                 f"version {version_id} not found on prompt {prompt_id}"
-            ) from exc
+            )
         version = await self._store.get_version(version_id)
         if version is None or version.prompt_id != prompt_id:
             raise PromptVersionNotFoundError(
@@ -284,6 +319,16 @@ class PromptCatalogService:
         if version.prompt_id != prompt.id:
             raise PromptVersionMismatchError(
                 f"version {version_id} belongs to prompt {version.prompt_id}, not {prompt.id}"
+            )
+        if contains_credential_material(
+            {
+                "content": version.content,
+                "note": version.note,
+                "created_by": version.created_by,
+            }
+        ):
+            raise PromptCredentialMaterialError(
+                "legacy prompt version contains credential material"
             )
         prompt.active_version_id = version.id
         prompt.updated_at = _utcnow()
@@ -390,12 +435,13 @@ def render_template(template: str, variables: Mapping[str, Any]) -> str:
                     f"prompt format width/precision exceeds the rendered limit ({limit})"
                 )
             if field_name in variables:
+                value_bound: int | None = None
                 try:
                     value_bound = len(str(variables[field_name])) * 8 + 2
-                except (TypeError, ValueError, OverflowError) as exc:
-                    raise _UnsafePromptTemplateError(
-                        "prompt variable cannot be rendered safely"
-                    ) from exc
+                except (TypeError, ValueError, OverflowError):
+                    pass
+                if value_bound is None:
+                    raise _UnsafePromptTemplateError("prompt variable cannot be rendered safely")
             else:
                 value_bound = len(field_name) + 2
             # Leave room for signs, prefixes, separators, and exponent markers
@@ -416,9 +462,7 @@ def render_template(template: str, variables: Mapping[str, Any]) -> str:
     except (ValueError, KeyError, IndexError):
         return template
     if len(rendered) > limit:
-        raise ValueError(
-            f"rendered prompt exceeds the deployment limit ({limit} characters)"
-        )
+        raise ValueError(f"rendered prompt exceeds the deployment limit ({limit} characters)")
     return rendered
 
 
@@ -507,12 +551,19 @@ def _compose_resolved(
     if not refs:
         refs.append(f"phase/{phase.value}@builtin")
 
-    return ResolvedPhasePrompt(
+    resolved = ResolvedPhasePrompt(
         system=render_template(system, variables),
         user=render_template(user, variables),
         application=application,
         source=_source(origin, refs),
     )
+    return _credential_safe_resolved(resolved)
+
+
+def _credential_safe_resolved(resolved: ResolvedPhasePrompt) -> ResolvedPhasePrompt:
+    if contains_credential_material(resolved):
+        raise PromptCredentialMaterialError("resolved prompt must not contain credential material")
+    return resolved
 
 
 def resolve_phase_prompt_no_catalog(
@@ -550,7 +601,7 @@ def prompt_review_from_resolved(
     updated_by: str = "system",
     updated_at: str | None = None,
 ) -> PromptReviewDraft:
-    return PromptReviewDraft(
+    draft = PromptReviewDraft(
         system=resolved["system"],
         phase_prompt=resolved["user"],
         application=resolved["application"],
@@ -559,11 +610,14 @@ def prompt_review_from_resolved(
         updated_at=updated_at or _utcnow().isoformat(),
         updated_by=updated_by,
     )
+    if contains_credential_material(draft):
+        raise PromptCredentialMaterialError("prompt review must not contain credential material")
+    return draft
 
 
 def resolved_from_prompt_review(draft: Mapping[str, Any]) -> ResolvedPhasePrompt:
     source = draft.get("source")
-    return ResolvedPhasePrompt(
+    resolved = ResolvedPhasePrompt(
         system=str(draft.get("system") or ""),
         user=user_prompt_with_context(
             str(draft.get("phase_prompt") or ""),
@@ -572,6 +626,7 @@ def resolved_from_prompt_review(draft: Mapping[str, Any]) -> ResolvedPhasePrompt
         application=draft.get("application") if draft.get("application") is not None else None,
         source=dict(source) if isinstance(source, dict) else _source("run_override", ["run"]),
     )
+    return _credential_safe_resolved(resolved)
 
 
 class PromptResolver:
@@ -606,6 +661,7 @@ class PromptResolver:
     async def _load_catalog_prompts(
         self, phase: Phase, app_id: str | None
     ) -> tuple[PromptVersion | None, PromptVersion | None, PromptVersion | None]:
+        error_type: str | None = None
         try:
             async with asyncio.timeout(CATALOG_TIMEOUT_S):
                 if self._store is not None:
@@ -628,18 +684,19 @@ class PromptResolver:
                     )
                 return await _load_prompts_with_fresh_engine(phase, app_id)
         except Exception as exc:
-            if get_settings().is_locked_down:
-                # Catalog/application prompts are part of the approved production
-                # execution contract. Substituting built-ins on an outage would let a
-                # headless run proceed with materially different instructions.
-                raise
-            # Expected when running without Postgres (langgraph dev, unit tests).
-            logger.debug(
-                "apex.prompts.catalog_unavailable",
-                phase=phase.value,
-                error_type=exc.__class__.__name__,
-            )
-            return None, None, None
+            error_type = safe_type_name(exc)
+        if get_settings().is_locked_down:
+            # Catalog/application prompts are part of the approved production
+            # execution contract. Substituting built-ins on an outage would let a
+            # headless run proceed with materially different instructions.
+            raise PromptCatalogUnavailableError("approved prompt catalog is unavailable")
+        # Expected when running without Postgres (langgraph dev, unit tests).
+        logger.debug(
+            "apex.prompts.catalog_unavailable",
+            phase=phase.value,
+            error_type=error_type,
+        )
+        return None, None, None
 
 
 async def resolve_phase_prompts(
@@ -657,20 +714,21 @@ async def resolve_phase_prompts(
             phase: await resolver.resolve_phase_prompt(phase, cfg, variables=variables)
             for phase in phases
         }
+    error_type: str | None = None
     try:
         async with asyncio.timeout(CATALOG_TIMEOUT_S):
             return await _resolve_phase_prompts_with_fresh_engine(phases, cfg, variables)
     except Exception as exc:
-        if get_settings().is_locked_down:
-            raise
-        logger.debug(
-            "apex.prompts.catalog_unavailable_batch",
-            error_type=exc.__class__.__name__,
-        )
-        return {
-            phase: resolve_phase_prompt_no_catalog(phase, cfg, variables=variables)
-            for phase in phases
-        }
+        error_type = safe_type_name(exc)
+    if get_settings().is_locked_down:
+        raise PromptCatalogUnavailableError("approved prompt catalog is unavailable")
+    logger.debug(
+        "apex.prompts.catalog_unavailable_batch",
+        error_type=error_type,
+    )
+    return {
+        phase: resolve_phase_prompt_no_catalog(phase, cfg, variables=variables) for phase in phases
+    }
 
 
 async def _load_prompts_with_fresh_engine(
@@ -702,7 +760,7 @@ async def _load_prompts_with_fresh_engine(
                 else None,
             )
     finally:
-        await engine.dispose()
+        await dispose_engine_instance_definitively(engine)
 
 
 async def _resolve_phase_prompts_with_fresh_engine(
@@ -729,7 +787,7 @@ async def _resolve_phase_prompts_with_fresh_engine(
                 for phase in phases
             }
     finally:
-        await engine.dispose()
+        await dispose_engine_instance_definitively(engine)
 
 
 async def resolve_phase_prompt(
@@ -796,6 +854,7 @@ __all__ = [
     "ActiveVersionReader",
     "DuplicatePromptError",
     "PromptCatalogService",
+    "PromptCredentialMaterialError",
     "PromptError",
     "PromptNotFoundError",
     "PromptReviewDraft",

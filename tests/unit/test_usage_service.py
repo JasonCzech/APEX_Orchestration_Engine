@@ -22,6 +22,71 @@ async def test_record_usage_event_swallows_db_errors() -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_record_agent_event_finish_reason_never_executes_scalar_truthiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HostileFinishReason:
+        called = False
+
+        def __bool__(self) -> bool:
+            self.called = True
+            raise AssertionError("finish-reason scalar truthiness must not execute")
+
+    captured: list[dict[str, Any]] = []
+
+    async def capture(_session_factory: Any, **kwargs: Any) -> None:
+        captured.append(kwargs)
+
+    monkeypatch.setattr(usage, "_insert_agent_event", capture)
+    hostile = HostileFinishReason()
+
+    await usage.record_agent_event(
+        thread_id="thread-1",
+        project_id="project-1",
+        app_id="app-1",
+        phase="execution",
+        agent_name="execution.worker",
+        model="gpt-4o",
+        provider="openai",
+        attempt=1,
+        status="ok",
+        latency_ms=5,
+        usage={"finish_reason": hostile, "stop_reason": "fallback-stop"},
+    )
+
+    assert hostile.called is False
+    assert captured[0]["extra"]["finish_reason"] == "fallback-stop"
+
+
+async def test_record_agent_event_never_invokes_hostile_scalar_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileText(str):
+        def __str__(self) -> str:
+            calls.append("str")
+            raise AssertionError("hostile agent telemetry hook ran")
+
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError("hostile agent telemetry hook ran")
+
+    await usage.record_agent_event(
+        thread_id=HostileText("thread-secret"),
+        project_id=None,
+        app_id=None,
+        phase=HostileText("execution"),
+        agent_name=HostileText("execution.worker"),
+        model=HostileText("provider-model"),
+        provider=None,
+        attempt=1,
+        status="ok",
+        latency_ms=1,
+    )
+
+    assert calls == []
+
+
 def test_record_usage_event_sync_swallows_db_errors() -> None:
     usage.record_usage_event_sync(
         consumer_name="graph", surface="graph", action="phase:execution:failed", status="error"
@@ -89,6 +154,24 @@ def test_durable_agent_numeric_evidence_is_preserved() -> None:
     assert sanitized["latency_ms"] == 88
 
 
+def test_event_scalar_sanitization_never_invokes_arbitrary_string_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileText(str):
+        def __str__(self) -> str:
+            calls.append("str")
+            raise AssertionError("hostile telemetry string hook ran")
+
+    sanitized = usage._sanitize_event_values(
+        {"action": HostileText("provider-secret"), "extra": {}},
+        usage._USAGE_TEXT_LIMITS,
+    )
+
+    assert calls == []
+    assert "provider-secret" not in sanitized["action"]
+    assert "unsupported-text" in sanitized["action"]
+
+
 # ── Phase bridge field mapping (capture the inner sync writer) ───────────────
 
 
@@ -145,6 +228,53 @@ def test_phase_usage_defaults_consumer_to_graph(monkeypatch: pytest.MonkeyPatch)
     assert captured[0]["consumer_name"] == "graph"
     assert captured[0]["project_id"] is None
     assert captured[0]["app_id"] is None
+
+
+def test_phase_usage_rejects_hostile_checkpoint_scalars_without_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _capture_sync_writer(monkeypatch)
+    calls: list[str] = []
+
+    class HostileText(str):
+        def __str__(self) -> str:
+            calls.append("str")
+            raise AssertionError("hostile checkpoint string hook ran")
+
+        def replace(self, *_args: object, **_kwargs: object) -> str:
+            calls.append("replace")
+            raise AssertionError("hostile checkpoint string hook ran")
+
+    usage.record_phase_usage_sync(
+        "execution",
+        "succeeded",
+        {
+            "configurable": {
+                "thread_id": HostileText("thread-secret"),
+                "project_id": HostileText("project-secret"),
+                "langgraph_auth_user": {"identity": HostileText("identity-secret")},
+            }
+        },
+        attempt=1,
+    )
+    usage.record_phase_usage_sync(
+        HostileText("execution"),
+        "succeeded",
+        {"configurable": {}},
+    )
+
+    assert calls == []
+    assert captured == [
+        {
+            "consumer_name": "graph",
+            "surface": "graph",
+            "action": "phase:execution:succeeded",
+            "status": "ok",
+            "project_id": None,
+            "app_id": None,
+            "thread_id": None,
+        }
+    ]
 
 
 def test_phase_usage_replay_key_is_stable_per_attempt(monkeypatch: pytest.MonkeyPatch) -> None:

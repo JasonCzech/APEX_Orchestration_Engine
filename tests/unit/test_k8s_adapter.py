@@ -6,6 +6,7 @@ formats (DeploymentList/ServiceList/Status bodies as the API server emits them).
 
 import asyncio
 import copy
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +200,31 @@ def mock_namespace(
         return_value=ingress_response or httpx.Response(200, json=INGRESS_LIST)
     )
     return deployments_route
+
+
+async def test_transport_error_does_not_invoke_hostile_exception_metaclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HostileMeta(type):
+        called = False
+
+        @property
+        def __name__(cls) -> str:  # type: ignore[override]
+            HostileMeta.called = True
+            raise RuntimeError("hostile exception type metadata was invoked")
+
+    class HostileTransportError(httpx.HTTPError, metaclass=HostileMeta):
+        pass
+
+    async def fail(*_args: object, **_kwargs: object) -> httpx.Response:
+        raise HostileTransportError("network unavailable")
+
+    monkeypatch.setattr(k8s_mod, "resilient_request", fail)
+
+    with pytest.raises(RuntimeError, match="unknown"):
+        await make_adapter(namespace="staging").scan_environment(EnvRef(id="env-1", name="Staging"))
+
+    assert HostileMeta.called is False
 
 
 # ── scans ────────────────────────────────────────────────────────────────────
@@ -669,6 +695,22 @@ async def test_in_cluster_scan_uses_pod_token_and_env_api_server(
     assert request.headers["authorization"] == "Bearer rotating-pod-token"
 
 
+async def test_in_cluster_client_uses_ca_context_without_deprecated_httpx_verify(
+    monkeypatch: Any, tmp_path: Any
+) -> None:
+    _mount_sa(monkeypatch, tmp_path)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")
+    adapter = make_in_cluster_adapter(environment_namespaces={"env-1": "staging"})
+
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            adapter._client_for_loop()
+        assert not any("verify=<str>" in str(warning.message) for warning in caught)
+    finally:
+        await adapter.aclose()
+
+
 @respx.mock
 async def test_in_cluster_requires_exact_environment_namespace_binding(
     monkeypatch: Any, tmp_path: Any
@@ -714,9 +756,7 @@ def test_in_cluster_reads_projected_token_with_hard_byte_cap(
         adapter._bearer_token()
 
 
-def test_in_cluster_rejects_non_utf8_projected_token(
-    monkeypatch: Any, tmp_path: Any
-) -> None:
+def test_in_cluster_rejects_non_utf8_projected_token(monkeypatch: Any, tmp_path: Any) -> None:
     token_file = _mount_sa(monkeypatch, tmp_path)
     token_file.write_bytes(b"valid-prefix-\xff")
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "kube-api.test")

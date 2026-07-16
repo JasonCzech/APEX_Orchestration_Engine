@@ -7,6 +7,8 @@ from sqlalchemy import Connection, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from apex.persistence.audit_lock import AUDIT_CHAIN_LOCK_KEY
+from apex.persistence.database_role_claims import DATABASE_ROLE_LOCK_KEY
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.persistence.migration_lineage import (
     CREATE_LINEAGE_TABLE_SQL,
     INSERT_LINEAGE_SQL,
@@ -14,7 +16,12 @@ from apex.persistence.migration_lineage import (
     packaged_revision_lineage,
 )
 from apex.persistence.models import Base
-from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
+from apex.settings import (
+    database_asyncpg_uri,
+    database_ssl_connect_args,
+    database_uri_has_safe_transport,
+    get_settings,
+)
 
 config = context.config
 if config.config_file_name is not None:
@@ -24,6 +31,7 @@ target_metadata = Base.metadata
 
 APEX_SCHEMA = "apex"
 AUDIT_LOCK_SQL = f"SELECT pg_advisory_xact_lock({AUDIT_CHAIN_LOCK_KEY})"
+DATABASE_ROLE_LOCK_SQL = f"SELECT pg_advisory_xact_lock({DATABASE_ROLE_LOCK_KEY})"
 ENSURE_APEX_SCHEMA_SQL = f"""
 DO $apex_schema$
 BEGIN
@@ -92,13 +100,17 @@ def _configure(connection: Connection | None = None, url: str | None = None) -> 
 
 def run_migrations_offline() -> None:
     _configure(url=_database_uri())
-    # PostgreSQL checks database-level CREATE even for ``CREATE SCHEMA IF NOT
-    # EXISTS`` when the schema already exists.  The split migration role owns
-    # ``apex`` but deliberately lacks that database-wide privilege, so branch
-    # before executing CREATE.  Empty databases still fail closed unless the
-    # migration principal is actually allowed to create the schema.
-    context.execute(text(ENSURE_APEX_SCHEMA_SQL))
     with context.begin_transaction():
+        # Serialize every Alembic entry point, including direct/unclaimed and
+        # generated offline upgrades.  Otherwise two deploys can both observe
+        # the old head and race schema bootstrap or revision DDL.
+        context.execute(text(DATABASE_ROLE_LOCK_SQL))
+        # PostgreSQL checks database-level CREATE even for ``CREATE SCHEMA IF
+        # NOT EXISTS`` when the schema already exists.  The split migration
+        # role owns ``apex`` but deliberately lacks that database-wide
+        # privilege, so branch before executing CREATE.  Empty databases still
+        # fail closed unless the migration principal can create the schema.
+        context.execute(text(ENSURE_APEX_SCHEMA_SQL))
         # Match the runtime writer's lock order before any revision can acquire
         # an audit-table lock.  This is emitted into offline SQL as well so a
         # generated upgrade script has the same zero-downtime safety property.
@@ -108,6 +120,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    if connection.dialect.name == "postgresql":
+        # This transaction-level lock complements the deploy hook's optional
+        # session-level claim lock and protects every other Alembic caller.
+        # Acquire it before schema bootstrap so concurrent first deploys cannot
+        # race CREATE SCHEMA or revision-table initialization.
+        connection.execute(text(DATABASE_ROLE_LOCK_SQL))
     # The apex schema must exist before Alembic writes its version table into it.
     # Use a conditional block rather than CREATE SCHEMA IF NOT EXISTS so an
     # existing schema owner does not also need database-wide CREATE.
@@ -126,6 +144,8 @@ def do_run_migrations(connection: Connection) -> None:
 async def run_migrations_online() -> None:
     uri = _database_uri()
     database = get_settings().database
+    if not database_uri_has_safe_transport(uri, database.ssl_mode):
+        raise ValueError("database transport must authenticate every remote server")
     engine = create_async_engine(
         database_asyncpg_uri(uri),
         poolclass=pool.NullPool,
@@ -138,7 +158,7 @@ async def run_migrations_online() -> None:
     finally:
         # Failed connects/migrations must release driver resources too. NullPool
         # avoids retained connections, but the async engine still owns teardown.
-        await engine.dispose()
+        await dispose_engine_instance_definitively(engine)
 
 
 def run_migrations_with_supplied_connection(connection: Connection) -> None:

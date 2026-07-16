@@ -34,6 +34,8 @@ import { isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
 
 import { GateActionBar } from './GateActionBar'
 import {
+  isActionAllowedForGate,
+  isEngineRetryGateKind,
   isPromptDirty,
   type GateAction,
   type GateDraftPatch,
@@ -48,6 +50,23 @@ import './hitl.css'
 
 function phaseLabel(phase: string): string {
   return isPhaseName(phase) ? PHASE_LABELS[phase] : phase
+}
+
+function gateKindLabel(kind: GateInstance['kind']): string {
+  switch (kind) {
+    case 'prompt_review':
+      return 'Prompt review'
+    case 'phase_review':
+      return 'Phase review'
+    case 'engine_provision_retry':
+      return 'Engine provisioning recovery'
+    case 'engine_cleanup_retry':
+      return 'Engine cleanup recovery'
+    case 'engine_collection_retry':
+      return 'Engine collection recovery'
+    case 'engine_collection_settle_retry':
+      return 'Engine teardown recovery'
+  }
 }
 
 /* ── Controlled renderer (run detail) ────────────────────────────────────── */
@@ -75,7 +94,7 @@ export function GateModuleView({
 }: GateModuleViewProps) {
   if (machineState.tag === 'no_gate') return null
 
-  const kindLabel = gate.kind === 'prompt_review' ? 'Prompt review' : 'Phase review'
+  const kindLabel = gateKindLabel(gate.kind)
   const header = (
     <header className="gate-module-header">
       <span className="kind-chip">{gate.kind}</span>
@@ -98,7 +117,9 @@ export function GateModuleView({
           <span className="gate-spinner" aria-hidden="true" />
           <span>
             Agent working on your{' '}
-            {machineState.action === 'discuss'
+            {machineState.action === 'retry'
+              ? 'provider retry'
+              : machineState.action === 'discuss'
               ? 'message'
               : machineState.action === 'modify'
                 ? 'prompt edits'
@@ -134,28 +155,39 @@ export function GateModuleView({
       {machineState.tag === 'failed' && (
         <div className="tonal-card danger gate-failed" data-testid="gate-failed">
           <span>Resume failed: {machineState.error.message} — your draft is intact below.</span>
-          <RequireRole role="operator">
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={() => onSubmit(machineState.action)}
-            >
-              Retry {machineState.action.replace('_', ' ')}
-            </button>
-          </RequireRole>
+          {payload?.actions.some((action) => action === machineState.action) && (
+            <RequireRole role="operator">
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => onSubmit(machineState.action)}
+              >
+                Retry {machineState.action.replace('_', ' ')}
+              </button>
+            </RequireRole>
+          )}
         </div>
       )}
 
       {typeof payload?.error === 'string' && (
         <div className="tonal-card warning" data-testid="gate-reinterrupt-error">
-          Previous decision was rejected: {payload.error}
+          {isEngineRetryGateKind(gate.kind)
+            ? `Provider operation paused: ${payload.error}`
+            : `Previous decision was rejected: ${payload.error}`}
+        </div>
+      )}
+
+      {payload !== null && 'message' in payload && typeof payload.message === 'string' && (
+        <div className="tonal-card" data-testid="engine-retry-message">
+          {payload.message}
         </div>
       )}
 
       {payload === null && (
         <div className="tonal-card warning" data-testid="gate-payload-drift">
-          This gate's payload did not match the dashboard's contract (schema drift) — review it
-          from the backend, or approve/abort blind below.
+          This gate's payload did not match the dashboard's contract (schema drift). Actions are
+          unavailable because the pending operation cannot be resumed safely without its complete
+          contract.
         </div>
       )}
 
@@ -186,7 +218,7 @@ export function GateModuleView({
         <GateActionBar
           key={`${gate.interrupt_id}:${JSON.stringify(gate.payload)}`}
           kind={gate.kind}
-          actions={payload?.actions ?? ['approve', 'abort']}
+          actions={payload?.actions ?? []}
           draft={draft}
           dirty={dirty}
           disabled={disabled}
@@ -224,12 +256,6 @@ export interface GateModuleProps {
   handleRef?: Ref<GateModuleHandle | null>
 }
 
-/** Actions valid per gate kind (the payload's `actions` further narrows). */
-const KIND_ACTIONS: Record<GateInstance['kind'], readonly GateAction[]> = {
-  prompt_review: ['approve', 'modify', 'skip_phase', 'abort'],
-  phase_review: ['approve', 'revise', 'discuss', 'abort'],
-}
-
 export function GateModule({
   threadId,
   interrupt,
@@ -264,6 +290,7 @@ export function GateModule({
       accepted.action !== 'modify' &&
       accepted.action !== 'discuss' &&
       accepted.action !== 'revise' &&
+      accepted.action !== 'retry' &&
       (!expectedId || accepted.interruptId === expectedId)
     ) {
       firedRef.current = true
@@ -283,18 +310,22 @@ export function GateModule({
   useImperativeHandle(
     handleRef,
     (): GateModuleHandle => ({
-      isActionable: () => canAct && stateRef.current.tag === 'open',
+      isActionable: () => {
+        const state = stateRef.current
+        return canAct && state.tag === 'open' && (state.gate.payload?.actions.length ?? 0) > 0
+      },
       invoke: (action: GateAction): boolean => {
         if (!canAct) return false
         const state = stateRef.current
         if (state.tag !== 'open') return false
         const { gate } = state
-        if (!KIND_ACTIONS[gate.kind].includes(action)) return false
-        const advertised = gate.payload?.actions ?? ['approve', 'abort']
+        if (!isActionAllowedForGate(gate.kind, action)) return false
+        const advertised = gate.payload?.actions ?? []
         if (!advertised.includes(action)) return false
         switch (action) {
           case 'approve':
           case 'skip_phase':
+          case 'retry':
             hitl.submit(action)
             return true
           case 'abort':
@@ -358,7 +389,7 @@ export function GateSlimBanner({ threadId, gate }: { threadId: string; gate: Gat
   return (
     <div className="gate-slim-banner" data-testid="gate-slim-banner">
       <span>
-        {gate.kind === 'prompt_review' ? 'Prompt review' : 'Phase review'} gate open on{' '}
+        {gateKindLabel(gate.kind)} gate open on{' '}
         <strong>{phaseLabel(gate.phase)}</strong>
       </span>
       <Link

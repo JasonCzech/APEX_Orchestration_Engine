@@ -18,7 +18,10 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
+from apex.domain.integrations import TestResultSummary
+from apex.domain.pipeline import EngineHandle
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.persistence.models import Connection, EngineRun
 from apex.ports.artifact_store import engine_artifact_namespace
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
@@ -43,6 +46,188 @@ class EngineRunReservationRejectedError(RuntimeError):
     """A required lifecycle write lost the monotonic projection race."""
 
 
+class EngineRunProjectionError(RuntimeError):
+    """A durable engine-run projection operation failed unexpectedly."""
+
+
+def _stable_projection_failure(exc: Exception, *, operation: str) -> Exception:
+    """Copy safe domain/input failures and hide backend exception objects."""
+
+    if isinstance(exc, EngineRunReservationRejectedError):
+        return EngineRunReservationRejectedError(bounded_diagnostic(exc))
+    if isinstance(exc, ValueError):
+        return ValueError(bounded_diagnostic(exc))
+    return EngineRunProjectionError(f"engine-run {operation} failed")
+
+
+def _validated_projection_text(
+    value: Any,
+    *,
+    label: str,
+    max_chars: int,
+    optional: bool = False,
+) -> str | None:
+    if value is None and optional:
+        return None
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > max_chars
+        or value != value.strip()
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        or contains_credential_material(value)
+    ):
+        raise ValueError(f"engine-run {label} is invalid or contains credential material")
+    return value
+
+
+def _validated_projection_handle(
+    handle: Any,
+    *,
+    engine: str,
+    allow_empty: bool,
+) -> dict[str, Any]:
+    if type(handle) is not dict:
+        raise ValueError("engine-run handle is invalid or contains credential material")
+    if not handle and allow_empty:
+        return {}
+    if contains_credential_material(handle, max_nodes=64, max_total_chars=32_768):
+        raise ValueError("engine-run handle is invalid or contains credential material")
+    validated: EngineHandle | None = None
+    try:
+        validated = EngineHandle.model_validate(handle, strict=True)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("engine-run handle is invalid or contains credential material")
+    if validated.engine != engine:
+        raise ValueError("engine-run handle provider does not match the projection")
+    return validated.model_dump(mode="json")
+
+
+def _validated_projection_summary(
+    summary: Any,
+    *,
+    engine: str,
+) -> dict[str, Any] | None:
+    if summary is None:
+        return None
+    if type(summary) is not dict or contains_credential_material(
+        summary,
+        max_nodes=256,
+        max_total_chars=300_000,
+    ):
+        raise ValueError("engine-run summary is invalid or contains credential material")
+    validated: TestResultSummary | None = None
+    try:
+        validated = TestResultSummary.model_validate(summary, strict=True)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("engine-run summary is invalid or contains credential material")
+    if validated.engine != engine:
+        raise ValueError("engine-run summary provider does not match the projection")
+    return validated.model_dump(mode="json")
+
+
+def _validate_engine_run_projection_input(
+    *,
+    thread_id: Any,
+    attempt: Any,
+    engine: Any,
+    handle: Any,
+    status: Any,
+    project_id: Any,
+    app_id: Any,
+    external_run_id: Any = None,
+    artifact_namespace: Any = None,
+    artifact_connection_id: Any = None,
+    connection_id: Any = None,
+    summary: Any = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Validate a complete projection before any durable row or provider lease."""
+
+    _validated_projection_text(thread_id, label="thread id", max_chars=64)
+    safe_engine = _validated_projection_text(engine, label="engine", max_chars=64)
+    assert safe_engine is not None
+    if type(attempt) is not int or not 1 <= attempt <= 1_000_000:
+        raise ValueError("engine-run attempt must be between 1 and 1000000")
+    if type(status) is not str or status not in {*_NONTERMINAL_ORDER, *_TERMINAL}:
+        raise ValueError("engine-run status is invalid")
+    for value, label, maximum in (
+        (project_id, "project id", 255),
+        (app_id, "application id", 255),
+        (external_run_id, "external run id", 255),
+        (artifact_namespace, "artifact namespace", 512),
+        (artifact_connection_id, "artifact connection id", 255),
+        (connection_id, "execution connection id", 255),
+    ):
+        _validated_projection_text(
+            value,
+            label=label,
+            max_chars=maximum,
+            optional=True,
+        )
+    canonical_handle = _validated_projection_handle(
+        handle,
+        engine=safe_engine,
+        allow_empty=status == "failed",
+    )
+    if canonical_handle:
+        handle_external_run_id = canonical_handle.get("external_run_id")
+        if external_run_id is not None and handle_external_run_id != external_run_id:
+            raise ValueError("engine-run external id does not match the durable handle")
+        handle_connection_id = canonical_handle.get("connection_id")
+        if connection_id is not None and handle_connection_id != connection_id:
+            raise ValueError("engine-run connection does not match the durable handle")
+        expected_namespace = engine_artifact_namespace(canonical_handle["idempotency_key"])
+        if artifact_namespace is not None and artifact_namespace.rstrip("/") != expected_namespace:
+            raise ValueError("engine-run artifact namespace does not match the durable handle")
+    canonical_summary = _validated_projection_summary(summary, engine=safe_engine)
+    return canonical_handle, canonical_summary
+
+
+def _verify_execution_connection_reservation(
+    connection: Connection | None,
+    *,
+    engine: str,
+    project_id: str | None,
+) -> Connection:
+    """Require the reserved engine adapter to be authorized for this run scope."""
+
+    if connection is None or not connection.enabled:
+        raise EngineRunReservationRejectedError(
+            "execution connection reservation is missing or disabled"
+        )
+    if connection.kind != "execution_engine" or connection.provider != engine:
+        raise EngineRunReservationRejectedError(
+            "execution connection reservation has a different adapter identity"
+        )
+    if connection.project_id is not None and connection.project_id != project_id:
+        raise EngineRunReservationRejectedError(
+            "execution connection reservation has different project ownership"
+        )
+    return connection
+
+
+def _verify_artifact_connection_reservation(
+    connection: Connection | None,
+    *,
+    project_id: str | None,
+) -> Connection:
+    """Require the reserved artifact store to be authorized for this run scope."""
+
+    if connection is None or not connection.enabled or connection.kind != "artifact_store":
+        raise EngineRunReservationRejectedError(
+            "artifact-store connection reservation is missing, disabled, or has the wrong kind"
+        )
+    if connection.project_id is not None and connection.project_id != project_id:
+        raise EngineRunReservationRejectedError(
+            "artifact-store connection reservation has different project ownership"
+        )
+    return connection
+
+
 def _authoritative_scope(
     project_id: str | None,
     app_id: str | None,
@@ -52,17 +237,24 @@ def _authoritative_scope(
 ) -> bool:
     """Return true only for an exact provider-I/O ownership assertion."""
 
-    complete = (
-        isinstance(project_id, str)
-        and bool(project_id.strip())
-        and isinstance(app_id, str)
-        and bool(app_id.strip())
-    )
+    complete = _is_exact_scope_component(project_id) and _is_exact_scope_component(app_id)
     if required and not complete:
         raise EngineRunReservationRejectedError(
             f"engine-run {operation} requires exact project and application ownership"
         )
     return required and complete
+
+
+def _is_exact_scope_component(value: Any) -> bool:
+    """Recognize a canonical bounded scope without invoking subclass hooks."""
+
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 255
+        and value == value.strip()
+        and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        and not contains_credential_material(value)
+    )
 
 
 def _verify_reservation_connection_generation(
@@ -163,10 +355,8 @@ def _normalize_scope_provenance(values: dict[str, Any]) -> dict[str, Any]:
     authoritative = (
         normalized.get("ownership_known") is True
         and normalized.get("scope_ownership_known") is True
-        and isinstance(normalized.get("project_id"), str)
-        and bool(normalized["project_id"].strip())
-        and isinstance(normalized.get("app_id"), str)
-        and bool(normalized["app_id"].strip())
+        and _is_exact_scope_component(normalized.get("project_id"))
+        and _is_exact_scope_component(normalized.get("app_id"))
     )
     if not authoritative:
         normalized["ownership_known"] = False
@@ -196,6 +386,11 @@ def _upsert_statement(values: dict[str, Any], dialect: str) -> Any:
         if incoming_status not in _TERMINAL
         else mutable_existing | (EngineRun.status == incoming_status)
     )
+    # Provider identity is immutable for one durable (thread, attempt). Without
+    # this predicate, a stale callback using the same ownership scope could
+    # replace the row's engine and handle even though provision/start recovery
+    # deliberately treats that identity as a provider-I/O lease.
+    transition_allowed = and_(transition_allowed, EngineRun.engine == values["engine"])
     # A lifecycle callback may enrich a quarantined legacy row, but it must never
     # rebind a known (thread, attempt) projection to another project/application.
     # The conflict key is global, so status monotonicity alone is not an ownership
@@ -345,7 +540,23 @@ async def record_engine_run(
     artifact ownership writes pass ``required=True`` so graph retries cannot perform
     external I/O or checkpoint inaccessible objects without a durable projection.
     """
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
+        handle, summary = _validate_engine_run_projection_input(
+            thread_id=thread_id,
+            attempt=attempt,
+            engine=engine,
+            handle=handle,
+            status=status,
+            project_id=project_id,
+            app_id=app_id,
+            external_run_id=external_run_id,
+            artifact_namespace=artifact_namespace,
+            artifact_connection_id=artifact_connection_id,
+            connection_id=connection_id,
+            summary=summary,
+        )
         settings = get_settings()
         (
             skip_projection,
@@ -371,14 +582,16 @@ async def record_engine_run(
         if artifact_connection_id is None:
             artifact_connection_version = None
         if required and connection_id is not None and connection_version is None:
-            raise RuntimeError(
+            raise EngineRunReservationRejectedError(
                 f"execution connection {connection_id!r} is missing its reservation version"
             )
         if completion_kind is not None:
             if completion_kind not in _COMPLETION_KINDS or status not in _TERMINAL:
                 raise ValueError("engine completion witness is invalid")
             if connection_id is not None and connection_version is None:
-                raise RuntimeError("engine completion witness has no execution generation")
+                raise EngineRunReservationRejectedError(
+                    "engine completion witness has no execution generation"
+                )
         # Throwaway engine per call: graph nodes run on worker threads with
         # short-lived event loops, so pooled connections must not outlive them.
         database = settings.database
@@ -394,12 +607,13 @@ async def record_engine_run(
                     connection = await session.scalar(
                         select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
-                    if connection is None or not connection.enabled:
-                        raise RuntimeError(
-                            f"execution connection {connection_id!r} is missing or disabled"
-                        )
+                    connection = _verify_execution_connection_reservation(
+                        connection,
+                        engine=engine,
+                        project_id=project_id,
+                    )
                     if connection.runtime_version != connection_version:
-                        raise RuntimeError(
+                        raise EngineRunReservationRejectedError(
                             f"execution connection {connection_id!r} changed during reservation"
                         )
                 if required and artifact_connection_id is not None:
@@ -408,18 +622,18 @@ async def record_engine_run(
                         .where(Connection.id == artifact_connection_id)
                         .with_for_update()
                     )
-                    if (
-                        artifact_connection is None
-                        or not artifact_connection.enabled
-                        or artifact_connection.kind != "artifact_store"
-                    ):
-                        raise RuntimeError("artifact-store connection is missing or disabled")
+                    artifact_connection = _verify_artifact_connection_reservation(
+                        artifact_connection,
+                        project_id=project_id,
+                    )
                     if artifact_connection_version is None:
-                        raise RuntimeError(
+                        raise EngineRunReservationRejectedError(
                             "artifact-store connection is missing its reservation version"
                         )
                     if artifact_connection.runtime_version != artifact_connection_version:
-                        raise RuntimeError("artifact-store connection changed during reservation")
+                        raise EngineRunReservationRejectedError(
+                            "artifact-store connection changed during reservation"
+                        )
                 values: dict[str, Any] = {
                     "thread_id": thread_id,
                     "attempt": attempt,
@@ -466,15 +680,18 @@ async def record_engine_run(
                     )
                 await session.commit()
         finally:
-            await engine_db.dispose()
+            await dispose_engine_instance_definitively(engine_db)
     except Exception as exc:  # noqa: BLE001 — projection writes never fail a run
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="record")
+    if failure is not None:
         logger.warning(
             "engine_runs.record_failed",
-            thread_id=thread_id,
-            error=bounded_diagnostic(exc),
+            thread_id=bounded_diagnostic(thread_id, max_chars=64),
+            error=diagnostic,
         )
         if required:
-            raise
+            raise failure
 
 
 async def prepare_engine_start(
@@ -496,7 +713,19 @@ async def prepare_engine_start(
     rows fail closed before provider I/O.
     """
 
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
+        handle, _summary = _validate_engine_run_projection_input(
+            thread_id=thread_id,
+            attempt=attempt,
+            engine=engine,
+            handle=handle,
+            status="ready",
+            project_id=project_id,
+            app_id=app_id,
+            connection_id=connection_id,
+        )
         settings = get_settings()
         skip_projection, connection_id, connection_version, _artifact_connection_id = (
             _normalize_development_connection_ids(
@@ -511,7 +740,7 @@ async def prepare_engine_start(
             return None
         _authoritative_scope(project_id, app_id, required=True, operation="start")
         if connection_id is not None and connection_version is None:
-            raise RuntimeError(
+            raise EngineRunReservationRejectedError(
                 f"execution connection {connection_id!r} is missing its reservation version"
             )
         database = settings.database
@@ -527,12 +756,13 @@ async def prepare_engine_start(
                     connection = await session.scalar(
                         select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
-                    if connection is None or not connection.enabled:
-                        raise RuntimeError(
-                            f"execution connection {connection_id!r} is missing or disabled"
-                        )
+                    connection = _verify_execution_connection_reservation(
+                        connection,
+                        engine=engine,
+                        project_id=project_id,
+                    )
                     if connection.runtime_version != connection_version:
-                        raise RuntimeError(
+                        raise EngineRunReservationRejectedError(
                             f"execution connection {connection_id!r} changed during reservation"
                         )
                 row = await session.scalar(
@@ -563,7 +793,20 @@ async def prepare_engine_start(
                     connection_version=connection_version,
                     operation="start",
                 )
-                row_handle = row.handle if isinstance(row.handle, dict) else {}
+                row_handle: dict[str, Any] | None = None
+                invalid_handle = False
+                try:
+                    row_handle = _validated_projection_handle(
+                        row.handle,
+                        engine=engine,
+                        allow_empty=False,
+                    )
+                except ValueError:
+                    invalid_handle = True
+                if invalid_handle or row_handle is None:
+                    raise EngineRunReservationRejectedError(
+                        "engine-run start reservation has an invalid durable handle"
+                    )
                 _verify_reservation_handle_identity(
                     row_handle,
                     engine=engine,
@@ -586,14 +829,17 @@ async def prepare_engine_start(
                 await session.commit()
                 return recovered
         finally:
-            await engine_db.dispose()
+            await dispose_engine_instance_definitively(engine_db)
     except Exception as exc:  # noqa: BLE001 — provider I/O must fail closed
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="start reservation")
+    if failure is not None:
         logger.warning(
             "engine_runs.start_reservation_failed",
-            thread_id=thread_id,
-            error=bounded_diagnostic(exc),
+            thread_id=bounded_diagnostic(thread_id, max_chars=64),
+            error=diagnostic,
         )
-        raise
+        raise failure
 
 
 async def prepare_engine_provision(
@@ -615,7 +861,20 @@ async def prepare_engine_provision(
     another provider call. Existing terminal or inconsistent attempts fail closed.
     """
 
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
+        handle, _summary = _validate_engine_run_projection_input(
+            thread_id=thread_id,
+            attempt=attempt,
+            engine=engine,
+            handle=handle,
+            status="provisioning",
+            project_id=project_id,
+            app_id=app_id,
+            artifact_namespace=artifact_namespace,
+            connection_id=connection_id,
+        )
         settings = get_settings()
         skip_projection, connection_id, connection_version, _artifact_connection_id = (
             _normalize_development_connection_ids(
@@ -630,7 +889,7 @@ async def prepare_engine_provision(
             return None
         _authoritative_scope(project_id, app_id, required=True, operation="provision")
         if connection_id is not None and connection_version is None:
-            raise RuntimeError(
+            raise EngineRunReservationRejectedError(
                 f"execution connection {connection_id!r} is missing its reservation version"
             )
         database = settings.database
@@ -646,12 +905,13 @@ async def prepare_engine_provision(
                     connection = await session.scalar(
                         select(Connection).where(Connection.id == connection_id).with_for_update()
                     )
-                    if connection is None or not connection.enabled:
-                        raise RuntimeError(
-                            f"execution connection {connection_id!r} is missing or disabled"
-                        )
+                    connection = _verify_execution_connection_reservation(
+                        connection,
+                        engine=engine,
+                        project_id=project_id,
+                    )
                     if connection.runtime_version != connection_version:
-                        raise RuntimeError(
+                        raise EngineRunReservationRejectedError(
                             f"execution connection {connection_id!r} changed during reservation"
                         )
                 values: dict[str, Any] = {
@@ -709,7 +969,20 @@ async def prepare_engine_provision(
                     raise EngineRunReservationRejectedError(
                         "engine-run provision reservation has a different artifact namespace"
                     )
-                row_handle = row.handle if isinstance(row.handle, dict) else {}
+                row_handle: dict[str, Any] | None = None
+                invalid_handle = False
+                try:
+                    row_handle = _validated_projection_handle(
+                        row.handle,
+                        engine=engine,
+                        allow_empty=False,
+                    )
+                except ValueError:
+                    invalid_handle = True
+                if invalid_handle or row_handle is None:
+                    raise EngineRunReservationRejectedError(
+                        "engine-run provision reservation has an invalid durable handle"
+                    )
                 _verify_reservation_handle_identity(
                     row_handle,
                     engine=engine,
@@ -738,14 +1011,17 @@ async def prepare_engine_provision(
                 await session.commit()
                 return recovered
         finally:
-            await engine_db.dispose()
+            await dispose_engine_instance_definitively(engine_db)
     except Exception as exc:  # noqa: BLE001 — provider I/O must fail closed
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="provision reservation")
+    if failure is not None:
         logger.warning(
             "engine_runs.provision_reservation_failed",
-            thread_id=thread_id,
-            error=bounded_diagnostic(exc),
+            thread_id=bounded_diagnostic(thread_id, max_chars=64),
+            error=diagnostic,
         )
-        raise
+        raise failure
 
 
 def _completion_replay_status(
@@ -769,7 +1045,20 @@ def _completion_replay_status(
 
     if row.status not in _TERMINAL:
         return None
-    row_handle = row.handle if isinstance(row.handle, dict) else {}
+    row_handle: dict[str, Any] | None = None
+    invalid_handle = False
+    try:
+        row_handle = _validated_projection_handle(
+            row.handle,
+            engine=engine,
+            allow_empty=False,
+        )
+    except ValueError:
+        invalid_handle = True
+    if invalid_handle or row_handle is None:
+        raise EngineRunReservationRejectedError(
+            "terminal engine-run projection does not match the completion witness"
+        )
     expected_idempotency_key = handle.get("idempotency_key")
     mismatched = (
         row.thread_id != thread_id
@@ -823,7 +1112,22 @@ async def recover_engine_completion(
         or not (expected_statuses <= _TERMINAL)
     ):
         raise ValueError("engine completion recovery contract is invalid")
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
+        handle, _summary = _validate_engine_run_projection_input(
+            thread_id=thread_id,
+            attempt=attempt,
+            engine=engine,
+            handle=handle,
+            status=next(iter(expected_statuses)),
+            project_id=project_id,
+            app_id=app_id,
+            external_run_id=external_run_id,
+            artifact_namespace=artifact_namespace,
+            artifact_connection_id=artifact_connection_id,
+            connection_id=connection_id,
+        )
         settings = get_settings()
         skip_projection, connection_id, connection_version, artifact_connection_id = (
             _normalize_development_connection_ids(
@@ -884,18 +1188,23 @@ async def recover_engine_completion(
                 await session.commit()
                 return recovered
         finally:
-            await engine_db.dispose()
+            await dispose_engine_instance_definitively(engine_db)
     except Exception as exc:  # noqa: BLE001 - teardown recovery must fail closed
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="completion recovery")
+    if failure is not None:
         logger.warning(
             "engine_runs.completion_recovery_failed",
-            thread_id=thread_id,
-            error=bounded_diagnostic(exc),
+            thread_id=bounded_diagnostic(thread_id, max_chars=64),
+            error=diagnostic,
         )
-        raise
+        raise failure
 
 
 def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
     """Sync bridge that is safe when called from either sync or async graph nodes."""
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
         try:
             asyncio.get_running_loop()
@@ -908,14 +1217,19 @@ def record_engine_run_sync(*args: Any, **kwargs: Any) -> None:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 executor.submit(asyncio.run, record_engine_run(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("engine_runs.record_failed", error=bounded_diagnostic(exc))
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="record")
+    if failure is not None:
+        logger.warning("engine_runs.record_failed", error=diagnostic)
         if kwargs.get("required") is True:
-            raise
+            raise failure
 
 
 def prepare_engine_start_sync(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
     """Sync bridge for the required pre-start reservation/recovery barrier."""
 
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
         try:
             asyncio.get_running_loop()
@@ -924,13 +1238,19 @@ def prepare_engine_start_sync(*args: Any, **kwargs: Any) -> dict[str, Any] | Non
         with ThreadPoolExecutor(max_workers=1) as executor:
             return executor.submit(asyncio.run, prepare_engine_start(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("engine_runs.start_reservation_failed", error=bounded_diagnostic(exc))
-        raise
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="start reservation")
+    logger.warning("engine_runs.start_reservation_failed", error=diagnostic)
+    if failure is None:  # pragma: no cover - sync bridge contract invariant
+        raise EngineRunProjectionError("engine-run start reservation returned no result")
+    raise failure
 
 
 def prepare_engine_provision_sync(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
     """Sync bridge for the insert-or-recover provision reservation barrier."""
 
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
         try:
             asyncio.get_running_loop()
@@ -939,13 +1259,19 @@ def prepare_engine_provision_sync(*args: Any, **kwargs: Any) -> dict[str, Any] |
         with ThreadPoolExecutor(max_workers=1) as executor:
             return executor.submit(asyncio.run, prepare_engine_provision(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("engine_runs.provision_reservation_failed", error=bounded_diagnostic(exc))
-        raise
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="provision reservation")
+    logger.warning("engine_runs.provision_reservation_failed", error=diagnostic)
+    if failure is None:  # pragma: no cover - sync bridge contract invariant
+        raise EngineRunProjectionError("engine-run provision reservation returned no result")
+    raise failure
 
 
 def recover_engine_completion_sync(*args: Any, **kwargs: Any) -> str | None:
     """Sync bridge for the exact post-effect completion witness."""
 
+    failure: Exception | None = None
+    diagnostic: str | None = None
     try:
         try:
             asyncio.get_running_loop()
@@ -954,5 +1280,9 @@ def recover_engine_completion_sync(*args: Any, **kwargs: Any) -> str | None:
         with ThreadPoolExecutor(max_workers=1) as executor:
             return executor.submit(asyncio.run, recover_engine_completion(*args, **kwargs)).result()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("engine_runs.completion_recovery_failed", error=bounded_diagnostic(exc))
-        raise
+        diagnostic = bounded_diagnostic(exc)
+        failure = _stable_projection_failure(exc, operation="completion recovery")
+    logger.warning("engine_runs.completion_recovery_failed", error=diagnostic)
+    if failure is None:  # pragma: no cover - sync bridge contract invariant
+        raise EngineRunProjectionError("engine-run completion recovery returned no result")
+    raise failure

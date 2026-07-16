@@ -101,7 +101,8 @@ migrations:
 
 databaseRoleProvisioning:
   enabled: true
-  # Both supported Azure deploy paths pass `helm upgrade --wait`, so the
+  # Both supported Azure deploy paths pass atomic/cleanup-on-fail/wait and run
+  # explicit CSI compensation on command failure or interruption, so the
   # post-upgrade hook runs only after the replacement Deployment is Ready.
   cleanupOldGenerations: true
   runtimeSecret: apex-database-bootstrap

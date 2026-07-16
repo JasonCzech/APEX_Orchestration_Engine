@@ -6,7 +6,7 @@ import asyncio
 import json
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping, MutableSequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableSequence
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from threading import Lock
 from typing import Any
@@ -18,7 +18,11 @@ from apex.app.distributed_limits import (
     StreamLease,
 )
 from apex.auth.service import extract_api_key, hash_api_key
-from apex.domain.diagnostics import bounded_diagnostic, is_credential_field
+from apex.domain.diagnostics import (
+    bounded_diagnostic,
+    contains_credential_material,
+    is_credential_field,
+)
 from apex.domain.input_limits import validate_json_object
 from apex.services.audit import append_audit_event_best_effort, request_audit_event
 from apex.services.langgraph_client import is_trusted_loopback
@@ -48,6 +52,16 @@ _MAX_LANGGRAPH_FILTER_NODES = 2_000
 _MAX_LANGGRAPH_IDENTIFIER_CHARS = 255
 _MAX_LANGGRAPH_QUERY_CHARS = 20_000
 _MAX_LANGGRAPH_QUERY_FIELDS = 64
+_MAX_RAW_HEADER_NAME_BYTES = 128
+_MAX_FORWARDED_FOR_HEADERS = 4
+_MAX_FORWARDED_FOR_BYTES = 4_096
+_MAX_FORWARDED_FOR_HOPS = 32
+_MAX_LANGSMITH_TRACE_BYTES = 4_096
+_MAX_LANGSMITH_BAGGAGE_HEADERS = 16
+_MAX_LANGSMITH_BAGGAGE_BYTES = _MAX_LANGGRAPH_FILTER_BYTES
+_MAX_CONTENT_TYPE_HEADER_BYTES = 1_024
+_MAX_CONTENT_LENGTH_HEADER_BYTES = 32
+_MAX_TRUSTED_LOOPBACK_HEADER_BYTES = 256
 _MAX_ASSISTANT_XRAY_DEPTH = 3
 _MAX_LANGGRAPH_DESCRIPTION_CHARS = 20_000
 _MAX_JSON_BODY_DEPTH = 64
@@ -56,6 +70,8 @@ _MAX_JSON_SCALAR_BYTES = 512_000
 _MAX_NATIVE_PROJECTION_JSON_BYTES = 5_000_000
 _MAX_NATIVE_PROJECTION_JSON_NODES = 20_000
 _MAX_PUBLIC_STREAM_EVENT_BYTES = 512_000
+_MAX_PROJECTED_RESPONSE_HEADERS = 128
+_MAX_PROJECTED_RESPONSE_HEADER_BYTES = 64 * 1024
 _LANGGRAPH_RUN_STATUSES = {
     "pending",
     "running",
@@ -81,6 +97,24 @@ class _RequestInputRejected(Exception):
     def __init__(self, detail: str) -> None:
         self.detail = detail
         super().__init__(detail)
+
+
+async def _await_task_definitively(task: asyncio.Task[None]) -> None:
+    """Settle owned cleanup despite repeated cancellation of its caller."""
+
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    # Retrieve the child outcome synchronously. Another await here would add a
+    # cancellation point after the resource has already been released.
+    task.result()
+    if interrupted:
+        raise asyncio.CancelledError from None
 
 
 class _JsonNestingPrecheck:
@@ -314,11 +348,10 @@ class RequestBodyLimitMiddleware:
             and not request_path.startswith("/v1/")
             and not _scope_is_trusted_loopback(scope)
         )
-        stream_buffer = bytearray()
+        stream_parser = _BoundedPublicSSEParser(_MAX_PUBLIC_STREAM_EVENT_BYTES)
         projection_response_buffer = bytearray()
         projection_response_oversized = False
         native_error_status: int | None = None
-        discard_oversized_stream_event = False
         body_complete = content_length == 0
         enforce_deadline = method in {"POST", "PUT", "PATCH", "DELETE"} and not body_complete
         deadline = asyncio.get_running_loop().time() + self._settings.timeout_s
@@ -334,11 +367,15 @@ class RequestBodyLimitMiddleware:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     raise _RequestBodyTimedOut
+                receive_timed_out = False
                 try:
                     async with asyncio.timeout(remaining):
                         message = await receive()
-                except TimeoutError as exc:
-                    raise _RequestBodyTimedOut from exc
+                except TimeoutError:
+                    receive_timed_out = True
+                    message = {}
+                if receive_timed_out:
+                    raise _RequestBodyTimedOut
             else:
                 message = await receive()
             if message.get("type") == "http.request":
@@ -364,7 +401,7 @@ class RequestBodyLimitMiddleware:
             return message
 
         async def tracked_send(message: dict[str, Any]) -> None:
-            nonlocal projection_response_oversized, discard_oversized_stream_event
+            nonlocal projection_response_oversized
             nonlocal native_error_status, response_started
             if message.get("type") == "http.response.start":
                 response_started = True
@@ -402,10 +439,13 @@ class RequestBodyLimitMiddleware:
             if public_json_projection is not None and message.get("type") == "http.response.body":
                 body = message.get("body", b"")
                 if isinstance(body, bytes) and not projection_response_oversized:
-                    projection_response_buffer.extend(body)
-                    if len(projection_response_buffer) > _MAX_NATIVE_PROJECTION_JSON_BYTES:
+                    if len(body) > (
+                        _MAX_NATIVE_PROJECTION_JSON_BYTES - len(projection_response_buffer)
+                    ):
                         projection_response_buffer.clear()
                         projection_response_oversized = True
+                    else:
+                        projection_response_buffer.extend(body)
                 if message.get("more_body", False):
                     return
                 projected = (
@@ -420,30 +460,36 @@ class RequestBodyLimitMiddleware:
                 return
             if public_custom_stream and message.get("type") == "http.response.body":
                 body = message.get("body", b"")
-                if isinstance(body, bytes):
-                    stream_buffer.extend(body)
-                    sanitized = bytearray()
-                    while True:
-                        boundary = _sse_event_boundary(stream_buffer)
-                        if boundary is None:
-                            if len(stream_buffer) > _MAX_PUBLIC_STREAM_EVENT_BYTES:
-                                stream_buffer.clear()
-                                discard_oversized_stream_event = True
-                                sanitized.extend(_safe_stream_error_event())
-                            break
-                        end, separator_size = boundary
-                        event = bytes(stream_buffer[:end])
-                        del stream_buffer[: end + separator_size]
-                        if discard_oversized_stream_event:
-                            discard_oversized_stream_event = False
-                            continue
-                        sanitized.extend(_sanitize_public_sse_event(event))
-                    if not message.get("more_body", False) and stream_buffer:
-                        if not discard_oversized_stream_event:
-                            sanitized.extend(_sanitize_public_sse_event(bytes(stream_buffer)))
-                        stream_buffer.clear()
-                        discard_oversized_stream_event = False
-                    message = {**message, "body": bytes(sanitized)}
+                outcomes: Iterator[bytes | None]
+                if type(body) is bytes:
+                    outcomes = stream_parser.feed(body)
+                else:
+                    outcomes = iter((None,)) if stream_parser.reject_chunk() else iter(())
+
+                # Do not aggregate projected events into another attacker-sized
+                # response chunk. Each raw event is bounded before it is copied,
+                # sanitized, and forwarded. A terminal empty frame preserves the
+                # original ASGI end-of-body signal after any number of events.
+                for event in outcomes:
+                    projected = (
+                        _safe_stream_error_event()
+                        if event is None
+                        else _sanitize_public_sse_event(event)
+                    )
+                    if projected:
+                        await send({**message, "body": projected, "more_body": True})
+                if message.get("more_body") is not True:
+                    for final_event in stream_parser.finish():
+                        projected = (
+                            _safe_stream_error_event()
+                            if final_event is None
+                            else _sanitize_public_sse_event(final_event)
+                        )
+                        if projected:
+                            await send({**message, "body": projected, "more_body": True})
+                    message = {**message, "body": b"", "more_body": False}
+                else:
+                    return
             if public_native_request and message.get("type") == "http.response.trailers":
                 # Native runtimes may opt into ASGI trailers independently of
                 # their ordinary response headers. They are not part of any
@@ -490,7 +536,12 @@ class SecurityHeadersMiddleware:
 
         async def send_wrapper(message: dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
-                headers = message.setdefault("headers", [])
+                # Inner ASGI applications and the native runtime are response
+                # projection inputs. Normalize to one exact bounded list before
+                # mutating headers so a malformed/custom container cannot run
+                # Python hooks, amplify work, or suppress the security boundary.
+                headers = list(_bounded_response_headers(message))
+                message = {**message, "headers": headers}
                 if self._settings.enabled:
                     _set_header(headers, b"x-content-type-options", b"nosniff")
                     _set_header(headers, b"x-frame-options", b"DENY")
@@ -793,6 +844,7 @@ class RateLimitMiddleware:
 
         async def acquire() -> None:
             nonlocal lease, local_acquired, renew_task
+            backend_unavailable = False
             try:
                 if backend is None:
                     local_acquired = self._acquire_stream(keys)
@@ -810,8 +862,10 @@ class RateLimitMiddleware:
                         raise _StreamAdmissionRejected
                     assert app_task is not None
                     renew_task = asyncio.create_task(renew(lease, app_task))
-            except LimitBackendUnavailable as exc:
-                raise _StreamAdmissionUnavailable from exc
+            except LimitBackendUnavailable:
+                backend_unavailable = True
+            if backend_unavailable:
+                raise _StreamAdmissionUnavailable
 
         async def renew(current_lease: StreamLease, current_app: asyncio.Task[None]) -> None:
             nonlocal renewal_error
@@ -827,8 +881,12 @@ class RateLimitMiddleware:
                         raise LimitBackendUnavailable("distributed SSE lease was lost")
             except asyncio.CancelledError:
                 raise
-            except LimitBackendUnavailable as exc:
-                renewal_error = exc
+            except LimitBackendUnavailable:
+                # Never retain an injected/backend exception here: custom
+                # backends may chain Redis endpoints or credentials. The
+                # stable sentinel is raised only after the app cancellation
+                # handler has been left.
+                renewal_error = LimitBackendUnavailable("distributed SSE lease was lost")
                 current_app.cancel()
 
         method = str(scope.get("method") or "").upper()
@@ -853,6 +911,7 @@ class RateLimitMiddleware:
             await self._app(scope, tracked_receive, tracked_send)
 
         app_task = asyncio.create_task(run_app())
+        renewal_failure_to_raise: LimitBackendUnavailable | None = None
         try:
             try:
                 await app_task
@@ -872,26 +931,39 @@ class RateLimitMiddleware:
                 if renewal_error is None:
                     raise
                 if response_started:
-                    raise renewal_error from None
-                _schedule_audit(scope, 503, reason="distributed SSE lease lost")
-                await _send_limit_backend_unavailable(send)
+                    renewal_failure_to_raise = renewal_error
+                else:
+                    _schedule_audit(scope, 503, reason="distributed SSE lease lost")
+                    await _send_limit_backend_unavailable(send)
+            if renewal_failure_to_raise is not None:
+                raise renewal_failure_to_raise
         finally:
-            if renew_task is not None and not renew_task.done():
-                renew_task.cancel()
-            if renew_task is not None:
-                await asyncio.gather(renew_task, return_exceptions=True)
-            if lease is not None and backend is not None:
+
+            async def cleanup() -> None:
                 try:
-                    await backend.release_stream(lease)
-                except LimitBackendUnavailable:
-                    # The short lease expires after a pod/backend failure.
-                    pass
-            elif local_acquired:
-                self._release_stream(keys)
-            if previous_admission is None:
-                scope.pop(_STREAM_ADMISSION_SCOPE_KEY, None)
-            else:
-                scope[_STREAM_ADMISSION_SCOPE_KEY] = previous_admission
+                    if renew_task is not None and not renew_task.done():
+                        renew_task.cancel()
+                    if renew_task is not None:
+                        await asyncio.gather(renew_task, return_exceptions=True)
+                    if lease is not None and backend is not None:
+                        try:
+                            await backend.release_stream(lease)
+                        except LimitBackendUnavailable:
+                            # The short lease expires after a pod/backend failure.
+                            pass
+                    elif local_acquired:
+                        self._release_stream(keys)
+                finally:
+                    if previous_admission is None:
+                        scope.pop(_STREAM_ADMISSION_SCOPE_KEY, None)
+                    else:
+                        scope[_STREAM_ADMISSION_SCOPE_KEY] = previous_admission
+
+            # ASGI servers can deliver another cancellation while unwinding a
+            # disconnected stream. Keep the lease and admission scope owned by
+            # a shielded child until cleanup reaches a definitive outcome.
+            cleanup_task = asyncio.create_task(cleanup())
+            await _await_task_definitively(cleanup_task)
 
     def _acquire_stream(self, keys: tuple[str, ...]) -> bool:
         source = keys[0]
@@ -1040,6 +1112,53 @@ def _proxy_networks(settings: RateLimitSettings) -> tuple[_IPNetwork, ...]:
     return tuple(ip_network(value, strict=False) for value in settings.trusted_proxy_cidrs)
 
 
+def _exact_raw_header_name(value: Any) -> str | None:
+    """Decode a small ASCII header name without caller-defined coercion."""
+
+    if type(value) is bytes:
+        if not 1 <= len(value) <= _MAX_RAW_HEADER_NAME_BYTES:
+            return None
+        try:
+            return value.decode("ascii", errors="strict").lower()
+        except UnicodeDecodeError:
+            return None
+    if type(value) is str:
+        if not 1 <= len(value) <= _MAX_RAW_HEADER_NAME_BYTES:
+            return None
+        try:
+            if len(value.encode("ascii", errors="strict")) > _MAX_RAW_HEADER_NAME_BYTES:
+                return None
+        except UnicodeEncodeError:
+            return None
+        return value.lower()
+    return None
+
+
+def _decode_bounded_raw_header_value(
+    value: Any,
+    *,
+    max_chars: int,
+    max_bytes: int,
+) -> tuple[str, int] | None:
+    """Return exact text and encoded size after applying pre-decode byte bounds."""
+
+    if type(value) is bytes:
+        if len(value) > max_bytes:
+            return None
+        return value.decode("latin-1"), len(value)
+    if type(value) is str:
+        if len(value) > max_chars:
+            return None
+        try:
+            encoded_size = len(value.encode("utf-8", errors="strict"))
+        except UnicodeEncodeError:
+            return None
+        if encoded_size > max_bytes:
+            return None
+        return value, encoded_size
+    return None
+
+
 def _source_rate_key(
     scope: Mapping[str, Any], trusted_proxy_networks: tuple[_IPNetwork, ...]
 ) -> str:
@@ -1057,12 +1176,29 @@ def _source_rate_key(
         return f"ip:{peer.compressed}"
 
     forwarded: list[str] = []
+    forwarded_headers = 0
+    forwarded_bytes = 0
     for name, value in scope.get("headers") or []:
-        raw_name = name.decode("latin-1") if isinstance(name, bytes) else str(name)
-        if raw_name.casefold() != "x-forwarded-for":
+        if _exact_raw_header_name(name) != "x-forwarded-for":
             continue
-        raw_value = value.decode("latin-1") if isinstance(value, bytes) else str(value)
-        forwarded.extend(part.strip() for part in raw_value.split(","))
+        forwarded_headers += 1
+        if forwarded_headers > _MAX_FORWARDED_FOR_HEADERS:
+            return f"ip:{peer.compressed}"
+        decoded = _decode_bounded_raw_header_value(
+            value,
+            max_chars=_MAX_FORWARDED_FOR_BYTES,
+            max_bytes=_MAX_FORWARDED_FOR_BYTES,
+        )
+        if decoded is None:
+            return f"ip:{peer.compressed}"
+        raw_value, value_bytes = decoded
+        forwarded_bytes += value_bytes
+        if forwarded_bytes > _MAX_FORWARDED_FOR_BYTES:
+            return f"ip:{peer.compressed}"
+        parts = raw_value.split(",")
+        if len(parts) > _MAX_FORWARDED_FOR_HOPS - len(forwarded):
+            return f"ip:{peer.compressed}"
+        forwarded.extend(part.strip() for part in parts)
 
     # Walk from the immediate peer toward the caller. Trusted proxies are
     # skipped; the first untrusted address is the source that cannot be forged
@@ -1126,7 +1262,7 @@ def _is_run_creation_request(scope: Mapping[str, Any]) -> bool:
 
 
 def _is_native_cron_path(scope: Mapping[str, Any]) -> bool:
-    path = str(scope.get("path") or "")
+    path = _native_path_without_trailing_slash(str(scope.get("path") or ""))
     parts = path.split("/")
     if len(parts) >= 3 and parts[1:3] == ["runs", "crons"]:
         return True
@@ -1143,7 +1279,7 @@ def _disabled_native_thread_primitive(scope: Mapping[str, Any]) -> str | None:
 
     if str(scope.get("method") or "").upper() != "POST":
         return None
-    path = str(scope.get("path") or "")
+    path = _native_path_without_trailing_slash(str(scope.get("path") or ""))
     if path == "/threads/prune":
         return "Native thread pruning is disabled"
     parts = path.split("/")
@@ -1162,7 +1298,7 @@ def _disabled_native_thread_primitive(scope: Mapping[str, Any]) -> str | None:
 def _is_disabled_thread_stream(scope: Mapping[str, Any]) -> bool:
     if str(scope.get("method") or "").upper() != "GET":
         return False
-    parts = str(scope.get("path") or "").split("/")
+    parts = _native_path_without_trailing_slash(str(scope.get("path") or "")).split("/")
     return len(parts) == 4 and parts[1] == "threads" and bool(parts[2]) and parts[3] == "stream"
 
 
@@ -1201,7 +1337,7 @@ def _is_long_lived_run_request(scope: Mapping[str, Any]) -> bool:
     path = _native_path_without_trailing_slash(str(scope.get("path") or ""))
     if method == "POST" and path in {"/runs/stream", "/runs/wait"}:
         return True
-    parts = str(scope.get("path") or "").split("/")
+    parts = path.split("/")
     if method == "POST":
         return (
             len(parts) == 5
@@ -1408,13 +1544,14 @@ async def _send_unprocessable_entity(send: Any, detail: str) -> None:
 
 
 def _request_target_contains_nul(scope: Mapping[str, Any]) -> bool:
-    path = str(scope.get("path") or "")
-    if "\x00" in path:
+    path = scope.get("path") or ""
+    if type(path) is str and "\x00" in path:
         return True
     for name in ("raw_path", "query_string"):
         value = scope.get(name) or b""
-        raw = value if isinstance(value, bytes) else str(value).encode("latin-1", errors="ignore")
-        if b"\x00" in raw or b"%00" in raw.lower():
+        if type(value) is bytes and (b"\x00" in value or b"%00" in value):
+            return True
+        if type(value) is str and ("\x00" in value or "%00" in value):
             return True
     return False
 
@@ -1423,12 +1560,18 @@ def _is_json_mutation_request(scope: Mapping[str, Any]) -> bool:
     if str(scope.get("method") or "").upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
         return False
     for raw_name, raw_value in scope.get("headers") or []:
-        name = (
-            raw_name.decode("latin-1") if isinstance(raw_name, bytes) else str(raw_name)
-        ).casefold()
-        if name != "content-type":
+        if _exact_raw_header_name(raw_name) != "content-type":
             continue
-        value = raw_value.decode("latin-1") if isinstance(raw_value, bytes) else str(raw_value)
+        decoded = _decode_bounded_raw_header_value(
+            raw_value,
+            max_chars=_MAX_CONTENT_TYPE_HEADER_BYTES,
+            max_bytes=_MAX_CONTENT_TYPE_HEADER_BYTES,
+        )
+        if decoded is None:
+            # A malformed relevant header must not disable the JSON nesting
+            # precheck. Applying it to a non-JSON body is conservative and safe.
+            return True
+        value = decoded[0]
         media_type = value.split(";", 1)[0].strip().casefold()
         if media_type == "application/json" or media_type.endswith("+json"):
             return True
@@ -1444,11 +1587,11 @@ def _credential_header_error(scope: Mapping[str, Any]) -> str | None:
 
     counts = {b"x-api-key": 0, b"authorization": 0}
     for raw_name, _raw_value in scope.get("headers") or []:
-        if not isinstance(raw_name, bytes):
+        name = _exact_raw_header_name(raw_name)
+        if name not in {"x-api-key", "authorization"}:
             continue
-        name = raw_name.lower()
-        if name in counts:
-            counts[name] += 1
+        encoded_name = name.encode("ascii")
+        counts[encoded_name] += 1
     if counts[b"x-api-key"] > 1:
         return "Duplicate x-api-key headers are not allowed"
     if counts[b"authorization"] > 1:
@@ -1459,16 +1602,19 @@ def _credential_header_error(scope: Mapping[str, Any]) -> str | None:
 
 
 def _is_thread_history_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return len(parts) == 4 and parts[1] == "threads" and bool(parts[2]) and parts[3] == "history"
 
 
 def _is_thread_runs_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return len(parts) == 4 and parts[1] == "threads" and bool(parts[2]) and parts[3] == "runs"
 
 
 def _is_run_create_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     return path == "/runs" or _is_thread_runs_path(path)
 
 
@@ -1482,6 +1628,7 @@ def _public_native_json_projection_kind(
 
     if trusted_loopback:
         return None
+    path = _native_path_without_trailing_slash(path)
     if method == "POST" and path == "/threads":
         return "thread"
     if method == "POST" and _is_run_create_path(path):
@@ -1535,6 +1682,7 @@ def _native_path_without_trailing_slash(path: str) -> str:
 
 
 def _is_thread_item_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return len(parts) == 3 and parts[1] == "threads" and bool(parts[2])
 
@@ -1545,7 +1693,7 @@ def _blocked_public_native_projection(scope: Mapping[str, Any]) -> str | None:
     if _scope_is_trusted_loopback(scope):
         return None
     method = str(scope.get("method") or "").upper()
-    path = str(scope.get("path") or "")
+    path = _native_path_without_trailing_slash(str(scope.get("path") or ""))
     parts = path.split("/")
     if method == "GET" and _is_thread_item_path(path):
         # The native Thread schema includes ``values`` and interrupts; it is not
@@ -1593,6 +1741,7 @@ def _blocked_public_native_projection(scope: Mapping[str, Any]) -> str | None:
 
 
 def _is_run_item_join_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return (len(parts) == 4 and parts[1] == "runs" and bool(parts[2]) and parts[3] == "join") or (
         len(parts) == 6
@@ -1605,6 +1754,7 @@ def _is_run_item_join_path(path: str) -> bool:
 
 
 def _is_run_item_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return (len(parts) == 3 and parts[1] == "runs" and bool(parts[2])) or (
         len(parts) == 5
@@ -1629,6 +1779,7 @@ def _is_run_wait_path(path: str) -> bool:
 
 
 def _is_run_cancel_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     if path == "/runs/cancel":
         return True
     parts = path.split("/")
@@ -1642,11 +1793,154 @@ def _is_run_cancel_path(path: str) -> bool:
     )
 
 
-def _sse_event_boundary(buffer: bytearray) -> tuple[int, int] | None:
+class _BoundedPublicSSEParser:
+    """Incrementally frame SSE events without copying an unbounded ASGI chunk.
+
+    The runtime controls response chunking, so a single chunk may be much larger
+    than the public event limit. The parser searches that immutable chunk in
+    place and copies only one bounded event. While discarding an oversized or
+    structurally invalid event it retains at most the three bytes needed to
+    recognize a CRLF delimiter split across chunks.
+    """
+
+    _DELIMITER_TAIL_BYTES = 3
+
+    def __init__(self, max_event_bytes: int) -> None:
+        if type(max_event_bytes) is not int or max_event_bytes < 1:
+            raise ValueError("public SSE event limit must be positive")
+        self._max_event_bytes = max_event_bytes
+        self._buffer = bytearray()
+        self._discarding = False
+
+    def feed(self, body: bytes) -> Iterator[bytes | None]:
+        """Yield bounded raw events; ``None`` denotes one rejected event."""
+
+        offset = 0
+        body_size = len(body)
+        while offset < body_size:
+            crossing = self._crossing_boundary(body, offset)
+            if crossing is not None:
+                boundary_start, separator_size, tail_size = crossing
+                event_end = len(self._buffer) - tail_size + boundary_start
+                body_consumed = boundary_start + separator_size - tail_size
+                was_discarding = self._discarding
+                event = (
+                    None
+                    if was_discarding or event_end > self._max_event_bytes
+                    else bytes(self._buffer[:event_end])
+                )
+                self._buffer.clear()
+                self._discarding = False
+                offset += body_consumed
+                if not was_discarding:
+                    yield event
+                continue
+
+            boundary = _sse_event_boundary(body, start=offset)
+            if boundary is None:
+                remaining = body_size - offset
+                if self._discarding:
+                    self._retain_delimiter_tail(body, offset)
+                else:
+                    new_size = len(self._buffer) + remaining
+                    if new_size <= self._max_event_bytes:
+                        self._buffer.extend(body[offset:])
+                    elif new_size <= (self._max_event_bytes + self._DELIMITER_TAIL_BYTES):
+                        # An exactly-at-limit event may be followed by a
+                        # delimiter split across ASGI chunks. Retain only a
+                        # proper delimiter prefix whose start is still within
+                        # the event cap; any other over-limit bytes are rejected.
+                        self._buffer.extend(body[offset:])
+                        if not self._has_pending_boundary_prefix():
+                            self._discarding = True
+                            self._retain_delimiter_tail(b"", 0)
+                            yield None
+                    else:
+                        self._discarding = True
+                        self._retain_delimiter_tail(body, offset)
+                        yield None
+                return
+
+            end, separator_size = boundary
+            if not self._discarding:
+                segment_size = end - offset
+                if segment_size > self._max_event_bytes - len(self._buffer):
+                    yield None
+                else:
+                    self._buffer.extend(body[offset:end])
+                    yield bytes(self._buffer)
+            self._buffer.clear()
+            self._discarding = False
+            offset = end + separator_size
+
+    def reject_chunk(self) -> bool:
+        """Fail closed for a non-bytes ASGI body and discard its current event."""
+
+        emit_error = not self._discarding
+        self._buffer.clear()
+        self._discarding = True
+        return emit_error
+
+    def finish(self) -> Iterator[bytes | None]:
+        """Yield one bounded terminal event or rejection, if input remains."""
+
+        if self._discarding:
+            self._buffer.clear()
+            self._discarding = False
+            return
+        if not self._buffer:
+            return
+        event = None if len(self._buffer) > self._max_event_bytes else bytes(self._buffer)
+        self._buffer.clear()
+        yield event
+
+    def _crossing_boundary(
+        self,
+        body: bytes,
+        offset: int,
+    ) -> tuple[int, int, int] | None:
+        tail_size = min(len(self._buffer), self._DELIMITER_TAIL_BYTES)
+        if tail_size == 0:
+            return None
+        # This is the only speculative copy: at most three retained bytes plus
+        # four new bytes, enough for either supported SSE delimiter.
+        probe = bytes(self._buffer[-tail_size:]) + body[offset : offset + 4]
+        boundary = _sse_event_boundary(probe)
+        if boundary is None:
+            return None
+        start, separator_size = boundary
+        if start >= tail_size or start + separator_size <= tail_size:
+            return None
+        return start, separator_size, tail_size
+
+    def _retain_delimiter_tail(self, body: bytes, offset: int) -> None:
+        retained = bytes(self._buffer[-self._DELIMITER_TAIL_BYTES :])
+        self._buffer.clear()
+        remaining = len(body) - offset
+        if remaining >= self._DELIMITER_TAIL_BYTES:
+            self._buffer.extend(body[-self._DELIMITER_TAIL_BYTES :])
+            return
+        self._buffer.extend((retained + body[offset:])[-self._DELIMITER_TAIL_BYTES :])
+
+    def _has_pending_boundary_prefix(self) -> bool:
+        for delimiter in (b"\n\n", b"\r\n\r\n"):
+            for prefix_size in range(1, len(delimiter)):
+                if self._buffer.endswith(delimiter[:prefix_size]) and (
+                    len(self._buffer) - prefix_size <= self._max_event_bytes
+                ):
+                    return True
+        return False
+
+
+def _sse_event_boundary(
+    buffer: bytes | bytearray,
+    *,
+    start: int = 0,
+) -> tuple[int, int] | None:
     """Return the earliest complete SSE event boundary in ``buffer``."""
 
-    lf = buffer.find(b"\n\n")
-    crlf = buffer.find(b"\r\n\r\n")
+    lf = buffer.find(b"\n\n", start)
+    crlf = buffer.find(b"\r\n\r\n", start)
     candidates = [(lf, 2), (crlf, 4)]
     present = [(offset, size) for offset, size in candidates if offset >= 0]
     return min(present, default=None)
@@ -1688,12 +1982,11 @@ def _safe_projected_json_start(
     headers = [(b"content-type", b"application/json")]
     if preserve_run_location:
         locations: list[bytes] = []
-        for raw_name, raw_value in message.get("headers") or []:
-            name = raw_name if isinstance(raw_name, bytes) else str(raw_name).encode("latin-1")
-            if name.lower() != b"content-location":
+        for raw_name, raw_value in _bounded_response_headers(message):
+            if _exact_raw_header_name(raw_name) != "content-location":
                 continue
-            value = raw_value if isinstance(raw_value, bytes) else str(raw_value).encode("latin-1")
-            locations.append(value)
+            if len(locations) < 2:
+                locations.append(raw_value if type(raw_value) is bytes else b"")
         if len(locations) == 1 and _safe_run_content_location(locations[0]):
             headers.append((b"content-location", locations[0]))
     projected = {**message, "headers": headers}
@@ -1792,13 +2085,12 @@ def _safe_public_stream_start(message: dict[str, Any]) -> dict[str, Any]:
 
     content_locations: list[bytes] = []
     reconnect_locations: list[bytes] = []
-    for raw_name, raw_value in message.get("headers") or []:
-        name = raw_name if isinstance(raw_name, bytes) else str(raw_name).encode("latin-1")
-        value = raw_value if isinstance(raw_value, bytes) else str(raw_value).encode("latin-1")
-        if name.lower() == b"content-location":
-            content_locations.append(value)
-        elif name.lower() == b"location":
-            reconnect_locations.append(value)
+    for raw_name, raw_value in _bounded_response_headers(message):
+        name = _exact_raw_header_name(raw_name)
+        if name == "content-location" and len(content_locations) < 2:
+            content_locations.append(raw_value if type(raw_value) is bytes else b"")
+        elif name == "location" and len(reconnect_locations) < 2:
+            reconnect_locations.append(raw_value if type(raw_value) is bytes else b"")
     headers = [(b"content-type", b"text/event-stream")]
     if len(content_locations) == 1 and _safe_run_content_location(content_locations[0]):
         headers.append((b"content-location", content_locations[0]))
@@ -1808,6 +2100,35 @@ def _safe_public_stream_start(message: dict[str, Any]) -> dict[str, Any]:
     projected = {**message, "headers": headers}
     projected.pop("trailers", None)
     return projected
+
+
+def _bounded_response_headers(message: dict[str, Any]) -> tuple[tuple[bytes, bytes], ...]:
+    """Return an exact, bounded ASGI response-header container or fail closed.
+
+    Runtime responses are projection inputs, not trusted Python protocols. In
+    particular, never invoke caller-defined iteration/coercion hooks or scan an
+    unbounded list merely to retain one optional whitelisted location header.
+    """
+
+    raw_headers = message.get("headers")
+    if raw_headers is None:
+        return ()
+    if type(raw_headers) not in {list, tuple} or len(raw_headers) > _MAX_PROJECTED_RESPONSE_HEADERS:
+        return ()
+
+    headers: list[tuple[bytes, bytes]] = []
+    total_bytes = 0
+    for raw_header in raw_headers:
+        if type(raw_header) not in {list, tuple} or len(raw_header) != 2:
+            return ()
+        raw_name, raw_value = raw_header
+        if type(raw_name) is not bytes or type(raw_value) is not bytes:
+            return ()
+        total_bytes += len(raw_name) + len(raw_value)
+        if total_bytes > _MAX_PROJECTED_RESPONSE_HEADER_BYTES:
+            return ()
+        headers.append((raw_name, raw_value))
+    return tuple(headers)
 
 
 def _empty_native_projection(kind: str) -> bytes:
@@ -1906,33 +2227,64 @@ def _sanitize_public_sse_event(event: bytes) -> bytes:
     """Allow only redacted custom events; drop every raw runtime state channel."""
 
     normalized = event.replace(b"\r\n", b"\n")
-    event_name: bytes | None = None
-    for line in normalized.split(b"\n"):
-        if line.startswith(b"event:"):
-            event_name = line[6:].strip().lower()
-            break
-    if event_name == b"error":
-        return _safe_stream_error_event()
-    if event_name == b"custom" or (event_name is not None and event_name.startswith(b"custom|")):
-        return _sanitize_public_custom_event(normalized, event_name)
+    # Bare CR has SSE line semantics but can also hide injected fields from a
+    # newline-only parser. The runtime emits LF/CRLF; other framing fails closed.
+    if b"\r" in normalized:
+        return b""
     lines = [line for line in normalized.split(b"\n") if line]
     if lines and all(line.startswith(b":") for line in lines):
         return b": heartbeat\n\n"
+
+    parsed = _strict_public_sse_fields(lines)
+    if parsed is None:
+        return b""
+    event_name, data_lines, event_id = parsed
+    if event_name == b"error":
+        return _safe_stream_error_event()
+    if _safe_public_custom_event_name(event_name):
+        return _sanitize_public_custom_event(data_lines, event_id, event_name)
     # LangGraph may internally add updates and emit interrupt state as `values`
     # even when the join requested custom only. Unknown event names fail closed.
     return b""
 
 
-def _sanitize_public_custom_event(normalized: bytes, event_name: bytes) -> bytes:
+def _strict_public_sse_fields(
+    lines: list[bytes],
+) -> tuple[bytes, list[bytes], bytes | None] | None:
+    """Parse the small public SSE envelope with exact EventSource semantics.
+
+    Multiple event/id fields, comments mixed into data events, retry controls,
+    and unknown fields are rejected. Otherwise a provider could make the
+    projector authorize one event name while browsers interpret another.
+    """
+
+    event_names: list[bytes] = []
+    data_lines: list[bytes] = []
+    event_ids: list[bytes] = []
+    for line in lines:
+        if line.startswith(b":"):
+            return None
+        field, separator, value = line.partition(b":")
+        if separator and value.startswith(b" "):
+            value = value[1:]
+        if field == b"event":
+            event_names.append(value)
+        elif field == b"data":
+            data_lines.append(value)
+        elif field == b"id":
+            event_ids.append(value)
+        else:
+            return None
+    if len(event_names) != 1 or len(event_ids) > 1:
+        return None
+    return event_names[0], data_lines, event_ids[0] if event_ids else None
+
+
+def _sanitize_public_custom_event(
+    data_lines: list[bytes], event_id: bytes | None, event_name: bytes
+) -> bytes:
     """Parse and project custom JSON instead of trusting raw SSE text."""
 
-    data_lines: list[bytes] = []
-    event_id: bytes | None = None
-    for line in normalized.split(b"\n"):
-        if line.startswith(b"data:"):
-            data_lines.append(line[5:].lstrip(b" "))
-        elif line.startswith(b"id:"):
-            event_id = line[3:].strip()
     if not data_lines:
         return b""
     try:
@@ -1955,20 +2307,38 @@ def _sanitize_public_custom_event(normalized: bytes, event_name: bytes) -> bytes
         ).encode("utf-8")
     except (RecursionError, TypeError, ValueError, json.JSONDecodeError):
         return b""
-    safe_name = bounded_diagnostic(
-        event_name.decode("utf-8", errors="replace"),
-        max_chars=512,
-    ).encode("utf-8")
-    lines = [b"event: " + safe_name]
+    # The event name has already passed a bounded ASCII grammar. Treat the ID
+    # separately: never normalize provider bytes into a different resume token,
+    # and never render it through a general diagnostic/coercion helper.
+    lines = [b"event: " + event_name]
     if event_id is not None:
-        decoded_id = event_id.decode("ascii", errors="ignore")
+        try:
+            decoded_id = event_id.decode("ascii")
+        except UnicodeDecodeError:
+            decoded_id = ""
         if len(decoded_id) <= 64 and _is_valid_redis_stream_id(decoded_id):
             lines.append(b"id: " + decoded_id.encode("ascii"))
     lines.append(b"data: " + encoded)
     return b"\n".join(lines) + b"\n\n"
 
 
+def _safe_public_custom_event_name(value: bytes) -> bool:
+    """Accept custom/subgraph event names with no SSE control-byte surface."""
+
+    if value == b"custom":
+        return True
+    prefix = b"custom|"
+    if not value.startswith(prefix) or not len(prefix) < len(value) <= 512:
+        return False
+    allowed_punctuation = b"-_.:|"
+    return all(
+        48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122 or byte in allowed_punctuation
+        for byte in value[len(prefix) :]
+    )
+
+
 def _is_assistant_versions_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return (
         len(parts) == 4 and parts[1] == "assistants" and bool(parts[2]) and parts[3] == "versions"
@@ -1976,11 +2346,13 @@ def _is_assistant_versions_path(path: str) -> bool:
 
 
 def _is_assistant_latest_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return len(parts) == 4 and parts[1] == "assistants" and bool(parts[2]) and parts[3] == "latest"
 
 
 def _is_assistant_item_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return len(parts) == 3 and parts[1] == "assistants" and bool(parts[2])
 
@@ -2004,14 +2376,24 @@ def _assistant_structure_path_kind(path: str) -> str | None:
 
 
 def _is_cron_item_path(path: str) -> bool:
+    path = _native_path_without_trailing_slash(path)
     parts = path.split("/")
     return len(parts) == 4 and parts[1] == "runs" and parts[2] == "crons" and bool(parts[3])
 
 
 def _direct_langgraph_read_body_path(scope: Mapping[str, Any]) -> str | None:
     method = str(scope.get("method") or "").upper()
-    path = str(scope.get("path") or "")
+    path = _native_path_without_trailing_slash(str(scope.get("path") or ""))
     if method == "PATCH" and _is_thread_item_path(path):
+        return "thread_update"
+    parts = path.split("/")
+    if (
+        method in {"POST", "PATCH"}
+        and len(parts) == 4
+        and parts[1] == "threads"
+        and bool(parts[2])
+        and parts[3] == "state"
+    ):
         return "thread_update"
     if method == "PATCH" and _is_assistant_item_path(path):
         return "assistant_write"
@@ -2021,6 +2403,8 @@ def _direct_langgraph_read_body_path(scope: Mapping[str, Any]) -> str | None:
         return None
     if _is_run_create_stream_path(path):
         return "run_stream_create"
+    if _is_run_create_path(path) or _is_run_wait_path(path):
+        return "run_create"
     if path == "/threads":
         return "thread_create"
     if path == "/assistants":
@@ -2044,13 +2428,18 @@ def _direct_langgraph_read_body_path(scope: Mapping[str, Any]) -> str | None:
 
 def _direct_langgraph_query_limit_error(scope: Mapping[str, Any]) -> str | None:
     method = str(scope.get("method") or "").upper()
-    path = str(scope.get("path") or "")
+    path = _native_path_without_trailing_slash(str(scope.get("path") or ""))
     if path == "/ready" or path.startswith("/v1/"):
         return None
     raw_query = scope.get("query_string") or b""
-    query = raw_query.decode("latin-1") if isinstance(raw_query, bytes) else str(raw_query)
-    if len(query) > _MAX_LANGGRAPH_QUERY_CHARS:
+    decoded_query = _decode_bounded_raw_header_value(
+        raw_query,
+        max_chars=_MAX_LANGGRAPH_QUERY_CHARS,
+        max_bytes=_MAX_LANGGRAPH_QUERY_CHARS,
+    )
+    if decoded_query is None:
         return "Native query string exceeds the bounded request limit"
+    query = decoded_query[0]
     try:
         params = parse_qs(
             query,
@@ -2198,11 +2587,18 @@ def _last_event_id_error(scope: Mapping[str, Any]) -> str | None:
 
     values: list[str] = []
     for raw_name, raw_value in scope.get("headers") or []:
-        name = raw_name.decode("latin-1") if isinstance(raw_name, bytes) else str(raw_name)
-        if name.casefold() != "last-event-id":
+        if _exact_raw_header_name(raw_name) != "last-event-id":
             continue
-        value = raw_value.decode("latin-1") if isinstance(raw_value, bytes) else str(raw_value)
-        values.append(value)
+        if values:
+            return "Last-Event-ID must be supplied at most once"
+        decoded = _decode_bounded_raw_header_value(
+            raw_value,
+            max_chars=64,
+            max_bytes=64,
+        )
+        if decoded is None:
+            return "Last-Event-ID must be a bounded Redis stream ID"
+        values.append(decoded[0])
     if not values:
         return None
     if len(values) != 1:
@@ -2210,8 +2606,6 @@ def _last_event_id_error(scope: Mapping[str, Any]) -> str | None:
     value = values[0]
     if not value:
         return None
-    if len(value) > 64:
-        return "Last-Event-ID must be a bounded Redis stream ID"
     if not _is_valid_redis_stream_id(value):
         return "Last-Event-ID must be a valid Redis stream ID"
     return None
@@ -2244,6 +2638,18 @@ def _direct_langgraph_body_limit_error(
         return "Direct LangGraph run batches are disabled; create one bounded run per request"
     if not isinstance(payload, dict):
         return None
+    if kind in {
+        "assistant_write",
+        "run_create",
+        "run_stream_create",
+        "thread_create",
+        "thread_update",
+    }:
+        # Thread state-update values are not exposed to LangGraph auth handlers.
+        # Inspect the raw JSON for every caller, including trusted loopback, so
+        # the capability cannot become a durable secret-persistence bypass.
+        if contains_credential_material(payload):
+            return "Native durable mutation must not contain credential material"
     if kind == "run_stream_create":
         if trusted_loopback:
             return None
@@ -2437,55 +2843,139 @@ def _bounded_optional_text_error(value: Any, *, label: str, max_chars: int) -> s
 
 
 def _langsmith_baggage_error(scope: Mapping[str, Any]) -> str | None:
-    """Validate LangSmith metadata before the runtime's uncaught JSON decode."""
+    """Validate tracing values before LangGraph can encrypt run configuration.
 
-    headers: dict[str, list[str]] = {}
+    ``create_valid_run`` injects these headers into ``config.configurable`` and
+    then encrypts the config before invoking the run auth hook.  Consequently
+    this raw-header boundary must enforce the same credential and shape policy
+    while the caller-controlled plaintext is still available.
+    """
+
+    traces: list[str] = []
+    raw_baggage_values: list[Any] = []
+    baggage_overflow = False
     for raw_name, raw_value in scope.get("headers") or []:
-        name = (
-            raw_name.decode("latin-1") if isinstance(raw_name, bytes) else str(raw_name)
-        ).casefold()
-        value = raw_value.decode("latin-1") if isinstance(raw_value, bytes) else str(raw_value)
-        headers.setdefault(name, []).append(value)
-    if "langsmith-trace" not in headers:
+        name = _exact_raw_header_name(raw_name)
+        if name == "langsmith-trace":
+            if traces:
+                return "LangSmith trace must be supplied at most once"
+            decoded = _decode_bounded_raw_header_value(
+                raw_value,
+                max_chars=_MAX_LANGSMITH_TRACE_BYTES,
+                max_bytes=_MAX_LANGSMITH_TRACE_BYTES,
+            )
+            if decoded is None:
+                return "LangSmith trace must be a bounded text header"
+            traces.append(decoded[0])
+        elif name == "baggage":
+            if len(raw_baggage_values) >= _MAX_LANGSMITH_BAGGAGE_HEADERS:
+                baggage_overflow = True
+            else:
+                # Do not inspect an otherwise irrelevant baggage value until a
+                # LangSmith trace proves the runtime will persist it.
+                raw_baggage_values.append(raw_value)
+    if not traces:
         return None
-    for baggage in headers.get("baggage", []):
+    if len(traces) != 1:
+        return "LangSmith trace must be supplied at most once"
+    trace = traces[0]
+    if error := _bounded_optional_text_error(
+        trace,
+        label="LangSmith trace",
+        max_chars=4_096,
+    ):
+        return error
+
+    persisted_tracing: dict[str, Any] = {"langsmith-trace": trace}
+    if baggage_overflow:
+        return (
+            "LangSmith baggage must be supplied in at most "
+            f"{_MAX_LANGSMITH_BAGGAGE_HEADERS} headers"
+        )
+    baggage_values: list[str] = []
+    baggage_bytes = 0
+    for raw_value in raw_baggage_values:
+        decoded = _decode_bounded_raw_header_value(
+            raw_value,
+            max_chars=_MAX_LANGSMITH_BAGGAGE_BYTES,
+            max_bytes=_MAX_LANGSMITH_BAGGAGE_BYTES,
+        )
+        if decoded is None:
+            return "LangSmith baggage must contain bounded text headers"
+        baggage, value_bytes = decoded
+        baggage_bytes += value_bytes
+        if baggage_bytes > _MAX_LANGSMITH_BAGGAGE_BYTES:
+            return f"LangSmith baggage must not exceed {_MAX_LANGSMITH_BAGGAGE_BYTES} bytes"
+        baggage_values.append(baggage)
+
+    for baggage in baggage_values:
         for item in baggage.split(","):
             if "=" not in item:
                 continue
             key, encoded_value = item.split("=", 1)
-            if key != "langsmith-metadata":
-                continue
-            try:
-                decoded_value = unquote(encoded_value)
-                if error := _json_nesting_limit_error(decoded_value.encode("utf-8")):
-                    return f"LangSmith baggage metadata: {error}"
-                metadata = json.loads(decoded_value)
-            except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
-                return "LangSmith baggage metadata must contain valid URL-encoded JSON"
-            if error := _bounded_json_object_error(
-                metadata,
-                label="LangSmith baggage metadata",
-            ):
-                return error
+            decoded_value = unquote(encoded_value)
+            if key == "langsmith-metadata":
+                try:
+                    if error := _json_nesting_limit_error(decoded_value.encode("utf-8")):
+                        return f"LangSmith baggage metadata: {error}"
+                    metadata = json.loads(decoded_value)
+                except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+                    return "LangSmith baggage metadata must contain valid URL-encoded JSON"
+                if error := _bounded_json_object_error(
+                    metadata,
+                    label="LangSmith baggage metadata",
+                ):
+                    return error
+                # The runtime retains only the first metadata value.
+                persisted_tracing.setdefault(key, metadata)
+            elif key == "langsmith-tags":
+                tags = decoded_value.split(",")
+                if len(tags) > 128:
+                    return "LangSmith baggage tags must contain at most 128 entries"
+                if any(len(tag) > 255 or "\x00" in tag for tag in tags):
+                    return "LangSmith baggage tag entries must be bounded NUL-free strings"
+                persisted_tracing[key] = tags
+            elif key == "langsmith-project":
+                if error := _bounded_optional_text_error(
+                    decoded_value,
+                    label="LangSmith baggage project",
+                    max_chars=_MAX_LANGGRAPH_IDENTIFIER_CHARS,
+                ):
+                    return error
+                persisted_tracing[key] = decoded_value
+    if contains_credential_material(persisted_tracing):
+        return "LangSmith tracing configuration must not contain credential material"
     return None
 
 
 def _scope_is_trusted_loopback(scope: Mapping[str, Any]) -> bool:
-    headers: dict[bytes, bytes] = {}
+    supplied: bytes | None = None
     for raw_name, raw_value in scope.get("headers") or []:
-        name = raw_name if isinstance(raw_name, bytes) else str(raw_name).encode("latin-1")
-        value = raw_value if isinstance(raw_value, bytes) else str(raw_value).encode("latin-1")
-        headers[name.lower()] = value
-    return is_trusted_loopback(headers)
+        if _exact_raw_header_name(raw_name) != "x-apex-trusted-loopback":
+            continue
+        if supplied is not None or type(raw_value) is not bytes:
+            return False
+        if len(raw_value) > _MAX_TRUSTED_LOOPBACK_HEADER_BYTES:
+            return False
+        supplied = raw_value
+    return is_trusted_loopback(
+        {b"x-apex-trusted-loopback": supplied} if supplied is not None else {}
+    )
 
 
 def _content_length(headers: Any) -> int | None:
     values: list[int] = []
     for raw_name, raw_value in headers:
-        name = raw_name.decode("latin-1") if isinstance(raw_name, bytes) else str(raw_name)
-        if name.casefold() != "content-length":
+        if _exact_raw_header_name(raw_name) != "content-length":
             continue
-        value = raw_value.decode("latin-1") if isinstance(raw_value, bytes) else str(raw_value)
+        decoded = _decode_bounded_raw_header_value(
+            raw_value,
+            max_chars=_MAX_CONTENT_LENGTH_HEADER_BYTES,
+            max_bytes=_MAX_CONTENT_LENGTH_HEADER_BYTES,
+        )
+        if decoded is None:
+            continue
+        value = decoded[0]
         try:
             parsed = int(value.strip())
         except ValueError:

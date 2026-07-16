@@ -61,15 +61,27 @@ def parse_json_response(
 
     _validate_json_limits(max_depth=max_depth, max_tokens=max_tokens)
     _require_json_content_type(response, context=context)
+    text: str | None = None
     try:
         text = response.content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise InvalidJsonResponseError(f"{context} returned non-UTF-8 JSON") from exc
+    except UnicodeDecodeError:
+        pass
+    if text is None:
+        # Raise after leaving the handler. UnicodeDecodeError retains the entire
+        # provider byte payload on ``.object`` and must not survive as context.
+        raise InvalidJsonResponseError(f"{context} returned non-UTF-8 JSON") from None
+    parsed: Any = None
+    invalid = False
     try:
         _validate_json_wire_limits(text, max_depth=max_depth, max_tokens=max_tokens)
-        return _strict_json_loads(text)
-    except (ValueError, OverflowError, RecursionError) as exc:
-        raise InvalidJsonResponseError(f"{context} returned invalid JSON") from exc
+        parsed = _strict_json_loads(text)
+    except (ValueError, OverflowError, RecursionError):
+        invalid = True
+    if invalid:
+        # JSONDecodeError retains the complete provider body on ``.doc``. Keep
+        # neither it nor duplicate-key/provider-value errors in the public chain.
+        raise InvalidJsonResponseError(f"{context} returned invalid JSON") from None
+    return parsed
 
 
 def parse_json_bytes(
@@ -83,17 +95,25 @@ def parse_json_bytes(
 
     _validate_json_limits(max_depth=max_depth, max_tokens=max_tokens)
     if isinstance(payload, str):
-        text = payload
+        text: str | None = payload
     else:
+        text = None
         try:
             text = bytes(payload).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise InvalidJsonResponseError(f"{context} returned non-UTF-8 JSON") from exc
+        except UnicodeDecodeError:
+            pass
+        if text is None:
+            raise InvalidJsonResponseError(f"{context} returned non-UTF-8 JSON") from None
+    parsed: Any = None
+    invalid = False
     try:
         _validate_json_wire_limits(text, max_depth=max_depth, max_tokens=max_tokens)
-        return _strict_json_loads(text)
-    except (ValueError, OverflowError, RecursionError) as exc:
-        raise InvalidJsonResponseError(f"{context} returned invalid JSON") from exc
+        parsed = _strict_json_loads(text)
+    except (ValueError, OverflowError, RecursionError):
+        invalid = True
+    if invalid:
+        raise InvalidJsonResponseError(f"{context} returned invalid JSON") from None
+    return parsed
 
 
 def _validate_json_limits(*, max_depth: int, max_tokens: int) -> None:
@@ -123,10 +143,14 @@ def _strict_json_loads(text: str) -> Any:
     def bounded_float(raw: str) -> float:
         if len(raw) > MAX_JSON_NUMBER_CHARS:
             raise ValueError("JSON number exceeds the numeric token limit")
+        exact: Decimal | None = None
+        invalid_number = False
         try:
             exact = Decimal(raw)
-        except InvalidOperation as exc:
-            raise ValueError("invalid JSON number") from exc
+        except InvalidOperation:
+            invalid_number = True
+        if invalid_number or exact is None:
+            raise ValueError("invalid JSON number")
         value = float(exact)
         if not exact.is_finite() or not math.isfinite(value):
             raise ValueError("JSON number is outside the finite float range")
@@ -226,26 +250,56 @@ class _DeadlineStream(httpx.AsyncByteStream):
         source: httpx.AsyncByteStream,
         *,
         deadline: float,
-        request: httpx.Request,
     ) -> None:
         self._source = source
         self._deadline = deadline
-        self._request = request
 
     async def __aiter__(self):  # type: ignore[no-untyped-def]
+        timed_out = False
         try:
             async with asyncio.timeout_at(self._deadline):
                 async for chunk in self._source:
                     yield chunk
-        except TimeoutError as exc:
+        except TimeoutError:
+            timed_out = True
+        if timed_out:
             await self._source.aclose()
             raise httpx.ReadTimeout(
                 "total request timeout exceeded while reading response body",
-                request=self._request,
-            ) from exc
+            )
 
     async def aclose(self) -> None:
         await self._source.aclose()
+
+
+async def close_response_definitively(response: httpx.Response) -> None:
+    """Close a provider response even if its consuming request is cancelled again.
+
+    A first cancellation commonly enters a caller's ``finally`` block. A second
+    cancellation can interrupt an ordinary ``await response.aclose()`` and leak
+    the pool slot permanently. The close task owns the response until completion;
+    shielding lets caller cancellation propagate without cancelling cleanup.
+    """
+
+    close_task = asyncio.create_task(response.aclose())
+    interrupted = False
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+
+    error: BaseException | None = None
+    try:
+        close_task.result()
+    except BaseException as exc:
+        error = exc
+    if interrupted:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
 
 
 def require_identity_content_encoding(response: httpx.Response) -> None:
@@ -279,20 +333,26 @@ class RetryPolicy:
         ):
             raise ValueError("retry attempts must be a positive integer")
         for name in ("base_delay_s", "max_delay_s", "retry_after_cap_s"):
+            value: float | None = None
+            invalid_value = False
             try:
                 value = float(getattr(self, name))
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{name} must be a finite non-negative number") from exc
+            except (TypeError, ValueError):
+                invalid_value = True
+            if invalid_value or value is None:
+                raise ValueError(f"{name} must be a finite non-negative number")
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be a finite non-negative number")
             setattr(self, name, value)
         if self.total_timeout_s is not None:
+            timeout: float | None = None
+            invalid_timeout = False
             try:
                 timeout = float(self.total_timeout_s)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "total_timeout_s must be a finite non-negative number or None"
-                ) from exc
+            except (TypeError, ValueError):
+                invalid_timeout = True
+            if invalid_timeout or timeout is None:
+                raise ValueError("total_timeout_s must be a finite non-negative number or None")
             if not math.isfinite(timeout) or timeout < 0:
                 raise ValueError("total_timeout_s must be a finite non-negative number or None")
             self.total_timeout_s = timeout
@@ -349,7 +409,10 @@ async def resilient_request(
     response for the adapter to interpret.
     """
 
-    if not 1 <= max_response_bytes <= HARD_MAX_BUFFERED_RESPONSE_BYTES:
+    if (
+        type(max_response_bytes) is not int
+        or not 1 <= max_response_bytes <= HARD_MAX_BUFFERED_RESPONSE_BYTES
+    ):
         raise ValueError(
             f"max_response_bytes must be between 1 and {HARD_MAX_BUFFERED_RESPONSE_BYTES}"
         )
@@ -389,7 +452,6 @@ async def resilient_stream_request(
     normalized_method = method.upper()
     max_attempts = max(policy.attempts, 1)
     can_retry = normalized_method in policy.retry_methods
-    last_error: httpx.HTTPError | None = None
     deadline = (
         time.monotonic() + max(policy.total_timeout_s, 0.0)
         if policy.total_timeout_s is not None
@@ -399,32 +461,43 @@ async def resilient_stream_request(
     for attempt in range(1, max_attempts + 1):
         if breaker is not None:
             breaker.before_request()
+        response: httpx.Response | None = None
+        deadline_expired = False
+        transport_failed = False
         try:
             response = await _stream_request_with_deadline(
                 client, normalized_method, url, deadline=deadline, **kwargs
             )
-        except TimeoutError as exc:
-            timeout = httpx.TimeoutException("total retry timeout exceeded")
-            last_error = timeout
-            if breaker is not None:
-                breaker.record_failure()
-            raise timeout from exc
-        except httpx.HTTPError as exc:
-            last_error = exc
+        except TimeoutError:
+            deadline_expired = True
+        except httpx.HTTPError:
+            transport_failed = True
+        if transport_failed:
             if not can_retry or attempt >= max_attempts:
                 if breaker is not None:
                     breaker.record_failure()
-                raise
+                raise httpx.TransportError("provider transport request failed")
             await _sleep_with_deadline(_delay(policy, attempt, random_fn), deadline, sleep_fn)
             continue
+        if deadline_expired:
+            timeout = httpx.TimeoutException("total retry timeout exceeded")
+            if breaker is not None:
+                breaker.record_failure()
+            raise timeout
+        if response is None:  # pragma: no cover - request contract invariant
+            raise RuntimeError("resilient request completed without a response")
 
         if response.status_code in policy.transient_statuses:
             if not can_retry or attempt >= max_attempts:
                 if breaker is not None:
                     breaker.record_failure()
                 return _attach_response_deadline(response, deadline)
+            # The response owns a pool slot until it is closed.  Close it before
+            # interpreting attacker-controlled retry metadata so malformed
+            # headers (or a caller-supplied jitter hook) cannot leak the slot by
+            # raising during delay calculation.
+            await close_response_definitively(response)
             delay = _retry_delay(response, policy, attempt, random_fn)
-            await response.aclose()
             await _sleep_with_deadline(delay, deadline, sleep_fn)
             continue
 
@@ -432,8 +505,6 @@ async def resilient_stream_request(
             breaker.record_success()
         return _attach_response_deadline(response, deadline)
 
-    if last_error is not None:
-        raise last_error
     raise RuntimeError("resilient_stream_request exhausted attempts without a response")
 
 
@@ -447,13 +518,16 @@ async def read_stream_error_preview(
     to build an exception message.
     """
 
-    if max_bytes < 1:
-        raise ValueError("max_bytes must be >= 1")
+    if type(max_bytes) is not int or not 1 <= max_bytes <= STREAM_ERROR_PREVIEW_BYTES:
+        raise ValueError(f"max_bytes must be between 1 and {STREAM_ERROR_PREVIEW_BYTES}")
+    deadline_expired = False
     try:
         _raise_if_response_deadline_expired(response)
     except httpx.ReadTimeout:
-        await response.aclose()
-        raise
+        deadline_expired = True
+    if deadline_expired:
+        await close_response_definitively(response)
+        raise httpx.ReadTimeout("total request timeout exceeded while reading response body")
     preview = bytearray()
     async for chunk in response.aiter_raw():
         remaining = max_bytes - len(preview)
@@ -477,18 +551,26 @@ async def read_bounded_response(
     and can be consumed with the normal ``.json()``/``.text`` APIs.
     """
 
-    if max_bytes < 1:
-        raise ValueError("max_bytes must be >= 1")
+    if type(max_bytes) is not int or not 1 <= max_bytes <= HARD_MAX_BUFFERED_RESPONSE_BYTES:
+        raise ValueError(f"max_bytes must be between 1 and {HARD_MAX_BUFFERED_RESPONSE_BYTES}")
+    deadline_expired = False
     try:
         _raise_if_response_deadline_expired(response)
     except httpx.ReadTimeout:
-        await response.aclose()
-        raise
+        deadline_expired = True
+    if deadline_expired:
+        await close_response_definitively(response)
+        raise httpx.ReadTimeout("total request timeout exceeded while reading response body")
+    unsupported_encoding = False
     try:
         require_identity_content_encoding(response)
     except ResponseTooLargeError:
-        await response.aclose()
-        raise
+        unsupported_encoding = True
+    if unsupported_encoding:
+        await close_response_definitively(response)
+        raise ResponseTooLargeError(
+            "provider ignored Accept-Encoding: identity; compressed responses are not accepted"
+        )
 
     content_length = response.headers.get("content-length")
     if content_length is not None:
@@ -497,7 +579,7 @@ async def read_bounded_response(
         except ValueError:
             declared_length = -1
         if declared_length > max_bytes:
-            await response.aclose()
+            await close_response_definitively(response)
             raise ResponseTooLargeError(
                 f"provider response declared {declared_length} bytes; limit is {max_bytes}"
             )
@@ -526,7 +608,7 @@ async def read_bounded_response(
                     )
                 body.extend(chunk)
     finally:
-        await response.aclose()
+        await close_response_definitively(response)
 
     return httpx.Response(
         status_code=response.status_code,
@@ -557,7 +639,6 @@ def _attach_response_deadline(response: httpx.Response, deadline: float | None) 
         response.stream = _DeadlineStream(
             response.stream,
             deadline=deadline,
-            request=response.request,
         )
     return response
 
@@ -567,7 +648,6 @@ def _raise_if_response_deadline_expired(response: httpx.Response) -> None:
     if isinstance(deadline, int | float) and time.monotonic() >= float(deadline):
         raise httpx.ReadTimeout(
             "total request timeout exceeded while reading response body",
-            request=response.request,
         )
 
 
@@ -619,10 +699,13 @@ async def _sleep_with_deadline(delay: float, deadline: float | None, sleep_fn: A
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:
         raise httpx.TimeoutException("total retry timeout exceeded")
+    timed_out = False
     try:
         await asyncio.wait_for(sleep_fn(min(delay, remaining)), timeout=remaining)
-    except TimeoutError as exc:
-        raise httpx.TimeoutException("total retry timeout exceeded") from exc
+    except TimeoutError:
+        timed_out = True
+    if timed_out:
+        raise httpx.TimeoutException("total retry timeout exceeded")
 
 
 def _retry_delay(
@@ -644,7 +727,7 @@ def _retry_delay(
             return min(max(numeric_delay, 0.0), cap)
     try:
         retry_at = parsedate_to_datetime(retry_after)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return _delay(policy, attempt, random_fn)
     if retry_at.tzinfo is None:
         retry_at = retry_at.replace(tzinfo=UTC)

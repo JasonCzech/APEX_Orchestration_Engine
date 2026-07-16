@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from apex.persistence.audit_lock import AUDIT_CHAIN_LOCK_KEY
+from apex.persistence.database_role_claims import DATABASE_ROLE_LOCK_KEY
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PUBLISHED_MIGRATION_DIGESTS = {
@@ -65,6 +66,21 @@ def test_offline_upgrade_locks_audit_chain_before_revision_table_work() -> None:
     lock_sql = f"SELECT pg_advisory_xact_lock({AUDIT_CHAIN_LOCK_KEY})"
 
     assert sql.index(lock_sql) < sql.index("CREATE TABLE apex.api_consumers")
+
+
+def test_offline_upgrade_serializes_before_schema_bootstrap() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sql = result.stdout
+    lock_sql = f"SELECT pg_advisory_xact_lock({DATABASE_ROLE_LOCK_KEY})"
+
+    assert sql.index("BEGIN;") < sql.index(lock_sql)
+    assert sql.index(lock_sql) < sql.index("IF to_regnamespace('apex') IS NULL THEN")
 
 
 def test_offline_upgrade_checks_schema_before_executing_create() -> None:

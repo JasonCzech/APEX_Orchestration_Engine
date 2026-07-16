@@ -9,6 +9,8 @@ from langgraph_sdk.errors import APIStatusError
 from apex.services.context import (
     EVIDENCE_PACKETS_PER_THREAD_CAP,
     EVIDENCE_THREAD_SCAN_CAP,
+    ContextEvidenceReadError,
+    ContextRunStartError,
     collect_context_evidence,
     start_context_summary,
 )
@@ -127,6 +129,66 @@ async def test_start_context_summary_creates_durable_streamable_run() -> None:
     assert call["multitask_strategy"] == "reject"
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"subject": "Authorization: Bearer context-secret-canary"},
+        {
+            "subject": "safe",
+            "work_item_keys": ["password=context-secret-canary"],
+        },
+        {
+            "subject": "safe",
+            "document_packets": [
+                {
+                    "id": "packet-1",
+                    "source": "test",
+                    "title": "safe",
+                    "text": "private_key=context-secret-canary",
+                }
+            ],
+        },
+    ],
+)
+async def test_context_summary_rejects_credentials_before_durable_creation(
+    kwargs: dict[str, Any],
+) -> None:
+    client = FakeLoopbackClient()
+
+    with pytest.raises(ValueError, match="credential material") as excinfo:
+        await start_context_summary(client, **kwargs)
+
+    assert "context-secret-canary" not in str(excinfo.value)
+    assert client.threads.create_calls == []
+    assert client.runs.calls == []
+
+
+@pytest.mark.parametrize("boundary", ["thread", "run"])
+async def test_context_summary_rejects_credential_shaped_native_ids(boundary: str) -> None:
+    client = FakeLoopbackClient()
+    canary = "context-native-id-secret-canary"
+
+    if boundary == "thread":
+
+        async def unsafe_thread(*, metadata: dict[str, Any]) -> dict[str, Any]:
+            return {"thread_id": f"password={canary}", "metadata": metadata}
+
+        cast(Any, client.threads).create = unsafe_thread
+    else:
+
+        async def unsafe_run(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            client.runs.calls.append({"args": args, "kwargs": kwargs})
+            return {"run_id": f"Authorization: Bearer {canary}"}
+
+        cast(Any, client.runs).create = unsafe_run
+
+    with pytest.raises(ContextRunStartError, match="thread creation|outcome") as excinfo:
+        await start_context_summary(client, subject="Checkout latency")
+
+    assert canary not in str(excinfo.value)
+    assert len(client.runs.calls) == (0 if boundary == "thread" else 1)
+
+
 @pytest.mark.parametrize(("status_code", "deleted"), [(404, True), (409, False), (503, False)])
 async def test_context_summary_cleans_up_only_definitively_rejected_run_creates(
     status_code: int,
@@ -137,7 +199,7 @@ async def test_context_summary_cleans_up_only_definitively_rejected_run_creates(
     async def reject(*args: Any, **kwargs: Any) -> dict[str, Any]:
         request = httpx.Request(
             "POST",
-            "http://loopback/threads/thread-context-1/runs",
+            "http://loopback/threads/thread-context-1/runs?token=provider-secret-canary",
         )
         raise APIStatusError(
             "run create failed",
@@ -146,10 +208,13 @@ async def test_context_summary_cleans_up_only_definitively_rejected_run_creates(
         )
 
     cast(Any, client.runs).create = reject
-    with pytest.raises(APIStatusError):
+    with pytest.raises(ContextRunStartError) as raised:
         await start_context_summary(client, subject="Checkout latency", project_id="proj-a")
 
     assert client.threads.delete_calls == (["thread-context-1"] if deleted else [])
+    assert "provider-secret-canary" not in repr(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 async def test_evidence_dedupes_packets_across_threads() -> None:
@@ -164,6 +229,52 @@ async def test_evidence_dedupes_packets_across_threads() -> None:
     packets = await collect_context_evidence(client)
     assert [p["id"] for p in packets] == ["pkt-shared", "pkt-a", "pkt-b"]
     assert packets[0]["thread_id"] == "t1"  # first sighting wins
+
+
+async def test_context_lookup_rejects_unsafe_caller_thread_id_before_native_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class CapturingLogger:
+        def info(self, event: str, **kwargs: Any) -> None:
+            events.append((event, kwargs))
+
+    monkeypatch.setattr("apex.services.context.logger", CapturingLogger())
+    client = FakeLoopbackClient()
+    with pytest.raises(LookupError) as excinfo:
+        await collect_context_evidence(
+            client,
+            thread_id="password=context-log-secret-canary",
+        )
+
+    assert str(excinfo.value) == "context thread not found"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert client.threads.get_calls == []
+    assert events == []
+
+
+class _HostileList(list[Any]):
+    def __bool__(self) -> bool:
+        raise AssertionError("hostile list truthiness must not run")
+
+    def __iter__(self) -> Any:
+        raise AssertionError("hostile list iteration must not run")
+
+
+async def test_context_summary_rejects_non_exact_lists_before_container_hooks() -> None:
+    client = FakeLoopbackClient()
+
+    with pytest.raises(ValueError, match="unsupported value"):
+        await start_context_summary(
+            client,
+            subject="Checkout latency",
+            work_item_keys=cast(Any, _HostileList()),
+        )
+
+    assert client.threads.create_calls == []
+    assert client.runs.calls == []
 
 
 async def test_evidence_projection_drops_malformed_and_oversized_legacy_packets() -> None:
@@ -200,6 +311,21 @@ async def test_evidence_projection_drops_malformed_and_oversized_legacy_packets(
             "thread_id": "t1",
         }
     ]
+
+
+async def test_evidence_rejects_native_thread_page_above_requested_cap() -> None:
+    client = FakeLoopbackClient()
+
+    async def oversized_page(**kwargs: Any) -> list[dict[str, Any]]:
+        return [
+            _thread(f"t-{index}", [_packet(f"packet-{index}")])
+            for index in range(int(kwargs["limit"]) + 1)
+        ]
+
+    cast(Any, client.threads).search = oversized_page
+
+    with pytest.raises(RuntimeError, match="invalid or oversized page"):
+        await collect_context_evidence(client)
 
 
 async def test_evidence_projection_redacts_legacy_credentials() -> None:
@@ -267,19 +393,71 @@ async def test_thread_id_narrows_to_one_thread_without_searching() -> None:
     assert client.threads.search_calls == []
 
 
+async def test_thread_lookup_rejects_mismatched_native_response_id() -> None:
+    client = FakeLoopbackClient([_thread("other-thread", [_packet("pkt-1")])])
+
+    async def mismatched(_thread_id: str) -> dict[str, Any]:
+        return _thread("other-thread", [_packet("pkt-1")])
+
+    client.threads.get = mismatched  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="unexpected identifier"):
+        await collect_context_evidence(client, thread_id="requested-thread")
+
+
+async def test_evidence_projection_drops_unsafe_native_thread_ids() -> None:
+    client = FakeLoopbackClient(
+        [_thread("password=native-thread-secret-canary", [_packet("pkt-1")])]
+    )
+
+    assert await collect_context_evidence(client) == []
+
+
+@pytest.mark.parametrize(("limit", "offset"), [(True, 0), (1, False)])
+async def test_evidence_pagination_requires_exact_integers(limit: Any, offset: Any) -> None:
+    client = FakeLoopbackClient()
+
+    with pytest.raises(ValueError):
+        await collect_context_evidence(client, limit=limit, offset=offset)
+
+    assert client.threads.search_calls == []
+
+
 async def test_unknown_thread_raises_lookup_error() -> None:
     client = FakeLoopbackClient([])
     with pytest.raises(LookupError):
         await collect_context_evidence(client, thread_id="missing")
 
 
-async def test_thread_lookup_backend_failure_is_not_misreported_as_missing() -> None:
+async def test_thread_lookup_backend_failure_is_translated_without_provider_chain() -> None:
     client = FakeLoopbackClient([])
+    canary = "context-provider-lookup-secret-canary"
 
     async def fail(_thread_id: str) -> dict[str, Any]:
-        raise RuntimeError("backend unavailable")
+        raise RuntimeError(f"backend unavailable: Authorization: Bearer {canary}")
 
     client.threads.get = fail  # type: ignore[method-assign]
 
-    with pytest.raises(RuntimeError, match="backend unavailable"):
+    with pytest.raises(ContextEvidenceReadError, match="thread lookup failed") as excinfo:
         await collect_context_evidence(client, thread_id="thread-1")
+
+    assert canary not in repr(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+async def test_thread_search_backend_failure_is_translated_without_provider_chain() -> None:
+    client = FakeLoopbackClient([])
+    canary = "context-provider-search-secret-canary"
+
+    async def fail(**_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError(f"backend unavailable: token={canary}")
+
+    client.threads.search = fail  # type: ignore[method-assign]
+
+    with pytest.raises(ContextEvidenceReadError, match="thread search failed") as excinfo:
+        await collect_context_evidence(client)
+
+    assert canary not in repr(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None

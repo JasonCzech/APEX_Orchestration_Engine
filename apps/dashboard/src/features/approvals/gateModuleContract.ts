@@ -32,7 +32,7 @@
  *   x     -> invoke('abort')                             — arm typed confirmation
  *   m     -> invoke('modify')                            — modify-FOCUS only
  *   Enter -> focus()
- *   All gated on isActionable() (machine 'open'); invoke() additionally
+ *   All gated on isActionable() (machine 'open' with a parsed action contract); invoke() additionally
  *   no-ops (returns false) when the gate kind/payload does not offer the
  *   action. The resume itself stays pessimistic inside the machine.
  */

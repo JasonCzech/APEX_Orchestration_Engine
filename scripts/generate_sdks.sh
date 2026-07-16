@@ -15,8 +15,19 @@ if [[ ! -f "${SPEC}" ]]; then
 fi
 
 # --- TypeScript types (openapi-typescript) -----------------------------------
-GENERATOR="${REPO_ROOT}/packages/api-client/node_modules/.bin/openapi-typescript"
-if [[ ! -x "${GENERATOR}" ]]; then
+# npm workspaces may keep a conflicting version beside the package or hoist the
+# shared binary to the repository root. Prefer the package-local dependency when
+# present, then accept npm's normal clean-install hoisted layout.
+GENERATOR=""
+for candidate in \
+  "${REPO_ROOT}/packages/api-client/node_modules/.bin/openapi-typescript" \
+  "${REPO_ROOT}/node_modules/.bin/openapi-typescript"; do
+  if [[ -x "${candidate}" ]]; then
+    GENERATOR="${candidate}"
+    break
+  fi
+done
+if [[ -z "${GENERATOR}" ]]; then
   echo "generate_sdks: missing openapi-typescript; run 'npm ci' first" >&2
   exit 3
 fi

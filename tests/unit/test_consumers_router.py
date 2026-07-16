@@ -18,7 +18,7 @@ from apex.persistence.repositories.consumers import (
     AmbiguousConsumerKeyExpiryError,
     DuplicateConsumerNameError,
 )
-from apex.routers.consumers import get_consumers_repository, router
+from apex.routers.consumers import ConsumerCreated, get_consumers_repository, router
 
 ADMIN = ConsumerIdentity(
     consumer_id="admin-1", name="root", consumer_type=ConsumerType.INTERNAL, role=Role.ADMIN
@@ -40,6 +40,25 @@ APP_SCOPED_ADMIN = ConsumerIdentity(
     role=Role.ADMIN,
     scopes=[ScopeRef(project_id="proj-a", app_id="app-a")],
 )
+
+
+def test_one_time_api_key_is_serialized_but_hidden_from_model_repr() -> None:
+    secret = "one-time-api-key-secret-canary"
+    response = ConsumerCreated(
+        id="consumer-1",
+        name="consumer",
+        consumer_type=ConsumerType.HEADLESS,
+        role=Role.VIEWER,
+        enabled=True,
+        scopes=[],
+        created_at=None,
+        last_used_at=None,
+        key_fingerprint="12345678",
+        api_key=secret,
+    )
+
+    assert response.model_dump()["api_key"] == secret
+    assert secret not in repr(response)
 
 
 class FakeConsumersRepository:
@@ -410,6 +429,59 @@ def test_create_duplicate_name_conflicts() -> None:
         assert client.post("/v1/admin/consumers", json=CREATE_BODY).status_code == 409
 
 
+def test_consumer_name_writes_reject_credentials_without_reflection() -> None:
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    repo = FakeConsumersRepository()
+    target = repo.seed(consumer_id="target", name="safe-name", key_hash=hash_api_key("target"))
+
+    with make_client(repo) as client:
+        created = client.post(
+            "/v1/admin/consumers",
+            json={**CREATE_BODY, "name": credential},
+        )
+        updated = client.patch(
+            "/v1/admin/consumers/target",
+            json={"name": credential},
+        )
+
+    assert created.status_code == 422
+    assert updated.status_code == 422
+    assert credential.encode() not in created.content
+    assert credential.encode() not in updated.content
+    assert target.name == "safe-name"
+
+
+def test_consumer_legacy_metadata_and_malformed_key_hash_are_quarantined() -> None:
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="safe-name", key_hash=hash_api_key("target"))
+    row.name = credential
+    row.id = credential
+    row.created_by = credential
+    row.updated_by = credential
+    row.key_hash = credential
+    row.scopes = [
+        ConsumerScope(
+            id=uuid4().hex,
+            consumer_id=row.id,
+            project_id=credential,
+            app_id=credential,
+        )
+    ]
+
+    with make_client(repo) as client:
+        response = client.get("/v1/admin/consumers/target")
+
+    assert response.status_code == 200
+    assert credential.encode() not in response.content
+    assert response.json()["name"] == "[REDACTED]"
+    assert response.json()["id"] == "[REDACTED]"
+    assert response.json()["created_by"] == "[REDACTED]"
+    assert response.json()["updated_by"] == "[REDACTED]"
+    assert response.json()["key_fingerprint"] == "invalid"
+    assert response.json()["scopes"] == [{"project_id": "[REDACTED]", "app_id": "[REDACTED]"}]
+
+
 @pytest.mark.parametrize(
     "scopes",
     [
@@ -585,6 +657,32 @@ def test_rotate_rejects_expired_new_key_without_revoking_old_key() -> None:
     assert response.status_code == 422
     assert old_key.revoked_at is None
     assert len(repo.rows[created["id"]].keys) == 1
+
+
+def test_target_rotation_rejects_grace_longer_than_new_key_lifetime(
+    audit_events: list[Any],
+) -> None:
+    repo = FakeConsumersRepository()
+    row = repo.seed(consumer_id="target", name="target", key_hash=hash_api_key("old"))
+    old_key = row.keys[0]
+    old_hash = row.key_hash
+
+    with make_client(repo) as client:
+        response = client.post(
+            "/v1/admin/consumers/target/rotate",
+            json={
+                "grace_period_seconds": 7 * 24 * 60 * 60,
+                "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+            },
+        )
+
+    assert response.status_code == 409
+    assert "beyond the old key's grace period" in response.json()["title"]
+    assert row.key_hash == old_hash
+    assert row.keys == [old_key]
+    assert [(event.action, event.decision) for event in audit_events] == [
+        ("consumer.rotate_key", "denied")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -892,6 +990,27 @@ def test_scoped_admin_can_manage_in_scope_consumer_only(audit_events: list[Any])
     assert [(event.action, event.decision, event.resource_id) for event in audit_events] == [
         ("consumer.get", "denied", "out")
     ]
+
+
+def test_consumer_audit_quarantines_legacy_credential_shaped_target_id(
+    audit_events: list[Any],
+) -> None:
+    credential_id = "password=legacy-id-secret"
+    repo = FakeConsumersRepository()
+    target = repo.seed(
+        consumer_id=credential_id,
+        name="legacy-target",
+        key_hash=hash_api_key("legacy-target"),
+    )
+    target.scopes = [ConsumerScope(id="legacy-scope", project_id="proj-b", app_id=None)]
+
+    with make_client(repo, identity=SCOPED_ADMIN) as client:
+        response = client.get(f"/v1/admin/consumers/{credential_id}")
+
+    assert response.status_code == 404
+    assert len(audit_events) == 1
+    assert audit_events[0].resource_id == "[REDACTED]"
+    assert credential_id not in repr(audit_events[0])
 
 
 def test_self_delete_conflicts_409(audit_events: list[Any]) -> None:

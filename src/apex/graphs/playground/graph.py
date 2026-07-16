@@ -59,9 +59,20 @@ def render_prompt(state: PlaygroundState) -> dict[str, Any]:
 
 def stub_completion(state: PlaygroundState) -> dict[str, Any]:
     """Deterministic stand-in for a model call (M4 replaces this node)."""
-    rendered = state.get("rendered_prompt") or {}
-    system = rendered.get("system", "")
-    user = rendered.get("user", "")
+    # This node can resume independently after an inter-node crash, so treat its
+    # checkpointed predecessor output as untrusted rather than assuming the input
+    # schema or render node just ran in this process.
+    rendered = state.get("rendered_prompt")
+    if (
+        type(rendered) is not dict
+        or set(rendered) != {"system", "user"}
+        or type(rendered.get("system")) is not str
+        or type(rendered.get("user")) is not str
+    ):
+        raise ValueError("checkpointed rendered prompt is invalid")
+    system = rendered["system"]
+    user = rendered["user"]
+    validate_rendered_model_input(system, user)
     echo = user or system
     completion = (
         "[stub completion — the playground runs without an LLM in M2; "

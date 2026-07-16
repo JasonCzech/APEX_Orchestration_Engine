@@ -192,6 +192,24 @@ async def test_unprovisioned_handle_raises() -> None:
         await engine.start(bare)
 
 
+async def test_untrusted_run_id_never_reaches_logs_or_artifacts() -> None:
+    canary = "opaque-sim-handle-canary-7e13"
+    engine = _engine(duration_s=FAST_DURATION_S)
+    handle = await engine.provision(_spec())
+    handle.external_run_id = canary
+    store = MemoryArtifactStore()
+
+    with capture_logs() as logs:
+        with pytest.raises(ValueError, match="invalid external_run_id"):
+            await engine.abort(handle, reason="stop")
+        await engine.teardown(handle)
+    with pytest.raises(ValueError, match="invalid external_run_id"):
+        await engine.collect_artifacts(handle, store)
+
+    assert canary not in repr(logs)
+    assert MemoryArtifactStore._objects == {}
+
+
 async def test_spec_duration_used_when_no_option_override() -> None:
     engine = _engine()  # no duration_s option
     handle = await engine.provision(LoadTestSpec(idempotency_key="k", title="t", duration_s=123.0))

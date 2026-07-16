@@ -25,10 +25,11 @@ import time
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qs
 
 import structlog
+from langchain_core.runnables import RunnableConfig
 from sqlalchemy import ColumnElement, case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -38,11 +39,18 @@ from sqlalchemy.pool import NullPool
 
 from apex.auth.identity import ConsumerIdentity, ScopeRef
 from apex.auth.service import extract_api_key, hash_api_key
+from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
 from apex.domain.durable_evidence import sanitize_durable_object, sanitize_durable_text
 from apex.graphs.pipeline.configurable import PipelineConfigurable
+from apex.persistence.db import dispose_engine_instance_definitively
 from apex.persistence.models import AgentEvent, UsageEvent
 from apex.services.analytics_scope import analytics_scope_filter
-from apex.services.pricing import MAX_TOKEN_COUNT, coerce_token_count, compute_cost
+from apex.services.pricing import (
+    coerce_token_count,
+    compute_cost,
+    normalize_cache_token_counts,
+    normalize_usage_mapping,
+)
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
@@ -89,7 +97,7 @@ def _sanitize_event_values(
     for field_name, limit in text_limits.items():
         value = sanitized.get(field_name)
         if value is not None:
-            sanitized[field_name] = sanitize_durable_text(str(value), limit)
+            sanitized[field_name] = sanitize_durable_text(value, limit)
     sanitized["extra"] = sanitize_durable_object(sanitized.get("extra") or {})
     return sanitized
 
@@ -183,12 +191,12 @@ async def record_usage_event(
                 extra=extra,
             )
         finally:
-            await engine_db.dispose()
+            await dispose_engine_instance_definitively(engine_db)
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request or run
         logger.warning(
             "usage.record_failed",
             action=action,
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(exc),
         )
 
 
@@ -230,7 +238,7 @@ def record_usage_event_sync(**kwargs: Any) -> None:
     try:
         asyncio.run(record_usage_event(**kwargs))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("usage.record_failed", error_type=exc.__class__.__name__)
+        logger.warning("usage.record_failed", error_type=safe_type_name(exc))
 
 
 def record_phase_usage_sync(
@@ -247,34 +255,44 @@ def record_phase_usage_sync(
     "graph" for unauthenticated/local runs.
     """
     try:
-        configurable: dict[str, Any] = dict((config or {}).get("configurable") or {})
-        user = configurable.get("langgraph_auth_user")
-        identity = (
-            user.get("identity") if isinstance(user, dict) else getattr(user, "identity", None)
+        raw_configurable = config.get("configurable") if type(config) is dict else None
+        configurable: dict[str, Any] = (
+            dict(raw_configurable) if type(raw_configurable) is dict else {}
         )
-        thread_id = configurable.get("thread_id")
-        project_id = configurable.get("project_id")
-        app_id = configurable.get("app_id")
+        safe_phase = _bounded_event_label(phase, _AGENT_TEXT_LIMITS["phase"])
+        safe_status = _bounded_event_label(status, _USAGE_TEXT_LIMITS["status"])
+        if safe_phase is None or safe_status is None:
+            return
+        user = configurable.get("langgraph_auth_user")
+        identity = user.get("identity") if type(user) is dict else None
+        consumer_name = _bounded_event_label(identity, _USAGE_TEXT_LIMITS["consumer_name"])
+        safe_thread_id = _bounded_event_label(
+            configurable.get("thread_id"), _USAGE_TEXT_LIMITS["thread_id"]
+        )
+        safe_project_id = _bounded_event_label(
+            configurable.get("project_id"), _USAGE_TEXT_LIMITS["project_id"]
+        )
+        safe_app_id = _bounded_event_label(configurable.get("app_id"), _USAGE_TEXT_LIMITS["app_id"])
         event_key = (
             _replay_event_key(
                 "phase",
-                thread_id=str(thread_id),
-                phase=phase,
+                thread_id=safe_thread_id,
+                phase=safe_phase,
                 attempt=attempt,
-                project_id=str(project_id) if project_id else None,
-                app_id=str(app_id) if app_id else None,
+                project_id=safe_project_id,
+                app_id=safe_app_id,
             )
-            if thread_id and attempt is not None
+            if safe_thread_id and type(attempt) is int and 1 <= attempt <= 1_000_000
             else None
         )
         event: dict[str, Any] = {
-            "consumer_name": str(identity) if identity else "graph",
+            "consumer_name": consumer_name or "graph",
             "surface": SURFACE_GRAPH,
-            "action": f"phase:{phase}:{status}",
-            "status": "ok" if status in _OK_PHASE_STATUSES else "error",
-            "project_id": str(project_id) if project_id else None,
-            "app_id": str(app_id) if app_id else None,
-            "thread_id": str(thread_id) if thread_id else None,
+            "action": f"phase:{safe_phase}:{safe_status}",
+            "status": "ok" if safe_status in _OK_PHASE_STATUSES else "error",
+            "project_id": safe_project_id,
+            "app_id": safe_app_id,
+            "thread_id": safe_thread_id,
         }
         if event_key is not None:
             event["event_key"] = event_key
@@ -282,8 +300,8 @@ def record_phase_usage_sync(
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "usage.phase_record_failed",
-            phase=phase,
-            error_type=exc.__class__.__name__,
+            phase=_bounded_event_label(phase, _AGENT_TEXT_LIMITS["phase"]),
+            error_type=safe_type_name(exc),
         )
 
 
@@ -300,56 +318,82 @@ def _usage_detail_int(details: Mapping[str, Any], *keys: str) -> int:
 
 def normalize_usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, int]:
     """Flatten LangChain AIMessage.usage_metadata into durable token columns."""
-    usage = usage or {}
+    # Provider metadata is untrusted. Exact built-in dictionaries preserve the
+    # normalized LangChain contract without executing custom Mapping truthiness,
+    # membership, or ``get`` hooks during best-effort analytics.
+    usage = normalize_usage_mapping(usage) or {}
     input_details = usage.get("input_token_details")
     output_details = usage.get("output_token_details")
-    input_details = input_details if isinstance(input_details, Mapping) else {}
-    output_details = output_details if isinstance(output_details, Mapping) else {}
+    input_details = normalize_usage_mapping(input_details) or {}
+    output_details = normalize_usage_mapping(output_details) or {}
     input_tokens = _usage_int(usage.get("input_tokens"))
     output_tokens = _usage_int(usage.get("output_tokens"))
-    total_tokens = _usage_int(usage.get("total_tokens")) or min(
-        input_tokens + output_tokens,
-        MAX_TOKEN_COUNT,
-    )
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-        "cache_read_tokens": _usage_detail_int(
+    # LangChain's normalized contract defines total_tokens as exactly the sum of
+    # input and output. Deriving it avoids persisting contradictory provider
+    # metadata and keeps aggregates internally reconcilable.
+    total_tokens = input_tokens + output_tokens
+    cache_read_tokens, cache_creation_tokens = normalize_cache_token_counts(
+        input_tokens,
+        _usage_detail_int(
             input_details, "cache_read", "cache_read_tokens", "cache_read_input_tokens"
         ),
-        "cache_creation_tokens": _usage_detail_int(
+        _usage_detail_int(
             input_details,
             "cache_creation",
             "cache_creation_tokens",
             "cache_creation_input_tokens",
             "cache_write",
         ),
-        "reasoning_tokens": _usage_detail_int(
-            output_details, "reasoning", "reasoning_tokens", "reasoning_output_tokens"
+    )
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_creation_tokens": cache_creation_tokens,
+        "reasoning_tokens": min(
+            output_tokens,
+            _usage_detail_int(
+                output_details, "reasoning", "reasoning_tokens", "reasoning_output_tokens"
+            ),
         ),
     }
 
 
+def _first_exact_nonempty_text(values: dict[str, Any], *keys: str) -> str | None:
+    """Select provider text without executing arbitrary scalar truthiness hooks."""
+
+    for key in keys:
+        candidate = values.get(key)
+        if type(candidate) is str and candidate:
+            return candidate
+    return None
+
+
 def _provider_from(model: str | None, usage: Mapping[str, Any] | None) -> str | None:
-    raw = (usage or {}).get("provider") or (usage or {}).get("ls_provider")
-    if isinstance(raw, str) and raw:
+    safe_usage = normalize_usage_mapping(usage) or {}
+    raw = _first_exact_nonempty_text(safe_usage, "provider", "ls_provider")
+    if raw is not None:
         return raw.replace("\x00", "\\0")[:64]
-    if model and ":" in model:
-        return model.split(":", 1)[0]
-    if model and "/" in model:
-        return model.split("/", 1)[0]
-    if model and model.startswith("claude-"):
+    safe_model = model if type(model) is str else None
+    if safe_model and ":" in safe_model:
+        return safe_model.split(":", 1)[0]
+    if safe_model and "/" in safe_model:
+        return safe_model.split("/", 1)[0]
+    if safe_model and safe_model.startswith("claude-"):
         return "anthropic"
-    if model and model.startswith("gpt-"):
+    if safe_model and safe_model.startswith("gpt-"):
         return "openai"
     return None
 
 
 def _bounded_event_label(value: str | None, max_chars: int) -> str | None:
-    if not isinstance(value, str):
+    if type(value) is not str:
         return None
-    return value.replace("\x00", "\\0")[:max_chars] or None
+    rendered = sanitize_durable_text(value, max_chars)
+    if rendered is None or len(rendered) > max_chars or "\x00" in value:
+        rendered = bounded_diagnostic(value, max_chars=max_chars)
+    return rendered or None
 
 
 async def _insert_agent_event(
@@ -418,32 +462,45 @@ async def record_agent_event(
     usage: Mapping[str, Any] | None = None,
 ) -> None:
     """Insert one agent-behavior event; never raises."""
-    token_usage = normalize_usage_metadata(usage)
-    model = _bounded_event_label(model, 255)
-    provider = _bounded_event_label(provider, 64)
-    cost_usd, pricing = compute_cost(model, token_usage)
-    extra: dict[str, Any] = {}
-    if pricing is not None:
-        extra["pricing"] = pricing
-    if usage:
-        finish_reason = usage.get("finish_reason") or usage.get("stop_reason")
-        safe_finish_reason = _bounded_event_label(finish_reason, 255)
-        if safe_finish_reason:
-            extra["finish_reason"] = safe_finish_reason
-    event_key = (
-        _replay_event_key(
-            "agent",
-            thread_id=thread_id,
-            phase=phase,
-            attempt=attempt,
-            agent_name=agent_name,
-            project_id=project_id,
-            app_id=app_id,
-        )
-        if thread_id and attempt is not None
-        else None
-    )
     try:
+        safe_thread_id = _bounded_event_label(thread_id, _AGENT_TEXT_LIMITS["thread_id"])
+        safe_project_id = _bounded_event_label(project_id, _AGENT_TEXT_LIMITS["project_id"])
+        safe_app_id = _bounded_event_label(app_id, _AGENT_TEXT_LIMITS["app_id"])
+        safe_phase = _bounded_event_label(phase, _AGENT_TEXT_LIMITS["phase"])
+        safe_agent_name = _bounded_event_label(agent_name, _AGENT_TEXT_LIMITS["agent_name"])
+        safe_status = _bounded_event_label(status, _AGENT_TEXT_LIMITS["status"])
+        if safe_phase is None or safe_agent_name is None or safe_status is None:
+            return
+        safe_attempt = attempt if type(attempt) is int and 1 <= attempt <= 1_000_000 else None
+        safe_latency_ms = (
+            latency_ms if type(latency_ms) is int and 0 <= latency_ms <= 86_400_000 else None
+        )
+        safe_usage = normalize_usage_mapping(usage)
+        token_usage = normalize_usage_metadata(safe_usage)
+        safe_model = _bounded_event_label(model, _AGENT_TEXT_LIMITS["model"])
+        safe_provider = _bounded_event_label(provider, _AGENT_TEXT_LIMITS["provider"])
+        cost_usd, pricing = compute_cost(safe_model, token_usage)
+        extra: dict[str, Any] = {}
+        if pricing is not None:
+            extra["pricing"] = pricing
+        if safe_usage:
+            finish_reason = _first_exact_nonempty_text(safe_usage, "finish_reason", "stop_reason")
+            safe_finish_reason = _bounded_event_label(finish_reason, 255)
+            if safe_finish_reason:
+                extra["finish_reason"] = safe_finish_reason
+        event_key = (
+            _replay_event_key(
+                "agent",
+                thread_id=safe_thread_id,
+                phase=safe_phase,
+                attempt=safe_attempt,
+                agent_name=safe_agent_name,
+                project_id=safe_project_id,
+                app_id=safe_app_id,
+            )
+            if safe_thread_id is not None and safe_attempt is not None
+            else None
+        )
         database = get_settings().database
         engine_db = create_async_engine(
             database_asyncpg_uri(database.uri),
@@ -454,28 +511,28 @@ async def record_agent_event(
             session_factory = async_sessionmaker(engine_db, expire_on_commit=False)
             await _insert_agent_event(
                 session_factory,
-                thread_id=thread_id,
-                project_id=project_id,
-                app_id=app_id,
-                phase=phase,
-                agent_name=agent_name,
-                model=model,
-                provider=provider,
-                attempt=attempt,
-                status=status,
-                latency_ms=latency_ms,
+                thread_id=safe_thread_id,
+                project_id=safe_project_id,
+                app_id=safe_app_id,
+                phase=safe_phase,
+                agent_name=safe_agent_name,
+                model=safe_model,
+                provider=safe_provider,
+                attempt=safe_attempt,
+                status=safe_status,
+                latency_ms=safe_latency_ms,
                 cost_usd=cost_usd,
                 event_key=event_key,
                 extra=extra,
                 **token_usage,
             )
         finally:
-            await engine_db.dispose()
+            await dispose_engine_instance_definitively(engine_db)
     except Exception as exc:  # noqa: BLE001 — analytics never fails a request or run
         logger.warning(
             "agent_events.record_failed",
-            phase=phase,
-            error_type=exc.__class__.__name__,
+            phase=_bounded_event_label(phase, _AGENT_TEXT_LIMITS["phase"]),
+            error_type=safe_type_name(exc),
         )
 
 
@@ -497,28 +554,43 @@ def record_agent_event_sync(
     override so behavior is unchanged for stub runs.
     """
     try:
-        configurable: dict[str, Any] = dict((config or {}).get("configurable") or {})
-        cfg = PipelineConfigurable.from_config(config)
+        raw_configurable = config.get("configurable") if type(config) is dict else None
+        configurable: dict[str, Any] = (
+            dict(raw_configurable) if type(raw_configurable) is dict else {}
+        )
+        safe_phase = _bounded_event_label(phase, _AGENT_TEXT_LIMITS["phase"])
+        safe_status = _bounded_event_label(status, _AGENT_TEXT_LIMITS["status"])
+        if safe_phase is None or safe_status is None:
+            return
+        cfg = PipelineConfigurable.from_config(
+            cast(RunnableConfig | None, config if type(config) is dict else None)
+        )
         if model is None:
             for key, value in cfg.model_by_phase.items():
-                if str(key) == phase:
+                if key.value == safe_phase:
                     model = value
                     break
+        safe_agent_name = (
+            _bounded_event_label(agent_name, _AGENT_TEXT_LIMITS["agent_name"])
+            or f"{safe_phase}.worker"
+        )
         asyncio.run(
             record_agent_event(
-                thread_id=str(configurable.get("thread_id"))
-                if configurable.get("thread_id")
-                else None,
-                project_id=str(configurable.get("project_id"))
-                if configurable.get("project_id")
-                else None,
-                app_id=str(configurable.get("app_id")) if configurable.get("app_id") else None,
-                phase=phase,
-                agent_name=agent_name or f"{phase}.worker",
+                thread_id=_bounded_event_label(
+                    configurable.get("thread_id"), _AGENT_TEXT_LIMITS["thread_id"]
+                ),
+                project_id=_bounded_event_label(
+                    configurable.get("project_id"), _AGENT_TEXT_LIMITS["project_id"]
+                ),
+                app_id=_bounded_event_label(
+                    configurable.get("app_id"), _AGENT_TEXT_LIMITS["app_id"]
+                ),
+                phase=safe_phase,
+                agent_name=safe_agent_name,
                 model=model,
                 provider=_provider_from(model, usage),
                 attempt=attempt,
-                status="ok" if status in _OK_PHASE_STATUSES else "error",
+                status="ok" if safe_status in _OK_PHASE_STATUSES else "error",
                 latency_ms=latency_ms,
                 usage=usage,
             )
@@ -526,8 +598,8 @@ def record_agent_event_sync(
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "agent_events.record_failed",
-            phase=phase,
-            error_type=exc.__class__.__name__,
+            phase=_bounded_event_label(phase, _AGENT_TEXT_LIMITS["phase"]),
+            error_type=safe_type_name(exc),
         )
 
 
@@ -537,11 +609,15 @@ def record_agent_event_sync(
 def _request_consumer_name(scope: Mapping[str, Any]) -> str:
     """Capture safe attribution without retaining a request credential."""
 
-    state = scope.get("state") or {}
-    identity = state.get("identity") if isinstance(state, Mapping) else None
-    if isinstance(identity, ConsumerIdentity):
-        return identity.name
-    api_key = extract_api_key(scope.get("headers") or [])
+    state = scope.get("state")
+    identity = state.get("identity") if type(state) is dict else None
+    if type(identity) is ConsumerIdentity:
+        return (
+            _bounded_event_label(identity.name, _USAGE_TEXT_LIMITS["consumer_name"])
+            or "authenticated"
+        )
+    raw_headers = scope.get("headers")
+    api_key = extract_api_key(raw_headers if type(raw_headers) is list else [])
     if api_key:
         return f"key:{hash_api_key(api_key)[:12]}"
     return "anonymous"
@@ -575,16 +651,22 @@ async def _record_request_event(
         logger.warning(
             "usage.record_failed",
             action=action,
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(exc),
         )
 
 
 def _first_value(values: Mapping[str, list[str]], *keys: str) -> str | None:
     for key in keys:
         candidates = values.get(key)
-        if candidates and candidates[0]:
+        if type(candidates) is list and candidates and type(candidates[0]) is str and candidates[0]:
             return candidates[0]
     return None
+
+
+def _scope_attribution_label(value: Any) -> str | None:
+    if type(value) is not str or not 1 <= len(value) <= 255 or value != value.strip():
+        return None
+    return value if sanitize_durable_text(value, 255) == value else None
 
 
 def _request_scope(scope: Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -596,17 +678,26 @@ def _request_scope(scope: Mapping[str, Any]) -> tuple[str | None, str | None]:
     unambiguous; multiple app scopes are deliberately left unattributed instead
     of widening the event to project scope.
     """
-    state = scope.get("state") or {}
-    identity = state.get("identity") if isinstance(state, Mapping) else None
-    if not isinstance(identity, ConsumerIdentity):
+    state = scope.get("state")
+    identity = state.get("identity") if type(state) is dict else None
+    if type(identity) is not ConsumerIdentity:
         return None, None
 
-    path_params = scope.get("path_params") or {}
-    query = parse_qs((scope.get("query_string") or b"").decode("latin-1"))
-    project_id = path_params.get("project_id") or _first_value(query, "project", "project_id")
-    app_id = path_params.get("app_id") or _first_value(query, "app", "app_id")
-    project_id = str(project_id) if project_id else None
-    app_id = str(app_id) if app_id else None
+    path_params = scope.get("path_params")
+    path_params = path_params if type(path_params) is dict else {}
+    raw_query = scope.get("query_string")
+    query: dict[str, list[str]] = {}
+    if type(raw_query) is bytes and len(raw_query) <= 100_000:
+        try:
+            query = parse_qs(raw_query.decode("latin-1"), max_num_fields=256)
+        except ValueError:
+            query = {}
+    project_id = _scope_attribution_label(
+        path_params.get("project_id") or _first_value(query, "project", "project_id")
+    )
+    app_id = _scope_attribution_label(
+        path_params.get("app_id") or _first_value(query, "app", "app_id")
+    )
 
     if app_id is not None and project_id is None:
         return None, None
@@ -676,11 +767,12 @@ class UsageTrackingMiddleware:
 
     def _schedule(self, scope: Mapping[str, Any], status_code: int, started: float) -> None:
         try:
-            if str(scope.get("path") or "") == "/ready":
+            if scope.get("path") == "/ready":
                 # Kubelet polls this frequently and it is not product usage.
                 return
             operation_id = getattr(scope.get("route"), "operation_id", None)
-            if not operation_id:
+            safe_operation_id = _bounded_event_label(operation_id, _USAGE_TEXT_LIMITS["action"])
+            if safe_operation_id is None:
                 return  # docs/openapi/unmatched paths carry no contract operation
             duration_ms = int((time.perf_counter() - started) * 1000)
             consumer_name = _request_consumer_name(scope)
@@ -690,7 +782,7 @@ class UsageTrackingMiddleware:
             task = asyncio.get_running_loop().create_task(
                 _record_request_event(
                     consumer_name=consumer_name,
-                    action=str(operation_id),
+                    action=safe_operation_id,
                     status="ok" if status_code < 400 else "error",
                     duration_ms=duration_ms,
                     project_id=project_id,
@@ -706,7 +798,7 @@ class UsageTrackingMiddleware:
         except Exception as exc:  # noqa: BLE001 — analytics never fails a request
             logger.warning(
                 "usage.middleware_failed",
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
 
 

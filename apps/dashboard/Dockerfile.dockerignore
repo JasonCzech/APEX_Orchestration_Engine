@@ -1,0 +1,32 @@
+# This Dockerfile uses the repository root as its build context for the two
+# workspace dependencies. Keep that context fail-closed independently of the
+# LangGraph image's root .dockerignore.
+**
+!package.json
+!package-lock.json
+
+!apps/
+!apps/dashboard/
+!apps/dashboard/package.json
+!apps/dashboard/index.html
+!apps/dashboard/tsconfig.json
+!apps/dashboard/tsconfig.app.json
+!apps/dashboard/tsconfig.node.json
+!apps/dashboard/vite.config.ts
+!apps/dashboard/nginx.conf
+!apps/dashboard/docker-entrypoint.sh
+!apps/dashboard/public/
+!apps/dashboard/public/**
+!apps/dashboard/src/
+!apps/dashboard/src/**
+
+!packages/
+!packages/api-client/
+!packages/api-client/package.json
+!packages/api-client/src/
+!packages/api-client/src/**
+!packages/pipeline-events/
+!packages/pipeline-events/package.json
+!packages/pipeline-events/tsconfig.json
+!packages/pipeline-events/src/
+!packages/pipeline-events/src/**

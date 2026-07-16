@@ -41,10 +41,12 @@ describe('Apex client authentication middleware', () => {
   })
 
   it('reports a 401 for the current credential generation', async () => {
+    const redirectModes: RequestRedirect[] = []
     server.use(
-      http.get('*/v1/system/info', () =>
-        HttpResponse.json({ detail: 'expired key' }, { status: 401 }),
-      ),
+      http.get('*/v1/system/info', ({ request }) => {
+        redirectModes.push(request.redirect)
+        return HttpResponse.json({ detail: 'expired key' }, { status: 401 })
+      }),
     )
     setApiKey('apex_current_key')
     const unauthorized = vi.fn()
@@ -53,6 +55,7 @@ describe('Apex client authentication middleware', () => {
     try {
       await getApexClient().GET('/v1/system/info')
       expect(unauthorized).toHaveBeenCalledOnce()
+      expect(redirectModes).toEqual(['error'])
     } finally {
       unsubscribe()
     }

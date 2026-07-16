@@ -17,7 +17,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeGuard, cast
 
 import structlog
 from langgraph_sdk.errors import NotFoundError
@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from apex.adapters.registry import PortKind
 from apex.auth.identity import ScopeRef
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.pipeline import (
     TERMINAL_PHASE_STATUSES,
     EngineConnectionAffinityMissingError,
@@ -50,6 +50,10 @@ from apex.services.pipeline_read import (
     LangGraphClientLike,
     TooManyActiveRunsError,
 )
+from apex.services.public_projection import (
+    validated_native_identifier,
+    validated_native_mapping_page,
+)
 from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -62,6 +66,16 @@ MAX_ACTIVE_RUN_SNAPSHOT = 1_000
 ACTIVE_RUN_STABILITY_ATTEMPTS = 4
 MAX_STATE_HANDLE_SEARCH_NODES = 10_000
 MAX_STATE_HANDLE_SEARCH_DEPTH = 64
+
+
+def _safe_connection_id(value: Any) -> TypeGuard[str]:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 256
+        and value == value.strip()
+        and "\x00" not in value
+        and not contains_credential_material(value)
+    )
 
 
 class EngineRunNotFoundError(Exception):
@@ -155,6 +169,19 @@ class EngineAbortResult:
     cancelled_runs: list[str] = field(default_factory=list)
     phase: str | None = None
     confirmed: bool = False
+
+    def __post_init__(self) -> None:
+        """Project legacy provider identifiers before they reach a V1 response."""
+
+        # These fixed caps mirror EngineHandle's domain fields. Never derive a
+        # diagnostic budget from a legacy/provider-controlled value: doing so
+        # defeats both the response-size bound and bounded redaction work.
+        self.engine = bounded_diagnostic(self.engine, max_chars=64)
+        if self.external_run_id is not None:
+            self.external_run_id = bounded_diagnostic(
+                self.external_run_id,
+                max_chars=255,
+            )
 
 
 @dataclass(frozen=True)
@@ -255,11 +282,14 @@ class EngineAbortService:
             # Bind checkpoint state to the exact durable projection identity before
             # borrowing its scope/generation.  A stale legacy state handle must not
             # abort one provider run and then terminalize a different projection.
+            merge_failed = False
             try:
                 target = _merge_abort_targets(target, projection_target)
             except ValueError:
+                merge_failed = True
+            if merge_failed:
                 await self._release_read_transaction()
-                raise EngineConnectionAffinityMissingError from None
+                raise EngineConnectionAffinityMissingError
         if target is None:
             await self._release_read_transaction()
             raise EngineRunNotFoundError(thread_id)
@@ -333,6 +363,7 @@ class EngineAbortService:
     async def _resolve_abort_adapter(self, target: _AbortTarget) -> tuple[Any, EngineHandle]:
         handle = _copy_engine_handle(target.handle)
         adapter: Any | None = None
+        resolution_failed = False
         try:
             resolve_with_metadata = getattr(self._resolver, "resolve_with_metadata", None)
             if callable(resolve_with_metadata):
@@ -346,7 +377,10 @@ class EngineAbortService:
                 if not isinstance(resolved, ResolvedAdapter):
                     raise RuntimeError("engine resolver returned invalid connection metadata")
                 adapter = resolved.adapter
-                if resolved.connection_id != handle.connection_id:
+                resolved_connection_id = resolved.connection_id
+                if not _safe_connection_id(resolved_connection_id):
+                    raise RuntimeError("engine resolver returned an invalid connection id")
+                if resolved_connection_id != handle.connection_id:
                     raise RuntimeError(
                         "engine resolver did not honor the abort connection affinity"
                     )
@@ -357,7 +391,6 @@ class EngineAbortService:
                     raise RuntimeError(
                         "engine connection changed after the run reserved its generation"
                     )
-                resolved_connection_id = resolved.connection_id
             else:
                 if target.connection_version is not None and get_settings().is_locked_down:
                     raise RuntimeError(
@@ -369,6 +402,15 @@ class EngineAbortService:
                     project_id=target.project_id,
                     expected_provider=handle.engine,
                 )
+                if not _safe_connection_id(resolved_connection_id):
+                    raise RuntimeError("engine resolver returned an invalid connection id")
+                if (
+                    handle.connection_id is not None
+                    and resolved_connection_id != handle.connection_id
+                ):
+                    raise RuntimeError(
+                        "engine resolver did not honor the abort connection affinity"
+                    )
             handle = EngineHandle(
                 engine=handle.engine,
                 connection_id=resolved_connection_id,
@@ -385,9 +427,12 @@ class EngineAbortService:
                     pass
             if isinstance(exc, asyncio.CancelledError):
                 raise
-            raise EngineProviderAbortError(
-                "engine provider could not be resolved for abort"
-            ) from exc
+            resolution_failed = True
+        if resolution_failed:
+            raise EngineProviderAbortError("engine provider could not be resolved for abort")
+        raise EngineProviderAbortError(
+            "engine provider resolution returned no adapter"
+        )  # pragma: no cover
 
     async def _abort_using_adapter(
         self,
@@ -401,14 +446,18 @@ class EngineAbortService:
         reason: str | None,
     ) -> EngineAbortResult:
         observed_phase: EngineRunPhase | None = None
+        has_active_monitor = False
         confirmed = False
         provider_handle = _copy_engine_handle(handle)
+        provider_abort_failed = False
         try:
             await adapter.abort(provider_handle, reason=_abort_reason(reason))
-        except Exception as exc:  # noqa: BLE001 - provider boundary
+        except Exception:  # noqa: BLE001 - provider boundary
             # Provider code must not be able to forge one of the service's
             # retryable finalization exceptions and change the HTTP outcome.
-            raise EngineProviderAbortError("engine provider abort failed") from exc
+            provider_abort_failed = True
+        if provider_abort_failed:
+            raise EngineProviderAbortError("engine provider abort failed")
 
         try:
             # Provider adapters legitimately enrich ``extras`` while reconciling an
@@ -439,11 +488,15 @@ class EngineAbortService:
             EngineProjectionFinalizationPendingError,
         ):
             raise
-        except Exception as exc:
+        except Exception:
             # Do not cancel the poller or claim the projection is aborted when the
             # external provider rejected/failed the kill. The operator must see the
             # failure and a still-live graph can continue observing the run.
-            raise EngineProviderAbortError("engine provider abort failed") from exc
+            provider_abort_failed = True
+        if provider_abort_failed:
+            raise EngineProviderAbortError("engine provider abort failed")
+        if observed_phase is None:  # pragma: no cover - successful provider contract invariant
+            raise EngineProviderAbortError("engine provider returned no status")
 
         projection_only = not state_target.found
         if confirmed and has_active_monitor:
@@ -497,6 +550,7 @@ class EngineAbortService:
         # There is no checkpoint/monitor that can collect or tear down a
         # projection-only provider run, so the abort service owns finalization.
         if confirmed and projection_only:
+            teardown_failed = False
             try:
                 await adapter.teardown(_copy_engine_handle(handle))
             except Exception as exc:  # noqa: BLE001 — retain the lease for exact retry
@@ -509,7 +563,9 @@ class EngineAbortService:
                 # lease while provider resources remain undisposed. A later abort
                 # retries the idempotent abort + teardown from the same durable
                 # handle even though the external load is already stopped.
-                raise EngineProjectionFinalizationPendingError(thread_id) from exc
+                teardown_failed = True
+            if teardown_failed:
+                raise EngineProjectionFinalizationPendingError(thread_id)
 
         if (
             confirmed
@@ -517,6 +573,8 @@ class EngineAbortService:
             and target.projection_id is not None
             and target.attempt is not None
         ):
+            projected: int | None = None
+            projection_failed = False
             try:
                 marker = getattr(self._repo, "mark_terminal", None)
                 if marker is not None:
@@ -546,15 +604,16 @@ class EngineAbortService:
                     thread_id=thread_id,
                     error=bounded_diagnostic(exc),
                 )
-                raise EngineProjectionFinalizationPendingError(thread_id) from exc
-            else:
-                if projected == 0:
-                    logger.warning("engine_abort.projection_update_empty", thread_id=thread_id)
-                    # Teardown succeeded, but the compare-and-set did not prove
-                    # that this exact durable lease became terminal. Report a
-                    # retryable finalization gap instead of returning a false
-                    # success while a nonterminal projection may remain active.
-                    raise EngineProjectionFinalizationPendingError(thread_id)
+                projection_failed = True
+            if projection_failed:
+                raise EngineProjectionFinalizationPendingError(thread_id)
+            if projected == 0:
+                logger.warning("engine_abort.projection_update_empty", thread_id=thread_id)
+                # Teardown succeeded, but the compare-and-set did not prove
+                # that this exact durable lease became terminal. Report a
+                # retryable finalization gap instead of returning a false
+                # success while a nonterminal projection may remain active.
+                raise EngineProjectionFinalizationPendingError(thread_id)
 
         return EngineAbortResult(
             thread_id=thread_id,
@@ -569,18 +628,24 @@ class EngineAbortService:
     async def _provider_phase(self, adapter: Any, handle: EngineHandle) -> EngineRunPhase:
         """Normalize provider disappearance as a confirmed abort on every poll."""
 
+        status = None
+        status_check_failed = False
         try:
             status = await adapter.get_status(_copy_engine_handle(handle))
         except EngineProviderRunNotFoundError:
             return EngineRunPhase.ABORTED
-        except Exception as exc:  # noqa: BLE001 - provider boundary
-            raise EngineProviderAbortError("engine provider status check failed") from exc
+        except Exception:  # noqa: BLE001 - provider boundary
+            status_check_failed = True
+        if status_check_failed:
+            raise EngineProviderAbortError("engine provider status check failed")
+        invalid_status = False
         try:
-            dump = getattr(status, "model_dump", None)
-            payload = dump(mode="python") if callable(dump) else status
-            return EngineRunStatus.model_validate(payload).phase
-        except Exception as exc:  # noqa: BLE001 - untrusted provider result
-            raise EngineProviderAbortError("engine provider returned an invalid status") from exc
+            return _provider_status_phase(status)
+        except Exception:  # noqa: BLE001 - untrusted provider result
+            invalid_status = True
+        if invalid_status:  # pragma: no branch - exception handler is the only fallthrough
+            raise EngineProviderAbortError("engine provider returned an invalid status")
+        raise EngineProviderAbortError("engine provider returned no status")  # pragma: no cover
 
     async def _confirm_without_graph_monitor(
         self, thread_id: str, adapter: Any, handle: EngineHandle
@@ -607,13 +672,15 @@ class EngineAbortService:
             state = await self._client.threads.get_state(thread_id)
         except NotFoundError:
             return _StateTarget(found=False, attempt_bound=False, target=None, attempt=None)
+        if type(state) is not dict:
+            raise EngineProviderAbortError("graph state provider returned an invalid object")
         values = state.get("values") or {}
-        values = values if isinstance(values, dict) else {}
+        values = values if type(values) is dict else {}
         results = values.get("phase_results")
-        execution = results.get(Phase.EXECUTION.value) if isinstance(results, dict) else None
-        attempt_bound = isinstance(execution, dict)
+        execution = results.get(Phase.EXECUTION.value) if type(results) is dict else None
+        attempt_bound = type(execution) is dict
         if attempt_bound:
-            assert isinstance(execution, dict)
+            assert type(execution) is dict
             phase_status = _optional_str(execution.get("status"))
             if phase_status != PhaseStatus.RUNNING.value:
                 return _StateTarget(
@@ -629,7 +696,7 @@ class EngineAbortService:
             raw = _find_engine_handle(state)
             attempt = None
             phase_status = None
-        if not isinstance(raw, dict):
+        if type(raw) is not dict:
             return _StateTarget(
                 found=True,
                 attempt_bound=attempt_bound,
@@ -649,7 +716,7 @@ class EngineAbortService:
                 phase_status=phase_status,
             )
         run_config = values.get("run_config")
-        run_config = run_config if isinstance(run_config, dict) else {}
+        run_config = run_config if type(run_config) is dict else {}
         return _StateTarget(
             found=True,
             attempt_bound=attempt_bound,
@@ -657,7 +724,7 @@ class EngineAbortService:
                 handle=handle,
                 connection_version=(
                     _optional_datetime(execution.get("engine_connection_version"))
-                    if isinstance(execution, dict)
+                    if type(execution) is dict
                     else None
                 ),
                 project_id=_optional_str(run_config.get("project_id")),
@@ -742,12 +809,16 @@ class EngineAbortService:
                         )
                         raise TooManyActiveRunsError(thread_id, MAX_ACTIVE_RUN_SNAPSHOT)
                     limit = min(ACTIVE_RUN_PAGE_SIZE, remaining)
-                    page = await self._client.runs.list(
-                        thread_id,
-                        status=status,
-                        limit=limit,
-                        offset=offset,
-                        select=["run_id", "status", "created_at"],
+                    page = validated_native_mapping_page(
+                        await self._client.runs.list(
+                            thread_id,
+                            status=status,
+                            limit=limit,
+                            offset=offset,
+                            select=["run_id", "status", "created_at"],
+                        ),
+                        requested_limit=limit,
+                        label="engine abort active-run search",
                     )
                     if not page:
                         break
@@ -760,8 +831,11 @@ class EngineAbortService:
                         )
                         raise TooManyActiveRunsError(thread_id, MAX_ACTIVE_RUN_SNAPSHOT)
                     for run in page:
-                        run_id = _optional_str(run.get("run_id"))
-                        if run_id is not None and run_id not in runs:
+                        run_id = validated_native_identifier(
+                            run.get("run_id"),
+                            label="engine abort active-run search",
+                        )
+                        if run_id not in runs:
                             runs[run_id] = dict(run)
                     offset += len(page)
         except NotFoundError:
@@ -790,7 +864,7 @@ def _find_engine_handle(value: Any) -> dict[str, Any] | None:
         current, depth = stack.pop()
         if depth > MAX_STATE_HANDLE_SEARCH_DEPTH:
             continue
-        if not isinstance(current, dict | list):
+        if type(current) not in {dict, list}:
             continue
         identity = id(current)
         if identity in seen:
@@ -799,9 +873,9 @@ def _find_engine_handle(value: Any) -> dict[str, Any] | None:
         visited += 1
         if visited > MAX_STATE_HANDLE_SEARCH_NODES:
             return None
-        if isinstance(current, dict):
+        if type(current) is dict:
             direct = current.get("engine_handle")
-            if isinstance(direct, dict):
+            if type(direct) is dict:
                 return direct
             # Reverse push order preserves the old depth-first values/state/tasks
             # preference while avoiding Python recursion and cyclic test doubles.
@@ -814,7 +888,7 @@ def _find_engine_handle(value: Any) -> dict[str, Any] | None:
 
 
 def _optional_str(value: Any) -> str | None:
-    return str(value) if value is not None else None
+    return value if type(value) is str else None
 
 
 def _copy_engine_handle(handle: EngineHandle) -> EngineHandle:
@@ -891,34 +965,110 @@ def _restamp_provider_handle(
 ) -> EngineHandle:
     """Accept only validated provider-owned extras; retain trusted affinity."""
 
-    candidate = EngineHandle.model_validate(provider_handle.model_dump(mode="python"))
+    candidate_extras: dict[str, str] | None = None
+    try:
+        if type(provider_handle) is not EngineHandle:
+            raise ValueError("unexpected provider handle type")
+        source = object.__getattribute__(provider_handle, "__dict__")
+        expected = {
+            "engine",
+            "connection_id",
+            "external_run_id",
+            "idempotency_key",
+            "extras",
+        }
+        if (
+            type(source) is not dict
+            or len(source) != len(expected)
+            or object.__getattribute__(provider_handle, "__pydantic_extra__")
+        ):
+            raise ValueError("provider handle fields are invalid")
+        keys = list(source)
+        if any(type(key) is not str for key in keys) or set(keys) != expected:
+            raise ValueError("provider handle fields are invalid")
+        extras = source["extras"]
+        if type(extras) is not dict or len(extras) > 32:
+            raise ValueError("provider handle extras are invalid")
+        if any(
+            type(key) is not str
+            or not 1 <= len(key) <= 64
+            or "\x00" in key
+            or type(value) is not str
+            or len(value) > 2_048
+            or "\x00" in value
+            for key, value in extras.items()
+        ):
+            raise ValueError("provider handle extras are invalid")
+        if contains_credential_material(extras, max_nodes=64, max_total_chars=32_768):
+            raise ValueError("provider handle extras are invalid")
+        candidate_extras = dict(extras)
+    except Exception:
+        pass
+    if candidate_extras is None:
+        raise ValueError("provider returned an invalid abort handle")
     return EngineHandle(
         engine=trusted.engine,
         connection_id=trusted.connection_id,
         external_run_id=trusted.external_run_id,
         idempotency_key=trusted.idempotency_key,
-        extras=dict(candidate.extras),
+        extras=candidate_extras,
     )
 
 
+def _provider_status_phase(status: Any) -> EngineRunPhase:
+    """Read one exact provider status without invoking serializer hooks."""
+
+    parsed_phase: EngineRunPhase | None = None
+    try:
+        if type(status) is EngineRunStatus:
+            source = object.__getattribute__(status, "__dict__")
+            if object.__getattribute__(status, "__pydantic_extra__"):
+                raise ValueError("provider status has extras")
+        elif type(status) is dict:
+            source = status
+        else:
+            raise ValueError("provider status type is invalid")
+        allowed = {"phase", "progress_pct", "live_stats", "message"}
+        if (
+            type(source) is not dict
+            or len(source) > len(allowed)
+            or "phase" not in source
+            or any(type(key) is not str or key not in allowed for key in source)
+        ):
+            raise ValueError("provider status fields are invalid")
+        phase = source["phase"]
+        if type(phase) is EngineRunPhase:
+            parsed_phase = phase
+        elif type(phase) is not str or not 1 <= len(phase) <= 32 or "\x00" in phase:
+            raise ValueError("provider status phase is invalid")
+        else:
+            parsed_phase = EngineRunPhase(phase)
+    except Exception:
+        pass
+    if parsed_phase is None:
+        raise ValueError("provider status is invalid")
+    return parsed_phase
+
+
 def _abort_reason(reason: str | None) -> str:
+    if reason is not None and type(reason) is not str:
+        raise ValueError("engine abort reason must be a string")
     value = reason or DEFAULT_ABORT_REASON
     if len(value) > 1_024 or "\x00" in value:
         raise ValueError("engine abort reason must be at most 1024 characters without U+0000")
+    if contains_credential_material(value):
+        raise ValueError("engine abort reason must not contain credential material")
     return value
 
 
 def _optional_int(value: Any) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return value if type(value) is int else None
 
 
 def _optional_datetime(value: Any) -> datetime | None:
-    if isinstance(value, datetime):
+    if type(value) is datetime:
         parsed = value
-    elif isinstance(value, str):
+    elif type(value) is str:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:

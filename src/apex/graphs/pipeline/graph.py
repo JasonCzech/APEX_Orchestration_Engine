@@ -12,11 +12,13 @@ compile `builder` with InMemorySaver.
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 
+from apex.domain.diagnostics import contains_credential_material
 from apex.domain.pipeline import (
     PHASE_ORDER,
     PHASE_PREREQUISITES,
     TERMINAL_PHASE_STATUSES,
     ContextPacket,
+    EngineHandle,
     ExternalResults,
     Phase,
     PhaseResult,
@@ -32,12 +34,39 @@ from apex.graphs.pipeline.state import JsonDict, PipelineInput, PipelineState
 from apex.services.prompts import prompt_review_from_resolved, resolve_phase_prompts_sync
 from apex.services.run_validation import validate_context_packets, validate_pipeline_input
 
+_PHASE_STATUS_VALUES = frozenset(status.value for status in PhaseStatus)
+
 
 def _prompt_variables(state: PipelineState) -> dict[str, str]:
-    return {
-        "title": state.get("title") or "untitled run",
-        "request": state.get("request") or "(no request provided)",
+    title = state.get("title")
+    request = state.get("request")
+    if title is None:
+        title = "untitled run"
+    elif type(title) is not str or len(title) > 500 or "\x00" in title:
+        raise ValueError("checkpointed pipeline title is invalid")
+    elif title == "":
+        title = "untitled run"
+    if request is None:
+        request = "(no request provided)"
+    elif type(request) is not str or len(request) > 20_000 or "\x00" in request:
+        raise ValueError("checkpointed pipeline request is invalid")
+    elif request == "":
+        request = "(no request provided)"
+    variables = {
+        "title": title,
+        "request": request,
     }
+    if contains_credential_material(variables, max_nodes=4, max_total_chars=20_564):
+        raise ValueError("checkpointed pipeline intent contains credential material")
+    return variables
+
+
+def _checkpoint_attempt(value: object, *, default: int) -> int:
+    if value is None:
+        return default
+    if type(value) is not int or not 0 <= value <= 1_000_000:
+        raise ValueError("checkpointed phase attempt is invalid")
+    return value
 
 
 def _external_seed(external: JsonDict, *, attempt: int) -> tuple[JsonDict, JsonDict]:
@@ -86,13 +115,47 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     selected = cfg.selected_phases()
     if not selected:
         raise ValueError("Pipeline phase plan is empty")
-    configurable = config.get("configurable") or {}
-    if not str(configurable.get("thread_id") or "").strip():
+    if type(config) is not dict:
+        raise ValueError("pipeline run configuration is invalid")
+    configurable = config.get("configurable")
+    if configurable is None:
+        configurable = {}
+    if type(configurable) is not dict:
+        raise ValueError("pipeline run configuration is invalid")
+    thread_id = configurable.get("thread_id")
+    if (
+        type(thread_id) is not str
+        or not thread_id
+        or thread_id != thread_id.strip()
+        or len(thread_id) > 255
+        or "\x00" in thread_id
+        or contains_credential_material(thread_id)
+    ):
         raise ValueError(
             "pipeline runs require a durable thread_id; stateless runs are not allowed"
         )
     selected_set = set(selected)  # canonical order => membership implies "runs earlier"
-    existing = dict(state.get("phase_results") or {})
+    previous_handle = state.get("engine_handle")
+    if previous_handle is not None:
+        if type(previous_handle) is not dict or contains_credential_material(previous_handle):
+            raise ValueError("checkpointed engine handle is invalid")
+        validated_handle: EngineHandle | None = None
+        try:
+            validated_handle = EngineHandle.model_validate(previous_handle, strict=True)
+        except (TypeError, ValueError):
+            pass
+        if validated_handle is None:
+            raise ValueError("checkpointed engine handle is invalid")
+        if validated_handle.model_dump(mode="json") != previous_handle:
+            raise ValueError("checkpointed engine handle is not canonical")
+    raw_existing = state.get("phase_results")
+    if raw_existing is None:
+        raw_existing = {}
+    if type(raw_existing) is not dict or any(
+        type(name) is not str or type(entry) is not dict for name, entry in raw_existing.items()
+    ):
+        raise ValueError("checkpointed phase results are invalid")
+    existing = dict(raw_existing)
 
     # Externally-supplied results seed a succeeded execution entry so analysis-only
     # runs (reporting/postmortem) satisfy the execution prerequisite honestly, without
@@ -102,9 +165,16 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
     external = state.get("external_results")
     external_execution: JsonDict | None = None
     external_packet: JsonDict | None = None
-    if external and Phase.EXECUTION not in selected_set:
-        exec_current = existing.get(Phase.EXECUTION.value) or {}
-        external_attempt = max(1, int(exec_current.get("attempt") or 0) + 1)
+    if external is not None and Phase.EXECUTION not in selected_set:
+        exec_current = existing.get(Phase.EXECUTION.value)
+        if exec_current is None:
+            exec_current = {}
+        if type(exec_current) is not dict:
+            raise ValueError("checkpointed execution phase is invalid")
+        external_attempt = max(
+            1,
+            _checkpoint_attempt(exec_current.get("attempt"), default=0) + 1,
+        )
         external_execution, external_packet = _external_seed(external, attempt=external_attempt)
         existing[Phase.EXECUTION.value] = external_execution
 
@@ -112,7 +182,13 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         for prereq in PHASE_PREREQUISITES[phase]:
             if prereq in selected_set:
                 continue
-            if existing.get(prereq.value, {}).get("status") == PhaseStatus.SUCCEEDED:
+            prereq_entry = existing.get(prereq.value)
+            if prereq_entry is not None and type(prereq_entry) is not dict:
+                raise ValueError("checkpointed prerequisite phase is invalid")
+            prereq_status = prereq_entry.get("status") if prereq_entry is not None else None
+            if prereq_status is not None and type(prereq_status) is not str:
+                raise ValueError("checkpointed prerequisite phase status is invalid")
+            if prereq_status == PhaseStatus.SUCCEEDED:
                 continue
             raise ValueError(
                 f"Cannot run phase '{phase.value}': prerequisite '{prereq.value}' is "
@@ -124,17 +200,28 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         seeded[Phase.EXECUTION.value] = external_execution
     for phase in selected:
         current = existing.get(phase.value)
-        if current and current.get("status") in TERMINAL_PHASE_STATUSES:
-            attempt = int(current.get("attempt") or 0) + 1
-        elif current:
-            attempt = int(current.get("attempt") or 1)
+        if current is not None and type(current) is not dict:
+            raise ValueError("checkpointed phase result is invalid")
+        current_status = current.get("status") if current is not None else None
+        if current_status is not None and (
+            type(current_status) is not str or current_status not in _PHASE_STATUS_VALUES
+        ):
+            raise ValueError("checkpointed phase status is invalid")
+        if current is not None and current_status in TERMINAL_PHASE_STATUSES:
+            attempt = _checkpoint_attempt(current.get("attempt"), default=0) + 1
+        elif current is not None and len(current) > 0:
+            attempt = _checkpoint_attempt(current.get("attempt"), default=1)
         else:
             attempt = 1
         seeded[phase.value] = PhaseResult(
             phase=phase, status=PhaseStatus.PENDING, attempt=attempt
         ).as_state()
 
-    existing_reviews = state.get("prompt_reviews") or {}
+    existing_reviews = state.get("prompt_reviews")
+    if existing_reviews is None:
+        existing_reviews = {}
+    if type(existing_reviews) is not dict:
+        raise ValueError("checkpointed prompt reviews are invalid")
     missing_review_phases = [phase for phase in PHASE_ORDER if phase.value not in existing_reviews]
     seeded_reviews: dict[str, JsonDict] = {}
     if missing_review_phases:
@@ -165,32 +252,102 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
         # run selected a real execution phase so a later checkpoint resume/rerun
         # can never silently reuse stale caller-supplied evidence.
         "external_results": None,
+        # Force reducer validation of inherited review channels even when this
+        # run already has every phase review. Otherwise a malformed legacy value
+        # for an unselected phase/application can ride into a fresh checkpoint
+        # without any node ever reading it.
+        "prompt_reviews": seeded_reviews,
+        "application_reviews": {},
+        # Touch every accumulated JSON channel at the new-run boundary. Their
+        # reducers revalidate inherited legacy state even if the run pauses at
+        # its first human gate before a phase would otherwise append anything.
+        "artifacts": [],
+        "dialogue": [],
     }
     if Phase.EXECUTION in selected_set:
         # A thread rerun starts a new execution attempt. Do not leave the previous
         # attempt's top-level handle available to the abort facade while the new
         # attempt is still in prompt review or provisioning.
         update["engine_handle"] = None
-    if seeded_reviews:
-        update["prompt_reviews"] = seeded_reviews
     if external_packet is not None:
-        current_packets = list(state.get("context_packets") or [])
+        raw_packets = state.get("context_packets")
+        if raw_packets is None:
+            raw_packets = []
+        current_packets = validate_context_packets(raw_packets)
         candidate_packets = [
-            packet for packet in current_packets if packet.get("id") != external_packet["id"]
+            packet for packet in current_packets if packet["id"] != external_packet["id"]
         ]
         validate_context_packets([*candidate_packets, external_packet])
         update["context_packets"] = [external_packet]
+    else:
+        update["context_packets"] = []
     return update
 
 
-def route_next_phase(state: PipelineState) -> str:
+def route_next_phase(
+    state: PipelineState,
+    config: RunnableConfig | None = None,
+) -> str:
     """Next plan phase whose result is non-terminal; END on abort or plan exhaustion."""
-    if state.get("run_aborted"):
+    run_aborted = state.get("run_aborted")
+    if run_aborted is not None and type(run_aborted) is not bool:
+        raise ValueError("checkpointed run abort flag is invalid")
+    if run_aborted is True:
         return END
-    results = state.get("phase_results") or {}
-    for name in state.get("phases_plan") or []:
+    results = state.get("phase_results")
+    if results is None:
+        results = {}
+    if type(results) is not dict:
+        raise ValueError("checkpointed phase results are invalid")
+    plan = state.get("phases_plan")
+    if plan is None:
+        plan = []
+    phase_names = [phase.value for phase in PHASE_ORDER]
+    if (
+        type(plan) is not list
+        or len(plan) > len(phase_names)
+        or any(
+            type(name) is not str
+            or not 1 <= len(name) <= 64
+            or "\x00" in name
+            or contains_credential_material(name)
+            or name not in phase_names
+            for name in plan
+        )
+        or len(set(plan)) != len(plan)
+        or plan != [name for name in phase_names if name in set(plan)]
+    ):
+        raise ValueError("checkpointed phase plan is invalid")
+    snapshot = state.get("run_config")
+    if snapshot is not None:
+        # Conditional-edge routing is itself an authorization boundary. A valid
+        # durable config must not be paired with a poisoned plan that enters an
+        # unselected provider/model phase.
+        effective_config: RunnableConfig
+        if config is None:
+            if type(snapshot) is not dict:
+                raise ValueError("checkpointed pipeline configuration is invalid")
+            effective_config = {"configurable": snapshot}
+        else:
+            effective_config = config
+        cfg = PipelineConfigurable.from_state(state, effective_config)
+        expected_plan = [phase.value for phase in cfg.selected_phases()]
+        if plan != expected_plan:
+            raise ValueError(
+                "checkpointed pipeline phase plan does not match its durable configuration"
+            )
+    for name in plan:
         entry = results.get(name)
-        if not entry or entry.get("status") not in TERMINAL_PHASE_STATUSES:
+        if entry is not None and type(entry) is not dict:
+            raise ValueError("checkpointed phase result is invalid")
+        status = entry.get("status") if entry is not None else None
+        if status is not None and (
+            type(status) is not str
+            or not 1 <= len(status) <= 64
+            or status not in _PHASE_STATUS_VALUES
+        ):
+            raise ValueError("checkpointed phase status is invalid")
+        if entry is None or len(entry) == 0 or status not in TERMINAL_PHASE_STATUSES:
             return name
     return END
 

@@ -25,7 +25,8 @@ Port-method -> LRE endpoint mapping:
     abort              GET  Runs/{RunID} (pre-check) +
                        POST Runs/{RunID}/stop  (graceful) or
                        POST Runs/{RunID}/abort (extras["abortive_stop"]="true")
-    collect_artifacts  GET  Runs/{RunID}/Results +
+    collect_artifacts  GET  Runs/{RunID} (identity pre-check) +
+                       GET  Runs/{RunID}/Results +
                        GET  Runs/{RunID}/Results/{ResultID}/data (zip, 60s)
     fetch_summary      GET  Runs/{RunID}
     teardown           no-op (LRE releases the timeslot itself; see below)
@@ -39,10 +40,11 @@ start() time (POST Runs both creates AND starts an LRE run), with the
 RunComment carrying the key so any later lookup — including provision() from a
 fresh process — finds it. start() re-runs the same lookup before POSTing, so a
 crash between run creation and the spine's checkpoint cannot double-start
-load; if several runs ever carry the same comment, the lowest RunID (the
-first created) wins deterministically. The final lookup + POST is serialized by
-a cross-event-loop process guard and, in locked multi-replica deployments, a
-PostgreSQL advisory lock; LRE itself has no atomic idempotency-key API.
+load; if several runs ever carry the same exact comment, reconciliation fails
+closed because adopting one would leave another load run unmanaged. The final
+lookup + POST is serialized by a cross-event-loop process guard and, in locked
+multi-replica deployments, a PostgreSQL advisory lock; LRE itself has no atomic
+idempotency-key API.
 
 LRE RunState -> EngineRunPhase mapping (case-insensitive):
 
@@ -97,6 +99,7 @@ import structlog
 from apex.adapters.http_resilience import (
     CircuitBreaker,
     CircuitOpenError,
+    close_response_definitively,
     parse_json_response,
     read_bounded_response,
     read_stream_error_preview,
@@ -107,7 +110,7 @@ from apex.adapters.http_resilience import (
 from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.remote_idempotency import remote_create_guard
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.integrations import (
     LoadTestSpec,
     SecretValue,
@@ -219,6 +222,8 @@ def _provider_text(
         or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
     ):
         raise RuntimeError(f"loadrunner {context} must be a bounded string")
+    if contains_credential_material(value):
+        raise RuntimeError(f"loadrunner {context} contains unsafe material")
     return value
 
 
@@ -241,12 +246,15 @@ def _handle_number(value: Any, context: str, *, maximum: float) -> float:
         raise ValueError(f"loadrunner handle {context} must be a finite non-negative number")
     if isinstance(value, str) and (not value or len(value) > 64):
         raise ValueError(f"loadrunner handle {context} must be a finite non-negative number")
+    parsed: float | None = None
     try:
         parsed = float(value)
-    except ValueError as exc:
+    except ValueError:
+        pass
+    if parsed is None:
         raise ValueError(
             f"loadrunner handle {context} must be a finite non-negative number"
-        ) from exc
+        ) from None
     if not math.isfinite(parsed) or not 0 <= parsed <= maximum:
         raise ValueError(f"loadrunner handle {context} must be a finite non-negative number")
     return parsed
@@ -255,11 +263,15 @@ def _handle_number(value: Any, context: str, *, maximum: float) -> float:
 def _revalidate_spec(spec: LoadTestSpec) -> LoadTestSpec:
     if not isinstance(spec, LoadTestSpec):
         raise ValueError("loadrunner requires a valid LoadTestSpec")
+    validated: LoadTestSpec | None = None
     try:
         payload = spec.model_dump(mode="python", round_trip=True, warnings="error")
-        return LoadTestSpec.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001 - corrupt models fail before load side effects
-        raise ValueError("loadrunner load test specification failed structural validation") from exc
+        validated = LoadTestSpec.model_validate(payload)
+    except Exception:  # noqa: BLE001 - corrupt models fail before load side effects
+        pass
+    if validated is None:
+        raise ValueError("loadrunner load test specification failed structural validation")
+    return validated
 
 
 def resolve_test_id(spec: LoadTestSpec, default: int | None) -> int:
@@ -267,13 +279,20 @@ def resolve_test_id(spec: LoadTestSpec, default: int | None) -> int:
     for index, ref in enumerate(spec.script_refs):
         if ref.startswith(_SCRIPT_REF_PREFIX):
             raw = ref[len(_SCRIPT_REF_PREFIX) :]
+            test_id: int | None = None
+            invalid_test_id = False
             try:
-                return _bounded_integer(raw, "LRE test id")
+                test_id = _bounded_integer(raw, "LRE test id")
             except ValueError:
+                invalid_test_id = True
+            if invalid_test_id:
                 raise ValueError(
                     f"script_refs[{index}] does not carry a bounded positive LRE test id "
                     f'(expected "lre-test:<id>")'
-                ) from None
+                )
+            if test_id is None:  # pragma: no cover - integer parser invariant
+                raise ValueError(f"script_refs[{index}] has no LRE test id")
+            return test_id
     if default is not None:
         return default
     raise ValueError(
@@ -308,6 +327,8 @@ def _provider_result_text(
         raise RuntimeError(f"LRE result {field} exceeds {max_chars} characters")
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in text):
         raise RuntimeError(f"LRE result {field} contains control characters")
+    if contains_credential_material(text):
+        raise RuntimeError(f"LRE result {field} contains unsafe material")
     return text
 
 
@@ -380,9 +401,7 @@ class LoadRunnerExecutionEngine:
         self._project_base = f"/LoadTest/rest/domains/{domain}/projects/{project}"
         raw_test_id = options.get("test_id")
         self._default_test_id = (
-            _bounded_integer(raw_test_id, "loadrunner test_id")
-            if raw_test_id is not None
-            else None
+            _bounded_integer(raw_test_id, "loadrunner test_id") if raw_test_id is not None else None
         )
         raw_instance = options.get("test_instance_id")
         # -1 asks LRE to auto-assign/create the test instance for the test set.
@@ -442,6 +461,8 @@ class LoadRunnerExecutionEngine:
     async def _authenticate(self, client: httpx.AsyncClient) -> None:
         """POST the authentication point with basic credentials; the LWSSO
         session cookie from Set-Cookie lands in the client's cookie jar."""
+        response: httpx.Response | None = None
+        transport_failure: RuntimeError | None = None
         try:
             stream = await resilient_stream_request(
                 client,
@@ -460,11 +481,15 @@ class LoadRunnerExecutionEngine:
             )
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            transport_failure = RuntimeError(
                 bounded_diagnostic(
                     f"loadrunner authentication failed before a response arrived: {detail}"
                 )
-            ) from exc
+            )
+        if transport_failure is not None:
+            raise transport_failure
+        if response is None:  # pragma: no cover - resilience contract invariant
+            raise RuntimeError("loadrunner authentication completed without a response")
         if response.status_code in (401, 403):
             raise RuntimeError(
                 f"loadrunner rejected credentials for connection {self._conn_id!r} "
@@ -492,6 +517,8 @@ class LoadRunnerExecutionEngine:
             if method.upper() == "GET" and path.startswith(f"{self._project_base}/Runs/")
             else None
         )
+        response: httpx.Response | None = None
+        request_failure: RuntimeError | None = None
         try:
             stream = await resilient_stream_request(
                 client,
@@ -502,19 +529,26 @@ class LoadRunnerExecutionEngine:
                 timeout=timeout_s if timeout_s is not None else _TIMEOUT_S,
                 breaker=breaker,
             )
-            return await read_bounded_response(
+            response = await read_bounded_response(
                 stream,
                 max_bytes=_MAX_JSON_RESPONSE_BYTES,
             )
-        except CircuitOpenError as exc:
-            raise RuntimeError(f"loadrunner request circuit is open for {method} {path}") from exc
+        except CircuitOpenError:
+            request_failure = RuntimeError(
+                f"loadrunner request circuit is open for {method} {path}"
+            )
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            request_failure = RuntimeError(
                 bounded_diagnostic(
                     f"loadrunner request {method} {path} failed before a response arrived: {detail}"
                 )
-            ) from exc
+            )
+        if request_failure is not None:
+            raise request_failure
+        if response is None:  # pragma: no cover - resilience contract invariant
+            raise RuntimeError("loadrunner request completed without a response")
+        return response
 
     async def _request(
         self,
@@ -564,8 +598,10 @@ class LoadRunnerExecutionEngine:
             await self._authenticate(client)
 
         async def _send() -> httpx.Response:
+            response: httpx.Response | None = None
+            request_failure: RuntimeError | None = None
             try:
-                return await resilient_stream_request(
+                response = await resilient_stream_request(
                     client,
                     "GET",
                     path,
@@ -573,28 +609,36 @@ class LoadRunnerExecutionEngine:
                     retry=retry_policy(total_timeout_s=_DOWNLOAD_TOTAL_TIMEOUT_S),
                     breaker=self._breaker,
                 )
-            except CircuitOpenError as exc:
-                raise RuntimeError(f"loadrunner request circuit is open for GET {path}") from exc
+            except CircuitOpenError:
+                request_failure = RuntimeError(f"loadrunner request circuit is open for GET {path}")
             except httpx.HTTPError as exc:
                 detail = bounded_diagnostic(exc)
-                raise RuntimeError(
+                request_failure = RuntimeError(
                     bounded_diagnostic(
                         f"loadrunner request GET {path} failed before a response arrived: {detail}"
                     )
-                ) from exc
+                )
+            if request_failure is not None:
+                raise request_failure
+            if response is None:  # pragma: no cover - resilience contract invariant
+                raise RuntimeError("loadrunner download completed without a response")
+            return response
 
         response = await _send()
         if response.status_code == 401:
-            await response.aclose()
+            await close_response_definitively(response)
             self._session_ok = False
             await self._authenticate(client)
             response = await _send()
         if response.status_code < 400:
+            unsupported_encoding = False
             try:
                 require_identity_content_encoding(response)
             except Exception:
-                await response.aclose()
-                raise
+                unsupported_encoding = True
+            if unsupported_encoding:
+                await close_response_definitively(response)
+                raise RuntimeError("loadrunner download used an unsupported content encoding")
             return response
         preview = await read_stream_error_preview(response)
         preview_response = httpx.Response(response.status_code, content=preview)
@@ -610,45 +654,94 @@ class LoadRunnerExecutionEngine:
                 f"{_error_text(preview_response)}"
             )
         finally:
-            await response.aclose()
+            await close_response_definitively(response)
 
     # ── handle / run helpers ──────────────────────────────────────────────────
 
     def _test_id_from(self, handle: EngineHandle) -> int:
+        test_id: int | None = None
+        missing_test_id = False
+        invalid_test_id = False
         try:
-            return _bounded_integer(handle.extras["test_id"], "loadrunner handle test_id")
+            test_id = _bounded_integer(handle.extras["test_id"], "loadrunner handle test_id")
         except KeyError:
+            missing_test_id = True
+        except ValueError:
+            invalid_test_id = True
+        if missing_test_id:
             raise ValueError(
-                f"handle for run {handle.external_run_id!r} was not provisioned by the "
-                "loadrunner engine (missing extras['test_id']); call provision() first"
-            ) from None
-        except ValueError as exc:
-            raise ValueError("loadrunner handle has an invalid test_id") from exc
+                "handle was not provisioned by the loadrunner engine "
+                "(missing extras['test_id']); call provision() first"
+            )
+        if invalid_test_id:
+            raise ValueError("loadrunner handle has an invalid test_id")
+        if test_id is None:  # pragma: no cover - integer parser invariant
+            raise ValueError("loadrunner handle has an invalid test_id")
+        return test_id
 
     def _run_id_from(self, handle: EngineHandle) -> str:
         run_id = handle.extras.get("run_id")
         if run_id is None or run_id == "":
             self._test_id_from(handle)  # not-provisioned beats not-started
-            raise ValueError(
-                f"loadrunner run for key {handle.idempotency_key!r} has not been created "
-                "yet; call start() first"
-            )
+            raise ValueError("loadrunner run has not been created yet; call start() first")
+        parsed: int | None = None
+        invalid_run_id = False
         try:
             parsed = _bounded_integer(run_id, "loadrunner handle run_id")
-        except ValueError as exc:
-            raise ValueError("loadrunner handle has an invalid run_id") from exc
+        except ValueError:
+            invalid_run_id = True
+        if invalid_run_id or parsed is None:
+            raise ValueError("loadrunner handle has an invalid run_id")
         canonical = str(parsed)
         if handle.external_run_id not in (None, f"lre-{canonical}"):
             raise ValueError("loadrunner handle external_run_id does not match its run_id")
         return canonical
+
+    @staticmethod
+    def _require_run_identity(
+        run: dict[str, Any],
+        *,
+        test_id: int,
+        key: str,
+        context: str,
+    ) -> None:
+        """Prove a returned run belongs to the requested test/idempotency scope."""
+
+        returned_test_id: int | None = None
+        invalid_test_id = False
+        try:
+            returned_test_id = _bounded_integer(
+                run.get("TestID"),
+                f"{context} field 'TestID'",
+            )
+        except ValueError:
+            invalid_test_id = True
+        if invalid_test_id or returned_test_id is None:
+            raise RuntimeError(f"{context} has no valid TestID")
+        if returned_test_id != test_id:
+            raise RuntimeError(f"{context} returned a run for an unexpected test")
+        comment: str | None = None
+        invalid_comment = False
+        try:
+            comment = _provider_text(
+                run.get("RunComment"),
+                f"{context} field 'RunComment'",
+                max_chars=512,
+            )
+        except ValueError:
+            invalid_comment = True
+        if invalid_comment or comment is None:
+            raise RuntimeError(f"{context} has no valid RunComment")
+        if comment != COMMENT_PREFIX + key:
+            raise RuntimeError(f"{context} did not acknowledge the idempotency marker")
 
     async def _find_run_by_comment(self, test_id: int, key: str) -> dict[str, Any] | None:
         """Idempotency lookup: the run whose RunComment carries apex-orch:<key>.
 
         LRE collection responses are paged. Filters by test id server-side and
         walks the complete bounded result set before deciding that the marker is
-        absent. Multiple matches (should never happen) resolve to the lowest
-        RunID — the first run created — deterministically.
+        absent. Multiple exact matches fail closed: adopting one would leave
+        another load run outside the durable handle's lifecycle.
         """
         marker = COMMENT_PREFIX + key
         matches: list[dict[str, Any]] = []
@@ -675,6 +768,7 @@ class LoadRunnerExecutionEngine:
                 runs = raw_runs
                 raw_total = payload.get("TotalResults")
                 if raw_total is not None:
+                    invalid_total = False
                     try:
                         total_results = _bounded_integer(
                             raw_total,
@@ -683,11 +777,17 @@ class LoadRunnerExecutionEngine:
                             maximum=_MAX_LRE_ID,
                             allow_string=False,
                         )
-                    except ValueError as exc:
+                    except ValueError:
+                        invalid_total = True
+                    if invalid_total:
                         raise RuntimeError(
                             "loadrunner Runs response field 'TotalResults' must be a bounded "
                             "non-negative integer"
-                        ) from exc
+                        )
+                    if total_results is None:  # pragma: no cover - integer parser invariant
+                        raise RuntimeError(
+                            "loadrunner Runs response field 'TotalResults' is missing"
+                        )
                     if total_results > _MAX_RUN_RECONCILIATION_ROWS:
                         raise RuntimeError(
                             "loadrunner run reconciliation exceeded the 5000-row provider scan "
@@ -711,6 +811,12 @@ class LoadRunnerExecutionEngine:
                     max_chars=512,
                 )
                 if comment == marker:
+                    self._require_run_identity(
+                        run,
+                        test_id=test_id,
+                        key=key,
+                        context="matching loadrunner run",
+                    )
                     matches.append(run)
 
             scanned += len(runs)
@@ -731,13 +837,20 @@ class LoadRunnerExecutionEngine:
 
         if not matches:
             return None
+        if len(matches) > 1:
+            raise RuntimeError("loadrunner idempotency marker is attached to multiple runs")
+        match: dict[str, Any] | None = None
+        invalid_match = False
         try:
-            return min(
+            match = min(
                 matches,
                 key=lambda run: _bounded_integer(run["ID"], "matching loadrunner run ID"),
             )
-        except (KeyError, ValueError) as exc:
-            raise RuntimeError("matching loadrunner run has no valid integer ID") from exc
+        except (KeyError, ValueError):
+            invalid_match = True
+        if invalid_match or match is None:
+            raise RuntimeError("matching loadrunner run has no valid integer ID")
+        return match
 
     async def _find_run_after_ambiguous_create(
         self, test_id: int, key: str
@@ -764,6 +877,19 @@ class LoadRunnerExecutionEngine:
         payload = parse_json_response(response, context="loadrunner run response")
         if not isinstance(payload, dict):
             raise RuntimeError("loadrunner run response must be a JSON object")
+        returned_run_id: int | None = None
+        invalid_run_id = False
+        try:
+            returned_run_id = _bounded_integer(
+                payload.get("ID"),
+                "loadrunner run response field 'ID'",
+            )
+        except ValueError:
+            invalid_run_id = True
+        if invalid_run_id or returned_run_id is None:
+            raise RuntimeError("loadrunner run response has no valid ID")
+        if str(returned_run_id) != run_id:
+            raise RuntimeError("loadrunner run response returned an unexpected run ID")
         return payload
 
     def _phase_for(self, run: dict[str, Any]) -> tuple[EngineRunPhase, str]:
@@ -797,11 +923,14 @@ class LoadRunnerExecutionEngine:
             "duration_s",
             maximum=86_400,
         )
-        elapsed_s = _provider_number(
-            raw_elapsed,
-            "run response field 'Duration'",
-            maximum=1_000_000_000,
-        ) * 60.0
+        elapsed_s = (
+            _provider_number(
+                raw_elapsed,
+                "run response field 'Duration'",
+                maximum=1_000_000_000,
+            )
+            * 60.0
+        )
         if duration_s <= 0:
             return 0.0
         return round(min(95.0, elapsed_s / duration_s * 100.0), 1)
@@ -851,10 +980,14 @@ class LoadRunnerExecutionEngine:
         external_run_id: str | None = None
         existing = await self._find_run_by_comment(test_id, spec.idempotency_key)
         if existing is not None:
+            run_id: str | None = None
+            invalid_run_id = False
             try:
                 run_id = str(_bounded_integer(existing["ID"], "matching loadrunner run ID"))
-            except (KeyError, ValueError) as exc:
-                raise RuntimeError("matching loadrunner run has no valid integer ID") from exc
+            except (KeyError, ValueError):
+                invalid_run_id = True
+            if invalid_run_id or run_id is None:
+                raise RuntimeError("matching loadrunner run has no valid integer ID")
             extras["run_id"] = run_id
             external_run_id = f"lre-{run_id}"
         return EngineHandle(
@@ -907,6 +1040,7 @@ class LoadRunnerExecutionEngine:
                     "VudsMode": False,
                     "RunComment": COMMENT_PREFIX + handle.idempotency_key,
                 }
+                create_error: RuntimeError | ValueError | None = None
                 try:
                     response = await self._request(
                         "POST",
@@ -920,22 +1054,46 @@ class LoadRunnerExecutionEngine:
                     )
                     if not isinstance(run, dict):
                         raise RuntimeError("loadrunner run creation response must be a JSON object")
+                    self._require_run_identity(
+                        run,
+                        test_id=test_id,
+                        key=handle.idempotency_key,
+                        context="loadrunner run creation response",
+                    )
                 except (RuntimeError, ValueError) as exc:
+                    create_error = exc
+                if create_error is not None:
                     run = await self._find_run_after_ambiguous_create(
                         test_id, handle.idempotency_key
                     )
                     if run is None:
-                        raise
+                        raise create_error
+                    reconciled_run_id: str | None = None
+                    invalid_reconciled_id = False
+                    try:
+                        reconciled_run_id = str(
+                            _bounded_integer(run.get("ID"), "reconciled loadrunner run ID")
+                        )
+                    except ValueError:
+                        invalid_reconciled_id = True
+                    if invalid_reconciled_id or reconciled_run_id is None:
+                        raise RuntimeError("reconciled loadrunner run has no valid integer ID")
                     logger.warning(
                         "loadrunner.run_create_reconciled",
                         test_id=test_id,
-                        run_id=run.get("ID"),
-                        error=bounded_diagnostic(exc),
+                        run_id=reconciled_run_id,
+                        error=bounded_diagnostic(create_error),
                     )
+        if run is None:  # pragma: no cover - lookup/create contract invariant
+            raise RuntimeError("loadrunner run creation returned no run")
+        run_id: str | None = None
+        invalid_created_id = False
         try:
             run_id = str(_bounded_integer(run["ID"], "loadrunner run creation response ID"))
-        except (KeyError, ValueError) as exc:
-            raise RuntimeError("loadrunner run creation response has no valid integer ID") from exc
+        except (KeyError, ValueError):
+            invalid_created_id = True
+        if invalid_created_id or run_id is None:
+            raise RuntimeError("loadrunner run creation response has no valid integer ID")
         handle.extras["run_id"] = run_id
         handle.external_run_id = f"lre-{run_id}"
         logger.info(
@@ -955,6 +1113,12 @@ class LoadRunnerExecutionEngine:
             )
         run_id = self._run_id_from(handle)
         run = await self._get_run(run_id)
+        self._require_run_identity(
+            run,
+            test_id=self._test_id_from(handle),
+            key=handle.idempotency_key,
+            context="loadrunner run status response",
+        )
         phase, message = self._phase_for(run)
         return EngineRunStatus(
             phase=phase,
@@ -986,10 +1150,15 @@ class LoadRunnerExecutionEngine:
                 )
                 return
             run = found
+            resolved_run_id: str | None = None
+            invalid_run_id = False
             try:
-                run_id = str(_bounded_integer(run["ID"], "matching loadrunner run ID"))
-            except (KeyError, ValueError) as exc:
-                raise RuntimeError("matching loadrunner run has no valid integer ID") from exc
+                resolved_run_id = str(_bounded_integer(run["ID"], "matching loadrunner run ID"))
+            except (KeyError, ValueError):
+                invalid_run_id = True
+            if invalid_run_id or resolved_run_id is None:
+                raise RuntimeError("matching loadrunner run has no valid integer ID")
+            run_id = resolved_run_id
             handle.extras["run_id"] = run_id
             handle.external_run_id = f"lre-{run_id}"
         else:
@@ -998,12 +1167,18 @@ class LoadRunnerExecutionEngine:
                 run = await self._get_run(run_id)
             except KeyError:
                 return  # run is gone — nothing to stop
+            self._require_run_identity(
+                run,
+                test_id=self._test_id_from(handle),
+                key=handle.idempotency_key,
+                context="loadrunner abort pre-check response",
+            )
         phase, _ = self._phase_for(run)
         if phase in TERMINAL_ENGINE_PHASES or phase is EngineRunPhase.STOPPING:
             logger.info(
                 "loadrunner.abort_noop",
                 external_run_id=handle.external_run_id,
-                state=run.get("RunState"),
+                state=phase.value,
                 reason_present=bool(reason),
                 reason_length=min(len(reason), 1_024),
             )
@@ -1026,11 +1201,18 @@ class LoadRunnerExecutionEngine:
     ) -> list[dict[str, Any]]:
         """Collect every result under one aggregate download/store deadline."""
 
+        artifacts: list[dict[str, Any]] | None = None
+        timed_out = False
         try:
             async with asyncio.timeout(_COLLECTION_TOTAL_TIMEOUT_S):
-                return await self._collect_artifacts(handle, store)
-        except TimeoutError as exc:
-            raise RuntimeError("LRE artifact collection exceeded its total deadline") from exc
+                artifacts = await self._collect_artifacts(handle, store)
+        except TimeoutError:
+            timed_out = True
+        if timed_out:
+            raise RuntimeError("LRE artifact collection exceeded its total deadline")
+        if artifacts is None:  # pragma: no cover - collection contract invariant
+            raise RuntimeError("LRE artifact collection returned no result")
+        return artifacts
 
     async def _collect_artifacts(
         self, handle: EngineHandle, store: ArtifactStorePort
@@ -1042,6 +1224,13 @@ class LoadRunnerExecutionEngine:
         back to every listed result so raw data is still preserved.
         """
         run_id = self._run_id_from(handle)
+        run = await self._get_run(run_id)
+        self._require_run_identity(
+            run,
+            test_id=self._test_id_from(handle),
+            key=handle.idempotency_key,
+            context="loadrunner artifact collection preflight response",
+        )
         try:
             response = await self._request(
                 "GET",
@@ -1049,7 +1238,7 @@ class LoadRunnerExecutionEngine:
                 not_found=f"LRE run {run_id} has no results collection",
             )
         except KeyError:
-            logger.warning("loadrunner.results_missing", external_run_id=handle.external_run_id)
+            logger.warning("loadrunner.results_missing", external_run_id=f"lre-{run_id}")
             return []
         payload = parse_json_response(response, context="loadrunner Results response")
         if isinstance(payload, list):
@@ -1065,12 +1254,30 @@ class LoadRunnerExecutionEngine:
                 f"LRE returned {len(results)} artifacts; limit is {_MAX_RESULT_ARTIFACTS}"
             )
         normalized: list[tuple[int, str, str, str]] = []
+        seen_result_ids: set[int] = set()
         for result in results:
             raw_id = result.get("ID")
+            result_id: int | None = None
+            invalid_result_id = False
             try:
                 result_id = _bounded_integer(raw_id, "LRE result ID")
-            except ValueError as exc:
-                raise RuntimeError("LRE result ID must be a bounded positive integer") from exc
+            except ValueError:
+                invalid_result_id = True
+            if invalid_result_id or result_id is None:
+                raise RuntimeError("LRE result ID must be a bounded positive integer")
+            if result_id in seen_result_ids:
+                raise RuntimeError("LRE results response contains a duplicate result ID")
+            seen_result_ids.add(result_id)
+            result_run_id: int | None = None
+            invalid_result_run_id = False
+            try:
+                result_run_id = _bounded_integer(result.get("RunID"), "LRE result RunID")
+            except ValueError:
+                invalid_result_run_id = True
+            if invalid_result_run_id or result_run_id is None:
+                raise RuntimeError("LRE result RunID must be a bounded positive integer")
+            if str(result_run_id) != run_id:
+                raise RuntimeError("LRE results response returned a result for an unexpected run")
             result_token = str(result_id)
             name = _provider_result_text(
                 result.get("Name"),
@@ -1100,7 +1307,7 @@ class LoadRunnerExecutionEngine:
             )
             item_budget = min(self._max_report_bytes, remaining_bytes)
             if item_budget < 1:
-                await data_response.aclose()
+                await close_response_definitively(data_response)
                 raise ValueError(
                     f"LRE artifacts exceed aggregate limit of {_MAX_TOTAL_ARTIFACT_BYTES} bytes"
                 )
@@ -1112,7 +1319,7 @@ class LoadRunnerExecutionEngine:
                     max_bytes=item_budget,
                 )
             finally:
-                await data_response.aclose()
+                await close_response_definitively(data_response)
             if stored.size < 0 or stored.size > item_budget:
                 raise ValueError("artifact store returned an invalid stored size")
             remaining_bytes -= stored.size
@@ -1131,6 +1338,12 @@ class LoadRunnerExecutionEngine:
         """State-derived summary; KPIs empty (v1 limitation, module docstring)."""
         run_id = self._run_id_from(handle)
         run = await self._get_run(run_id)
+        self._require_run_identity(
+            run,
+            test_id=self._test_id_from(handle),
+            key=handle.idempotency_key,
+            context="loadrunner summary response",
+        )
         raw_state = _provider_text(
             run.get("RunState"),
             "run response field 'RunState'",
@@ -1165,4 +1378,7 @@ class LoadRunnerExecutionEngine:
     async def teardown(self, handle: EngineHandle) -> None:
         """No-op: LRE releases the run's timeslot itself when the run reaches a
         terminal state, and never-raise-on-gone is part of the port contract."""
-        logger.debug("loadrunner.teardown_noop", external_run_id=handle.external_run_id)
+        logger.debug(
+            "loadrunner.teardown_noop",
+            external_run_id_present=bool(handle.external_run_id),
+        )

@@ -1,8 +1,10 @@
 """Admin compliance tooling for audit chain verification and export."""
 
+import asyncio
+from collections.abc import AsyncIterator, Awaitable
 from datetime import datetime
 from threading import Lock
-from typing import Annotated
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -33,6 +35,60 @@ router = APIRouter(
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 MAX_CONCURRENT_AUDIT_EXPORTS = 4
+
+
+class _AuditExportStreamError(RuntimeError):
+    """Stable sentinel for a failure after export response headers were sent."""
+
+
+async def _await_task_definitively(task: asyncio.Task[None]) -> None:
+    """Settle owned cleanup despite repeated cancellation of its caller."""
+
+    interrupted = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    task.result()
+    if interrupted:
+        raise asyncio.CancelledError from None
+
+
+async def _close_audit_iterator(lines: AsyncIterator[str]) -> None:
+    close = getattr(lines, "aclose", None)
+    if not callable(close):
+        return
+
+    async def close_owned() -> None:
+        try:
+            await cast(Awaitable[Any], close())
+        except BaseException:
+            # The source is already unusable or the response has ended. Cleanup
+            # diagnostics must not replace the caller's cancellation/read result.
+            pass
+
+    await _await_task_definitively(asyncio.create_task(close_owned()))
+
+
+async def _stable_audit_export(lines: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Detach database/provider diagnostics before an ASGI server can log them."""
+
+    failed = False
+    try:
+        try:
+            async for line in lines:
+                yield line + "\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            failed = True
+    finally:
+        await _close_audit_iterator(lines)
+    if failed:
+        raise _AuditExportStreamError("audit export stream failed")
 
 
 class _AuditExportLease:
@@ -132,10 +188,13 @@ RetainAnchorParam = Annotated[
 def _validate_before(before: datetime | None) -> datetime:
     if before is None:
         raise HTTPException(status_code=422, detail="before query parameter is required")
+    cutoff_error: HTTPException | None = None
     try:
         validate_retention_cutoff(before)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid audit retention cutoff") from exc
+    except ValueError:
+        cutoff_error = HTTPException(status_code=422, detail="invalid audit retention cutoff")
+    if cutoff_error is not None:
+        raise cutoff_error
     return before
 
 
@@ -164,13 +223,9 @@ async def export_audit_jsonl(session: SessionDep) -> StreamingResponse:
     lease = _acquire_audit_export_lease()
     service = AuditService(session)
 
-    async def body():
-        async for line in service.iter_jsonl():
-            yield line + "\n"
-
     try:
         return _LeasedStreamingResponse(
-            body(),
+            _stable_audit_export(service.iter_jsonl()),
             media_type="application/x-ndjson",
             lease=lease,
         )
@@ -188,13 +243,9 @@ async def export_audit_cef(session: SessionDep) -> StreamingResponse:
     lease = _acquire_audit_export_lease()
     service = AuditService(session)
 
-    async def body():
-        async for line in service.iter_cef():
-            yield line + "\n"
-
     try:
         return _LeasedStreamingResponse(
-            body(),
+            _stable_audit_export(service.iter_cef()),
             media_type="text/plain; charset=utf-8",
             lease=lease,
         )

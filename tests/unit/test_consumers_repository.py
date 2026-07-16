@@ -29,7 +29,7 @@ async def test_create_duplicate_name_rolls_back_and_raises_conflict() -> None:
     session.commit = AsyncMock(side_effect=_integrity_error("uq_api_consumers_name"))
     session.rollback = AsyncMock()
 
-    with pytest.raises(DuplicateConsumerNameError):
+    with pytest.raises(DuplicateConsumerNameError) as raised:
         await ConsumersRepository(session).create(
             name="duplicate",
             consumer_type="headless",
@@ -37,6 +37,9 @@ async def test_create_duplicate_name_rolls_back_and_raises_conflict() -> None:
             key_hash="a" * 64,
         )
 
+    assert str(raised.value) == "consumer name already exists"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
     session.rollback.assert_awaited_once()
     session.refresh.assert_not_called()
 

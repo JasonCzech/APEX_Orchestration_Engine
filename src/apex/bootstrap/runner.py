@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from apex.adapters.registry import ConnectionConfig
@@ -35,6 +35,12 @@ from apex.services.connections import (
     TRUSTED_PRIVATE_HOST_OPTION,
     validate_adapter_base_url,
     validate_connection_config,
+    validate_scoped_work_tracking_config,
+)
+from apex.settings import (
+    MAX_API_KEY_SECRET_BYTES,
+    MAX_API_KEY_SECRET_CHARS,
+    get_settings,
 )
 
 if TYPE_CHECKING:
@@ -62,6 +68,12 @@ class BootstrapReport:
 
 
 BOOTSTRAP_DIAGNOSTIC_MAX_CHARS = 4_096
+# A single transaction-scoped lock serializes every natural-key bootstrap write
+# and admin credential claim. This makes the documented idempotency hold across
+# concurrent hook retries without publishing a plaintext-derived verifier in
+# PostgreSQL's advisory-lock metadata. ``b"APEXADM1"`` is merely a stable,
+# domain-specific lock ID retained across rolling upgrades.
+_BOOTSTRAP_ADMIN_LOCK_KEY = int.from_bytes(b"APEXADM1", byteorder="big", signed=True)
 
 
 def safe_bootstrap_diagnostic(value: Any) -> str:
@@ -79,6 +91,38 @@ def safe_bootstrap_diagnostic(value: Any) -> str:
         single_line,
         max_chars=BOOTSTRAP_DIAGNOSTIC_MAX_CHARS,
     )
+
+
+async def _lock_bootstrap_admin_key(session: AsyncSession) -> None:
+    """Serialize one complete bootstrap document and direct admin claim calls."""
+
+    bind = getattr(session, "bind", None)
+    dialect = getattr(bind, "dialect", None)
+    if getattr(dialect, "name", None) != "postgresql":
+        return
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"),
+        {"lock_key": _BOOTSTRAP_ADMIN_LOCK_KEY},
+    )
+
+
+def _validated_bootstrap_admin_key(value: Any) -> str:
+    """Require an exact resolver-compatible secret without normalizing it."""
+
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > MAX_API_KEY_SECRET_CHARS
+        or value != value.strip()
+    ):
+        raise BootstrapError("bootstrap admin key has an invalid type, length, or whitespace")
+    try:
+        encoded_length = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        encoded_length = MAX_API_KEY_SECRET_BYTES + 1
+    if encoded_length > MAX_API_KEY_SECRET_BYTES:
+        raise BootstrapError("bootstrap admin key exceeds the UTF-8 byte limit")
+    return value
 
 
 def _safe_bootstrap_character(character: str) -> str:
@@ -178,6 +222,10 @@ async def apply_document(
     def safe_log(message: str) -> None:
         log(safe_bootstrap_diagnostic(message))
 
+    # ``SELECT ... FOR UPDATE`` cannot lock an absent natural-key row. Acquire
+    # one stable transaction lock before any lookup/insert so concurrent Helm
+    # retries cannot both observe absence and race a uniqueness constraint.
+    await _lock_bootstrap_admin_key(session)
     report = BootstrapReport()
     if doc.seed_default_prompts:
         await _seed_default_prompts(session, report, safe_log)
@@ -273,16 +321,19 @@ async def _apply_environments(
                 "under `applications` (or in a prior run)"
             )
         if spec.base_url:
+            invalid_target = False
             try:
                 validate_adapter_base_url(
                     spec.base_url,
                     allow_private_hosts=spec.options.get(TRUSTED_PRIVATE_HOST_OPTION) is True
                     or None,
                 )
-            except ValueError as exc:
+            except ValueError:
+                invalid_target = True
+            if invalid_target:
                 raise BootstrapError(
-                    f"environment {spec.application!r}/{spec.name!r} has an invalid target: {exc}"
-                ) from exc
+                    f"environment {spec.application!r}/{spec.name!r} has an invalid target"
+                )
         existing = await session.scalar(
             select(Environment)
             .where(Environment.application_id == app.id, Environment.name == spec.name)
@@ -343,6 +394,7 @@ async def _apply_connections(
         options = dict(spec.options)
         if spec.base_url:
             options.setdefault("base_url", spec.base_url)
+        invalid_configuration = False
         try:
             # Validate before reading or writing a row so a bad bootstrap
             # document cannot persist a transport that only fails at first use.
@@ -350,20 +402,23 @@ async def _apply_connections(
                 spec.base_url,
                 allow_private_hosts=options.get(TRUSTED_PRIVATE_HOST_OPTION) is True or None,
             )
-            validate_connection_config(
-                ConnectionConfig(
-                    id=f"bootstrap:{spec.name}",
-                    kind=spec.kind,
-                    provider=spec.provider,
-                    name=spec.name,
-                    options=options,
-                    secret_ref=spec.secret_ref,
-                )
+            config = ConnectionConfig(
+                id=f"bootstrap:{spec.name}",
+                kind=spec.kind,
+                provider=spec.provider,
+                name=spec.name,
+                options=options,
+                secret_ref=spec.secret_ref,
             )
-        except ValueError as exc:
-            raise BootstrapError(
-                f"connection {spec.name!r} has an invalid transport: {exc}"
-            ) from exc
+            validate_connection_config(config)
+            validate_scoped_work_tracking_config(
+                config,
+                internal_project_id=spec.project_id,
+            )
+        except ValueError:
+            invalid_configuration = True
+        if invalid_configuration:
+            raise BootstrapError(f"connection {spec.name!r} has invalid configuration")
         existing = await session.scalar(
             select(Connection).where(Connection.name == spec.name).with_for_update()
         )
@@ -422,14 +477,23 @@ async def _apply_admin(
     spec = doc.admin
     if spec is None:
         return
-    plaintext = (env.get(spec.key_env) or "").strip()
-    if not plaintext:
+    raw_plaintext = env.get(spec.key_env)
+    if raw_plaintext is None or (type(raw_plaintext) is str and raw_plaintext == ""):
         raise BootstrapError(
             f"admin consumer {spec.name!r} requested but ${spec.key_env} is unset/empty; "
             "supply the initial admin key via that environment variable (K8s Secret / Key Vault)"
         )
+    plaintext = _validated_bootstrap_admin_key(raw_plaintext)
+    dev_key = get_settings().auth.dev_api_key
+    if dev_key and _secrets.compare_digest(plaintext, dev_key):
+        raise BootstrapError("bootstrap admin key must not equal the synthetic development API key")
     key_hash = hash_api_key(plaintext)
     candidate_key_hashes = _candidate_key_hashes(plaintext)
+    # PostgreSQL's per-hash unique constraints cannot detect that current,
+    # previous, and legacy digests represent the same plaintext. Serialize all
+    # bootstrap admin claims before checking every generation inside the
+    # caller-owned transaction.
+    await _lock_bootstrap_admin_key(session)
     existing = await session.scalar(
         select(ApiConsumer)
         .where(ApiConsumer.name == spec.name)
@@ -438,6 +502,19 @@ async def _apply_admin(
         # authority/key proof stable until the bootstrap transaction commits.
         .with_for_update()
     )
+    conflict_filters = [
+        or_(
+            ApiConsumer.key_hash.in_(candidate_key_hashes),
+            ApiConsumer.keys.any(ConsumerKey.key_hash.in_(candidate_key_hashes)),
+        )
+    ]
+    if existing is not None:
+        conflict_filters.append(ApiConsumer.id != existing.id)
+    conflicting_consumer_id = await session.scalar(
+        select(ApiConsumer.id).where(*conflict_filters).limit(1).with_for_update()
+    )
+    if conflicting_consumer_id is not None:
+        raise BootstrapError("bootstrap key is already assigned to another consumer")
     if existing is not None:
         drift = _admin_drift_fields(existing, spec, candidate_key_hashes)
         if drift:

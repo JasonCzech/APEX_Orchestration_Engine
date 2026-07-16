@@ -50,12 +50,28 @@ def run(command: list[str]) -> None:
 
 @task("ensure-env", "Copy .env.example to .env if .env does not exist.")
 def ensure_env(_: list[str]) -> None:
-    if ENV_FILE.exists():
-        print(".env already exists")
-        return
     if not ENV_EXAMPLE.exists():
         raise SystemExit(".env.example is missing")
-    shutil.copyfile(ENV_EXAMPLE, ENV_FILE)
+    try:
+        descriptor = os.open(ENV_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # O_EXCL also refuses dangling symlinks, so this check cannot be raced
+        # into overwriting an attacker-selected file.
+        print(".env already exists")
+        return
+    except OSError:
+        raise SystemExit("Unable to create the private .env file") from None
+
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            with ENV_EXAMPLE.open("rb") as source:
+                shutil.copyfileobj(source, destination)
+    except OSError:
+        try:
+            ENV_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise SystemExit("Unable to create the private .env file") from None
     print("Created .env from .env.example")
 
 

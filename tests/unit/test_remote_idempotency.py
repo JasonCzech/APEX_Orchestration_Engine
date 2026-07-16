@@ -146,3 +146,71 @@ async def test_postgres_guard_sets_timeouts_and_releases_process_admission(
     assert any("lock_timeout" in statement for statement in statements)
     assert any("statement_timeout" in statement for statement in statements)
     assert any("pg_advisory_xact_lock" in statement for statement in statements)
+
+
+async def test_postgres_guard_disposal_survives_repeated_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body_entered = asyncio.Event()
+
+    class Connection:
+        async def execute(self, _statement: object, *_args: object) -> None:
+            return None
+
+    class Transaction:
+        async def __aenter__(self) -> Connection:
+            return Connection()
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+    class Engine:
+        def __init__(self) -> None:
+            self.dispose_entered = asyncio.Event()
+            self.allow_dispose = asyncio.Event()
+            self.disposed = False
+
+        def begin(self) -> Transaction:
+            return Transaction()
+
+        async def dispose(self) -> None:
+            self.dispose_entered.set()
+            await self.allow_dispose.wait()
+            self.disposed = True
+
+    engine = Engine()
+    admission = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(idempotency, "_postgres_admission", admission)
+    monkeypatch.setattr(
+        idempotency,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database=SimpleNamespace(uri="postgresql://db/apex", ssl_mode="disable")
+        ),
+    )
+    monkeypatch.setattr(idempotency, "database_asyncpg_uri", lambda uri: uri)
+    monkeypatch.setattr(idempotency, "database_ssl_connect_args", lambda *_args: {})
+    monkeypatch.setattr(idempotency, "create_async_engine", lambda *_args, **_kwargs: engine)
+
+    async def guarded() -> None:
+        async with idempotency._postgres_guard("remote-key"):
+            body_entered.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(guarded())
+    await body_entered.wait()
+    task.cancel()
+    await engine.dispose_entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    assert admission.acquire(blocking=False) is False
+    engine.allow_dispose.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert engine.disposed is True
+    assert admission.acquire(blocking=False) is True
+    admission.release()

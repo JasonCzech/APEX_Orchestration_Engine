@@ -2,7 +2,15 @@
   "python_version": "3.12",
   "_INTERNAL_docker_tag": "0.10.0-py3.12@sha256:812e919f12ad9605c9a2b443c95fcdc7d4f8cfecaf11de02181f04943864f27c",
   "base_image": "langchain/langgraph-api",
-  "dependencies": ["."],
+  "dockerfile_lines": [
+    "ARG APEX_BUILD_VERSION=0.0.0+local",
+    "ENV APEX_VERSION=${APEX_BUILD_VERSION}",
+    "LABEL org.opencontainers.image.version=${APEX_BUILD_VERSION}"
+  ],
+  "source": {
+    "kind": "uv",
+    "root": "."
+  },
   "graphs": {
     "pipeline": "./src/apex/graphs/pipeline/graph.py:graph",
     "playground": "./src/apex/graphs/playground/graph.py:graph",

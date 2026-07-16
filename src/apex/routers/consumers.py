@@ -6,9 +6,10 @@ is stored, so `key_fingerprint` is the first 8 hex chars of the stored *hash*
 (not of the key); it identifies a credential in the UI but can never reconstruct it.
 """
 
+import re
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,10 +28,34 @@ from apex.persistence.repositories.consumers import (
     consume_credential_response_key_hash,
 )
 from apex.services.audit import append_audit_event_best_effort, event_from_identity
+from apex.services.connection_credentials import (
+    reject_credential_text,
+    sanitize_credential_text_for_output,
+)
 
 router = APIRouter(prefix="/admin/consumers", tags=["consumers"])
 
 FINGERPRINT_LENGTH = 8
+INVALID_KEY_FINGERPRINT = "invalid"
+_SHA256_HEX_RE = re.compile(r"[0-9a-fA-F]{64}")
+
+
+def _sanitize_consumer_metadata(
+    value: Any,
+    *,
+    required: bool,
+    maximum: int = 255,
+) -> str | None:
+    safe = sanitize_credential_text_for_output(value)
+    if safe is None:
+        return "[REDACTED]" if required else None
+    if (
+        not safe
+        or len(safe) > maximum
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in safe)
+    ):
+        return "[REDACTED]"
+    return safe
 
 
 def get_consumers_repository(
@@ -48,6 +73,8 @@ ConsumerId = Annotated[RecordId, Path(description="Consumer id")]
 
 
 class ConsumerRead(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     id: str
     name: str
     consumer_type: ConsumerType
@@ -68,22 +95,43 @@ class ConsumerRead(BaseModel):
         "key, which is never persisted). Stable identifier for a credential."
     )
 
+    @field_validator("id", mode="before")
+    @classmethod
+    def sanitize_legacy_id(cls, value: Any) -> str:
+        return _sanitize_consumer_metadata(value, required=True, maximum=32) or "[REDACTED]"
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def sanitize_legacy_name(cls, value: Any) -> str:
+        return _sanitize_consumer_metadata(value, required=True) or "[REDACTED]"
+
+    @field_validator("created_by", "updated_by", mode="before")
+    @classmethod
+    def sanitize_legacy_actor(cls, value: Any) -> str | None:
+        return _sanitize_consumer_metadata(value, required=False)
+
 
 class ConsumerCreated(ConsumerRead):
     api_key: str = Field(
+        repr=False,
         description="The raw API key. Shown exactly once — it is stored only as a "
-        "configured hash and can never be retrieved again."
+        "configured hash and can never be retrieved again.",
     )
 
 
 class ConsumerCreateRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: NoNulStr = Field(min_length=1, max_length=255)
     consumer_type: ConsumerType
     role: Role
     scopes: list[ScopeRef] = Field(default_factory=list, max_length=MAX_CHILD_ITEMS)
     expires_at: datetime | None = None
+
+    @field_validator("name")
+    @classmethod
+    def reject_credential_name(cls, value: str) -> str:
+        return reject_credential_text(value, label="consumer name") or ""
 
     @field_validator("scopes")
     @classmethod
@@ -94,7 +142,7 @@ class ConsumerCreateRequest(BaseModel):
 class ConsumerUpdateRequest(BaseModel):
     """Partial update; omitted fields are left unchanged."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
     role: Role | None = None
@@ -102,6 +150,13 @@ class ConsumerUpdateRequest(BaseModel):
     scopes: list[ScopeRef] | None = Field(default=None, max_length=MAX_CHILD_ITEMS)
     expires_at: datetime | None = None
     revoked_at: datetime | None = None
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("name cannot be null")
+        return reject_credential_text(value, label="consumer name") or ""
 
     @field_validator("scopes")
     @classmethod
@@ -127,13 +182,19 @@ def _as_utc(value: datetime) -> datetime:
 
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
+    timestamp_error: HTTPException | None = None
+    normalized: datetime | None = None
     try:
-        return value.astimezone(UTC)
-    except OverflowError as exc:
-        raise HTTPException(
+        normalized = value.astimezone(UTC)
+    except OverflowError:
+        timestamp_error = HTTPException(
             status_code=422,
             detail="lifecycle timestamp is outside the representable UTC range",
-        ) from exc
+        )
+    if timestamp_error is not None:
+        raise timestamp_error
+    assert normalized is not None
+    return normalized
 
 
 def _validate_scope_set(scopes: list[ScopeRef]) -> list[ScopeRef]:
@@ -155,7 +216,13 @@ def _read_model(consumer: ApiConsumer) -> ConsumerRead:
         role=Role(consumer.role),
         enabled=consumer.enabled,
         scopes=[
-            ScopeRef(project_id=scope.project_id, app_id=scope.app_id) for scope in consumer.scopes
+            ScopeRef(
+                project_id=(
+                    _sanitize_consumer_metadata(scope.project_id, required=True) or "[REDACTED]"
+                ),
+                app_id=_sanitize_consumer_metadata(scope.app_id, required=False),
+            )
+            for scope in consumer.scopes
         ],
         created_at=consumer.created_at,
         last_used_at=consumer.last_used_at,
@@ -166,8 +233,16 @@ def _read_model(consumer: ApiConsumer) -> ConsumerRead:
         rotated_at=consumer.rotated_at,
         rotation_count=int(consumer.rotation_count or 0),
         deleted_at=consumer.deleted_at,
-        key_fingerprint=response_key_hash[:FINGERPRINT_LENGTH],
+        key_fingerprint=_key_fingerprint(response_key_hash),
     )
+
+
+def _key_fingerprint(value: Any) -> str:
+    """Derive a fingerprint only from a structurally valid SHA-256 digest."""
+
+    if type(value) is not str or _SHA256_HEX_RE.fullmatch(value) is None:
+        return INVALID_KEY_FINGERPRINT
+    return value[:FINGERPRINT_LENGTH].lower()
 
 
 def _created_model(consumer: ApiConsumer, api_key: str) -> ConsumerCreated:
@@ -257,6 +332,14 @@ async def _audit_consumer_action(
     decision: str = "allowed",
     reason: str | None = None,
 ) -> None:
+    # The route can target a legacy/direct-SQL consumer whose primary key
+    # predates the credential-free identity contract.  Audit rows are durable;
+    # never copy that untrusted path value into a second table verbatim.
+    safe_consumer_id = _sanitize_consumer_metadata(
+        consumer_id,
+        required=False,
+        maximum=32,
+    )
     await append_audit_event_best_effort(
         event_from_identity(
             identity=identity,
@@ -265,7 +348,7 @@ async def _audit_consumer_action(
             decision=decision,
             reason=reason,
             resource_type="api_consumer",
-            resource_id=consumer_id,
+            resource_id=safe_consumer_id,
         )
     )
 
@@ -318,6 +401,8 @@ async def create_consumer(
     if await repo.get_by_name(body.name) is not None:
         raise HTTPException(status_code=409, detail="consumer name already exists")
     api_key = _generate_api_key()
+    create_error: HTTPException | None = None
+    consumer: ApiConsumer | None = None
     try:
         consumer = await repo.create(
             name=body.name,
@@ -328,8 +413,11 @@ async def create_consumer(
             expires_at=expires_at,
             created_by=identity.consumer_id,
         )
-    except DuplicateConsumerNameError as exc:
-        raise HTTPException(status_code=409, detail="consumer name already exists") from exc
+    except DuplicateConsumerNameError:
+        create_error = HTTPException(status_code=409, detail="consumer name already exists")
+    if create_error is not None:
+        raise create_error
+    assert consumer is not None
     await _audit_consumer_action(identity, "consumer.create", consumer.id)
     # This response is the only time the raw credential exists outside the
     # caller. Prevent browsers and intermediaries from retaining a reusable key.
@@ -423,6 +511,8 @@ async def update_consumer(
         action="consumer.update",
         consumer_id=consumer_id,
     )
+    update_error: HTTPException | None = None
+    updated: ApiConsumer | None = None
     try:
         updated = await repo.update_existing(
             existing,
@@ -436,12 +526,15 @@ async def update_consumer(
             revoked_at_set="revoked_at" in body.model_fields_set,
             updated_by=identity.consumer_id,
         )
-    except AmbiguousConsumerKeyExpiryError as exc:
-        raise HTTPException(
+    except AmbiguousConsumerKeyExpiryError:
+        update_error = HTTPException(
             status_code=409, detail="consumer key expiry update is ambiguous"
-        ) from exc
-    except DuplicateConsumerNameError as exc:
-        raise HTTPException(status_code=409, detail="consumer name already exists") from exc
+        )
+    except DuplicateConsumerNameError:
+        update_error = HTTPException(status_code=409, detail="consumer name already exists")
+    if update_error is not None:
+        raise update_error
+    assert updated is not None
     await _audit_consumer_action(identity, "consumer.update", consumer_id)
     return _read_model(updated)
 
@@ -497,17 +590,17 @@ async def rotate_consumer_key(
                 reason=reason,
             )
             raise HTTPException(status_code=409, detail=reason)
-        grace_deadline = now + timedelta(seconds=body.grace_period_seconds)
-        if expires_at is not None and expires_at <= grace_deadline:
-            reason = "A self-rotated key must remain valid beyond the old key's grace period"
-            await _audit_consumer_action(
-                identity,
-                "consumer.rotate_key",
-                consumer_id,
-                decision="denied",
-                reason=reason,
-            )
-            raise HTTPException(status_code=409, detail=reason)
+    grace_deadline = now + timedelta(seconds=body.grace_period_seconds)
+    if expires_at is not None and expires_at <= grace_deadline:
+        reason = "A new key must remain valid beyond the old key's grace period"
+        await _audit_consumer_action(
+            identity,
+            "consumer.rotate_key",
+            consumer_id,
+            decision="denied",
+            reason=reason,
+        )
+        raise HTTPException(status_code=409, detail=reason)
     api_key = _generate_api_key()
     grace_expires_at = None
     if body.grace_period_seconds > 0:

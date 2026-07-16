@@ -76,6 +76,7 @@ _CONFIDENCE_STEP = 0.15
 
 MAX_PROVIDER_PAGE_SIZE = 200
 MAX_PROVIDER_RESULT_WINDOW = 1_000
+MAX_NATURAL_LANGUAGE_QUERY_CHARS = 20_000
 
 
 def validate_provider_page(page: Page) -> Page:
@@ -117,7 +118,14 @@ def parse_work_query(
     `default_project` (the adapter's configured project). Only an explicit
     text mention counts as a rule hit.
     """
+    if (
+        type(natural_language) is not str
+        or not 1 <= len(natural_language) <= MAX_NATURAL_LANGUAGE_QUERY_CHARS
+    ):
+        raise ValueError("natural-language query must contain 1-20000 characters")
     text = natural_language.strip()
+    if not text:
+        raise ValueError("natural-language query must contain non-whitespace text")
     lowered = text.lower()
     hits = 0
 

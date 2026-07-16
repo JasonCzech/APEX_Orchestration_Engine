@@ -47,15 +47,29 @@ export type LiveAgentEvent =
       at?: unknown
     }
 
-/** Retryable engine status failure; the backend keeps polling up to its bounded cap. */
-export interface LiveEngineError {
-  type: 'engine_poll_error'
-  phase: string
-  attempt: number
-  error: string
-  consecutive_errors: number
-  at?: unknown
-}
+/** Retryable engine operation failure; each operation has its own bounded cap. */
+export type LiveEngineError =
+  | {
+      type: 'engine_poll_error'
+      phase: string
+      attempt: number
+      error: string
+      consecutive_errors: number
+      at?: unknown
+    }
+  | {
+      type:
+        | 'engine_provision_error'
+        | 'engine_collection_error'
+        | 'engine_collection_index_error'
+        | 'engine_collection_settle_error'
+      phase: string
+      attempt: number
+      error: string
+      failure: number
+      external_run_id?: string | null
+      at?: unknown
+    }
 
 /** One `engine_poll` ring-buffer sample (live_stats null when the engine has no fidelity yet). */
 export interface LiveEngineSample {

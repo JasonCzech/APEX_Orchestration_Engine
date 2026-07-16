@@ -1,5 +1,7 @@
 """Every stub/sim adapter must satisfy its runtime_checkable port Protocol."""
 
+from collections.abc import Iterator, Mapping
+
 import pytest
 from pydantic import ValidationError
 
@@ -26,6 +28,8 @@ from apex.ports import (
     SourceControlPort,
     WorkTrackingPort,
 )
+from apex.ports.artifact_store import transcript_artifact_key, validate_stored_artifact_ack
+from apex.services.work_tracking import parse_work_query
 
 ADAPTER_PORT_PAIRS = [
     (StubWorkTrackingAdapter, WorkTrackingPort),
@@ -82,3 +86,66 @@ def test_load_test_spec_defaults() -> None:
 
     other = LoadTestSpec(title="demo")
     assert other.idempotency_key != spec.idempotency_key
+
+
+def test_artifact_ack_rejects_hostile_mapping_without_invoking_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileMapping(Mapping[str, object]):
+        def __getitem__(self, key: str) -> object:
+            calls.append(f"getitem:{key}")
+            raise AssertionError("hostile provider hook ran")
+
+        def __iter__(self) -> Iterator[str]:
+            calls.append("iter")
+            raise AssertionError("hostile provider hook ran")
+
+        def __len__(self) -> int:
+            calls.append("len")
+            raise AssertionError("hostile provider hook ran")
+
+    with pytest.raises(RuntimeError, match="invalid object metadata") as raised:
+        validate_stored_artifact_ack(HostileMapping(), "expected")
+
+    assert raised.value.__cause__ is None
+    assert calls == []
+
+
+def test_transcript_key_rejects_noncanonical_or_unbounded_components_before_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileText(str):
+        def strip(self, *_args: object, **_kwargs: object) -> str:
+            calls.append("strip")
+            raise AssertionError("hostile text hook ran")
+
+    for thread_id, phase in (
+        (HostileText("thread-a"), "execution"),
+        ("thread-a", HostileText("execution")),
+        ("t" * 256, "execution"),
+        (" thread-a", "execution"),
+        ("thread-a", "../execution"),
+    ):
+        with pytest.raises(ValueError, match="transcript artifact key"):
+            transcript_artifact_key(thread_id, phase, 1)
+
+    assert calls == []
+    assert (
+        transcript_artifact_key("thread-a", "execution", 2)
+        == "transcripts/thread-a/execution/attempt-2.txt"
+    )
+
+
+def test_work_query_rejects_hostile_and_unbounded_text_before_normalization() -> None:
+    calls: list[str] = []
+
+    class HostileText(str):
+        def strip(self, *_args: object, **_kwargs: object) -> str:
+            calls.append("strip")
+            raise AssertionError("hostile text hook ran")
+
+    for value in (HostileText("open bugs"), "x" * 20_001, "   "):
+        with pytest.raises(ValueError, match="natural-language query"):
+            parse_work_query(value)
+
+    assert calls == []

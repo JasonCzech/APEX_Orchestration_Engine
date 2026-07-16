@@ -1,5 +1,7 @@
 """Unit tests for gate payload builders, decision parsing, and approval attribution."""
 
+import pytest
+
 from apex.domain.pipeline import Phase
 from apex.graphs.pipeline.gates import (
     PHASE_REVIEW_ACTIONS,
@@ -89,6 +91,28 @@ def test_parse_gate_decision_non_mapping() -> None:
     assert "mapping" in parsed["error"]
 
 
+def test_gate_validation_exception_details_are_not_reflected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class HostileValidationError(ValueError):
+        def __str__(self) -> str:
+            calls.append("str")
+            raise AssertionError("validation exception hook ran")
+
+    def reject(_decision: object) -> None:
+        raise HostileValidationError("provider-detail-secret")
+
+    monkeypatch.setattr("apex.graphs.pipeline.gates.validate_gate_payload", reject)
+
+    assert parse_gate_decision({"action": "approve"}, PHASE_REVIEW_ACTIONS) == {
+        "action": None,
+        "error": "gate decision is invalid",
+    }
+    assert calls == []
+
+
 def test_resolve_actor_variants() -> None:
     assert resolve_actor(None) == "unknown"
     assert resolve_actor({"configurable": {}}) == "unknown"
@@ -101,6 +125,18 @@ def test_resolve_actor_variants() -> None:
         identity = "obj@apex"
 
     assert resolve_actor({"configurable": {"langgraph_auth_user": User()}}) == "obj@apex"
+
+
+def test_resolve_actor_rejects_hostile_configurable_without_truthiness_hooks() -> None:
+    calls: list[str] = []
+
+    class BoolBomb:
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError("untrusted configurable must not be coerced")
+
+    assert resolve_actor({"configurable": BoolBomb()}) == "unknown"  # type: ignore[typeddict-item]
+    assert calls == []
 
 
 def test_make_approval_records_actor_and_note() -> None:

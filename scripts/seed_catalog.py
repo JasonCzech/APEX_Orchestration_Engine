@@ -20,6 +20,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import PortKind
+from apex.domain.diagnostics import safe_type_name
 from apex.persistence.db import get_sessionmaker
 from apex.persistence.models import Application, Connection, Environment, EnvironmentHost
 from apex.services.connections import DEV_CONNECTIONS
@@ -152,7 +153,7 @@ async def main() -> int:
             await _seed_minio_connection(session)
             await session.commit()
     except (SQLAlchemyError, OSError) as exc:
-        print(f"Database unreachable ({exc.__class__.__name__}).")
+        print(f"Database unreachable ({safe_type_name(exc)}).")
         print("Run `make infra-up` + `make migrate` first, then re-run this script.")
         return 0
     return 0

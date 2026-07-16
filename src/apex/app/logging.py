@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import islice
@@ -38,6 +39,9 @@ _SECRET_KEYS = frozenset(
 )
 _REDACTED = "[redacted]"
 _TRUNCATED = "[truncated]"
+_UNSUPPORTED_CONTAINER = "[unsupported container]"
+_UNSUPPORTED_KEY = "[unsupported credential key]"
+_UNSUPPORTED_VALUE = "[unsupported value]"
 _MAX_REDACTION_DEPTH = 8
 _MAX_REDACTION_NODES = 256
 _MAX_COLLECTION_ITEMS = 64
@@ -73,6 +77,11 @@ def configure_logging() -> None:
 
 
 def _redact_event_dict(logger: WrappedLogger, method_name: str, event_dict: EventDict) -> EventDict:
+    if type(event_dict) is not dict:
+        # Processor contracts normally provide a plain dict. Fail closed rather
+        # than invoking provider-controlled mapping methods if that invariant is
+        # ever violated by a custom processor.
+        return {"event": _UNSUPPORTED_CONTAINER}
     state = _RedactionState()
     rendered: EventDict = {}
     for key, value in islice(event_dict.items(), _MAX_COLLECTION_ITEMS):
@@ -98,16 +107,31 @@ def _redact_value(
         or any(fragment in lowered for fragment in _SECRET_KEY_FRAGMENTS)
     ):
         return _REDACTED
-    if isinstance(value, bytes | bytearray | memoryview):
+    value_type = type(value)
+    if value_type in {bytes, bytearray, memoryview}:
         value = bytes(value[:_MAX_LOG_STRING_CHARS]).decode("utf-8", errors="replace")
-    if isinstance(value, str):
+        value_type = str
+    if value_type is str:
         return _redact_string(value)
-    if isinstance(value, BaseException):
-        return _redact_string(str(value))
-    if depth >= _MAX_REDACTION_DEPTH and isinstance(value, Mapping | list | tuple | set):
+    # ``isinstance(provider_value, ...)`` reads a spoofable ``__class__``
+    # attribute after an exact-type miss.  Classify subclasses from their real
+    # type so logging never executes a provider-owned descriptor merely while
+    # deciding how to redact it.
+    if issubclass(value_type, BaseException):
+        return _safe_exception_text(value)
+    is_container = value_type in {dict, list, tuple, set, frozenset}
+    is_container_subclass = issubclass(
+        value_type,
+        (Mapping, list, tuple, set, frozenset, bytes, bytearray, memoryview, str),
+    )
+    if is_container_subclass and not is_container:
+        # Do not call items(), __iter__(), __len__(), str(), or repr() on an
+        # untrusted container subclass. A fixed marker is both safe and useful.
+        return _UNSUPPORTED_CONTAINER
+    if depth >= _MAX_REDACTION_DEPTH and is_container:
         return _TRUNCATED
     container_id = id(value)
-    if isinstance(value, Mapping | list | tuple | set):
+    if is_container:
         if container_id in state.active_container_ids:
             return _TRUNCATED
         state.active_container_ids.add(container_id)
@@ -124,7 +148,7 @@ def _redact_container_value(
     depth: int,
     state: _RedactionState,
 ) -> Any:
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         rendered = {}
         for child_key, child in islice(value.items(), _MAX_COLLECTION_ITEMS):
             safe_child_key = _key_text(child_key)
@@ -137,7 +161,7 @@ def _redact_container_value(
         if len(value) > _MAX_COLLECTION_ITEMS:
             rendered["__truncated__"] = _TRUNCATED
         return rendered
-    if isinstance(value, list):
+    if type(value) is list:
         rendered = [
             _redact_value(key, child, depth=depth + 1, state=state)
             for child in value[:_MAX_COLLECTION_ITEMS]
@@ -145,7 +169,7 @@ def _redact_container_value(
         if len(value) > _MAX_COLLECTION_ITEMS:
             rendered.append(_TRUNCATED)
         return rendered
-    if isinstance(value, tuple):
+    if type(value) is tuple:
         if len(value) == 2:
             header_key = _key_text(value[0])
             return (
@@ -157,32 +181,58 @@ def _redact_container_value(
             for child in value[:_MAX_COLLECTION_ITEMS]
         )
         return rendered + ((_TRUNCATED,) if len(value) > _MAX_COLLECTION_ITEMS else ())
-    if isinstance(value, set):
+    if type(value) in {set, frozenset}:
         rendered = {
             _redact_value(key, child, depth=depth + 1, state=state)
             for child in islice(value, _MAX_COLLECTION_ITEMS)
         }
         if len(value) > _MAX_COLLECTION_ITEMS:
             rendered.add(_TRUNCATED)
-        return rendered
-    if value is None or isinstance(value, bool | int | float):
+        return frozenset(rendered) if type(value) is frozenset else rendered
+    if value is None or type(value) is bool:
         return value
+    if type(value) is int:
+        return value if value.bit_length() <= 256 else _UNSUPPORTED_VALUE
+    if type(value) is float:
+        return value if math.isfinite(value) else _UNSUPPORTED_VALUE
     # JSONRenderer stringifies unsupported objects after this processor runs.
     # Normalize them here so custom ``str``/``repr`` implementations cannot
     # smuggle credentials around the shared diagnostic scrubber.
-    return bounded_diagnostic(value, max_chars=_MAX_LOG_STRING_CHARS)
+    return _UNSUPPORTED_VALUE
+
+
+def _safe_exception_text(value: BaseException) -> str:
+    """Render only an exact string exception argument, bypassing custom hooks."""
+
+    args_descriptor = BaseException.__dict__["args"]
+    try:
+        args = args_descriptor.__get__(value, type(value))
+    except Exception:  # noqa: BLE001 - logging must never mask a request failure
+        return _UNSUPPORTED_VALUE
+    if type(args) is tuple and len(args) == 1 and type(args[0]) is str:
+        return _redact_string(args[0])
+    return _UNSUPPORTED_VALUE
 
 
 def _key_text(key: Any) -> str:
-    if isinstance(key, bytes):
+    if type(key) is bytes:
         rendered = key[:_MAX_LOG_KEY_CHARS].decode("utf-8", errors="replace")
+    elif type(key) is str:
+        rendered = key
+    elif key is None or type(key) is bool:
+        rendered = str(key)
+    elif type(key) is int:
+        if key.bit_length() > 256:
+            return _UNSUPPORTED_KEY
+        rendered = str(key)
+    elif type(key) is float:
+        if not math.isfinite(key):
+            return _UNSUPPORTED_KEY
+        rendered = str(key)
     else:
-        # Nested mappings and header-like tuples can originate in provider
-        # payloads. Their keys are data too: normalize arbitrary objects before
-        # JSONRenderer gets a chance to invoke an unsafe ``repr`` and scrub
-        # credentials embedded in a dynamic key (for example
-        # ``"authorization=Bearer ..."`` or a signed URL).
-        rendered = bounded_diagnostic(key, max_chars=_MAX_LOG_KEY_CHARS)
+        # Unknown provider key types may carry arbitrary __str__/__repr__ hooks.
+        # Treat their values as credential-bearing and never invoke those hooks.
+        return _UNSUPPORTED_KEY
     return bounded_diagnostic(rendered, max_chars=_MAX_LOG_KEY_CHARS)
 
 

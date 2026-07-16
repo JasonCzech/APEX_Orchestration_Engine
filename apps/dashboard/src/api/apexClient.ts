@@ -7,6 +7,7 @@ import { resolveApexBaseUrl } from '@/config/runtimeConfig'
 import { getDevApexFetch, subscribeDevDataMode } from '@/dev-data'
 
 import { ApiError, errorMessageOf } from './errors'
+import { fetchWithoutRedirects } from './fetchPolicy'
 
 export type ApexClient = ReturnType<typeof createClient<paths>>
 export type SystemInfo = components['schemas']['SystemInfo']
@@ -60,9 +61,10 @@ let client: ApexClient | null = null
  */
 export function getApexClient(): ApexClient {
   if (!client) {
+    const transport = getDevApexFetch() ?? globalThis.fetch
     client = createClient<paths>({
       baseUrl: resolveApexBaseUrl(),
-      fetch: getDevApexFetch(),
+      fetch: (input: Request) => fetchWithoutRedirects(input, undefined, transport),
     })
     client.use(authMiddleware)
   }

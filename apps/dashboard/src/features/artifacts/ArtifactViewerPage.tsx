@@ -77,8 +77,8 @@ export function ArtifactViewerPage() {
     queryKey: queryKeys.threads.artifact(threadId, name),
     enabled: url !== null,
     staleTime: Infinity, // artifact bytes are immutable once written
-    queryFn: async (): Promise<LoadedArtifact> => {
-      const bytes = await fetchArtifactBytes(url as string)
+    queryFn: async ({ signal }): Promise<LoadedArtifact> => {
+      const bytes = await fetchArtifactBytes(url as string, signal)
       const mediaType = bytes.mediaType || ref?.media_type || ''
       const kind = renderKindOf(mediaType)
       return {

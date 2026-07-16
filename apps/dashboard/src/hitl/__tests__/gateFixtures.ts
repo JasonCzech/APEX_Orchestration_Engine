@@ -55,6 +55,17 @@ export const PHASE_PAYLOAD = {
   actions: ['approve', 'revise', 'discuss', 'abort'],
 } as const
 
+export const ENGINE_RETRY_PAYLOAD = {
+  schema_version: 1,
+  kind: 'engine_cleanup_retry',
+  phase: 'execution',
+  attempt: 2,
+  thread_id: 'th-recovery',
+  actions: ['retry'],
+  error: 'provider abort unavailable',
+  message: 'Resume the exact durable provider attempt.',
+} as const
+
 export function promptInterrupt(id = 'int-p1'): GateInterrupt {
   return {
     interrupt_id: id,
@@ -70,6 +81,15 @@ export function phaseInterrupt(id = 'int-r1'): GateInterrupt {
     kind: 'phase_review',
     phase: 'test_planning',
     payload: structuredClone(PHASE_PAYLOAD) as unknown as Record<string, unknown>,
+  }
+}
+
+export function engineRetryInterrupt(id = 'int-retry-1'): GateInterrupt {
+  return {
+    interrupt_id: id,
+    kind: 'engine_cleanup_retry',
+    phase: 'execution',
+    payload: structuredClone(ENGINE_RETRY_PAYLOAD) as unknown as Record<string, unknown>,
   }
 }
 
@@ -116,7 +136,7 @@ export interface CapturedResume {
  */
 export function resumeHandler(
   status: 202 | 409 | 500 = 202,
-  options: { runId?: string } = {},
+  options: { runId?: string; waitForResponse?: Promise<void> } = {},
 ): { handler: ReturnType<typeof http.post>; captured: CapturedResume } {
   const captured: CapturedResume = {
     calls: [],
@@ -130,6 +150,7 @@ export function resumeHandler(
         interruptId: String(params['interruptId']),
         body: (await request.json()) as Record<string, unknown>,
       })
+      await options.waitForResponse
       if (status === 202) {
         return HttpResponse.json({ run_id: options.runId ?? 'run-99' }, { status: 202 })
       }

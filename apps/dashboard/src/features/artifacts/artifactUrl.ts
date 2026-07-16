@@ -15,10 +15,115 @@ import { getApiKey } from '@/auth/keyStorage'
 import { resolveApexBaseUrl } from '@/config/runtimeConfig'
 import { getDevArtifactBytes } from '@/dev-data'
 
-import { ApiError, errorMessageOf } from '@/api/errors'
+import { ApiError } from '@/api/errors'
+import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 
 const MEMORY_SCHEME = 'memory://'
 const S3_SCHEME = 's3://'
+export const MAX_ARTIFACT_VIEWER_BYTES = 64 * 1024 * 1024
+export const MAX_ARTIFACT_VIEWER_CHUNKS = 8_192
+export const ARTIFACT_READ_IDLE_MS = 30_000
+export const ARTIFACT_READ_ERROR = 'Artifact could not be loaded safely.'
+
+function withArtifactReadDeadline<T>(
+  operation: Promise<T>,
+  controller: AbortController,
+  timeoutMs = ARTIFACT_READ_IDLE_MS,
+): Promise<T> {
+  if (controller.signal.aborted) return Promise.reject(new Error(ARTIFACT_READ_ERROR))
+  return new Promise((resolve, reject) => {
+    const rejectSafely = (): void => {
+      clearTimeout(timer)
+      controller.signal.removeEventListener('abort', rejectSafely)
+      reject(new Error(ARTIFACT_READ_ERROR))
+    }
+    const timer = setTimeout(() => {
+      controller.abort()
+      rejectSafely()
+    }, timeoutMs)
+    controller.signal.addEventListener('abort', rejectSafely, { once: true })
+    void operation.then(
+      (value) => {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', rejectSafely)
+        resolve(value)
+      },
+      rejectSafely,
+    )
+  })
+}
+
+function cancelBody(body: ReadableStream<Uint8Array> | null): void {
+  try {
+    void body?.cancel().catch(() => undefined)
+  } catch {
+    // Cancellation is advisory; the stable rejection must never wait on it.
+  }
+}
+
+function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    void reader.cancel().catch(() => undefined)
+  } catch {
+    // Cancellation is advisory; the stable rejection must never wait on it.
+  }
+}
+
+/** Read a binary response without ever buffering more than the viewer budget. */
+export async function readBoundedArtifactBody(
+  response: Response,
+  maxBytes = MAX_ARTIFACT_VIEWER_BYTES,
+  maxChunks = MAX_ARTIFACT_VIEWER_CHUNKS,
+  controller = new AbortController(),
+): Promise<Blob> {
+  const mediaType = response.headers.get('content-type') ?? ''
+  const declaredLength = response.headers.get('content-length')
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 ||
+    !Number.isSafeInteger(maxChunks) ||
+    maxChunks < 1 ||
+    (declaredLength !== null &&
+      (!/^(?:0|[1-9][0-9]*)$/.test(declaredLength) ||
+        !Number.isSafeInteger(Number(declaredLength)) ||
+        Number(declaredLength) > maxBytes))
+  ) {
+    cancelBody(response.body)
+    throw new Error(ARTIFACT_READ_ERROR)
+  }
+  if (!response.body) return new Blob([], { type: mediaType })
+
+  const reader = response.body.getReader()
+  const chunks: ArrayBuffer[] = []
+  let total = 0
+  let chunkCount = 0
+  try {
+    while (true) {
+      const chunk = await withArtifactReadDeadline(reader.read(), controller)
+      if (chunk.done) break
+      chunkCount += 1
+      if (chunkCount > maxChunks || chunk.value.byteLength > maxBytes - total) {
+        cancelReader(reader)
+        throw new Error(ARTIFACT_READ_ERROR)
+      }
+      const copy = new Uint8Array(chunk.value.byteLength)
+      copy.set(chunk.value)
+      chunks.push(copy.buffer)
+      total += chunk.value.byteLength
+    }
+  } catch {
+    controller.abort()
+    cancelReader(reader)
+    throw new Error(ARTIFACT_READ_ERROR)
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // A hostile pending cancellation can retain the lock; rejection is final.
+    }
+  }
+  return new Blob(chunks, { type: mediaType })
+}
 
 /** Extract the artifact-store key from a ref uri; null when unsupported/malformed. */
 export function artifactKeyFromUri(uri: string | null | undefined): string | null {
@@ -57,31 +162,60 @@ export interface ArtifactBytes {
  * fetch instead of the openapi-fetch client: the generated client percent-
  * encodes path params wholesale, which would mangle the `{key:path}` slashes.
  */
-export async function fetchArtifactBytes(url: string): Promise<ArtifactBytes> {
-  const devBytes = getDevArtifactBytes(url)
+export async function fetchArtifactBytes(url: string, signal?: AbortSignal): Promise<ArtifactBytes> {
+  let artifactUrl: URL
+  try {
+    const base = new URL(resolveApexBaseUrl() || window.location.origin, window.location.origin)
+    artifactUrl = new URL(url, base)
+    if (
+      artifactUrl.origin !== base.origin ||
+      artifactUrl.username !== '' ||
+      artifactUrl.password !== '' ||
+      !artifactUrl.pathname.startsWith('/v1/artifacts/') ||
+      artifactUrl.pathname === '/v1/artifacts/' ||
+      artifactUrl.search !== '' ||
+      artifactUrl.hash !== '' ||
+      artifactUrl.href.length > 4_096
+    ) {
+      throw new Error(ARTIFACT_READ_ERROR)
+    }
+  } catch {
+    throw new Error(ARTIFACT_READ_ERROR)
+  }
+
+  const devBytes = getDevArtifactBytes(artifactUrl.href)
   if (devBytes) return devBytes
 
   const headers = new Headers()
   const key = getApiKey()
   if (key) headers.set('x-api-key', key)
-  const response = await fetch(url, { headers })
-  if (!response.ok) {
-    let body: unknown
-    try {
-      body = await response.json()
-    } catch {
-      body = undefined
-    }
-    throw new ApiError(
-      response.status,
-      errorMessageOf(body, `Artifact request failed (${response.status})`),
-      body,
+  const controller = new AbortController()
+  const abortFromCaller = (): void => controller.abort()
+  if (signal?.aborted) throw new Error(ARTIFACT_READ_ERROR)
+  signal?.addEventListener('abort', abortFromCaller, { once: true })
+  try {
+    const response = await withArtifactReadDeadline(
+      fetchWithoutRedirects(artifactUrl, { headers, signal: controller.signal }),
+      controller,
     )
-  }
-  const blob = await response.blob()
-  return {
-    blob,
-    mediaType: response.headers.get('content-type') ?? '',
-    size: blob.size,
+    if (!response.ok) {
+      // Never parse or retain an untrusted error body: providers/proxies may omit
+      // Content-Length and the status is sufficient for an operator-safe error.
+      cancelBody(response.body)
+      throw new ApiError(response.status, `Artifact request failed (${response.status})`)
+    }
+    const blob = await readBoundedArtifactBody(
+      response,
+      MAX_ARTIFACT_VIEWER_BYTES,
+      MAX_ARTIFACT_VIEWER_CHUNKS,
+      controller,
+    )
+    return {
+      blob,
+      mediaType: response.headers.get('content-type') ?? '',
+      size: blob.size,
+    }
+  } finally {
+    signal?.removeEventListener('abort', abortFromCaller)
   }
 }

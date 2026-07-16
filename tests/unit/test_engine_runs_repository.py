@@ -17,6 +17,7 @@ def _seed_engine_runs(session: Session) -> None:
         # An old 0027 pod can write after the pre-upgrade 0028 migration. It
         # explicitly sets the old bit true but cannot set the new scope bit.
         ("rolling-ambiguous", "p1", None, True, False),
+        ("app-ambiguous", "p1", "app-a", True, False),
         ("other-project", "p2", "app-a", True, True),
     )
     for thread_id, project_id, app_id, ownership_known, scope_ownership_known in rows:
@@ -76,6 +77,7 @@ def test_project_scope_sees_all_project_runs_including_legacy_unknown() -> None:
         "project-level",
         "legacy-unknown",
         "rolling-ambiguous",
+        "app-ambiguous",
     }
 
 
@@ -118,4 +120,5 @@ def test_project_scope_can_mutate_all_project_runs() -> None:
         "project-level",
         "legacy-unknown",
         "rolling-ambiguous",
+        "app-ambiguous",
     }

@@ -15,11 +15,17 @@ import {
   type GateMachineState,
 } from '@/hitl/gateMachine'
 
-import { gateInstanceOf, phaseInterrupt, promptInterrupt } from './gateFixtures'
+import {
+  engineRetryInterrupt,
+  gateInstanceOf,
+  phaseInterrupt,
+  promptInterrupt,
+} from './gateFixtures'
 
 const promptGate: GateInstance = gateInstanceOf(promptInterrupt('int-1'))
 const otherGate: GateInstance = gateInstanceOf(promptInterrupt('int-2'))
 const phaseGate: GateInstance = gateInstanceOf(phaseInterrupt('int-9'))
+const retryGate: GateInstance = gateInstanceOf(engineRetryInterrupt('int-retry'))
 
 const failure = new Error('resume exploded')
 
@@ -248,6 +254,11 @@ describe('gateReducer semantics beyond tags', () => {
       type: 'RESUME_ACCEPTED',
     })
     expect(discuss).toMatchObject({ tag: 'awaiting_agent', action: 'discuss' })
+    const retry = gateReducer(
+      { tag: 'submitting', gate: retryGate, action: 'retry', draft: {} },
+      { type: 'RESUME_ACCEPTED' },
+    )
+    expect(retry).toMatchObject({ tag: 'awaiting_agent', action: 'retry' })
     const approve = gateReducer(STATES['submitting_approve'] as GateMachineState, {
       type: 'RESUME_ACCEPTED',
     })

@@ -6,7 +6,7 @@
  *   src/apex/graphs/pipeline/phase_subgraph.py   phase_status, gate_opened, tool_call,
  *                                               agent_message, agent_error
  *   src/apex/graphs/pipeline/execution_phase.py  phase_status, engine_poll,
- *                                               engine_poll_error
+ *                                               engine_poll_error, engine_*_error
  *
  * Forward-compatibility policy (schema_version 1):
  * - Unknown FIELDS on a known event type are tolerated (`.passthrough()`) and
@@ -175,6 +175,65 @@ export const EnginePollErrorEventSchema = z
   .passthrough();
 export type EnginePollErrorEvent = z.infer<typeof EnginePollErrorEventSchema>;
 
+const engineRecoveryErrorFields = {
+  schema_version: schemaVersion,
+  phase: z.literal("execution"),
+  attempt: z.number().int().positive(),
+  failure: z.number().int().positive(),
+  error: z.string(),
+};
+
+/** Ambiguous provider creation or reservation failure before an engine handle exists. */
+export const EngineProvisionErrorEventSchema = z
+  .object({
+    ...engineRecoveryErrorFields,
+    type: z.literal("engine_provision_error"),
+  })
+  .passthrough();
+export type EngineProvisionErrorEvent = z.infer<typeof EngineProvisionErrorEventSchema>;
+
+/** Provider/artifact-store collection failure after the external run is terminal. */
+export const EngineCollectionErrorEventSchema = z
+  .object({
+    ...engineRecoveryErrorFields,
+    type: z.literal("engine_collection_error"),
+    external_run_id: z.string().nullable(),
+  })
+  .passthrough();
+export type EngineCollectionErrorEvent = z.infer<typeof EngineCollectionErrorEventSchema>;
+
+/** Durable artifact-reference indexing failure; no provider writes are retried. */
+export const EngineCollectionIndexErrorEventSchema = z
+  .object({
+    ...engineRecoveryErrorFields,
+    type: z.literal("engine_collection_index_error"),
+    external_run_id: z.string().nullable(),
+  })
+  .passthrough();
+export type EngineCollectionIndexErrorEvent = z.infer<
+  typeof EngineCollectionIndexErrorEventSchema
+>;
+
+/** Teardown failure after collected results were durably staged. */
+export const EngineCollectionSettleErrorEventSchema = z
+  .object({
+    ...engineRecoveryErrorFields,
+    type: z.literal("engine_collection_settle_error"),
+    external_run_id: z.string().nullable(),
+  })
+  .passthrough();
+export type EngineCollectionSettleErrorEvent = z.infer<
+  typeof EngineCollectionSettleErrorEventSchema
+>;
+
+export type EngineRecoveryErrorEvent =
+  | EngineProvisionErrorEvent
+  | EngineCollectionErrorEvent
+  | EngineCollectionIndexErrorEvent
+  | EngineCollectionSettleErrorEvent;
+
+export type EngineErrorEvent = EnginePollErrorEvent | EngineRecoveryErrorEvent;
+
 /**
  * Emitted once by engine_start (initial tick) then once per poll cycle by
  * engine_poll (execution_phase.py `_poll_event`). `status` is the ENGINE run
@@ -204,6 +263,10 @@ export const PipelineEventSchema = z.discriminatedUnion("type", [
   AgentMessageEventSchema,
   AgentErrorEventSchema,
   EnginePollErrorEventSchema,
+  EngineProvisionErrorEventSchema,
+  EngineCollectionErrorEventSchema,
+  EngineCollectionIndexErrorEventSchema,
+  EngineCollectionSettleErrorEventSchema,
   EnginePollEventSchema,
 ]);
 export type PipelineEvent = z.infer<typeof PipelineEventSchema>;

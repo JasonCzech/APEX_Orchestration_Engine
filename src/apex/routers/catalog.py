@@ -35,9 +35,11 @@ from apex.persistence.models import Environment, EnvironmentSnapshot
 from apex.persistence.repositories.catalog import CatalogRepository, DuplicateNameError
 from apex.services.connection_credentials import (
     connection_options_require_repair,
+    reject_credential_text,
     reject_raw_secret_options,
     sanitize_connection_options_for_output,
     sanitize_connection_url_for_output,
+    sanitize_credential_text_for_output,
 )
 from apex.services.connections import (
     TRUSTED_PRIVATE_HOST_OPTION,
@@ -71,6 +73,13 @@ class ApplicationCreate(BaseModel):
     name: NoNulStr = Field(min_length=1, max_length=255)
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
+    @field_validator("*")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: Any) -> Any:
+        if type(value) is str:
+            reject_credential_text(value, label="application text field")
+        return value
+
 
 class ApplicationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -78,9 +87,23 @@ class ApplicationUpdate(BaseModel):
     name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
+    @field_validator("name")
+    @classmethod
+    def reject_null_name(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("name cannot be null")
+        return value
+
+    @field_validator("*")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: Any) -> Any:
+        if type(value) is str:
+            reject_credential_text(value, label="application text field")
+        return value
+
 
 class ApplicationOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, hide_input_in_errors=True)
 
     id: str
     project_id: str
@@ -90,6 +113,11 @@ class ApplicationOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @field_validator("project_id", "name", "description", mode="before")
+    @classmethod
+    def sanitize_legacy_labels(cls, value: Any) -> str | None:
+        return sanitize_credential_text_for_output(value)
+
 
 class HostIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -97,13 +125,25 @@ class HostIn(BaseModel):
     hostname: NoNulStr = Field(min_length=1, max_length=1024)
     role: NoNulStr | None = Field(default=None, max_length=255)
 
+    @field_validator("*")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: Any) -> Any:
+        if type(value) is str:
+            reject_credential_text(value, label="environment host text field")
+        return value
+
 
 class HostOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, hide_input_in_errors=True)
 
     id: str
     hostname: str
     role: str | None
+
+    @field_validator("hostname", "role", mode="before")
+    @classmethod
+    def sanitize_legacy_labels(cls, value: Any) -> str | None:
+        return sanitize_credential_text_for_output(value)
 
 
 class SnapshotSummary(BaseModel):
@@ -123,6 +163,13 @@ class EnvironmentCreate(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
     hosts: list[HostIn] = Field(default_factory=list, max_length=MAX_CHILD_ITEMS)
 
+    @field_validator("*")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: Any) -> Any:
+        if type(value) is str:
+            reject_credential_text(value, label="environment text field")
+        return value
+
     @field_validator("options")
     @classmethod
     def validate_options(cls, options: dict[str, Any]) -> dict[str, Any]:
@@ -139,6 +186,20 @@ class EnvironmentUpdate(BaseModel):
     hosts: list[HostIn] | None = Field(
         default=None, max_length=MAX_CHILD_ITEMS
     )  # when present, REPLACES the full host list
+
+    @field_validator("name")
+    @classmethod
+    def reject_null_name(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("name cannot be null")
+        return value
+
+    @field_validator("*")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: Any) -> Any:
+        if type(value) is str:
+            reject_credential_text(value, label="environment text field")
+        return value
 
     @field_validator("options")
     @classmethod
@@ -170,6 +231,11 @@ class EnvironmentOut(BaseModel):
     updated_at: datetime
     # Populated on getEnvironment only (list omits it to avoid N+1 scans).
     last_snapshot: SnapshotSummary | None = None
+
+    @field_validator("application_id", "name", "kind", mode="before")
+    @classmethod
+    def sanitize_legacy_labels(cls, value: Any) -> str | None:
+        return sanitize_credential_text_for_output(value)
 
     @field_validator("base_url", mode="before")
     @classmethod
@@ -230,14 +296,17 @@ def _is_platform_admin(identity: ConsumerIdentity) -> bool:
 
 
 def _validate_environment_options(identity: ConsumerIdentity, options: dict[str, Any]) -> None:
+    validation_error: HTTPException | None = None
     try:
         reject_raw_secret_options(
             options,
             label="environment options",
             reference="a managed connection secret_ref",
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid environment options") from exc
+    except ValueError:
+        validation_error = HTTPException(status_code=422, detail="invalid environment options")
+    if validation_error is not None:
+        raise validation_error
     if connection_options_require_repair(options):
         raise HTTPException(
             status_code=422,
@@ -262,13 +331,16 @@ def _approve_environment_target(
         )
     if base_url is None or not base_url.strip():
         return False
+    validation_error: HTTPException | None = None
     try:
         validate_adapter_base_url(
             base_url,
             allow_private_hosts=options.get(TRUSTED_PRIVATE_HOST_OPTION) is True or None,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid environment target") from exc
+    except ValueError:
+        validation_error = HTTPException(status_code=422, detail="invalid environment target")
+    if validation_error is not None:
+        raise validation_error
     return True
 
 
@@ -307,15 +379,20 @@ async def create_application(
             status_code=403,
             detail="application creation requires project-wide scope",
         )
+    write_error: HTTPException | None = None
+    app = None
     try:
         app = await repo.create_application(
             project_id=body.project_id, name=body.name, description=body.description
         )
     except DuplicateNameError:
-        raise HTTPException(
+        write_error = HTTPException(
             status_code=409,
             detail="application name already exists in project",
-        ) from None
+        )
+    if write_error is not None:
+        raise write_error
+    assert app is not None
     return ApplicationOut.model_validate(app)
 
 
@@ -339,13 +416,16 @@ async def update_application(
     app = await repo.get_application(application_id)
     if app is None or not _can_access_application(identity, app):
         raise _not_found("application", application_id)
+    write_error: HTTPException | None = None
     try:
         app = await repo.update_application(app, body.model_dump(exclude_unset=True))
     except DuplicateNameError:
-        raise HTTPException(
+        write_error = HTTPException(
             status_code=409,
             detail="application name already exists in project",
-        ) from None
+        )
+    if write_error is not None:
+        raise write_error
     return ApplicationOut.model_validate(app)
 
 
@@ -413,6 +493,8 @@ async def create_environment(
     if body.base_url is not None:
         target_approved = _approve_environment_target(identity, body.base_url, body.options)
         target_version = 1
+    write_error: HTTPException | None = None
+    env = None
     try:
         env = await repo.create_environment(
             application_id=body.application_id,
@@ -425,10 +507,13 @@ async def create_environment(
             hosts=[host.model_dump() for host in body.hosts],
         )
     except DuplicateNameError:
-        raise HTTPException(
+        write_error = HTTPException(
             status_code=409,
             detail="environment name already exists on application",
-        ) from None
+        )
+    if write_error is not None:
+        raise write_error
+    assert env is not None
     return _environment_out(env)
 
 
@@ -468,13 +553,16 @@ async def update_environment(
             identity, next_base_url, next_options
         )
         changes["target_version"] = int(env.target_version) + 1
+    write_error: HTTPException | None = None
     try:
         env = await repo.update_environment(env, changes, hosts=hosts)
     except DuplicateNameError:
-        raise HTTPException(
+        write_error = HTTPException(
             status_code=409,
             detail="environment name already exists on application",
-        ) from None
+        )
+    if write_error is not None:
+        raise write_error
     return _environment_out(env)
 
 

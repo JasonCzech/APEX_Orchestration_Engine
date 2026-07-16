@@ -84,7 +84,14 @@ class MatrixResolver(IdentityResolver):
         SCOPED_ADMIN_KEY: _identity(Role.ADMIN),
     }
 
-    async def _resolve_from_db(self, api_key: str) -> ConsumerIdentity | None:
+    async def _resolve_from_db(
+        self,
+        api_key: str,
+        *,
+        reject_persisted_match: bool = False,
+    ) -> ConsumerIdentity | None:
+        if reject_persisted_match and api_key in self._by_key:
+            return None
         return self._by_key.get(api_key)
 
 

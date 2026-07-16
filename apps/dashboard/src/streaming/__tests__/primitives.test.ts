@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { resumeStore } from '../resumeStore'
+import { MAX_RESUME_EVENT_ID_CHARS, resumeStore } from '../resumeStore'
 import { RingBuffer } from '../ringBuffer'
 import { createFlushGate } from '../tokenBuffer'
 import { BACKOFF_CAP_MS, backoffDelayMs } from '../usePipelineStream'
@@ -97,6 +97,18 @@ describe('resumeStore', () => {
     resumeStore.clear('t1', 'r1')
     expect(resumeStore.get('t1', 'r1')).toBeNull()
     expect(resumeStore.get('t1', 'r2')).toBe('ev-9')
+  })
+
+  it('drops malformed or oversized event ids instead of poisoning request headers', () => {
+    resumeStore.set('t1', 'r1', 'valid-cursor')
+    resumeStore.set('t1', 'r1', `x`.repeat(MAX_RESUME_EVENT_ID_CHARS + 1))
+    expect(resumeStore.get('t1', 'r1')).toBeNull()
+
+    window.sessionStorage.setItem('apex:stream:last-event-id:t1:r1', 'line\nbreak')
+    expect(resumeStore.get('t1', 'r1')).toBeNull()
+
+    resumeStore.set('t1', 'r1', '')
+    expect(resumeStore.get('t1', 'r1')).toBeNull()
   })
 })
 

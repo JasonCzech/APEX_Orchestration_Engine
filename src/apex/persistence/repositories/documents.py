@@ -60,13 +60,20 @@ class DocumentsRepository:
             document.artifact_connection_id = None
         elif artifact_connection_id is not None:
             result = await self._session.execute(
-                select(Connection.id, Connection.kind, Connection.enabled)
+                select(
+                    Connection.id,
+                    Connection.kind,
+                    Connection.enabled,
+                    Connection.project_id,
+                )
                 .where(Connection.id == artifact_connection_id)
                 .with_for_update()
             )
             connection = result.one_or_none()
             if connection is None or not connection.enabled or connection.kind != "artifact_store":
                 raise RuntimeError("artifact-store connection is missing or disabled")
+            if connection.project_id is not None and connection.project_id != document.project_id:
+                raise RuntimeError("artifact-store connection is outside the document project")
 
     async def is_persisted(self, document_id: str) -> bool:
         """Resolve an ambiguous commit/refresh failure before object compensation."""

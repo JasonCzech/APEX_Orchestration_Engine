@@ -5,6 +5,8 @@ import { notifyUnauthorized } from '@/api/apexClient'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { createDevLangGraphClient, subscribeDevDataMode } from '@/dev-data'
 
+import { fetchWithoutRedirects } from './fetchPolicy'
+
 let clientPromise: Promise<Client> | null = null
 
 /**
@@ -40,7 +42,7 @@ async function buildClient(): Promise<Client> {
     if (requestRevision !== getApiKeyRevision() || requestKey !== getApiKey()) {
       throw new Error('API key changed while using the LangGraph client')
     }
-    const response = await fetch(input, init)
+    const response = await fetchWithoutRedirects(input, init)
     const responseKey = new Request(input, init).headers.get('x-api-key')
     if (
       response.status === 401 &&

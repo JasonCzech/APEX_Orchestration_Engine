@@ -23,15 +23,16 @@ scope.
 """
 
 import re
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, Any, cast
+from types import TracebackType
+from typing import Annotated, Any, Never, cast
 
 import httpx
+import structlog
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
@@ -39,6 +40,7 @@ from apex.auth.identity import ConsumerIdentity, Role, ScopeRef
 from apex.domain.input_limits import (
     MAX_DB_LIST_OFFSET,
     MAX_DESCRIPTION_CHARS,
+    MAX_SCOPE_ID_CHARS,
     NoNulStr,
     RecordId,
     ResourceId,
@@ -55,18 +57,34 @@ from apex.domain.integrations import (
     WorkItemPage,
 )
 from apex.persistence.models import SavedQuery
-from apex.persistence.repositories.saved_queries import SavedQueriesRepository
+from apex.persistence.repositories.saved_queries import (
+    SavedQueriesRepository,
+    SavedQueryNameConflictError,
+)
 from apex.persistence.repositories.work_item_mutations import (
     MutationClaimedError,
     MutationConnectionChangedError,
     MutationPayloadConflictError,
     MutationRetiredError,
 )
-from apex.services.connections import ConnectionResolver, internal_project_binding
+from apex.services.connection_credentials import (
+    reject_credential_text,
+    sanitize_credential_text_for_output,
+)
+from apex.services.connections import (
+    ConnectionResolver,
+    close_adapter,
+    internal_project_binding,
+)
 from apex.services.work_item_mutations import (
     WorkItemMutationOutcomeAmbiguousError,
     WorkItemMutationService,
     get_work_item_mutation_service,
+)
+from apex.services.work_items import (
+    validated_provider_query,
+    validated_provider_work_item,
+    validated_provider_work_item_page,
 )
 from apex.services.work_tracking import (
     get_saved_queries_repository,
@@ -75,6 +93,7 @@ from apex.services.work_tracking import (
 )
 
 router = APIRouter(prefix="/work-tracking", tags=["work-tracking"])
+logger = structlog.get_logger(__name__)
 
 ResolverDep = Annotated[ConnectionResolver, Depends(get_work_tracking_resolver)]
 RepositoryDep = Annotated[SavedQueriesRepository, Depends(get_saved_queries_repository)]
@@ -101,6 +120,68 @@ ProjectParam = Annotated[
 ]
 
 
+def _sanitize_saved_query_output_text(
+    value: Any,
+    *,
+    minimum: int,
+    maximum: int,
+    required: bool,
+) -> str | None:
+    """Quarantine malformed legacy text without reflecting or truncating it."""
+
+    safe = sanitize_credential_text_for_output(value)
+    if safe is None:
+        return "[REDACTED]" if required else None
+    if not minimum <= len(safe) <= maximum or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in safe
+    ):
+        return "[REDACTED]"
+    return safe
+
+
+def _work_tracking_resolution_unavailable() -> HTTPException:
+    return HTTPException(status_code=503, detail="work-tracking connection unavailable")
+
+
+def _invalid_work_tracking_connection() -> HTTPException:
+    return HTTPException(status_code=409, detail="invalid work-tracking connection")
+
+
+def _normalized_provider(value: Any) -> str | None:
+    """Validate resolver/provider identity without invoking scalar-subclass hooks."""
+
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= 64
+        or value != value.strip()
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        return None
+    return value.casefold()
+
+
+def _valid_connection_id(value: Any) -> bool:
+    return (
+        type(value) is str
+        and 1 <= len(value) <= 32
+        and value == value.strip()
+        and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    )
+
+
+def _valid_connection_version(value: Any) -> bool:
+    return value is None or type(value) is datetime
+
+
+async def _close_work_tracking_adapter(adapter: Any) -> None:
+    """Settle provider cleanup without replacing a durable result or stable error."""
+
+    try:
+        await close_adapter(adapter)
+    except Exception:
+        logger.warning("apex.work_tracking.adapter_close_failed")
+
+
 # ── Schemas ──────────────────────────────────────────────────────────────────
 
 
@@ -121,7 +202,7 @@ class ExecuteQueryRequest(BaseModel):
 
 
 class SavedQueryCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: NoNulStr = Field(min_length=1, max_length=255)
     provider: NoNulStr = Field(min_length=1, max_length=64)
@@ -129,18 +210,35 @@ class SavedQueryCreate(BaseModel):
     project_id: ScopeId | None = None
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
+    @field_validator("name", "provider", "query", "description")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: str | None) -> str | None:
+        return reject_credential_text(value, label="saved query text field")
+
 
 class SavedQueryUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     name: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
     provider: NoNulStr | None = Field(default=None, min_length=1, max_length=64)
     query: NoNulStr | None = Field(default=None, min_length=1, max_length=20_000)
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
+    @field_validator("name", "provider", "query")
+    @classmethod
+    def reject_null_required_fields(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
+
+    @field_validator("name", "provider", "query", "description")
+    @classmethod
+    def reject_raw_credential_scalars(cls, value: str | None) -> str | None:
+        return reject_credential_text(value, label="saved query text field")
+
 
 class SavedQueryOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, hide_input_in_errors=True)
 
     id: str
     name: str
@@ -151,6 +249,42 @@ class SavedQueryOut(BaseModel):
     created_by: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    @field_validator("id", "name", "provider", "query", mode="before")
+    @classmethod
+    def sanitize_required_legacy_text(cls, value: Any, info: Any) -> str:
+        bounds = {
+            "id": (1, 32),
+            "name": (1, 255),
+            "provider": (1, 64),
+            "query": (1, 20_000),
+        }
+        minimum, maximum = bounds[info.field_name]
+        return (
+            _sanitize_saved_query_output_text(
+                value,
+                minimum=minimum,
+                maximum=maximum,
+                required=True,
+            )
+            or "[REDACTED]"
+        )
+
+    @field_validator("project_id", "description", "created_by", mode="before")
+    @classmethod
+    def sanitize_optional_legacy_text(cls, value: Any, info: Any) -> str | None:
+        bounds = {
+            "project_id": (1, MAX_SCOPE_ID_CHARS),
+            "description": (0, MAX_DESCRIPTION_CHARS),
+            "created_by": (1, 255),
+        }
+        minimum, maximum = bounds[info.field_name]
+        return _sanitize_saved_query_output_text(
+            value,
+            minimum=minimum,
+            maximum=maximum,
+            required=False,
+        )
 
 
 class SavedQueryListResponse(BaseModel):
@@ -202,6 +336,11 @@ async def _resolve_adapter(
     project: str | None = None,
 ) -> "ResolvedWorkTrackingAdapter":
     selected_project = _selected_project(identity, project)
+    resolution_error: HTTPException | None = None
+    adapter: Any = None
+    resolved_connection_id: str | None = None
+    persisted = False
+    connection_version: datetime | None = None
     try:
         resolve_with_metadata = getattr(resolver, "resolve_with_metadata", None)
         if callable(resolve_with_metadata):
@@ -213,7 +352,9 @@ async def _resolve_adapter(
             )
             adapter = resolved.adapter
             resolved_connection_id = resolved.connection_id
-            persisted = bool(resolved.persisted)
+            if type(resolved.persisted) is not bool:
+                raise ValueError("invalid persisted-connection marker")
+            persisted = resolved.persisted
             connection_version = resolved.connection_version
         else:  # compatibility for injected test/extension resolvers
             adapter = await resolver.resolve(
@@ -224,24 +365,48 @@ async def _resolve_adapter(
             resolved_connection_id = connection_id or "dev-work-tracking-fake"
             persisted = False
             connection_version = None
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="work-tracking connection not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail="work-tracking connection conflict") from exc
-    provider = getattr(adapter, "provider", None)
-    if not isinstance(provider, str) or not provider.strip():
-        raise HTTPException(
-            status_code=409,
-            detail="resolved work-tracking adapter does not declare its provider",
+    except KeyError:
+        resolution_error = HTTPException(
+            status_code=404, detail="work-tracking connection not found"
         )
-    return ResolvedWorkTrackingAdapter(
-        adapter=adapter,
-        provider=provider.casefold(),
-        selected_project=selected_project,
-        connection_id=resolved_connection_id,
-        connection_persisted=persisted,
-        connection_version=connection_version,
-    )
+    except ValueError:
+        resolution_error = HTTPException(
+            status_code=409, detail="work-tracking connection conflict"
+        )
+    except Exception:
+        resolution_error = _work_tracking_resolution_unavailable()
+    if resolution_error is not None:
+        if adapter is not None:
+            await _close_work_tracking_adapter(adapter)
+        raise resolution_error
+    assert adapter is not None and resolved_connection_id is not None
+    binding_error: HTTPException | None = None
+    binding: ResolvedWorkTrackingAdapter | None = None
+    try:
+        provider = getattr(adapter, "provider", None)
+        normalized_provider = _normalized_provider(provider)
+        if (
+            normalized_provider is None
+            or not _valid_connection_id(resolved_connection_id)
+            or not _valid_connection_version(connection_version)
+        ):
+            binding_error = _invalid_work_tracking_connection()
+        else:
+            binding = ResolvedWorkTrackingAdapter(
+                adapter=adapter,
+                provider=normalized_provider,
+                selected_project=selected_project,
+                connection_id=resolved_connection_id,
+                connection_persisted=persisted,
+                connection_version=connection_version,
+            )
+    except Exception:
+        binding_error = _invalid_work_tracking_connection()
+    if binding_error is not None:
+        await _close_work_tracking_adapter(adapter)
+        raise binding_error
+    assert binding is not None
+    return binding
 
 
 @dataclass(frozen=True)
@@ -264,6 +429,7 @@ class WorkTrackingMutationConnection:
     connection_persisted: bool
     connection_version: datetime | None
     resolver_metadata: Any | None = None
+    adapter_builder: Callable[[Any], Awaitable[Any]] | None = None
     prebuilt: ResolvedWorkTrackingAdapter | None = None
 
 
@@ -274,41 +440,79 @@ async def _select_mutation_connection(
     project: str | None,
 ) -> WorkTrackingMutationConnection:
     selected_project = _selected_project(identity, project)
-    resolve_metadata = getattr(resolver, "resolve_metadata", None)
-    build_from_metadata = getattr(resolver, "build_from_metadata", None)
+    resolver_surface_error = False
+    resolve_metadata: Any = None
+    build_from_metadata: Any = None
+    try:
+        resolve_metadata = getattr(resolver, "resolve_metadata", None)
+        build_from_metadata = getattr(resolver, "build_from_metadata", None)
+    except Exception:
+        resolver_surface_error = True
+    if resolver_surface_error:
+        raise _work_tracking_resolution_unavailable()
     if callable(resolve_metadata) and callable(build_from_metadata):
+        resolution_error: HTTPException | None = None
+        metadata: Any = None
         try:
             metadata = await cast(Callable[..., Awaitable[Any]], resolve_metadata)(
                 PortKind.WORK_TRACKING,
                 connection_id=connection_id,
                 project_id=selected_project,
             )
-        except KeyError as exc:
-            raise HTTPException(
+        except KeyError:
+            resolution_error = HTTPException(
                 status_code=404, detail="work-tracking connection not found"
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=409, detail="work-tracking connection conflict"
-            ) from exc
-        provider = metadata.config.provider
-        if not isinstance(provider, str) or not provider.strip():
-            raise HTTPException(
-                status_code=409,
-                detail="resolved work-tracking connection does not declare its provider",
             )
+        except ValueError:
+            resolution_error = HTTPException(
+                status_code=409, detail="work-tracking connection conflict"
+            )
+        except Exception:
+            resolution_error = _work_tracking_resolution_unavailable()
+        if resolution_error is not None:
+            raise resolution_error
+        assert metadata is not None
+        metadata_error: HTTPException | None = None
+        provider: str | None = None
+        metadata_connection_id: str | None = None
+        metadata_persisted: bool | None = None
+        metadata_version: datetime | None = None
+        try:
+            provider = _normalized_provider(metadata.config.provider)
+            metadata_connection_id = metadata.config.id
+            metadata_persisted = metadata.persisted
+            metadata_version = metadata.connection_version
+            if (
+                provider is None
+                or not _valid_connection_id(metadata_connection_id)
+                or type(metadata_persisted) is not bool
+                or not _valid_connection_version(metadata_version)
+            ):
+                metadata_error = _invalid_work_tracking_connection()
+        except Exception:
+            metadata_error = _invalid_work_tracking_connection()
+        if metadata_error is not None:
+            raise metadata_error
+        assert provider is not None
+        assert metadata_connection_id is not None
+        assert metadata_persisted is not None
         return WorkTrackingMutationConnection(
-            provider=provider.casefold(),
+            provider=provider,
             selected_project=selected_project,
-            connection_id=metadata.config.id,
-            connection_persisted=bool(metadata.persisted),
-            connection_version=metadata.connection_version,
+            connection_id=metadata_connection_id,
+            connection_persisted=metadata_persisted,
+            connection_version=metadata_version,
             resolver_metadata=metadata,
+            adapter_builder=cast(Callable[[Any], Awaitable[Any]], build_from_metadata),
         )
 
     # Compatibility for injected resolvers that expose only the legacy API.
-    binding = await _resolve_adapter(resolver, identity, connection_id, selected_project)
-    _require_project_bound(binding)
+    binding = await resolve_scoped_work_tracking_adapter(
+        resolver,
+        identity,
+        connection_id,
+        selected_project,
+    )
     return WorkTrackingMutationConnection(
         provider=binding.provider,
         selected_project=binding.selected_project,
@@ -325,38 +529,63 @@ async def _build_mutation_adapter(
 ) -> ResolvedWorkTrackingAdapter:
     if selection.prebuilt is not None:
         return selection.prebuilt
-    build = cast(Callable[..., Awaitable[Any]], resolver.build_from_metadata)
+    del resolver
+    build = selection.adapter_builder
+    if build is None:
+        raise RuntimeError("work-tracking adapter builder is unavailable")
     resolved = await build(selection.resolver_metadata)
     adapter = resolved.adapter
-    provider = getattr(adapter, "provider", None)
-    if not isinstance(provider, str) or provider.casefold() != selection.provider:
-        raise ValueError("resolved work-tracking adapter provider changed during construction")
-    binding = ResolvedWorkTrackingAdapter(
-        adapter=adapter,
-        provider=selection.provider,
-        selected_project=selection.selected_project,
-        connection_id=resolved.connection_id,
-        connection_persisted=bool(resolved.persisted),
-        connection_version=resolved.connection_version,
-    )
-    _require_project_bound(binding)
-    return binding
+    try:
+        provider = _normalized_provider(getattr(adapter, "provider", None))
+        if (
+            provider != selection.provider
+            or type(resolved.connection_id) is not str
+            or resolved.connection_id != selection.connection_id
+            or type(resolved.persisted) is not bool
+            or resolved.persisted is not selection.connection_persisted
+            or not _valid_connection_version(resolved.connection_version)
+            or resolved.connection_version != selection.connection_version
+        ):
+            raise RuntimeError(
+                "resolved work-tracking adapter identity changed during construction"
+            )
+        binding = ResolvedWorkTrackingAdapter(
+            adapter=adapter,
+            provider=selection.provider,
+            selected_project=selection.selected_project,
+            connection_id=selection.connection_id,
+            connection_persisted=selection.connection_persisted,
+            connection_version=selection.connection_version,
+        )
+        _require_project_bound(binding)
+        return binding
+    except BaseException:
+        await _close_work_tracking_adapter(adapter)
+        raise
 
 
 def _require_project_bound(binding: ResolvedWorkTrackingAdapter) -> None:
-    """Fail closed for scoped real-provider adapters lacking an APEX binding."""
+    """Fail closed unless a scoped real provider has both ownership boundaries.
+
+    The persisted APEX project binding prevents one tenant from selecting another
+    tenant's connection.  The provider project/key separately prevents that
+    connection's broader credential from reading or mutating sibling projects at
+    the upstream tracker.  Every scoped route needs both checks; query translation
+    alone is not a sufficient boundary for direct item and mutation operations.
+    """
 
     if binding.selected_project is None or binding.provider in {"stub", "fake"}:
         return
     configured = internal_project_binding(binding.adapter)
-    if (
-        not isinstance(configured, str)
-        or configured.casefold() != binding.selected_project.casefold()
-    ):
+    if type(configured) is not str or configured.casefold() != binding.selected_project.casefold():
         raise HTTPException(
             status_code=403,
             detail="resolved work-tracking connection is not bound to the selected project",
         )
+    # Direct list/get/create/enrich routes do not pass through query-envelope
+    # constraining.  Require the same external-project proof used by translated
+    # queries before any of those routes can reach a provider credential.
+    _external_query_project(binding)
 
 
 def _external_query_project(binding: ResolvedWorkTrackingAdapter) -> str | None:
@@ -367,7 +596,12 @@ def _external_query_project(binding: ResolvedWorkTrackingAdapter) -> str | None:
     if binding.provider in {"stub", "fake"}:
         return binding.selected_project
     configured = getattr(binding.adapter, "project_id", None)
-    if not isinstance(configured, str) or not configured.strip():
+    if (
+        type(configured) is not str
+        or not 1 <= len(configured) <= MAX_SCOPE_ID_CHARS
+        or configured != configured.strip()
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in configured)
+    ):
         raise HTTPException(
             status_code=409,
             detail="resolved work-tracking adapter has no external project configured",
@@ -394,8 +628,12 @@ async def resolve_scoped_work_tracking_adapter(
     """Resolve an adapter and prove its direct-item project boundary."""
 
     binding = await _resolve_adapter(resolver, identity, connection_id, project)
-    _require_project_bound(binding)
-    return binding
+    try:
+        _require_project_bound(binding)
+        return binding
+    except BaseException:
+        await _close_work_tracking_adapter(binding.adapter)
+        raise
 
 
 async def get_work_tracking_adapter(
@@ -403,51 +641,97 @@ async def get_work_tracking_adapter(
     resolver: ResolverDep,
     connection_id: ConnectionIdParam = None,
     project: ProjectParam = None,
-) -> ResolvedWorkTrackingAdapter:
-    return await resolve_scoped_work_tracking_adapter(resolver, identity, connection_id, project)
+) -> AsyncIterator[ResolvedWorkTrackingAdapter]:
+    binding = await resolve_scoped_work_tracking_adapter(resolver, identity, connection_id, project)
+    try:
+        yield binding
+    finally:
+        await _close_work_tracking_adapter(binding.adapter)
 
 
 AdapterDep = Annotated[ResolvedWorkTrackingAdapter, Depends(get_work_tracking_adapter)]
 
 
 def _provider_page(offset: int, limit: int) -> Page:
+    page_error: HTTPException | None = None
+    page: Page | None = None
     try:
-        return validate_provider_page(Page(offset=offset, limit=limit))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid work-item page") from exc
+        page = validate_provider_page(Page(offset=offset, limit=limit))
+    except ValueError:
+        page_error = HTTPException(status_code=422, detail="invalid work-item page")
+    if page_error is not None:
+        raise page_error
+    assert page is not None
+    return page
 
 
-@contextmanager
-def adapter_errors() -> Iterator[None]:
-    """Translate adapter exceptions into problem details (see module doc)."""
-    try:
-        yield
-    except MutationPayloadConflictError as exc:
-        raise HTTPException(status_code=409, detail="work-item mutation payload conflict") from exc
-    except MutationClaimedError as exc:
-        raise HTTPException(
-            status_code=409, detail="work-item mutation is already claimed"
-        ) from exc
-    except MutationRetiredError as exc:
-        raise HTTPException(status_code=409, detail="work-item mutation is retired") from exc
-    except MutationConnectionChangedError as exc:
-        raise HTTPException(
-            status_code=409, detail="work-item mutation connection changed"
-        ) from exc
-    except WorkItemMutationOutcomeAmbiguousError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail="work-item mutation outcome is ambiguous",
-            headers={"Retry-After": "5"},
-        ) from exc
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="work item not found") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="work tracker rejected the request") from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail="work tracker upstream failure") from exc
-    except httpx.HTTPError as exc:  # defensive: adapters normally wrap transport errors
-        raise HTTPException(status_code=502, detail="work tracker upstream failure") from exc
+class _AdapterErrorBoundary:
+    """Suppress a raw adapter error, then expose only its stable translation."""
+
+    def __init__(self) -> None:
+        self._translated: HTTPException | None = None
+
+    def __enter__(self) -> None:
+        return None
+
+    def __exit__(
+        self,
+        error_type: type[BaseException] | None,
+        _error: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> bool:
+        if error_type is None:
+            return False
+        if issubclass(error_type, MutationPayloadConflictError):
+            self._translated = HTTPException(
+                status_code=409, detail="work-item mutation payload conflict"
+            )
+        elif issubclass(error_type, MutationClaimedError):
+            self._translated = HTTPException(
+                status_code=409, detail="work-item mutation is already claimed"
+            )
+        elif issubclass(error_type, MutationRetiredError):
+            self._translated = HTTPException(
+                status_code=409, detail="work-item mutation is retired"
+            )
+        elif issubclass(error_type, MutationConnectionChangedError):
+            self._translated = HTTPException(
+                status_code=409, detail="work-item mutation connection changed"
+            )
+        elif issubclass(error_type, WorkItemMutationOutcomeAmbiguousError):
+            self._translated = HTTPException(
+                status_code=409,
+                detail="work-item mutation outcome is ambiguous",
+                headers={"Retry-After": "5"},
+            )
+        elif issubclass(error_type, KeyError):
+            self._translated = HTTPException(status_code=404, detail="work item not found")
+        elif issubclass(error_type, ValueError):
+            self._translated = HTTPException(
+                status_code=422, detail="work tracker rejected the request"
+            )
+        elif issubclass(error_type, (RuntimeError, httpx.HTTPError)):
+            self._translated = HTTPException(
+                status_code=502, detail="work tracker upstream failure"
+            )
+        elif issubclass(error_type, Exception):
+            self._translated = HTTPException(
+                status_code=502, detail="work tracker upstream failure"
+            )
+        else:
+            return False
+        return True
+
+    def raise_if_error(self) -> Never:
+        if self._translated is not None:
+            raise self._translated
+        raise RuntimeError("adapter error boundary has no translated error")
+
+
+def adapter_errors() -> _AdapterErrorBoundary:
+    """Build an adapter boundary whose translation is raised after ``with``."""
+
+    return _AdapterErrorBoundary()
 
 
 def _visible(identity: ConsumerIdentity, row: SavedQuery) -> bool:
@@ -487,15 +771,37 @@ def _ensure_work_item_write(identity: ConsumerIdentity, project_id: str | None) 
 
 
 _ORDER_BY = re.compile(r"\border\s+by\b", re.IGNORECASE)
-_WIQL_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
+_WIQL_WHERE = re.compile(r"(?<![@.A-Za-z0-9_])where\b", re.IGNORECASE)
+_WIQL_SUFFIX = re.compile(
+    r"(?<![@.A-Za-z0-9_])(?:order\s+by|asof|mode)\b",
+    re.IGNORECASE,
+)
+_WIQL_LINKS_FROM = re.compile(r"\bfrom\s+workitemlinks\b", re.IGNORECASE)
 _JQL_PROJECT = re.compile(
-    r"\bproject\s*(?:=|in)\s*(?P<value>\([^)]*\)|\"[^\"]+\"|'[^']+'|[A-Za-z0-9_-]+)",
+    r"\bproject\s*(?P<operator>=|in)\s*",
     re.IGNORECASE,
 )
 _WIQL_PROJECT = re.compile(
-    r"\[System\.TeamProject\]\s*(?:=|in)\s*"
-    r"(?P<value>\([^)]*\)|\"[^\"]+\"|'[^']+'|[A-Za-z0-9_-]+)",
+    r"\[System\.TeamProject\]\s*(?P<operator>=|in)\s*",
     re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _QueryDialect:
+    backslash_escapes_quotes: bool
+    doubled_quotes_escape: bool
+    bracketed_identifiers: bool = False
+
+
+_JQL_DIALECT = _QueryDialect(
+    backslash_escapes_quotes=True,
+    doubled_quotes_escape=False,
+)
+_WIQL_DIALECT = _QueryDialect(
+    backslash_escapes_quotes=False,
+    doubled_quotes_escape=True,
+    bracketed_identifiers=True,
 )
 
 
@@ -526,8 +832,11 @@ def _constrain_translated_query(
 
 
 def _constrain_jql(raw: str, allowed: tuple[str, ...]) -> str:
-    _validate_query_envelope(raw)
-    _reject_conflicting_projects(_JQL_PROJECT.findall(raw), allowed)
+    _validate_query_envelope(raw, dialect=_JQL_DIALECT)
+    _reject_conflicting_projects(
+        _project_references(raw, _JQL_PROJECT, dialect=_JQL_DIALECT),
+        allowed,
+    )
     predicate, order = _split_order_by(raw)
     scope = f"project in ({', '.join(_jql_value(project) for project in allowed)})"
     if predicate:
@@ -536,30 +845,44 @@ def _constrain_jql(raw: str, allowed: tuple[str, ...]) -> str:
 
 
 def _constrain_wiql(raw: str, allowed: tuple[str, ...]) -> str:
-    _validate_query_envelope(raw)
-    _reject_conflicting_projects(_WIQL_PROJECT.findall(raw), allowed)
-    scope = f"[System.TeamProject] IN ({', '.join(_wiql_value(project) for project in allowed)})"
-    order_match = _top_level_match(raw, _ORDER_BY)
-    head = raw[: order_match.start()].strip() if order_match else raw.strip()
-    order = raw[order_match.start() :].strip() if order_match else ""
-    where_match = _top_level_match(head, _WIQL_WHERE)
+    _validate_query_envelope(raw, dialect=_WIQL_DIALECT)
+    _reject_conflicting_projects(
+        _project_references(raw, _WIQL_PROJECT, dialect=_WIQL_DIALECT),
+        allowed,
+    )
+    values = ", ".join(_wiql_value(project) for project in allowed)
+    suffix_match = _top_level_match(raw, _WIQL_SUFFIX, dialect=_WIQL_DIALECT)
+    head = raw[: suffix_match.start()].strip() if suffix_match else raw.strip()
+    suffix = raw[suffix_match.start() :].strip() if suffix_match else ""
+    if _top_level_match(head, _WIQL_LINKS_FROM, dialect=_WIQL_DIALECT):
+        # Link queries can return identifiers from both ends of a relation.
+        # Qualify and constrain both sides; an unqualified TeamProject field is
+        # not valid in a WorkItemLinks WHERE clause and would fail only at the
+        # provider boundary.
+        scope = (
+            f"([Source].[System.TeamProject] IN ({values}) AND "
+            f"[Target].[System.TeamProject] IN ({values}))"
+        )
+    else:
+        scope = f"[System.TeamProject] IN ({values})"
+    where_match = _top_level_match(head, _WIQL_WHERE, dialect=_WIQL_DIALECT)
     if where_match:
         prefix = head[: where_match.end()].strip()
         predicate = head[where_match.end() :].strip()
         if predicate:
-            return f"{prefix} {scope} AND ({predicate}){_prefixed(order)}"
-        return f"{prefix} {scope}{_prefixed(order)}"
-    return f"{head} WHERE {scope}{_prefixed(order)}"
+            return f"{prefix} {scope} AND ({predicate}){_prefixed(suffix)}"
+        return f"{prefix} {scope}{_prefixed(suffix)}"
+    return f"{head} WHERE {scope}{_prefixed(suffix)}"
 
 
 def _split_order_by(raw: str) -> tuple[str, str]:
-    match = _top_level_match(raw, _ORDER_BY)
+    match = _top_level_match(raw, _ORDER_BY, dialect=_JQL_DIALECT)
     if match is None:
         return raw.strip(), ""
     return raw[: match.start()].strip(), raw[match.start() :].strip()
 
 
-def _validate_query_envelope(raw: str) -> None:
+def _validate_query_envelope(raw: str, *, dialect: _QueryDialect) -> None:
     """Reject syntax that can escape the server-added project grouping.
 
     This is deliberately a small envelope validator, not a provider parser. It
@@ -574,16 +897,25 @@ def _validate_query_envelope(raw: str) -> None:
     while index < len(raw):
         char = raw[index]
         if quote is not None:
-            if char == "\\":
+            if dialect.backslash_escapes_quotes and char == "\\":
                 index += 2
                 continue
             if char == quote:
-                # WIQL/SQL strings escape quotes by doubling them.
-                if index + 1 < len(raw) and raw[index + 1] == quote:
+                if (
+                    dialect.doubled_quotes_escape
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == quote
+                ):
                     index += 2
                     continue
                 quote = None
             index += 1
+            continue
+        if dialect.bracketed_identifiers and char == "[":
+            closing = raw.find("]", index + 1)
+            if closing < 0:
+                _unsafe_query_envelope()
+            index = closing + 1
             continue
         if char in {"'", '"'}:
             quote = char
@@ -609,7 +941,12 @@ def _unsafe_query_envelope() -> None:
     )
 
 
-def _top_level_match(raw: str, pattern: re.Pattern[str]) -> re.Match[str] | None:
+def _top_level_match(
+    raw: str,
+    pattern: re.Pattern[str],
+    *,
+    dialect: _QueryDialect,
+) -> re.Match[str] | None:
     """Find a provider keyword outside quoted strings and nested predicates."""
 
     depth = 0
@@ -618,15 +955,25 @@ def _top_level_match(raw: str, pattern: re.Pattern[str]) -> re.Match[str] | None
     while index < len(raw):
         char = raw[index]
         if quote is not None:
-            if char == "\\":
+            if dialect.backslash_escapes_quotes and char == "\\":
                 index += 2
                 continue
             if char == quote:
-                if index + 1 < len(raw) and raw[index + 1] == quote:
+                if (
+                    dialect.doubled_quotes_escape
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == quote
+                ):
                     index += 2
                     continue
                 quote = None
             index += 1
+            continue
+        if dialect.bracketed_identifiers and char == "[":
+            closing = raw.find("]", index + 1)
+            if closing < 0:
+                return None
+            index = closing + 1
             continue
         if char in {"'", '"'}:
             quote = char
@@ -646,27 +993,238 @@ def _prefixed(value: str) -> str:
     return f" {value}" if value else ""
 
 
-def _reject_conflicting_projects(raw_values: list[str], allowed: tuple[str, ...]) -> None:
+def _project_references(
+    raw: str,
+    pattern: re.Pattern[str],
+    *,
+    dialect: _QueryDialect,
+) -> tuple[str, ...]:
+    """Extract only statically named projects from real field expressions."""
+
+    projects: list[str] = []
+    for match in _unquoted_pattern_matches(raw, pattern, dialect=dialect):
+        operator = match.group("operator").casefold()
+        if operator == "in":
+            projects.extend(_static_project_list(raw, match.end(), dialect=dialect))
+        else:
+            project = _static_project_scalar(raw, match.end(), dialect=dialect)
+            if project is not None:
+                projects.append(project)
+    return tuple(projects)
+
+
+def _unquoted_pattern_matches(
+    raw: str,
+    pattern: re.Pattern[str],
+    *,
+    dialect: _QueryDialect,
+) -> tuple[re.Match[str], ...]:
+    """Match at every nesting depth while skipping literals and other WIQL fields."""
+
+    matches: list[re.Match[str]] = []
+    quote: str | None = None
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if quote is not None:
+            if dialect.backslash_escapes_quotes and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if (
+                    dialect.doubled_quotes_escape
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == quote
+                ):
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+
+        match = pattern.match(raw, index)
+        if match is not None:
+            matches.append(match)
+            index = match.end()
+            continue
+        if dialect.bracketed_identifiers and char == "[":
+            closing = raw.find("]", index + 1)
+            if closing < 0:
+                break
+            index = closing + 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        index += 1
+    return tuple(matches)
+
+
+def _static_project_list(
+    raw: str,
+    start: int,
+    *,
+    dialect: _QueryDialect,
+) -> tuple[str, ...]:
+    index = start
+    while index < len(raw) and raw[index].isspace():
+        index += 1
+    if index >= len(raw) or raw[index] != "(":
+        # Dynamic JQL project functions are still bounded by the injected scope.
+        return ()
+    closing = _matching_query_parenthesis(raw, index, dialect=dialect)
+    if closing is None:
+        return ()
+    values: list[str] = []
+    for segment in _split_query_values(raw[index + 1 : closing], dialect=dialect):
+        value = _decode_static_project_value(segment, dialect=dialect)
+        if value is not None:
+            values.append(value)
+    return tuple(values)
+
+
+def _static_project_scalar(
+    raw: str,
+    start: int,
+    *,
+    dialect: _QueryDialect,
+) -> str | None:
+    index = start
+    while index < len(raw) and raw[index].isspace():
+        index += 1
+    if index >= len(raw):
+        return None
+    if raw[index] in {"'", '"'}:
+        parsed = _decode_query_literal(raw, index, dialect=dialect)
+        return parsed[0] if parsed is not None else None
+    match = re.match(r"[A-Za-z0-9_-]+", raw[index:])
+    return match.group(0) if match is not None else None
+
+
+def _matching_query_parenthesis(
+    raw: str,
+    opening: int,
+    *,
+    dialect: _QueryDialect,
+) -> int | None:
+    depth = 1
+    quote: str | None = None
+    index = opening + 1
+    while index < len(raw):
+        char = raw[index]
+        if quote is not None:
+            if dialect.backslash_escapes_quotes and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if (
+                    dialect.doubled_quotes_escape
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == quote
+                ):
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def _split_query_values(raw: str, *, dialect: _QueryDialect) -> tuple[str, ...]:
+    values: list[str] = []
+    start = 0
+    depth = 0
+    quote: str | None = None
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if quote is not None:
+            if dialect.backslash_escapes_quotes and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if (
+                    dialect.doubled_quotes_escape
+                    and index + 1 < len(raw)
+                    and raw[index + 1] == quote
+                ):
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            values.append(raw[start:index])
+            start = index + 1
+        index += 1
+    values.append(raw[start:])
+    return tuple(values)
+
+
+def _decode_static_project_value(raw: str, *, dialect: _QueryDialect) -> str | None:
+    value = raw.strip()
+    if not value:
+        return None
+    if value[0] in {"'", '"'}:
+        parsed = _decode_query_literal(value, 0, dialect=dialect)
+        if parsed is None or parsed[1] != len(value):
+            return None
+        return parsed[0]
+    return value if re.fullmatch(r"[A-Za-z0-9_-]+", value) else None
+
+
+def _decode_query_literal(
+    raw: str,
+    opening: int,
+    *,
+    dialect: _QueryDialect,
+) -> tuple[str, int] | None:
+    quote = raw[opening]
+    decoded: list[str] = []
+    index = opening + 1
+    while index < len(raw):
+        char = raw[index]
+        if dialect.backslash_escapes_quotes and char == "\\":
+            if index + 1 >= len(raw):
+                return None
+            decoded.append(raw[index + 1])
+            index += 2
+            continue
+        if char == quote:
+            if dialect.doubled_quotes_escape and index + 1 < len(raw) and raw[index + 1] == quote:
+                decoded.append(quote)
+                index += 2
+                continue
+            return "".join(decoded), index + 1
+        decoded.append(char)
+        index += 1
+    return None
+
+
+def _reject_conflicting_projects(
+    requested_projects: tuple[str, ...], allowed: tuple[str, ...]
+) -> None:
     allowed_set = set(allowed)
-    requested = {
-        project
-        for raw in raw_values
-        for project in _project_values(raw)
-        if project not in allowed_set
-    }
+    requested = {project for project in requested_projects if project not in allowed_set}
     if requested:
         raise HTTPException(
             status_code=403,
             detail="work query references a project outside scope",
         )
-
-
-def _project_values(raw: str) -> tuple[str, ...]:
-    value = raw.strip()
-    if value.startswith("(") and value.endswith(")"):
-        value = value[1:-1]
-    parts = [part.strip().strip("\"'") for part in value.split(",")]
-    return tuple(part for part in parts if part)
 
 
 def _jql_value(value: str) -> str:
@@ -699,20 +1257,23 @@ async def translate_work_query(
     binding = await _resolve_adapter(
         resolver, identity, body.connection_id or connection_id, selected_project
     )
-    _require_project_bound(binding)
-    external_project = _external_query_project(binding)
-    context = QueryContext(
-        project_id=selected_project,
-        hints={"project": external_project} if external_project is not None else {},
-    )
-    with adapter_errors():
-        translated = await binding.adapter.translate_query(body.text, context=context)
-    if translated.provider.casefold() != binding.provider:
-        raise HTTPException(
-            status_code=502,
-            detail="work-tracking adapter returned an inconsistent provider",
+    try:
+        _require_project_bound(binding)
+        external_project = _external_query_project(binding)
+        context = QueryContext(
+            project_id=selected_project,
+            hints={"project": external_project} if external_project is not None else {},
         )
-    return translated
+        boundary = adapter_errors()
+        with boundary:
+            translated = await binding.adapter.translate_query(body.text, context=context)
+            return validated_provider_query(
+                translated,
+                expected_provider=binding.provider,
+            )
+        boundary.raise_if_error()
+    finally:
+        await _close_work_tracking_adapter(binding.adapter)
 
 
 @router.post("/query/execute", operation_id="executeWorkQuery", response_model=WorkItemPage)
@@ -728,13 +1289,21 @@ async def execute_work_query(
     binding = await _resolve_adapter(
         resolver, identity, body.connection_id or connection_id, selected_project
     )
-    _require_project_bound(binding)
-    _require_matching_provider(binding, body.query)
-    external_project = _external_query_project(binding)
-    allowed_projects = (external_project,) if external_project is not None else None
-    scoped_query = _constrain_translated_query(body.query, allowed_projects)
-    with adapter_errors():
-        return await binding.adapter.execute_query(scoped_query, page=page)
+    try:
+        _require_project_bound(binding)
+        _require_matching_provider(binding, body.query)
+        external_project = _external_query_project(binding)
+        allowed_projects = (external_project,) if external_project is not None else None
+        scoped_query = _constrain_translated_query(body.query, allowed_projects)
+        boundary = adapter_errors()
+        with boundary:
+            return validated_provider_work_item_page(
+                await binding.adapter.execute_query(scoped_query, page=page),
+                requested_page=page,
+            )
+        boundary.raise_if_error()
+    finally:
+        await _close_work_tracking_adapter(binding.adapter)
 
 
 # ── Item passthrough ─────────────────────────────────────────────────────────
@@ -751,14 +1320,21 @@ async def list_work_items(
 ) -> Any:
     filters = WorkItemFilters(status=status, kind=kind, text=q)
     page = _provider_page(offset, limit)
-    with adapter_errors():
-        return await binding.adapter.list_items(filters, page=page)
+    boundary = adapter_errors()
+    with boundary:
+        return validated_provider_work_item_page(
+            await binding.adapter.list_items(filters, page=page),
+            requested_page=page,
+        )
+    boundary.raise_if_error()
 
 
 @router.get("/items/{key}", operation_id="getWorkItem", response_model=WorkItem)
 async def get_work_item(key: Annotated[ResourceId, Path()], binding: AdapterDep) -> Any:
-    with adapter_errors():
-        return await binding.adapter.get_item(key)
+    boundary = adapter_errors()
+    with boundary:
+        return validated_provider_work_item(await binding.adapter.get_item(key))
+    boundary.raise_if_error()
 
 
 @router.post(
@@ -782,34 +1358,41 @@ async def create_work_item(
     selection = await _select_mutation_connection(
         resolver, identity, connection_id, selected_project
     )
-    with adapter_errors():
-        replay_create = getattr(mutations, "replay_create", None)
-        replay = (
-            await cast(Callable[..., Awaitable[Any]], replay_create)(
+    binding = selection.prebuilt
+    try:
+        boundary = adapter_errors()
+        with boundary:
+            replay_create = getattr(mutations, "replay_create", None)
+            replay = (
+                await cast(Callable[..., Awaitable[Any]], replay_create)(
+                    draft=draft,
+                    identity=identity,
+                    project_id=selection.selected_project,
+                    connection_id=selection.connection_id,
+                    connection_persisted=selection.connection_persisted,
+                    connection_version=selection.connection_version,
+                    idempotency_key=idempotency_key,
+                )
+                if callable(replay_create)
+                else None
+            )
+            if replay is not None:
+                return replay
+            binding = await _build_mutation_adapter(resolver, selection)
+            return await mutations.create(
+                adapter=binding.adapter,
                 draft=draft,
                 identity=identity,
-                project_id=selection.selected_project,
-                connection_id=selection.connection_id,
-                connection_persisted=selection.connection_persisted,
-                connection_version=selection.connection_version,
+                project_id=binding.selected_project,
+                connection_id=binding.connection_id,
+                connection_persisted=binding.connection_persisted,
+                connection_version=binding.connection_version,
                 idempotency_key=idempotency_key,
             )
-            if callable(replay_create)
-            else None
-        )
-        if replay is not None:
-            return replay
-        binding = await _build_mutation_adapter(resolver, selection)
-        return await mutations.create(
-            adapter=binding.adapter,
-            draft=draft,
-            identity=identity,
-            project_id=binding.selected_project,
-            connection_id=binding.connection_id,
-            connection_persisted=binding.connection_persisted,
-            connection_version=binding.connection_version,
-            idempotency_key=idempotency_key,
-        )
+        boundary.raise_if_error()
+    finally:
+        if binding is not None:
+            await _close_work_tracking_adapter(binding.adapter)
 
 
 @router.post(
@@ -833,36 +1416,43 @@ async def enrich_work_item(
     selection = await _select_mutation_connection(
         resolver, identity, connection_id, selected_project
     )
-    with adapter_errors():
-        replay_enrich = getattr(mutations, "replay_enrich", None)
-        replay = (
-            await cast(Callable[..., Awaitable[Any]], replay_enrich)(
+    binding = selection.prebuilt
+    try:
+        boundary = adapter_errors()
+        with boundary:
+            replay_enrich = getattr(mutations, "replay_enrich", None)
+            replay = (
+                await cast(Callable[..., Awaitable[Any]], replay_enrich)(
+                    key=key,
+                    enrichment=enrichment,
+                    identity=identity,
+                    project_id=selection.selected_project,
+                    connection_id=selection.connection_id,
+                    connection_persisted=selection.connection_persisted,
+                    connection_version=selection.connection_version,
+                    idempotency_key=idempotency_key,
+                )
+                if callable(replay_enrich)
+                else None
+            )
+            if replay is not None:
+                return replay
+            binding = await _build_mutation_adapter(resolver, selection)
+            return await mutations.enrich(
+                adapter=binding.adapter,
                 key=key,
                 enrichment=enrichment,
                 identity=identity,
-                project_id=selection.selected_project,
-                connection_id=selection.connection_id,
-                connection_persisted=selection.connection_persisted,
-                connection_version=selection.connection_version,
+                project_id=binding.selected_project,
+                connection_id=binding.connection_id,
+                connection_persisted=binding.connection_persisted,
+                connection_version=binding.connection_version,
                 idempotency_key=idempotency_key,
             )
-            if callable(replay_enrich)
-            else None
-        )
-        if replay is not None:
-            return replay
-        binding = await _build_mutation_adapter(resolver, selection)
-        return await mutations.enrich(
-            adapter=binding.adapter,
-            key=key,
-            enrichment=enrichment,
-            identity=identity,
-            project_id=binding.selected_project,
-            connection_id=binding.connection_id,
-            connection_persisted=binding.connection_persisted,
-            connection_version=binding.connection_version,
-            idempotency_key=idempotency_key,
-        )
+        boundary.raise_if_error()
+    finally:
+        if binding is not None:
+            await _close_work_tracking_adapter(binding.adapter)
 
 
 # ── Saved queries ────────────────────────────────────────────────────────────
@@ -911,10 +1501,18 @@ async def create_saved_query(
         description=body.description,
         created_by=identity.name,
     )
+    write_error: HTTPException | None = None
+    created: Any = None
     try:
-        return await repository.add(row)
-    except ValueError as exc:  # unique (project_id, name) collision
-        raise HTTPException(status_code=409, detail="saved query name already exists") from exc
+        created = await repository.add(row)
+    except SavedQueryNameConflictError:
+        write_error = HTTPException(status_code=409, detail="saved query name already exists")
+    except ValueError:
+        write_error = HTTPException(status_code=422, detail="invalid saved query")
+    if write_error is not None:
+        raise write_error
+    assert created is not None
+    return created
 
 
 @router.get("/saved-queries/{saved_query_id}", operation_id="getSavedQuery")
@@ -947,10 +1545,17 @@ async def update_saved_query(
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         return SavedQueryOut.model_validate(row)
+    write_error: HTTPException | None = None
+    updated: Any = None
     try:
         updated = await repository.update(row, changes)
-    except ValueError as exc:  # unique (project_id, name) collision
-        raise HTTPException(status_code=409, detail="saved query name already exists") from exc
+    except SavedQueryNameConflictError:
+        write_error = HTTPException(status_code=409, detail="saved query name already exists")
+    except ValueError:
+        write_error = HTTPException(status_code=422, detail="invalid saved query update")
+    if write_error is not None:
+        raise write_error
+    assert updated is not None
     return SavedQueryOut.model_validate(updated)
 
 

@@ -21,9 +21,13 @@
  * Every no-op returns the SAME state reference so effect loops that dispatch
  * idempotent discovery events settle without re-rendering.
  */
-import type { GateInterruptPayload } from '@apex/pipeline-events'
+import type { EngineRetryKind, GateInterruptPayload } from '@apex/pipeline-events'
 
-export type GateKind = 'prompt_review' | 'phase_review'
+export type GateKind = 'prompt_review' | 'phase_review' | EngineRetryKind
+
+export function isEngineRetryGateKind(kind: GateKind): kind is EngineRetryKind {
+  return kind.startsWith('engine_') && kind.endsWith('_retry')
+}
 
 /** Normalized pending interrupt (id + kind guaranteed; payload null on drift). */
 export interface GateInstance {
@@ -56,10 +60,31 @@ export interface GateDraftPatch {
   note?: string
 }
 
-export type GateAction = 'approve' | 'modify' | 'skip_phase' | 'abort' | 'revise' | 'discuss'
+export type GateAction =
+  | 'approve'
+  | 'modify'
+  | 'skip_phase'
+  | 'abort'
+  | 'revise'
+  | 'discuss'
+  | 'retry'
+
+/** Actions valid for each gate family; payload.actions can only narrow this set. */
+export const GATE_KIND_ACTIONS: Record<GateKind, readonly GateAction[]> = {
+  prompt_review: ['approve', 'modify', 'skip_phase', 'abort'],
+  phase_review: ['approve', 'revise', 'discuss', 'abort'],
+  engine_provision_retry: ['retry'],
+  engine_cleanup_retry: ['retry'],
+  engine_collection_retry: ['retry'],
+  engine_collection_settle_retry: ['retry'],
+}
+
+export function isActionAllowedForGate(kind: GateKind, action: GateAction): boolean {
+  return GATE_KIND_ACTIONS[kind].includes(action)
+}
 
 /** Actions whose 202 means "the agent is working and the gate will reopen". */
-export type ReopeningAction = Extract<GateAction, 'modify' | 'discuss' | 'revise'>
+export type ReopeningAction = Extract<GateAction, 'modify' | 'discuss' | 'revise' | 'retry'>
 
 export type GateMachineState =
   | { tag: 'no_gate' }
@@ -200,7 +225,10 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
     case 'submitting':
       switch (event.type) {
         case 'RESUME_ACCEPTED':
-          return state.action === 'modify' || state.action === 'discuss' || state.action === 'revise'
+          return state.action === 'modify' ||
+            state.action === 'discuss' ||
+            state.action === 'revise' ||
+            state.action === 'retry'
             ? { tag: 'awaiting_agent', gate: state.gate, action: state.action }
             : GATE_MACHINE_INITIAL
         case 'RESUME_REJECTED':

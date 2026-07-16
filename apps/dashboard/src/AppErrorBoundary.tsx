@@ -17,8 +17,10 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     return { error }
   }
 
-  componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error('[AppErrorBoundary] render failure', { error, componentStack: info.componentStack })
+  componentDidCatch(_error: Error, info: ErrorInfo): void {
+    console.error('[AppErrorBoundary] render failure', {
+      componentStack: info.componentStack,
+    })
   }
 
   render() {
@@ -27,7 +29,7 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
     return (
       <ProblemCard
         title="Something went wrong"
-        message={this.state.error.message || 'The dashboard could not render.'}
+        message="The dashboard could not render this view."
         onRetry={() => {
           this.setState({ error: null })
         }}

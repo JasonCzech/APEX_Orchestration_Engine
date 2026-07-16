@@ -1,6 +1,7 @@
 """Facade mapping + /pipelines read routes against a fake loopback client."""
 
 import json
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -12,15 +13,22 @@ from langgraph_sdk.errors import NotFoundError
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
-from apex.domain.pipeline import PHASE_ORDER
+from apex.domain.pipeline import PHASE_ORDER, Phase
+from apex.graphs.pipeline.gates import build_prompt_review_payload
 from apex.routers.pipelines import get_pipeline_read_service, router
+from apex.services import pipeline_read as pipeline_read_module
 from apex.services.pipeline_public import (
     MAX_PUBLIC_GATE_BYTES,
     MAX_PUBLIC_PIPELINE_STATE_BYTES,
+    public_gate,
+    public_pipeline_state,
 )
 from apex.services.pipeline_read import (
     MAX_PIPELINE_QUERY_CHARS,
     MAX_PIPELINE_TEXT_SCAN_RECORDS,
+    MAX_PUBLIC_PENDING_GATES,
+    MAX_PUBLIC_PENDING_GATES_BYTES,
+    MAX_PUBLIC_PENDING_GATES_NODES,
     PIPELINE_SUMMARY_EXTRACT,
     PIPELINE_SUMMARY_SELECT,
     PIPELINE_TEXT_SCAN_PAGE_SIZE,
@@ -32,6 +40,406 @@ from apex.services.pipeline_read import (
 )
 
 JsonDict = dict[str, Any]
+_MISSING = object()
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "password=malformed-config-canary",
+        ["password=malformed-config-canary"],
+    ],
+)
+def test_public_pipeline_state_omits_non_mapping_legacy_run_config(malformed: object) -> None:
+    projected = public_pipeline_state({"run_config": malformed})
+
+    assert "run_config" not in projected
+    assert "malformed-config-canary" not in json.dumps(projected)
+
+
+def test_public_pipeline_state_safely_handles_cyclic_legacy_run_config() -> None:
+    malformed: JsonDict = {"password": "cyclic-config-canary"}
+    malformed["cycle"] = malformed
+
+    projected = public_pipeline_state({"run_config": malformed})
+
+    assert "cyclic-config-canary" not in json.dumps(projected)
+
+
+def test_public_pipeline_state_bounds_nonpublic_run_config_before_model_validation() -> None:
+    oversized = {
+        "title": "safe public title",
+        "prompt_overrides": {"story_analysis": "x" * 5_000_001},
+    }
+
+    projected = public_pipeline_state({"title": "visible", "run_config": oversized})
+
+    assert projected == {"title": "visible", "current_phase": None}
+
+
+def test_public_projections_quarantine_unhashable_and_huge_legacy_scalars() -> None:
+    projected = public_pipeline_state(
+        {
+            "title": "visible",
+            "phases_plan": [["not-a-phase"]],
+            "current_phase": ["not-a-phase"],
+            "phase_results": {
+                "execution": {
+                    "status": ["succeeded"],
+                    "attempt": 1 << 10_000,
+                    "duration_s": 1 << 10_000,
+                    "resolved_prompt_source": {"origin": ["catalog"]},
+                    "approvals": [{"id": "a-1", "gate": ["prompt_review"], "action": "approve"}],
+                    "tool_calls": [{"id": "t-1", "tool": "fetch", "status": ["ok"]}],
+                }
+            },
+        }
+    )
+    gate = public_gate(
+        {
+            "interrupt_id": "interrupt-1",
+            "kind": ["prompt_review"],
+            "phase": ["execution"],
+            "payload": {"actions": [["approve"]]},
+        },
+        include_payload=True,
+    )
+
+    assert projected == {
+        "title": "visible",
+        "phase_results": {"execution": {"phase": "execution"}},
+    }
+    assert gate is None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "engine_provision_retry",
+        "engine_cleanup_retry",
+        "engine_collection_retry",
+        "engine_collection_settle_retry",
+    ],
+)
+def test_public_gate_projects_engine_recovery_interrupts(kind: str) -> None:
+    gate = public_gate(
+        {
+            "interrupt_id": "recovery-interrupt-1",
+            "kind": kind,
+            "phase": "execution",
+            "payload": {
+                "schema_version": 1,
+                "kind": kind,
+                "phase": "execution",
+                "attempt": 3,
+                "thread_id": "internal-thread-id",
+                "actions": ["retry"],
+                "error": "provider temporarily unavailable",
+                "message": "Resume the exact durable provider attempt.",
+                "connection_id": "must-not-project",
+            },
+        },
+        include_payload=True,
+    )
+
+    assert gate == {
+        "interrupt_id": "recovery-interrupt-1",
+        "kind": kind,
+        "phase": "execution",
+        "payload": {
+            "schema_version": 1,
+            "kind": kind,
+            "phase": "execution",
+            "actions": ["retry"],
+            "attempt": 3,
+            "thread_id": "internal-thread-id",
+            "message": "Resume the exact durable provider attempt.",
+            "error": "provider temporarily unavailable",
+        },
+    }
+
+
+def test_public_gate_rejects_engine_recovery_interrupt_on_another_phase() -> None:
+    assert (
+        public_gate(
+            {
+                "interrupt_id": "recovery-interrupt-1",
+                "kind": "engine_cleanup_retry",
+                "phase": "reporting",
+                "payload": {},
+            },
+            include_payload=True,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    [
+        pytest.param("schema_version", True, id="schema-version-bool"),
+        pytest.param("schema_version", 2, id="schema-version-unknown"),
+        pytest.param("kind", "phase_review", id="payload-kind-mismatch"),
+        pytest.param("phase", "reporting", id="payload-phase-mismatch"),
+        pytest.param("actions", _MISSING, id="actions-missing"),
+        pytest.param("actions", [], id="actions-empty"),
+        pytest.param("actions", ["approve"], id="actions-wrong"),
+        pytest.param("actions", ["retry", "retry"], id="actions-duplicate"),
+        pytest.param("attempt", True, id="attempt-bool"),
+        pytest.param("attempt", 0, id="attempt-low"),
+        pytest.param("attempt", 1_000_001, id="attempt-high"),
+        pytest.param("thread_id", _MISSING, id="thread-id-missing"),
+        pytest.param("thread_id", "", id="thread-id-empty"),
+        pytest.param("thread_id", "x" * 256, id="thread-id-long"),
+        pytest.param("message", _MISSING, id="message-missing"),
+        pytest.param("message", "x" * 4_097, id="message-long"),
+        pytest.param("error", 42, id="error-non-string"),
+        pytest.param("error", "x" * 4_097, id="error-long"),
+    ],
+)
+def test_public_gate_rejects_malformed_engine_recovery_contract(
+    field: str,
+    malformed: object,
+) -> None:
+    payload: JsonDict = {
+        "schema_version": 1,
+        "kind": "engine_cleanup_retry",
+        "phase": "execution",
+        "attempt": 3,
+        "thread_id": "thread-1",
+        "actions": ["retry"],
+        "message": "Resume the exact durable provider attempt.",
+        "error": "provider temporarily unavailable",
+    }
+    if malformed is _MISSING:
+        payload.pop(field)
+    else:
+        payload[field] = malformed
+
+    assert (
+        public_gate(
+            {
+                "interrupt_id": "recovery-interrupt-1",
+                "kind": "engine_cleanup_retry",
+                "phase": "execution",
+                "payload": payload,
+            },
+            include_payload=True,
+        )
+        is None
+    )
+
+
+def test_public_gate_allows_engine_recovery_error_to_be_absent() -> None:
+    gate = public_gate(
+        {
+            "interrupt_id": "recovery-interrupt-1",
+            "kind": "engine_cleanup_retry",
+            "phase": "execution",
+            "payload": {
+                "schema_version": 1,
+                "kind": "engine_cleanup_retry",
+                "phase": "execution",
+                "attempt": 3,
+                "thread_id": "thread-1",
+                "actions": ["retry"],
+                "message": "Resume the exact durable provider attempt.",
+            },
+        },
+        include_payload=True,
+    )
+
+    assert gate is not None
+    assert "error" not in gate["payload"]
+
+
+def test_public_gate_rejects_hostile_recovery_scalars_without_comparing_them() -> None:
+    class HostileEquality:
+        def __eq__(self, _other: object) -> bool:
+            raise AssertionError("untyped recovery fields must not be compared")
+
+    hostile = HostileEquality()
+    for field, malformed in (
+        ("kind", hostile),
+        ("phase", hostile),
+        ("actions", [hostile]),
+    ):
+        payload: JsonDict = {
+            "schema_version": 1,
+            "kind": "engine_cleanup_retry",
+            "phase": "execution",
+            "attempt": 3,
+            "thread_id": "thread-1",
+            "actions": ["retry"],
+            "message": "Resume the exact durable provider attempt.",
+        }
+        payload[field] = malformed
+
+        assert (
+            public_gate(
+                {
+                    "interrupt_id": "recovery-interrupt-1",
+                    "kind": "engine_cleanup_retry",
+                    "phase": "execution",
+                    "payload": payload,
+                },
+                include_payload=True,
+            )
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "schema_version": 1,
+            "kind": "prompt_review",
+            "phase": "execution",
+            "actions": ["approve", "modify", "skip_phase", "abort"],
+        },
+        {
+            "schema_version": 1,
+            "kind": "phase_review",
+            "phase": "execution",
+            "actions": ["approve", "revise", "discuss", "abort"],
+        },
+        {
+            "schema_version": 1,
+            "kind": "prompt_review",
+            "phase": "execution",
+            "prompt": {
+                "system": None,
+                "user": " ",
+                "application": None,
+                "source": {"origin": "catalog", "ref": None},
+            },
+            "additional_context": "",
+            "context_packets": [],
+            "tools": [],
+            "editable": True,
+            "actions": ["approve", "modify", "skip_phase", "abort"],
+        },
+        {
+            "schema_version": 1,
+            "kind": "phase_review",
+            "phase": "execution",
+            "summary": None,
+            "result_preview": {"summary": None, "reasoning_digest": None},
+            "artifacts": [],
+            "warnings": [],
+            "dialogue_tail": [],
+            "actions": ["approve", "revise", "discuss", "abort"],
+        },
+    ],
+)
+def test_public_gate_rejects_incomplete_or_empty_human_review_contract(
+    payload: JsonDict,
+) -> None:
+    assert (
+        public_gate(
+            {
+                "interrupt_id": "review-interrupt-1",
+                "kind": payload["kind"],
+                "phase": payload["phase"],
+                "payload": payload,
+            },
+            include_payload=True,
+        )
+        is None
+    )
+
+
+def test_public_gate_preserves_complete_nullable_review_fields() -> None:
+    payload: JsonDict = {
+        "schema_version": 1,
+        "kind": "prompt_review",
+        "phase": "execution",
+        "prompt": {
+            "system": "system",
+            "user": "user",
+            "application": None,
+            "source": {"origin": "catalog", "ref": None},
+        },
+        "additional_context": "",
+        "context_packets": [
+            {"id": "packet-1", "source": "jira", "title": "Story", "summary": None}
+        ],
+        "tools": [],
+        "editable": True,
+        "actions": ["approve", "modify", "skip_phase", "abort"],
+    }
+
+    gate = public_gate(
+        {
+            "interrupt_id": "review-interrupt-1",
+            "kind": "prompt_review",
+            "phase": "execution",
+            "payload": payload,
+        },
+        include_payload=True,
+    )
+
+    assert gate is not None
+    assert gate["payload"]["prompt"]["application"] is None
+    assert gate["payload"]["prompt"]["source"]["ref"] is None
+    assert gate["payload"]["context_packets"][0]["summary"] is None
+
+    phase_payload: JsonDict = {
+        "schema_version": 1,
+        "kind": "phase_review",
+        "phase": "execution",
+        "summary": None,
+        "result_preview": {"summary": None, "reasoning_digest": None},
+        "artifacts": [],
+        "warnings": ["Review the provider warning."],
+        "dialogue_tail": [],
+        "actions": ["approve", "revise", "discuss", "abort"],
+    }
+    phase_gate = public_gate(
+        {
+            "interrupt_id": "phase-review-interrupt-1",
+            "kind": "phase_review",
+            "phase": "execution",
+            "payload": phase_payload,
+        },
+        include_payload=True,
+    )
+
+    assert phase_gate is not None
+    assert phase_gate["payload"]["summary"] is None
+    assert phase_gate["payload"]["result_preview"] == {
+        "summary": None,
+        "reasoning_digest": None,
+    }
+
+
+def test_public_gate_keeps_generated_explicitly_blank_prompt_override() -> None:
+    payload = build_prompt_review_payload(
+        Phase.EXECUTION,
+        {"system": "", "user": "", "application": None},
+        {"origin": "run_override", "ref": None},
+        [],
+        [],
+    )
+
+    gate = public_gate(
+        {
+            "interrupt_id": "blank-prompt-review-1",
+            "kind": "prompt_review",
+            "phase": "execution",
+            "payload": payload,
+        },
+        include_payload=True,
+    )
+
+    assert gate is not None
+    assert gate["payload"]["prompt"] == {
+        "system": "",
+        "user": "",
+        "application": None,
+        "source": {"origin": "run_override", "ref": None},
+    }
 
 
 def _not_found() -> NotFoundError:
@@ -128,6 +536,17 @@ async def test_active_run_probe_uses_single_row_projection() -> None:
     ]
 
 
+async def test_pipeline_list_rejects_native_page_above_requested_cap() -> None:
+    class OversizedThreads(FakeThreads):
+        async def search(self, **kwargs: Any) -> list[JsonDict]:
+            return [dict(THREAD_IDLE), dict(THREAD_INTERRUPTED)]
+
+    service = PipelineReadService(FakeClient(OversizedThreads([])))
+
+    with pytest.raises(RuntimeError, match="invalid or oversized page"):
+        await service.list_pipelines(limit=1)
+
+
 async def test_graph_only_abort_paginates_beyond_sdk_default_run_page() -> None:
     class PaginatedRuns:
         def __init__(self) -> None:
@@ -173,10 +592,44 @@ async def test_graph_only_abort_paginates_beyond_sdk_default_run_page() -> None:
     assert any(call["offset"] >= 10 for call in runs.list_calls)
 
 
+async def test_abort_rejects_unsafe_native_run_id_before_cancellation() -> None:
+    class UnsafeRuns:
+        def __init__(self) -> None:
+            self.cancelled: list[str] = []
+
+        async def list(self, *_args: Any, status: str, **_kwargs: Any) -> list[JsonDict]:
+            if status == "running":
+                return [{"run_id": "password=abort-native-id-secret-canary"}]
+            return []
+
+        async def cancel(self, _thread_id: str, run_id: str) -> None:
+            self.cancelled.append(run_id)
+
+    client = FakeClient(FakeThreads([]))
+    runs = UnsafeRuns()
+    client.runs = cast(Any, runs)
+
+    with pytest.raises(RuntimeError, match="invalid identifier") as excinfo:
+        await PipelineReadService(client).abort_pipeline("thread-1")
+
+    assert "abort-native-id-secret-canary" not in str(excinfo.value)
+    assert runs.cancelled == []
+
+
 GATE_PAYLOAD = {
     "schema_version": 1,
     "kind": "prompt_review",
     "phase": "test_planning",
+    "prompt": {
+        "system": "You are the planning agent.",
+        "user": "Review the test plan.",
+        "application": None,
+        "source": {"origin": "catalog", "ref": None},
+    },
+    "additional_context": "",
+    "context_packets": [],
+    "tools": ["work_tracking.query"],
+    "editable": True,
     "actions": ["approve", "modify", "skip_phase", "abort"],
 }
 
@@ -270,6 +723,84 @@ def test_pending_gates_from_state_prefers_tasks_then_top_level() -> None:
     flat = {"tasks": [], "interrupts": [{"id": "int-8", "value": GATE_PAYLOAD}]}
     assert pending_gates_from_state(flat)[0]["interrupt_id"] == "int-8"
     assert pending_gates_from_state({}) == []
+
+
+def _pending_interrupts(start: int, count: int, *, payload: JsonDict | None = None) -> list:
+    gate_payload = payload or GATE_PAYLOAD
+    return [{"id": f"int-{index}", "value": gate_payload} for index in range(start, start + count)]
+
+
+def test_pending_gates_from_state_caps_aggregate_task_interrupts() -> None:
+    state = {
+        "tasks": [
+            {"interrupts": _pending_interrupts(0, MAX_PUBLIC_PENDING_GATES)},
+            {
+                "interrupts": _pending_interrupts(
+                    MAX_PUBLIC_PENDING_GATES,
+                    MAX_PUBLIC_PENDING_GATES,
+                )
+            },
+        ],
+        "interrupts": [],
+    }
+
+    gates = pending_gates_from_state(state)
+
+    assert len(gates) == MAX_PUBLIC_PENDING_GATES
+    assert [gate["interrupt_id"] for gate in gates] == [
+        f"int-{index}" for index in range(MAX_PUBLIC_PENDING_GATES)
+    ]
+
+
+def test_pending_gates_from_thread_caps_aggregate_interrupt_mapping() -> None:
+    first_count = 75
+    thread = {
+        "interrupts": {
+            "task-a": _pending_interrupts(0, first_count),
+            "task-b": _pending_interrupts(first_count, first_count),
+        }
+    }
+
+    gates = pending_gates_from_thread(thread)
+
+    assert len(gates) == MAX_PUBLIC_PENDING_GATES
+    assert gates[-1]["interrupt_id"] == f"int-{MAX_PUBLIC_PENDING_GATES - 1}"
+
+
+def test_pending_gate_helpers_reject_container_subclasses_without_hooks() -> None:
+    class HostileDict(dict):
+        def get(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("hostile mapping hook ran")
+
+    class HostileList(list):
+        def __len__(self) -> int:
+            raise AssertionError("hostile sequence hook ran")
+
+        def __iter__(self) -> Any:
+            raise AssertionError("hostile sequence hook ran")
+
+    assert pending_gates_from_thread(cast(Any, HostileDict())) == []
+    assert pending_gates_from_state(cast(Any, HostileDict())) == []
+    assert pending_gates_from_thread({"interrupts": cast(Any, HostileDict())}) == []
+    assert pending_gates_from_state({"tasks": cast(Any, HostileList()), "interrupts": []}) == []
+    assert (
+        pending_gates_from_state(
+            {
+                "tasks": [
+                    {
+                        "interrupts": [
+                            cast(
+                                Any,
+                                HostileDict({"id": "int-hostile", "value": GATE_PAYLOAD}),
+                            )
+                        ]
+                    }
+                ],
+                "interrupts": [],
+            }
+        )
+        == []
+    )
 
 
 def test_map_thread_summary_shapes_pipeline_row() -> None:
@@ -434,6 +965,159 @@ def test_get_pipeline_returns_state_values_and_interrupts() -> None:
     assert body["pending_gate"]["interrupt_id"] == "int-1"
 
 
+def test_get_pipeline_caps_aggregate_gate_payload_response() -> None:
+    payload = {**GATE_PAYLOAD, "additional_context": "C" * 50_000}
+    state = {
+        "values": THREAD_INTERRUPTED["values"],
+        "tasks": [
+            {"interrupts": _pending_interrupts(0, MAX_PUBLIC_PENDING_GATES, payload=payload)},
+            {
+                "interrupts": _pending_interrupts(
+                    MAX_PUBLIC_PENDING_GATES,
+                    MAX_PUBLIC_PENDING_GATES,
+                    payload=payload,
+                )
+            },
+        ],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.get("/v1/pipelines/t-1")
+
+    assert response.status_code == 200
+    body = response.json()
+    gates = body["interrupts"]
+    assert 1 <= len(gates) < MAX_PUBLIC_PENDING_GATES
+    assert [gate["interrupt_id"] for gate in gates] == [
+        f"int-{index}" for index in range(len(gates))
+    ]
+    encoded_gates = [json.dumps(gate, separators=(",", ":")).encode() for gate in gates]
+    assert all(len(gate) <= MAX_PUBLIC_GATE_BYTES for gate in encoded_gates)
+    assert sum(map(len, encoded_gates)) + max(len(gates) - 1, 0) + 2 <= (
+        MAX_PUBLIC_PENDING_GATES_BYTES
+    )
+    assert len(response.content) <= (
+        MAX_PUBLIC_PENDING_GATES_BYTES + MAX_PUBLIC_PIPELINE_STATE_BYTES + 100_000
+    )
+
+
+def test_pending_gate_projection_enforces_aggregate_node_budget_without_large_preflight_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        **GATE_PAYLOAD,
+        "context_packets": [
+            {"id": str(index), "source": "doc", "title": "title", "summary": "summary"}
+            for index in range(64)
+        ],
+        "tools": [f"tool-{index}" for index in range(64)],
+    }
+    measured_candidates: list[str] = []
+    original_cost = pipeline_read_module._bounded_json_cost
+
+    def tracked_cost(value: JsonDict, *, max_bytes: int, max_nodes: int):  # noqa: ANN202
+        assert type(value) is dict
+        assert type(value.get("interrupt_id")) is str
+        assert "interrupts" not in value
+        measured_candidates.append(value["interrupt_id"])
+        return original_cost(value, max_bytes=max_bytes, max_nodes=max_nodes)
+
+    monkeypatch.setattr(pipeline_read_module, "_bounded_json_cost", tracked_cost)
+    state = {
+        "values": THREAD_INTERRUPTED["values"],
+        "tasks": [
+            {"interrupts": _pending_interrupts(0, MAX_PUBLIC_PENDING_GATES, payload=payload)}
+        ],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.get("/v1/pipelines/t-1")
+
+    assert response.status_code == 200
+    gates = response.json()["interrupts"]
+    assert 1 <= len(gates) < MAX_PUBLIC_PENDING_GATES
+    assert measured_candidates == [f"int-{index}" for index in range(len(gates) + 1)]
+    # The aggregate JSON tree stays below the node cap; preflight only ever
+    # encodes one bounded gate dictionary, never the full provider collection.
+    stack: list[Any] = [gates]
+    node_cost = 0
+    while stack:
+        current = stack.pop()
+        node_cost += 1
+        if type(current) is dict:
+            stack.extend(current.values())
+        elif type(current) is list:
+            stack.extend(current)
+    assert node_cost <= MAX_PUBLIC_PENDING_GATES_NODES
+    assert len(json.dumps(gates, separators=(",", ":")).encode()) <= (
+        MAX_PUBLIC_PENDING_GATES_BYTES
+    )
+
+
+async def test_get_pipeline_rejects_provider_container_subclasses_without_hooks() -> None:
+    class HostileDict(dict):
+        def get(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("hostile provider mapping hook ran")
+
+    hostile_thread = HostileDict(THREAD_INTERRUPTED)
+    client = FakeClient(
+        FakeThreads(
+            cast(Any, [hostile_thread]),
+            states={"t-1": {"values": {}, "tasks": [], "interrupts": []}},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="invalid response"):
+        await PipelineReadService(client).get_pipeline("t-1")
+
+
+def test_get_pipeline_engine_retry_gate_matches_shared_consumer_fixture() -> None:
+    payload = {
+        "schema_version": 1,
+        "kind": "engine_cleanup_retry",
+        "phase": "execution",
+        "attempt": 2,
+        "thread_id": "t-1",
+        "actions": ["retry"],
+        "error": "provider abort unavailable",
+        "message": "Resume the exact durable provider attempt.",
+        "connection_id": "must-not-project",
+    }
+    state = {
+        "values": THREAD_INTERRUPTED["values"],
+        "tasks": [
+            {
+                "interrupts": [
+                    {
+                        "id": "engine-retry-interrupt-1",
+                        "value": payload,
+                    }
+                ]
+            }
+        ],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    expected = json.loads(
+        (
+            Path(__file__).parents[2]
+            / "packages/pipeline-events/tests/fixtures/public-engine-retry-gate.json"
+        ).read_text()
+    )
+
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.get("/v1/pipelines/t-1")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["interrupts"] == [expected]
+    assert body["pending_gate"] == {key: expected[key] for key in ("interrupt_id", "kind", "phase")}
+
+
 def test_get_pipeline_projects_checkpoint_and_gate_without_operational_secrets() -> None:
     canary = "PIPELINE_PUBLIC_STATE_SECRET_CANARY"
     bearer_canary = "PIPELINE_CONFIG_BEARER_CANARY"
@@ -563,24 +1247,25 @@ def test_get_pipeline_projects_checkpoint_and_gate_without_operational_secrets()
     assert "request" not in public_state
     assert "unknown_server_state" not in public_state
     assert public_state["engine_handle"] == {"engine": "sim", "external_run_id": "run-1"}
-    assert set(public_state["run_config"]).isdisjoint(
-        {
-            "assistant_id",
-            "project_id",
-            "app_id",
-            "environment_id",
-            "connections",
-            "environment_target",
-            "environment_target_version",
-            "prompt_overrides",
-            "pre_execution_context",
-        }
-    )
-    assert public_state["run_config"]["engine"] == "Bearer [REDACTED]"
-    assert public_state["run_config"]["load_test"] == {
-        "title": "https://load.test/?X-Amz-Signature=[REDACTED]",
-        "vusers": 10,
-    }
+    # Credential-bearing legacy config now fails closed as a whole. If a future
+    # projector recovers safe display fields, server-only fields must remain absent.
+    if (run_config := public_state.get("run_config")) is not None:
+        assert set(run_config).isdisjoint(
+            {
+                "assistant_id",
+                "project_id",
+                "app_id",
+                "environment_id",
+                "connections",
+                "environment_target",
+                "environment_target_version",
+                "prompt_overrides",
+                "pre_execution_context",
+            }
+        )
+        assert set(run_config.get("load_test") or {}).issubset(
+            {"title", "vusers", "ramp_s", "duration_s", "slas"}
+        )
     execution = public_state["phase_results"]["execution"]
     assert execution["summary"] == "token=[REDACTED]"
     assert execution["tool_calls"] == [
@@ -596,12 +1281,14 @@ def test_get_pipeline_projects_checkpoint_and_gate_without_operational_secrets()
     assert "engine_handle" not in execution
     assert public_state["artifacts"][0].keys().isdisjoint({"key", "artifact_connection_id"})
     assert public_state["context_packets"][0].keys().isdisjoint({"text", "ref"})
-    interrupt = body["interrupts"][0]
-    assert interrupt["payload"]["prompt"]["system"] == "token=[REDACTED]"
-    assert "provider_token" not in interrupt["payload"]
+    # A passive checkpoint summary may be safely redacted, but an actionable
+    # review must be a faithful projection of what the graph will execute.
+    # Quarantine this legacy gate instead of offering approval over hidden text.
+    assert body["interrupts"] == []
+    assert body["pending_gate"] is None
 
 
-def test_get_pipeline_enforces_aggregate_state_and_gate_projection_budgets() -> None:
+def test_get_pipeline_quarantines_gate_that_cannot_fit_complete_public_contract() -> None:
     large_prompt = "P" * 100_000
     values = {
         "title": "Large legacy checkpoint",
@@ -656,21 +1343,15 @@ def test_get_pipeline_enforces_aggregate_state_and_gate_projection_budgets() -> 
     assert response.status_code == 200
     body = response.json()
     encoded_state = json.dumps(body["values"], separators=(",", ":")).encode()
-    encoded_gate = json.dumps(body["interrupts"][0], separators=(",", ":")).encode()
     assert len(encoded_state) <= MAX_PUBLIC_PIPELINE_STATE_BYTES
-    assert len(encoded_gate) <= MAX_PUBLIC_GATE_BYTES
     assert "prompt_reviews" not in body["values"]
     assert body["values"]["phase_results"]["execution"] == {
         "phase": "execution",
         "status": "succeeded",
         "attempt": 1,
     }
-    assert set(body["interrupts"][0]["payload"]) == {
-        "schema_version",
-        "kind",
-        "phase",
-        "actions",
-    }
+    assert body["interrupts"] == []
+    assert body["pending_gate"] is None
 
 
 def test_get_pipeline_quarantines_malformed_legacy_checkpoint_and_interrupts() -> None:
@@ -915,6 +1596,64 @@ def test_patch_phase_prompt_review_rejects_credentials_before_checkpoint_write()
     assert client_obj.runs.create_calls == []
 
 
+@pytest.mark.parametrize(
+    "checkpoint",
+    [None, {"checkpoint_id": "x", "provider_blob": "x" * 100_001}],
+)
+def test_patch_phase_prompt_review_requires_a_bounded_checkpoint_cas(
+    checkpoint: JsonDict | None,
+) -> None:
+    state: JsonDict = {
+        "values": {},
+        "tasks": [],
+        "interrupts": [],
+    }
+    if checkpoint is not None:
+        state["checkpoint"] = checkpoint
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "S",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "",
+            },
+        )
+
+    assert response.status_code == 409
+    assert fake.update_calls == []
+
+
+def test_patch_phase_prompt_review_rejects_noncanonical_provider_draft() -> None:
+    canary = "legacy-application-secret-canary"
+    review = _seeded_review("S", f"Authorization: Bearer {canary}")
+    state = {
+        "values": {"prompt_reviews": {"story_analysis": review}},
+        "tasks": [],
+        "interrupts": [],
+        "checkpoint": {"checkpoint_id": "cp-unsafe-draft"},
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.patch(
+            "/v1/pipelines/t-1/phases/story_analysis/prompt-review",
+            json={
+                "system": "S2",
+                "phase_prompt": "P",
+                "application": None,
+                "additional_context": "",
+            },
+        )
+
+    assert response.status_code == 409
+    assert canary not in response.text
+    assert fake.update_calls == []
+
+
 @pytest.mark.parametrize("status", ["running", "succeeded", "failed", "aborted"])
 def test_patch_phase_prompt_review_rejects_started_or_terminal_phase(status: str) -> None:
     state = {
@@ -1055,6 +1794,7 @@ def test_patch_application_prompt_is_app_wide() -> None:
         },
         "tasks": [],
         "interrupts": [],
+        "checkpoint": {"checkpoint_id": "cp-application-wide"},
     }
     fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})  # metadata app_id="a1"
     app = make_app(FakeClient(fake), operator_identity())
@@ -1084,6 +1824,7 @@ def test_patch_application_unchanged_does_not_write_override() -> None:
         "values": {"prompt_reviews": {"story_analysis": _seeded_review("S1", "App catalog")}},
         "tasks": [],
         "interrupts": [],
+        "checkpoint": {"checkpoint_id": "cp-application-unchanged"},
     }
     fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
     app = make_app(FakeClient(fake), operator_identity())
@@ -1117,6 +1858,7 @@ def test_patch_null_application_is_truthful_and_preserves_override() -> None:
         },
         "tasks": [],
         "interrupts": [],
+        "checkpoint": {"checkpoint_id": "cp-application-preserved"},
     }
     fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
     app = make_app(FakeClient(fake), operator_identity())

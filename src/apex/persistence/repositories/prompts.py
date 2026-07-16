@@ -10,6 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.persistence.models import Prompt, PromptVersion
+from apex.persistence.repositories._conflicts import (
+    bounded_driver_message,
+    driver_constraint_name,
+)
 
 
 class DuplicatePromptKeyError(Exception):
@@ -122,6 +126,7 @@ class PromptRepository:
         The circular prompts<->prompt_versions FK forces the two-step flush:
         the pointer can only be set once the version row exists.
         """
+        duplicate_key = False
         try:
             prompt.active_version_id = None
             self._session.add(prompt)
@@ -133,8 +138,13 @@ class PromptRepository:
         except IntegrityError as exc:
             await self._session.rollback()
             if _is_duplicate_prompt_key(exc):
-                raise DuplicatePromptKeyError(str(exc.orig)) from exc
-            raise
+                duplicate_key = True
+            else:
+                raise
+        if duplicate_key:
+            # Do not retain the raw driver exception in the public conflict:
+            # constraint diagnostics can contain caller-controlled prompt keys.
+            raise DuplicatePromptKeyError("prompt key already exists")
 
     async def add_version(self, prompt: Prompt, version: PromptVersion) -> None:
         """Insert an immutable version and move the active pointer (one commit)."""
@@ -156,8 +166,8 @@ class PromptRepository:
 
 
 def _is_duplicate_prompt_key(exc: IntegrityError) -> bool:
-    constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
-    message = str(exc.orig).lower()
+    constraint_name = driver_constraint_name(exc.orig)
+    message = bounded_driver_message(exc.orig)
     return constraint_name == "uq_prompts_namespace" or (
         "uq_prompts_namespace" in message
         or (

@@ -41,7 +41,7 @@ APEX_DATABASE__URI=postgresql+asyncpg://user:pass@host:5432/apex \
 Order of a release rollout:
 
 1. `python -m apex.persistence.migrate` (run from CI/a job pod against the prod DB).
-2. `helm upgrade <release> deploy/helm/apex-orchestration-engine --set image.tag=<tag> ... --wait`
+2. `helm upgrade <release> deploy/helm/apex-orchestration-engine --set image.tag=<tag> ... --atomic --cleanup-on-fail --wait`
 3. Watch the rollout: surge-first strategy (`maxUnavailable: 0`) keeps
    `replicaCount` serving throughout.
 4. Smoke: `/ok`, then `GET /v1/system/info` with a real key.
@@ -138,7 +138,8 @@ behavior.
   the migrate-then-roll order above. A failure aborts the release.
 - **Database-role generation cleanup**
   (`databaseRoleProvisioning.cleanupOldGenerations=true`): opt in only when every
-  upgrade and rollback uses `--wait`. Its post-hook retires old login roles after
+  upgrade uses `--atomic --cleanup-on-fail --wait` and every manual rollback uses
+  `--wait`. Its post-hook retires old login roles after
   the replacement Deployment is Ready; the generic default is manual cleanup so
   a non-waiting Helm client cannot revoke credentials from still-serving pods.
   Runtime and migration owner-role names must be unique to a Helm release within
@@ -150,9 +151,12 @@ behavior.
   provisioning and cleanup fail closed; restore the original key through the
   secret backend before upgrading rather than editing role comments or enabling
   automatic adoption. The migration, post-migration grants, and cleanup hooks
-  independently revalidate the exact owner, every direct generation, and the
-  `apex` schema HMAC immediately before privileged work; hook ordering alone is
-  not treated as continuity proof. Migration retains the database-role advisory
+  independently revalidate the exact owner, every direct non-administrable
+  generation membership, and the `apex` schema HMAC immediately before
+  privileged work; hook ordering alone is not treated as continuity proof. The
+  broad runtime table grant and the write denial on Alembic head/lineage metadata
+  are published in one database transaction, so a failed hook cannot expose an
+  intermediate privilege set. Migration retains the database-role advisory
   lock on the exact Alembic connection from claim verification through DDL and
   the final compatibility check. This serializes cooperating release hooks; as
   with any database system, a compromised server administrator who deliberately
@@ -173,8 +177,9 @@ behavior.
   never logged). The document carries `secret_ref` names only, no secret values.
 - **Secret backends** (`secretBackend.mode`): `existingSecret` (default; pre-create
   the Secrets), `secretsStoreCSI` (Azure Key Vault via the CSI driver — synthesizes
-  the same Secret names), or `externalSecrets` (External Secrets Operator). The env
-  wiring is identical across modes.
+  the same Secret names), or `externalSecrets` (External Secrets Operator). The
+  chart rejects every other mode instead of silently rendering without a secret
+  producer. The env wiring is identical across modes.
 - **Locked configuration contract:** production defaults require an `apex-auth`
   pepper Secret, TLS DB/Redis URIs, and explicit HTTPS CORS origins. The
   LangGraph `CORS_CONFIG` origins and authenticated/SSE headers must match
@@ -184,6 +189,35 @@ behavior.
   first install: disable database-role provisioning, migrations, and bootstrap,
   wait for every ExternalSecret to be Ready, then reenable them on an upgrade.
   For a CSI-to-ESO transition, run CSI cleanup in that hook-free first stage.
+  Locked CSI releases remove hook-only native Secrets and their workload
+  identity/RBAC after every successful rollout. An unbound exact-name Role
+  carries only the prior release's hook Secret names into the next pre-upgrade
+  cleanup, so renames do not strand privileged values or grant namespace-wide
+  Secret deletion. When the first upgrade that adopts this ledger also renames
+  a custom hook Secret, list its former name in
+  `secretBackend.csi.cleanup.previousHookSecretNames`; remove the entry after
+  that upgrade succeeds. Hook and runtime Secret names must remain distinct.
+  If a former hook Secret name will become runtime-consumed, use two upgrades:
+  first rename and clean the hook Secret, then assign the old name to runtime.
+  Cleanup fails closed while the prior-name ledger overlaps a current runtime
+  Secret and never deletes the runtime Secret. Supported deploy paths use an
+  atomic Helm rollback plus the chart's `post-rollback`/`post-delete` cleanup
+  hooks. Cleanup identities include the monotonic Helm release revision. Each
+  new cleanup Role can revoke and remove the exact Job, RoleBinding, Role, and
+  ServiceAccount names from every earlier revision (plus the legacy unscoped
+  name), so consecutive interrupted upgrades or a rollback cannot strand an
+  older deletion-capable subject merely because `rN-1` cleanup also failed.
+  Exact-name RBAC and cleanup argv are capped at Helm revision 128. Before a
+  later revision, run `scripts/cleanup_csi_hook_material.py`, uninstall the
+  release, and reinstall it (or migrate to a new release name) so the revision
+  resets; the chart fails rendering instead of silently truncating the cleanup
+  set or granting namespace-wide deletion.
+  Their failure and signal handlers also run
+  `scripts/cleanup_csi_hook_material.py`, which stops release hook Jobs first,
+  then removes hook-only CSI providers, labelled/exact native Secrets, RBAC,
+  and workload identity ServiceAccounts. This out-of-band compensation covers
+  interrupted and first-ledger-adoption releases whose rollback target cannot
+  yet contain the new cleanup hook.
 - **ServiceAccount / RBAC / NetworkPolicy / topology spread / startup probe /
   Gateway-or-Ingress / ServiceMonitor**: all gated; see `values.yaml` comments.
 - **`helm test <release>`**: an in-cluster dependency-aware `/ready` smoke.
@@ -247,7 +281,14 @@ image serves any environment: `/config.json` (`apexOrigin`/`langgraphOrigin`) is
 generated at container start, and `backendUpstream` turns on an in-pod, SSE-safe
 reverse proxy for `/v1`, `/threads`, `/runs`, `/assistants`, `/ok`, and `/ready`
 (same-origin — no CORS). Built/published as a separate image track in
-`release.yaml`.
+`release.yaml`. Enabling the dashboard requires either `backendUpstream` or
+both explicit API origins. All three settings accept only complete HTTP(S)
+origins (optional port, no userinfo/path/query/fragment); an invalid explicit
+JSON runtime configuration fails closed before the SPA mounts. Locked
+environments require HTTPS for both browser-visible origins (an in-cluster
+`backendUpstream` may remain HTTP). The container emits an exact `connect-src`
+allowlist from those validated origins; non-container static hosts must mirror
+that allowlist when either API is cross-origin.
 
 ## Secret matrix
 

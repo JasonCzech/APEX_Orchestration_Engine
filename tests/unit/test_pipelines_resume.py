@@ -1,5 +1,6 @@
 """Gate CAS resume + abort: superseded 409, invalid action 422, conflict mapping."""
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -15,7 +16,7 @@ from apex.domain.pipeline import (
     ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
     EngineConnectionAffinityMissingError,
 )
-from apex.graphs.pipeline.configurable import Limits
+from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 from apex.routers.engines import get_engine_abort_service
 from apex.routers.pipelines import get_pipeline_read_service, router
@@ -30,7 +31,14 @@ from apex.services.langgraph_client import (
     RERUN_CLAIM_METADATA_KEY,
     RERUN_FINGERPRINT_METADATA_KEY,
 )
-from apex.services.pipeline_read import PipelineReadService
+from apex.services.pipeline_read import (
+    PipelineReadService,
+    RerunActiveRunConflictError,
+    RerunConfigurationConflictError,
+    _ensure_durable_config_ownership,
+    _ensure_rerun_checkpoint_is_terminal,
+    _run_config_from_state,
+)
 
 JsonDict = dict[str, Any]
 
@@ -38,6 +46,14 @@ GATE_PAYLOAD = {
     "schema_version": 1,
     "kind": "phase_review",
     "phase": "execution",
+    "summary": "Execution completed.",
+    "result_preview": {
+        "summary": "Execution completed.",
+        "reasoning_digest": "Provider results were collected.",
+    },
+    "artifacts": [],
+    "warnings": [],
+    "dialogue_tail": [],
     "actions": ["approve", "revise", "discuss", "abort"],
 }
 
@@ -77,6 +93,7 @@ class FakeRuns:
     def __init__(self, *, conflict_on_create: bool = False, runs: list[JsonDict] | None = None):
         self.conflict_on_create = conflict_on_create
         self.runs = runs or []
+        self.create_result: JsonDict = {"run_id": "run-42"}
         self.create_calls: list[JsonDict] = []
         self.cancelled: list[str] = []
 
@@ -84,7 +101,7 @@ class FakeRuns:
         self.create_calls.append({"thread_id": thread_id, "assistant_id": assistant_id, **kwargs})
         if self.conflict_on_create:
             raise _conflict()
-        return {"run_id": "run-42"}
+        return self.create_result
 
     async def list(
         self,
@@ -173,14 +190,17 @@ def state_with_interrupt(
     *,
     limits: dict[str, Any] | None = None,
     run_config: dict[str, Any] | None = None,
+    include_run_config: bool = True,
 ) -> JsonDict:
     # Mirrors the real get_state shape: plan_resolver checkpoints the complete
     # run config, with values["limits"] retained for old-thread compatibility.
     values: JsonDict = {}
     if limits is not None:
         values["limits"] = limits
-    if run_config is not None:
-        values["run_config"] = run_config
+    if include_run_config:
+        values["run_config"] = (
+            run_config if run_config is not None else PipelineConfigurable().snapshot()
+        )
     return {
         "values": values,
         "tasks": [{"interrupts": [{"id": interrupt_id, "value": GATE_PAYLOAD}]}],
@@ -188,36 +208,48 @@ def state_with_interrupt(
     }
 
 
-def rerun_state(run_config: JsonDict) -> JsonDict:
-    return {"values": {"run_config": run_config}, "tasks": [], "interrupts": []}
+def rerun_state(
+    run_config: JsonDict,
+    *,
+    phase_results: JsonDict | None = None,
+) -> JsonDict:
+    values: JsonDict = {"run_config": run_config}
+    if phase_results is not None:
+        values["phase_results"] = phase_results
+    return {"values": values, "tasks": [], "interrupts": []}
 
 
 def trusted_rerun_snapshot() -> JsonDict:
-    return {
-        "assistant_id": "assistant-golden",
-        "project_id": "project-a",
-        "app_id": "app-a",
-        "environment_id": "env-a",
-        "environment_target": "https://private.example.test/load",
-        "environment_target_version": 7,
-        "engine": "loadrunner",
-        "connections": {
-            "execution_engine": "conn-engine",
-            "artifact_store": "conn-artifact",
-        },
-        "phases": ["story_analysis", "execution"],
-        "gates": {
-            "execution": {"prompt_review": "auto", "output_review": "gated"},
-        },
-        "prompt_overrides": {
-            "phase/execution": {"content": "trusted prompt", "version_id": "version-7"},
-        },
-        "pre_execution_context": ["trusted server-side context"],
-        "model_by_phase": {},
-        "agent_backend": "anthropic",
-        "load_test": {"vusers": 17, "duration_s": 30},
-        "limits": {"poll_interval_s": 7.0, "poll_timeout_s": 70.0},
-    }
+    return PipelineConfigurable.model_validate(
+        {
+            "assistant_id": "assistant-golden",
+            "project_id": "project-a",
+            "app_id": "app-a",
+            "environment_id": "env-a",
+            "environment_target": "https://private.example.test/load",
+            "environment_target_version": 7,
+            "engine": "loadrunner",
+            "connections": {
+                "execution_engine": "conn-engine",
+                "artifact_store": "conn-artifact",
+            },
+            "phases": ["story_analysis", "execution"],
+            "gates": {
+                "execution": {"prompt_review": "auto", "output_review": "gated"},
+            },
+            "prompt_overrides": {
+                "phase/execution": {
+                    "content": "trusted prompt",
+                    "version_id": "version-7",
+                },
+            },
+            "pre_execution_context": ["trusted server-side context"],
+            "model_by_phase": {},
+            "agent_backend": "anthropic",
+            "load_test": {"vusers": 17, "duration_s": 30},
+            "limits": {"poll_interval_s": 7.0, "poll_timeout_s": 70.0},
+        }
+    ).snapshot()
 
 
 def test_rerun_facade_preserves_trusted_config_and_only_overrides_plan_controls() -> None:
@@ -290,6 +322,147 @@ async def test_rerun_ambiguous_retry_adopts_hashed_claim_without_raw_key_metadat
     assert "consumer-a" not in repr(metadata)
 
 
+async def test_rerun_rejects_credential_shaped_native_run_id() -> None:
+    snapshot = trusted_rerun_snapshot()
+    threads = FakeThreads(
+        {"t-1": rerun_state(snapshot)},
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    runs = FakeRuns()
+    runs.create_result = {"run_id": "password=rerun-native-id-secret-canary"}
+
+    with pytest.raises(RuntimeError, match="invalid identifier") as excinfo:
+        await PipelineReadService(FakeClient(threads, runs)).rerun_pipeline(
+            "t-1",
+            phases=["execution"],
+            gates_mode="inherit",
+            idempotency_key="rerun-request-1",
+            principal_id="consumer-a",
+        )
+
+    assert "rerun-native-id-secret-canary" not in str(excinfo.value)
+
+
+async def test_rerun_conflict_reconciliation_miss_detaches_sdk_request() -> None:
+    canary = "Bearer rerun-conflict-request-secret-canary"
+
+    class ConflictingRuns(FakeRuns):
+        async def create(self, thread_id: str, assistant_id: str, **kwargs: Any) -> JsonDict:
+            del thread_id, assistant_id, kwargs
+            request = httpx.Request(
+                "POST",
+                "http://loopback/threads/t-1/runs",
+                headers={"Authorization": canary},
+            )
+            raise ConflictError(
+                "provider conflict",
+                response=httpx.Response(409, request=request),
+                body={"diagnostic": canary},
+            )
+
+    snapshot = trusted_rerun_snapshot()
+    threads = FakeThreads(
+        {"t-1": rerun_state(snapshot)},
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    service = PipelineReadService(FakeClient(threads, ConflictingRuns()))
+
+    with pytest.raises(RerunActiveRunConflictError) as excinfo:
+        await service.rerun_pipeline(
+            "t-1",
+            phases=["execution"],
+            gates_mode="inherit",
+            idempotency_key="rerun-request-1",
+            principal_id="consumer-a",
+        )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
+
+
+async def test_rerun_snapshot_failure_definitively_settles_sibling_read() -> None:
+    state_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    class Threads(FakeThreads):
+        async def get(self, thread_id: str) -> JsonDict:
+            del thread_id
+            await state_started.wait()
+            raise RuntimeError("thread snapshot unavailable")
+
+        async def get_state(self, thread_id: str) -> JsonDict:
+            del thread_id
+            state_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleanup_started.set()
+                await release_cleanup.wait()
+            raise AssertionError("get_state should have been cancelled")
+
+    service = PipelineReadService(FakeClient(Threads({}), FakeRuns()))
+    operation = asyncio.create_task(
+        service.rerun_pipeline(
+            "t-1",
+            phases=["execution"],
+            gates_mode="inherit",
+            idempotency_key="snapshot-failure",
+            principal_id="consumer-a",
+        )
+    )
+
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+    assert not operation.done()
+    release_cleanup.set()
+    with pytest.raises(RuntimeError, match="thread snapshot unavailable"):
+        await operation
+
+
+async def test_resume_snapshot_parent_cancellation_settles_both_reads() -> None:
+    both_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    active = 0
+    cleaned = 0
+
+    class Threads(FakeThreads):
+        async def _read(self) -> JsonDict:
+            nonlocal active, cleaned
+            active += 1
+            if active == 2:
+                both_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned += 1
+                if cleaned == 2:
+                    cleanup_started.set()
+                await release_cleanup.wait()
+            raise AssertionError("cancelled native read resumed")
+
+        async def get(self, thread_id: str) -> JsonDict:
+            del thread_id
+            return await self._read()
+
+        async def get_state(self, thread_id: str) -> JsonDict:
+            del thread_id
+            return await self._read()
+
+    service = PipelineReadService(FakeClient(Threads({}), FakeRuns()))
+    operation = asyncio.create_task(service.resume_gate("t-1", "int-1", "approve", {}))
+    await asyncio.wait_for(both_started.wait(), timeout=1)
+
+    operation.cancel()
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+    assert not operation.done()
+    release_cleanup.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    assert cleaned == 2
+
+
 def test_rerun_rejects_idempotency_reuse_with_different_overrides() -> None:
     snapshot = trusted_rerun_snapshot()
     threads = FakeThreads(
@@ -342,6 +515,90 @@ def test_rerun_rejects_checkpoint_scope_drift_before_create() -> None:
     assert response.status_code == 409
     assert response.json()["title"] == "rerun_configuration_conflict"
     assert runs.create_calls == []
+
+
+@pytest.mark.parametrize(
+    "phase_entry",
+    [
+        {"status": "awaiting_output_review", "attempt": 4},
+        {"status": "awaiting_prompt_review", "attempt": 4},
+        {"status": "running", "attempt": 4},
+        {"status": "pending", "attempt": 4},
+        {"status": "unknown", "attempt": 4},
+        {"status": "succeeded", "attempt": "4"},
+    ],
+)
+def test_rerun_rejects_unfinished_or_malformed_checkpoint_before_create(
+    phase_entry: JsonDict,
+) -> None:
+    runs = DurableRerunRuns()
+    threads = FakeThreads(
+        {
+            "t-1": rerun_state(
+                trusted_rerun_snapshot(),
+                phase_results={"execution": phase_entry},
+            )
+        },
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={
+                "phases": ["reporting"],
+                "gates_mode": "inherit",
+                "idempotency_key": "must-resume-the-old-attempt",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "rerun_configuration_conflict"
+    assert runs.create_calls == []
+
+
+def test_rerun_accepts_a_terminal_checkpoint_as_a_new_attempt() -> None:
+    runs = DurableRerunRuns()
+    threads = FakeThreads(
+        {
+            "t-1": rerun_state(
+                trusted_rerun_snapshot(),
+                phase_results={"execution": {"status": "succeeded", "attempt": 4}},
+            )
+        },
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={
+                "phases": ["execution"],
+                "gates_mode": "inherit",
+                "idempotency_key": "new-terminal-attempt",
+            },
+        )
+
+    assert response.status_code == 202
+    assert len(runs.create_calls) == 1
+
+
+def test_rerun_checkpoint_guard_rejects_mapping_subclasses_without_hooks() -> None:
+    class HostileEntry(dict[str, Any]):
+        called = False
+
+        def get(self, *_args: Any, **_kwargs: Any) -> Any:
+            self.called = True
+            raise AssertionError("checkpoint mapping hooks must not execute")
+
+    hostile_entry = HostileEntry(status="awaiting_output_review", attempt=3)
+
+    with pytest.raises(RerunConfigurationConflictError, match="phase results are invalid"):
+        _ensure_rerun_checkpoint_is_terminal(
+            {"values": {"phase_results": {"execution": hostile_entry}}}
+        )
+
+    assert hostile_entry.called is False
 
 
 @pytest.mark.parametrize(
@@ -415,6 +672,350 @@ def test_resume_gate_accepts_and_creates_reject_run() -> None:
     assert call["command"] == {"resume": {"int-1": {"action": "approve", "note": "lgtm"}}}
 
 
+def test_resume_engine_recovery_gate_retries_the_exact_durable_interrupt() -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("engine-retry-1")
+    state["tasks"][0]["interrupts"][0]["value"] = {
+        "schema_version": 1,
+        "kind": "engine_cleanup_retry",
+        "phase": "execution",
+        "attempt": 2,
+        "thread_id": "t-1",
+        "actions": ["retry"],
+        "error": "provider abort unavailable",
+        "message": "Resume the exact durable provider attempt.",
+    }
+    client_app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(client_app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/engine-retry-1/resume",
+            json={"action": "retry"},
+        )
+
+    assert response.status_code == 202
+    assert response.json() == {"run_id": "run-42"}
+    call = runs.create_calls[0]
+    assert call["multitask_strategy"] == "reject"
+    assert call["durability"] == "sync"
+    assert call["command"] == {"resume": {"engine-retry-1": {"action": "retry"}}}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "schema_version": 1,
+            "kind": "unknown_recovery_gate",
+            "phase": "execution",
+            "attempt": 2,
+            "thread_id": "t-1",
+            "actions": ["retry"],
+            "message": "Retry the durable provider attempt.",
+        },
+        {
+            "schema_version": 1,
+            "kind": "engine_cleanup_retry",
+            "phase": "reporting",
+            "attempt": 2,
+            "thread_id": "t-1",
+            "actions": ["retry"],
+            "message": "Retry the durable provider attempt.",
+        },
+        {
+            "schema_version": 1,
+            "kind": "engine_cleanup_retry",
+            "phase": "execution",
+            "attempt": 2,
+            "thread_id": "t-1",
+            "actions": ["approve"],
+            "message": "Retry the durable provider attempt.",
+        },
+    ],
+)
+def test_resume_gate_rejects_hidden_or_malformed_pending_gate(payload: JsonDict) -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("engine-retry-1")
+    state["tasks"][0]["interrupts"][0]["value"] = payload
+    app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/engine-retry-1/resume",
+            json={"action": payload["actions"][0]},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "pipeline_configuration_conflict"
+    assert runs.create_calls == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "schema_version": 1,
+            "kind": "prompt_review",
+            "phase": "execution",
+            "actions": ["approve", "modify", "skip_phase", "abort"],
+        },
+        {
+            "schema_version": 1,
+            "kind": "phase_review",
+            "phase": "execution",
+            "actions": ["approve", "revise", "discuss", "abort"],
+        },
+        {
+            "schema_version": 1,
+            "kind": "prompt_review",
+            "phase": "execution",
+            "prompt": {
+                "system": None,
+                "user": " ",
+                "application": None,
+                "source": {"origin": "catalog", "ref": None},
+            },
+            "additional_context": "",
+            "context_packets": [],
+            "tools": [],
+            "editable": True,
+            "actions": ["approve", "modify", "skip_phase", "abort"],
+        },
+        {
+            "schema_version": 1,
+            "kind": "phase_review",
+            "phase": "execution",
+            "summary": None,
+            "result_preview": {"summary": None, "reasoning_digest": None},
+            "artifacts": [],
+            "warnings": [],
+            "dialogue_tail": [],
+            "actions": ["approve", "revise", "discuss", "abort"],
+        },
+    ],
+)
+def test_resume_gate_rejects_incomplete_or_empty_human_review(payload: JsonDict) -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("review-1")
+    state["tasks"][0]["interrupts"][0]["value"] = payload
+    app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/review-1/resume",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "pipeline_configuration_conflict"
+    assert runs.create_calls == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "canary"),
+    [
+        (
+            {
+                "schema_version": 1,
+                "kind": "prompt_review",
+                "phase": "execution",
+                "prompt": {
+                    "system": "Authorization: Bearer prompt-review-secret-canary",
+                    "user": "Review the execution prompt.",
+                    "application": None,
+                    "source": {"origin": "catalog", "ref": None},
+                },
+                "additional_context": "",
+                "context_packets": [],
+                "tools": [],
+                "editable": True,
+                "actions": ["approve", "modify", "skip_phase", "abort"],
+            },
+            "prompt-review-secret-canary",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "kind": "phase_review",
+                "phase": "execution",
+                "summary": "token=phase-review-secret-canary",
+                "result_preview": {
+                    "summary": "Execution completed.",
+                    "reasoning_digest": None,
+                },
+                "artifacts": [],
+                "warnings": [],
+                "dialogue_tail": [],
+                "actions": ["approve", "revise", "discuss", "abort"],
+            },
+            "phase-review-secret-canary",
+        ),
+    ],
+)
+def test_resume_gate_rejects_redacted_human_review_contract(
+    payload: JsonDict,
+    canary: str,
+) -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("review-1")
+    state["tasks"][0]["interrupts"][0]["value"] = payload
+    app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/review-1/resume",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "pipeline_configuration_conflict"
+    assert canary not in response.text
+    assert runs.create_calls == []
+
+
+def test_resume_engine_recovery_gate_rejects_non_retry_action() -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("engine-retry-1")
+    state["tasks"][0]["interrupts"][0]["value"] = {
+        "schema_version": 1,
+        "kind": "engine_cleanup_retry",
+        "phase": "execution",
+        "attempt": 2,
+        "thread_id": "t-1",
+        "actions": ["retry"],
+        "message": "Retry the durable provider attempt.",
+    }
+    app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/engine-retry-1/resume",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["title"] == "action is not allowed for this gate"
+    assert runs.create_calls == []
+
+
+def test_resume_engine_recovery_gate_rejects_cross_thread_payload_binding() -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("engine-retry-1")
+    state["tasks"][0]["interrupts"][0]["value"] = {
+        "schema_version": 1,
+        "kind": "engine_cleanup_retry",
+        "phase": "execution",
+        "attempt": 2,
+        "thread_id": "another-thread",
+        "actions": ["retry"],
+        "message": "Retry the durable provider attempt.",
+    }
+    app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/engine-retry-1/resume",
+            json={"action": "retry"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "pipeline_configuration_conflict"
+    assert runs.create_calls == []
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {},
+        {"run_config": None},
+        {"run_config": "legacy-default-provider"},
+        {"run_config": {}},
+    ],
+)
+def test_resume_gate_rejects_missing_or_malformed_durable_run_config(
+    values: dict[str, Any],
+) -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("int-1", include_run_config=False)
+    state["values"] = values
+    app = make_app(FakeClient(FakeThreads({"t-1": state}), runs))
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/int-1/resume",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "pipeline_configuration_conflict"
+    assert runs.create_calls == []
+
+
+def test_durable_replay_boundaries_reject_mapping_subclasses_without_hooks() -> None:
+    class HostileMapping(dict[str, Any]):
+        called = False
+
+        def get(self, *_args: Any, **_kwargs: Any) -> Any:
+            self.called = True
+            raise AssertionError("native response mapping hooks must not execute")
+
+    hostile_state = HostileMapping()
+    hostile_values = HostileMapping()
+    hostile_thread = HostileMapping()
+    hostile_metadata = HostileMapping()
+
+    with pytest.raises(RerunConfigurationConflictError, match="state is invalid"):
+        _run_config_from_state(hostile_state)
+    with pytest.raises(RerunConfigurationConflictError, match="snapshot is missing"):
+        _run_config_from_state({"values": hostile_values})
+    with pytest.raises(RerunConfigurationConflictError, match="metadata is invalid"):
+        _ensure_durable_config_ownership(PipelineConfigurable(), hostile_thread)
+    with pytest.raises(RerunConfigurationConflictError, match="metadata is invalid"):
+        _ensure_durable_config_ownership(
+            PipelineConfigurable(),
+            {"metadata": hostile_metadata},
+        )
+
+    assert hostile_state.called is False
+    assert hostile_values.called is False
+    assert hostile_thread.called is False
+    assert hostile_metadata.called is False
+
+
+async def test_resume_gate_rejects_path_delimiting_native_run_id() -> None:
+    runs = FakeRuns()
+    runs.create_result = {"run_id": "run/../../sibling?token=resume-secret-canary"}
+    service = PipelineReadService(
+        FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1")}), runs)
+    )
+
+    with pytest.raises(RuntimeError, match="invalid identifier") as excinfo:
+        await service.resume_gate("t-1", "int-1", "approve", {})
+
+    assert "resume-secret-canary" not in str(excinfo.value)
+
+
+async def test_resume_gate_rejects_run_response_subclass_without_hooks() -> None:
+    class HostileRunResponse(dict[str, Any]):
+        called = False
+
+        def get(self, *_args: Any, **_kwargs: Any) -> Any:
+            self.called = True
+            raise AssertionError("run response hooks must not execute")
+
+    response = HostileRunResponse(run_id="run-unsafe")
+    runs = FakeRuns()
+    runs.create_result = response
+    service = PipelineReadService(
+        FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1")}), runs)
+    )
+
+    with pytest.raises(RuntimeError, match="invalid response"):
+        await service.resume_gate("t-1", "int-1", "approve", {})
+
+    assert response.called is False
+
+
 def test_resume_gate_rejects_nul_before_checkpoint_write() -> None:
     runs = FakeRuns()
     client_app = make_app(FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1")}), runs))
@@ -485,20 +1086,30 @@ def test_resume_gate_rejects_legacy_checkpointed_credentials_before_replay() -> 
 
 
 def test_resume_gate_restores_complete_checkpointed_run_config() -> None:
-    snapshot = {
-        "assistant_id": "assistant-golden",
-        "project_id": "project-a",
-        "app_id": "app-a",
-        "engine": "loadrunner",
-        "connections": {"execution_engine": "lre-a"},
-        "agent_backend": "anthropic",
-        "load_test": {},
-        "gates": {"execution": {"prompt_review": "auto", "output_review": "gated"}},
-        "limits": {"poll_interval_s": 7.0, "poll_timeout_s": 70.0},
-    }
+    snapshot = PipelineConfigurable.model_validate(
+        {
+            "assistant_id": "assistant-golden",
+            "project_id": "project-a",
+            "app_id": "app-a",
+            "engine": "loadrunner",
+            "connections": {"execution_engine": "lre-a"},
+            "agent_backend": "anthropic",
+            "load_test": {},
+            "gates": {
+                "execution": {"prompt_review": "auto", "output_review": "gated"},
+            },
+            "limits": {"poll_interval_s": 7.0, "poll_timeout_s": 70.0},
+        }
+    ).snapshot()
     runs = FakeRuns()
     client_app = make_app(
-        FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1", run_config=snapshot)}), runs)
+        FakeClient(
+            FakeThreads(
+                {"t-1": state_with_interrupt("int-1", run_config=snapshot)},
+                {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+            ),
+            runs,
+        )
     )
     with TestClient(client_app) as client:
         response = client.post("/v1/pipelines/t-1/gates/int-1/resume", json={"action": "approve"})
@@ -514,6 +1125,33 @@ def test_resume_gate_restores_complete_checkpointed_run_config() -> None:
     assert restored["connections"] == {"execution_engine": "lre-a"}
     assert restored["agent_backend"] == "anthropic"
     assert restored["load_test"] == {}
+
+
+def test_resume_gate_rejects_checkpoint_scope_drift_before_create() -> None:
+    snapshot = PipelineConfigurable(
+        project_id="project-b",
+        app_id="app-b",
+    ).snapshot()
+    runs = FakeRuns()
+    app = make_app(
+        FakeClient(
+            FakeThreads(
+                {"t-1": state_with_interrupt("int-1", run_config=snapshot)},
+                {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+            ),
+            runs,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/int-1/resume",
+            json={"action": "approve"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["title"] == "pipeline_configuration_conflict"
+    assert runs.create_calls == []
 
 
 @pytest.mark.parametrize(
@@ -546,15 +1184,20 @@ def test_resume_gate_rejects_legacy_untrusted_provider_selectors(selector: str, 
     assert runs.create_calls == []
 
 
-def test_resume_gate_rejects_invalid_legacy_limits_without_starting_run() -> None:
+def test_resume_gate_rejects_invalid_durable_limits_without_starting_run() -> None:
     runs = FakeRuns()
+    run_config = PipelineConfigurable().snapshot()
+    run_config["limits"] = {
+        **run_config["limits"],
+        "poll_timeout_s": "credential-shaped-invalid-value",
+    }
     app = make_app(
         FakeClient(
             FakeThreads(
                 {
                     "t-1": state_with_interrupt(
                         "int-1",
-                        limits={"poll_timeout_s": "credential-shaped-invalid-value"},
+                        run_config=run_config,
                     )
                 }
             ),
@@ -575,9 +1218,21 @@ def test_resume_gate_rejects_invalid_legacy_limits_without_starting_run() -> Non
 
 def test_resume_gate_uses_thread_limits_for_recursion_budget() -> None:
     limits = {"poll_interval_s": 0.5, "poll_timeout_s": 3600.0}
+    run_config = PipelineConfigurable.model_validate({"limits": limits}).snapshot()
     runs = FakeRuns()
     client_app = make_app(
-        FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1", limits=limits)}), runs)
+        FakeClient(
+            FakeThreads(
+                {
+                    "t-1": state_with_interrupt(
+                        "int-1",
+                        limits=limits,
+                        run_config=run_config,
+                    )
+                }
+            ),
+            runs,
+        )
     )
     with TestClient(client_app) as client:
         response = client.post(

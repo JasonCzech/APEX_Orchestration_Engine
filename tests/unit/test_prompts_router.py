@@ -9,18 +9,27 @@ from typing import Any
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from langgraph_sdk.errors import UnprocessableEntityError
 
 from apex.app.dependencies import get_current_identity
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
-from apex.routers.prompts import RollbackRequest, TestPromptRequest, get_catalog, router
+from apex.domain.input_limits import MAX_DESCRIPTION_CHARS
+from apex.routers.prompts import (
+    RollbackRequest,
+    get_catalog,
+    router,
+)
+from apex.routers.prompts import (
+    TestPromptRequest as PromptTestRequest,
+)
 from apex.services.prompts import PromptCatalogService
+from apex.services.run_validation import MAX_PROMPT_PART_CHARS_HARD
 from tests.unit.test_prompts_service import FakePromptRepository
 
 
-@pytest.mark.parametrize("model", [RollbackRequest, TestPromptRequest])
+@pytest.mark.parametrize("model", [RollbackRequest, PromptTestRequest])
 def test_prompt_version_body_models_reject_nul(model: type[Any]) -> None:
     with pytest.raises(ValueError, match="string_pattern_mismatch"):
         model.model_validate({"version_id": "version\x00id"})
@@ -134,6 +143,91 @@ def test_create_rejects_oversized_catalog_fields_before_write(
 
     assert response.status_code == 422
     assert repo.prompts == {}
+
+
+def test_prompt_catalog_mutations_reject_credentials_without_reflection(
+    client: TestClient,
+    repo: FakePromptRepository,
+) -> None:
+    canary = "prompt-router-secret-canary"
+    create = client.post(
+        "/v1/prompts",
+        json={
+            "namespace": "phase",
+            "key": "unsafe",
+            "content": f"Authorization: Bearer {canary}",
+        },
+    )
+    safe = create_prompt(client, key="safe", content="safe")
+    version = client.post(
+        f"/v1/prompts/{safe['id']}/versions",
+        json={"content": f"database_uri={canary}"},
+    )
+
+    assert create.status_code == 422
+    assert version.status_code == 422
+    assert canary not in create.text
+    assert canary not in version.text
+    assert len(repo.prompts) == 1
+    assert len(repo.versions) == 1
+
+
+def test_prompt_reads_redact_legacy_credential_material(
+    client: TestClient,
+    repo: FakePromptRepository,
+) -> None:
+    canary = "legacy-prompt-read-secret-canary"
+    created = create_prompt(client, key="safe", content="safe")
+    version_id = created["active_version"]["id"]
+    repo.versions[version_id].content = f"Authorization: Bearer {canary}"
+    repo.versions[version_id].note = f"password={canary}"
+
+    detail = client.get(f"/v1/prompts/{created['id']}")
+    version = client.get(f"/v1/prompts/{created['id']}/versions/{version_id}")
+
+    assert detail.status_code == 200
+    assert version.status_code == 200
+    assert canary not in detail.text
+    assert canary not in version.text
+    assert "[REDACTED]" in detail.text
+    assert "[REDACTED]" in version.text
+
+
+def test_prompt_reads_bound_oversized_legacy_text_fields(
+    client: TestClient,
+    repo: FakePromptRepository,
+) -> None:
+    canary = "oversized-legacy-prompt-secret-canary"
+    created = create_prompt(client, key="safe", content="safe")
+    prompt = repo.prompts[created["id"]]
+    version_id = created["active_version"]["id"]
+    version = repo.versions[version_id]
+    prompt.namespace = f"password={canary}" + "n" * 1_000
+    prompt.key = "k" * 1_000
+    prompt.description = "d" * (MAX_DESCRIPTION_CHARS + 1_000)
+    version.content = "c" * (MAX_PROMPT_PART_CHARS_HARD + 1_000)
+    version.note = "n" * (MAX_DESCRIPTION_CHARS + 1_000)
+    version.created_by = "u" * 1_000
+
+    listed = client.get("/v1/prompts")
+    detail = client.get(f"/v1/prompts/{created['id']}")
+    versions = client.get(f"/v1/prompts/{created['id']}/versions")
+    version_detail = client.get(f"/v1/prompts/{created['id']}/versions/{version_id}")
+
+    assert all(
+        response.status_code == 200 for response in (listed, detail, versions, version_detail)
+    )
+    summary = listed.json()[0]
+    assert len(summary["namespace"]) <= 255
+    assert len(summary["key"]) <= 255
+    assert len(summary["description"]) <= MAX_DESCRIPTION_CHARS
+    assert len(detail.json()["content"]) <= MAX_PROMPT_PART_CHARS_HARD
+    assert len(detail.json()["note"]) <= MAX_DESCRIPTION_CHARS
+    assert len(versions.json()[0]["created_by"]) <= 255
+    assert len(version_detail.json()["content"]) <= MAX_PROMPT_PART_CHARS_HARD
+    rendered = "".join(response.text for response in (listed, detail, versions, version_detail))
+    assert canary not in rendered
+    assert "[REDACTED]" in rendered
 
 
 def test_prompt_and_version_lists_are_paginated(client: TestClient) -> None:
@@ -310,22 +404,28 @@ class FakeRuns:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.error: Exception | None = None
+        self.result: dict[str, Any] = {
+            "run_id": "run-1",
+            "thread_id": "thread-1",
+            "status": "pending",
+        }
 
     async def create(self, thread_id: Any, assistant_id: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append({"thread_id": thread_id, "assistant_id": assistant_id, **kwargs})
         if self.error is not None:
             raise self.error
-        return {"run_id": "run-1", "thread_id": "thread-1", "status": "pending"}
+        return self.result
 
 
 class FakeThreads:
     def __init__(self) -> None:
         self.create_calls: list[dict[str, Any]] = []
         self.delete_calls: list[str] = []
+        self.result: dict[str, Any] = {"thread_id": "thread-1"}
 
     async def create(self, **kwargs: Any) -> dict[str, Any]:
         self.create_calls.append(kwargs)
-        return {"thread_id": "thread-1", "metadata": kwargs.get("metadata") or {}}
+        return {**self.result, "metadata": kwargs.get("metadata") or {}}
 
     async def delete(self, thread_id: str) -> None:
         self.delete_calls.append(thread_id)
@@ -369,6 +469,137 @@ def test_test_prompt_creates_stateless_playground_run(
     thread_call = fake.threads.create_calls[0]
     assert thread_call["metadata"]["purpose"] == "prompt_test"
     assert thread_call["ttl"] == {"strategy": "delete", "ttl": 1440}
+
+
+@pytest.mark.parametrize("boundary", ["thread", "run"])
+def test_test_prompt_rejects_credential_shaped_native_ids(
+    boundary: str,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeLoopbackClient()
+    canary = "prompt-native-id-secret-canary"
+    if boundary == "thread":
+        fake.threads.result = {"thread_id": f"password={canary}"}
+    else:
+        fake.runs.result = {"run_id": f"Authorization: Bearer {canary}"}
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    created = create_prompt(client)
+
+    response = client.post(f"/v1/prompts/{created['id']}/test", json={})
+
+    assert response.status_code == 502
+    assert canary not in response.text
+    assert len(fake.runs.calls) == (0 if boundary == "thread" else 1)
+
+
+@pytest.mark.parametrize("boundary", ["thread", "run"])
+def test_test_prompt_rejects_hostile_native_mapping_subclasses_without_hooks(
+    boundary: str,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HostileMapping(dict[str, Any]):
+        called = False
+
+        def get(self, key: str, default: Any = None) -> Any:
+            self.called = True
+            raise AssertionError("provider mapping hooks must not run")
+
+    hostile = HostileMapping(
+        thread_id="thread-1" if boundary == "thread" else None,
+        run_id="run-1" if boundary == "run" else None,
+    )
+
+    class Threads(FakeThreads):
+        async def create(self, **kwargs: Any) -> dict[str, Any]:
+            if boundary == "thread":
+                return hostile
+            return await super().create(**kwargs)
+
+    class Runs(FakeRuns):
+        async def create(self, thread_id: Any, assistant_id: str, **kwargs: Any) -> dict[str, Any]:
+            if boundary == "run":
+                return hostile
+            return await super().create(thread_id, assistant_id, **kwargs)
+
+    fake = FakeLoopbackClient()
+    fake.threads = Threads()
+    fake.runs = Runs()
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    created = create_prompt(client)
+
+    response = client.post(f"/v1/prompts/{created['id']}/test", json={})
+
+    assert response.status_code == 502
+    assert hostile.called is False
+
+
+def test_test_prompt_does_not_trust_provider_http_exception(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "prompt-provider-http-secret-canary"
+    fake = FakeLoopbackClient()
+    fake.runs.error = HTTPException(status_code=418, detail=canary)
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    created = create_prompt(client)
+
+    response = client.post(f"/v1/prompts/{created['id']}/test", json={})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "failed to create playground run"
+    assert canary not in response.text
+
+
+def test_test_prompt_does_not_read_hostile_exception_type_metadata(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "prompt-exception-metaclass-secret-canary"
+
+    class HostileExceptionMeta(type):
+        @property
+        def __name__(cls) -> str:  # type: ignore[reportIncompatibleVariableOverride]
+            raise AssertionError(secret)
+
+    class HostileProviderError(Exception, metaclass=HostileExceptionMeta):
+        pass
+
+    class Threads(FakeThreads):
+        async def create(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise HostileProviderError("provider failed")
+
+    fake = FakeLoopbackClient()
+    fake.threads = Threads()
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    created = create_prompt(client)
+
+    response = client.post(f"/v1/prompts/{created['id']}/test", json={})
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "failed to create playground thread"
+    assert secret not in response.text
+
+
+def test_test_prompt_rejects_credentials_before_scratch_thread_creation(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = FakeLoopbackClient()
+    monkeypatch.setattr("apex.routers.prompts.loopback_client", lambda api_key=None: fake)
+    created = create_prompt(client)
+
+    response = client.post(
+        f"/v1/prompts/{created['id']}/test",
+        json={"content": "Authorization: Bearer prompt-test-secret-canary"},
+    )
+
+    assert response.status_code == 422
+    assert "prompt-test-secret-canary" not in response.text
+    assert fake.threads.create_calls == []
+    assert fake.runs.calls == []
 
 
 def test_test_prompt_scoped_operator_stamps_exact_thread_and_run_scope(

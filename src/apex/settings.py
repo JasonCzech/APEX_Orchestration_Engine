@@ -3,7 +3,7 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import ip_address, ip_network
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,6 +19,8 @@ DATABASE_SSL_MODES = {"require", "verify-ca", "verify-full"}
 DATABASE_AUTHENTICATED_SSL_MODE = "verify-full"
 MIN_API_KEY_PEPPER_BYTES = 32
 MAX_PREVIOUS_API_KEY_PEPPERS = 16
+MAX_API_KEY_SECRET_BYTES = 4_096
+MAX_API_KEY_SECRET_CHARS = 4_096
 MAX_HTTP_REQUEST_BODY_BYTES = 26 * 1024 * 1024
 MAX_FETCH_ALLOWED_HOSTS = 256
 MAX_FETCH_ALLOWED_HOST_CHARS = 253
@@ -28,6 +30,20 @@ _LOCKED_CSP_NONE_DIRECTIVES = (
     "base-uri",
     "form-action",
 )
+_MAX_DATABASE_URI_CHARS = 16_384
+
+
+def _database_uri_has_safe_raw_syntax(uri: object) -> bool:
+    """Reject parser-confusing database URI text before any URL/driver parsing."""
+
+    return (
+        type(uri) is str
+        and bool(uri)
+        and uri == uri.strip()
+        and len(uri) <= _MAX_DATABASE_URI_CHARS
+        and "\\" not in uri
+        and not any(ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F for character in uri)
+    )
 
 
 def normalize_fetch_allowed_host(raw_host: str) -> str:
@@ -60,10 +76,14 @@ def normalize_fetch_allowed_host(raw_host: str) -> str:
         host = host[:-1]
     if not host or host.endswith("."):
         raise ValueError("fetch allow-list entries contain an invalid hostname")
+    encoded_host: str | None = None
     try:
-        host = host.encode("idna").decode("ascii").casefold()
-    except UnicodeError as exc:
-        raise ValueError("fetch allow-list entries contain an invalid hostname") from exc
+        encoded_host = host.encode("idna").decode("ascii").casefold()
+    except UnicodeError:
+        pass
+    if encoded_host is None:
+        raise ValueError("fetch allow-list entries contain an invalid hostname")
+    host = encoded_host
     if len(host) > MAX_FETCH_ALLOWED_HOST_CHARS:
         raise ValueError("fetch allow-list entries exceed the hostname length limit")
     labels = host.split(".")
@@ -98,6 +118,8 @@ def _has_locked_csp_minimum(policy: str) -> bool:
 def _database_tls_query_options(uri: str) -> list[tuple[str, str]]:
     """Return TLS query options without collapsing duplicate/conflicting keys."""
 
+    if not _database_uri_has_safe_raw_syntax(uri):
+        return []
     try:
         query = urlsplit(uri).query
     except ValueError:
@@ -110,6 +132,8 @@ def _database_tls_query_options(uri: str) -> list[tuple[str, str]]:
 
 
 def _database_tls_query_is_unambiguous(uri: str) -> bool:
+    if not _database_uri_has_safe_raw_syntax(uri):
+        return False
     try:
         query_options = parse_qsl(urlsplit(uri).query, keep_blank_values=True)
     except ValueError:
@@ -184,6 +208,8 @@ class DatabaseSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_tls_configuration(self) -> "DatabaseSettings":
+        if not _database_uri_has_safe_raw_syntax(self.uri):
+            raise ValueError("database URI must be bounded and free of unsafe characters")
         options = _database_tls_query_options(self.uri)
         if not _database_tls_query_is_unambiguous(self.uri):
             raise ValueError("database URI must contain one unambiguous TLS option")
@@ -194,17 +220,58 @@ class DatabaseSettings(BaseModel):
         return self
 
 
+ApiKeySecret = Annotated[
+    str,
+    Field(min_length=1, max_length=MAX_API_KEY_SECRET_CHARS),
+]
+
+
+def _api_key_secret_is_utf8_bounded(value: str) -> bool:
+    try:
+        return len(value.encode("utf-8")) <= MAX_API_KEY_SECRET_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
 class AuthSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = True
-    # Local-dev shortcut: a key resolving to a synthetic unscoped admin without DB access.
-    dev_api_key: str | None = None
+    # Local-dev shortcut: a key resolving to a synthetic unscoped admin only
+    # after the authoritative credential store proves it is not persisted.
+    dev_api_key: ApiKeySecret | None = None
     # Server-held secret used to HMAC API keys at rest. Required in locked environments.
-    api_key_hash_pepper: str | None = None
+    api_key_hash_pepper: ApiKeySecret | None = None
     # Ordered fallback peppers used only during rotation. Successful auth is
     # rehashed with the current pepper, so old values can be removed after use.
-    previous_api_key_hash_peppers: list[str] = Field(default_factory=list)
+    previous_api_key_hash_peppers: list[ApiKeySecret] = Field(
+        default_factory=list,
+        max_length=MAX_PREVIOUS_API_KEY_PEPPERS,
+    )
+
+    @field_validator("previous_api_key_hash_peppers", mode="before")
+    @classmethod
+    def validate_previous_pepper_count(cls, values: object) -> object:
+        if isinstance(values, list) and len(values) > MAX_PREVIOUS_API_KEY_PEPPERS:
+            raise ValueError(
+                "auth.previous_api_key_hash_peppers must contain at most "
+                f"{MAX_PREVIOUS_API_KEY_PEPPERS} entries"
+            )
+        return values
+
+    @field_validator("dev_api_key", "api_key_hash_pepper")
+    @classmethod
+    def validate_api_key_secret_bytes(cls, value: str | None) -> str | None:
+        if value is not None and not _api_key_secret_is_utf8_bounded(value):
+            raise ValueError("configured API key secret exceeds the byte limit")
+        return value
+
+    @field_validator("previous_api_key_hash_peppers")
+    @classmethod
+    def validate_previous_pepper_bytes(cls, values: list[str]) -> list[str]:
+        if any(not _api_key_secret_is_utf8_bounded(value) for value in values):
+            raise ValueError("configured previous API key pepper exceeds the byte limit")
+        return values
 
 
 class RateLimitSettings(BaseModel):
@@ -243,11 +310,19 @@ class RateLimitSettings(BaseModel):
     @field_validator("trusted_proxy_cidrs")
     @classmethod
     def validate_trusted_proxy_cidrs(cls, values: list[str]) -> list[str]:
+        invalid_cidr = False
         for value in values:
             try:
                 ip_network(value, strict=False)
-            except ValueError as exc:
-                raise ValueError(f"invalid trusted proxy CIDR {value!r}") from exc
+            except ValueError:
+                # Settings validation often runs before structured logging and
+                # may be rendered verbatim in a startup traceback.  Keep raw
+                # environment-derived text out of custom diagnostics; Pydantic's
+                # hide_input_in_errors cannot redact values interpolated here.
+                invalid_cidr = True
+                break
+        if invalid_cidr:
+            raise ValueError("invalid trusted proxy CIDR")
         return values
 
     @field_validator("protected_path_prefixes")
@@ -466,12 +541,16 @@ class ApexSettings(BaseSettings):
             origin = raw_value.strip()
             if not origin or origin == "*":
                 raise ValueError("cors_origins entries must be explicit non-wildcard origins")
+            parsed = None
+            parsed_port = None
             try:
                 parsed = urlsplit(origin)
                 # Accessing ``port`` also validates malformed/non-numeric ports.
                 parsed_port = parsed.port
-            except ValueError as exc:
-                raise ValueError(f"invalid CORS origin {origin!r}") from exc
+            except ValueError:
+                parsed = None
+            if parsed is None:
+                raise ValueError("invalid CORS origin")
             if (
                 parsed.scheme.lower() not in {"http", "https"}
                 or not parsed.hostname
@@ -500,6 +579,8 @@ class ApexSettings(BaseSettings):
     @field_validator("langgraph_database_uri")
     @classmethod
     def validate_langgraph_database_tls_query(cls, uri: str | None) -> str | None:
+        if uri is not None and not _database_uri_has_safe_raw_syntax(uri):
+            raise ValueError("DATABASE_URI must be bounded and free of unsafe characters")
         if uri is not None and not _database_tls_query_is_unambiguous(uri):
             raise ValueError("DATABASE_URI must contain one unambiguous TLS option")
         return uri
@@ -611,7 +692,9 @@ class ApexSettings(BaseSettings):
                 "database.uri must authenticate the TLS server with sslmode=verify-full "
                 "in locked environments"
             )
-        if self.langgraph_database_uri is not None and not _database_uri_authenticates_server(
+        if not self.langgraph_database_uri:
+            errors.append("DATABASE_URI is required in locked environments")
+        elif not _database_uri_authenticates_server(
             self.langgraph_database_uri,
             None,
             allow_asyncpg_ssl_true=False,
@@ -681,11 +764,13 @@ class ApexSettings(BaseSettings):
         if insecure_origins:
             errors.append("cors_origins must be explicit https:// origins in locked environments")
         if errors:
-            raise ValueError(f"Unsafe {self.environment!r} configuration: {'; '.join(errors)}")
+            raise ValueError(f"Unsafe locked-environment configuration: {'; '.join(errors)}")
         return self
 
 
 def _is_local_database_uri(uri: str) -> bool:
+    if not _database_uri_has_safe_raw_syntax(uri):
+        return False
     if uri == DEFAULT_DATABASE_URI:
         return True
     try:
@@ -703,17 +788,18 @@ def _database_uri_authenticates_server(
 ) -> bool:
     """Require hostname-authenticated TLS, not merely encrypted transport."""
 
-    if not _database_tls_query_is_unambiguous(uri):
+    if not _database_uri_has_safe_raw_syntax(uri) or not _database_tls_query_is_unambiguous(uri):
         return False
     try:
         parsed = urlsplit(uri)
+        port = parsed.port
     except ValueError:
         return False
-    try:
-        _ = parsed.port
-    except ValueError:
-        return False
-    if parsed.scheme not in {"postgres", "postgresql", "postgresql+asyncpg"} or not parsed.hostname:
+    if (
+        parsed.scheme not in {"postgres", "postgresql", "postgresql+asyncpg"}
+        or not parsed.hostname
+        or (port is not None and not 1 <= port <= 65_535)
+    ):
         return False
     mode = _database_ssl_mode(uri, ssl_mode).strip().lower()
     if mode == DATABASE_AUTHENTICATED_SSL_MODE:
@@ -737,6 +823,8 @@ def _database_uri_authenticates_server(
 def database_uses_ssl(uri: str, ssl_mode: str | None) -> bool:
     """True when SQLAlchemy/asyncpg should force a TLS connection."""
 
+    if not _database_uri_has_safe_raw_syntax(uri):
+        return False
     try:
         parsed = urlsplit(uri)
     except ValueError:
@@ -763,6 +851,44 @@ def database_ssl_connect_args(uri: str, ssl_mode: str | None) -> dict[str, objec
             return {"ssl": ssl.create_default_context()}
         return {"ssl": mode if mode in DATABASE_SSL_MODES else "require"}
     return {}
+
+
+def database_uri_has_safe_transport(uri: str, ssl_mode: str | None) -> bool:
+    """Prove a database URI uses local IPC/loopback or authenticated TLS.
+
+    This mirrors the concrete value passed to asyncpg instead of treating
+    encrypted-but-unauthenticated ``require``/``verify-ca`` modes as secure.
+    Privileged deploy CLIs use it even when the complete runtime settings
+    environment is intentionally unavailable.
+    """
+
+    if not _database_uri_has_safe_raw_syntax(uri):
+        return False
+    try:
+        parsed = urlsplit(uri)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme.startswith("sqlite"):
+        return parsed.hostname in {None, ""}
+    if parsed.scheme not in {"postgres", "postgresql", "postgresql+asyncpg"}:
+        return False
+    if not parsed.hostname:
+        return False
+    if port is not None and not 1 <= port <= 65_535:
+        return False
+    if _is_local_database_uri(uri):
+        return True
+    if not _database_tls_query_is_unambiguous(uri):
+        return False
+    transport = database_ssl_connect_args(uri, ssl_mode).get("ssl")
+    if transport is True:
+        return True
+    return (
+        isinstance(transport, ssl.SSLContext)
+        and transport.verify_mode is ssl.CERT_REQUIRED
+        and transport.check_hostname
+    )
 
 
 def database_asyncpg_uri(uri: str) -> str:

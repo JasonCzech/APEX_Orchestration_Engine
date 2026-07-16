@@ -1,6 +1,7 @@
 """Context graph: deterministic stub-evidence gathering (no LLM until M4)."""
 
 import asyncio
+import gc
 import threading
 from typing import Any, cast
 
@@ -84,10 +85,122 @@ async def test_resolver_scope_errors_are_not_masked(monkeypatch: pytest.MonkeyPa
             raise ValueError("connection is scoped to project 'p1', not 'p2'")
 
     monkeypatch.setattr("apex.graphs.context.graph._make_resolver", ScopeFailingResolver)
-    with pytest.raises(ValueError, match="scoped to project"):
+    with pytest.raises(RuntimeError, match="evidence gathering failed"):
         await graph.ainvoke(
             ContextState(subject="anything", work_item_keys=["PHX-241"], project_id="p2")
         )
+
+
+async def test_direct_graph_rejects_scoped_real_tracker_without_external_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads: list[str] = []
+    closed: set[str] = set()
+
+    class Tracker:
+        provider = "jira"
+        project_id = None
+
+        async def get_item(self, key: str) -> WorkItem:
+            reads.append(key)
+            raise AssertionError("scope validation must run before provider reads")
+
+        async def aclose(self) -> None:
+            closed.add("tracker")
+
+    class Resolver:
+        async def resolve(self, *_args: object, **_kwargs: object) -> Tracker:
+            return Tracker()
+
+        async def close(self) -> None:
+            closed.add("resolver")
+
+    monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
+
+    with pytest.raises(RuntimeError, match="evidence gathering failed") as raised:
+        await graph.ainvoke(
+            ContextState(
+                subject="cross-project read",
+                work_item_keys=["OTHER-1"],
+                project_id="internal-p1",
+            )
+        )
+
+    assert reads == []
+    assert closed == {"tracker", "resolver"}
+    assert raised.value.__cause__ is None
+
+
+async def test_graph_provider_failure_is_redacted_and_detached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "opaque-context-provider-error-secret-canary"
+
+    class FailingResolver(ConnectionResolver):
+        async def resolve(self, *args: object, **kwargs: object) -> object:
+            raise OSError(f"upstream exploded with opaque value {secret}")
+
+    monkeypatch.setattr("apex.graphs.context.graph._make_resolver", FailingResolver)
+    with pytest.raises(RuntimeError, match="evidence gathering failed") as raised:
+        await graph.ainvoke(ContextState(subject="anything", work_item_keys=["PHX-241"]))
+
+    assert secret not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+async def test_simultaneous_provider_failures_are_all_drained_and_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = {
+        "ONE": "context-first-failure-secret-canary",
+        "TWO": "context-second-failure-secret-canary",
+    }
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    started = 0
+
+    class Tracker:
+        async def get_item(self, key: str) -> WorkItem:
+            nonlocal started
+            started += 1
+            if started == 2:
+                both_started.set()
+            await release.wait()
+            raise RuntimeError(f"Authorization: Bearer {secrets[key]}")
+
+    class Resolver:
+        async def resolve(self, *_args: object, **_kwargs: object) -> Tracker:
+            return Tracker()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop_errors: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    task = asyncio.create_task(
+        context_graph.gather_evidence(
+            ContextState(subject="incident", work_item_keys=["ONE", "TWO"])
+        )
+    )
+    try:
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        release.set()
+        with pytest.raises(RuntimeError, match="evidence gathering failed") as raised:
+            await task
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    rendered_error = repr(raised.value)
+    assert all(secret not in rendered_error for secret in secrets.values())
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    assert loop_errors == []
 
 
 async def test_resolver_operational_errors_are_not_reported_as_empty_evidence(
@@ -149,6 +262,56 @@ async def test_provider_parser_key_error_is_not_reported_as_missing_evidence(
 
     with pytest.raises(KeyError, match="missing-provider-field"):
         await context_graph._work_tracking_evidence(["PHX-241"], None)
+
+
+async def test_provider_evidence_is_redacted_before_checkpoint_and_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "context-provider-secret-canary"
+
+    class Tracker:
+        async def get_item(self, key: str) -> WorkItem:
+            return WorkItem(
+                key=key,
+                title=f"Authorization: Bearer {secret}",
+                description=f"database_password={secret}" + ("x" * 10_000),
+                url=f"https://tracker.test/{key}",
+            )
+
+    class Resolver:
+        async def __aenter__(self) -> "Resolver":
+            return self
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            return False
+
+        async def resolve(self, *_args: object, **_kwargs: object) -> Tracker:
+            return Tracker()
+
+    monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
+    result = await graph.ainvoke(ContextState(subject="incident", work_item_keys=["SAFE-1"]))
+
+    rendered = repr(result)
+    assert secret not in rendered
+    assert "[REDACTED]" in rendered
+    packet = result["evidence"][0]
+    assert len(packet["title"]) <= 500
+    assert len(packet["ref"]) <= 2_048
+    assert len(packet["summary"]) <= context_graph._SUMMARY_SNIPPET_CHARS
+    assert secret not in result["summary"]
+
+
+def test_packet_bounds_huge_provider_summary_before_stripping() -> None:
+    secret = "huge-context-secret-canary"
+    packet = context_graph._packet(
+        "work_tracking",
+        "incident",
+        None,
+        (" " * 1_000_000) + f"password={secret}",
+    )
+
+    assert packet["summary"] is None
+    assert secret not in repr(packet)
 
 
 async def test_graph_rejects_fanout_before_resolving_provider(
@@ -253,6 +416,72 @@ async def test_parent_cancellation_settles_all_evidence_children_before_resolver
 
     assert active == 0
     assert exited_with_active == [0]
+
+
+async def test_repeated_parent_cancellation_does_not_abandon_child_settlement() -> None:
+    child_started = asyncio.Event()
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def child() -> None:
+        child_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    child_task = asyncio.create_task(child())
+    await child_started.wait()
+    settlement = asyncio.create_task(context_graph._settle_cancelled_evidence_tasks([child_task]))
+    await cleanup_started.wait()
+
+    settlement.cancel()
+    await asyncio.sleep(0)
+    settlement.cancel()
+    release_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await settlement
+    assert child_task.done()
+    assert child_task.cancelled()
+
+
+async def test_tracker_and_resolver_closes_survive_repeated_cancellation() -> None:
+    started: set[str] = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    closed: set[str] = set()
+
+    async def close(name: str) -> None:
+        started.add(name)
+        if len(started) == 2:
+            both_started.set()
+        await release.wait()
+        closed.add(name)
+
+    class Tracker:
+        async def aclose(self) -> None:
+            await close("tracker")
+
+    class Resolver:
+        async def close(self) -> None:
+            await close("resolver")
+
+    task = asyncio.create_task(
+        context_graph._close_context_resources_definitively(Tracker(), Resolver())
+    )
+    await both_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed == {"tracker", "resolver"}
 
 
 def test_context_provider_admission_is_shared_across_event_loops(

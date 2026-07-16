@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from 'react'
 
 import { useAuth } from '@/auth/AuthProvider'
+import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 import {
   getApiKey,
   getApiKeyRevision,
@@ -112,7 +113,7 @@ function ApiKeySection() {
     setState({ kind: 'validating' })
     try {
       // Validate BEFORE persisting: the active session must survive a typo.
-      const response = await fetch(`${resolveApexBaseUrl()}/v1/system/info`, {
+      const response = await fetchWithoutRedirects(`${resolveApexBaseUrl()}/v1/system/info`, {
         headers: { 'x-api-key': candidate },
         signal: controller.signal,
       })

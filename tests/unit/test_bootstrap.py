@@ -5,14 +5,17 @@ tests/integration/test_bootstrap_apply.py; here we cover everything that needs
 no database.
 """
 
+import builtins
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
 from apex.adapters.registry import PortKind
+from apex.bootstrap import __main__ as bootstrap_main
 from apex.bootstrap.__main__ import MAX_BOOTSTRAP_BYTES, _load_document, main
 from apex.bootstrap.runner import (
     BootstrapError,
@@ -25,6 +28,7 @@ from apex.bootstrap.runner import (
 )
 from apex.bootstrap.schema import (
     AdminConsumerSpec,
+    ApplicationSpec,
     BootstrapDocument,
     ConnectionSpec,
     EnvironmentSpec,
@@ -81,15 +85,15 @@ def test_bootstrap_error_sanitizes_caller_controlled_diagnostics_at_construction
 
 async def test_apply_document_sanitizes_progress_log_values() -> None:
     canary = "bootstrap-progress-secret-canary"
-    document = BootstrapDocument.model_validate(
-        {
-            "applications": [
-                {
-                    "project_id": "project-a",
-                    "name": f"release-password={canary}\nforged-progress",
-                }
-            ]
-        }
+    # Bypass input validation deliberately to exercise the final logging sink's
+    # defense against a corrupt/internally forged model instance.
+    document = BootstrapDocument.model_construct(
+        applications=[
+            ApplicationSpec.model_construct(
+                project_id="project-a",
+                name=f"release-password={canary}\nforged-progress",
+            )
+        ]
     )
     messages: list[str] = []
 
@@ -153,6 +157,24 @@ def test_bootstrap_secret_ref_requires_a_runtime_supported_scheme(secret_ref: st
         {"password": "literal"},
         {"nested": {"api_token": "literal"}},
         {"items": [{"clientSecret": "literal"}]},
+        {"connection_string": "postgresql://user:password@example.test/db"},
+        {"nested": {"database_uri": "postgresql://user:password@example.test/db"}},
+        {"items": [{"dsn": "host=db password=literal"}]},
+        {"ssh_key": "literal"},
+        {"signing_key": "literal"},
+        {"encryption_key": "literal"},
+        {"sas": "literal"},
+        {"authentication": "literal"},
+        {"header": "Authorization: Bearer raw-auth-canary"},
+        {"ordinary": "postgresql://user:raw-uri-canary@example.test/db"},
+        {"items": ["Authorization: Bearer nested-auth-canary"]},
+        {"value": "ghp_0123456789abcdefghijklmnopqrstuvwxyz"},
+        {"data": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhcGV4LXVzZXIifQ.c2lnbmF0dXJlLWNhbmFyeQ"},
+        {
+            "value": "-----BEGIN PRIVATE KEY-----\n"
+            "cHJpdmF0ZS1rZXktY2FuYXJ5\n"
+            "-----END PRIVATE KEY-----"
+        },
     ],
 )
 def test_bootstrap_rejects_raw_secrets_in_connection_options(
@@ -174,9 +196,94 @@ def test_bootstrap_rejects_raw_secrets_in_environment_options() -> None:
                 "project_id": "project-a",
                 "application": "app-a",
                 "name": "prod",
-                "options": {"nested": {"access_token": "raw-secret"}},
+                "options": {"nested": {"broker_uri": "amqp://user:raw-secret@broker"}},
             }
         )
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhcGV4LXVzZXIifQ.c2lnbmF0dXJlLWNhbmFyeQ",
+        "-----BEGIN PRIVATE KEY-----\ncHJpdmF0ZS1rZXktY2FuYXJ5\n-----END PRIVATE KEY-----",
+    ],
+)
+def test_bootstrap_rejects_standalone_credential_signatures_in_environment_options(
+    credential: str,
+) -> None:
+    with pytest.raises(ValueError, match="external connection secret_ref"):
+        EnvironmentSpec.model_validate(
+            {
+                "project_id": "project-a",
+                "application": "app-a",
+                "name": "prod",
+                "options": {"value": credential},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {
+            "applications": [
+                {
+                    "project_id": "project-a",
+                    "name": "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+                }
+            ]
+        },
+        {
+            "applications": [
+                {
+                    "project_id": "project-a",
+                    "name": "safe",
+                    "description": "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+                }
+            ]
+        },
+        {
+            "environments": [
+                {
+                    "project_id": "project-a",
+                    "application": "app-a",
+                    "name": "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+                }
+            ]
+        },
+        {
+            "environments": [
+                {
+                    "project_id": "project-a",
+                    "application": "app-a",
+                    "name": "prod",
+                    "hosts": [
+                        {
+                            "hostname": "api.example.test",
+                            "role": "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+                        }
+                    ],
+                }
+            ]
+        },
+        {
+            "connections": [
+                {
+                    "name": "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+                    "kind": "artifact_store",
+                    "provider": "s3",
+                }
+            ]
+        },
+        {"admin": {"key_env": "ghp_0123456789abcdefghijklmnopqrstuvwxyz"}},
+    ],
+)
+def test_bootstrap_rejects_credentials_in_all_scalar_label_models(
+    document: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="credential material"):
+        BootstrapDocument.model_validate(document)
 
 
 def test_unknown_top_level_key_is_rejected() -> None:
@@ -229,6 +336,30 @@ def test_bootstrap_loader_rejects_yaml_aliases_and_duplicate_keys(tmp_path: Path
     duplicate_path.write_text("admin: null\nadmin: {}\n")
     with pytest.raises(BootstrapError, match="duplicate key"):
         _load_document(str(duplicate_path))
+
+
+def test_bootstrap_loader_detaches_missing_yaml_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "bootstrap.yaml"
+    path.write_text("admin: null\n")
+    canary = "missing-yaml-dependency-canary"
+    import_error = ModuleNotFoundError(canary)
+    real_import = builtins.__import__
+
+    def fail_yaml_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "yaml":
+            raise import_error
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_yaml_import)
+
+    with pytest.raises(BootstrapError, match="PyYAML") as caught:
+        _load_document(str(path))
+
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert canary not in str(caught.value)
 
 
 def test_admin_defaults() -> None:
@@ -627,10 +758,33 @@ def test_main_does_not_echo_malformed_json_snippets(
     assert main([str(path)]) == 2
     assert canary not in capsys.readouterr().err
 
+    with pytest.raises(BootstrapError) as raised:
+        _load_document(str(path))
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
 
 def test_main_requires_a_file() -> None:
     with pytest.raises(SystemExit):
         main([])  # argparse error -> SystemExit(2)
+
+
+async def test_run_rejects_unauthenticated_remote_database_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        bootstrap_main,
+        "get_settings",
+        lambda: SimpleNamespace(
+            database=SimpleNamespace(
+                uri="postgresql+asyncpg://u:p@db.example/apex?sslmode=require",
+                ssl_mode=None,
+            )
+        ),
+    )
+
+    with pytest.raises(BootstrapError, match="authenticate every remote server"):
+        await bootstrap_main._run(BootstrapDocument())
 
 
 def test_main_graceful_returns_zero_when_db_unreachable(tmp_path: Path) -> None:
@@ -638,6 +792,22 @@ def test_main_graceful_returns_zero_when_db_unreachable(tmp_path: Path) -> None:
     path.write_text(json.dumps(VALID_DOC))
     # Hermetic fixture points APEX_DATABASE__URI at an unreachable host.
     assert main([str(path), "--graceful"]) == 0
+
+
+def test_main_rejects_graceful_mode_in_locked_environments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    path = tmp_path / "boot.json"
+    path.write_text(json.dumps(VALID_DOC))
+    monkeypatch.setattr(
+        "apex.bootstrap.__main__.get_settings",
+        lambda: SimpleNamespace(is_locked_down=True),
+    )
+
+    assert main([str(path), "--graceful"]) == 2
+    assert "only in local/test environments" in capsys.readouterr().err
 
 
 def test_main_strict_returns_nonzero_when_db_unreachable(tmp_path: Path) -> None:

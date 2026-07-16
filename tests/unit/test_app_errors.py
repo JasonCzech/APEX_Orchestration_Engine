@@ -2,8 +2,11 @@
 
 import json
 from types import SimpleNamespace
+from typing import Any
 
+from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
+from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from apex.app.errors import (
@@ -18,6 +21,7 @@ from apex.app.errors import (
     _safe_route_template,
     _sanitized_validation_errors,
     problem,
+    register_exception_handlers,
 )
 
 
@@ -157,3 +161,87 @@ def test_problem_title_and_detail_are_credential_redacted_and_bounded() -> None:
     assert "[REDACTED]" in body["detail"]
     assert len(body["title"]) <= MAX_PROBLEM_TITLE_CHARS
     assert len(body["detail"]) <= MAX_PROBLEM_DETAIL_CHARS
+
+
+def _exception_test_client(
+    *,
+    detail: Any,
+    headers: Any = None,
+    status_code: int = 503,
+) -> TestClient:
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/failure")
+    async def failure() -> None:
+        raise HTTPException(status_code=status_code, detail=detail, headers=headers)
+
+    return TestClient(app)
+
+
+def test_http_exception_detail_never_invokes_custom_string_conversion() -> None:
+    class HostileDetail:
+        def __str__(self) -> str:
+            raise AssertionError("custom string conversion must not run")
+
+    response = _exception_test_client(detail=HostileDetail()).get("/failure")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "type": "about:blank",
+        "title": "Request failed",
+        "status": 503,
+    }
+
+
+def test_http_exception_drops_untrusted_detail_and_headers() -> None:
+    canary = "provider-secret-canary"
+    response = _exception_test_client(
+        detail={"provider_error": canary},
+        headers={
+            "Authorization": f"Bearer {canary}",
+            "Set-Cookie": f"session={canary}",
+            "X-Provider-Diagnostic": canary,
+            "Retry-After": "0005",
+        },
+    ).get("/failure")
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "5"
+    assert "authorization" not in response.headers
+    assert "set-cookie" not in response.headers
+    assert "x-provider-diagnostic" not in response.headers
+    assert canary not in response.text
+    assert canary not in str(response.headers)
+
+
+def test_http_exception_rejects_malformed_retry_after_header() -> None:
+    response = _exception_test_client(
+        detail="capacity unavailable",
+        headers={"Retry-After": "1\r\nX-Injected: true"},
+    ).get("/failure")
+
+    assert response.status_code == 503
+    assert "retry-after" not in response.headers
+
+
+def test_http_exception_rejects_oversized_retry_after_without_integer_parsing() -> None:
+    response = _exception_test_client(
+        detail="capacity unavailable",
+        headers={"Retry-After": "9" * 100_000},
+    ).get("/failure")
+
+    assert response.status_code == 503
+    assert "retry-after" not in response.headers
+
+
+def test_http_exception_preserves_valid_server_control_headers() -> None:
+    response = _exception_test_client(
+        detail="method not allowed",
+        status_code=405,
+        headers={"Allow": "GET, HEAD", "Retry-After": "5"},
+    ).get("/failure")
+
+    assert response.status_code == 405
+    assert response.headers["allow"] == "GET, HEAD"
+    assert response.headers["retry-after"] == "5"

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -25,9 +26,16 @@ from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from scripts.terraform_plan_policy import enforce_plan_policy
+    from scripts.cleanup_csi_hook_material import cleanup_csi_hook_material
+    from scripts.immutable_plan_snapshot import (
+        ImmutablePlanSnapshotError,
+        immutable_plan_snapshot,
+    )
+    from scripts.terraform_plan_policy import MAX_PLAN_JSON_BYTES, enforce_plan_policy
 except ModuleNotFoundError:  # `python scripts/deploy.py` puts scripts/ on sys.path.
-    from terraform_plan_policy import enforce_plan_policy
+    from cleanup_csi_hook_material import cleanup_csi_hook_material
+    from immutable_plan_snapshot import ImmutablePlanSnapshotError, immutable_plan_snapshot
+    from terraform_plan_policy import MAX_PLAN_JSON_BYTES, enforce_plan_policy
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHART = "deploy/helm/apex-orchestration-engine"
@@ -35,6 +43,10 @@ TF = "deploy/terraform"
 BACKUP_TF = "deploy/terraform/backup"
 DEFAULT_TAG = "local"
 LOCKED_ENVIRONMENTS = frozenset({"staging", "prod"})
+TRIVY_VERSION = "0.70.0"
+MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+MAX_SAVED_PLAN_BYTES = 512 * 1024 * 1024
+_STREAM_CHUNK_BYTES = 1024 * 1024
 _OCI_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?")
@@ -77,6 +89,15 @@ _DISPLAY_ASSIGNMENT_OPTIONS = frozenset(
     }
 )
 
+_AZURE_CSI_HOOK_SECRETS = (
+    "apex-database-admin",
+    "apex-database-role-claim",
+    "apex-database-bootstrap",
+    "apex-database-migration",
+    "apex-admin",
+    "apex-hook-auth",
+)
+
 Task = Callable[[list[str]], None]
 TASKS: dict[str, tuple[str, Task]] = {}
 
@@ -89,19 +110,24 @@ def task(name: str, help_text: str) -> Callable[[Task], Task]:
     return register
 
 
-def run(command: list[str]) -> None:
+def run(command: list[str], *, pass_fds: tuple[int, ...] = ()) -> None:
     # Display is a separate trust boundary from execution. Commands can carry
     # Helm/Terraform assignments, registry userinfo, signed URLs, and local
     # private-key paths. Keep subprocess argv exact while ensuring CI logs never
     # become a credential sink or accept multiline terminal injection.
     print("+ " + _display_command(command), flush=True)
     try:
-        subprocess.run(command, cwd=REPO_ROOT, check=True)
+        if pass_fds:
+            subprocess.run(command, cwd=REPO_ROOT, check=True, pass_fds=pass_fds)
+        else:
+            subprocess.run(command, cwd=REPO_ROOT, check=True)
     except FileNotFoundError:
         executable = _single_line_display(command[0]) if command else "<empty command>"
         raise SystemExit(
             f"Required executable not found: {executable}. Install it / add to PATH."
         ) from None
+    except OSError:
+        raise SystemExit("Unable to execute the required command.") from None
     except subprocess.CalledProcessError as exc:
         raise SystemExit(exc.returncode) from None
 
@@ -210,27 +236,72 @@ def _single_line_display(value: str, *, limit: int = 4_096) -> str:
 
 
 def capture(command: list[str]) -> str:
+    return _capture_bounded(
+        command,
+        max_output_bytes=MAX_CAPTURE_BYTES,
+        output_description="Command output",
+    )
+
+
+def _capture_bounded(
+    command: list[str],
+    *,
+    max_output_bytes: int,
+    output_description: str,
+    allow_failure: bool = False,
+    pass_fds: tuple[int, ...] = (),
+) -> str:
+    """Capture one command without allowing stdout to exhaust process memory."""
+
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             command,
             cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            pass_fds=pass_fds,
         )
     except FileNotFoundError:
         executable = _single_line_display(command[0]) if command else "<empty command>"
         raise SystemExit(
             f"Required executable not found: {executable}. Install it / add to PATH."
         ) from None
-    except subprocess.CalledProcessError as exc:
-        # CalledProcessError renders its original argv and captured output. Both
-        # may carry credentials, so expose only the exit status and the same
-        # display-only, redacted command used by run().
+    except OSError:
+        raise SystemExit("Unable to execute the required command.") from None
+
+    output = bytearray()
+    assert process.stdout is not None
+    try:
+        while len(output) <= max_output_bytes:
+            chunk = process.stdout.read(
+                min(_STREAM_CHUNK_BYTES, max_output_bytes + 1 - len(output))
+            )
+            if not chunk:
+                break
+            output.extend(chunk)
+        if len(output) > max_output_bytes:
+            process.kill()
+            process.wait()
+            raise SystemExit(f"{output_description} exceeds the size limit.")
+        return_code = process.wait()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        raise
+    finally:
+        process.stdout.close()
+
+    if return_code != 0 and not allow_failure:
         raise SystemExit(
-            f"Command failed with exit code {exc.returncode}: {_display_command(command)}"
-        ) from None
-    return result.stdout.strip()
+            f"Command failed with exit code {return_code}: {_display_command(command)}"
+        )
+    if return_code != 0:
+        return ""
+    try:
+        return output.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise SystemExit(f"{output_description} is not valid UTF-8.") from None
 
 
 def require_env(name: str) -> str:
@@ -247,10 +318,76 @@ def _arg(args: list[str], index: int, default: str) -> str:
 # ── images ────────────────────────────────────────────────────────────────────
 
 
+def _image_reference_tag(image: str) -> str:
+    """Return a validated tag from an image reference (or Docker's ``latest``)."""
+
+    last_slash = image.rfind("/")
+    last_colon = image.rfind(":")
+    tag = image[last_colon + 1 :] if last_colon > last_slash else "latest"
+    return _validate_oci_tag(tag)
+
+
+def _build_server_image(image: str, version: str) -> None:
+    run(
+        [
+            "uv",
+            "run",
+            "langgraph",
+            "build",
+            "-t",
+            image,
+            "--build-arg",
+            f"APEX_BUILD_VERSION={version}",
+        ]
+    )
+
+
+def _require_clean_locked_worktree(environment: str) -> None:
+    """Keep commit-derived image identities honest in staging and production."""
+
+    if environment not in LOCKED_ENVIRONMENTS:
+        return
+    status = capture(["git", "status", "--porcelain=v1", "--untracked-files=all"])
+    if status:
+        # Do not print the status: untracked or renamed paths can themselves
+        # contain sensitive/operator-controlled text.
+        raise SystemExit(
+            "A clean Git worktree is required for staging/prod image builds; "
+            "commit or remove local changes before deployment."
+        )
+
+
+def _scan_release_images(tag: str) -> None:
+    """Apply the same fail-closed HIGH/CRITICAL gate as deploy-aks CI."""
+
+    version_output = capture(["trivy", "--version"])
+    if re.search(rf"(?m)^Version:\s*{re.escape(TRIVY_VERSION)}(?:\s|$)", version_output) is None:
+        raise SystemExit(f"Trivy {TRIVY_VERSION} is required for reviewed image scans.")
+    for image in (f"apex-orchestration-engine:{tag}", f"apex-dashboard:{tag}"):
+        run(
+            [
+                "trivy",
+                "image",
+                "--scanners",
+                "vuln",
+                "--pkg-types",
+                "os,library",
+                "--severity",
+                "HIGH,CRITICAL",
+                "--ignore-unfixed=false",
+                "--exit-code",
+                "1",
+                "--format",
+                "table",
+                image,
+            ]
+        )
+
+
 @task("image-build", "Build the server (langgraph) + dashboard images. Args: [tag]")
 def image_build(args: list[str]) -> None:
-    tag = _arg(args, 0, DEFAULT_TAG)
-    run(["uv", "run", "langgraph", "build", "-t", f"apex-orchestration-engine:{tag}"])
+    tag = _validate_oci_tag(_arg(args, 0, DEFAULT_TAG))
+    _build_server_image(f"apex-orchestration-engine:{tag}", tag)
     run(["docker", "build", "-f", "apps/dashboard/Dockerfile", "-t", f"apex-dashboard:{tag}", "."])
 
 
@@ -258,7 +395,8 @@ def image_build(args: list[str]) -> None:
 def image_push(args: list[str]) -> None:
     if not args:
         raise SystemExit("usage: image-push <registry> [tag]")
-    registry, tag = args[0].rstrip("/"), _arg(args, 1, DEFAULT_TAG)
+    registry = _validate_registry(args[0].rstrip("/"))
+    tag = _validate_oci_tag(_arg(args, 1, DEFAULT_TAG))
     for name in ("apex-orchestration-engine", "apex-dashboard"):
         run(["docker", "tag", f"{name}:{tag}", f"{registry}/{name}:{tag}"])
         run(["docker", "push", f"{registry}/{name}:{tag}"])
@@ -284,10 +422,10 @@ def _pushed_image_digest(image_ref: str) -> str:
         if isinstance(value, str) and value.startswith(prefix)
     }
     if len(candidates) != 1:
-        raise SystemExit(f"Docker returned an invalid pushed digest for {image_ref}.")
+        raise SystemExit("Docker returned an invalid pushed digest.")
     digest = candidates.pop()
     if _OCI_DIGEST.fullmatch(digest) is None:
-        raise SystemExit(f"Docker returned an invalid pushed digest for {image_ref}.")
+        raise SystemExit("Docker returned an invalid pushed digest.")
     return digest
 
 
@@ -297,7 +435,7 @@ def _pushed_image_digest(image_ref: str) -> str:
 @task("compose-up", "Build + start the full local stack (infra + server + dashboard).")
 def compose_up(_: list[str]) -> None:
     image = os.environ.get("APEX_IMAGE", "apex-orchestration-engine:local")
-    run(["uv", "run", "langgraph", "build", "-t", image])
+    _build_server_image(image, _image_reference_tag(image))
     run(["docker", "compose", "-f", "docker-compose.yaml", "up", "-d", "--build", "--wait"])
 
 
@@ -309,7 +447,7 @@ def compose_down(_: list[str]) -> None:
 @task("compose-ha-up", "Start the HA soak rig (2 replicas + nginx). Needs the license env vars.")
 def compose_ha_up(_: list[str]) -> None:
     image = os.environ.get("APEX_IMAGE", "apex-orchestration-engine:local")
-    run(["uv", "run", "langgraph", "build", "-t", image])
+    _build_server_image(image, _image_reference_tag(image))
     run(
         [
             "docker",
@@ -326,24 +464,104 @@ def compose_ha_up(_: list[str]) -> None:
 # ── kubernetes / helm ─────────────────────────────────────────────────────────
 
 
+@contextmanager
+def _cleanup_on_failed_helm(cleanup: Callable[[], None]) -> Iterator[None]:
+    """Run compensating cleanup on command failure, interrupt, HUP, or TERM."""
+
+    watched = tuple(
+        candidate
+        for candidate in (
+            getattr(signal, "SIGHUP", None),
+            getattr(signal, "SIGINT", None),
+            getattr(signal, "SIGTERM", None),
+        )
+        if candidate is not None
+    )
+    previous = {candidate: signal.getsignal(candidate) for candidate in watched}
+
+    def interrupted(signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt(f"deployment interrupted by signal {signum}")
+
+    for candidate in watched:
+        signal.signal(candidate, interrupted)
+    restored = False
+
+    def restore() -> None:
+        nonlocal restored
+        if restored:
+            return
+        for candidate, handler in previous.items():
+            signal.signal(candidate, handler)
+        restored = True
+
+    try:
+        yield
+    except BaseException:
+        # A second termination signal must not interrupt compensation halfway.
+        for candidate in watched:
+            signal.signal(candidate, signal.SIG_IGN)
+        try:
+            cleanup()
+        finally:
+            restore()
+        raise
+    finally:
+        restore()
+
+
+def _cleanup_failed_csi_release(
+    namespace: str,
+    release: str,
+    *,
+    hook_secrets: tuple[str, ...] = (),
+) -> None:
+    """Best-effort but exhaustive cleanup for a supported Helm deploy path."""
+
+    try:
+        succeeded = cleanup_csi_hook_material(
+            namespace=namespace,
+            release=release,
+            hook_secrets=hook_secrets,
+        )
+    except ValueError:
+        # Helm rejects these identifiers before creating Kubernetes resources;
+        # never reflect attacker-controlled identifier text into deployment logs.
+        succeeded = False
+    if not succeeded:
+        print(
+            "WARNING: CSI hook cleanup was incomplete; keep the deployment failed and "
+            "re-run scripts/cleanup_csi_hook_material.py before retrying.",
+            file=sys.stderr,
+        )
+
+
 @task("helm-install", "helm upgrade --install. Args: [release] [namespace] [extra helm args...]")
 def helm_install(args: list[str]) -> None:
     release = _arg(args, 0, "apex")
     namespace = _arg(args, 1, "apex")
     extra = args[2:]
-    run(
-        [
-            "helm",
-            "upgrade",
-            "--install",
-            release,
-            CHART,
-            "-n",
-            namespace,
-            "--create-namespace",
-            *extra,
-        ]
-    )
+    helm_command = [
+        "helm",
+        "upgrade",
+        "--install",
+        release,
+        CHART,
+        "-n",
+        namespace,
+        "--create-namespace",
+        *extra,
+        # Hook resources are not ordinary release resources. Atomic rollback
+        # invokes the chart's post-rollback CSI cleanup hook, and
+        # cleanup-on-fail removes newly-created ordinary resources.
+        "--atomic",
+        "--cleanup-on-fail",
+        "--wait",
+    ]
+    # The chart labels every newly synchronized hook-only Secret, so generic
+    # callers do not need to disclose or parse custom Secret names here. The
+    # pre-upgrade exact-name ledger removes unlabelled pre-adoption names first.
+    with _cleanup_on_failed_helm(lambda: _cleanup_failed_csi_release(namespace, release)):
+        run(helm_command)
 
 
 # ── azure aks (turnkey) ───────────────────────────────────────────────────────
@@ -383,7 +601,18 @@ def _saved_plan_path(terraform_dir: str, environment: str, action: str) -> Path:
 
 
 def _saved_plan_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_STREAM_CHUNK_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _remove_saved_plan(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        raise SystemExit("Unable to remove the sensitive Terraform plan file.") from None
 
 
 def _saved_plan_confirmation_token(action: str, environment: str, path: Path) -> str:
@@ -401,12 +630,22 @@ def _private_umask() -> Iterator[None]:
         os.umask(previous)
 
 
-def _confirm_saved_plan(action: str, environment: str, path: Path) -> None:
-    """Require a token tied to the exact locked-environment binary plan."""
+def _confirm_saved_plan(action: str, environment: str, path: Path) -> str:
+    """Require approval and return the exact digest that was approved."""
+
+    try:
+        approved_digest = _saved_plan_digest(path)
+    except OSError:
+        raise SystemExit("Approved Terraform plan is no longer available.") from None
+    return _confirm_saved_plan_digest(action, environment, approved_digest)
+
+
+def _confirm_saved_plan_digest(action: str, environment: str, approved_digest: str) -> str:
+    """Require operator approval for a digest already bound to a private snapshot."""
 
     if environment not in LOCKED_ENVIRONMENTS:
-        return
-    expected = _saved_plan_confirmation_token(action, environment, path)
+        return approved_digest
+    expected = f"{action}:{environment}:{approved_digest}"
     variable = (
         "APEX_TERRAFORM_DESTROY_CONFIRM" if action == "destroy" else "APEX_TERRAFORM_APPLY_CONFIRM"
     )
@@ -418,10 +657,92 @@ def _confirm_saved_plan(action: str, environment: str, path: Path) -> None:
         raise SystemExit(
             f"Exact saved-plan confirmation required. Set ${variable} to {expected!r}."
         )
+    return approved_digest
 
 
-def _enforce_saved_plan_policy(terraform_dir: str, environment: str, plan_name: str) -> None:
-    plan = json.loads(capture(["terraform", f"-chdir={terraform_dir}", "show", "-json", plan_name]))
+def _assert_saved_plan_unchanged(path: Path, approved_digest: str) -> None:
+    """Refuse a saved plan replaced after policy review/operator approval."""
+
+    try:
+        current_digest = _saved_plan_digest(path)
+    except OSError:
+        # The OS exception retains the local plan path and platform details;
+        # neither is needed at the operator-facing boundary.
+        raise SystemExit("Approved Terraform plan is no longer available.") from None
+    if current_digest != approved_digest:
+        raise SystemExit("Approved Terraform plan changed before apply; refusing deployment.")
+
+
+def _inherited_descriptor_path(descriptor: int) -> str:
+    for directory in (Path("/proc/self/fd"), Path("/dev/fd")):
+        if directory.is_dir():
+            return str(directory / str(descriptor))
+    raise SystemExit("This platform cannot safely apply a verified Terraform plan snapshot.")
+
+
+@contextmanager
+def _saved_plan_snapshot(path: Path) -> Iterator[tuple[str, int, str]]:
+    """Yield an inherited read-only snapshot and the digest of its exact bytes."""
+
+    try:
+        with immutable_plan_snapshot(
+            path,
+            max_bytes=MAX_SAVED_PLAN_BYTES,
+            chunk_bytes=_STREAM_CHUNK_BYTES,
+        ) as snapshot:
+            yield snapshot
+    except ImmutablePlanSnapshotError as exc:
+        raise SystemExit(str(exc)) from None
+
+
+@contextmanager
+def _verified_saved_plan_snapshot(
+    path: Path,
+    approved_digest: str,
+) -> Iterator[tuple[str, int]]:
+    """Yield an anonymous snapshot only when it matches the approved digest."""
+
+    with _saved_plan_snapshot(path) as (snapshot_path, descriptor, digest):
+        if digest != approved_digest:
+            raise SystemExit("Approved Terraform plan changed before apply; refusing deployment.")
+        yield snapshot_path, descriptor
+
+
+def _apply_verified_saved_plan(
+    terraform_dir: str,
+    path: Path,
+    approved_digest: str,
+) -> None:
+    with _verified_saved_plan_snapshot(path, approved_digest) as (snapshot_path, descriptor):
+        run(
+            ["terraform", f"-chdir={terraform_dir}", "apply", "-input=false", snapshot_path],
+            pass_fds=(descriptor,),
+        )
+
+
+def _rewind_plan_snapshot(descriptor: int) -> None:
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+    except OSError:
+        raise SystemExit("Unable to rewind the private Terraform plan snapshot.") from None
+
+
+def _enforce_saved_plan_policy(
+    terraform_dir: str,
+    environment: str,
+    plan_name: str,
+    pass_fds: tuple[int, ...] = (),
+) -> None:
+    payload = _capture_bounded(
+        ["terraform", f"-chdir={terraform_dir}", "show", "-json", plan_name],
+        max_output_bytes=MAX_PLAN_JSON_BYTES,
+        output_description="Terraform saved-plan JSON",
+        pass_fds=pass_fds,
+    )
+    try:
+        plan = json.loads(payload)
+    except (json.JSONDecodeError, RecursionError):
+        raise SystemExit("Terraform emitted an invalid saved-plan document.") from None
     if not isinstance(plan, dict):
         raise SystemExit("Terraform emitted an invalid saved-plan document.")
     try:
@@ -439,6 +760,10 @@ def _plan_and_apply(
     plan_name = f"apex-{environment}-apply.tfplan"
     plan_path = _saved_plan_path(terraform_dir, environment, "apply")
     try:
+        # A pre-existing plan can retain a permissive mode when Terraform
+        # truncates it. Remove it before planning so the private umask controls
+        # the mode from the first credential-bearing byte written.
+        _remove_saved_plan(plan_path)
         with _private_umask():
             run(
                 [
@@ -450,14 +775,36 @@ def _plan_and_apply(
                     *plan_arguments,
                 ]
             )
-        plan_path.chmod(0o600)
-        _enforce_saved_plan_policy(terraform_dir, environment, plan_name)
-        _confirm_saved_plan("apply", environment, plan_path)
-        run(["terraform", f"-chdir={terraform_dir}", "apply", "-input=false", plan_name])
+        # Policy review, operator approval, and apply all consume the same
+        # anonymous snapshot. A replaced workspace path can therefore neither
+        # bypass policy nor swap bytes after approval.
+        with _saved_plan_snapshot(plan_path) as (snapshot_path, descriptor, digest):
+            _remove_saved_plan(plan_path)
+            _enforce_saved_plan_policy(
+                terraform_dir,
+                environment,
+                snapshot_path,
+                (descriptor,),
+            )
+            # /dev/fd may duplicate the inherited file description rather than
+            # opening an independent one. Rewind after `terraform show` so the
+            # subsequent apply always begins at byte zero on every POSIX host.
+            _rewind_plan_snapshot(descriptor)
+            _confirm_saved_plan_digest("apply", environment, digest)
+            run(
+                [
+                    "terraform",
+                    f"-chdir={terraform_dir}",
+                    "apply",
+                    "-input=false",
+                    snapshot_path,
+                ],
+                pass_fds=(descriptor,),
+            )
     finally:
         # Binary plans can contain sensitive values. Do not retain one when a
         # policy check, confirmation, or apply fails partway through the flow.
-        plan_path.unlink(missing_ok=True)
+        _remove_saved_plan(plan_path)
 
 
 def _helm_fullname(release: str, chart: str = "apex-orchestration-engine") -> str:
@@ -500,6 +847,24 @@ def _validate_dns_label(value: str, *, label: str, max_length: int = 63) -> str:
 def _validate_oci_tag(value: str) -> str:
     if _OCI_TAG.fullmatch(value) is None:
         raise SystemExit("$APEX_TAG must be a valid OCI image tag (1-128 safe characters).")
+    return value
+
+
+def _validate_registry(value: str) -> str:
+    """Accept the hostname[:port] form supported by the image-push task."""
+
+    hostname, separator, raw_port = value.rpartition(":")
+    if separator and raw_port.isdecimal() and ":" not in hostname:
+        if not 1 <= int(raw_port) <= 65_535:
+            raise SystemExit("Registry must be a valid lowercase DNS name with an optional port.")
+        candidate = hostname
+    elif separator:
+        raise SystemExit("Registry must be a valid lowercase DNS name with an optional port.")
+    else:
+        candidate = value
+    normalized = _validate_dns_name(candidate, label="registry")
+    if normalized != candidate:
+        raise SystemExit("Registry must be a valid lowercase DNS name with an optional port.")
     return value
 
 
@@ -630,7 +995,7 @@ def _verify_artifact_backup(namespace: str, storage_account: str, environment: s
         raise SystemExit(wait_result.returncode)
     run(["kubectl", "-n", namespace, "logs", f"job/{job}", "--all-containers=true"])
     for _ in range(30):
-        result = subprocess.run(
+        exists = _capture_bounded(
             [
                 "az",
                 "storage",
@@ -649,12 +1014,11 @@ def _verify_artifact_backup(namespace: str, storage_account: str, environment: s
                 "-o",
                 "tsv",
             ],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
+            max_output_bytes=16 * 1024,
+            output_description="Azure blob probe output",
+            allow_failure=True,
         )
-        if result.returncode == 0 and result.stdout.strip() == "true":
+        if exists == "true":
             # Remove the source sentinel after proving the copy. The next sync
             # removes its current backup object while soft-delete retains the
             # recovery evidence only for the configured bounded window.
@@ -684,6 +1048,7 @@ def _verify_artifact_backup(namespace: str, storage_account: str, environment: s
 @task("aks-up", "Provision Azure + deploy. Needs APEX_ENV (dev|staging|prod) and `az login`.")
 def aks_up(_: list[str]) -> None:
     env = _validate_azure_environment(require_env("APEX_ENV"))
+    _require_clean_locked_worktree(env)
     _configure_kubernetes_version(env)
     hostname = _validate_dns_name(require_env("APEX_HOSTNAME"), label="APEX_HOSTNAME")
     tls_secret = _validate_dns_name(require_env("APEX_TLS_SECRET"), label="APEX_TLS_SECRET")
@@ -746,6 +1111,7 @@ def aks_up(_: list[str]) -> None:
 
     # 2) Build + push images to ACR (langgraph build has no Dockerfile -> can't use `az acr build`).
     image_build([tag])
+    _scan_release_images(tag)
     run(["az", "acr", "login", "--name", acr.split(".")[0]])
     image_push([acr, tag])
     backend_digest = _pushed_image_digest(f"{acr}/apex-orchestration-engine:{tag}")
@@ -768,14 +1134,13 @@ def aks_up(_: list[str]) -> None:
     )
     run(["kubelogin", "convert-kubeconfig", "-l", "azurecli"])
     for attempt in range(30):
-        access = subprocess.run(
+        access = _capture_bounded(
             ["kubectl", "auth", "can-i", "*", "*", "--all-namespaces"],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
+            max_output_bytes=16 * 1024,
+            output_description="Kubernetes authorization probe output",
+            allow_failure=True,
         )
-        if access.returncode == 0 and access.stdout.strip() == "yes":
+        if access == "yes":
             break
         print(f"Waiting for AKS Azure RBAC propagation ({attempt + 1}/30)", flush=True)
         time.sleep(10)
@@ -804,67 +1169,75 @@ def aks_up(_: list[str]) -> None:
     run(["kubectl", "apply", "-n", namespace, "-f", "deploy/azure/k8s/minio/minio.yaml"])
 
     # 6) Deploy. Migration + bootstrap run as pre-upgrade hooks (migrate-then-roll).
-    run(
-        [
-            "helm",
-            "upgrade",
-            "--install",
-            release,
-            CHART,
-            "-n",
+    helm_command = [
+        "helm",
+        "upgrade",
+        "--install",
+        release,
+        CHART,
+        "-n",
+        namespace,
+        "--create-namespace",
+        "-f",
+        "deploy/azure/helm/values-azure.yaml",
+        "--set",
+        f"image.repository={acr}/apex-orchestration-engine",
+        "--set",
+        f"image.tag={tag}",
+        "--set-string",
+        f"image.digest={backend_digest}",
+        "--set",
+        f"dashboard.image.repository={acr}/apex-dashboard",
+        "--set",
+        f"dashboard.image.tag={tag}",
+        "--set-string",
+        f"dashboard.image.digest={dashboard_digest}",
+        "--set-string",
+        f"dashboard.backendUpstream=http://{fullname}:80",
+        "--set-string",
+        "bootstrap.document.connections[0].options.endpoint=apex-minio:9000",
+        "--set-string",
+        f"ingress.hosts[0].host={hostname}",
+        "--set-string",
+        f"ingress.tls[0].hosts[0]={hostname}",
+        "--set-string",
+        f"ingress.tls[0].secretName={tls_secret}",
+        "--set-string",
+        f'apexSettings.APEX_CORS_ORIGINS=["https://{hostname}"]',
+        "--set",
+        f"secretBackend.csi.keyvaultName={kv}",
+        "--set",
+        f"secretBackend.csi.hookKeyvaultName={hook_kv}",
+        "--set",
+        f"secretBackend.csi.tenantId={tenant}",
+        "--set",
+        f"workloadIdentity.clientId={client_id}",
+        "--set",
+        f"hookWorkloadIdentity.clientId={hook_client_id}",
+        "--set",
+        f"backupWorkloadIdentity.clientId={backup_client_id}",
+        "--set",
+        f"serviceAccount.name={service_account}",
+        "--set",
+        f"hookServiceAccountName={hook_service_account}",
+        "--set",
+        f"backupWorkloadIdentity.serviceAccountName={backup_service_account}",
+        "--set-string",
+        f"databaseRoleProvisioning.credentialGeneration={database_credential_generation}",
+        "--atomic",
+        "--cleanup-on-fail",
+        "--wait",
+        "--timeout",
+        "15m",
+    ]
+    with _cleanup_on_failed_helm(
+        lambda: _cleanup_failed_csi_release(
             namespace,
-            "--create-namespace",
-            "-f",
-            "deploy/azure/helm/values-azure.yaml",
-            "--set",
-            f"image.repository={acr}/apex-orchestration-engine",
-            "--set",
-            f"image.tag={tag}",
-            "--set-string",
-            f"image.digest={backend_digest}",
-            "--set",
-            f"dashboard.image.repository={acr}/apex-dashboard",
-            "--set",
-            f"dashboard.image.tag={tag}",
-            "--set-string",
-            f"dashboard.image.digest={dashboard_digest}",
-            "--set-string",
-            f"dashboard.backendUpstream=http://{fullname}:80",
-            "--set-string",
-            "bootstrap.document.connections[0].options.endpoint=apex-minio:9000",
-            "--set-string",
-            f"ingress.hosts[0].host={hostname}",
-            "--set-string",
-            f"ingress.tls[0].hosts[0]={hostname}",
-            "--set-string",
-            f"ingress.tls[0].secretName={tls_secret}",
-            "--set-string",
-            f'apexSettings.APEX_CORS_ORIGINS=["https://{hostname}"]',
-            "--set",
-            f"secretBackend.csi.keyvaultName={kv}",
-            "--set",
-            f"secretBackend.csi.hookKeyvaultName={hook_kv}",
-            "--set",
-            f"secretBackend.csi.tenantId={tenant}",
-            "--set",
-            f"workloadIdentity.clientId={client_id}",
-            "--set",
-            f"hookWorkloadIdentity.clientId={hook_client_id}",
-            "--set",
-            f"backupWorkloadIdentity.clientId={backup_client_id}",
-            "--set",
-            f"serviceAccount.name={service_account}",
-            "--set",
-            f"hookServiceAccountName={hook_service_account}",
-            "--set",
-            f"backupWorkloadIdentity.serviceAccountName={backup_service_account}",
-            "--set-string",
-            f"databaseRoleProvisioning.credentialGeneration={database_credential_generation}",
-            "--wait",
-            "--timeout",
-            "15m",
-        ]
-    )
+            release,
+            hook_secrets=_AZURE_CSI_HOOK_SECRETS,
+        )
+    ):
+        run(helm_command)
     # A reused image tag or rotated Secret does not change the pod template.
     run(
         [
@@ -974,7 +1347,7 @@ def aks_up(_: list[str]) -> None:
         ]
     )
     if ingress_class != "webapprouting.kubernetes.azure.com":
-        raise SystemExit(f"Unexpected AKS ingress class: {ingress_class!r}")
+        raise SystemExit("AKS ingress did not use the required ingress class.")
     run(
         [
             "curl",
@@ -1001,6 +1374,7 @@ def aks_down(_: list[str]) -> None:
     plan_name = f"apex-{env}-destroy.tfplan"
     plan_path = _saved_plan_path(TF, env, "destroy")
     try:
+        _remove_saved_plan(plan_path)
         with _private_umask():
             run(
                 [
@@ -1013,14 +1387,18 @@ def aks_down(_: list[str]) -> None:
                     f"-var-file=env/{env}.tfvars",
                 ]
             )
-        plan_path.chmod(0o600)
         # Destruction is an explicit break-glass task, not an ordinary deploy. The
         # confirmation includes the full binary-plan digest and target environment;
         # the separately stateful backup account is outside this plan and survives.
-        _confirm_saved_plan("destroy", env, plan_path)
-        run(["terraform", f"-chdir={TF}", "apply", "-input=false", plan_name])
+        with _saved_plan_snapshot(plan_path) as (snapshot_path, descriptor, digest):
+            _remove_saved_plan(plan_path)
+            _confirm_saved_plan_digest("destroy", env, digest)
+            run(
+                ["terraform", f"-chdir={TF}", "apply", "-input=false", snapshot_path],
+                pass_fds=(descriptor,),
+            )
     finally:
-        plan_path.unlink(missing_ok=True)
+        _remove_saved_plan(plan_path)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:

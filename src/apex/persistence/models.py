@@ -636,12 +636,8 @@ class EngineRun(Base):
     # Durable post-effect witness fields survive terminal lease release. They
     # let a graph recover a committed terminal projection without resolving a
     # connection that may have been disabled/deleted after teardown completed.
-    execution_connection_version: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    artifact_connection_version: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    execution_connection_version: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    artifact_connection_version: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completion_kind: Mapped[str | None] = mapped_column(String(32))
     handle: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     status: Mapped[str] = mapped_column(String(32))  # EngineRunPhase value

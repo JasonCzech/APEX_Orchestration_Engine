@@ -7,7 +7,7 @@
  */
 import type {
   AgentEvent,
-  EnginePollErrorEvent,
+  EngineErrorEvent,
   EnginePollSample,
   GateName,
   PhaseName,
@@ -43,8 +43,8 @@ export interface PipelineStreamView {
   toolCalls: ToolCallEvent[]
   /** Real-agent completion/error telemetry, capped independently. */
   agentEvents: AgentEvent[]
-  /** Retryable external-engine poll failures, capped independently. */
-  engineErrors: EnginePollErrorEvent[]
+  /** Retryable external-engine operation failures, capped independently. */
+  engineErrors: EngineErrorEvent[]
   engineStats: EngineStatsView
   /** Set by gate_opened; D3's gate machine consumes it. Cleared when the phase moves on. */
   pendingGateHint: PendingGateHint | null
@@ -92,6 +92,10 @@ function isAwaiting(status: PhaseStatus): boolean {
   return status === 'awaiting_prompt_review' || status === 'awaiting_output_review'
 }
 
+function isTerminal(status: PhaseStatus): boolean {
+  return status === 'succeeded' || status === 'failed' || status === 'skipped' || status === 'aborted'
+}
+
 function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): PipelineStreamView {
   switch (event.type) {
     case 'plan_resolved': {
@@ -103,7 +107,15 @@ function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): Pip
     }
     case 'phase_status': {
       const current = state.phaseProgress[event.phase]
-      if (current && current.attempt > event.attempt) return state
+      if (
+        current &&
+        (current.attempt > event.attempt ||
+          (current.attempt === event.attempt &&
+            isTerminal(current.status) &&
+            current.status !== event.status))
+      ) {
+        return state
+      }
       const hint = state.pendingGateHint
       const clearsHint = hint !== null && hint.phase === event.phase && !isAwaiting(event.status)
       return {
@@ -117,13 +129,23 @@ function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): Pip
     }
     case 'gate_opened': {
       const current = state.phaseProgress[event.phase]
-      if (current && current.attempt > event.attempt) return state
+      const nextStatus = GATE_AWAIT_STATUS[event.gate]
+      if (
+        current &&
+        (current.attempt > event.attempt ||
+          (current.attempt === event.attempt &&
+            (isTerminal(current.status) ||
+              (current.status === 'awaiting_output_review' &&
+                nextStatus === 'awaiting_prompt_review'))))
+      ) {
+        return state
+      }
       return {
         ...state,
         pendingGateHint: { gate: event.gate, phase: event.phase },
         phaseProgress: {
           ...state.phaseProgress,
-          [event.phase]: { status: GATE_AWAIT_STATUS[event.gate], attempt: event.attempt },
+          [event.phase]: { status: nextStatus, attempt: event.attempt },
         },
       }
     }
@@ -142,7 +164,11 @@ function applyEvent(state: PipelineStreamView, event: ReducedPipelineEvent): Pip
           : [...state.agentEvents, event]
       return { ...state, agentEvents }
     }
-    case 'engine_poll_error': {
+    case 'engine_poll_error':
+    case 'engine_provision_error':
+    case 'engine_collection_error':
+    case 'engine_collection_index_error':
+    case 'engine_collection_settle_error': {
       const engineErrors =
         state.engineErrors.length >= ENGINE_ERROR_CAP
           ? [...state.engineErrors.slice(state.engineErrors.length - ENGINE_ERROR_CAP + 1), event]

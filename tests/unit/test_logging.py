@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Iterator
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 import structlog
@@ -112,36 +114,73 @@ def test_logging_redacts_credentials_embedded_in_generic_string_fields() -> None
     assert redacted["camel"] == "stripeApiKey=[REDACTED]; retry disabled"
 
 
-def test_logging_scrubs_arbitrary_objects_before_json_renderer_stringifies_them() -> None:
+def test_logging_never_stringifies_arbitrary_scalar_objects() -> None:
     class CredentialBearingObject:
+        class_called = False
+        str_called = False
+        repr_called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).class_called = True
+                raise AssertionError("scalar __class__ descriptor must not be called")
+            return object.__getattribute__(self, name)
+
         def __str__(self) -> str:
+            self.str_called = True
             return "provider response password=object-secret"
 
         def __repr__(self) -> str:
+            self.repr_called = True
             return "<CredentialBearingObject password=repr-secret>"
 
+    payload = CredentialBearingObject()
     redacted = _redact_event_dict(
         None,
         "error",
-        {"payload": CredentialBearingObject(), "attempt": 2, "retrying": False},
+        {"payload": payload, "attempt": 2, "retrying": False},
     )
 
     assert redacted == {
-        "payload": "provider response password=[REDACTED]",
+        "payload": "[unsupported value]",
         "attempt": 2,
         "retrying": False,
     }
+    assert payload.str_called is False
+    assert payload.repr_called is False
+    assert payload.class_called is False
     rendered = str(structlog.processors.JSONRenderer()(None, "error", redacted))
     assert "object-secret" not in rendered
     assert "repr-secret" not in rendered
 
 
+def test_logging_replaces_oversized_and_nonfinite_exact_numeric_scalars() -> None:
+    huge = 1 << 1_000_000
+
+    redacted = _redact_event_dict(
+        None,
+        "error",
+        cast(Any, {"huge": huge, huge: "unsafe-key", "infinite": float("inf")}),
+    )
+
+    assert redacted == {
+        "huge": "[unsupported value]",
+        "[unsupported credential key]": "[redacted]",
+        "infinite": "[unsupported value]",
+    }
+
+
 def test_logging_scrubs_mapping_and_tuple_keys_before_rendering() -> None:
     class CredentialBearingKey:
+        str_called = False
+        repr_called = False
+
         def __str__(self) -> str:
+            self.str_called = True
             return "authorization=Bearer object-key-secret"
 
         def __repr__(self) -> str:
+            self.repr_called = True
             return "<CredentialBearingKey password=repr-key-secret>"
 
     dynamic_key = CredentialBearingKey()
@@ -160,15 +199,123 @@ def test_logging_scrubs_mapping_and_tuple_keys_before_rendering() -> None:
     assert redacted == {
         "payload": {
             "password=[REDACTED]": "[redacted]",
-            "authorization=[REDACTED]": "[redacted]",
+            "[unsupported credential key]": "[redacted]",
         },
-        "headers": [("authorization=[REDACTED]", "[redacted]")],
+        "headers": [("[unsupported credential key]", "[redacted]")],
     }
+    assert dynamic_key.str_called is False
+    assert dynamic_key.repr_called is False
     rendered = str(structlog.processors.JSONRenderer()(None, "error", redacted))
     assert "nested-key-secret" not in rendered
     assert "object-key-secret" not in rendered
     assert "repr-key-secret" not in rendered
     assert "tuple-value" not in rendered
+
+
+def test_logging_never_invokes_hostile_exception_string_hooks() -> None:
+    class HostileException(RuntimeError):
+        class_called = False
+        str_called = False
+        repr_called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).class_called = True
+                raise AssertionError("exception __class__ descriptor must not be called")
+            return BaseException.__getattribute__(self, name)
+
+        def __str__(self) -> str:
+            self.str_called = True
+            raise AssertionError("exception __str__ must not be called")
+
+        def __repr__(self) -> str:
+            self.repr_called = True
+            raise AssertionError("exception __repr__ must not be called")
+
+    error = HostileException(object())
+
+    redacted = _redact_event_dict(None, "error", {"error": error})
+
+    assert redacted == {"error": "[unsupported value]"}
+    assert error.str_called is False
+    assert error.repr_called is False
+    assert error.class_called is False
+
+
+def test_logging_never_traverses_hostile_container_subclasses() -> None:
+    class HostileMapping(dict[str, Any]):
+        called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).called = True
+                raise AssertionError("mapping __class__ descriptor must not be called")
+            return dict.__getattribute__(self, name)
+
+        def items(self) -> Any:
+            self.called = True
+            raise AssertionError("mapping items must not be called")
+
+        def __iter__(self) -> Iterator[str]:
+            self.called = True
+            raise AssertionError("mapping iteration must not be called")
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("mapping length must not be called")
+
+        def __str__(self) -> str:
+            self.called = True
+            raise AssertionError("mapping stringification must not be called")
+
+    class HostileList(list[Any]):
+        called = False
+
+        def __iter__(self) -> Iterator[Any]:
+            self.called = True
+            raise AssertionError("list iteration must not be called")
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("list length must not be called")
+
+        def __getitem__(self, index: Any) -> Any:
+            self.called = True
+            raise AssertionError("list indexing must not be called")
+
+        def __repr__(self) -> str:
+            self.called = True
+            raise AssertionError("list repr must not be called")
+
+    hostile_mapping = HostileMapping(password="must-not-be-read")
+    hostile_list = HostileList(["Bearer must-not-be-read"])
+
+    redacted = _redact_event_dict(
+        None,
+        "error",
+        {"mapping": hostile_mapping, "sequence": hostile_list},
+    )
+
+    assert redacted == {
+        "mapping": "[unsupported container]",
+        "sequence": "[unsupported container]",
+    }
+    assert hostile_mapping.called is False
+    assert hostile_list.called is False
+
+
+def test_logging_rejects_a_hostile_top_level_event_mapping_without_traversal() -> None:
+    class HostileEventDict(dict[str, Any]):
+        called = False
+
+        def items(self) -> Any:
+            self.called = True
+            raise AssertionError("event items must not be called")
+
+    event = HostileEventDict(event="unsafe")
+
+    assert _redact_event_dict(None, "error", event) == {"event": "[unsupported container]"}
+    assert event.called is False
 
 
 @pytest.mark.parametrize(

@@ -33,11 +33,13 @@ def test_allow_listed_host_passes() -> None:
 
 def test_host_not_in_allow_list_is_rejected() -> None:
     # Rejected before any DNS resolution — the allow-list check comes first.
-    with pytest.raises(FetchError, match="allow-list"):
+    canary = "untrusted-provider-host-canary.example"
+    with pytest.raises(FetchError, match="allow-list") as error:
         validate_fetch_url(
-            "https://evil.example.com/x",
+            f"https://{canary}/x",
             allowed_hosts=["results.example.com"],
         )
+    assert canary not in str(error.value)
 
 
 def test_empty_allow_list_disables_the_tool() -> None:
@@ -65,8 +67,10 @@ def test_link_local_metadata_ip_is_rejected() -> None:
 
 
 def test_non_http_scheme_is_rejected() -> None:
-    with pytest.raises(FetchError, match="scheme"):
-        validate_fetch_url("file:///etc/passwd", allowed_hosts=["results.example.com"])
+    canary = "provider-scheme-canary"
+    with pytest.raises(FetchError, match="http or https") as error:
+        validate_fetch_url(f"{canary}:///etc/passwd", allowed_hosts=["results.example.com"])
+    assert canary not in str(error.value)
 
 
 def test_locked_fetch_requires_https_before_network_io() -> None:
@@ -462,9 +466,65 @@ def test_fetch_http_error_does_not_persist_path_or_query_secrets(
         )
 
     message = str(error.value)
-    assert "https://results.example.com" in message
+    assert "results.example.com" not in message
     assert "token-123" not in message
     assert "signature" not in message
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+
+
+def test_fetch_error_classification_never_invokes_exception_hooks() -> None:
+    class HostileConnectError(httpx.ConnectError):
+        class_called = False
+        str_called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).class_called = True
+                raise AssertionError("exception __class__ descriptor must not be called")
+            return BaseException.__getattribute__(self, name)
+
+        def __str__(self) -> str:
+            type(self).str_called = True
+            raise AssertionError("exception __str__ must not be called")
+
+    error = HostileConnectError("provider-host-secret-canary")
+
+    assert results_fetch._safe_http_error_detail(error) == "ConnectError"
+    assert error.class_called is False
+    assert error.str_called is False
+
+
+def test_fetch_redirect_error_does_not_persist_provider_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(
+            302,
+            headers={"Location": "https://redirect.example/private?token=secret"},
+            request=request,
+        )
+    )
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):  # type: ignore[no-untyped-def]
+        kwargs.pop("transport", None)
+        kwargs.pop("trust_env", None)
+        return real_client(*args, transport=transport, **kwargs)
+
+    monkeypatch.setattr(results_fetch.httpx, "Client", client_factory)
+
+    with pytest.raises(FetchError, match="redirects are disabled") as error:
+        fetch_results_text(
+            "https://results.example.com/private/token-123?signature=abc",
+            allowed_hosts=["results.example.com"],
+            allow_private=True,
+        )
+
+    message = str(error.value)
+    assert "results.example.com" not in message
+    assert "redirect.example" not in message
+    assert "token-123" not in message
 
 
 def test_dns_rebinding_is_rejected_again_at_socket_connect(
@@ -487,3 +547,36 @@ def test_dns_rebinding_is_rejected_again_at_socket_connect(
         )
 
     assert calls == 1  # allow-list validation is syntax-only; connect-time DNS is authoritative
+
+
+@pytest.mark.parametrize("metadata_address", ["fd20:ce::254", "192.0.0.192"])
+def test_private_fetch_approval_never_admits_instance_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_address: str,
+) -> None:
+    monkeypatch.setattr(
+        network_safety,
+        "_resolve_hostname_sync",
+        lambda *_args, **_kwargs: [metadata_address],
+    )
+
+    with pytest.raises(FetchError, match="ConnectError"):
+        fetch_results_text(
+            "http://results.internal/latest/meta-data/iam/security-credentials/",
+            allowed_hosts=["results.internal"],
+            allow_private=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "max_bytes",
+    [True, 0, 10_000_001, 1.5],
+)
+def test_fetch_rejects_noncanonical_or_unbounded_output_budgets(max_bytes: Any) -> None:
+    with pytest.raises(FetchError, match="max_bytes must be between"):
+        fetch_results_text(
+            "https://results.example.com/run/42",
+            allowed_hosts=["results.example.com"],
+            allow_private=True,
+            max_bytes=max_bytes,
+        )

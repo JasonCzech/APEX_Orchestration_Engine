@@ -1,3 +1,4 @@
+import asyncio
 from collections import deque
 from typing import Any
 
@@ -60,6 +61,8 @@ async def test_backend_returns_retry_and_wraps_redis_failure() -> None:
         await backend.auth_retry_after(("ip:one",))
 
     assert "credentials" not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
 
 
 async def test_stream_permit_is_a_renewable_expiring_lease() -> None:
@@ -79,6 +82,84 @@ async def test_stream_permit_is_a_renewable_expiring_lease() -> None:
     assert await backend.renew_stream(lease, lease_ttl_s=30) is True
     await backend.release_stream(lease)
     assert [call[1] for call in redis.calls] == [3, 3, 3]
+
+
+async def test_cancelled_stream_acquire_definitively_releases_ambiguous_lease() -> None:
+    class AmbiguousAcquireRedis(FakeRedis):
+        def __init__(self) -> None:
+            super().__init__()
+            self.acquire_started = asyncio.Event()
+            self.allow_acquire = asyncio.Event()
+            self.acquire_finished = asyncio.Event()
+            self.release_started = asyncio.Event()
+            self.allow_release = asyncio.Event()
+
+        async def eval(self, script: str, numkeys: int, *keys_and_args: Any) -> int:
+            self.calls.append((script, numkeys, keys_and_args))
+            if len(self.calls) == 1:
+                self.acquire_started.set()
+                await self.allow_acquire.wait()
+                self.acquire_finished.set()
+                return 1
+            assert self.acquire_finished.is_set()
+            self.release_started.set()
+            await self.allow_release.wait()
+            return 1
+
+    redis = AmbiguousAcquireRedis()
+    backend = RedisDistributedLimitBackend(client=redis)
+    acquire = asyncio.create_task(
+        backend.acquire_stream(
+            ("ip:one", "key:one"),
+            global_limit=2,
+            source_limit=1,
+            credential_limit=1,
+            lease_ttl_s=30,
+        )
+    )
+    await redis.acquire_started.wait()
+
+    acquire.cancel()
+    await asyncio.sleep(0)
+    assert redis.release_started.is_set() is False
+    assert acquire.done() is False
+
+    redis.allow_acquire.set()
+    await redis.acquire_finished.wait()
+    await redis.release_started.wait()
+    acquire.cancel()
+    await asyncio.sleep(0)
+    acquire.cancel()
+    await asyncio.sleep(0)
+
+    assert acquire.done() is False
+    redis.allow_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await acquire
+
+    assert len(redis.calls) == 2
+    acquire_call, release_call = redis.calls
+    assert acquire_call[1] == release_call[1] == 3
+    assert acquire_call[2][:4] == release_call[2]
+
+
+async def test_failed_stream_acquire_compensates_for_a_lost_success_reply() -> None:
+    redis = FakeRedis(ConnectionError("reply lost after commit"), 1)
+    backend = RedisDistributedLimitBackend(client=redis)
+
+    with pytest.raises(LimitBackendUnavailable):
+        await backend.acquire_stream(
+            ("ip:one", "key:one"),
+            global_limit=2,
+            source_limit=1,
+            credential_limit=1,
+            lease_ttl_s=30,
+        )
+
+    assert len(redis.calls) == 2
+    acquire_call, release_call = redis.calls
+    assert acquire_call[1] == release_call[1] == 3
+    assert acquire_call[2][:4] == release_call[2]
 
 
 async def test_auth_failure_and_success_touch_both_source_and_credential_state() -> None:

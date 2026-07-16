@@ -1,5 +1,66 @@
 {{- if .Values.secretBackend.csi.cleanup.enabled -}}
-{{- $name := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-cleanup") -}}
+{{- $revision := int .Release.Revision -}}
+{{- $maxTrackedCleanupRevision := 128 -}}
+{{- if gt $revision $maxTrackedCleanupRevision -}}
+{{- fail (printf "CSI cleanup supports Helm release revisions only through r%d; run scripts/cleanup_csi_hook_material.py, uninstall the release, and reinstall it to reset the revision before continuing" $maxTrackedCleanupRevision) -}}
+{{- end -}}
+{{- $name := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" (printf "csi-cleanup-r%d" $revision)) -}}
+{{- $legacyCleanupName := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-cleanup") -}}
+{{- $currentPostCleanupName := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" (printf "csi-post-cleanup-r%d" $revision)) -}}
+{{- $postCleanupNames := list $currentPostCleanupName -}}
+{{- $secretConsumerJobNames := list (include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "db-roles")) (include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "migrate")) (include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "db-grants")) (include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "bootstrap")) (include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "db-role-cleanup")) -}}
+{{- $staleCleanupNames := list -}}
+{{- $stalePriorBindingNames := list -}}
+{{- /*
+The fixed guard above bounds all exact resourceNames, joined argv values, and
+the at-most-eleven kubectl API operations contributed by each prior revision.
+Newest-first order revokes the most recently failed identities even if an API
+outage later exhausts the Job deadline.
+*/ -}}
+{{- range $priorRevision := untilStep (sub $revision 1 | int) 0 -1 -}}
+{{- $postCleanupNames = append $postCleanupNames (include "apex.suffixedName" (dict "base" (include "apex.fullname" $) "suffix" (printf "csi-post-cleanup-r%d" $priorRevision))) -}}
+{{- $staleCleanupNames = append $staleCleanupNames (include "apex.suffixedName" (dict "base" (include "apex.fullname" $) "suffix" (printf "csi-cleanup-r%d" $priorRevision))) -}}
+{{- $stalePriorBindingNames = append $stalePriorBindingNames (include "apex.suffixedName" (dict "base" (include "apex.fullname" $) "suffix" (printf "csi-prior-secret-cleanup-r%d" $priorRevision))) -}}
+{{- end -}}
+{{- $staleCleanupNames = append $staleCleanupNames $legacyCleanupName -}}
+{{- $ledgerName := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-hook-secret-ledger") -}}
+{{- $priorBindingName := include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" (printf "csi-prior-secret-cleanup-r%d" $revision)) -}}
+{{- $runtimeSecrets := dict -}}
+{{- range .Values.secretBackend.csi.objects -}}
+{{- $_ := set $runtimeSecrets .secretName true -}}
+{{- end -}}
+{{- range $runtimeName := list .Values.database.existingSecret .Values.redis.existingSecret .Values.auth.existingSecret .Values.license.existingSecret -}}
+{{- if $runtimeName -}}
+{{- $_ := set $runtimeSecrets (toString $runtimeName) true -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.extraEnv -}}
+{{- if kindIs "map" . -}}
+{{- $valueFrom := get . "valueFrom" -}}
+{{- if kindIs "map" $valueFrom -}}
+{{- $secretKeyRef := get $valueFrom "secretKeyRef" -}}
+{{- if kindIs "map" $secretKeyRef -}}
+{{- $runtimeName := get $secretKeyRef "name" -}}
+{{- if and (kindIs "string" $runtimeName) $runtimeName -}}
+{{- $_ := set $runtimeSecrets $runtimeName true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $hookOnlySecrets := dict -}}
+{{- range .Values.secretBackend.csi.hookObjects -}}
+{{- if not (hasKey $runtimeSecrets .secretName) -}}
+{{- $_ := set $hookOnlySecrets .secretName true -}}
+{{- end -}}
+{{- end -}}
+{{- $cleanupSecrets := dict -}}
+{{- range (keys $hookOnlySecrets) -}}
+{{- $_ := set $cleanupSecrets . true -}}
+{{- end -}}
+{{- range .Values.secretBackend.csi.cleanup.previousHookSecretNames -}}
+{{- $_ := set $cleanupSecrets . true -}}
+{{- end -}}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -8,9 +69,9 @@ metadata:
     {{- include "apex.labels" . | nindent 4 }}
     app.kubernetes.io/component: csi-cleanup
   annotations:
-    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook": pre-upgrade,post-delete,post-rollback
     "helm.sh/hook-weight": "-60"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -19,20 +80,44 @@ metadata:
   name: {{ $name }}
   labels:
     {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-cleanup
   annotations:
-    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook": pre-upgrade,post-delete,post-rollback
     "helm.sh/hook-weight": "-60"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 rules:
   - apiGroups: ["batch"]
     resources: ["jobs"]
     resourceNames:
       - {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-sync") | quote }}
+      {{- range $secretConsumerJobNames }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- range $postCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- range $staleCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
     verbs: ["get", "delete"]
+  # Job foreground deletion is necessary but not sufficient: an orphaned hook
+  # Pod can retain a CSI mount. Kubernetes RBAC cannot constrain Pod deletion
+  # by label, so the hook receives read-only discovery and fails closed when a
+  # matching orphan remains. The trusted deploy helper performs active drains.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["serviceaccounts"]
     resourceNames:
       - {{ include "apex.defaultHookServiceAccountName" . | quote }}
+      {{- range $postCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- range $staleCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      - {{ $name | quote }}
     verbs: ["get", "delete"]
   - apiGroups: ["secrets-store.csi.x-k8s.io"]
     resources: ["secretproviderclasses"]
@@ -41,10 +126,47 @@ rules:
       - {{ include "apex.hookRuntimeAkVSecretProviderClassName" . | quote }}
     verbs: ["get", "delete"]
   - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["roles", "rolebindings"]
+    resources: ["roles"]
     resourceNames:
       - {{ include "apex.csiSyncRbacName" . | quote }}
+      {{- range $postCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- range $staleCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      - {{ $name | quote }}
     verbs: ["get", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    resourceNames:
+      - {{ include "apex.csiSyncRbacName" . | quote }}
+      {{- range $postCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- range $staleCleanupNames }}
+      - {{ . | quote }}
+      {{- end }}
+      {{- range $stalePriorBindingNames }}
+      - {{ . | quote }}
+      {{- end }}
+      - {{ $priorBindingName | quote }}
+      - {{ $name | quote }}
+    verbs: ["get", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    resourceNames:
+      - {{ $ledgerName | quote }}
+    verbs: ["get"]
+  {{- if $cleanupSecrets }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- range (keys $cleanupSecrets | sortAlpha) }}
+      - {{ . | quote }}
+      {{- end }}
+    verbs: ["get", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -52,14 +174,39 @@ metadata:
   name: {{ $name }}
   labels:
     {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-cleanup
   annotations:
-    "helm.sh/hook": pre-upgrade,post-delete
-    "helm.sh/hook-weight": "-60"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook": pre-upgrade,post-delete,post-rollback
+    # Delete/recreate name-based authorization before a same-revision hook can
+    # recreate its ServiceAccount subject.
+    "helm.sh/hook-weight": "-70"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $priorBindingName }}
+  labels:
+    {{- include "apex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-cleanup
+  annotations:
+    "helm.sh/hook": pre-upgrade,post-delete,post-rollback
+    "helm.sh/hook-weight": "-70"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  # This ordinary, unbound Role still contains the previous successful
+  # release's exact hook Secret names while pre-upgrade hooks execute.
+  name: {{ $ledgerName }}
 subjects:
   - kind: ServiceAccount
     name: {{ $name }}
@@ -73,9 +220,9 @@ metadata:
     {{- include "apex.labels" . | nindent 4 }}
     app.kubernetes.io/component: csi-cleanup
   annotations:
-    "helm.sh/hook": pre-upgrade,post-delete
+    "helm.sh/hook": pre-upgrade,post-delete,post-rollback
     "helm.sh/hook-weight": "-50"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded,hook-failed
 spec:
   backoffLimit: 1
   activeDeadlineSeconds: 300
@@ -86,6 +233,9 @@ spec:
         app.kubernetes.io/component: csi-cleanup
     spec:
       restartPolicy: Never
+      # activeDeadlineSeconds terminates the Pod with SIGTERM. Keep enough
+      # grace for one bounded in-flight deletion plus both identity revocations.
+      terminationGracePeriodSeconds: 60
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: true
       securityContext:
@@ -99,14 +249,226 @@ spec:
           command: ["sh", "-ec"]
           args:
             - |
-              # Wait for the sync pod to release its CSI mounts before Helm
-              # recreates these fixed-name hook resources in the same upgrade.
-              kubectl -n "$POD_NAMESPACE" delete job {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-sync") }} --ignore-not-found --wait=true --timeout=120s
-              kubectl -n "$POD_NAMESPACE" delete secretproviderclass {{ include "apex.hookAkVSecretProviderClassName" . }} --ignore-not-found --wait=true --timeout=120s
-              kubectl -n "$POD_NAMESPACE" delete secretproviderclass {{ include "apex.hookRuntimeAkVSecretProviderClassName" . }} --ignore-not-found --wait=true --timeout=120s
-              kubectl -n "$POD_NAMESPACE" delete rolebinding {{ include "apex.csiSyncRbacName" . }} --ignore-not-found --wait=true --timeout=120s
-              kubectl -n "$POD_NAMESPACE" delete role {{ include "apex.csiSyncRbacName" . }} --ignore-not-found --wait=true --timeout=120s
-              kubectl -n "$POD_NAMESPACE" delete serviceaccount {{ include "apex.defaultHookServiceAccountName" . }} --ignore-not-found --wait=true --timeout=120s
+              self_name="${10}"
+              prior_binding_name="${11}"
+              protected_runtime_names="${12}"
+              sync_rbac_name="$4"
+              hook_service_account_name="$5"
+              cleanup_status=0
+              revoke_identity() {
+                revoke_status=0
+                if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete rolebinding --ignore-not-found --wait=true --timeout=5s -- "$prior_binding_name"; then
+                  revoke_status=1
+                  # The prior binding targets this same subject. If its exact
+                  # capability cannot be removed, delete the subject before
+                  # attempting the self-binding deletion below.
+                  if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete serviceaccount --ignore-not-found --wait=true --timeout=5s -- "$self_name"; then
+                    revoke_status=1
+                  fi
+                fi
+                # Remove the durable authorization object, not only its
+                # current subject: Kubernetes RoleBinding subjects are names,
+                # so a binding left behind would reactivate if Helm recreated
+                # a ServiceAccount with the same name on a later release.
+                if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete rolebinding --ignore-not-found --wait=true --timeout=5s -- "$self_name"; then
+                  revoke_status=1
+                  # A transient binding-deletion failure must still leave the
+                  # current identity inert. Cleanup identities are scoped to
+                  # .Release.Revision, so a later release never recreates this
+                  # subject underneath the stranded name-based binding.
+                  if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete serviceaccount --ignore-not-found --wait=true --timeout=5s -- "$self_name"; then
+                    revoke_status=1
+                  fi
+                fi
+                return "$revoke_status"
+              }
+              revoke_sync_identity() {
+                sync_revoke_status=0
+                if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete rolebinding --ignore-not-found --wait=true --timeout=5s -- "$sync_rbac_name"; then
+                  sync_revoke_status=1
+                fi
+                if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete role --ignore-not-found --wait=true --timeout=5s -- "$sync_rbac_name"; then
+                  sync_revoke_status=1
+                fi
+                if ! kubectl --request-timeout=5s -n "$POD_NAMESPACE" delete serviceaccount --ignore-not-found --wait=true --timeout=5s -- "$hook_service_account_name"; then
+                  sync_revoke_status=1
+                fi
+                return "$sync_revoke_status"
+              }
+              cleanup_failed_identity() {
+                result=$?
+                trap - EXIT
+                trap '' HUP INT TERM
+                if [ "$result" -ne 0 ]; then
+                  # Revoke both cleanup bindings while this token still
+                  # authenticates. ServiceAccount deletion is the fallback if
+                  # either authorization object cannot be removed.
+                  revoke_sync_identity || true
+                  revoke_identity || true
+                fi
+                exit "$result"
+              }
+              delete_resource() {
+                resource="$1"
+                shift
+                if ! kubectl --request-timeout=10s -n "$POD_NAMESPACE" delete "$resource" --ignore-not-found --wait=true --timeout=30s -- "$@"; then
+                  cleanup_status=1
+                fi
+              }
+              quiesce_job() {
+                job_name="$1"
+                quiesce_status=0
+                # Foreground propagation prevents the Job object disappearing
+                # while an owned CSI-mounted Pod is still terminating.
+                if ! kubectl --request-timeout=10s -n "$POD_NAMESPACE" delete job --cascade=foreground --ignore-not-found --wait=true --timeout=30s -- "$job_name"; then
+                  quiesce_status=1
+                fi
+                # A selector-scoped Pod delete would require namespace-wide
+                # deletecollection privilege. Inspect instead and retain every
+                # SPC/Secret when foreground cascading left an orphan behind.
+                if ! remaining_pods="$(kubectl --request-timeout=10s -n "$POD_NAMESPACE" get pods --selector="batch.kubernetes.io/job-name=$job_name" --ignore-not-found=true -o name)"; then
+                  quiesce_status=1
+                elif [ -n "$remaining_pods" ]; then
+                  quiesce_status=1
+                fi
+                return "$quiesce_status"
+              }
+              cleanup_all() {
+                quiesced=1
+                # The cleanup Job uses its revision-scoped self identity, not
+                # the csi-sync ServiceAccount. Revoke the sync capability before
+                # any bounded-but-slow Job wait, then retry below for exhaustive
+                # cleanup if an API call failed transiently.
+                if ! revoke_sync_identity; then
+                  cleanup_status=1
+                fi
+                # Revoke every older cleanup identity before touching other
+                # hook material. Helm revisions are monotonic across failed
+                # upgrades and rollbacks, so the exact-name lists include all
+                # potentially stranded revisions, not only rN-1.
+                for stale_cleanup_name in $7; do
+                  delete_resource rolebinding "$stale_cleanup_name"
+                  if ! quiesce_job "$stale_cleanup_name"; then
+                    cleanup_status=1
+                    quiesced=0
+                  fi
+                  delete_resource role "$stale_cleanup_name"
+                  delete_resource serviceaccount "$stale_cleanup_name"
+                done
+                # These secondary bindings target the ServiceAccounts just
+                # deleted above and are already inert even if this pass stops.
+                for stale_prior_binding_name in $8; do
+                  delete_resource rolebinding "$stale_prior_binding_name"
+                done
+                if ! quiesce_job "$1"; then
+                  cleanup_status=1
+                  quiesced=0
+                fi
+                # Remove post-cleanup hooks from every revision before deleting
+                # their deletion-capable identities.
+                for post_cleanup_name in $6; do
+                  if ! quiesce_job "$post_cleanup_name"; then
+                    cleanup_status=1
+                    quiesced=0
+                  fi
+                done
+                # A failed earlier release can strand any later-weight hook Job
+                # while it still consumes a synchronized hook Secret. Drain each
+                # exact, chart-derived Job name before deleting either SPC or any
+                # Secret. A delete, Pod-list, or orphan result fails closed.
+                for secret_consumer_job_name in $SECRET_CONSUMER_JOB_NAMES; do
+                  if ! quiesce_job "$secret_consumer_job_name"; then
+                    cleanup_status=1
+                    quiesced=0
+                  fi
+                done
+                # Never remove an SPC or synchronized Secret unless every Job
+                # controller and matching Pod drain succeeded. A surviving Job
+                # could otherwise recreate a Pod and race Secret synchronization.
+                if [ "$quiesced" -eq 1 ]; then
+                  delete_resource secretproviderclass "$2"
+                  delete_resource secretproviderclass "$3"
+                  # The temporary second RoleBinding authorizes only the exact
+                  # names carried by the trusted prior-release ledger.
+                  for secret_name in $prior_secret_names; do
+                    delete_resource secret "$secret_name"
+                  done
+                  shift 12
+                  for secret_name do
+                    delete_resource secret "$secret_name"
+                  done
+                fi
+                # Identity/RBAC revocation remains exhaustive even when
+                # quiescence fails and secret material is deliberately retained.
+                delete_resource rolebinding "$sync_rbac_name"
+                delete_resource role "$sync_rbac_name"
+                delete_resource serviceaccount "$hook_service_account_name"
+                for post_cleanup_name in $6; do
+                  delete_resource rolebinding "$post_cleanup_name"
+                  delete_resource role "$post_cleanup_name"
+                  delete_resource serviceaccount "$post_cleanup_name"
+                done
+                # Revoke the exact prior-ledger binding, then delete our own
+                # RoleBinding as the final successful API mutation. No
+                # deletion privilege survives under a reusable subject name
+                # if Helm never reaches its hook bookkeeping step.
+                if ! revoke_identity; then
+                  cleanup_status=1
+                fi
+                return "$cleanup_status"
+              }
+              handle_signal() {
+                signal_status="$1"
+                trap - EXIT
+                trap '' HUP INT TERM
+                # Do not repeat the full compensation pass on timeout: a
+                # bounded identity revocation must fit inside the Pod's
+                # termination grace period even if another resource is stuck.
+                revoke_sync_identity || true
+                revoke_identity || true
+                exit "$signal_status"
+              }
+              trap cleanup_failed_identity EXIT
+              trap 'handle_signal 129 "$@"' HUP
+              trap 'handle_signal 130 "$@"' INT
+              trap 'handle_signal 143 "$@"' TERM
+              # The unbound ledger Role is updated only after pre-upgrade hooks,
+              # so its exact resourceNames are the prior successful release's
+              # hook Secrets. Missing is legitimate only on the first
+              # ledger-adoption upgrade; every other API failure aborts.
+              prior_secret_names="$(kubectl --request-timeout=10s -n "$POD_NAMESPACE" get role "$9" --ignore-not-found=true -o 'jsonpath={.rules[0].resourceNames[*]}')"
+              # Check the entire prior ledger before mutating anything. A name
+              # that became runtime-consumed requires an explicit two-stage
+              # migration and must never be deleted by cleanup.
+              for secret_name in $prior_secret_names; do
+                for runtime_secret_name in $protected_runtime_names; do
+                  if [ "$secret_name" = "$runtime_secret_name" ]; then
+                    echo "prior hook Secret is now runtime-consumed; use a two-stage name migration" >&2
+                    exit 2
+                  fi
+                done
+              done
+              # Wait for the sync pod to release its CSI mounts before deleting
+              # native Secrets or recreating fixed-name hook resources.
+              cleanup_all "$@"
+            # Values are separate argv entries, never shell source. This stays
+            # safe even if a future name-validation regression is introduced.
+            - cleanup
+            - {{ include "apex.suffixedName" (dict "base" (include "apex.fullname" .) "suffix" "csi-sync") | quote }}
+            - {{ include "apex.hookAkVSecretProviderClassName" . | quote }}
+            - {{ include "apex.hookRuntimeAkVSecretProviderClassName" . | quote }}
+            - {{ include "apex.csiSyncRbacName" . | quote }}
+            - {{ include "apex.defaultHookServiceAccountName" . | quote }}
+            - {{ $postCleanupNames | join " " | quote }}
+            - {{ $staleCleanupNames | join " " | quote }}
+            - {{ $stalePriorBindingNames | join " " | quote }}
+            - {{ $ledgerName | quote }}
+            - {{ $name | quote }}
+            - {{ $priorBindingName | quote }}
+            - {{ keys $runtimeSecrets | sortAlpha | join " " | quote }}
+            {{- range (keys $cleanupSecrets | sortAlpha) }}
+            - {{ . | quote }}
+            {{- end }}
           env:
             - name: HOME
               value: /tmp
@@ -114,6 +476,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: SECRET_CONSUMER_JOB_NAMES
+              value: {{ $secretConsumerJobNames | join " " | quote }}
           resources:
             requests:
               cpu: 10m

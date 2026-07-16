@@ -19,6 +19,7 @@ import asyncio
 import json
 import math
 from datetime import datetime
+from types import GetSetDescriptorType, MemberDescriptorType
 from typing import Any
 
 import structlog
@@ -29,13 +30,23 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, interrupt
 
 from apex.adapters.registry import PortKind
-from apex.domain.diagnostics import bounded_diagnostic
-from apex.domain.integrations import LoadTestSpec
+from apex.domain.diagnostics import (
+    bounded_diagnostic,
+    contains_credential_material,
+    is_credential_field,
+)
+from apex.domain.durable_evidence import sanitize_durable_object
+from apex.domain.integrations import LoadTestSpec, TestResultSummary
 from apex.domain.pipeline import (
+    MAX_CONTEXT_REF_CHARS,
+    MAX_CONTEXT_SUMMARY_CHARS,
+    MAX_CONTEXT_TEXT_CHARS,
+    MAX_CONTEXT_TITLE_CHARS,
+    MAX_GATE_DECISION_TEXT_CHARS,
+    MAX_GATE_TEXT_CHARS,
     MAX_TOOL_ARGS_PREVIEW_BYTES,
     MAX_TOOL_CALL_RECORDS,
     PHASE_PREREQUISITES,
-    TERMINAL_PHASE_STATUSES,
     ArtifactRef,
     DialogueEntry,
     ExternalResults,
@@ -54,27 +65,36 @@ from apex.graphs.pipeline.gates import (
     parse_gate_decision,
     resolve_actor,
 )
-from apex.graphs.pipeline.state import JsonDict, PipelineState
+from apex.graphs.pipeline.state import (
+    MAX_DURABLE_ARTIFACTS,
+    MAX_DURABLE_DIALOGUE_ENTRIES,
+    MAX_DURABLE_PHASE_DIAGNOSTICS,
+    JsonDict,
+    PipelineState,
+)
 from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import usage as usage_events
 from apex.services.artifact_references import persist_artifact_with_intent
-from apex.services.connections import ConnectionResolver, DbConnectionStore
+from apex.services.connections import ConnectionResolver, DbConnectionStore, close_adapter
 from apex.services.pricing import MAX_TOKEN_COUNT, coerce_token_count
 from apex.services.prompts import (
     prompt_review_from_resolved,
     resolve_phase_prompt_sync,
     resolved_from_prompt_review,
-    user_prompt_with_context,
 )
 from apex.services.results_fetch import redact_fetch_url
-from apex.services.run_validation import validate_rendered_model_input
+from apex.services.run_validation import validate_context_packets, validate_rendered_model_input
 from apex.settings import get_settings
 
 EVENT_SCHEMA_VERSION = 1
 logger = structlog.get_logger(__name__)
 
+_PHASE_STATUS_VALUES = frozenset(status.value for status in PhaseStatus)
+
 # Bounds re-interrupt loops inside a single gate node (modify re-reviews, bad actions).
 MAX_GATE_LOOPS = 10
+MAX_AGENT_RESPONSE_BLOCKS = 128
+MAX_AGENT_TOOL_CALLS_PER_RESPONSE = 8
 _TOOL_ARG_SECRET_KEY_MARKERS = frozenset(
     {
         "auth",
@@ -117,27 +137,60 @@ def stub_tool_names(phase: Phase) -> list[str]:
 
 
 def _prompt_variables(state: PipelineState) -> dict[str, str]:
-    return {
-        "title": state.get("title") or "untitled run",
-        "request": state.get("request") or "(no request provided)",
+    title = state.get("title")
+    request = state.get("request")
+    if title is None:
+        title = "untitled run"
+    if request is None:
+        request = "(no request provided)"
+    if type(title) is not str or len(title) > 500 or "\x00" in title:
+        raise ValueError("checkpointed pipeline title is invalid")
+    if type(request) is not str or len(request) > 20_000 or "\x00" in request:
+        raise ValueError("checkpointed pipeline request is invalid")
+    variables = {
+        "title": title,
+        "request": request,
     }
+    if contains_credential_material(variables, max_nodes=4, max_total_chars=20_564):
+        raise ValueError("checkpointed pipeline intent contains credential material")
+    return variables
 
 
 def _entry(state: PipelineState, phase: Phase) -> JsonDict:
-    return (state.get("phase_results") or {}).get(phase.value) or {}
+    results = state.get("phase_results")
+    if results is None:
+        results = {}
+    if type(results) is not dict:
+        raise ValueError("checkpointed phase results are invalid")
+    entry = results.get(phase.value)
+    if entry is None:
+        entry = {}
+    if type(entry) is not dict:
+        raise ValueError("checkpointed phase result is invalid")
+    return entry
 
 
 def _attempt(entry: JsonDict) -> int:
-    return int(entry.get("attempt") or 1)
+    attempt = entry.get("attempt")
+    if attempt is None:
+        return 1
+    if type(attempt) is not int or not 1 <= attempt <= 1_000_000:
+        raise ValueError("checkpointed phase attempt is invalid")
+    return attempt
 
 
 def _dialogue_matches_attempt(entry: JsonDict, phase: Phase, attempt: int) -> bool:
-    if entry.get("phase") != phase.value:
+    if type(entry) is not dict:
+        raise ValueError("checkpointed dialogue entry is invalid")
+    entry_phase = entry.get("phase")
+    if type(entry_phase) is not str:
+        raise ValueError("checkpointed dialogue entry is invalid")
+    if entry_phase != phase.value:
         return False
-    try:
-        return int(entry.get("attempt") or 1) == attempt
-    except (TypeError, ValueError):
-        return False
+    raw_attempt = entry.get("attempt")
+    if raw_attempt is None:
+        raw_attempt = 1
+    return type(raw_attempt) is int and raw_attempt == attempt
 
 
 def _phase_update(phase: Phase, attempt: int, **fields: Any) -> JsonDict:
@@ -147,15 +200,61 @@ def _phase_update(phase: Phase, attempt: int, **fields: Any) -> JsonDict:
 
 
 def _thread_id(config: RunnableConfig | None) -> str:
-    configurable = dict((config or {}).get("configurable") or {})
-    thread_id = str(configurable.get("thread_id") or "").strip()
-    if not thread_id:
+    if config is not None and type(config) is not dict:
+        raise ValueError("pipeline run configuration is invalid")
+    configurable = (config or {}).get("configurable")
+    if configurable is None:
+        configurable = {}
+    if type(configurable) is not dict:
+        raise ValueError("pipeline run configuration is invalid")
+    thread_id = configurable.get("thread_id")
+    if (
+        type(thread_id) is not str
+        or not thread_id
+        or thread_id != thread_id.strip()
+        or len(thread_id) > 255
+        or "\x00" in thread_id
+        or contains_credential_material(thread_id)
+    ):
         raise ValueError("pipeline runs require a durable thread_id")
     return thread_id
 
 
 def _make_artifact_resolver() -> ConnectionResolver:
     return ConnectionResolver(store=DbConnectionStore())
+
+
+async def _close_transcript_resources_definitively(
+    store: Any | None,
+    resolver: Any,
+) -> None:
+    """Release the checkout and its resolver cache despite repeated cancellation."""
+
+    coroutines = [resolver.close()]
+    if store is not None:
+        coroutines.insert(0, close_adapter(store))
+    tasks = [asyncio.create_task(coroutine) for coroutine in coroutines]
+    cancelled = False
+    error: BaseException | None = None
+    for task in tasks:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException as exc:
+            if error is None:
+                error = exc
+    if cancelled:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
 
 
 def _transcript_bytes(
@@ -168,11 +267,12 @@ def _transcript_bytes(
 ) -> bytes:
     """Render a deterministic, human-readable record from checkpointed state."""
 
-    dialogue = [
-        item
-        for item in state.get("dialogue") or []
-        if _dialogue_matches_attempt(item, phase, attempt)
-    ]
+    raw_dialogue = state.get("dialogue")
+    if raw_dialogue is None:
+        raw_dialogue = []
+    if type(raw_dialogue) is not list:
+        raise ValueError("checkpointed dialogue is invalid")
+    dialogue = [item for item in raw_dialogue if _dialogue_matches_attempt(item, phase, attempt)]
     document = {
         "schema_version": EVENT_SCHEMA_VERSION,
         "phase": phase.value,
@@ -181,12 +281,19 @@ def _transcript_bytes(
         "summary": entry.get("summary"),
         "reasoning_digest": entry.get("reasoning_digest"),
         "resolved_prompt": entry.get("resolved_prompt"),
-        "approvals": entry.get("approvals") or [],
-        "tool_calls": entry.get("tool_calls") or [],
-        "warnings": entry.get("warnings") or [],
-        "errors": entry.get("errors") or [],
+        "approvals": entry.get("approvals") if entry.get("approvals") is not None else [],
+        "tool_calls": entry.get("tool_calls") if entry.get("tool_calls") is not None else [],
+        "warnings": entry.get("warnings") if entry.get("warnings") is not None else [],
+        "errors": entry.get("errors") if entry.get("errors") is not None else [],
         "dialogue": dialogue,
     }
+    if contains_credential_material(
+        document,
+        max_nodes=10_000,
+        max_total_chars=1_000_000,
+    ):
+        raise ValueError("checkpointed transcript contains unsafe material")
+    document = sanitize_durable_object(document)
     return (
         "APEX phase transcript\n"
         + json.dumps(document, indent=2, sort_keys=True, ensure_ascii=False)
@@ -203,9 +310,10 @@ async def _persist_transcript(
     attempt: int,
     status: str,
 ) -> tuple[StoredArtifact, str]:
-    cfg = PipelineConfigurable.from_config(config)
+    cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
     key = transcript_artifact_key(_thread_id(config), phase.value, attempt)
     resolver = _make_artifact_resolver()
+    store: Any = None
     try:
         store, connection_id = await resolver.resolve_with_connection_id(
             PortKind.ARTIFACT_STORE,
@@ -226,7 +334,7 @@ async def _persist_transcript(
         return stored, connection_id
     finally:
         try:
-            await resolver.close()
+            await _close_transcript_resources_definitively(store, resolver)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # cleanup cannot overturn a committed object + index
@@ -239,13 +347,25 @@ async def _persist_transcript(
 
 
 def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
-    results = state.get("phase_results") or {}
+    results = state.get("phase_results")
+    if results is None:
+        results = {}
+    if type(results) is not dict:
+        raise ValueError("checkpointed phase results are invalid")
     for prereq in PHASE_PREREQUISITES[phase]:
-        status = (results.get(prereq.value) or {}).get("status")
+        prereq_entry = results.get(prereq.value)
+        if prereq_entry is None:
+            prereq_entry = {}
+        if type(prereq_entry) is not dict:
+            raise ValueError("checkpointed prerequisite phase result is invalid")
+        status = prereq_entry.get("status")
+        if status is not None and (type(status) is not str or status not in _PHASE_STATUS_VALUES):
+            raise ValueError("checkpointed prerequisite phase status is invalid")
         if status != PhaseStatus.SUCCEEDED.value:
+            rendered_status = status if status is not None else "missing"
             return (
                 f"Cannot run phase '{phase.value}': prerequisite '{prereq.value}' "
-                f"ended with status '{status or 'missing'}'."
+                f"ended with status '{rendered_status}'."
             )
     return None
 
@@ -258,9 +378,27 @@ def _state_application_override(state: PipelineState, cfg: PipelineConfigurable)
     """
     if not cfg.app_id:
         return None
-    override = (state.get("application_reviews") or {}).get(cfg.app_id)
-    if isinstance(override, dict) and override.get("content") is not None:
-        return str(override["content"])
+    reviews = state.get("application_reviews")
+    if reviews is None:
+        reviews = {}
+    if type(reviews) is not dict:
+        raise ValueError("checkpointed application prompt overrides are invalid")
+    override = reviews.get(cfg.app_id)
+    if override is None:
+        return None
+    if type(override) is not dict:
+        raise ValueError("checkpointed application prompt override is invalid")
+    content = override.get("content")
+    if content is not None:
+        limit = get_settings().runs.max_prompt_part_chars
+        if (
+            type(content) is not str
+            or len(content) > limit
+            or "\x00" in content
+            or contains_credential_material(content)
+        ):
+            raise ValueError("checkpointed application prompt override is invalid")
+        return content
     return None
 
 
@@ -272,8 +410,74 @@ def _apply_application_override(
 ) -> tuple[JsonDict, JsonDict]:
     override = _state_application_override(state, cfg)
     if override is None:
-        return review, resolved
-    return {**review, "application": override}, {**resolved, "application": override}
+        return _validated_prompt_review(review)
+    return _validated_prompt_review({**review, "application": override})
+
+
+def _validated_prompt_review(review: Any) -> tuple[JsonDict, JsonDict]:
+    """Validate checkpointed prompt state before replaying or re-checkpointing it."""
+
+    if type(review) is not dict or any(
+        type(key) is not str
+        or key
+        not in {
+            "system",
+            "phase_prompt",
+            "application",
+            "additional_context",
+            "source",
+            "updated_at",
+            "updated_by",
+        }
+        for key in review
+    ):
+        raise ValueError("checkpointed prompt review is invalid")
+    limits = get_settings().runs
+    text_limits = {
+        "system": limits.max_prompt_part_chars,
+        "phase_prompt": limits.max_prompt_part_chars,
+        "additional_context": limits.max_gate_string_chars,
+        "updated_at": 64,
+        "updated_by": 255,
+    }
+    for field, limit in text_limits.items():
+        value = review.get(field, "")
+        if type(value) is not str or len(value) > limit or "\x00" in value:
+            raise ValueError("checkpointed prompt review is invalid")
+    application = review.get("application")
+    if application is not None and (
+        type(application) is not str
+        or len(application) > limits.max_prompt_part_chars
+        or "\x00" in application
+    ):
+        raise ValueError("checkpointed prompt review is invalid")
+    source = review.get("source")
+    if type(source) is not dict or any(
+        type(key) is not str or key not in {"origin", "ref", "editor"} for key in source
+    ):
+        raise ValueError("checkpointed prompt review is invalid")
+    origin = source.get("origin")
+    if type(origin) is not str or origin not in {
+        "catalog",
+        "assistant_pin",
+        "run_override",
+        "gate_edit",
+    }:
+        raise ValueError("checkpointed prompt review is invalid")
+    for field, limit in (("ref", 2_048), ("editor", 255)):
+        value = source.get(field)
+        if value is not None and (type(value) is not str or len(value) > limit or "\x00" in value):
+            raise ValueError("checkpointed prompt review is invalid")
+    if contains_credential_material(review):
+        raise ValueError("checkpointed prompt review must not contain credential material")
+    resolved: JsonDict | None = None
+    try:
+        resolved = dict(resolved_from_prompt_review(review))
+    except Exception:
+        pass
+    if resolved is None:
+        raise ValueError("checkpointed prompt review is invalid")
+    return dict(review), resolved
 
 
 def _application_review_update(
@@ -285,10 +489,17 @@ def _application_review_update(
     """State update recording the run-scoped, app-wide application override."""
     if not cfg.app_id or application is None:
         return {}
+    if (
+        type(application) is not str
+        or len(application) > get_settings().runs.max_prompt_part_chars
+        or "\x00" in application
+        or contains_credential_material(application)
+    ):
+        raise ValueError("application prompt override is invalid")
     return {
         "application_reviews": {
             cfg.app_id: {
-                "content": str(application),
+                "content": application,
                 "source": source,
                 "updated_at": utcnow_iso(),
                 "updated_by": resolve_actor(config),
@@ -309,23 +520,40 @@ def _review_source_for_phase(
     The application prompt is layered from the run-scoped, app-wide override so
     that every phase resolves the same application text.
     """
-    reviews = state.get("prompt_reviews") or {}
+    reviews = state.get("prompt_reviews")
+    if reviews is None:
+        reviews = {}
+    if type(reviews) is not dict:
+        raise ValueError("checkpointed prompt reviews are invalid")
     review = reviews.get(phase.value)
-    if isinstance(review, dict):
-        return _apply_application_override(
-            state, cfg, review, dict(resolved_from_prompt_review(review))
-        )
+    if review is not None:
+        return _apply_application_override(state, cfg, review, {})
 
     entry = _entry(state, phase)
     prompt = entry.get("resolved_prompt")
-    if isinstance(prompt, dict) and (prompt.get("system") or prompt.get("user")):
+    if prompt is not None and type(prompt) is not dict:
+        raise ValueError("checkpointed resolved prompt is invalid")
+    if type(prompt) is dict and len(prompt) > 0:
+        system = prompt.get("system")
+        user = prompt.get("user")
+        application = prompt.get("application")
+        if system is None:
+            system = ""
+        if user is None:
+            user = ""
+        if type(system) is not str or type(user) is not str:
+            raise ValueError("checkpointed resolved prompt is invalid")
         source = entry.get("resolved_prompt_source")
+        if source is None:
+            source = {"origin": "catalog"}
+        elif type(source) is not dict:
+            raise ValueError("checkpointed resolved prompt source is invalid")
         review = {
-            "system": prompt.get("system") or "",
-            "phase_prompt": prompt.get("user") or "",
-            "application": prompt.get("application"),
+            "system": system,
+            "phase_prompt": user,
+            "application": application,
             "additional_context": "",
-            "source": dict(source) if isinstance(source, dict) else {"origin": "catalog"},
+            "source": dict(source),
             "updated_at": utcnow_iso(),
             "updated_by": "system",
         }
@@ -333,12 +561,7 @@ def _review_source_for_phase(
             state,
             cfg,
             review,
-            {
-                "system": review["system"],
-                "user": review["phase_prompt"],
-                "application": review["application"],
-                "source": review["source"],
-            },
+            {},
         )
 
     resolved = resolve_phase_prompt_sync(phase, cfg, variables=_prompt_variables(state))
@@ -351,22 +574,18 @@ def _prompt_review_update(phase: Phase, review: JsonDict) -> JsonDict:
 
 
 def _review_to_prompt(review: JsonDict) -> JsonDict:
+    system = review.get("system")
+    user = review.get("phase_prompt")
     return {
-        "system": review.get("system") or "",
-        "user": review.get("phase_prompt") or "",
+        "system": system if system is not None else "",
+        "user": user if user is not None else "",
         "application": review.get("application"),
     }
 
 
 def _resolved_prompt_from_review(review: JsonDict) -> JsonDict:
-    return {
-        "system": review.get("system") or "",
-        "user": user_prompt_with_context(
-            str(review.get("phase_prompt") or ""),
-            str(review.get("additional_context") or ""),
-        ),
-        "application": review.get("application"),
-    }
+    _validated, resolved = _validated_prompt_review(review)
+    return {key: resolved[key] for key in ("system", "user", "application")}
 
 
 def _gate_edited_review(
@@ -377,25 +596,30 @@ def _gate_edited_review(
     config: RunnableConfig,
     note: Any = None,
 ) -> JsonDict:
+    system = prompt.get("system")
+    user = prompt.get("user")
     next_review = {
         **review,
-        "system": prompt.get("system") or "",
-        "phase_prompt": prompt.get("user") or "",
+        "system": system if system is not None else "",
+        "phase_prompt": user if user is not None else "",
         "application": prompt.get("application"),
         "source": source,
         "updated_at": utcnow_iso(),
         "updated_by": resolve_actor(config),
     }
     if note is not None:
-        next_review["additional_context"] = str(note)
+        if type(note) is not str:
+            raise ValueError("prompt review note is invalid")
+        next_review["additional_context"] = note
     elif "additional_context" not in next_review:
         next_review["additional_context"] = ""
-    return next_review
+    validated, _resolved = _validated_prompt_review(next_review)
+    return validated
 
 
 def _make_prepare(phase: Phase):
     def prepare(state: PipelineState, config: RunnableConfig) -> JsonDict:
-        cfg = PipelineConfigurable.from_config(config)
+        cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         attempt = _attempt(_entry(state, phase))
         prereq_error = _prerequisite_error(state, phase)
         if prereq_error is not None:
@@ -428,7 +652,12 @@ def _make_prepare(phase: Phase):
             },
             resolved_prompt_source=dict(resolved["source"]),
         )
-        if phase.value not in (state.get("prompt_reviews") or {}):
+        raw_reviews = state.get("prompt_reviews")
+        if raw_reviews is None:
+            raw_reviews = {}
+        if type(raw_reviews) is not dict:
+            raise ValueError("checkpointed prompt reviews are invalid")
+        if phase.value not in raw_reviews:
             update.update(_prompt_review_update(phase, review))
         update["current_phase"] = phase.value
         return update
@@ -439,7 +668,11 @@ def _make_prepare(phase: Phase):
 def _make_route_after_prepare(phase: Phase):
     def route_after_prepare(state: PipelineState) -> str:
         entry = _entry(state, phase)
-        if entry.get("status") == PhaseStatus.FAILED.value and entry.get("errors"):
+        status = entry.get("status")
+        if status is not None and (type(status) is not str or status not in _PHASE_STATUS_VALUES):
+            raise ValueError("checkpointed phase status is invalid")
+        errors = _checkpoint_diagnostics(entry, "errors")
+        if status == PhaseStatus.FAILED.value and len(errors) > 0:
             return "finalize"
         return "open_prompt_gate"
 
@@ -448,7 +681,7 @@ def _make_route_after_prepare(phase: Phase):
 
 def _make_open_prompt_gate(phase: Phase):
     def open_prompt_gate(state: PipelineState, config: RunnableConfig) -> JsonDict:
-        cfg = PipelineConfigurable.from_config(config)
+        cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         if cfg.gate_policy(phase).prompt_review is not GateMode.GATED:
             return {}
         attempt = _attempt(_entry(state, phase))
@@ -468,17 +701,29 @@ def _make_open_prompt_gate(phase: Phase):
 
 def _make_prompt_gate(phase: Phase):
     def prompt_gate(state: PipelineState, config: RunnableConfig) -> Command[str]:
-        cfg = PipelineConfigurable.from_config(config)
+        cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         if cfg.gate_policy(phase).prompt_review is not GateMode.GATED:
             return Command(goto="agent")
         entry = _entry(state, phase)
         attempt = _attempt(entry)
         review, _resolved = _review_source_for_phase(state, phase, cfg)
         prompt = _review_to_prompt(review)
-        source = dict(review.get("source") or entry.get("resolved_prompt_source") or {})
-        additional_context = str(review.get("additional_context") or "")
+        raw_source = review.get("source")
+        if type(raw_source) is not dict:
+            raise ValueError("checkpointed prompt review source is invalid")
+        source = dict(raw_source)
+        additional_context = review.get("additional_context") or ""
         original_application = review.get("application")
-        packets = list(state.get("context_packets") or [])
+        raw_packets = state.get("context_packets")
+        if raw_packets is None:
+            raw_packets = []
+        packets = validate_context_packets(raw_packets)
+        if contains_credential_material(
+            packets,
+            max_nodes=2_000,
+            max_total_chars=1_000_000,
+        ):
+            raise ValueError("checkpointed context packets contain unsafe material")
         settings = get_settings()
         if cfg.agent_backend == "anthropic" and settings.llm.anthropic_api_key:
             tools = [
@@ -507,7 +752,7 @@ def _make_prompt_gate(phase: Phase):
             if action == "approve":
                 note_changed = False
                 if decision.get("note") is not None:
-                    next_context = str(decision.get("note") or "")
+                    next_context = decision.get("note") or ""
                     note_changed = next_context != additional_context
                     additional_context = next_context
                 if note_changed and source.get("origin") != "gate_edit":
@@ -548,14 +793,14 @@ def _make_prompt_gate(phase: Phase):
                 return Command(goto="agent", update=update)
             if action == "modify":
                 edit = decision.get("prompt")
-                if isinstance(edit, dict):
+                if type(edit) is dict:
                     prompt = {
                         "system": edit.get("system", prompt.get("system")),
                         "user": edit.get("user", prompt.get("user")),
                         "application": edit.get("application", prompt.get("application")),
                     }
                 if decision.get("note") is not None:
-                    additional_context = str(decision.get("note") or "")
+                    additional_context = decision.get("note") or ""
                 source = {
                     "origin": "gate_edit",
                     "ref": source.get("ref"),
@@ -621,20 +866,22 @@ def _script_scenario_load_test_spec(
     this one seeds it for spec review/UX. Per-run sizing knobs ride the (unvalidated)
     "load_test" configurable dict so demos and tests can shrink vusers/duration.
     """
-    configurable = dict((config or {}).get("configurable") or {})
     thread_id = _thread_id(config)
-    overrides = configurable.get("load_test")
-    overrides = dict(overrides) if isinstance(overrides, dict) else {}
-    title = state.get("title") or "untitled run"
+    overrides = PipelineConfigurable.from_state_for_phase(
+        state,
+        config,
+        Phase.SCRIPT_SCENARIO,
+    ).load_test
+    title = _prompt_variables(state)["title"]
     spec = LoadTestSpec(
         idempotency_key=f"{thread_id}-execution-a{attempt}",
         title=f"{title} load test",
         # No fake remote id: APEX Load generates its default inline workload,
         # while LoadRunner uses the selected connection's configured test_id.
         script_refs=[],
-        vusers=int(overrides.get("vusers") or 10),
-        ramp_s=float(overrides.get("ramp_s") or 1.0),
-        duration_s=float(overrides.get("duration_s") or 2.0),
+        vusers=overrides.get("vusers", 10),
+        ramp_s=overrides.get("ramp_s", 1.0),
+        duration_s=overrides.get("duration_s", 2.0),
         slas={"p95_ms": 500.0, "error_rate": 0.05},
         # Preview only. The execution reserve node re-resolves environment_id
         # after assistant config merging and checkpoints the approved target.
@@ -645,19 +892,67 @@ def _script_scenario_load_test_spec(
 
 def _reporting_kpi_suffix(state: PipelineState) -> str:
     """Deterministic KPI mention when the execution phase produced a test_summary."""
-    test_summary = _entry(state, Phase.EXECUTION).get("test_summary")
-    if not isinstance(test_summary, dict):
+    test_summary = _validated_checkpoint_summary(_entry(state, Phase.EXECUTION).get("test_summary"))
+    if test_summary is None:
         return ""
-    kpis = test_summary.get("kpis") or {}
+    kpis = test_summary.kpis
     kpi_text = ", ".join(
         f"{key}={value:g}" if isinstance(value, int | float) else f"{key}={value}"
         for key, value in sorted(kpis.items())
     )
-    verdict = "passed" if test_summary.get("passed") else "failed"
+    verdict = "passed" if test_summary.passed else "failed"
     return (
-        f" | execution {verdict} on engine {test_summary.get('engine')} — "
+        f" | execution {verdict} on engine {test_summary.engine} — "
         f"KPIs: {kpi_text or 'none reported'}"
     )
+
+
+def _validated_checkpoint_summary(value: Any) -> TestResultSummary | None:
+    """Fail closed on malformed/legacy provider summaries used in model output."""
+
+    if type(value) is not dict or len(value) > 5:
+        return None
+    allowed = {"engine", "passed", "kpis", "sla_breaches", "notes"}
+    if any(type(key) is not str or key not in allowed for key in value):
+        return None
+    engine = value.get("engine")
+    passed = value.get("passed")
+    kpis = value.get("kpis", {})
+    breaches = value.get("sla_breaches", [])
+    notes = value.get("notes")
+    if (
+        type(engine) is not str
+        or not 1 <= len(engine) <= 64
+        or type(passed) is not bool
+        or type(kpis) is not dict
+        or len(kpis) > 64
+        or type(breaches) is not list
+        or len(breaches) > 128
+        or (notes is not None and (type(notes) is not str or len(notes) > 20_000))
+    ):
+        return None
+    for name, metric in kpis.items():
+        if type(name) is not str or not 1 <= len(name) <= 64 or "\x00" in name:
+            return None
+        if type(metric) is int:
+            if abs(metric) > 1_000_000_000_000:
+                return None
+        elif type(metric) is float:
+            if not math.isfinite(metric) or abs(metric) > 1_000_000_000_000:
+                return None
+        else:
+            return None
+    if any(
+        type(breach) is not str or not 1 <= len(breach) <= 2_048 or "\x00" in breach
+        for breach in breaches
+    ):
+        return None
+    if contains_credential_material(value, max_nodes=256, max_total_chars=300_000):
+        return None
+    try:
+        return TestResultSummary.model_validate(value)
+    except Exception:
+        return None
 
 
 def _stub_agent_body(
@@ -670,15 +965,29 @@ def _stub_agent_body(
     """Deterministic, offline agent stub (the default backend)."""
     entry = _entry(state, phase)
     attempt = _attempt(entry)
-    revise_count = int(entry.get("revise_count") or 0)
-    title = state.get("title") or "untitled run"
-    request = state.get("request") or "(no request provided)"
+    revise_count = entry.get("revise_count")
+    if revise_count is None:
+        revise_count = 0
+    if type(revise_count) is not int or not 0 <= revise_count <= 10:
+        raise ValueError("checkpointed phase revision count is invalid")
+    variables = _prompt_variables(state)
+    title = variables["title"]
+    request = variables["request"]
     summary = f"[{phase.value}] stub result for '{title}': {request}"
     instructions = entry.get("revise_instructions")
-    if instructions:
-        summary += f" (revised per: {instructions})"
+    if instructions is not None:
+        if (
+            type(instructions) is not str
+            or len(instructions) > get_settings().runs.max_gate_string_chars
+            or "\x00" in instructions
+            or contains_credential_material(instructions)
+        ):
+            raise ValueError("checkpointed revision instructions are invalid")
+        if instructions:
+            summary += f" (revised per: {instructions})"
     if phase is Phase.REPORTING:
         summary += _reporting_kpi_suffix(state)
+    summary = bounded_diagnostic(summary, max_chars=MAX_GATE_TEXT_CHARS)
     digest = (
         f"Deterministic stub reasoning for {phase.value} "
         f"(attempt {attempt}, revision {revise_count})."
@@ -718,30 +1027,208 @@ def _stub_agent_body(
 
 def _message_text(message: Any) -> str:
     """Extract the text from an AIMessage whose content may be a string or, when
-    thinking is enabled, a list of content blocks (thinking + text)."""
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content.strip()
+    thinking is enabled, a list of content blocks (thinking + text).
+
+    Extraction is itself bounded. Do not first join or strip provider-controlled
+    content: a non-conforming backend may ignore the requested token cap.
+    """
+    content = _raw_provider_field(message, "content", "")
+    if type(content) is str:
+        return bounded_diagnostic(content, max_chars=MAX_GATE_TEXT_CHARS).strip()
+    if type(content) is not list:
+        return ""
     parts: list[str] = []
-    for block in content or []:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-            parts.append(str(block["text"]))
-    return "\n".join(p for p in parts if p).strip()
+    remaining = MAX_GATE_TEXT_CHARS
+    for block in content[:MAX_AGENT_RESPONSE_BLOCKS]:
+        raw_text: str | None = None
+        if type(block) is str:
+            raw_text = block
+        elif type(block) is dict and block.get("type") == "text":
+            text = block.get("text")
+            if type(text) is str:
+                raw_text = text
+        if raw_text is None:
+            continue
+        separator = 1 if parts else 0
+        available = remaining - separator
+        if available <= 0:
+            break
+        rendered = bounded_diagnostic(raw_text, max_chars=available).strip()
+        if not rendered:
+            continue
+        parts.append(rendered)
+        remaining -= separator + len(rendered)
+        if remaining <= 0:
+            break
+    return bounded_diagnostic(
+        "\n".join(parts),
+        max_chars=MAX_GATE_TEXT_CHARS,
+    ).strip()
+
+
+def _response_tool_calls(response: Any) -> list[dict[str, Any]]:
+    """Materialize only the bounded plain-list tool-call shape LangChain promises."""
+
+    calls = _raw_provider_field(response, "tool_calls", None)
+    if calls is None:
+        calls = []
+    if type(calls) is not list:
+        raise ValueError("model tool_calls must be a list")
+    if len(calls) > MAX_AGENT_TOOL_CALLS_PER_RESPONSE:
+        raise ValueError("model returned too many tool calls in one response")
+    if any(type(call) is not dict for call in calls):
+        raise ValueError("model tool calls must be objects")
+    return calls
+
+
+def _canonical_tool_calls(
+    calls: list[dict[str, Any]],
+    *,
+    phase: Phase,
+    attempt: int,
+    first_index: int,
+    seen_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Copy the tiny tool protocol envelope before it can re-enter model input."""
+
+    canonical: list[dict[str, Any]] = []
+    for index, call in enumerate(calls):
+        tool_name = _tool_call_text(
+            call.get("name"),
+            label="tool name",
+            default="unknown",
+        )
+        tool_id = _tool_call_text(
+            call.get("id"),
+            label="tool call id",
+            default=f"{phase.value}-a{attempt}-tool{first_index + index}",
+        )
+        if tool_id in seen_ids:
+            raise ValueError("model returned a duplicate tool call id")
+        seen_ids.add(tool_id)
+        canonical.append(
+            {
+                "name": tool_name,
+                "args": _tool_call_args(call.get("args")),
+                "id": tool_id,
+                "type": "tool_call",
+            }
+        )
+    return canonical
+
+
+def _raw_provider_field(value: Any, field: str, default: Any = None) -> Any:
+    """Read a response field without executing descriptors or ``__getattr__``."""
+
+    if type(value) is dict:
+        return value.get(field, default)
+    try:
+        mro = type.__getattribute__(type(value), "__mro__")
+        if type(mro) is not tuple:
+            return default
+        descriptor: Any = None
+        for base in mro:
+            namespace = type.__getattribute__(base, "__dict__")
+            if "__dict__" in namespace:
+                descriptor = namespace["__dict__"]
+                break
+        if type(descriptor) not in {GetSetDescriptorType, MemberDescriptorType}:
+            return default
+        state = descriptor.__get__(value, type(value))
+    except Exception:
+        return default
+    if type(state) is not dict:
+        return default
+    return state.get(field, default)
+
+
+def _tool_call_text(value: Any, *, label: str, default: str) -> str:
+    if value is None:
+        return default
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 256
+        or "\x00" in value
+        or contains_credential_material(value)
+    ):
+        raise ValueError(f"model {label} must be a bounded credential-free string")
+    return value
+
+
+def _tool_call_args(value: Any) -> dict[str, Any]:
+    """Validate model tool arguments without copying or serializing an oversized tree."""
+
+    if value is None:
+        return {}
+    if type(value) is not dict:
+        raise ValueError("model tool call args must be an object")
+    remaining_chars = MAX_TOOL_ARGS_PREVIEW_BYTES // 4
+    nodes = 0
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > 64 or depth > 4:
+            raise ValueError("model tool call args exceed the structural limit")
+        if type(current) is dict:
+            if len(current) > 16:
+                raise ValueError("model tool call args contain too many fields")
+            for key, nested in current.items():
+                if type(key) is not str or not key or len(key) > 128 or "\x00" in key:
+                    raise ValueError("model tool call arg names are invalid")
+                remaining_chars -= len(key)
+                stack.append((nested, depth + 1))
+        elif type(current) is list:
+            if len(current) > 16:
+                raise ValueError("model tool call args contain too many items")
+            stack.extend((nested, depth + 1) for nested in current)
+        elif type(current) is str:
+            if "\x00" in current:
+                raise ValueError("model tool call args must not contain U+0000")
+            remaining_chars -= len(current)
+        elif current is None or type(current) in {bool, int}:
+            if type(current) is int and current.bit_length() > 256:
+                raise ValueError("model tool call args contain an oversized integer")
+            remaining_chars -= 32
+        elif type(current) is float and math.isfinite(current):
+            remaining_chars -= 32
+        else:
+            raise ValueError("model tool call args contain unsupported values")
+        if remaining_chars < 0:
+            raise ValueError("model tool call args exceed the character limit")
+    return value
 
 
 def _compose_system(resolved: JsonDict) -> str:
-    system = str(resolved.get("system") or "").strip()
+    if type(resolved) is not dict:
+        raise ValueError("checkpointed resolved prompt is invalid")
+    raw_system = resolved.get("system")
+    if raw_system is None:
+        raw_system = ""
+    if type(raw_system) is not str:
+        raise ValueError("checkpointed resolved prompt is invalid")
+    system = raw_system.strip()
     application = resolved.get("application")
-    app = str(application or "").strip()
+    if application is not None and type(application) is not str:
+        raise ValueError("checkpointed resolved prompt is invalid")
+    app = application.strip() if application is not None else ""
     if app:
         system = f"{system}\n\n=== APPLICATION CONTEXT ===\n{app}" if system else app
     return system or "You are an APEX analysis agent."
 
 
 def _context_packets_block(state: PipelineState) -> str:
-    packets = state.get("context_packets") or []
+    raw_packets = state.get("context_packets")
+    if raw_packets is None:
+        raw_packets = []
+    packets = validate_context_packets(raw_packets)
+    if contains_credential_material(
+        packets,
+        max_nodes=2_000,
+        max_total_chars=1_000_000,
+    ):
+        raise ValueError("checkpointed context packets contain unsafe material")
     settings = get_settings()
     document_budget = settings.documents.max_context_chars_total
     runs = getattr(settings, "runs", None)
@@ -755,17 +1242,44 @@ def _context_packets_block(state: PipelineState) -> str:
     for packet in packets:
         if remaining <= 0:
             break
-        if not isinstance(packet, dict):
-            continue
-        title = str(packet.get("title") or packet.get("source") or "evidence")
+        if type(packet) is not dict:
+            raise ValueError("checkpointed context packet is invalid")
+        title = packet.get("title")
+        if title is None or title == "":
+            title = packet.get("source")
+        if title is None or title == "":
+            title = "evidence"
+        if type(title) is not str or len(title) > MAX_CONTEXT_TITLE_CHARS or "\x00" in title:
+            raise ValueError("checkpointed context packet is invalid")
         header = f"- {title}"
-        summary = str(packet.get("summary") or "")
+        summary = packet.get("summary")
+        if summary is None:
+            summary = ""
+        if (
+            type(summary) is not str
+            or len(summary) > MAX_CONTEXT_SUMMARY_CHARS
+            or "\x00" in summary
+        ):
+            raise ValueError("checkpointed context packet is invalid")
         if summary:
             header += f": {summary}"
-        ref = str(packet.get("ref") or "")
+        ref = packet.get("ref")
+        if ref is None:
+            ref = ""
+        if type(ref) is not str or len(ref) > MAX_CONTEXT_REF_CHARS or "\x00" in ref:
+            raise ValueError("checkpointed context packet is invalid")
         if ref:
             header += f" ({ref})"
-        text = str(packet.get("text") or "").strip()
+        raw_text = packet.get("text")
+        if raw_text is None:
+            raw_text = ""
+        if (
+            type(raw_text) is not str
+            or len(raw_text) > MAX_CONTEXT_TEXT_CHARS
+            or "\x00" in raw_text
+        ):
+            raise ValueError("checkpointed context packet is invalid")
+        text = raw_text.strip()
         separator_cost = 1 if sections else 0
         available = remaining - separator_cost
         if available <= 0:
@@ -801,7 +1315,14 @@ def _fence(text: str) -> str:
 
 def _compose_user(state: PipelineState, phase: Phase, resolved: JsonDict, entry: JsonDict) -> str:
     blocks: list[str] = []
-    user = str(resolved.get("user") or "").strip()
+    if type(resolved) is not dict:
+        raise ValueError("checkpointed resolved prompt is invalid")
+    raw_user = resolved.get("user")
+    if raw_user is None:
+        raw_user = ""
+    if type(raw_user) is not str:
+        raise ValueError("checkpointed resolved prompt is invalid")
+    user = raw_user.strip()
     if user:
         blocks.append(user)
     packets = _context_packets_block(state)
@@ -812,15 +1333,32 @@ def _compose_user(state: PipelineState, phase: Phase, resolved: JsonDict, entry:
         if suffix:
             blocks.append(f"Execution results: {suffix}")
     instructions = entry.get("revise_instructions")
-    if instructions:
-        blocks.append(f"Operator revision instructions: {instructions}")
+    if instructions is not None:
+        if (
+            type(instructions) is not str
+            or len(instructions) > get_settings().runs.max_gate_string_chars
+            or "\x00" in instructions
+            or contains_credential_material(instructions)
+        ):
+            raise ValueError("checkpointed revision instructions are invalid")
+        if instructions:
+            blocks.append(f"Operator revision instructions: {instructions}")
     return "\n\n".join(blocks) or "(no request provided)"
 
 
 def _approved_fetch_urls(state: PipelineState) -> frozenset[str]:
     """Return only server-derived, credential-free URLs supplied by this run."""
 
-    execution = (state.get("phase_results") or {}).get(Phase.EXECUTION.value) or {}
+    results = state.get("phase_results")
+    if results is None:
+        results = {}
+    if type(results) is not dict:
+        raise ValueError("checkpointed phase results are invalid")
+    execution = results.get(Phase.EXECUTION.value)
+    if execution is None:
+        execution = {}
+    if type(execution) is not dict:
+        raise ValueError("checkpointed execution phase is invalid")
     if execution.get("external") is not True:
         return frozenset()
     source_uri = execution.get("source_uri")
@@ -915,7 +1453,7 @@ def _fetch_requires_https(settings: Any) -> bool:
 
 def _accumulate_usage(acc: dict[str, Any], usage: Any) -> None:
     """Sum untrusted usage metadata without exceptions or unbounded totals."""
-    if not isinstance(usage, dict):
+    if type(usage) is not dict:
         return
 
     def saturated_sum(left: Any, right: Any) -> int:
@@ -925,14 +1463,22 @@ def _accumulate_usage(acc: dict[str, Any], usage: Any) -> None:
         acc[key] = saturated_sum(acc.get(key), usage.get(key))
     for detail_key in ("input_token_details", "output_token_details"):
         source = usage.get(detail_key)
-        if isinstance(source, dict):
+        if type(source) is dict:
             existing = acc.get(detail_key)
-            target: dict[str, int] = existing if isinstance(existing, dict) else {}
+            target: dict[str, int] = existing if type(existing) is dict else {}
             acc[detail_key] = target
-            for name, value in source.items():
+            for index, (name, value) in enumerate(source.items()):
+                if index >= 128:
+                    break
                 # Detail labels are provider-controlled. Keep the normalized
                 # metadata JSON-bounded as well as bounding every count.
-                if not isinstance(name, str) or not name or len(name) > 128:
+                if (
+                    type(name) is not str
+                    or not name
+                    or len(name) > 128
+                    or is_credential_field(name)
+                    or contains_credential_material(name)
+                ):
                     continue
                 if name not in target and len(target) >= 64:
                     continue
@@ -951,13 +1497,15 @@ def _llm_agent_body(
     model (optionally looping through the fetch tool), and records the model + usage so
     finalize writes a costed AgentEvent."""
     from langchain_anthropic import ChatAnthropic
-    from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
     settings = get_settings()
     model = cfg.model_by_phase.get(phase) or settings.llm.default_model
-    resolved = entry.get("resolved_prompt")
-    if not (isinstance(resolved, dict) and (resolved.get("system") or resolved.get("user"))):
-        _review, resolved = _review_source_for_phase(state, phase, cfg)
+    # Always pass checkpointed prompt state through the exact replay validator.
+    # A resumed legacy checkpoint can enter this node directly, without rerunning
+    # prepare, so merely checking that ``resolved_prompt`` is a truthy mapping
+    # would let credential-bearing prompt text reach the provider.
+    _review, resolved = _review_source_for_phase(state, phase, cfg)
     system_text = _compose_system(resolved)
     user_text = _compose_user(state, phase, resolved, entry)
     validate_rendered_model_input(system_text, user_text, settings=settings)
@@ -985,39 +1533,93 @@ def _llm_agent_body(
     max_tool_rounds = max(1, settings.llm.fetch_max_tool_iters) if tools else 0
     tool_rounds = 0
     tool_context_chars = 0
+    tool_context_parts: list[str] = []
+    seen_tool_ids: set[str] = set()
+
+    def append_tool_context(value: str, *, truncate: bool) -> str:
+        """Account for every provider-controlled character before model reuse."""
+
+        nonlocal tool_context_chars
+        # The rendered validation string prefixes the first context part with a
+        # newline and separates every later part with one as well.
+        separator = 1
+        available = max(
+            0,
+            settings.runs.max_model_input_chars
+            - len(system_text)
+            - len(user_text)
+            - tool_context_chars
+            - separator,
+        )
+        rendered = value
+        if len(rendered) > available:
+            if not truncate:
+                raise ValueError("model tool context exceeds the deployment input limit")
+            marker = "\n…[tool result truncated]"
+            if available <= len(marker):
+                rendered = marker[:available]
+            else:
+                rendered = rendered[: available - len(marker)] + marker
+        if rendered:
+            tool_context_parts.append(rendered)
+            tool_context_chars += separator + len(rendered)
+        validate_rendered_model_input(
+            system_text,
+            user_text + ("\n" + "\n".join(tool_context_parts) if tool_context_parts else ""),
+            settings=settings,
+        )
+        return rendered
+
     while True:
         response = runnable.invoke(messages)
-        messages.append(response)
-        _accumulate_usage(usage, getattr(response, "usage_metadata", None))
-        calls = getattr(response, "tool_calls", None) or []
-        if len(calls) > 8:
-            raise ValueError("model returned too many tool calls in one response")
-        if not calls:
+        _accumulate_usage(usage, _raw_provider_field(response, "usage_metadata"))
+        raw_calls = _response_tool_calls(response)
+        if not raw_calls:
             break
+        calls = _canonical_tool_calls(
+            raw_calls,
+            phase=phase,
+            attempt=attempt,
+            first_index=len(tool_calls_record),
+            seen_ids=seen_tool_ids,
+        )
+        # Release the raw response before tool execution and, critically, before
+        # evaluating the next provider call. Otherwise an ignored token cap can
+        # keep a huge content body live while the follow-up response is allocated.
+        response = None
+        raw_calls = []
+        call_context = json.dumps(
+            calls,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        append_tool_context(call_context, truncate=False)
+        # Never retain or resend raw provider content. Tool turns need only the
+        # canonical call envelope; ordinary final content is read once below.
+        messages.append(AIMessage(content="", tool_calls=calls))
         if tool_rounds >= max_tool_rounds:
             for call in calls:
-                tool_id = str(
-                    call.get("id") or f"{phase.value}-a{attempt}-tool-limit-{len(messages)}"
+                content = append_tool_context(
+                    "error: configured tool-call round limit reached",
+                    truncate=True,
                 )
                 messages.append(
                     ToolMessage(
-                        content="error: configured tool-call round limit reached",
-                        tool_call_id=tool_id,
+                        content=content,
+                        tool_call_id=call["id"],
                     )
                 )
             response = llm.invoke(messages)
-            messages.append(response)
-            _accumulate_usage(usage, getattr(response, "usage_metadata", None))
-            if getattr(response, "tool_calls", None):
+            _accumulate_usage(usage, _raw_provider_field(response, "usage_metadata"))
+            if _response_tool_calls(response):
                 raise ValueError("model exceeded the configured tool-call round limit")
             break
         tool_rounds += 1
         for call in calls:
-            tool = tools_by_name.get(call.get("name"))
-            tool_id = str(
-                call.get("id") or f"{phase.value}-a{attempt}-tool{len(tool_calls_record)}"
-            )
-            args = dict(call.get("args") or {})
+            tool_name = call["name"]
+            tool = tools_by_name.get(tool_name)
+            tool_id = call["id"]
+            args = call["args"]
             if len(tool_calls_record) >= MAX_TOOL_CALL_RECORDS:
                 raise ValueError("model returned too many aggregate tool calls")
             try:
@@ -1026,7 +1628,6 @@ def _llm_agent_body(
                     - len(system_text)
                     - len(user_text)
                     - tool_context_chars
-                    - 1_024
                 )
                 output = (
                     _invoke_agent_tool(
@@ -1037,14 +1638,14 @@ def _llm_agent_body(
                         approved_urls=approved_fetch_urls,
                     )
                     if tool is not None
-                    else f"error: unknown tool {call.get('name')!r}"
+                    else f"error: unknown tool {tool_name!r}"
                 )
             except Exception as exc:  # noqa: BLE001 — tool failures feed back to the model
                 detail = bounded_diagnostic(exc)
                 output = bounded_diagnostic(f"error: {detail}")
                 record = ToolCallRecord(
                     id=tool_id,
-                    tool=str(call.get("name") or "tool"),
+                    tool=tool_name,
                     args_preview=_safe_tool_args(args),
                     status="error",
                     error=detail,
@@ -1052,7 +1653,7 @@ def _llm_agent_body(
             else:
                 record = ToolCallRecord(
                     id=tool_id,
-                    tool=str(call.get("name") or "tool"),
+                    tool=tool_name,
                     args_preview=_safe_tool_args(args),
                     status="ok",
                 ).model_dump(mode="json")
@@ -1067,32 +1668,20 @@ def _llm_agent_body(
                     "status": record["status"],
                 }
             )
-            output_text = str(output)
-            remaining_chars = max(
-                0,
-                settings.runs.max_model_input_chars
-                - len(system_text)
-                - len(user_text)
-                - tool_context_chars
-                - 1_024,
+            output_text = (
+                output
+                if type(output) is str
+                else bounded_diagnostic(output, max_chars=MAX_GATE_TEXT_CHARS)
             )
-            if len(output_text) > remaining_chars:
-                output_text = output_text[:remaining_chars] + "\n…[tool result truncated]"
-            tool_context_chars += len(output_text)
+            output_text = append_tool_context(output_text, truncate=True)
             messages.append(ToolMessage(content=output_text, tool_call_id=tool_id))
-        # Tool results are untrusted model input too. Re-check the complete
-        # rendered budget after every tool round instead of validating only the
-        # initial prompt.
-        tool_context = "\n".join(
-            str(getattr(message, "content", ""))
-            for message in messages
-            if isinstance(message, ToolMessage)
-        )
-        validate_rendered_model_input(
-            system_text, user_text + "\n" + tool_context, settings=settings
-        )
 
-    summary = _message_text(response) or f"[{phase.value}] (no text returned)"
+    # Model output is an untrusted durable boundary. It may echo a credential
+    # from fetched provider content and providers may return more text than the
+    # requested token cap. Redact and bound before the checkpoint or stream can
+    # retain the response.
+    raw_summary = _message_text(response) or f"[{phase.value}] (no text returned)"
+    summary = bounded_diagnostic(raw_summary, max_chars=MAX_GATE_TEXT_CHARS)
     emit_event(
         {
             "schema_version": EVENT_SCHEMA_VERSION,
@@ -1135,7 +1724,7 @@ def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
         """Render one untrusted scalar without preserving credential syntax."""
 
         nonlocal remaining_chars
-        if isinstance(value, str):
+        if type(value) is str:
             lowered_key = (key or "").casefold()
             url_context = lowered_key in {"url", "uri", "link"} or lowered_key.endswith(
                 ("_url", "_uri", "_link")
@@ -1162,11 +1751,13 @@ def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
         nodes += 1
         if key is not None and key_is_sensitive(key):
             return safe_text("[REDACTED]", key=None, max_chars=512)
-        if isinstance(value, str):
+        if type(value) is str:
             return safe_text(value, key=key, max_chars=512)
-        if value is None or isinstance(value, bool | int):
+        if value is None or type(value) in {bool, int}:
+            if type(value) is int and value.bit_length() > 256:
+                return safe_text("…[integer omitted]", key=None, max_chars=64)
             return value
-        if isinstance(value, float):
+        if type(value) is float:
             return (
                 value
                 if math.isfinite(value)
@@ -1174,19 +1765,23 @@ def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
             )
         if depth >= 4:
             return "…[max depth]"
-        if isinstance(value, dict | list | tuple):
+        if type(value) in {dict, list, tuple}:
             container_id = id(value)
             if container_id in active_containers:
                 return "…[cycle]"
             active_containers.add(container_id)
             try:
-                if isinstance(value, dict):
+                if type(value) is dict:
                     mapping_preview: dict[str, Any] = {}
                     for index, (raw_key, nested) in enumerate(value.items()):
                         if index >= 16:
                             mapping_preview["__truncated__"] = "…[more fields]"
                             break
-                        safe_key = safe_text(raw_key, key=None, max_chars=128) or "_"
+                        safe_key = (
+                            safe_text(raw_key, key=None, max_chars=128)
+                            if type(raw_key) is str
+                            else "[non-string-key]"
+                        ) or "_"
                         mapping_preview[safe_key] = preview(
                             nested,
                             depth=depth + 1,
@@ -1202,7 +1797,7 @@ def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
         return safe_text(value, key=key, max_chars=512)
 
     safe = preview(args, depth=0)
-    if not isinstance(safe, dict):
+    if type(safe) is not dict:
         return {"preview": "…[tool arguments omitted]"}
     if len(json.dumps(safe, ensure_ascii=False).encode("utf-8")) > MAX_TOOL_ARGS_PREVIEW_BYTES:
         return {"preview": "…[tool arguments exceeded byte budget]"}
@@ -1211,7 +1806,7 @@ def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
 
 def _make_agent(phase: Phase):
     def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
-        cfg = PipelineConfigurable.from_config(config)
+        cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         if cfg.agent_backend == "anthropic":
             entry = _entry(state, phase)
             attempt = _attempt(entry)
@@ -1259,9 +1854,160 @@ def _make_agent(phase: Phase):
     return agent
 
 
+def _checkpoint_review_text(
+    value: Any,
+    *,
+    label: str,
+    limit: int = MAX_GATE_TEXT_CHARS,
+) -> str | None:
+    if value is None:
+        return None
+    if (
+        type(value) is not str
+        or len(value) > limit
+        or "\x00" in value
+        or contains_credential_material(value)
+    ):
+        raise ValueError(f"checkpointed {label} is invalid")
+    return value
+
+
+def _checkpoint_terminal_text(value: Any, *, label: str) -> str | None:
+    try:
+        return _checkpoint_review_text(value, label=label)
+    except ValueError:
+        return None
+
+
+def _checkpoint_terminal_timestamp(value: Any) -> str | None:
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= 64
+        or "\x00" in value
+        or contains_credential_material(value)
+    ):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (OverflowError, ValueError):
+        return None
+    return value if parsed.tzinfo is not None else None
+
+
+def _checkpoint_diagnostics(entry: JsonDict, field: str) -> list[str]:
+    raw = entry.get(field)
+    if raw is None:
+        return []
+    if type(raw) is not list or len(raw) > MAX_DURABLE_PHASE_DIAGNOSTICS:
+        raise ValueError(f"checkpointed phase {field} are invalid")
+    diagnostics: list[str] = []
+    for value in raw:
+        validated = _checkpoint_review_text(
+            value,
+            label=f"phase {field}",
+            limit=4_096,
+        )
+        if validated is None:
+            raise ValueError(f"checkpointed phase {field} are invalid")
+        diagnostics.append(validated)
+    return diagnostics
+
+
+def _checkpoint_artifact_previews(state: PipelineState, entry: JsonDict) -> list[JsonDict]:
+    raw_ids = entry.get("artifact_ids")
+    if raw_ids is None:
+        raw_ids = []
+    if (
+        type(raw_ids) is not list
+        or len(raw_ids) > MAX_DURABLE_ARTIFACTS
+        or any(
+            type(artifact_id) is not str
+            or not 1 <= len(artifact_id) <= 128
+            or "\x00" in artifact_id
+            or contains_credential_material(artifact_id)
+            for artifact_id in raw_ids
+        )
+    ):
+        raise ValueError("checkpointed phase artifact ids are invalid")
+    artifact_ids = set(raw_ids)
+
+    raw_artifacts = state.get("artifacts")
+    if raw_artifacts is None:
+        raw_artifacts = []
+    if type(raw_artifacts) is not list or len(raw_artifacts) > MAX_DURABLE_ARTIFACTS:
+        raise ValueError("checkpointed artifacts are invalid")
+    previews: list[JsonDict] = []
+    for artifact in raw_artifacts:
+        if type(artifact) is not dict:
+            raise ValueError("checkpointed artifact is invalid")
+        artifact_id = artifact.get("id")
+        if type(artifact_id) is not str:
+            raise ValueError("checkpointed artifact is invalid")
+        if artifact_id not in artifact_ids:
+            continue
+        kind = artifact.get("kind")
+        name = artifact.get("name")
+        if (
+            type(kind) is not str
+            or type(name) is not str
+            or not 1 <= len(kind) <= 64
+            or not 1 <= len(name) <= 512
+            or "\x00" in kind
+            or "\x00" in name
+            or contains_credential_material({"id": artifact_id, "kind": kind, "name": name})
+        ):
+            raise ValueError("checkpointed artifact is invalid")
+        previews.append({"id": artifact_id, "kind": kind, "name": name})
+    return previews
+
+
+def _checkpoint_phase_dialogue(
+    state: PipelineState,
+    phase: Phase,
+    attempt: int,
+) -> list[JsonDict]:
+    raw_dialogue = state.get("dialogue")
+    if raw_dialogue is None:
+        return []
+    if type(raw_dialogue) is not list or len(raw_dialogue) > MAX_DURABLE_DIALOGUE_ENTRIES:
+        raise ValueError("checkpointed dialogue is invalid")
+    phase_dialogue: list[JsonDict] = []
+    allowed = {"id", "phase", "attempt", "role", "content", "at"}
+    for entry in raw_dialogue:
+        if type(entry) is not dict or any(
+            type(key) is not str or key not in allowed for key in entry
+        ):
+            raise ValueError("checkpointed dialogue entry is invalid")
+        entry_phase = entry.get("phase")
+        entry_attempt = entry.get("attempt", 1)
+        entry_id = entry.get("id")
+        role = entry.get("role")
+        content = entry.get("content")
+        at = entry.get("at")
+        if (
+            type(entry_phase) is not str
+            or type(entry_attempt) is not int
+            or not 1 <= entry_attempt <= 1_000_000
+            or type(entry_id) is not str
+            or not 1 <= len(entry_id) <= 256
+            or type(role) is not str
+            or role not in {"operator", "agent"}
+            or type(content) is not str
+            or len(content) > MAX_GATE_DECISION_TEXT_CHARS
+            or type(at) is not str
+            or not 1 <= len(at) <= 64
+            or any("\x00" in value for value in (entry_phase, entry_id, role, content, at))
+            or contains_credential_material(entry)
+        ):
+            raise ValueError("checkpointed dialogue entry is invalid")
+        if entry_phase == phase.value and entry_attempt == attempt:
+            phase_dialogue.append(dict(entry))
+    return phase_dialogue
+
+
 def _make_open_output_gate(phase: Phase):
     def open_output_gate(state: PipelineState, config: RunnableConfig) -> JsonDict:
-        cfg = PipelineConfigurable.from_config(config)
+        cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         if cfg.gate_policy(phase).output_review is not GateMode.GATED:
             return {}
         entry = _entry(state, phase)
@@ -1276,7 +2022,10 @@ def _make_open_output_gate(phase: Phase):
             }
         )
         fields: JsonDict = {"status": PhaseStatus.AWAITING_OUTPUT_REVIEW.value}
-        if phase is Phase.EXECUTION and entry.get("engine_collection_settled"):
+        collection_settled = entry.get("engine_collection_settled")
+        if collection_settled is not None and type(collection_settled) is not bool:
+            raise ValueError("checkpointed engine collection state is invalid")
+        if phase is Phase.EXECUTION and collection_settled is True:
             fields.update(
                 engine_collection_settled=False,
                 engine_collection_final_status=None,
@@ -1289,24 +2038,44 @@ def _make_open_output_gate(phase: Phase):
 
 def _make_output_gate(phase: Phase):
     def output_gate(state: PipelineState, config: RunnableConfig) -> Command[str]:
-        cfg = PipelineConfigurable.from_config(config)
+        cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         if cfg.gate_policy(phase).output_review is not GateMode.GATED:
             return Command(goto="finalize")
         entry = _entry(state, phase)
         attempt = _attempt(entry)
-        revise_count = int(entry.get("revise_count") or 0)
-        summary = entry.get("summary")
-        warnings = list(entry.get("warnings") or [])
-        result_preview = {"summary": summary, "reasoning_digest": entry.get("reasoning_digest")}
-        artifact_ids = set(entry.get("artifact_ids") or [])
-        artifact_previews = [
-            {"id": a.get("id"), "kind": a.get("kind"), "name": a.get("name")}
-            for a in state.get("artifacts") or []
-            if a.get("id") in artifact_ids
-        ]
-        phase_dialogue = [
-            d for d in state.get("dialogue") or [] if _dialogue_matches_attempt(d, phase, attempt)
-        ]
+        revise_count = entry.get("revise_count")
+        if revise_count is None:
+            revise_count = 0
+        if type(revise_count) is not int or not 0 <= revise_count <= 10:
+            raise ValueError("checkpointed phase revision count is invalid")
+        summary = _checkpoint_review_text(entry.get("summary"), label="phase summary")
+        reasoning_digest = _checkpoint_review_text(
+            entry.get("reasoning_digest"),
+            label="phase reasoning digest",
+        )
+        warnings = _checkpoint_diagnostics(entry, "warnings")
+        result_preview = {"summary": summary, "reasoning_digest": reasoning_digest}
+        artifact_previews = _checkpoint_artifact_previews(state, entry)
+        phase_dialogue = _checkpoint_phase_dialogue(state, phase, attempt)
+        if not _phase_review_has_visible_evidence(
+            summary,
+            reasoning_digest,
+            artifact_previews,
+            warnings,
+            phase_dialogue,
+        ):
+            # Never checkpoint an interrupt that the public contract must
+            # quarantine. A legacy/invalid empty result cannot be approved
+            # meaningfully; terminate this attempt with an actionable error.
+            return Command(
+                goto="finalize",
+                update=_phase_update(
+                    phase,
+                    attempt,
+                    status=PhaseStatus.FAILED.value,
+                    errors=["phase review requires visible result evidence"],
+                ),
+            )
         new_dialogue: list[JsonDict] = []
         max_turns = cfg.limits.max_dialogue_turns
         error: str | None = None
@@ -1327,7 +2096,7 @@ def _make_output_gate(phase: Phase):
                 )
                 return Command(goto="finalize", update={**update, **extra})
             if action == "revise":
-                instructions = str(decision.get("instructions") or "")
+                instructions = decision.get("instructions") or ""
                 if revise_count >= cfg.limits.max_revise_loops:
                     error = (
                         f"max_revise_loops ({cfg.limits.max_revise_loops}) reached; "
@@ -1341,9 +2110,12 @@ def _make_output_gate(phase: Phase):
                     # wording revision must not traverse reserve/start/poll again.
                     target = "open_output_gate"
                     revision_fields = {
-                        "summary": (
-                            f"{summary or 'Execution results'} | analysis revised per: "
-                            f"{instructions or '(no instructions supplied)'}"
+                        "summary": bounded_diagnostic(
+                            (
+                                f"{summary or 'Execution results'} | analysis revised per: "
+                                f"{instructions or '(no instructions supplied)'}"
+                            ),
+                            max_chars=MAX_GATE_TEXT_CHARS,
                         ),
                         "reasoning_digest": (
                             "Execution analysis revision only; the external load run "
@@ -1371,7 +2143,7 @@ def _make_output_gate(phase: Phase):
                 )
                 return Command(goto=target, update={**update, **extra})
             if action == "discuss":
-                message = str(decision.get("message") or "")
+                message = decision.get("message") or ""
                 operator_turns = sum(
                     1 for d in phase_dialogue + new_dialogue if d.get("role") == "operator"
                 )
@@ -1392,7 +2164,10 @@ def _make_output_gate(phase: Phase):
                         phase=phase,
                         attempt=attempt,
                         role="agent",
-                        content=f"[{phase.value} agent stub] acknowledged: {message}",
+                        content=bounded_diagnostic(
+                            f"[{phase.value} agent stub] acknowledged: {message}",
+                            max_chars=MAX_GATE_DECISION_TEXT_CHARS,
+                        ),
                     ).model_dump(mode="json"),
                 ]
                 continue  # re-interrupt with the refreshed dialogue tail
@@ -1419,27 +2194,121 @@ def _make_output_gate(phase: Phase):
     return output_gate
 
 
+def _phase_review_has_visible_evidence(
+    summary: str | None,
+    reasoning_digest: str | None,
+    artifacts: list[JsonDict],
+    warnings: list[str],
+    dialogue: list[JsonDict],
+) -> bool:
+    def meaningful(value: Any) -> bool:
+        return type(value) is str and bool(value.strip())
+
+    return (
+        meaningful(summary)
+        or meaningful(reasoning_digest)
+        or any(
+            all(meaningful(artifact.get(field)) for field in ("id", "kind", "name"))
+            for artifact in artifacts
+        )
+        or any(meaningful(warning) for warning in warnings)
+        or any(meaningful(entry.get("content")) for entry in dialogue)
+    )
+
+
 def _make_finalize(phase: Phase):
     def finalize(state: PipelineState, config: RunnableConfig) -> JsonDict:
+        # Finalization attributes usage and persists provider-backed evidence.  Validate
+        # the durable run contract before the best-effort transcript block so a config
+        # drift error cannot be swallowed as an observational artifact warning.
+        PipelineConfigurable.from_state_for_phase(state, config, phase)
         entry = _entry(state, phase)
         attempt = _attempt(entry)
-        status = entry.get("status")
-        collection_settled = bool(
-            phase is Phase.EXECUTION and entry.get("engine_collection_settled")
+        safe_summary = _checkpoint_terminal_text(
+            entry.get("summary"),
+            label="phase summary",
         )
-        if collection_settled and entry.get("engine_collection_final_status") in {
+        safe_reasoning_digest = _checkpoint_terminal_text(
+            entry.get("reasoning_digest"),
+            label="phase reasoning digest",
+        )
+        safe_started_at = _checkpoint_terminal_timestamp(entry.get("started_at"))
+        # Validate every diagnostic before transcript/telemetry side effects. A
+        # malformed checkpoint must not be able to commit those effects and only
+        # then fail while building the terminal state update.
+        warnings = _checkpoint_diagnostics(entry, "warnings")
+        errors = _checkpoint_diagnostics(entry, "errors")
+
+        raw_status = entry.get("status")
+        terminal_statuses = {
+            PhaseStatus.SUCCEEDED.value,
             PhaseStatus.FAILED.value,
+            PhaseStatus.SKIPPED.value,
             PhaseStatus.ABORTED.value,
-        }:
-            status = entry["engine_collection_final_status"]
-        if status not in TERMINAL_PHASE_STATUSES:
+        }
+        completable_statuses = {
+            PhaseStatus.RUNNING.value,
+            PhaseStatus.AWAITING_OUTPUT_REVIEW.value,
+        }
+        invalid_terminal_transition = (
+            type(raw_status) is not str
+            or not 1 <= len(raw_status) <= 64
+            or raw_status not in terminal_statuses | completable_statuses
+        )
+        if invalid_terminal_transition:
+            status = PhaseStatus.FAILED.value
+        elif raw_status in terminal_statuses:
+            status = raw_status
+        else:
             status = PhaseStatus.SUCCEEDED.value
+
+        collection_settled = False
+        if phase is Phase.EXECUTION:
+            raw_collection_settled = entry.get("engine_collection_settled")
+            if raw_collection_settled is not None and type(raw_collection_settled) is not bool:
+                invalid_terminal_transition = True
+            collection_settled = raw_collection_settled is True
+            collection_status = entry.get("engine_collection_final_status")
+            if collection_settled:
+                if collection_status is None:
+                    pass
+                elif type(collection_status) is str and collection_status in {
+                    PhaseStatus.FAILED.value,
+                    PhaseStatus.ABORTED.value,
+                }:
+                    status = collection_status
+                else:
+                    invalid_terminal_transition = True
+            elif collection_status is not None:
+                invalid_terminal_transition = True
+
+        if invalid_terminal_transition:
+            status = PhaseStatus.FAILED.value
+            checkpoint_error = "checkpointed phase terminal transition was invalid"
+            if checkpoint_error not in errors:
+                errors = [*errors, checkpoint_error][-MAX_DURABLE_PHASE_DIAGNOSTICS:]
+        transcript_entry = {
+            **entry,
+            "summary": safe_summary,
+            "reasoning_digest": safe_reasoning_digest,
+            "started_at": safe_started_at,
+            "warnings": warnings,
+            "errors": errors,
+        }
         ended_at = utcnow_iso()
         duration_s: float | None = None
-        started_at = entry.get("started_at")
-        if started_at:
-            delta = datetime.fromisoformat(ended_at) - datetime.fromisoformat(started_at)
-            duration_s = delta.total_seconds()
+        started_at = safe_started_at
+        if type(started_at) is str and started_at:
+            try:
+                parsed_start = datetime.fromisoformat(started_at)
+                parsed_end = datetime.fromisoformat(ended_at)
+                if parsed_start.tzinfo is None:
+                    parsed_start = parsed_start.replace(tzinfo=parsed_end.tzinfo)
+                duration_s = max(0.0, (parsed_end - parsed_start).total_seconds())
+            except (OverflowError, TypeError, ValueError):
+                # A legacy/malformed timestamp must not strand a completed phase
+                # before its terminal checkpoint. Duration is observational only.
+                duration_s = None
         transcript: JsonDict | None = None
         transcript_warning: str | None = None
         try:
@@ -1447,11 +2316,16 @@ def _make_finalize(phase: Phase):
                 _persist_transcript(
                     state,
                     phase,
-                    entry,
+                    transcript_entry,
                     config,
                     attempt=attempt,
-                    status=str(status),
+                    status=status,
                 )
+            )
+            transcript_summary = (
+                safe_reasoning_digest[:MAX_CONTEXT_SUMMARY_CHARS]
+                if safe_reasoning_digest is not None
+                else None
             )
             transcript = ArtifactRef(
                 id=f"{phase.value}-a{attempt}-transcript",
@@ -1461,7 +2335,7 @@ def _make_finalize(phase: Phase):
                 key=stored.key,
                 artifact_connection_id=artifact_connection_id,
                 media_type="text/plain",
-                summary=entry.get("reasoning_digest"),
+                summary=transcript_summary,
             ).model_dump(mode="json")
         except Exception as exc:  # noqa: BLE001 - terminal phase state is authoritative
             transcript_warning = "phase transcript persistence failed"
@@ -1481,31 +2355,45 @@ def _make_finalize(phase: Phase):
             }
         )
         # Usage analytics (M6): best-effort, never fails the run.
-        usage_events.record_phase_usage_sync(phase.value, str(status), config, attempt=attempt)
+        usage_events.record_phase_usage_sync(phase.value, status, config, attempt=attempt)
         usage_metadata = entry.get("usage_metadata")
         recorded_model = entry.get("model")
+        normalized_usage: dict[str, Any] = {}
+        _accumulate_usage(normalized_usage, usage_metadata)
+        safe_model = (
+            recorded_model
+            if type(recorded_model) is str
+            and 1 <= len(recorded_model) <= 200
+            and "\x00" not in recorded_model
+            and not contains_credential_material(recorded_model)
+            else None
+        )
         usage_events.record_agent_event_sync(
             phase=phase.value,
-            status=str(status),
+            status=status,
             attempt=attempt,
             config=config,
             latency_ms=max(0, round(duration_s * 1000)) if duration_s is not None else None,
-            usage=usage_metadata if isinstance(usage_metadata, dict) else None,
+            usage=normalized_usage if normalized_usage else None,
             agent_name=f"{phase.value}.worker",
-            model=recorded_model if isinstance(recorded_model, str) else None,
+            model=safe_model,
         )
-        warnings = list(entry.get("warnings") or [])
         if transcript_warning is not None:
-            warnings.append(transcript_warning)
+            if transcript_warning not in warnings:
+                warnings = [*warnings, transcript_warning][-MAX_DURABLE_PHASE_DIAGNOSTICS:]
         finalize_fields: JsonDict = {
             "status": status,
+            "summary": safe_summary,
+            "reasoning_digest": safe_reasoning_digest,
+            "started_at": safe_started_at,
             "ended_at": ended_at,
             "duration_s": duration_s,
             "artifact_ids": [transcript["id"]] if transcript is not None else [],
             "transcript_ref": transcript,
             "warnings": warnings,
+            "errors": errors,
         }
-        if collection_settled:
+        if phase is Phase.EXECUTION:
             finalize_fields.update(
                 engine_collection_settled=False,
                 engine_collection_final_status=None,

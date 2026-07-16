@@ -1,7 +1,7 @@
 name: release
 
-# Tag-driven release: full quality gates, then three artifact tracks (server
-# image, TypeScript SDK, Helm chart). Every track always uploads a workflow
+# Tag-driven release: full quality gates, then four artifact tracks (server and
+# dashboard images, TypeScript SDK, Helm chart). Every track uploads a workflow
 # artifact; the push/publish steps are gated on the corresponding secrets being
 # configured and skip loudly when they are not — no registry credentials are
 # assumed to exist.
@@ -19,16 +19,19 @@ jobs:
     outputs:
       value: ${{ steps.version.outputs.value }}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Enforce main-only release provenance
+        run: |
+          git fetch --no-tags --prune origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
       - name: Validate and normalize release version
         id: version
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Tag must be v-prefixed SemVer without build metadata; got: $GITHUB_REF_NAME" >&2
-            exit 2
-          fi
-          echo "value=$version" >> "$GITHUB_OUTPUT"
+          version="$(python3 scripts/release_version.py "$GITHUB_REF_NAME")"
+          printf 'value=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
   gates:
     runs-on: ubuntu-latest
@@ -39,6 +42,11 @@ jobs:
           enable-cache: true
       - run: uv python install 3.12
       - run: uv sync --frozen
+      - name: Validate pinned LangGraph image recipe
+        run: |
+          uv run langgraph validate
+          uv run langgraph dockerfile /tmp/apex-langgraph.Dockerfile
+          uv run python scripts/validate_langgraph_recipe.py /tmp/apex-langgraph.Dockerfile
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -49,8 +57,32 @@ jobs:
           uv run python scripts/export_openapi.py
           git diff --exit-code docs/api/
 
+  dashboard-gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run -w @apex/pipeline-events typecheck
+      - run: npm run -w @apex/pipeline-events lint
+      - run: npm run -w @apex/pipeline-events test
+      - name: Generated-types drift gate
+        run: |
+          npm run generate:sdks
+          git diff --exit-code packages/api-client/src/schema.d.ts
+      - run: npm run -w @apex/api-client typecheck
+      - run: npm run -w @apex/dashboard typecheck
+      - run: npm run -w @apex/dashboard lint
+      - run: npm run -w @apex/dashboard test
+      - run: npm run -w @apex/dashboard test:coverage
+      - run: npm run -w @apex/dashboard build
+
   server-image:
-    needs: [gates, version]
+    needs: [gates, dashboard-gates, version]
     runs-on: ubuntu-latest
     permissions:
       attestations: write
@@ -64,7 +96,32 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --frozen
       - name: Build standalone server image (langgraph build)
-        run: uv run langgraph build -t "apex-orchestration-engine:${{ needs.version.outputs.value }}"
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.value }}
+        run: >-
+          uv run langgraph build
+          -t "apex-orchestration-engine:$RELEASE_VERSION"
+          --build-arg "APEX_BUILD_VERSION=$RELEASE_VERSION"
+      - name: Verify server image release identity
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          reported_version="$(docker run --rm --entrypoint python \
+            "apex-orchestration-engine:$RELEASE_VERSION" \
+            -c 'from apex.settings import ApexSettings; print(ApexSettings().version)')"
+          test "$reported_version" = "$RELEASE_VERSION"
+      - name: Scan server image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: "apex-orchestration-engine:${{ needs.version.outputs.value }}"
+          version: v0.70.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "false"
+          exit-code: "1"
+          format: table
       - name: Save image as artifact
         run: |
           mkdir -p dist
@@ -127,7 +184,7 @@ jobs:
           push-to-registry: true
 
   dashboard-image:
-    needs: [gates, version]
+    needs: [dashboard-gates, gates, version]
     runs-on: ubuntu-latest
     permissions:
       attestations: write
@@ -137,6 +194,18 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Build dashboard image (context = repo root)
         run: docker build -f apps/dashboard/Dockerfile -t "apex-dashboard:${{ needs.version.outputs.value }}" .
+      - name: Scan dashboard image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: "apex-dashboard:${{ needs.version.outputs.value }}"
+          version: v0.70.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "false"
+          exit-code: "1"
+          format: table
       - name: Save image as artifact
         run: |
           mkdir -p dist
@@ -198,7 +267,7 @@ jobs:
           push-to-registry: true
 
   sdk:
-    needs: gates
+    needs: [gates, dashboard-gates, version]
     runs-on: ubuntu-latest
     permissions:
       attestations: write
@@ -212,15 +281,29 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm audit --audit-level=high
+      - name: Stamp package with the validated release version
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.value }}
+        run: >-
+          npm version --workspace @apex/api-client "$RELEASE_VERSION"
+          --no-git-tag-version --allow-same-version
       - name: Regenerate @apex/api-client types from the committed spec
         run: bash scripts/generate_sdks.sh
       - name: Generated-types drift gate (types move in lockstep with the spec)
         run: git diff --exit-code packages/api-client/src/schema.d.ts
       - run: npm run -w @apex/api-client typecheck
       - name: npm pack
+        id: sdk-package
         run: |
           mkdir -p dist
           (cd packages/api-client && npm pack --pack-destination ../../dist)
+          shopt -s nullglob
+          artifacts=(dist/*.tgz)
+          if (( ${#artifacts[@]} != 1 )); then
+            echo "Expected exactly one SDK tarball, found ${#artifacts[@]}" >&2
+            exit 2
+          fi
+          printf 'tarball=%s\n' "${artifacts[0]}" >> "$GITHUB_OUTPUT"
       - uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45 # v2
         with:
           subject-path: "dist/*.tgz"
@@ -251,15 +334,16 @@ jobs:
       # this step is double-gated by design. Flip "private" when publishing for real.
       - name: Publish to npm
         if: steps.npm.outputs.available == 'true'
-        working-directory: packages/api-client
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          SDK_TARBALL: ${{ steps.sdk-package.outputs.tarball }}
         run: |
           npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
-          npm publish
+          test -f "$SDK_TARBALL"
+          npm publish "$SDK_TARBALL"
 
   helm-chart:
-    needs: [gates, version]
+    needs: [gates, dashboard-gates, version]
     runs-on: ubuntu-latest
     permissions:
       attestations: write
@@ -267,10 +351,28 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
-      - name: Helm lint and render release variants
+        with:
+          version: ${{ steps.tool_versions.outputs.helm }}
+      - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: ${{ steps.tool_versions.outputs.kubeconform }}
+          KUBECONFORM_SHA256: ${{ steps.tool_versions.outputs.kubeconform_linux_amd64_sha256 }}
+        run: |
+          curl -fsSLo /tmp/kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$KUBECONFORM_SHA256" /tmp/kubeconform.tar.gz \
+            | sha256sum --check --strict -
+          tar -xzf /tmp/kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/
+      - name: Helm lint, render, and schema-validate release variants
         run: |
           chart=deploy/helm/apex-orchestration-engine
+          out=/tmp/release-manifests
+          mkdir -p "$out"
           digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           generation=0123456789abcdef
           locked_args=(
@@ -281,9 +383,12 @@ jobs:
           helm lint --strict "$chart" "${locked_args[@]}"
           helm lint --strict "$chart" -f deploy/azure/helm/values-azure.yaml \
             "${locked_args[@]}"
-          helm template release-smoke "$chart" "${locked_args[@]}" >/dev/null
+          helm template release-smoke "$chart" "${locked_args[@]}" \
+            > "$out/default.yaml"
           helm template release-smoke "$chart" \
-            -f deploy/azure/helm/values-azure.yaml "${locked_args[@]}" >/dev/null
+            -f deploy/azure/helm/values-azure.yaml "${locked_args[@]}" \
+            > "$out/azure.yaml"
+          kubeconform -strict -ignore-missing-schemas -summary "$out"/*.yaml
       - name: Helm package
         run: |
           mkdir -p dist
@@ -294,6 +399,7 @@ jobs:
           rendered="$(helm template release-smoke \
             "dist/apex-orchestration-engine-${{ needs.version.outputs.value }}.tgz" \
             --set dashboard.enabled=true \
+            --set dashboard.backendUpstream=http://apex:80 \
             --set apexSettings.APEX_ENVIRONMENT=compose \
             --set apexSettings.APEX_AUTH__ENABLED=false \
             --set auth.existingSecret=)"

@@ -12,10 +12,17 @@ SettingsDep = Annotated[ApexSettings, Depends(get_settings)]
 
 async def get_current_identity(request: Request) -> ConsumerIdentity:
     """Resolve the calling API consumer from x-api-key / bearer headers (401 if none)."""
+    store_unavailable = False
     try:
         identity = await get_default_resolver().resolve(extract_api_key(request.headers))
-    except AuthStoreUnavailableError as exc:
-        raise HTTPException(status_code=503, detail="API key store is unavailable") from exc
+    except AuthStoreUnavailableError:
+        # Raise only after the handler is gone: ``from None`` suppresses display
+        # but still retains a driver's credential/endpoint-bearing exception in
+        # ``__context__`` for tracing and exception consumers.
+        store_unavailable = True
+        identity = None
+    if store_unavailable:
+        raise HTTPException(status_code=503, detail="API key store is unavailable")
     if identity is None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     request.state.identity = identity

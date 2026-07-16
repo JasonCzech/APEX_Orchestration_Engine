@@ -433,5 +433,6 @@ def test_sim_graph_smoke_execution_spine_consumes_the_port(
     engine_artifacts = [ref for ref in result["artifacts"] if ref["kind"] == "engine_results"]
     assert engine_artifacts, "spine must persist the engine's artifacts"
     uri = str(engine_artifacts[0]["uri"])
-    data = asyncio.run(MemoryArtifactStore().get(uri.removeprefix("memory://")))
+    assert uri.startswith("apex-artifact:///")
+    data = asyncio.run(MemoryArtifactStore().get(str(engine_artifacts[0]["key"])))
     assert data, "engine artifact bytes must land in the resolved artifact store"

@@ -4,10 +4,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from fastapi import HTTPException
 from langgraph_sdk import Auth
+from starlette.requests import Request
 
 import apex.auth.handlers as auth_handlers
 import apex.auth.service as auth_service
+from apex.app.dependencies import get_current_identity
 from apex.auth.handlers import (
     authenticate,
     ensure_thread_scope,
@@ -29,6 +32,7 @@ from apex.auth.handlers import (
     user_payload,
 )
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
+from apex.auth.service import AuthStoreUnavailableError
 from apex.services.langgraph_client import (
     LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
     RERUN_CLAIM_METADATA_KEY,
@@ -64,6 +68,14 @@ class FakeResolver:
     async def resolve(self, api_key: str | None) -> ConsumerIdentity | None:
         self.seen_keys.append(api_key)
         return self.identity
+
+
+class UnavailableResolver:
+    async def resolve(self, _api_key: str | None) -> ConsumerIdentity | None:
+        try:
+            raise RuntimeError("postgresql://admin:raw-secret@database.internal/apex")
+        except RuntimeError as exc:
+            raise AuthStoreUnavailableError("API key store is unavailable") from exc
 
 
 class DictUser:
@@ -185,6 +197,42 @@ async def test_authenticate_rejects_unknown_key_and_audits(
     assert event.status_code == 401
 
 
+async def test_authenticate_detaches_raw_store_failure_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth_service, "default_resolver", UnavailableResolver())
+
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        await authenticate(headers={b"x-api-key": b"some-key"})
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert "raw-secret" not in repr(exc_info.value)
+
+
+async def test_fastapi_identity_detaches_raw_store_failure_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth_service, "default_resolver", UnavailableResolver())
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/v1/system/info",
+            "headers": [(b"x-api-key", b"some-key")],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_current_identity(request)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert "raw-secret" not in repr(exc_info.value)
+
+
 def test_identity_round_trips_through_user_payload() -> None:
     identity = make_identity(Role.ADMIN, [ScopeRef(project_id="p1")])
     assert identity_from_user(user_payload(identity)) == identity
@@ -213,6 +261,8 @@ def test_identity_from_user_rejects_unknown_role_or_type(field: str, value: str)
         identity_from_user(payload)
 
     assert excinfo.value.status_code == 401
+    assert excinfo.value.__context__ is None
+    assert excinfo.value.__cause__ is None
 
 
 def test_studio_user_is_admin_in_dev(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,6 +369,43 @@ def test_unscoped_run_scope_rejects_invalid_durable_identifiers(value: Any) -> N
 
     assert excinfo.value.status_code == 422
     assert "must-not-leak" not in str(excinfo.value.detail)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {
+            "input": {"project_id": "p1"},
+            "config": {"configurable": {"project_id": "p2"}},
+        },
+        {
+            "input": {"project_id": "p1", "app_id": "a1"},
+            "metadata": {"app_id": "a2"},
+        },
+        {"input": {"app_id": "a1"}},
+    ],
+)
+def test_unscoped_run_scope_rejects_ambiguous_tenant_identity(value: Any) -> None:
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        auth_handlers.ensure_run_scope(make_identity(Role.ADMIN), value)
+
+    assert excinfo.value.status_code == 422
+
+
+def test_unscoped_run_scope_canonicalizes_explicit_tenant_and_filters_thread() -> None:
+    value: Any = {
+        "input": {"project_id": "p1", "app_id": "a1"},
+        "config": {"configurable": {}, "metadata": {}},
+        "metadata": {},
+    }
+
+    result = auth_handlers.ensure_run_scope(make_identity(Role.ADMIN), value)
+
+    assert result == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "a1"}}
+    assert value["input"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["config"]["configurable"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["config"]["metadata"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["metadata"] == {"project_id": "p1", "app_id": "a1"}
 
 
 def test_ensure_thread_scope_stamps_single_project() -> None:
@@ -591,6 +678,142 @@ async def test_public_run_writes_reject_credential_material_without_reflection(
     assert excinfo.value.status_code == 422
     assert "run-secret-canary" not in str(excinfo.value.detail)
     assert "credential material" in str(excinfo.value.detail)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "metadata": {"note": "Authorization: Bearer trusted-secret-canary"},
+        },
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {"input": {"request": "password=trusted-secret-canary"}},
+        },
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {
+                "config": {
+                    "configurable": {
+                        "langsmith-metadata": {"database_uri": "trusted-secret-canary"}
+                    }
+                }
+            },
+        },
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {
+                "command": {
+                    "resume": {
+                        "interrupt-1": {
+                            "action": "revise",
+                            "instructions": "private_key=trusted-secret-canary",
+                        }
+                    }
+                }
+            },
+        },
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {"webhook": "https://user:trusted-secret-canary@example.test"},
+        },
+    ],
+)
+async def test_trusted_loopback_run_writes_still_reject_credential_material(
+    value: Any,
+) -> None:
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(
+            ctx=make_ctx(
+                make_identity(Role.OPERATOR),
+                action="create_run",
+                trusted_loopback=True,
+            ),
+            value=value,
+        )
+
+    assert excinfo.value.status_code == 422
+    assert "trusted-secret-canary" not in str(excinfo.value.detail)
+    assert "credential material" in str(excinfo.value.detail)
+
+
+async def test_runtime_auth_user_extra_fields_cannot_evade_credential_scan() -> None:
+    identity = make_identity(Role.OPERATOR)
+    forged_user = {
+        **user_payload(identity, trusted_loopback=True),
+        "apiKey": "trusted-auth-user-secret-canary",
+    }
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {},
+            "config": {"configurable": {"langgraph_auth_user": forged_user}},
+        },
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(
+            ctx=make_ctx(identity, action="create_run", trusted_loopback=True),
+            value=value,
+        )
+
+    assert excinfo.value.status_code == 422
+    assert "trusted-auth-user-secret-canary" not in str(excinfo.value.detail)
+    assert "authenticated consumer" in str(excinfo.value.detail)
+
+
+async def test_pinned_proxy_user_no_arg_model_dump_is_accepted_when_canonical() -> None:
+    # An unscoped admin is the only identity that can launch without a
+    # project selector; keep this regression focused on ProxyUser shape.
+    identity = make_identity(Role.ADMIN)
+    canonical = user_payload(identity, trusted_loopback=True)
+
+    class PinnedProxyUserShape:
+        def get(self, key: str, default: Any = None) -> Any:
+            return canonical.get(key, default)
+
+        def model_dump(self) -> dict[str, Any]:
+            # LangGraph 0.10 ProxyUser accepts no kwargs and adds this one field.
+            return {**canonical, "is_authenticated": True}
+
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {},
+            "config": {"configurable": {"langgraph_auth_user": PinnedProxyUserShape()}},
+        },
+    }
+
+    await on_threads_create_run(
+        ctx=make_ctx(identity, action="create_run", trusted_loopback=True),
+        value=value,
+    )
+
+
+@pytest.mark.parametrize("handler", [on_threads_create, on_threads_update])
+async def test_trusted_loopback_thread_metadata_still_rejects_credentials(
+    handler: Any,
+) -> None:
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await handler(
+            ctx=make_ctx(
+                make_identity(Role.OPERATOR),
+                action="update" if handler is on_threads_update else "create",
+                trusted_loopback=True,
+            ),
+            value={"metadata": {"note": "password=trusted-thread-secret-canary"}},
+        )
+
+    assert excinfo.value.status_code == 422
+    assert "trusted-thread-secret-canary" not in str(excinfo.value.detail)
 
 
 async def test_threads_create_run_rejects_out_of_scope_input_project() -> None:
@@ -883,6 +1106,29 @@ async def test_threads_create_run_rejects_conflicting_project_ids() -> None:
     assert excinfo.value.status_code == 403
 
 
+async def test_unscoped_threads_create_run_validates_catalog_app_project_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def mismatched_app(_app_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id="a1", project_id="p2", archived_at=None)
+
+    monkeypatch.setattr(auth_handlers, "_load_catalog_application", mismatched_app)
+    value: Any = {
+        "assistant_id": "018faea9-8b68-7df5-94b7-1d5a0d771620",
+        "thread_id": "existing-thread",
+        "input": {"project_id": "p1", "app_id": "a1"},
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(
+            ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
+            value=value,
+        )
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail == "app_id is not authorized for project_id"
+
+
 async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1", app_id="a1")])
     runtime_user = DictUser(user_payload(identity))
@@ -944,6 +1190,28 @@ async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> N
     [
         ({"checkpoint_id": "checkpoint-1"}, "1 unsupported field(s)"),
         ({"__after_seconds__": 1}, "__after_seconds__ must be 0"),
+        ({"__after_seconds__": "0"}, "__after_seconds__ must be an integer"),
+        (
+            {"__request_start_time_ms__": -1},
+            "must be a finite non-negative number",
+        ),
+        (
+            {"langgraph_auth_user_id": "another-consumer"},
+            "does not match the authenticated consumer",
+        ),
+        (
+            {"langgraph_auth_permissions": "threads:read"},
+            "must be a list of strings",
+        ),
+        ({"langgraph_request_id": 17}, "must be a string"),
+        ({"langgraph_request_id": "bad\x00request"}, "must not contain U+0000"),
+        ({"__dd_trace_headers__": []}, "must be an object"),
+        (
+            {"__dd_trace_headers__": {f"trace-{index}": "ok" for index in range(65)}},
+            "at most 32 entries",
+        ),
+        ({"__pregel_node_finished": "not-callable"}, "must be a runtime callback"),
+        ({"langsmith-metadata": []}, "must be a JSON object"),
         (
             {
                 "langgraph_auth_user": {
@@ -974,6 +1242,149 @@ async def test_threads_create_run_rejects_invalid_runtime_configurable(
 
     assert excinfo.value.status_code == 422
     assert expected_detail in str(excinfo.value.detail)
+    assert excinfo.value.__context__ is None
+    assert excinfo.value.__cause__ is None
+
+
+async def test_threads_create_run_accepts_bounded_runtime_trace_metadata() -> None:
+    value = cast(
+        Any,
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {
+                "input": {},
+                "config": {
+                    "configurable": {
+                        "__request_start_time_ms__": 0,
+                        "__dd_trace_headers__": {
+                            "x-datadog-trace-id": "123",
+                            "x-datadog-parent-id": "456",
+                        },
+                        "langsmith-metadata": {"source": "bounded-test"},
+                        "langsmith-tags": ["unit", "auth-boundary"],
+                    }
+                },
+            },
+        },
+    )
+
+    await on_threads_create_run(
+        ctx=make_ctx(
+            make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")]),
+            action="create_run",
+        ),
+        value=value,
+    )
+
+    runtime = value["kwargs"]["config"]["configurable"]
+    assert runtime["__dd_trace_headers__"]["x-datadog-trace-id"] == "123"
+    assert runtime["langsmith-tags"] == ["unit", "auth-boundary"]
+
+
+async def test_trusted_loopback_run_bounds_delayed_dispatch_window() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+
+    accepted = cast(
+        Any,
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {
+                "input": {},
+                "config": {"configurable": {"__after_seconds__": 86_400}},
+            },
+        },
+    )
+    await on_threads_create_run(
+        ctx=make_ctx(identity, action="create_run", trusted_loopback=True),
+        value=accepted,
+    )
+
+    rejected = cast(
+        Any,
+        {
+            "assistant_id": "pipeline",
+            "thread_id": "thread-1",
+            "kwargs": {
+                "input": {},
+                "config": {"configurable": {"__after_seconds__": 86_401}},
+            },
+        },
+    )
+    with pytest.raises(Auth.exceptions.HTTPException) as excinfo:
+        await on_threads_create_run(
+            ctx=make_ctx(identity, action="create_run", trusted_loopback=True),
+            value=rejected,
+        )
+
+    assert excinfo.value.status_code == 422
+    assert "between 0 and 86400" in str(excinfo.value.detail)
+
+
+@pytest.mark.parametrize(
+    ("proxy", "message"),
+    [
+        (
+            type(
+                "ExplodingDescriptor",
+                (),
+                {
+                    "__getattribute__": lambda self, name: (
+                        (_ for _ in ()).throw(RuntimeError("secret"))
+                        if name == "model_dump"
+                        else object.__getattribute__(self, name)
+                    )
+                },
+            )(),
+            "not inspectable",
+        ),
+        (
+            type(
+                "ExplodingRenderer",
+                (),
+                {"model_dump": lambda self, **_kwargs: (_ for _ in ()).throw(RuntimeError("x"))},
+            )(),
+            "not inspectable",
+        ),
+        (type("ScalarRenderer", (), {"model_dump": lambda self, **_kwargs: 17})(), "render"),
+    ],
+)
+def test_runtime_auth_user_rejects_uninspectable_proxy_objects(
+    proxy: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message) as exc_info:
+        auth_handlers._runtime_auth_user_payload(proxy)
+
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert "secret" not in repr(exc_info.value)
+
+
+def test_runtime_auth_user_rejects_unenumerable_or_unreadable_proxies() -> None:
+    class Unenumerable:
+        def __iter__(self) -> Iterator[str]:
+            raise RuntimeError("secret")
+
+    class Unreadable:
+        def __iter__(self) -> Iterator[str]:
+            yield "identity"
+
+        def __getitem__(self, _key: str) -> object:
+            raise RuntimeError("secret")
+
+    with pytest.raises(ValueError, match="not enumerable") as unenumerable_error:
+        auth_handlers._runtime_auth_user_payload(Unenumerable())
+    with pytest.raises(ValueError, match="not enumerable") as unreadable_error:
+        auth_handlers._runtime_auth_user_payload(Unreadable())
+    with pytest.raises(ValueError, match="invalid fields"):
+        auth_handlers._runtime_auth_user_payload(iter(str(index) for index in range(33)))
+
+    for error in (unenumerable_error.value, unreadable_error.value):
+        assert error.__context__ is None
+        assert error.__cause__ is None
+        assert "secret" not in repr(error)
 
 
 @pytest.mark.parametrize(
@@ -1400,6 +1811,44 @@ async def test_environment_target_stamps_authoritative_app_for_project_wide_call
     assert value["metadata"]["app_id"] == "app-a"
 
 
+async def test_unscoped_environment_run_filters_existing_thread_to_authoritative_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def resolve(
+        environment_id: str, project_id: str | None, app_id: str | None
+    ) -> tuple[str, int, str]:
+        assert (environment_id, project_id, app_id) == ("env-1", "p1", None)
+        return "https://approved.example.test", 7, "app-a"
+
+    monkeypatch.setattr("apex.auth.handlers._load_run_environment_target", resolve)
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "existing-thread",
+        "kwargs": {
+            "input": {},
+            "config": {
+                "configurable": {
+                    "project_id": "p1",
+                    "environment_id": "env-1",
+                }
+            },
+        },
+    }
+
+    scope = await on_threads_create_run(
+        ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"),
+        value=value,
+    )
+
+    assert scope == {
+        "project_id": {"$eq": "p1"},
+        "app_id": {"$eq": "app-a"},
+        _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
+    }
+    assert value["kwargs"]["input"]["app_id"] == "app-a"
+    assert value["metadata"]["app_id"] == "app-a"
+
+
 async def test_environment_target_rejects_injected_conflicting_app_ownership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1419,6 +1868,32 @@ async def test_environment_target_rejects_injected_conflicting_app_ownership(
         await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
 
     assert excinfo.value.status_code == 404
+
+
+async def test_environment_target_not_found_detaches_lookup_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "environment-lookup-secret-canary"
+
+    async def resolve(
+        _environment_id: str, _project_id: str | None, _app_id: str | None
+    ) -> tuple[str, int, str]:
+        raise LookupError(secret)
+
+    monkeypatch.setattr("apex.auth.handlers._load_run_environment_target", resolve)
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {"config": {"configurable": {"environment_id": "env-1"}}},
+    }
+
+    with pytest.raises(Auth.exceptions.HTTPException) as exc_info:
+        await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert secret not in repr(exc_info.value)
 
 
 async def test_threads_create_run_rejects_nested_direct_environment_url() -> None:

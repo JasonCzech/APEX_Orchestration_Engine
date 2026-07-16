@@ -7,8 +7,17 @@ engine-neutral; provider quirks belong inside adapters.
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
+from apex.domain.diagnostics import contains_credential_material
 from apex.domain.input_limits import (
     MAX_DESCRIPTION_CHARS,
     NoNulStr,
@@ -38,6 +47,8 @@ class TimeWindow(BaseModel):
 class WorkItem(BaseModel):
     # Provider responses cross a trust boundary and may be persisted in mutation
     # outbox JSONB. Bound every scalar before it reaches graph state or storage.
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     key: NoNulStr = Field(max_length=255)
     title: NoNulStr = Field(max_length=500)
     kind: NoNulStr = Field(default="story", max_length=64)
@@ -47,8 +58,10 @@ class WorkItem(BaseModel):
 
 
 class WorkItemPage(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     items: list[WorkItem] = Field(default_factory=list, max_length=200)
-    total: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0, le=9_223_372_036_854_775_807)
     page: Page = Field(default_factory=Page)
 
 
@@ -83,7 +96,7 @@ class WorkItemFilters(BaseModel):
 
 
 class WorkItemDraft(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     title: NoNulStr = Field(min_length=1, max_length=500)
     kind: NoNulStr = Field(default="story", min_length=1, max_length=64)
@@ -96,9 +109,15 @@ class WorkItemDraft(BaseModel):
         validate_json_object(values, label="work item fields")
         return values
 
+    @model_validator(mode="after")
+    def reject_credential_material(self) -> "WorkItemDraft":
+        if contains_credential_material(self.model_dump(mode="json")):
+            raise ValueError("work item draft must not contain credential material")
+        return self
+
 
 class Enrichment(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     fields: dict[str, Any] = Field(default_factory=dict, max_length=64)
     comment: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
@@ -108,6 +127,12 @@ class Enrichment(BaseModel):
     def validate_fields(cls, values: dict[str, Any]) -> dict[str, Any]:
         validate_json_object(values, label="work item enrichment fields")
         return values
+
+    @model_validator(mode="after")
+    def reject_credential_material(self) -> "Enrichment":
+        if contains_credential_material(self.model_dump(mode="json")):
+            raise ValueError("work item enrichment must not contain credential material")
+        return self
 
 
 # --- log search ------------------------------------------------------------
@@ -220,12 +245,16 @@ class EnvRef(BaseModel):
 
 
 class ServiceInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     name: NoNulStr = Field(min_length=1, max_length=253)
     replicas: int = Field(default=1, ge=0, le=10_000_000)
     image: NoNulStr = Field(default="", max_length=2_048)
 
 
 class EnvironmentSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     services: list[ServiceInfo] = Field(default_factory=list, max_length=MAX_INVENTORY_SERVICES)
     scanned_at: NoNulStr = Field(default_factory=utcnow_iso, min_length=1, max_length=64)
 
@@ -328,6 +357,8 @@ class TestResultSummary(BaseModel):
 
     Conventional kpis keys: tps_avg, p95_ms, error_rate, vusers_peak.
     """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     engine: NoNulStr = Field(min_length=1, max_length=64)
     passed: bool

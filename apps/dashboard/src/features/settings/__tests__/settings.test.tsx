@@ -40,9 +40,11 @@ describe('SettingsPage', () => {
 
   it('replace key validates against system/info, then saves and updates the mask', async () => {
     const seenKeys: (string | null)[] = []
+    const redirectModes: RequestRedirect[] = []
     server.use(
       http.get('*/v1/system/info', ({ request }) => {
         seenKeys.push(request.headers.get('x-api-key'))
+        redirectModes.push(request.redirect)
         return HttpResponse.json(SYSTEM_INFO)
       }),
     )
@@ -55,6 +57,7 @@ describe('SettingsPage', () => {
 
     expect(await screen.findByText('Key validated and saved.')).toBeInTheDocument()
     expect(seenKeys).toContain('apex_new_key_1234') // validated BEFORE saving
+    expect(redirectModes).toEqual(['error'])
     expect(window.localStorage.getItem(API_KEY_STORAGE_KEY)).toBe('apex_new_key_1234')
     expect(screen.getByTestId('settings-key-mask')).toHaveTextContent('••••••••1234')
   })

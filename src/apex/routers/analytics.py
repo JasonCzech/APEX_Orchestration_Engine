@@ -256,13 +256,19 @@ def _aware(value: datetime | None) -> datetime | None:
 def _default_window_start(window_to: datetime) -> datetime:
     """Return the seven-day default without leaking datetime underflow as a 500."""
 
+    window_error: HTTPException | None = None
+    window_start: datetime | None = None
     try:
-        return window_to - timedelta(days=7)
-    except OverflowError as exc:
-        raise HTTPException(
+        window_start = window_to - timedelta(days=7)
+    except OverflowError:
+        window_error = HTTPException(
             status_code=422,
             detail="`to` is too early to derive the default seven-day analytics window",
-        ) from exc
+        )
+    if window_error is not None:
+        raise window_error
+    assert window_start is not None
+    return window_start
 
 
 def _multi(values: list[str] | None) -> tuple[str, ...]:

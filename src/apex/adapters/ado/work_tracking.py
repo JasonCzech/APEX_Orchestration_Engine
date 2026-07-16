@@ -93,8 +93,9 @@ _API_VERSION = "7.1"
 _COMMENTS_API_VERSION = "7.1-preview.3"
 _MUTATION_MARKER = re.compile(r"\Aapex-idem-[0-9a-f]{32}\Z")
 _FIELD_REFERENCE_NAME = re.compile(r"\A[A-Za-z][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)+\Z")
-_COMMENT_PAGE_SIZE = 200
+_COMMENT_PAGE_SIZE = 100
 _MAX_COMMENT_SCAN = 10_000
+_IDEMPOTENCY_CANDIDATE_LIMIT = 100
 _MAX_ITEM_ID = 2_147_483_647
 _ITEM_FIELDS = [
     "System.Id",
@@ -350,17 +351,23 @@ class AdoWorkTrackingAdapter:
         headers: dict[str, str] | None = None,
         not_found: str | None = None,
     ) -> httpx.Response:
+        response: httpx.Response | None = None
+        transport_failure: RuntimeError | None = None
         try:
             response = await resilient_request(
                 self._client(), method, path, json=json, params=params, headers=headers
             )
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            transport_failure = RuntimeError(
                 bounded_diagnostic(
                     f"ado request {method} {path} failed before a response arrived: {detail}"
                 )
-            ) from exc
+            )
+        if transport_failure is not None:
+            raise transport_failure
+        if response is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("azure devops request completed without a response")
         if response.status_code == 404 and not_found is not None:
             raise WorkTrackingMutationTargetNotFoundError(not_found)
         # ADO answers unauthenticated API calls with a 203 + sign-in HTML page.
@@ -517,7 +524,10 @@ class AdoWorkTrackingAdapter:
         response = await self._request(
             "POST",
             f"/{self._project_path}/_apis/wit/wiql",
-            params={"api-version": _API_VERSION, "$top": 2},
+            params={
+                "api-version": _API_VERSION,
+                "$top": _IDEMPOTENCY_CANDIDATE_LIMIT + 1,
+            },
             json={
                 "query": (
                     "SELECT [System.Id] FROM WorkItems WHERE "
@@ -528,8 +538,8 @@ class AdoWorkTrackingAdapter:
         )
         data = _json_object(response, "idempotency marker query")
         raw_items = _list_field(data, "workItems", context="idempotency query response")
-        if len(raw_items) > 2:
-            raise RuntimeError("azure devops idempotency marker is attached to multiple items")
+        if len(raw_items) > _IDEMPOTENCY_CANDIDATE_LIMIT:
+            raise RuntimeError("azure devops idempotency query exhausted its candidate budget")
         ids: list[str] = []
         seen_ids: set[int] = set()
         for index, item in enumerate(raw_items):
@@ -542,9 +552,17 @@ class AdoWorkTrackingAdapter:
                 raise RuntimeError("azure devops idempotency marker is attached to multiple items")
             seen_ids.add(item_id)
             ids.append(str(item_id))
-        if len(ids) > 1:
+        matches: list[WorkItem] = []
+        for item_id in ids:
+            row, item = await self._get_item_snapshot(item_id)
+            raw_fields = row.get("fields")
+            if not isinstance(raw_fields, dict):  # pragma: no cover - snapshot invariant
+                raise RuntimeError("azure devops work item response has malformed fields")
+            if _contains_exact_tag(raw_fields.get("System.Tags"), marker):
+                matches.append(item)
+        if len(matches) > 1:
             raise RuntimeError("azure devops idempotency marker is attached to multiple items")
-        return await self.get_item(ids[0]) if ids else None
+        return matches[0] if matches else None
 
     async def create_item_idempotent(self, draft: WorkItemDraft, *, marker: str) -> WorkItem:
         self.validate_create_item_idempotent(draft, marker=marker)
@@ -597,7 +615,19 @@ class AdoWorkTrackingAdapter:
             json=patch,
             headers={"Content-Type": "application/json-patch+json"},
         )
-        return self._work_item_from_row(_json_object(response, "created work item"))
+        row = _json_object(response, "created work item")
+        item = self._work_item_from_row(row)
+        if marker is not None:
+            raw_fields = row.get("fields")
+            if not isinstance(raw_fields, dict):  # pragma: no cover - projection invariant
+                raise RuntimeError("azure devops create response has malformed fields")
+            if not _contains_exact_tag(raw_fields.get("System.Tags"), marker):
+                # A successful create without the exact marker cannot be
+                # reconciled after an ambiguous local durability failure.
+                raise RuntimeError(
+                    "azure devops create response did not acknowledge the idempotency marker"
+                )
+        return item
 
     async def enrich_item(self, key: str, enrichment: Enrichment) -> WorkItem:
         """fields -> JSON-patch PATCH; comment -> comments preview API; re-fetch."""
@@ -784,8 +814,10 @@ class AdoWorkTrackingAdapter:
             raise WorkTrackingMutationTargetNotFoundError(
                 f"work item {item_id!r} not found in configured azure devops project"
             )
+        item: WorkItem | None = None
+        invalid_item = False
         try:
-            return WorkItem(
+            item = WorkItem(
                 key=item_id,
                 title=raw_title,
                 kind=kind,
@@ -793,8 +825,13 @@ class AdoWorkTrackingAdapter:
                 description=html_to_text(raw_description),
                 url=f"{self._base_url}/{quote(project, safe='')}/_workitems/edit/{item_id}",
             )
-        except ValidationError as exc:
-            raise RuntimeError("azure devops returned an invalid work item") from exc
+        except ValidationError:
+            invalid_item = True
+        if invalid_item:
+            raise RuntimeError("azure devops returned an invalid work item")
+        if item is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("azure devops returned an invalid work item")
+        return item
 
 
 def _error_text(response: httpx.Response) -> str:
@@ -829,3 +866,13 @@ def _json_object(response: httpx.Response, context: str) -> dict[str, Any]:
 
 def _comment_marker(marker: str) -> str:
     return f"[APEX-IDEMPOTENCY:{marker}]"
+
+
+def _contains_exact_tag(value: object, marker: str) -> bool:
+    """Prove an exact ADO tag after the WIQL substring candidate search."""
+
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        raise RuntimeError("azure devops work item response has malformed tags")
+    return marker in {tag.strip() for tag in value.split(";") if tag.strip()}

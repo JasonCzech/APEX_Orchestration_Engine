@@ -82,16 +82,25 @@ async def rescan_environment(
     project_id = env.application.project_id
     environment = EnvRef(id=env.id, name=env.name)
     await release_read_transactions(repository)
+    rescan_error: HTTPException | None = None
+    result: InventoryView | None = None
     try:
-        return await InventoryService(repository).rescan(
+        result = await InventoryService(repository).rescan(
             environment,
             lambda: resolve_adapter(connection_id, project_id),
         )
     except InventoryScanBusyError:
-        raise HTTPException(
+        rescan_error = HTTPException(
             status_code=429,
             detail="inventory scan capacity is exhausted; retry later",
             headers={"Retry-After": "1"},
-        ) from None
-    except (KeyError, TimeoutError, ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=502, detail="environment rescan failed") from exc
+        )
+    except Exception:
+        # Provider/config exceptions can retain credentials in traceback locals.
+        rescan_error = HTTPException(status_code=502, detail="environment rescan failed")
+    if rescan_error is not None:
+        # Raise only after the provider handler is gone; ``from None`` hides an
+        # exception chain but still leaves the raw exception in __context__.
+        raise rescan_error
+    assert result is not None
+    return result

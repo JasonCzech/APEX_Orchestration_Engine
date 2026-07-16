@@ -10,6 +10,7 @@ import sys
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from apex.domain.diagnostics import safe_type_name
 from apex.persistence.db import get_sessionmaker
 from apex.persistence.repositories.prompts import PromptRepository
 from apex.services.prompts import DEFAULT_PHASE_PROMPTS, PHASE_NAMESPACE, PromptCatalogService
@@ -36,7 +37,7 @@ async def main() -> int:
                 )
                 print(f"{PHASE_NAMESPACE}/{key}: created v{version.version} (id={prompt.id})")
     except (SQLAlchemyError, OSError) as exc:
-        print(f"Database unreachable ({exc.__class__.__name__}).")
+        print(f"Database unreachable ({safe_type_name(exc)}).")
         print("Run `make infra-up` + `make migrate` first, then re-run this script.")
         return 0
     return 0

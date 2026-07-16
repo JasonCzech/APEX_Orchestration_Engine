@@ -59,7 +59,13 @@ describe('dev-data route smoke', () => {
     ['/admin/consumers', 'Read Only Reviewer'],
     ['/admin/system', 'dev-dummy'],
   ])('renders %s from dummy data', async (path, expectedText) => {
-    renderApp({ initialEntries: [path], authState: authenticatedState() })
+    renderApp({
+      initialEntries: [path],
+      authState: authenticatedState(),
+      // This route specifically verifies the dev-data system response. Other
+      // smoke routes retain the static session seed and avoid unrelated IO.
+      seedSystemInfo: path !== '/admin/system',
+    })
 
     expect(await screen.findByText(expectedText, {}, { timeout: 4_000 })).toBeInTheDocument()
   })

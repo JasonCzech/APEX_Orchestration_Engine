@@ -23,6 +23,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from apex.bootstrap.runner import BootstrapError, apply_document
 from apex.bootstrap.schema import BootstrapDocument
+from apex.domain.diagnostics import safe_type_name
+from apex.settings import database_uri_has_safe_transport, get_settings
 
 MAX_BOOTSTRAP_BYTES = 1_048_576
 MAX_BOOTSTRAP_DEPTH = 32
@@ -30,6 +32,9 @@ MAX_BOOTSTRAP_NODES = 10_000
 
 
 def _read_document(path: str) -> str:
+    read_error_kind: str | None = None
+    value = ""
+    encoded_size = 0
     try:
         if path == "-":
             value = sys.stdin.read(MAX_BOOTSTRAP_BYTES + 1)
@@ -40,7 +45,9 @@ def _read_document(path: str) -> str:
             encoded_size = len(payload)
             value = payload.decode("utf-8")
     except (OSError, UnicodeError) as exc:
-        raise BootstrapError(f"cannot read bootstrap document ({type(exc).__name__})") from exc
+        read_error_kind = safe_type_name(exc)
+    if read_error_kind is not None:
+        raise BootstrapError(f"cannot read bootstrap document ({read_error_kind})")
     if encoded_size > MAX_BOOTSTRAP_BYTES:
         raise BootstrapError(f"bootstrap document exceeds the {MAX_BOOTSTRAP_BYTES}-byte limit")
     return value
@@ -116,13 +123,19 @@ def _validate_document_tree(data: Any) -> None:
 def _load_document(path: str) -> dict[str, Any]:
     raw = _read_document(path)
     suffix = "" if path == "-" else Path(path).suffix.lower()
+    data: Any = None
     if suffix in (".yaml", ".yml"):
+        yaml_module: Any | None = None
+        yaml_error_kind: str | None = None
         try:
-            import yaml  # transitive (langchain-core); JSON needs no dependency
-        except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
+            import yaml as yaml_module  # transitive; JSON needs no dependency
+        except ModuleNotFoundError:  # pragma: no cover - environment dependent
+            pass
+        if yaml_module is None:
             raise BootstrapError(
                 "YAML bootstrap files need PyYAML installed; use JSON or `pip install pyyaml`"
-            ) from exc
+            )
+        yaml = yaml_module
         try:
             depth = 0
             nodes = 0
@@ -159,10 +172,14 @@ def _load_document(path: str) -> dict[str, Any]:
                 result: dict[Any, Any] = {}
                 for key_node, value_node in node.value:
                     key = loader.construct_object(key_node, deep=deep)
+                    invalid_key = False
                     try:
                         duplicate = key in result
-                    except TypeError as exc:
-                        raise BootstrapError("bootstrap YAML mapping keys must be scalar") from exc
+                    except TypeError:
+                        invalid_key = True
+                        duplicate = False
+                    if invalid_key:
+                        raise BootstrapError("bootstrap YAML mapping keys must be scalar")
                     if duplicate:
                         raise BootstrapError("bootstrap document contains a duplicate key")
                     result[key] = loader.construct_object(value_node, deep=deep)
@@ -176,9 +193,12 @@ def _load_document(path: str) -> dict[str, Any]:
         except BootstrapError:
             raise
         except (yaml.YAMLError, RecursionError) as exc:
-            raise BootstrapError(f"invalid YAML bootstrap document ({type(exc).__name__})") from exc
+            yaml_error_kind = safe_type_name(exc)
+        if yaml_error_kind is not None:
+            raise BootstrapError(f"invalid YAML bootstrap document ({yaml_error_kind})")
     else:
         _validate_json_nesting(raw)
+        json_error_kind: str | None = None
         try:
             data = json.loads(
                 raw,
@@ -190,16 +210,22 @@ def _load_document(path: str) -> dict[str, Any]:
         except BootstrapError:
             raise
         except (json.JSONDecodeError, RecursionError) as exc:
-            raise BootstrapError(f"invalid JSON bootstrap document ({type(exc).__name__})") from exc
+            json_error_kind = safe_type_name(exc)
+            data = None
+        if json_error_kind is not None:
+            raise BootstrapError(f"invalid JSON bootstrap document ({json_error_kind})")
     _validate_document_tree(data)
     if not isinstance(data, dict):
-        raise BootstrapError(f"bootstrap document must be a mapping, got {type(data).__name__}")
+        raise BootstrapError(f"bootstrap document must be a mapping, got {safe_type_name(data)}")
     return data
 
 
 async def _run(doc: BootstrapDocument) -> None:
     from apex.persistence.db import get_sessionmaker
 
+    database = get_settings().database
+    if not database_uri_has_safe_transport(database.uri, database.ssl_mode):
+        raise BootstrapError("database transport must authenticate every remote server")
     async with get_sessionmaker()() as session:
         report = await apply_document(doc, session, env=os.environ)
         await session.commit()
@@ -224,6 +250,20 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if not args.file:
         parser.error("no bootstrap file given (pass a path or set $APEX_BOOTSTRAP_FILE)")
+    if args.graceful:
+        # A production hook must never report success after skipping every
+        # bootstrap write. Validate this before reading the document or opening
+        # a database connection, and keep configuration details out of stderr.
+        try:
+            graceful_allowed = not get_settings().is_locked_down
+        except Exception:
+            graceful_allowed = False
+        if not graceful_allowed:
+            print(
+                "apex.bootstrap: --graceful is allowed only in local/test environments",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         doc = BootstrapDocument.model_validate(_load_document(args.file))
@@ -242,7 +282,7 @@ def main(argv: list[str]) -> int:
         return 2
     except ValueError as exc:
         print(
-            f"apex.bootstrap: invalid document ({type(exc).__name__})",
+            f"apex.bootstrap: invalid document ({safe_type_name(exc)})",
             file=sys.stderr,
         )
         return 2
@@ -253,7 +293,7 @@ def main(argv: list[str]) -> int:
         print(f"apex.bootstrap: {exc}", file=sys.stderr)
         return 1
     except (SQLAlchemyError, OSError) as exc:
-        message = f"apex.bootstrap: database unavailable ({exc.__class__.__name__})"
+        message = f"apex.bootstrap: database unavailable ({safe_type_name(exc)})"
         if args.graceful:
             print(f"{message}; --graceful set, treating as no-op", file=sys.stderr)
             return 0

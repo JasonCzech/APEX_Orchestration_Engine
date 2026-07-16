@@ -121,6 +121,46 @@ function enginePollError() {
   }
 }
 
+function engineRecoveryErrors() {
+  return [
+    {
+      schema_version: 1,
+      type: 'engine_provision_error',
+      phase: 'execution',
+      attempt: 1,
+      failure: 1,
+      error: 'provider create response was ambiguous',
+    },
+    {
+      schema_version: 1,
+      type: 'engine_collection_error',
+      phase: 'execution',
+      attempt: 1,
+      external_run_id: 'sim-77',
+      failure: 1,
+      error: 'artifact store was unavailable',
+    },
+    {
+      schema_version: 1,
+      type: 'engine_collection_index_error',
+      phase: 'execution',
+      attempt: 1,
+      external_run_id: 'sim-77',
+      failure: 1,
+      error: 'artifact ownership index was unavailable',
+    },
+    {
+      schema_version: 1,
+      type: 'engine_collection_settle_error',
+      phase: 'execution',
+      attempt: 1,
+      external_run_id: 'sim-77',
+      failure: 1,
+      error: 'provider teardown was unavailable',
+    },
+  ]
+}
+
 function gateOpened(gate: 'prompt_review' | 'phase_review', phase: PhaseName, attempt = 1) {
   return { schema_version: 1, type: 'gate_opened', gate, phase, attempt }
 }
@@ -209,6 +249,9 @@ describe('usePipelineStream', () => {
       stream.pushCustom(agentMessage(), 'ev-3a')
       stream.pushCustom(agentError(), 'ev-3b')
       stream.pushCustom(enginePollError(), 'ev-3c')
+      for (const [index, event] of engineRecoveryErrors().entries()) {
+        stream.pushCustom(event, `ev-3r${index}`)
+      }
       stream.pushCustom(phaseStatus('story_analysis', 'succeeded'), 'ev-4')
       await vi.advanceTimersByTimeAsync(0)
     })
@@ -218,13 +261,36 @@ describe('usePipelineStream', () => {
       expect.objectContaining({ type: 'agent_message', model: 'claude-sonnet-4-5' }),
       expect.objectContaining({ type: 'agent_error', error: 'provider request timed out' }),
     ])
-    expect(result.current.engineErrors).toEqual([
-      expect.objectContaining({
-        type: 'engine_poll_error',
-        error: 'provider status request timed out',
-        consecutive_errors: 2,
-      }),
-    ])
+    expect(result.current.engineErrors).toHaveLength(5)
+    expect(result.current.engineErrors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'engine_poll_error',
+          error: 'provider status request timed out',
+          consecutive_errors: 2,
+        }),
+        expect.objectContaining({
+          type: 'engine_provision_error',
+          error: 'provider create response was ambiguous',
+          failure: 1,
+        }),
+        expect.objectContaining({
+          type: 'engine_collection_error',
+          error: 'artifact store was unavailable',
+          failure: 1,
+        }),
+        expect.objectContaining({
+          type: 'engine_collection_index_error',
+          error: 'artifact ownership index was unavailable',
+          failure: 1,
+        }),
+        expect.objectContaining({
+          type: 'engine_collection_settle_error',
+          error: 'provider teardown was unavailable',
+          failure: 1,
+        }),
+      ]),
+    )
     expect(result.current.driftCount).toBe(0)
     expect(result.current.phaseProgress.story_analysis).toEqual({
       status: 'succeeded',
@@ -252,9 +318,15 @@ describe('usePipelineStream', () => {
     expect(resumeStore.get('t1', 'r1')).toBe('ev-4')
   })
 
-  it('attempt-aware merge: a new attempt replaces the cached phase entry', async () => {
+  it('keeps terminal attempts monotonic and replaces the entry on a real retry', async () => {
     const { queryClient, wrapper } = setup()
     const seeded = makeSnapshot()
+    const seededStrip = seeded.detail.phase_strip.find(
+      (segment) => segment.phase === 'story_analysis',
+    )
+    if (!seededStrip) throw new Error('story_analysis strip entry missing')
+    seededStrip.status = 'failed'
+    seededStrip.attempt = 1
     seeded.state = {
       phase_results: {
         story_analysis: {
@@ -266,20 +338,41 @@ describe('usePipelineStream', () => {
       },
     }
     queryClient.setQueryData<ThreadStateSnapshot>(queryKeys.threads.state('t1'), seeded)
+    const seededList = makeListResponse()
+    const listStrip = seededList.items[0]?.phase_strip.find(
+      (segment) => segment.phase === 'story_analysis',
+    )
+    if (!listStrip) throw new Error('story_analysis list strip entry missing')
+    listStrip.status = 'failed'
+    listStrip.attempt = 1
+    queryClient.setQueryData(queryKeys.pipelines.list({}), seededList)
     const stream = fake.scriptStream()
-    renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
     await pump()
 
-    // Same attempt: merge keeps existing fields.
+    // A delayed event from the terminal attempt cannot move it back to running.
     await act(async () => {
       stream.pushCustom(phaseStatus('story_analysis', 'running', 1))
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(snapshotOf(queryClient).state.phase_results?.story_analysis).toMatchObject({
-      status: 'running',
+      status: 'failed',
       attempt: 1,
       summary: 'stale attempt-1 summary',
     })
+    expect(result.current.phaseProgress.story_analysis).toBeUndefined()
+    expect(listRowOf(queryClient).phase_strip.find((s) => s.phase === 'story_analysis')).toMatchObject(
+      { status: 'failed', attempt: 1 },
+    )
+
+    // A matching terminal replay seeds the live projection; a later stale
+    // running replay is rejected by both the cache and reducer.
+    await act(async () => {
+      stream.pushCustom(phaseStatus('story_analysis', 'failed', 1))
+      stream.pushCustom(phaseStatus('story_analysis', 'running', 1))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(result.current.phaseProgress.story_analysis).toEqual({ status: 'failed', attempt: 1 })
 
     // New attempt: replace, dropping attempt-1 fields.
     await act(async () => {
@@ -289,6 +382,42 @@ describe('usePipelineStream', () => {
     const entry = snapshotOf(queryClient).state.phase_results?.story_analysis
     expect(entry).toMatchObject({ status: 'running', attempt: 2 })
     expect(entry?.summary).toBeUndefined()
+  })
+
+  it('does not clear a later current phase when an earlier phase finishes late', async () => {
+    const { queryClient, wrapper } = setup()
+    const snapshot = makeSnapshot()
+    snapshot.detail.current_phase = 'execution'
+    snapshot.state.current_phase = 'execution'
+    const story = snapshot.detail.phase_strip.find((segment) => segment.phase === 'story_analysis')
+    if (!story) throw new Error('story_analysis strip entry missing')
+    story.status = 'running'
+    story.attempt = 1
+    snapshot.state.phase_results = {
+      story_analysis: { phase: 'story_analysis', status: 'running', attempt: 1 },
+    }
+    queryClient.setQueryData(queryKeys.threads.state('t1'), snapshot)
+    const list = makeListResponse()
+    const row = list.items[0]
+    if (!row) throw new Error('list row missing')
+    row.current_phase = 'execution'
+    const rowStory = row.phase_strip.find((segment) => segment.phase === 'story_analysis')
+    if (!rowStory) throw new Error('story_analysis list strip entry missing')
+    rowStory.status = 'running'
+    rowStory.attempt = 1
+    queryClient.setQueryData(queryKeys.pipelines.list({}), list)
+    const stream = fake.scriptStream()
+    renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+
+    await act(async () => {
+      stream.pushCustom(phaseStatus('story_analysis', 'succeeded', 1))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(snapshotOf(queryClient).detail.current_phase).toBe('execution')
+    expect(snapshotOf(queryClient).state.current_phase).toBe('execution')
+    expect(listRowOf(queryClient).current_phase).toBe('execution')
   })
 
   it('engine_poll flood: coalesced flushes (50ms floor) and ZERO query-cache writes', async () => {
@@ -446,13 +575,48 @@ describe('usePipelineStream', () => {
     const expectedGate = { interrupt_id: null, kind: 'prompt_review', phase: 'test_planning' }
     expect(snapshotOf(queryClient).detail.pending_gate).toEqual(expectedGate)
     expect(listRowOf(queryClient).pending_gate).toEqual(expectedGate)
+    expect(snapshotOf(queryClient).state.phase_results?.test_planning).toMatchObject({
+      status: 'awaiting_prompt_review',
+      attempt: 1,
+    })
+    expect(
+      snapshotOf(queryClient).detail.phase_strip.find((entry) => entry.phase === 'test_planning'),
+    ).toMatchObject({ status: 'awaiting_prompt_review', attempt: 1 })
+    expect(
+      listRowOf(queryClient).phase_strip.find((entry) => entry.phase === 'test_planning'),
+    ).toMatchObject({ status: 'awaiting_prompt_review', attempt: 1 })
+    expect(snapshotOf(queryClient).detail.current_phase).toBe('test_planning')
 
-    // The phase moving on clears the hint.
+    // The phase moving on clears both the live hint and cached gate summaries.
     await act(async () => {
       stream.pushCustom(phaseStatus('test_planning', 'running'))
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(result.current.pendingGateHint).toBeNull()
+    expect(snapshotOf(queryClient).detail.pending_gate).toBeNull()
+    expect(listRowOf(queryClient).pending_gate).toBeNull()
+  })
+
+  it('ignores a same-attempt gate replay after the phase is terminal', async () => {
+    const { queryClient, wrapper } = setup()
+    const stream = fake.scriptStream()
+    const { result } = renderHook(() => usePipelineStream('t1', 'r1'), { wrapper })
+    await pump()
+
+    await act(async () => {
+      stream.pushCustom(phaseStatus('test_planning', 'succeeded', 1))
+      stream.pushCustom(gateOpened('phase_review', 'test_planning', 1))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(result.current.phaseProgress.test_planning).toEqual({ status: 'succeeded', attempt: 1 })
+    expect(result.current.pendingGateHint).toBeNull()
+    expect(snapshotOf(queryClient).state.phase_results?.test_planning).toMatchObject({
+      status: 'succeeded',
+      attempt: 1,
+    })
+    expect(snapshotOf(queryClient).detail.pending_gate).toBeNull()
+    expect(listRowOf(queryClient).pending_gate).toBeNull()
   })
 
   it('ignores a gate_opened event from an older phase attempt in every cache', async () => {
@@ -498,7 +662,7 @@ describe('usePipelineStream', () => {
     expect(fake.joinStreamCalls[1]?.options?.lastEventId).toBe('ev-2')
   })
 
-  it('terminal error event surfaces as status error (single healing refetch still applies)', async () => {
+  it('terminal error event surfaces a non-reflective error (single healing refetch still applies)', async () => {
     const { queryClient, wrapper } = setup()
     const stream = fake.scriptStream()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
@@ -506,12 +670,13 @@ describe('usePipelineStream', () => {
     await pump()
 
     await act(async () => {
-      stream.push({ event: 'error', data: 'ValueError: engine exploded' })
+      stream.push({ event: 'error', data: 'ValueError: provider-secret-canary' })
       stream.end()
       await vi.advanceTimersByTimeAsync(0)
     })
     expect(result.current.status).toBe('error')
-    expect(result.current.error?.message).toContain('engine exploded')
+    expect(result.current.error?.message).toBe('Run stream reported an error.')
+    expect(result.current.error?.message).not.toContain('provider-secret-canary')
     expect(
       invalidate.mock.calls.filter(
         ([filters]) =>
@@ -528,7 +693,11 @@ describe('usePipelineStream', () => {
     await pump()
 
     await act(async () => {
-      stream.pushCustom({ schema_version: 1, type: 'totally_new_event', payload: 1 })
+      stream.pushCustom({
+        schema_version: 1,
+        type: 'totally_new_event',
+        payload: 'schema-drift-secret-canary',
+      })
       stream.pushCustom(phaseStatus('story_analysis', 'running'))
       await vi.advanceTimersByTimeAsync(0)
     })
@@ -536,6 +705,11 @@ describe('usePipelineStream', () => {
     expect(result.current.status).toBe('live')
     expect(result.current.phaseProgress.story_analysis?.status).toBe('running')
     expect(warn).toHaveBeenCalled()
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('schema-drift-secret-canary')
+    expect(warn).toHaveBeenCalledWith(
+      '[usePipelineStream] schema drift on custom stream event',
+      expect.objectContaining({ issueCount: expect.any(Number) }),
+    )
   })
 
   it('abort on unmount: cancels the SSE signal and never reconnects', async () => {

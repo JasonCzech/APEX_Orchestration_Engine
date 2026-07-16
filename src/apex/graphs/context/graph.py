@@ -24,9 +24,21 @@ from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from apex.adapters.registry import PortKind
+from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.pipeline import (
+    MAX_CONTEXT_REF_CHARS,
+    MAX_CONTEXT_SOURCE_CHARS,
+    MAX_CONTEXT_TITLE_CHARS,
+)
 from apex.ports.work_tracking import WorkTrackingMutationTargetNotFoundError
-from apex.services.connections import ConnectionResolver, DbConnectionStore
+from apex.services.connections import (
+    ConnectionResolver,
+    DbConnectionStore,
+    close_adapter,
+    validate_resolved_work_tracking_project,
+)
 from apex.services.run_validation import CONTEXT_RUN_INPUT_KEYS, validate_context_run_input
+from apex.services.work_items import validated_provider_work_item
 
 JsonDict = dict[str, Any]
 
@@ -66,79 +78,182 @@ def _make_resolver() -> ConnectionResolver:
 
 
 def _packet(source: str, title: str, ref: str | None, summary: str | None) -> JsonDict:
-    packet_id = hashlib.sha256(f"{source}|{ref or title}".encode()).hexdigest()[:32]
-    snippet = (summary or "").strip()[:_SUMMARY_SNIPPET_CHARS] or None
-    return {"id": packet_id, "source": source, "title": title, "ref": ref, "summary": snippet}
+    """Build a bounded, secret-free packet from an untrusted provider response."""
+
+    safe_source = bounded_diagnostic(source, max_chars=MAX_CONTEXT_SOURCE_CHARS)
+    safe_title = bounded_diagnostic(title, max_chars=MAX_CONTEXT_TITLE_CHARS)
+    safe_ref = bounded_diagnostic(ref, max_chars=MAX_CONTEXT_REF_CHARS) if ref is not None else None
+    safe_summary = (
+        bounded_diagnostic(summary, max_chars=_SUMMARY_SNIPPET_CHARS).strip() or None
+        if summary is not None
+        else None
+    )
+    packet_id = hashlib.sha256(f"{safe_source}|{safe_ref or safe_title}".encode()).hexdigest()[:32]
+    return {
+        "id": packet_id,
+        "source": safe_source,
+        "title": safe_title,
+        "ref": safe_ref,
+        "summary": safe_summary,
+    }
 
 
 async def _work_tracking_evidence(keys: list[str], project_id: str | None) -> list[JsonDict]:
-    async with _make_resolver() as resolver:
+    resolver = _make_resolver()
+    tracker: Any | None = None
+    try:
         tracker = await resolver.resolve(PortKind.WORK_TRACKING, project_id=project_id)
-        local_admission = asyncio.Semaphore(CONTEXT_EVIDENCE_CONCURRENCY)
+        validate_resolved_work_tracking_project(
+            tracker,
+            provider=getattr(tracker, "provider", ""),
+            requested_project_id=project_id,
+        )
+        return await _gather_tracker_evidence(tracker, keys)
+    finally:
+        await _close_context_resources_definitively(tracker, resolver)
 
-        @asynccontextmanager
-        async def provider_slot() -> AsyncIterator[None]:
-            delay = 0.001
-            while not _CONTEXT_PROVIDER_ADMISSION.acquire(blocking=False):
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 0.05)
-            try:
-                yield
-            finally:
-                _CONTEXT_PROVIDER_ADMISSION.release()
 
-        async def fetch(index: int, key: str) -> tuple[int, JsonDict | None]:
-            async with local_admission, provider_slot():
-                try:
-                    item = await tracker.get_item(key)
-                except asyncio.CancelledError:
-                    raise
-                except WorkTrackingMutationTargetNotFoundError:
-                    return index, None  # a definitive missing work-item is not evidence
-                return index, _packet(
-                    "work_tracking", item.title, item.url or item.key, item.description
-                )
+async def _gather_tracker_evidence(tracker: Any, keys: list[str]) -> list[JsonDict]:
+    local_admission = asyncio.Semaphore(CONTEXT_EVIDENCE_CONCURRENCY)
 
-        tasks = [asyncio.create_task(fetch(index, key)) for index, key in enumerate(keys)]
-        if not tasks:
-            return []
+    @asynccontextmanager
+    async def provider_slot() -> AsyncIterator[None]:
+        delay = 0.001
+        while not _CONTEXT_PROVIDER_ADMISSION.acquire(blocking=False):
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 0.05)
         try:
-            done, pending = await asyncio.wait(
-                tasks,
-                timeout=CONTEXT_EVIDENCE_TOTAL_TIMEOUT_S,
-                return_when=asyncio.FIRST_EXCEPTION,
-            )
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-
-            completed: dict[int, JsonDict] = {}
-            for task in tasks:
-                if task in pending:
-                    continue
-                # Operational/provider exceptions are evidence-gathering failures,
-                # not proof that no evidence exists. Re-raise after all timed-out
-                # siblings have been cancelled and settled above.
-                index, packet = task.result()
-                if packet is not None:
-                    completed[index] = packet
-            if pending:
-                # Returning the completed subset makes an unavailable provider look
-                # indistinguishable from genuinely absent evidence. The caller can
-                # retry a bounded operational failure, but cannot repair a false
-                # negative embedded in a durable context summary.
-                raise TimeoutError("work-tracking evidence gathering timed out")
-            # Preserve caller order even though provider calls complete concurrently.
-            return [completed[index] for index in sorted(completed)]
+            yield
         finally:
-            # Parent run cancellation can interrupt asyncio.wait itself. Every child
-            # must settle before the resolver/adapter lease leaves this scope.
-            unfinished = [task for task in tasks if not task.done()]
-            for task in unfinished:
-                task.cancel()
-            if unfinished:
-                await asyncio.gather(*unfinished, return_exceptions=True)
+            _CONTEXT_PROVIDER_ADMISSION.release()
+
+    async def fetch(index: int, key: str) -> tuple[int, JsonDict | None]:
+        async with local_admission, provider_slot():
+            try:
+                item = validated_provider_work_item(await tracker.get_item(key))
+            except asyncio.CancelledError:
+                raise
+            except WorkTrackingMutationTargetNotFoundError:
+                return index, None  # a definitive missing work-item is not evidence
+            return index, _packet(
+                "work_tracking", item.title, item.url or item.key, item.description
+            )
+
+    tasks = [asyncio.create_task(fetch(index, key)) for index, key in enumerate(keys)]
+    if not tasks:
+        return []
+    try:
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=CONTEXT_EVIDENCE_TOTAL_TIMEOUT_S,
+            return_when=asyncio.FIRST_EXCEPTION,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await _settle_cancelled_evidence_tasks(list(pending))
+
+        completed: dict[int, JsonDict] = {}
+        for task in tasks:
+            if task in pending:
+                continue
+            # Operational/provider exceptions are evidence-gathering failures,
+            # not proof that no evidence exists. Re-raise after all timed-out
+            # siblings have been cancelled and settled above.
+            index, packet = task.result()
+            if packet is not None:
+                completed[index] = packet
+        if pending:
+            # Returning the completed subset makes an unavailable provider look
+            # indistinguishable from genuinely absent evidence. The caller can
+            # retry a bounded operational failure, but cannot repair a false
+            # negative embedded in a durable context summary.
+            raise TimeoutError("work-tracking evidence gathering timed out")
+        # Preserve caller order even though provider calls complete concurrently.
+        return [completed[index] for index in sorted(completed)]
+    finally:
+        # Parent run cancellation can interrupt asyncio.wait itself, and one
+        # completed provider failure can make ``task.result()`` skip later failed
+        # siblings. Always gather every task with ``return_exceptions=True`` so no
+        # provider diagnostic escapes through the event loop's exception handler,
+        # and settle all children before the resolver lease leaves this scope.
+        await _settle_cancelled_evidence_tasks(tasks)
+
+
+async def _close_context_resources_definitively(tracker: Any | None, resolver: Any) -> None:
+    """Release the tracker checkout and resolver cache under repeated cancellation."""
+
+    close = getattr(resolver, "close", None)
+    if callable(close):
+        resolver_cleanup = close()
+    else:
+        exit_method = getattr(resolver, "__aexit__", None)
+        if callable(exit_method):
+            resolver_cleanup = exit_method(None, None, None)
+        else:
+
+            async def _noop_resolver_cleanup() -> None:
+                return None
+
+            resolver_cleanup = _noop_resolver_cleanup()
+    coroutines = [resolver_cleanup]
+    if tracker is not None:
+        coroutines.insert(0, close_adapter(tracker))
+
+    async def run_cleanup(awaitable: Any) -> None:
+        await awaitable
+
+    tasks = [asyncio.create_task(run_cleanup(coroutine)) for coroutine in coroutines]
+    cancelled = False
+    error: BaseException | None = None
+    for task in tasks:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+            except BaseException:
+                break
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            cancelled = True
+        except BaseException as exc:
+            if error is None:
+                error = exc
+    if cancelled:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
+
+
+async def _settle_cancelled_evidence_tasks(tasks: list[asyncio.Task[Any]]) -> None:
+    """Cancel and definitively settle children even under repeated parent cancel."""
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if not tasks:
+        return
+
+    async def settle() -> None:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    waiter = asyncio.create_task(settle())
+    interrupted = False
+    while not waiter.done():
+        try:
+            await asyncio.shield(waiter)
+        except asyncio.CancelledError:
+            # A fresh shield on the next iteration keeps waiting for the same
+            # settlement task instead of cancelling child cleanup.
+            interrupted = True
+    # Retrieve synchronously once done. A final ``await waiter`` would introduce
+    # one more cancellation checkpoint after cleanup has already settled and can
+    # obscure the original cancellation under a tightly repeated cancel signal.
+    waiter.result()
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 def _document_evidence(document_packets: list[JsonDict]) -> list[JsonDict]:
@@ -167,7 +282,19 @@ async def gather_evidence(state: ContextState) -> ContextState:
     subject = validated.subject
     project_id = validated.project_id
     evidence: list[JsonDict] = []
-    evidence.extend(await _work_tracking_evidence(validated.work_item_keys, project_id))
+    provider_failed = False
+    try:
+        evidence.extend(await _work_tracking_evidence(validated.work_item_keys, project_id))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        # LangGraph may persist and surface node failures. Provider/resolver
+        # exceptions are untrusted diagnostics. Raise a fixed error after
+        # leaving the handler so opaque provider secrets are neither rendered
+        # nor retained in ``__context__`` by the durable graph failure.
+        provider_failed = True
+    if provider_failed:
+        raise RuntimeError("work-tracking evidence gathering failed")
     evidence.extend(
         _document_evidence(
             [

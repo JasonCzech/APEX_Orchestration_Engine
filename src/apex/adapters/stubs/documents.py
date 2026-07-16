@@ -47,10 +47,10 @@ class StubDocumentsAdapter:
         return hits[:k]
 
     async def fetch(self, ref: DocRef) -> DocumentContent:
-        try:
-            hit, text = _DOCS[ref.id]
-        except KeyError:
-            raise KeyError(f"document {ref.id!r} not found in stub corpus") from None
+        stored = _DOCS.get(ref.id)
+        if stored is None:
+            raise KeyError(f"document {ref.id!r} not found in stub corpus")
+        hit, text = stored
         return DocumentContent(
             ref=hit.ref.model_copy(deep=True), media_type="text/markdown", text=text
         )

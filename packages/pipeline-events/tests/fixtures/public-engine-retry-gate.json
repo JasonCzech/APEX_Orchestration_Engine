@@ -1,0 +1,15 @@
+{
+  "interrupt_id": "engine-retry-interrupt-1",
+  "kind": "engine_cleanup_retry",
+  "phase": "execution",
+  "payload": {
+    "schema_version": 1,
+    "kind": "engine_cleanup_retry",
+    "phase": "execution",
+    "actions": ["retry"],
+    "attempt": 2,
+    "thread_id": "t-1",
+    "message": "Resume the exact durable provider attempt.",
+    "error": "provider abort unavailable"
+  }
+}

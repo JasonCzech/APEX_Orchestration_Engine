@@ -61,16 +61,20 @@ register_exception_handlers(app)
 async def runtime_readiness(request: Request) -> Response:
     """Opaque, unauthenticated dependency-aware orchestrator probe."""
 
+    readiness_failed = False
     try:
         await check_runtime_readiness(request.app)
-    except Exception as exc:
+    except Exception:
         # Dependency diagnostics may contain database/Redis endpoints. Keep the
         # public probe deliberately opaque; detailed failures remain in logs.
+        readiness_failed = True
+    if readiness_failed:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Service is not ready",
-        ) from exc
+        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
 limit_backend = (
     RedisDistributedLimitBackend(settings.redis_uri)

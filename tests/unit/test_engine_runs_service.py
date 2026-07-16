@@ -3,12 +3,13 @@
 import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from apex.persistence.models import Base, EngineRun
+from apex.persistence.models import Base, Connection, EngineRun
 from apex.services import engine_runs
 from apex.services.engine_runs import (
     COMPLETION_COLLECTION_TEARDOWN,
@@ -18,7 +19,10 @@ from apex.services.engine_runs import (
     _completion_replay_status,
     _insert_reservation_statement,
     _normalize_development_connection_ids,
+    _normalize_scope_provenance,
     _upsert_statement,
+    _verify_artifact_connection_reservation,
+    _verify_execution_connection_reservation,
     _verify_reservation_connection_generation,
     _verify_reservation_handle_identity,
 )
@@ -38,7 +42,7 @@ def _terminal_completion_row(
         scope_ownership_known=True,
         engine="loadrunner",
         external_run_id="lre-42",
-        artifact_namespace="engine-runs/completion",
+        artifact_namespace=engine_runs.engine_artifact_namespace("completion-thread-execution-a2"),
         artifact_connection_id="artifact-a",
         artifact_connection_version=artifact_version,
         execution_connection_version=execution_version,
@@ -74,7 +78,7 @@ def _recover_completion(
         project_id="project-a",
         app_id="app-a",
         external_run_id="lre-42",
-        artifact_namespace="engine-runs/completion",
+        artifact_namespace=engine_runs.engine_artifact_namespace("completion-thread-execution-a2"),
         artifact_connection_id="artifact-a",
         artifact_connection_version=artifact_version,
         connection_version=execution_version,
@@ -112,6 +116,89 @@ def test_recovered_reservation_requires_exact_connection_generation() -> None:
         connection_version=original_generation,
         operation="provision",
     )
+
+
+def test_execution_connection_reservation_requires_adapter_and_project_affinity() -> None:
+    def connection(*, project_id: str | None = None) -> Connection:
+        return Connection(
+            id="engine-a",
+            kind="execution_engine",
+            provider="loadrunner",
+            name="Engine A",
+            project_id=project_id,
+            enabled=True,
+        )
+
+    _verify_execution_connection_reservation(
+        connection(project_id=None),
+        engine="loadrunner",
+        project_id="project-a",
+    )
+    _verify_execution_connection_reservation(
+        connection(project_id="project-a"),
+        engine="loadrunner",
+        project_id="project-a",
+    )
+
+    with pytest.raises(EngineRunReservationRejectedError, match="project ownership"):
+        _verify_execution_connection_reservation(
+            connection(project_id="project-b"),
+            engine="loadrunner",
+            project_id="project-a",
+        )
+
+    wrong_adapter = connection(project_id="project-a")
+    wrong_adapter.kind = "artifact_store"
+    with pytest.raises(EngineRunReservationRejectedError, match="adapter identity"):
+        _verify_execution_connection_reservation(
+            wrong_adapter,
+            engine="loadrunner",
+            project_id="project-a",
+        )
+
+    wrong_provider = connection(project_id="project-a")
+    wrong_provider.provider = "sim"
+    with pytest.raises(EngineRunReservationRejectedError, match="adapter identity"):
+        _verify_execution_connection_reservation(
+            wrong_provider,
+            engine="loadrunner",
+            project_id="project-a",
+        )
+
+
+def test_artifact_connection_reservation_requires_kind_and_project_affinity() -> None:
+    def connection(*, project_id: str | None = None) -> Connection:
+        return Connection(
+            id="artifact-a",
+            kind="artifact_store",
+            provider="s3",
+            name="Artifact A",
+            project_id=project_id,
+            enabled=True,
+        )
+
+    _verify_artifact_connection_reservation(
+        connection(project_id=None),
+        project_id="project-a",
+    )
+    _verify_artifact_connection_reservation(
+        connection(project_id="project-a"),
+        project_id="project-a",
+    )
+
+    with pytest.raises(EngineRunReservationRejectedError, match="project ownership"):
+        _verify_artifact_connection_reservation(
+            connection(project_id="project-b"),
+            project_id="project-a",
+        )
+
+    wrong_kind = connection(project_id="project-a")
+    wrong_kind.kind = "execution_engine"
+    with pytest.raises(EngineRunReservationRejectedError, match="wrong kind"):
+        _verify_artifact_connection_reservation(
+            wrong_kind,
+            project_id="project-a",
+        )
 
 
 def test_recovered_reservation_requires_exact_handle_affinity() -> None:
@@ -257,6 +344,42 @@ def test_only_required_complete_scope_is_authoritative() -> None:
             )
 
 
+def test_scope_authority_rejects_noncanonical_unbounded_and_hostile_values() -> None:
+    calls: list[str] = []
+
+    class HostileScope(str):
+        def strip(self, *_args: object, **_kwargs: object) -> str:
+            calls.append("strip")
+            raise AssertionError("hostile scope hook ran")
+
+    for project_id, app_id in (
+        (HostileScope("project-a"), "app-a"),
+        ("project-a", HostileScope("app-a")),
+        ("p" * 256, "app-a"),
+        (" project-a", "app-a"),
+        ("project-a", "app-a\nshadow"),
+    ):
+        with pytest.raises(EngineRunReservationRejectedError, match="exact project"):
+            _authoritative_scope(
+                project_id,
+                app_id,
+                required=True,
+                operation="test",
+            )
+        normalized = _normalize_scope_provenance(
+            {
+                "ownership_known": True,
+                "scope_ownership_known": True,
+                "project_id": project_id,
+                "app_id": app_id,
+            }
+        )
+        assert normalized["ownership_known"] is False
+        assert normalized["scope_ownership_known"] is False
+
+    assert calls == []
+
+
 def test_required_persisted_connection_reservation_requires_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -273,6 +396,7 @@ def test_required_persisted_connection_reservation_requires_version(
                 1,
                 "sim",
                 {
+                    "engine": "sim",
                     "connection_id": "real-engine",
                     "idempotency_key": "thread-1-execution-a1",
                 },
@@ -284,6 +408,187 @@ def test_required_persisted_connection_reservation_requires_version(
                 required=True,
             )
         )
+
+
+async def test_engine_run_boundaries_reject_credentials_before_settings_or_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "engine-writer-secret-canary"
+    logged: list[dict[str, Any]] = []
+
+    class CapturingLogger:
+        def warning(self, _event: str, **fields: Any) -> None:
+            logged.append(fields)
+
+    def forbidden_settings() -> None:
+        raise AssertionError("unsafe projection must fail before reading runtime settings")
+
+    monkeypatch.setattr(engine_runs, "logger", CapturingLogger())
+    monkeypatch.setattr(engine_runs, "get_settings", forbidden_settings)
+    unsafe_handle = {
+        "engine": "sim",
+        "idempotency_key": f"api_key={canary}",
+    }
+    safe_handle = {
+        "engine": "sim",
+        "idempotency_key": "engine-writer-execution-a1",
+    }
+
+    calls = (
+        engine_runs.record_engine_run(
+            "thread-writer",
+            1,
+            "sim",
+            unsafe_handle,
+            "running",
+            project_id="project-a",
+            app_id="app-a",
+            required=True,
+        ),
+        engine_runs.record_engine_run(
+            "thread-writer",
+            1,
+            "sim",
+            safe_handle,
+            "completed",
+            project_id="project-a",
+            app_id="app-a",
+            summary={
+                "engine": "sim",
+                "passed": True,
+                "notes": f"api_key={canary}",
+            },
+            required=True,
+        ),
+        engine_runs.prepare_engine_start(
+            "thread-writer",
+            1,
+            "sim",
+            unsafe_handle,
+            project_id="project-a",
+            app_id="app-a",
+        ),
+        engine_runs.prepare_engine_provision(
+            "thread-writer",
+            1,
+            "sim",
+            unsafe_handle,
+            project_id="project-a",
+            app_id="app-a",
+        ),
+        engine_runs.recover_engine_completion(
+            "thread-writer",
+            1,
+            "sim",
+            unsafe_handle,
+            project_id="project-a",
+            app_id="app-a",
+            artifact_namespace=engine_runs.engine_artifact_namespace("engine-writer-execution-a1"),
+            completion_kind=COMPLETION_COLLECTION_TEARDOWN,
+            expected_statuses=frozenset({"completed"}),
+        ),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="credential material") as raised:
+            await call
+        assert canary not in str(raised.value)
+
+    assert canary not in repr(logged)
+
+
+async def test_required_projection_detaches_unexpected_backend_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "engine-projection-backend-secret-canary"
+
+    class BackendFailure(Exception):
+        pass
+
+    def fail_settings() -> None:
+        raise BackendFailure(canary)
+
+    monkeypatch.setattr(engine_runs, "get_settings", fail_settings)
+
+    with pytest.raises(engine_runs.EngineRunProjectionError) as excinfo:
+        await engine_runs.record_engine_run(
+            "thread-1",
+            1,
+            "sim",
+            {
+                "engine": "sim",
+                "idempotency_key": "thread-1-execution-a1",
+            },
+            "running",
+            project_id="project-a",
+            app_id="app-a",
+            required=True,
+        )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
+
+
+def test_engine_run_model_validation_does_not_retain_raw_projection_values() -> None:
+    canary = "bare-engine-projection-canary"
+
+    with pytest.raises(ValueError, match="handle is invalid") as handle_error:
+        engine_runs._validated_projection_handle(
+            {
+                "engine": "sim",
+                "idempotency_key": "safe-engine-attempt",
+                "external_run_id": canary,
+                "extras": [],
+            },
+            engine="sim",
+            allow_empty=False,
+        )
+
+    assert handle_error.value.__cause__ is None
+    assert handle_error.value.__context__ is None
+    assert canary not in str(handle_error.value)
+
+    with pytest.raises(ValueError, match="summary is invalid") as summary_error:
+        engine_runs._validated_projection_summary(
+            {"engine": "sim", "passed": f"invalid-{canary}"},
+            engine="sim",
+        )
+
+    assert summary_error.value.__cause__ is None
+    assert summary_error.value.__context__ is None
+    assert canary not in str(summary_error.value)
+
+
+async def test_invalid_thread_identifier_is_redacted_from_engine_run_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "thread-secret-canary"
+    logged: list[dict[str, Any]] = []
+
+    class CapturingLogger:
+        def warning(self, _event: str, **fields: Any) -> None:
+            logged.append(fields)
+
+    def forbidden_settings() -> None:
+        raise AssertionError("unsafe projection must fail before reading runtime settings")
+
+    monkeypatch.setattr(engine_runs, "logger", CapturingLogger())
+    monkeypatch.setattr(engine_runs, "get_settings", forbidden_settings)
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        await engine_runs.record_engine_run(
+            f"api_key={canary}",
+            1,
+            "sim",
+            {"engine": "sim", "idempotency_key": "safe-engine-attempt"},
+            "running",
+            project_id="project-a",
+            app_id="app-a",
+            required=True,
+        )
+
+    assert canary not in str(raised.value)
+    assert canary not in repr(logged)
 
 
 def test_required_upsert_rejects_zero_row_terminal_conflict(
@@ -352,6 +657,7 @@ def test_required_upsert_rejects_zero_row_terminal_conflict(
                 1,
                 "sim",
                 {
+                    "engine": "sim",
                     "connection_id": "real-engine",
                     "idempotency_key": "thread-terminal-execution-a1",
                 },
@@ -448,6 +754,55 @@ def test_sqlite_upsert_rejects_known_cross_app_rebinding() -> None:
     assert row.project_id == "project-1"
     assert row.app_id == "app-a"
     assert row.status == "running"
+
+
+def test_sqlite_upsert_rejects_provider_rebinding_within_same_scope() -> None:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ATTACH DATABASE ':memory:' AS apex")
+        Base.metadata.tables["apex.engine_runs"].create(connection)
+        base = {
+            "thread_id": "provider-collision",
+            "attempt": 1,
+            "project_id": "project-1",
+            "app_id": "app-a",
+            "ownership_known": True,
+            "scope_ownership_known": True,
+        }
+        connection.execute(
+            _upsert_statement(
+                {
+                    **base,
+                    "engine": "sim",
+                    "handle": {"idempotency_key": "provider-collision-a1"},
+                    "status": "running",
+                },
+                "sqlite",
+            )
+        )
+        collision = connection.execute(
+            _upsert_statement(
+                {
+                    **base,
+                    "engine": "loadrunner",
+                    "handle": {
+                        "idempotency_key": "provider-collision-a1",
+                        "external_run_id": "foreign-run",
+                    },
+                    "status": "collecting",
+                },
+                "sqlite",
+            )
+        )
+
+    with Session(engine) as session:
+        row = session.scalar(select(EngineRun))
+
+    assert collision.rowcount == 0
+    assert row is not None
+    assert row.engine == "sim"
+    assert row.status == "running"
+    assert row.handle == {"idempotency_key": "provider-collision-a1"}
 
 
 def test_sqlite_upsert_rejects_projectless_callback_for_known_owned_run() -> None:
@@ -884,3 +1239,305 @@ def test_nonterminal_replay_never_downgrades_or_erases_later_stage() -> None:
     assert row.handle == full_handle
     assert row.external_run_id == "lre-1042"
     assert row.artifact_connection_id == "artifact-a"
+
+
+class _AsyncProjectionSession:
+    def __init__(self, scalar_results: list[Any] | None = None) -> None:
+        self.scalar_results = iter(scalar_results or [])
+        self.executed: list[Any] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def __aenter__(self) -> "_AsyncProjectionSession":
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    def get_bind(self) -> SimpleNamespace:
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    async def scalar(self, _statement: Any) -> Any:
+        return next(self.scalar_results)
+
+    async def execute(self, statement: Any) -> SimpleNamespace:
+        self.executed.append(statement)
+        return SimpleNamespace(rowcount=1)
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class _AsyncProjectionFactory:
+    def __init__(self, session: _AsyncProjectionSession) -> None:
+        self.session = session
+
+    def __call__(self) -> _AsyncProjectionSession:
+        return self.session
+
+
+def _install_async_projection_db(
+    monkeypatch: pytest.MonkeyPatch,
+    session: _AsyncProjectionSession,
+) -> tuple[object, list[object]]:
+    database_engine = object()
+    disposed: list[object] = []
+    monkeypatch.setattr(
+        engine_runs,
+        "get_settings",
+        lambda: SimpleNamespace(
+            is_locked_down=True,
+            database=SimpleNamespace(uri="sqlite+aiosqlite://", ssl_mode="disable"),
+        ),
+    )
+    monkeypatch.setattr(
+        engine_runs,
+        "create_async_engine",
+        lambda *_args, **_kwargs: database_engine,
+    )
+    monkeypatch.setattr(
+        engine_runs,
+        "async_sessionmaker",
+        lambda *_args, **_kwargs: _AsyncProjectionFactory(session),
+    )
+
+    async def dispose(value: object) -> None:
+        disposed.append(value)
+
+    monkeypatch.setattr(engine_runs, "dispose_engine_instance_definitively", dispose)
+    return database_engine, disposed
+
+
+async def test_required_record_locks_both_connection_generations_and_commits_witness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = datetime.now(UTC)
+    execution_connection = SimpleNamespace(
+        enabled=True,
+        kind="execution_engine",
+        provider="loadrunner",
+        project_id="project-a",
+        runtime_version=version,
+    )
+    artifact_connection = SimpleNamespace(
+        enabled=True,
+        kind="artifact_store",
+        project_id="project-a",
+        runtime_version=version,
+    )
+    session = _AsyncProjectionSession([execution_connection, artifact_connection])
+    database_engine, disposed = _install_async_projection_db(monkeypatch, session)
+
+    await engine_runs.record_engine_run(
+        "thread-record",
+        3,
+        "loadrunner",
+        {
+            "engine": "loadrunner",
+            "connection_id": "engine-a",
+            "external_run_id": "run-42",
+            "idempotency_key": "thread-record-execution-a3",
+        },
+        "completed",
+        project_id="project-a",
+        app_id="app-a",
+        external_run_id="run-42",
+        artifact_namespace=engine_runs.engine_artifact_namespace("thread-record-execution-a3"),
+        artifact_connection_id="artifact-a",
+        artifact_connection_version=version,
+        connection_id="engine-a",
+        connection_version=version,
+        summary={"engine": "loadrunner", "passed": True},
+        completion_kind=COMPLETION_COLLECTION_TEARDOWN,
+        required=True,
+    )
+
+    assert len(session.executed) == 1
+    assert session.commits == 1
+    assert session.rollbacks == 0
+    assert disposed == [database_engine]
+
+
+async def test_start_reservation_recovers_an_already_running_exact_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = {
+        "engine": "sim",
+        "idempotency_key": "thread-start-execution-a2",
+        "external_run_id": "sim-42",
+    }
+    row = EngineRun(
+        thread_id="thread-start",
+        attempt=2,
+        project_id="project-a",
+        app_id="app-a",
+        ownership_known=True,
+        scope_ownership_known=True,
+        engine="sim",
+        handle=handle,
+        status="running",
+    )
+    session = _AsyncProjectionSession([row])
+    database_engine, disposed = _install_async_projection_db(monkeypatch, session)
+
+    recovered = await engine_runs.prepare_engine_start(
+        "thread-start",
+        2,
+        "sim",
+        {"engine": "sim", "idempotency_key": "thread-start-execution-a2"},
+        project_id="project-a",
+        app_id="app-a",
+    )
+
+    assert recovered == {
+        **handle,
+        "connection_id": None,
+        "extras": {},
+    }
+    assert recovered is not handle
+    assert session.commits == 1
+    assert disposed == [database_engine]
+
+
+async def test_provision_reservation_recovers_exact_provider_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = {
+        "engine": "loadrunner",
+        "idempotency_key": "thread-provision-execution-a1",
+        "external_run_id": "lre-88",
+        "extras": {"run_id": "88"},
+    }
+    row = EngineRun(
+        thread_id="thread-provision",
+        attempt=1,
+        project_id="project-a",
+        app_id="app-a",
+        ownership_known=True,
+        scope_ownership_known=True,
+        engine="loadrunner",
+        handle=handle,
+        artifact_namespace=engine_runs.engine_artifact_namespace("thread-provision-execution-a1"),
+        status="provisioning",
+    )
+    session = _AsyncProjectionSession([row])
+    database_engine, disposed = _install_async_projection_db(monkeypatch, session)
+
+    recovered = await engine_runs.prepare_engine_provision(
+        "thread-provision",
+        1,
+        "loadrunner",
+        {
+            "engine": "loadrunner",
+            "idempotency_key": "thread-provision-execution-a1",
+        },
+        project_id="project-a",
+        app_id="app-a",
+        artifact_namespace=engine_runs.engine_artifact_namespace("thread-provision-execution-a1"),
+    )
+
+    assert recovered == {**handle, "connection_id": None}
+    assert len(session.executed) == 1
+    assert session.commits == 1
+    assert disposed == [database_engine]
+
+
+async def test_completion_recovery_reads_and_commits_exact_terminal_witness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    execution_version = datetime.now(UTC)
+    artifact_version = datetime.now(UTC)
+    row = _terminal_completion_row(
+        execution_version=execution_version,
+        artifact_version=artifact_version,
+    )
+    session = _AsyncProjectionSession([row])
+    database_engine, disposed = _install_async_projection_db(monkeypatch, session)
+
+    recovered = await engine_runs.recover_engine_completion(
+        "completion-thread",
+        2,
+        "loadrunner",
+        {
+            "engine": "loadrunner",
+            "connection_id": "engine-a",
+            "external_run_id": "lre-42",
+            "idempotency_key": "completion-thread-execution-a2",
+            "extras": {"run_id": "42"},
+        },
+        project_id="project-a",
+        app_id="app-a",
+        external_run_id="lre-42",
+        artifact_namespace=engine_runs.engine_artifact_namespace("completion-thread-execution-a2"),
+        artifact_connection_id="artifact-a",
+        artifact_connection_version=artifact_version,
+        connection_id="engine-a",
+        connection_version=execution_version,
+        completion_kind=COMPLETION_COLLECTION_TEARDOWN,
+        expected_statuses=frozenset({"completed"}),
+    )
+
+    assert recovered == "completed"
+    assert session.commits == 1
+    assert disposed == [database_engine]
+
+
+def test_sync_bridges_run_required_coroutines_without_an_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def record(*_args: Any, **_kwargs: Any) -> None:
+        calls.append("record")
+
+    async def start(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        calls.append("start")
+        return {"stage": "start"}
+
+    async def provision(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        calls.append("provision")
+        return {"stage": "provision"}
+
+    async def completion(*_args: Any, **_kwargs: Any) -> str:
+        calls.append("completion")
+        return "completed"
+
+    monkeypatch.setattr(engine_runs, "record_engine_run", record)
+    monkeypatch.setattr(engine_runs, "prepare_engine_start", start)
+    monkeypatch.setattr(engine_runs, "prepare_engine_provision", provision)
+    monkeypatch.setattr(engine_runs, "recover_engine_completion", completion)
+
+    engine_runs.record_engine_run_sync(required=True)
+    assert engine_runs.prepare_engine_start_sync() == {"stage": "start"}
+    assert engine_runs.prepare_engine_provision_sync() == {"stage": "provision"}
+    assert engine_runs.recover_engine_completion_sync() == "completed"
+    assert calls == ["record", "start", "provision", "completion"]
+
+
+async def test_sync_bridges_use_worker_loop_when_caller_loop_is_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def record(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def start(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {"stage": "start"}
+
+    async def provision(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {"stage": "provision"}
+
+    async def completion(*_args: Any, **_kwargs: Any) -> str:
+        return "completed"
+
+    monkeypatch.setattr(engine_runs, "record_engine_run", record)
+    monkeypatch.setattr(engine_runs, "prepare_engine_start", start)
+    monkeypatch.setattr(engine_runs, "prepare_engine_provision", provision)
+    monkeypatch.setattr(engine_runs, "recover_engine_completion", completion)
+
+    engine_runs.record_engine_run_sync(required=True)
+    assert engine_runs.prepare_engine_start_sync() == {"stage": "start"}
+    assert engine_runs.prepare_engine_provision_sync() == {"stage": "provision"}
+    assert engine_runs.recover_engine_completion_sync() == "completed"

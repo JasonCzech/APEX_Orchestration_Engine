@@ -90,7 +90,7 @@ describe('ActivityFeed', () => {
     expect(cards[1]?.querySelector('.status-badge')).toHaveClass('danger')
   })
 
-  it('renders retryable engine poll failures as warning telemetry', () => {
+  it('renders retryable engine operation failures as warning telemetry', () => {
     render(
       <ActivityFeed
         phase="execution"
@@ -103,14 +103,25 @@ describe('ActivityFeed', () => {
             error: 'provider status request timed out',
             consecutive_errors: 3,
           },
+          {
+            type: 'engine_collection_settle_error',
+            phase: 'execution',
+            attempt: 2,
+            error: 'provider teardown was unavailable',
+            failure: 2,
+            external_run_id: 'sim-1',
+          },
         ]}
       />,
     )
 
-    const card = screen.getByTestId('activity-engine-error-card')
-    expect(card).toHaveTextContent('provider status request timed out')
-    expect(card).toHaveTextContent('consecutive failure 3')
-    expect(card.querySelector('.status-badge')).toHaveClass('warning')
+    const cards = screen.getAllByTestId('activity-engine-error-card')
+    expect(cards).toHaveLength(2)
+    expect(cards[0]).toHaveTextContent('provider status request timed out')
+    expect(cards[0]).toHaveTextContent('consecutive failure 3')
+    expect(cards[1]).toHaveTextContent('provider teardown was unavailable')
+    expect(cards[1]).toHaveTextContent('failure 2')
+    expect(cards[1]?.querySelector('.status-badge')).toHaveClass('warning')
   })
 
   it('summarizes engine_poll ticks one expandable row per 10', () => {

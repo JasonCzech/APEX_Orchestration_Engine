@@ -40,6 +40,43 @@ def test_json_object_rejects_shallow_width_before_growing_the_work_stack() -> No
         )
 
 
+def test_json_object_rejects_hostile_builtin_subclasses_without_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileDict(dict[object, object]):
+        def items(self):  # type: ignore[no-untyped-def]
+            calls.append("items")
+            raise AssertionError("hostile mapping hook ran")
+
+    class HostileString(str):
+        def __len__(self) -> int:
+            calls.append("len")
+            raise AssertionError("hostile string hook ran")
+
+    for payload in (HostileDict({"safe": "value"}), {"safe": HostileString("value")}):
+        with pytest.raises(ValueError, match="JSON object|unsupported values"):
+            validate_json_object(payload, label="payload")  # type: ignore[arg-type]
+
+    assert calls == []
+
+
+def test_json_object_rejects_cycles_oversized_integers_and_total_text() -> None:
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+    with pytest.raises(ValueError, match="repeated or circular"):
+        validate_json_object(cyclic, label="payload")
+
+    with pytest.raises(ValueError, match="256 bits"):
+        validate_json_object({"integer": 1 << 256}, label="payload")
+
+    with pytest.raises(ValueError, match="byte limit"):
+        validate_json_object(
+            {"first": "a" * 40, "second": "b" * 40},
+            label="payload",
+            max_bytes=64,
+        )
+
+
 def test_validation_error_summary_does_not_reflect_locations_or_validator_messages() -> None:
     canary = "CANARY_REJECTED_VALIDATION_SECRET"
 

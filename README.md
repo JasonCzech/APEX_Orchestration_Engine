@@ -52,7 +52,9 @@ Live end-to-end smokes against the running dev server: `scripts/m1_smoke.py`
 `APEX_AUTH__DEV_API_KEY=dev-key-m1` in `.env`) and `scripts/m2_smoke.py` (domain
 API surface; usage in its docstring, takes seeded admin/viewer keys).
 
-Quality gates: `npm run check:backend` or `make check` (ruff, pyright, pytest).
+Backend-only gates: `npm run check:backend` or `make check` (ruff, pyright,
+pytest). The root `npm run check` additionally typechecks/lints/tests the shared
+API/event contracts and runs the complete dashboard gate.
 
 ## Dashboard
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -38,16 +37,29 @@ def sanitize_durable_text(value: str | None, limit: int) -> str | None:
         raise ValueError("limit must be positive")
     if value is None:
         return None
+    if type(value) is not str:
+        # This helper is a string boundary. Do not invoke attacker-controlled
+        # str-subclass slicing/replacement hooks or materialize custom values.
+        value = f"[unsupported-text:{_safe_type_name(value)}]"
+    diagnostic_window = max(limit * 4, 16_384)
+    # bounded_diagnostic below applies this same fixed window. Slice first so
+    # NUL normalization never scans or copies an unbounded provider value.
+    value = value[:diagnostic_window]
     # PostgreSQL text and JSONB cannot represent U+0000. Durable evidence is
     # attacker-influenced, so normalize it before hashing and persistence.
     value = value.replace("\x00", _POSTGRES_NUL_REPLACEMENT)
     # Bound diagnostics before field-specific truncation so auth schemes,
     # assignments, URL userinfo, and signed-query parameters are removed first.
-    value = bounded_diagnostic(value, max_chars=max(limit * 4, 16_384))
+    value = bounded_diagnostic(value, max_chars=diagnostic_window)
     if len(value) <= limit:
         return value
     digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:12]
-    marker = f"...[truncated:{digest}]" if limit >= 32 else f"~{digest}"
+    if limit >= 32:
+        marker = f"...[truncated:{digest}]"
+    elif limit == 1:
+        marker = "~"
+    else:
+        marker = f"~{digest[: limit - 1]}"
     return value[: limit - len(marker)] + marker
 
 
@@ -89,28 +101,28 @@ def _sanitize_value(value: Any, budget: _JsonBudget, *, depth: int) -> Any:
         return {_TRUNCATED_KEY: "node-limit"}
     budget.remaining_nodes -= 1
 
-    if value is None or isinstance(value, bool):
+    if value is None or type(value) is bool:
         return value
-    if isinstance(value, str):
+    if type(value) is str:
         return sanitize_durable_text(value, _STRING_LIMIT)
-    if isinstance(value, int):
+    if type(value) is int:
         if value.bit_length() <= 256:
             return value
         sign = "negative" if value < 0 else "positive"
         return f"[integer-out-of-range:{sign}:bits={value.bit_length()}]"
-    if isinstance(value, float):
+    if type(value) is float:
         return value if math.isfinite(value) else "[non-finite-float]"
-    if isinstance(value, datetime):
+    if type(value) is datetime:
         return value.astimezone(UTC).isoformat()
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         return _sanitize_mapping(value, budget, depth=depth)
-    if isinstance(value, (list, tuple)):
+    if type(value) in {list, tuple}:
         return _sanitize_sequence(value, budget, depth=depth)
-    type_name = sanitize_durable_text(type(value).__name__, 64) or "unknown"
+    type_name = _safe_type_name(value)
     return f"[unsupported-json-value:{type_name}]"
 
 
-def _sanitize_mapping(value: Mapping[Any, Any], budget: _JsonBudget, *, depth: int) -> Any:
+def _sanitize_mapping(value: dict[Any, Any], budget: _JsonBudget, *, depth: int) -> Any:
     if depth >= _MAX_DEPTH:
         return {_TRUNCATED_KEY: "depth-limit"}
     identity = id(value)
@@ -142,7 +154,7 @@ def _sanitize_mapping(value: Mapping[Any, Any], budget: _JsonBudget, *, depth: i
                 _sanitize_key(key),
                 (
                     _REDACTED_VALUE
-                    if isinstance(key, str) and is_credential_field(key)
+                    if type(key) is str and is_credential_field(key)
                     else _sanitize_value(item, budget, depth=depth + 1)
                 ),
             )
@@ -187,21 +199,48 @@ def _sanitize_sequence(
 
 
 def _sanitize_key(value: Any) -> str:
-    if isinstance(value, str):
+    if type(value) is str:
         if is_credential_field(value):
             return _REDACTED_KEY
         key = value
     elif value is None:
         key = "[non-string-key:null]"
-    elif isinstance(value, bool):
+    elif type(value) is bool:
         key = f"[non-string-key:bool:{str(value).lower()}]"
-    elif isinstance(value, int) and value.bit_length() <= 256:
+    elif type(value) is int and value.bit_length() <= 256:
         key = f"[non-string-key:int:{value}]"
-    elif isinstance(value, float) and math.isfinite(value):
+    elif type(value) is float and math.isfinite(value):
         key = f"[non-string-key:float:{value}]"
     else:
-        key = f"[non-string-key:{type(value).__name__}]"
+        key = f"[non-string-key:{_safe_type_name(value)}]"
     return sanitize_durable_text(key, _KEY_LIMIT) or "[empty-key]"
+
+
+def _safe_type_name(value: Any) -> str:
+    """Read a bounded type name without invoking a custom metaclass hook."""
+
+    cls = type(value)
+    metaclass = type(cls)
+    if type(metaclass) is not type:
+        return "unknown"
+    try:
+        metaclass_mro = type.__getattribute__(metaclass, "__mro__")
+    except Exception:
+        return "unknown"
+    if type(metaclass_mro) is not tuple:
+        return "unknown"
+    for metaclass_base in metaclass_mro:
+        try:
+            namespace = type.__getattribute__(metaclass_base, "__dict__")
+        except Exception:
+            return "unknown"
+        if metaclass_base is not type and "__name__" in namespace:
+            return "unknown"
+    try:
+        name = type.__getattribute__(cls, "__name__")
+    except Exception:
+        return "unknown"
+    return name[:64] if type(name) is str and name else "unknown"
 
 
 def _insert_mapping_value(result: dict[str, Any], key: str, value: Any) -> None:

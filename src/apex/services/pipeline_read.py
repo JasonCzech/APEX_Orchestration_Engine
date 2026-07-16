@@ -21,7 +21,12 @@ from uuid import NAMESPACE_URL, uuid5
 import structlog
 from langgraph_sdk.errors import APIStatusError, ConflictError, NotFoundError
 
-from apex.domain.diagnostics import contains_credential_material
+from apex.domain.diagnostics import contains_credential_material, safe_type_name
+from apex.domain.input_limits import (
+    MAX_DESCRIPTION_CHARS,
+    MAX_SCOPE_ID_CHARS,
+    validate_json_object,
+)
 from apex.domain.pipeline import (
     PHASE_ORDER,
     TERMINAL_PHASE_STATUSES,
@@ -32,7 +37,6 @@ from apex.domain.pipeline import (
 )
 from apex.graphs.pipeline.configurable import (
     MAX_RECOMMENDED_RECURSION_LIMIT,
-    Limits,
     PipelineConfigurable,
 )
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
@@ -40,9 +44,12 @@ from apex.services.langgraph_client import (
     LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
     RERUN_CLAIM_METADATA_KEY,
     RERUN_FINGERPRINT_METADATA_KEY,
+    delete_native_thread_definitively,
 )
 from apex.services.launch_locks import LaunchLockManager
 from apex.services.pipeline_public import (
+    MAX_PUBLIC_PIPELINE_STATE_BYTES,
+    MAX_PUBLIC_PIPELINE_STATE_NODES,
     public_gate,
     public_pipeline_state,
     public_prompt_review,
@@ -53,7 +60,12 @@ from apex.services.prompts import (
     resolve_phase_prompt_no_catalog,
     resolve_phase_prompt_sync,
 )
-from apex.services.public_projection import public_engine_handle_summary
+from apex.services.public_projection import (
+    native_run_stream_url,
+    public_engine_handle_summary,
+    validated_native_identifier,
+    validated_native_mapping_page,
+)
 from apex.services.run_validation import (
     validate_context_packets,
     validate_gate_payload,
@@ -66,6 +78,12 @@ PIPELINE_GRAPH_ID = "pipeline"
 MAX_PIPELINE_QUERY_CHARS = 256
 PIPELINE_TEXT_SCAN_PAGE_SIZE = 100
 MAX_PIPELINE_TEXT_SCAN_RECORDS = 1_000
+MAX_PUBLIC_PENDING_GATES = 100
+MAX_PUBLIC_PENDING_GATES_BYTES = MAX_PUBLIC_PIPELINE_STATE_BYTES
+MAX_PUBLIC_PENDING_GATES_NODES = MAX_PUBLIC_PIPELINE_STATE_NODES
+MAX_LAUNCH_TITLE_CHARS = 500
+MAX_LAUNCH_ASSISTANT_ID_CHARS = 256
+MAX_LAUNCH_IDEMPOTENCY_KEY_CHARS = 128
 PIPELINE_SUMMARY_SELECT = (
     "thread_id",
     "metadata",
@@ -151,6 +169,10 @@ class LaunchIdempotencyConflictError(Exception):
     """An idempotency key was reused for a different scoped request."""
 
 
+class LaunchProviderError(Exception):
+    """The native runtime failed or returned malformed launch data."""
+
+
 class PromptReviewConflictError(Exception):
     """A prompt draft can no longer be edited at the observed checkpoint."""
 
@@ -161,6 +183,49 @@ class RerunConfigurationConflictError(Exception):
 
 class RerunIdempotencyConflictError(Exception):
     """A rerun idempotency claim was reused for different overrides."""
+
+
+class RerunActiveRunConflictError(Exception):
+    """The native runtime rejected a rerun because another run is active."""
+
+
+async def _thread_and_state_definitively(
+    client: LangGraphClientLike, thread_id: str
+) -> tuple[Any, Any]:
+    """Read a native thread snapshot without abandoning the sibling request.
+
+    ``asyncio.gather`` leaves other awaitables running when one raises. These
+    reads execute while a cross-request mutation lock is held, so a detached
+    sibling could keep consuming loopback I/O after the operation and lock scope
+    have exited. Cancel and retrieve both tasks on every exceptional exit,
+    including repeated parent cancellation.
+    """
+
+    tasks = [
+        asyncio.create_task(client.threads.get(thread_id)),
+        asyncio.create_task(client.threads.get_state(thread_id)),
+    ]
+    try:
+        results = await asyncio.gather(*tasks)
+        return results[0], results[1]
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        async def settle() -> None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        waiter = asyncio.create_task(settle())
+        interrupted = False
+        while not waiter.done():
+            try:
+                await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                interrupted = True
+        waiter.result()
+        if interrupted:
+            raise asyncio.CancelledError from None
 
 
 # ── Pure mapping helpers ─────────────────────────────────────────────────────
@@ -186,16 +251,84 @@ def build_phase_strip(values: JsonDict | None) -> list[JsonDict]:
     return strip
 
 
+def _validated_run_create_id(value: Any, *, label: str) -> str:
+    """Extract one loopback run id without invoking attacker-defined mapping hooks."""
+
+    if type(value) is not dict:
+        raise RuntimeError(f"{label} returned an invalid response")
+    run_id = value.get("run_id")
+    if type(run_id) is not str:
+        raise RuntimeError(f"{label} returned an invalid identifier")
+    return validated_native_identifier(run_id, label=label)
+
+
+def _validated_thread_create_fields(value: Any, *, label: str) -> tuple[str, JsonDict | None]:
+    """Extract bounded launch fields without trusting provider mapping hooks."""
+
+    if type(value) is not dict:
+        raise RuntimeError(f"{label} returned an invalid response")
+    thread_id = validated_native_identifier(value.get("thread_id"), label=label)
+    metadata = value.get("metadata")
+    if metadata is None:
+        return thread_id, None
+    if (
+        type(metadata) is not dict
+        or len(metadata) > 64
+        or any(type(key) is not str or not 1 <= len(key) <= 255 for key in metadata)
+    ):
+        raise RuntimeError(f"{label} returned invalid metadata")
+    return thread_id, dict(metadata)
+
+
+def _validated_launch_text(
+    value: Any,
+    *,
+    label: str,
+    max_chars: int,
+    allow_empty: bool,
+    canonical_whitespace: bool = False,
+) -> str:
+    """Require one exact bounded service-layer launch string."""
+
+    if (
+        type(value) is not str
+        or (not allow_empty and not value)
+        or len(value) > max_chars
+        or "\x00" in value
+        or (canonical_whitespace and value != value.strip())
+    ):
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+def _validated_optional_launch_text(
+    value: Any,
+    *,
+    label: str,
+    max_chars: int,
+    canonical_whitespace: bool = False,
+) -> str | None:
+    if value is None:
+        return None
+    return _validated_launch_text(
+        value,
+        label=label,
+        max_chars=max_chars,
+        allow_empty=False,
+        canonical_whitespace=canonical_whitespace,
+    )
+
+
 def engine_info_from_values(values: JsonDict | None) -> JsonDict | None:
     """Tiny engine summary from state ``engine_handle`` (None when absent/malformed)."""
     return public_engine_handle_summary((values or {}).get("engine_handle"))
 
 
 def _gate_info(interrupt: Any) -> JsonDict:
-    if not isinstance(interrupt, dict):
+    if type(interrupt) is not dict:
         return {}
     value = interrupt.get("value")
-    payload: JsonDict = value if isinstance(value, dict) else {}
+    payload: JsonDict = value if type(value) is dict else {}
     return {
         "interrupt_id": interrupt.get("id"),
         "kind": payload.get("kind"),
@@ -204,36 +337,125 @@ def _gate_info(interrupt: Any) -> JsonDict:
     }
 
 
+def _extend_pending_gates(gates: list[JsonDict], interrupts: Any) -> bool:
+    """Append in provider order and stop at the aggregate public gate budget."""
+
+    if type(interrupts) is not list or len(interrupts) > MAX_PUBLIC_PENDING_GATES:
+        return False
+    for interrupt in interrupts:
+        if len(gates) >= MAX_PUBLIC_PENDING_GATES:
+            return True
+        info = _gate_info(interrupt)
+        if info:
+            gates.append(info)
+    return len(gates) >= MAX_PUBLIC_PENDING_GATES
+
+
 def pending_gates_from_thread(thread: JsonDict) -> list[JsonDict]:
     """Gate infos from a Thread's ``interrupts`` mapping (task_id -> interrupts)."""
     gates: list[JsonDict] = []
+    if type(thread) is not dict:
+        return gates
     mapping = thread.get("interrupts")
-    if not isinstance(mapping, dict) or len(mapping) > 100:
+    if type(mapping) is not dict or len(mapping) > MAX_PUBLIC_PENDING_GATES:
         return gates
     for interrupts in mapping.values():
-        if not isinstance(interrupts, list) or len(interrupts) > 100:
-            continue
-        gates.extend(info for interrupt in interrupts if (info := _gate_info(interrupt)))
+        if _extend_pending_gates(gates, interrupts):
+            break
     return gates
 
 
 def pending_gates_from_state(state: JsonDict) -> list[JsonDict]:
     """Gate infos from a ThreadState: tasks[].interrupts, else top-level interrupts."""
     gates: list[JsonDict] = []
+    if type(state) is not dict:
+        return gates
     tasks = state.get("tasks")
-    if isinstance(tasks, list) and len(tasks) <= 100:
+    if type(tasks) is list and len(tasks) <= MAX_PUBLIC_PENDING_GATES:
         for task in tasks:
-            if not isinstance(task, dict):
+            if type(task) is not dict:
                 continue
             interrupts = task.get("interrupts")
-            if not isinstance(interrupts, list) or len(interrupts) > 100:
-                continue
-            gates.extend(info for interrupt in interrupts if (info := _gate_info(interrupt)))
+            if _extend_pending_gates(gates, interrupts):
+                return gates
     if not gates:
         interrupts = state.get("interrupts")
-        if isinstance(interrupts, list) and len(interrupts) <= 100:
-            gates.extend(info for interrupt in interrupts if (info := _gate_info(interrupt)))
+        _extend_pending_gates(gates, interrupts)
     return gates
+
+
+def _bounded_json_cost(
+    value: JsonDict,
+    *,
+    max_bytes: int,
+    max_nodes: int,
+) -> tuple[int, int] | None:
+    """Measure one already-projected object without encoding an aggregate copy."""
+
+    stack: list[Any] = [value]
+    nodes = 0
+    while stack:
+        current = stack.pop()
+        nodes += 1
+        if nodes > max_nodes:
+            return None
+        if type(current) is dict:
+            stack.extend(current.values())
+        elif type(current) is list:
+            stack.extend(current)
+        elif current is None or type(current) in {str, bool, int, float}:
+            continue
+        else:
+            return None
+
+    encoded_bytes = 0
+    try:
+        chunks = json.JSONEncoder(
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).iterencode(value)
+        for chunk in chunks:
+            encoded_bytes += len(chunk.encode("utf-8"))
+            if encoded_bytes > max_bytes:
+                return None
+    except (OverflowError, RecursionError, TypeError, ValueError):
+        return None
+    return encoded_bytes, nodes
+
+
+def _project_pending_gates(gates: list[JsonDict]) -> list[JsonDict]:
+    """Project the provider-ordered prefix within one aggregate response budget.
+
+    Each candidate is individually bounded by ``public_gate``. Cost is then
+    measured incrementally, so preflight never builds or serializes the possible
+    100-gate aggregate before deciding it is too large.
+    """
+
+    projected_gates: list[JsonDict] = []
+    used_bytes = 2  # JSON list brackets
+    used_nodes = 1  # JSON list container
+    for gate in gates:
+        projected = public_gate(gate, include_payload=True)
+        if projected is None:
+            continue
+        separator_bytes = 1 if projected_gates else 0
+        remaining_bytes = MAX_PUBLIC_PENDING_GATES_BYTES - used_bytes - separator_bytes
+        remaining_nodes = MAX_PUBLIC_PENDING_GATES_NODES - used_nodes
+        if remaining_bytes < 1 or remaining_nodes < 1:
+            break
+        cost = _bounded_json_cost(
+            projected,
+            max_bytes=remaining_bytes,
+            max_nodes=remaining_nodes,
+        )
+        if cost is None:
+            break
+        encoded_bytes, nodes = cost
+        projected_gates.append(projected)
+        used_bytes += separator_bytes + encoded_bytes
+        used_nodes += nodes
+    return projected_gates
 
 
 def _public_gate(gate: JsonDict | None) -> JsonDict | None:
@@ -244,17 +466,23 @@ def phase_by_name(name: str) -> Phase:
     for phase in PHASE_ORDER:
         if phase.value == name:
             return phase
-    raise ValueError(f"unknown phase {name!r}")
+    # Phase names can originate in legacy checkpoints as well as route input.
+    # Keep the traced/public diagnostic opaque instead of reflecting either.
+    raise ValueError("unknown pipeline phase")
 
 
 def _application_override_content(values: JsonDict, app_id: str | None) -> str | None:
     """Run-scoped, app-wide application prompt override content, if set."""
     if not app_id:
         return None
-    override = (values.get("application_reviews") or {}).get(app_id)
-    if isinstance(override, dict) and override.get("content") is not None:
-        return str(override["content"])
-    return None
+    reviews = values.get("application_reviews")
+    if type(reviews) is not dict:
+        return None
+    override = reviews.get(app_id)
+    if type(override) is not dict:
+        return None
+    content = override.get("content")
+    return content if type(content) is str else None
 
 
 def _with_application_override(review: JsonDict, values: JsonDict, app_id: str | None) -> JsonDict:
@@ -335,18 +563,88 @@ class PipelineReadService:
         unattended analysis run completes without an operator resuming gates; pass an
         explicit `gates` map for interactive runs. Raises ValueError on unknown phases.
         """
-        run_configurable: JsonDict = dict(configurable or {})
+        title = _validated_launch_text(
+            title,
+            label="pipeline title",
+            max_chars=MAX_LAUNCH_TITLE_CHARS,
+            allow_empty=False,
+        )
+        request = _validated_launch_text(
+            request,
+            label="pipeline request",
+            max_chars=MAX_DESCRIPTION_CHARS,
+            allow_empty=True,
+        )
+        assistant_id = _validated_optional_launch_text(
+            assistant_id,
+            label="pipeline assistant_id",
+            max_chars=MAX_LAUNCH_ASSISTANT_ID_CHARS,
+        )
+        project_id = _validated_optional_launch_text(
+            project_id,
+            label="pipeline project_id",
+            max_chars=MAX_SCOPE_ID_CHARS,
+            canonical_whitespace=True,
+        )
+        app_id = _validated_optional_launch_text(
+            app_id,
+            label="pipeline app_id",
+            max_chars=MAX_SCOPE_ID_CHARS,
+            canonical_whitespace=True,
+        )
+        idempotency_key = _validated_optional_launch_text(
+            idempotency_key,
+            label="pipeline idempotency_key",
+            max_chars=MAX_LAUNCH_IDEMPOTENCY_KEY_CHARS,
+        )
+        principal_id = _validated_optional_launch_text(
+            principal_id,
+            label="pipeline principal_id",
+            max_chars=MAX_SCOPE_ID_CHARS,
+        )
+        agent_backend = _validated_optional_launch_text(
+            agent_backend,
+            label="pipeline agent_backend",
+            max_chars=32,
+        )
+        if configurable is None:
+            run_configurable: JsonDict = {}
+        else:
+            if type(configurable) is not dict:
+                raise ValueError("pipeline configurable is invalid")
+            validate_json_object(configurable, label="pipeline configurable")
+            run_configurable = dict(configurable)
+        if phases is not None and (
+            type(phases) is not list
+            or len(phases) > len(PHASE_ORDER)
+            or any(type(name) is not str for name in phases)
+        ):
+            raise ValueError("pipeline phases are invalid")
+        if gates is not None:
+            if type(gates) is not dict:
+                raise ValueError("pipeline gates are invalid")
+            validate_json_object(gates, label="pipeline gates")
+        if model_by_phase is not None:
+            if type(model_by_phase) is not dict:
+                raise ValueError("pipeline model_by_phase is invalid")
+            validate_json_object(model_by_phase, label="pipeline model_by_phase")
+        if external_results is not None:
+            if type(external_results) is not dict:
+                raise ValueError("pipeline external_results are invalid")
+            validate_json_object(external_results, label="pipeline external_results")
+
         selected_assistant_id = assistant_id or PIPELINE_GRAPH_ID
         run_configurable["assistant_id"] = selected_assistant_id
         configured_phases = run_configurable.get("phases")
         requested_phases = phases
-        if requested_phases is None and isinstance(configured_phases, list):
-            requested_phases = [str(name) for name in configured_phases]
+        if requested_phases is None and type(configured_phases) is list:
+            requested_phases = configured_phases
         if requested_phases:
             known = {phase.value for phase in PHASE_ORDER}
-            unknown = sorted(name for name in requested_phases if name not in known)
-            if unknown:
-                raise ValueError(f"unknown phase(s): {unknown}")
+            if any(type(name) is not str or name not in known for name in requested_phases) or len(
+                set(requested_phases)
+            ) != len(requested_phases):
+                raise ValueError("unknown pipeline phase")
 
         if project_id:
             run_configurable["project_id"] = project_id
@@ -363,7 +661,7 @@ class PipelineReadService:
             gates
             if gates is not None
             else inherited_gates
-            if isinstance(inherited_gates, dict)
+            if type(inherited_gates) is dict
             else _auto_gates(requested_phases)
         )
         if resolved_gates:
@@ -380,12 +678,14 @@ class PipelineReadService:
         )
 
         run_input: JsonDict = {"title": title, "request": request}
-        if external_results:
+        if external_results is not None:
             run_input["external_results"] = ExternalResults.model_validate(
                 external_results
             ).model_dump(mode="json", exclude_none=True, exclude_defaults=True)
-        if context_packets:
-            run_input["context_packets"] = validate_context_packets(context_packets)
+        if context_packets is not None:
+            validated_packets = validate_context_packets(context_packets)
+            if validated_packets:
+                run_input["context_packets"] = validated_packets
 
         # This facade intentionally uses a trusted loopback identity after its
         # own scope checks. Reapply the native durable-write credential barrier
@@ -463,23 +763,50 @@ class PipelineReadService:
         recursion_limit: int,
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
-        thread = await self._client.threads.create(
-            metadata=metadata,
-            **(
-                {"thread_id": deterministic_thread_id, "if_exists": "do_nothing"}
-                if deterministic_thread_id is not None
-                else {}
-            ),
-        )
-        thread_id = thread["thread_id"]
+        thread: JsonDict | None = None
+        thread_id: str | None = None
+        thread_metadata: JsonDict | None = None
+        thread_error_type: str | None = None
+        try:
+            thread_response = await self._client.threads.create(
+                metadata=metadata,
+                **(
+                    {"thread_id": deterministic_thread_id, "if_exists": "do_nothing"}
+                    if deterministic_thread_id is not None
+                    else {}
+                ),
+            )
+            thread_id, thread_metadata = _validated_thread_create_fields(
+                thread_response,
+                label="pipeline thread creation",
+            )
+            thread = thread_response
+        except Exception as exc:  # noqa: BLE001 - provider boundary normalization
+            thread_error_type = safe_type_name(exc)
+        if thread_error_type is not None:
+            logger.warning(
+                "pipeline.thread_create_failed",
+                deterministic=deterministic_thread_id is not None,
+                error_type=thread_error_type,
+            )
+            raise LaunchProviderError("pipeline runtime thread creation failed")
+        if thread is None or thread_id is None:  # pragma: no cover - client contract invariant
+            raise LaunchProviderError("pipeline runtime thread creation failed")
+        if deterministic_thread_id is not None and thread_id != deterministic_thread_id:
+            raise LaunchIdempotencyConflictError(
+                "the deterministic thread response did not match the idempotency claim"
+            )
 
         if idempotency_key:
-            existing_metadata = thread.get("metadata") or {}
-            existing_fingerprint = existing_metadata.get("launch_idempotency_fingerprint")
+            existing_fingerprint = (
+                thread_metadata.get("launch_idempotency_fingerprint")
+                if thread_metadata is not None
+                else None
+            )
             # A deterministic id is guessable by design. Only a thread stamped
             # atomically by this launch path is adoptable; a same-scope native
             # thread with missing metadata must not become someone else's run.
-            if existing_fingerprint != request_fingerprint:
+            if type(existing_fingerprint) is not str or existing_fingerprint != request_fingerprint:
                 raise LaunchIdempotencyConflictError(
                     "idempotency_key was already used for a different request"
                 )
@@ -488,15 +815,22 @@ class PipelineReadService:
                 request_fingerprint=request_fingerprint,
             )
             if existing_run is not None:
-                existing_run_id = existing_run["run_id"]
+                existing_run_id = validated_native_identifier(
+                    existing_run.get("run_id"),
+                    label="pipeline launch reconciliation",
+                )
                 return {
                     "thread_id": thread_id,
                     "run_id": existing_run_id,
-                    "stream_url": (
-                        f"/threads/{thread_id}/runs/{existing_run_id}/stream?stream_mode=custom"
-                    ),
+                    "stream_url": native_run_stream_url(thread_id, existing_run_id),
                 }
 
+        run_id: str | None = None
+        create_conflict = False
+        provider_failure = False
+        provider_failure_definitive = False
+        provider_status_code: int | None = None
+        provider_error_type: str | None = None
         try:
             run = await self._client.runs.create(
                 thread_id,
@@ -524,7 +858,21 @@ class PipelineReadService:
                 durability="sync",
                 multitask_strategy="reject",
             )
+            run_id = _validated_run_create_id(run, label="pipeline run creation")
         except ConflictError:
+            create_conflict = True
+        except APIStatusError as exc:
+            provider_failure = True
+            provider_status_code = exc.status_code
+            provider_error_type = safe_type_name(exc)
+            provider_failure_definitive = (
+                400 <= exc.status_code < 500
+                and exc.status_code not in _AMBIGUOUS_RUN_CREATE_CLIENT_STATUSES
+            )
+        except Exception as exc:  # noqa: BLE001 - provider boundary normalization
+            provider_failure = True
+            provider_error_type = safe_type_name(exc)
+        if create_conflict:
             if idempotency_key:
                 # A concurrent caller won the run-create race on the deterministic
                 # thread. Wait briefly for its run row to become visible.
@@ -536,59 +884,47 @@ class PipelineReadService:
                         request_fingerprint=request_fingerprint,
                     )
                     if existing_run is not None:
-                        existing_run_id = existing_run["run_id"]
+                        existing_run_id = validated_native_identifier(
+                            existing_run.get("run_id"),
+                            label="pipeline launch reconciliation",
+                        )
                         return {
                             "thread_id": thread_id,
                             "run_id": existing_run_id,
-                            "stream_url": (
-                                f"/threads/{thread_id}/runs/{existing_run_id}/stream"
-                                "?stream_mode=custom"
-                            ),
+                            "stream_url": native_run_stream_url(thread_id, existing_run_id),
                         }
-            raise
-        except APIStatusError as exc:
-            definitive_rejection = (
-                400 <= exc.status_code < 500
-                and exc.status_code not in _AMBIGUOUS_RUN_CREATE_CLIENT_STATUSES
+            raise LaunchIdempotencyConflictError(
+                "pipeline launch was rejected because the thread already has an active run"
             )
-            if definitive_rejection and deterministic_thread_id is None:
+        if provider_failure:
+            if provider_failure_definitive and deterministic_thread_id is None:
                 # The server definitively rejected this non-idempotent launch, so
                 # its freshly-created random thread cannot contain a committed run.
                 # Deterministic threads are durable idempotency claims and remain.
                 try:
-                    await self._client.threads.delete(thread_id)
+                    await delete_native_thread_definitively(self._client, thread_id)
                 except Exception as cleanup_exc:  # cleanup failure must not mask the launch error
                     logger.warning(
                         "pipeline.rejected_launch_thread_cleanup_failed",
                         thread_id=thread_id,
-                        status_code=exc.status_code,
-                        error_type=cleanup_exc.__class__.__name__,
+                        status_code=provider_status_code,
+                        error_type=safe_type_name(cleanup_exc),
                     )
             else:
                 # A 5xx can be returned after the server committed the run.
                 logger.warning(
                     "pipeline.run_create_ambiguous",
                     thread_id=thread_id,
-                    status_code=exc.status_code,
-                    error_type=exc.__class__.__name__,
+                    status_code=provider_status_code,
+                    error_type=provider_error_type,
                 )
-            raise
-        except Exception as exc:
-            # A transport/server exception does not prove the run was rejected. The
-            # server may have committed it before the response was lost; deleting the
-            # thread here would erase its checkpoints and the only durable external
-            # cleanup handle. Keep both deterministic and randomly-created threads so
-            # operators can reconcile an ambiguously accepted launch.
-            logger.warning(
-                "pipeline.run_create_ambiguous",
-                thread_id=thread_id,
-                error_type=exc.__class__.__name__,
-            )
-            raise
+            raise LaunchProviderError("pipeline runtime run creation failed")
+        if run_id is None:  # pragma: no cover - client contract invariant
+            raise LaunchProviderError("pipeline runtime run creation failed")
         return {
             "thread_id": thread_id,
-            "run_id": run["run_id"],
-            "stream_url": (f"/threads/{thread_id}/runs/{run['run_id']}/stream?stream_mode=custom"),
+            "run_id": run_id,
+            "stream_url": native_run_stream_url(thread_id, run_id),
         }
 
     async def _find_launch_root_run(
@@ -613,22 +949,36 @@ class PipelineReadService:
                 _RUN_LIST_PAGE_SIZE,
                 _MAX_LAUNCH_RUN_RECONCILE_RECORDS - offset,
             )
-            page = await self._client.runs.list(
-                thread_id,
-                limit=limit,
-                offset=offset,
-                select=["run_id", "status", "metadata", "created_at"],
-            )
+            page: list[JsonDict] | None = None
+            lookup_error_type: str | None = None
+            try:
+                page = validated_native_mapping_page(
+                    await self._client.runs.list(
+                        thread_id,
+                        limit=limit,
+                        offset=offset,
+                        select=["run_id", "status", "metadata", "created_at"],
+                    ),
+                    requested_limit=limit,
+                    label="pipeline launch run search",
+                )
+            except Exception as exc:  # noqa: BLE001 - provider boundary normalization
+                lookup_error_type = safe_type_name(exc)
+            if lookup_error_type is not None or page is None:
+                logger.warning(
+                    "pipeline.launch_reconciliation_failed",
+                    thread_id=thread_id,
+                    error_type=lookup_error_type,
+                )
+                raise LaunchProviderError("pipeline launch reconciliation failed")
             for candidate in page:
                 candidate_metadata = candidate.get("metadata")
-                if isinstance(candidate_metadata, dict) and (
+                if type(candidate_metadata) is dict and (
                     LAUNCH_ROOT_FINGERPRINT_METADATA_KEY in candidate_metadata
                 ):
                     saw_root_marker = True
-                    if (
-                        candidate_metadata.get(LAUNCH_ROOT_FINGERPRINT_METADATA_KEY)
-                        == request_fingerprint
-                    ):
+                    marker = candidate_metadata.get(LAUNCH_ROOT_FINGERPRINT_METADATA_KEY)
+                    if type(marker) is str and marker == request_fingerprint:
                         return candidate
                 legacy_oldest = candidate
             offset += len(page)
@@ -663,15 +1013,19 @@ class PipelineReadService:
         """
         metadata = {"project_id": project} if project else None
         if not q:
-            threads = await self._client.threads.search(
-                metadata=metadata,
-                status=status,
-                limit=limit,
-                offset=offset,
-                sort_by="updated_at",
-                sort_order="desc",
-                select=list(PIPELINE_SUMMARY_SELECT),
-                extract=dict(PIPELINE_SUMMARY_EXTRACT),
+            threads = validated_native_mapping_page(
+                await self._client.threads.search(
+                    metadata=metadata,
+                    status=status,
+                    limit=limit,
+                    offset=offset,
+                    sort_by="updated_at",
+                    sort_order="desc",
+                    select=list(PIPELINE_SUMMARY_SELECT),
+                    extract=dict(PIPELINE_SUMMARY_EXTRACT),
+                ),
+                requested_limit=limit,
+                label="pipeline thread search",
             )
             return [map_thread_summary(thread) for thread in threads]
 
@@ -690,15 +1044,19 @@ class PipelineReadService:
                 PIPELINE_TEXT_SCAN_PAGE_SIZE,
                 MAX_PIPELINE_TEXT_SCAN_RECORDS - scan_offset,
             )
-            threads = await self._client.threads.search(
-                metadata=metadata,
-                status=status,
-                limit=scan_limit,
-                offset=scan_offset,
-                sort_by="updated_at",
-                sort_order="desc",
-                select=list(PIPELINE_SUMMARY_SELECT),
-                extract=dict(PIPELINE_SUMMARY_EXTRACT),
+            threads = validated_native_mapping_page(
+                await self._client.threads.search(
+                    metadata=metadata,
+                    status=status,
+                    limit=scan_limit,
+                    offset=scan_offset,
+                    sort_by="updated_at",
+                    sort_order="desc",
+                    select=list(PIPELINE_SUMMARY_SELECT),
+                    extract=dict(PIPELINE_SUMMARY_EXTRACT),
+                ),
+                requested_limit=scan_limit,
+                label="pipeline text-search thread page",
             )
             page = [map_thread_summary(thread) for thread in threads]
             matches.extend(
@@ -718,11 +1076,9 @@ class PipelineReadService:
         """Thread summary plus an explicit public checkpoint/gate projection."""
         thread = await self._client.threads.get(thread_id)
         state = await self._client.threads.get_state(thread_id)
-        gates = [
-            projected
-            for gate in pending_gates_from_state(state)
-            if (projected := public_gate(gate, include_payload=True)) is not None
-        ]
+        if type(thread) is not dict or type(state) is not dict:
+            raise RuntimeError("pipeline read provider returned an invalid response")
+        gates = _project_pending_gates(pending_gates_from_state(state))
         summary = map_thread_summary(thread)
         summary["pending_gate"] = _public_gate(gates[0] if gates else None)
         return {
@@ -835,23 +1191,149 @@ class PipelineReadService:
         changes it is written once under application_reviews[app_id] so the edit
         propagates to every phase of the run.
         """
+        allowed_fields = {"system", "phase_prompt", "application", "additional_context"}
+        if (
+            type(body) is not dict
+            or len(body) > len(allowed_fields)
+            or any(type(key) is not str or key not in allowed_fields for key in body)
+            or type(actor) is not str
+            or public_text(actor, 255, allow_empty=False) != actor
+        ):
+            raise ValueError("prompt review fields are invalid")
+
+        def required_text(field: str) -> str:
+            value = body.get(field)
+            if value is None:
+                return ""
+            if type(value) is not str:
+                raise ValueError("prompt review fields are invalid")
+            return value
+
+        system = required_text("system")
+        phase_prompt = required_text("phase_prompt")
+        additional_context = required_text("additional_context")
+        raw_application = body.get("application")
+        if raw_application is not None and type(raw_application) is not str:
+            raise ValueError("prompt review fields are invalid")
+        body_application = raw_application
         validate_prompt_parts(
-            system=str(body.get("system") or ""),
-            user=str(body.get("phase_prompt") or ""),
-            application=(str(body["application"]) if body.get("application") is not None else None),
-            additional_context=str(body.get("additional_context") or ""),
+            system=system,
+            user=phase_prompt,
+            application=body_application,
+            additional_context=additional_context,
         )
-        if contains_credential_material({"body": body, "actor": actor}):
+        if contains_credential_material(
+            {
+                "system": system,
+                "phase_prompt": phase_prompt,
+                "application": body_application,
+                "additional_context": additional_context,
+                "actor": actor,
+            }
+        ):
             raise ValueError("prompt review must not contain credential material")
         phase = phase_by_name(phase_name)
         async with self._launch_locks.hold(f"prompt-review:{thread_id}"):
             thread = await self._client.threads.get(thread_id)
-            metadata = thread.get("metadata") or {}
+            if type(thread) is not dict:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            metadata = thread.get("metadata")
+            if metadata is None:
+                metadata = {}
+            if type(metadata) is not dict:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
             app_id = metadata.get("app_id")
+            if app_id is not None and public_text(app_id, 255, allow_empty=False) != app_id:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
             state = await self._client.threads.get_state(thread_id)
-            values = state.get("values") or {}
-            entry = (values.get("phase_results") or {}).get(phase.value) or {}
-            status = entry.get("status")
+            if type(state) is not dict:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            raw_values = state.get("values")
+            if raw_values is None:
+                raw_values = {}
+            if type(raw_values) is not dict:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            values = public_pipeline_state(raw_values)
+
+            raw_results = raw_values.get("phase_results")
+            if raw_results is None:
+                raw_results = {}
+            if type(raw_results) is not dict or len(raw_results) > len(PHASE_ORDER):
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            raw_entry = raw_results.get(phase.value)
+            if raw_entry is None:
+                raw_entry = {}
+            if type(raw_entry) is not dict:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            status = raw_entry.get("status")
+            if status is not None and (
+                type(status) is not str or status not in {item.value for item in PhaseStatus}
+            ):
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            projected_results = values.get("phase_results")
+            entry = projected_results.get(phase.value) if type(projected_results) is dict else None
+            if entry is None:
+                entry = {}
+            if type(entry) is not dict or (status is not None and entry.get("status") != status):
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+
+            raw_reviews = raw_values.get("prompt_reviews")
+            if raw_reviews is None:
+                raw_reviews = {}
+            if type(raw_reviews) is not dict or len(raw_reviews) > len(PHASE_ORDER):
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            raw_current = raw_reviews.get(phase.value)
+            projected_reviews = values.get("prompt_reviews")
+            current = (
+                projected_reviews.get(phase.value) if type(projected_reviews) is dict else None
+            )
+            if raw_current is not None and (
+                type(raw_current) is not dict or type(current) is not dict or current != raw_current
+            ):
+                raise PromptReviewConflictError("pipeline prompt-review draft is invalid")
+
+            raw_application_reviews = raw_values.get("application_reviews")
+            if raw_application_reviews is None:
+                raw_application_reviews = {}
+            if type(raw_application_reviews) is not dict or len(raw_application_reviews) > 32:
+                raise PromptReviewConflictError("pipeline prompt-review state is invalid")
+            raw_application_review = (
+                raw_application_reviews.get(app_id) if type(app_id) is str else None
+            )
+            projected_application_reviews = values.get("application_reviews")
+            projected_application_review = (
+                projected_application_reviews.get(app_id)
+                if type(projected_application_reviews) is dict and type(app_id) is str
+                else None
+            )
+            if raw_application_review is not None and (
+                type(raw_application_review) is not dict
+                or type(projected_application_review) is not dict
+                or projected_application_review != raw_application_review
+            ):
+                raise PromptReviewConflictError(
+                    "pipeline application prompt-review draft is invalid"
+                )
+
+            checkpoint = state.get("checkpoint")
+            if type(checkpoint) is not dict:
+                raise PromptReviewConflictError("pipeline prompt-review checkpoint is invalid")
+            try:
+                validate_json_object(
+                    checkpoint,
+                    label="pipeline prompt-review checkpoint",
+                    max_bytes=100_000,
+                    max_nodes=2_000,
+                    max_depth=16,
+                )
+                validated_native_identifier(
+                    checkpoint.get("checkpoint_id"),
+                    label="pipeline prompt-review checkpoint",
+                )
+            except (OverflowError, RecursionError, RuntimeError, TypeError, ValueError):
+                raise PromptReviewConflictError(
+                    "pipeline prompt-review checkpoint is invalid"
+                ) from None
             matching_gate = next(
                 (
                     gate
@@ -882,16 +1364,14 @@ class PipelineReadService:
                     f"phase {phase.value!r} may advance while the prompt is being edited"
                 )
 
-            current = (values.get("prompt_reviews") or {}).get(phase.value)
-            current_source = current.get("source") if isinstance(current, dict) else None
+            current_source = current.get("source") if type(current) is dict else None
             now = utcnow_iso()
             source = {
                 "origin": "run_override",
-                "ref": current_source.get("ref") if isinstance(current_source, dict) else None,
+                "ref": current_source.get("ref") if type(current_source) is dict else None,
                 "editor": actor,
             }
 
-            body_application = body.get("application")
             update_values: JsonDict = {}
             effective_application = body_application
             if app_id:
@@ -899,7 +1379,7 @@ class PipelineReadService:
                 prior = (
                     existing
                     if existing is not None
-                    else (current.get("application") if isinstance(current, dict) else None)
+                    else (current.get("application") if type(current) is dict else None)
                 )
                 # The application prompt is app-wide and run-scoped. A non-null edit updates
                 # the single override; a null is treated as "no change" (run-scoped prompts
@@ -918,10 +1398,10 @@ class PipelineReadService:
                     effective_application = prior
 
             draft: JsonDict = {
-                "system": str(body.get("system") or ""),
-                "phase_prompt": str(body.get("phase_prompt") or ""),
+                "system": system,
+                "phase_prompt": phase_prompt,
                 "application": effective_application,
-                "additional_context": str(body.get("additional_context") or ""),
+                "additional_context": additional_context,
                 "source": source,
                 "updated_at": now,
                 "updated_by": actor,
@@ -930,20 +1410,24 @@ class PipelineReadService:
             # Pin the update to the exact checkpoint observed above. The facade lock
             # serializes prompt edits across replicas; sharing it with gate resume
             # prevents a stale edit from racing the decision that advances the graph.
-            update_kwargs: JsonDict = {"as_node": "plan_resolver"}
-            checkpoint = state.get("checkpoint")
-            if isinstance(checkpoint, dict):
-                update_kwargs["checkpoint"] = checkpoint
+            update_kwargs: JsonDict = {
+                "as_node": "plan_resolver",
+                "checkpoint": dict(checkpoint),
+            }
             await self._client.threads.update_state(thread_id, update_values, **update_kwargs)
             return draft
 
     async def _has_active_run(self, thread_id: str) -> bool:
         for status in ("running", "pending"):
-            if await self._client.runs.list(
-                thread_id,
-                status=status,
-                limit=1,
-                select=["run_id", "status"],
+            if validated_native_mapping_page(
+                await self._client.runs.list(
+                    thread_id,
+                    status=status,
+                    limit=1,
+                    select=["run_id", "status"],
+                ),
+                requested_limit=1,
+                label="pipeline active-run probe",
             ):
                 return True
         return False
@@ -988,39 +1472,10 @@ class PipelineReadService:
             ).encode()
         ).hexdigest()
         async with self._launch_locks.hold(f"rerun:{thread_id}:{claim}"):
-            thread, state = await asyncio.gather(
-                self._client.threads.get(thread_id),
-                self._client.threads.get_state(thread_id),
-            )
-            metadata = thread.get("metadata")
-            metadata = metadata if isinstance(metadata, dict) else {}
-            values = state.get("values")
-            values = values if isinstance(values, dict) else {}
-            snapshot = values.get("run_config")
-            if not isinstance(snapshot, dict):
-                raise RerunConfigurationConflictError("durable rerun configuration is missing")
-            validated = _validated_durable_replay_config(snapshot)
-
-            metadata_project = metadata.get("project_id")
-            metadata_app = metadata.get("app_id")
-            if (
-                (metadata_project is not None and not isinstance(metadata_project, str))
-                or (metadata_app is not None and not isinstance(metadata_app, str))
-                or validated.project_id != metadata_project
-                or validated.app_id != metadata_app
-                or (validated.app_id is not None and validated.project_id is None)
-                or (
-                    validated.environment_id is not None
-                    and (
-                        validated.project_id is None
-                        or validated.app_id is None
-                        or validated.environment_target is None
-                    )
-                )
-            ):
-                raise RerunConfigurationConflictError(
-                    "durable rerun configuration ownership does not match the thread"
-                )
+            thread, state = await _thread_and_state_definitively(self._client, thread_id)
+            run_config = _run_config_from_state(state)
+            validated = _validated_durable_replay_config(run_config)
+            _ensure_durable_config_ownership(validated, thread)
 
             run_config = validated.snapshot()
             run_config["phases"] = list(phases)
@@ -1054,7 +1509,13 @@ class PipelineReadService:
                 fingerprint=fingerprint,
             )
             if existing is not None:
-                return str(existing["run_id"])
+                return validated_native_identifier(
+                    existing.get("run_id"),
+                    label="pipeline rerun reconciliation",
+                )
+            _ensure_rerun_checkpoint_is_terminal(state)
+            run: JsonDict | None = None
+            conflict = False
             try:
                 run = await self._client.runs.create(
                     thread_id,
@@ -1075,15 +1536,24 @@ class PipelineReadService:
                     multitask_strategy="reject",
                 )
             except ConflictError:
+                conflict = True
+            if conflict:
                 existing = await self._find_rerun_run(
                     thread_id,
                     claim=claim,
                     fingerprint=fingerprint,
                 )
                 if existing is not None:
-                    return str(existing["run_id"])
-                raise
-            return str(run["run_id"])
+                    return validated_native_identifier(
+                        existing.get("run_id"),
+                        label="pipeline rerun reconciliation",
+                    )
+                raise RerunActiveRunConflictError(
+                    "pipeline rerun was rejected because another run is active"
+                )
+            if run is None:  # pragma: no cover - native client contract invariant
+                raise RuntimeError("pipeline rerun creation returned no run")
+            return _validated_run_create_id(run, label="pipeline rerun creation")
 
     async def _find_rerun_run(
         self,
@@ -1095,11 +1565,15 @@ class PipelineReadService:
         offset = 0
         while offset < _MAX_RERUN_RECONCILE_RECORDS:
             limit = min(_RUN_LIST_PAGE_SIZE, _MAX_RERUN_RECONCILE_RECORDS - offset)
-            page = await self._client.runs.list(
-                thread_id,
-                limit=limit,
-                offset=offset,
-                select=["run_id", "metadata", "created_at"],
+            page = validated_native_mapping_page(
+                await self._client.runs.list(
+                    thread_id,
+                    limit=limit,
+                    offset=offset,
+                    select=["run_id", "metadata", "created_at"],
+                ),
+                requested_limit=limit,
+                label="pipeline rerun search",
             )
             for candidate in page:
                 metadata = candidate.get("metadata")
@@ -1127,8 +1601,8 @@ class PipelineReadService:
 
         1. Re-read state; the targeted interrupt must still be pending, else
            GateSupersededError (carrying the currently-pending gate, if any).
-        2. Action must be in the payload's "actions" list (absent list = permissive,
-           for forward-compat with payloads that omit it).
+        2. Revalidate the exact pending gate through the public gate schema and
+           require the action to be in its non-empty projected actions list.
         3. Resume run uses multitask_strategy="reject"; a server 409 (lost race)
            maps to GateSupersededError too.
         """
@@ -1138,31 +1612,50 @@ class PipelineReadService:
         if contains_credential_material(resume):
             raise ValueError("gate resume must not contain credential material")
         async with self._launch_locks.hold(f"prompt-review:{thread_id}"):
-            state = await self._client.threads.get_state(thread_id)
+            thread, state = await _thread_and_state_definitively(self._client, thread_id)
+            if type(state) is not dict or type(thread) is not dict:
+                raise RerunConfigurationConflictError("durable pipeline replay response is invalid")
             gates = pending_gates_from_state(state)
             match = next((g for g in gates if g["interrupt_id"] == interrupt_id), None)
             if match is None:
                 raise GateSupersededError(thread_id, interrupt_id, gates[0] if gates else None)
 
-            allowed = match["payload"].get("actions")
-            if isinstance(allowed, list) and allowed and action not in allowed:
-                raise InvalidGateActionError(action, [str(a) for a in allowed])
+            projected_match = public_gate(match, include_payload=True)
+            if projected_match is None:
+                raise RerunConfigurationConflictError(
+                    "pending pipeline gate does not match the public resume contract"
+                )
+            projected_payload = projected_match.get("payload")
+            if type(projected_payload) is not dict:
+                raise RerunConfigurationConflictError("pending pipeline gate payload is invalid")
+            allowed = projected_payload.get("actions")
+            if type(allowed) is not list or not allowed or action not in allowed:
+                safe_allowed = (
+                    [candidate for candidate in allowed if type(candidate) is str]
+                    if type(allowed) is list
+                    else []
+                )
+                raise InvalidGateActionError(action, safe_allowed)
+            if (
+                projected_match.get("kind") not in {"prompt_review", "phase_review"}
+                and projected_payload.get("thread_id") != thread_id
+            ):
+                raise RerunConfigurationConflictError(
+                    "pending engine recovery gate is bound to another thread"
+                )
 
             run_config = _run_config_from_state(state)
-            assistant_id = _validated_durable_replay_config(run_config).assistant_id
-            try:
-                limits = _limits_from_state(state)
-            except (TypeError, ValueError) as exc:
-                raise RerunConfigurationConflictError(
-                    "durable pipeline limits are invalid"
-                ) from exc
+            validated_config = _validated_durable_replay_config(run_config)
+            _ensure_durable_config_ownership(validated_config, thread)
+            assistant_id = validated_config.assistant_id
+            conflict = False
             try:
                 run = await self._client.runs.create(
                     thread_id,
                     assistant_id,
                     config={
                         "configurable": run_config,
-                        "recursion_limit": recommended_recursion_limit(limits),
+                        "recursion_limit": recommended_recursion_limit(validated_config.limits),
                     },
                     # Bind the decision to the exact interrupt observed above. A scalar
                     # resume is consumed by whichever interrupt is current when the run
@@ -1171,9 +1664,14 @@ class PipelineReadService:
                     durability="sync",
                     multitask_strategy="reject",
                 )
-            except ConflictError as exc:
-                raise GateSupersededError(thread_id, interrupt_id, None) from exc
-            return run["run_id"]
+            except ConflictError:
+                conflict = True
+                run = None
+            if conflict:
+                raise GateSupersededError(thread_id, interrupt_id, None)
+            if run is None:  # pragma: no cover - client contract invariant
+                raise RuntimeError("pipeline gate resume returned no run")
+            return _validated_run_create_id(run, label="pipeline gate resume")
 
     async def abort_pipeline(self, thread_id: str) -> list[str]:
         """Cancel every pending/running run on the thread (engine-level abort is M3)."""
@@ -1221,17 +1719,24 @@ class PipelineReadService:
                 if remaining <= 0:
                     raise TooManyActiveRunsError(thread_id)
                 page_limit = min(_RUN_LIST_PAGE_SIZE, remaining)
-                page = await self._client.runs.list(
-                    thread_id,
-                    status=status,
-                    limit=page_limit,
-                    offset=offset,
-                    select=["run_id", "status"],
+                page = validated_native_mapping_page(
+                    await self._client.runs.list(
+                        thread_id,
+                        status=status,
+                        limit=page_limit,
+                        offset=offset,
+                        select=["run_id", "status"],
+                    ),
+                    requested_limit=page_limit,
+                    label="pipeline active-run search",
                 )
                 if not page:
                     break
                 for run in page:
-                    run_id = str(run["run_id"])
+                    run_id = validated_native_identifier(
+                        run.get("run_id") if isinstance(run, dict) else None,
+                        label="pipeline active-run search",
+                    )
                     if run_id not in active_ids:
                         active_ids.append(run_id)
                         if len(active_ids) > _MAX_ABORT_ACTIVE_RUNS:
@@ -1242,35 +1747,104 @@ class PipelineReadService:
         return tuple(active_ids)
 
 
-def _limits_from_state(state: JsonDict) -> Limits:
-    """Recover the run's Limits to size the resume recursion budget.
-
-    The pipeline's plan_resolver checkpoints the resolved limits into state
-    `values["limits"]` (graph.plan_resolver); that is the authoritative location,
-    since LangGraph's get_state does not surface the run configurable. Falls back
-    to defaults only when no run has seeded the snapshot yet.
-    """
-    values = state.get("values") if isinstance(state.get("values"), dict) else {}
-    run_config = (values or {}).get("run_config")
-    if isinstance(run_config, dict) and isinstance(run_config.get("limits"), dict):
-        return Limits.model_validate(run_config["limits"])
-    snapshot = (values or {}).get("limits")
-    if isinstance(snapshot, dict):
-        return Limits.model_validate(snapshot)
-    return Limits()
-
-
 def _run_config_from_state(state: JsonDict) -> JsonDict:
     """Return the validated durable configurable for a gate-resume run.
 
-    Old threads have only the limits snapshot. They retain their historical
-    behavior, while every newly-created run checkpoints the complete contract.
+    Gate resumes may continue directly into model/provider work, so there is no
+    safe default for a checkpoint created before the complete run contract was
+    persisted. Such threads require an explicit migration/recovery path instead
+    of silently inheriting today's default tenant, provider, and connection.
     """
-    values = state.get("values") if isinstance(state.get("values"), dict) else {}
-    snapshot = (values or {}).get("run_config")
-    if not isinstance(snapshot, dict):
-        return {}
+    if type(state) is not dict:
+        raise RerunConfigurationConflictError("durable pipeline state is invalid")
+    values = state.get("values")
+    if type(values) is not dict:
+        raise RerunConfigurationConflictError("durable pipeline configuration snapshot is missing")
+    snapshot = values.get("run_config")
+    if type(snapshot) is not dict:
+        raise RerunConfigurationConflictError(
+            "durable pipeline configuration snapshot is missing or invalid"
+        )
     return _validated_durable_replay_config(snapshot).snapshot()
+
+
+def _ensure_rerun_checkpoint_is_terminal(state: JsonDict) -> None:
+    """Reject an explicit rerun while any prior phase attempt is unfinished.
+
+    Gate resume/recovery is the only safe way to continue a non-terminal attempt.
+    Re-entering ``plan_resolver`` from an output-review checkpoint would otherwise
+    preserve that attempt number while clearing its settlement fields, allowing the
+    execution engine to see an already-terminal provider idempotency key again.
+
+    This check intentionally runs *after* same-claim reconciliation so an ambiguous
+    HTTP retry can still adopt the rerun that was already committed.
+    """
+
+    if type(state) is not dict:
+        raise RerunConfigurationConflictError("durable pipeline state is invalid")
+    values = state.get("values")
+    if type(values) is not dict:
+        raise RerunConfigurationConflictError("durable pipeline state is invalid")
+    raw_results = values.get("phase_results")
+    if raw_results is None:
+        return
+    if type(raw_results) is not dict:
+        raise RerunConfigurationConflictError("durable pipeline phase results are invalid")
+
+    known_phases = {phase.value for phase in PHASE_ORDER}
+    known_statuses = {status.value for status in PhaseStatus}
+    terminal_statuses = {status.value for status in TERMINAL_PHASE_STATUSES}
+    for phase_name, entry in raw_results.items():
+        if type(phase_name) is not str or phase_name not in known_phases or type(entry) is not dict:
+            raise RerunConfigurationConflictError("durable pipeline phase results are invalid")
+        if not entry:
+            continue
+        attempt = entry.get("attempt")
+        status = entry.get("status")
+        if (
+            type(attempt) is not int
+            or not 1 <= attempt <= 1_000_000
+            or type(status) is not str
+            or status not in known_statuses
+        ):
+            raise RerunConfigurationConflictError("durable pipeline phase results are invalid")
+        if status not in terminal_statuses:
+            raise RerunConfigurationConflictError(
+                "durable pipeline has an unfinished phase attempt; resume or abort it before rerun"
+            )
+
+
+def _ensure_durable_config_ownership(
+    validated: PipelineConfigurable,
+    thread: JsonDict,
+) -> None:
+    """Bind one durable replay snapshot to immutable thread ownership metadata."""
+
+    if type(thread) is not dict:
+        raise RerunConfigurationConflictError("pipeline thread metadata is invalid")
+    metadata = thread.get("metadata")
+    if type(metadata) is not dict:
+        raise RerunConfigurationConflictError("pipeline thread metadata is invalid")
+    metadata_project = metadata.get("project_id")
+    metadata_app = metadata.get("app_id")
+    if (
+        (metadata_project is not None and type(metadata_project) is not str)
+        or (metadata_app is not None and type(metadata_app) is not str)
+        or validated.project_id != metadata_project
+        or validated.app_id != metadata_app
+        or (validated.app_id is not None and validated.project_id is None)
+        or (
+            validated.environment_id is not None
+            and (
+                validated.project_id is None
+                or validated.app_id is None
+                or validated.environment_target is None
+            )
+        )
+    ):
+        raise RerunConfigurationConflictError(
+            "durable pipeline configuration ownership does not match the thread"
+        )
 
 
 def _validated_durable_replay_config(snapshot: JsonDict) -> PipelineConfigurable:
@@ -1284,14 +1858,49 @@ def _validated_durable_replay_config(snapshot: JsonDict) -> PipelineConfigurable
     only a new facade-owned replay fails closed here.
     """
 
+    if type(snapshot) is not dict:
+        raise RerunConfigurationConflictError("durable pipeline configuration is invalid")
+    invalid = False
+    try:
+        validate_json_object(
+            snapshot,
+            label="durable pipeline configuration",
+            max_bytes=5_000_000,
+            max_nodes=20_000,
+        )
+    except ValueError:
+        invalid = True
+    if invalid:
+        raise RerunConfigurationConflictError("durable pipeline configuration is invalid")
+    if set(snapshot) != set(PipelineConfigurable.model_fields):
+        raise RerunConfigurationConflictError(
+            "durable pipeline configuration snapshot is incomplete"
+        )
     if contains_credential_material(snapshot):
         raise RerunConfigurationConflictError(
             "durable pipeline configuration contains credential material"
         )
+    validated: PipelineConfigurable | None = None
     try:
         validated = PipelineConfigurable.model_validate(snapshot)
-    except (TypeError, ValueError) as exc:
-        raise RerunConfigurationConflictError("durable pipeline configuration is invalid") from exc
+    except (TypeError, ValueError):
+        pass
+    if validated is None:
+        raise RerunConfigurationConflictError("durable pipeline configuration is invalid")
+    if json.dumps(
+        validated.snapshot(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ) != json.dumps(
+        snapshot,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ):
+        raise RerunConfigurationConflictError("durable pipeline configuration is not canonical")
     forbidden = _UNSAFE_DURABLE_REPLAY_LOAD_TEST_FIELDS.intersection(validated.load_test)
     if forbidden:
         raise RerunConfigurationConflictError(

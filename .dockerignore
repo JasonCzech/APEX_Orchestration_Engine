@@ -1,48 +1,15 @@
-# Slim the `langgraph build` context. Keep everything the wheel build needs:
-# pyproject.toml, README.md (project.readme), uv.lock, langgraph.json, src/.
-#
-# VCS / tooling
-.git
-.gitignore
-.github
-.idea
-.vscode
+# Deny the LangGraph build context by default.  `source.root = "."` makes the
+# CLI enumerate otherwise-unignored workspace entries into explicit Dockerfile
+# ADD instructions, so a denylist can silently bake editor state, checkpoints,
+# generated output, or a newly-created secret into an application image.
+**
 
-# Python virtualenvs / caches / build output
-.venv
-venv
-dist
-build
-*.egg-info
-**/__pycache__
-*.py[cod]
-.pytest_cache
-.ruff_cache
-.mypy_cache
-.coverage
-htmlcov
-.python-version
-
-# Node / frontend (server image does not bundle the dashboard)
-node_modules
-**/node_modules
-apps/*/dist
-apps/*/coverage
-.npm
-
-# Tests, docs, deploy assets — not needed at server runtime
-tests
-docs
-deploy
-plan
-CHANGELOG.md
-CONTRIBUTING.md
-
-# Local env files must never bake into an image.  The LangGraph config uses an
-# empty environment mapping; deployment environments inject settings at runtime.
-.env
-.env.*
-!.env.example
-*.tfvars
-*.tfstate
-*.tfstate.*
+# The Python distribution and generated LangGraph image recipe need only this
+# locked package metadata and the package source.  Keep directory and contents
+# as separate exceptions so Docker can traverse the otherwise-ignored parent.
+!pyproject.toml
+!README.md
+!uv.lock
+!langgraph.json
+!src/
+!src/**

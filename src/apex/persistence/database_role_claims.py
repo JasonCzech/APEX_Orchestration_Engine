@@ -15,7 +15,11 @@ from urllib.parse import unquote, urlsplit
 
 import asyncpg
 
-from apex.settings import database_asyncpg_uri, database_ssl_connect_args
+from apex.settings import (
+    database_asyncpg_uri,
+    database_ssl_connect_args,
+    database_uri_has_safe_transport,
+)
 
 CLAIM_PREFIX = "apex-role-claim-v2"
 DATABASE_ROLE_LOCK_KEY = 4706337856242535493
@@ -32,6 +36,34 @@ class _Connection(Protocol):
     async def fetch(self, query: str, *args: object) -> Sequence[Mapping[str, Any]]: ...
 
     async def fetchrow(self, query: str, *args: object) -> Mapping[str, Any] | None: ...
+
+
+class _ClosableConnection(Protocol):
+    async def close(self) -> Any: ...
+
+
+async def _close_connection_definitively(connection: _ClosableConnection) -> None:
+    """Settle one privileged connection close despite repeated cancellation."""
+
+    close_task = asyncio.create_task(connection.close())
+    interrupted = False
+    while not close_task.done():
+        try:
+            await asyncio.shield(close_task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    error: BaseException | None = None
+    try:
+        close_task.result()
+    except BaseException as exc:
+        # Retrieve the child outcome before preserving caller cancellation.
+        error = exc
+    if interrupted:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,18 +88,37 @@ def claim_context_from_environment(
     """Build and validate the short-lived claim context used by one hook."""
 
     env = os.environ if environment is None else environment
-    try:
-        raw_key = env["APEX_DATABASE_ROLE_CLAIM_KEY"]
-        owner_id = env["APEX_DATABASE_ROLE_OWNER_ID"]
-        runtime_owner = env["APEX_RUNTIME_OWNER_ROLE"]
-        migration_owner = env["APEX_MIGRATION_OWNER_ROLE"]
-        runtime_uri = env["APEX_RUNTIME_DATABASE_URI"]
-        migration_uri = env.get("APEX_MIGRATION_DATABASE_URI") or env["APEX_DATABASE__URI"]
-    except KeyError as exc:
-        raise DatabaseRoleClaimError("database role claim configuration is incomplete") from exc
+    raw_key = env.get("APEX_DATABASE_ROLE_CLAIM_KEY")
+    owner_id = env.get("APEX_DATABASE_ROLE_OWNER_ID")
+    runtime_owner = env.get("APEX_RUNTIME_OWNER_ROLE")
+    migration_owner = env.get("APEX_MIGRATION_OWNER_ROLE")
+    runtime_uri = env.get("APEX_RUNTIME_DATABASE_URI")
+    migration_uri = env.get("APEX_MIGRATION_DATABASE_URI") or env.get("APEX_DATABASE__URI")
+    if any(
+        value is None
+        for value in (
+            raw_key,
+            owner_id,
+            runtime_owner,
+            migration_owner,
+            runtime_uri,
+            migration_uri,
+        )
+    ):
+        raise DatabaseRoleClaimError("database role claim configuration is incomplete")
+    assert raw_key is not None
+    assert owner_id is not None
+    assert runtime_owner is not None
+    assert migration_owner is not None
+    assert runtime_uri is not None
+    assert migration_uri is not None
 
-    claim_key = raw_key.encode()
-    if len(claim_key) < 32 or raw_key != raw_key.strip():
+    claim_key: bytes | None = None
+    try:
+        claim_key = raw_key.encode("utf-8")
+    except UnicodeEncodeError:
+        pass
+    if claim_key is None or len(claim_key) < 32 or raw_key != raw_key.strip():
         raise DatabaseRoleClaimError(
             "database role claim key must be a trimmed value of at least 32 bytes"
         )
@@ -89,6 +140,10 @@ def claim_context_from_environment(
 
     runtime_login, runtime_target = _uri_identity("runtime", runtime_uri)
     migration_login, migration_target = _uri_identity("migration", migration_uri)
+    if not database_uri_has_safe_transport(
+        runtime_uri, None
+    ) or not database_uri_has_safe_transport(migration_uri, None):
+        raise DatabaseRoleClaimError("database role URI transport is unsafe")
     if runtime_target != migration_target:
         raise DatabaseRoleClaimError(
             "runtime and migration credentials target different database endpoints"
@@ -110,20 +165,33 @@ def claim_context_from_environment(
 
 
 def _uri_identity(label: str, uri: str) -> tuple[str, tuple[str, int, str]]:
+    parsed = None
+    username = ""
+    database = ""
+    hostname = ""
+    port = 0
     try:
         parsed = urlsplit(uri)
         username = unquote(parsed.username or "")
-        database = unquote(parsed.path.strip("/"))
+        # Match asyncpg exactly: it removes one URI path separator, not every
+        # leading/trailing slash. Otherwise `/apex` and `/apex/` compare equal
+        # here while selecting distinct PostgreSQL database names.
+        database_path = parsed.path[1:] if parsed.path.startswith("/") else parsed.path
+        database = unquote(database_path)
         hostname = (parsed.hostname or "").lower().rstrip(".")
-        port = parsed.port or 5432
-    except (ValueError, UnicodeError) as exc:
-        raise DatabaseRoleClaimError(f"{label} database URI is invalid") from exc
+        parsed_port = parsed.port
+        port = 5432 if parsed_port is None else parsed_port
+    except (ValueError, UnicodeError):
+        parsed = None
+    if parsed is None:
+        raise DatabaseRoleClaimError(f"{label} database URI is invalid")
     if (
         not username
         or _ROLE_PATTERN.fullmatch(username) is None
         or parsed.password is None
         or not hostname
         or not database
+        or not 1 <= port <= 65_535
     ):
         raise DatabaseRoleClaimError(f"{label} database URI is incomplete")
     return username, (hostname, port, database)
@@ -252,7 +320,7 @@ async def _verify_role(
 async def _parents(connection: _Connection, role_name: str) -> set[str]:
     rows = await connection.fetch(
         """
-        SELECT parent.rolname
+        SELECT parent.rolname, membership.admin_option AS admin_option
         FROM pg_auth_members AS membership
         JOIN pg_roles AS parent ON parent.oid = membership.roleid
         JOIN pg_roles AS member ON member.oid = membership.member
@@ -260,6 +328,10 @@ async def _parents(connection: _Connection, role_name: str) -> set[str]:
         """,
         role_name,
     )
+    if any(bool(row["admin_option"]) for row in rows):
+        raise DatabaseRoleClaimError(
+            "a claimed database role has an administrable parent membership"
+        )
     return {str(row["rolname"]) for row in rows}
 
 
@@ -298,7 +370,7 @@ async def verify_database_role_claims_from_environment(
         )
         await verify_database_role_claims(connection, context)
     finally:
-        await connection.close()
+        await _close_connection_definitively(connection)
 
 
 def main() -> int:

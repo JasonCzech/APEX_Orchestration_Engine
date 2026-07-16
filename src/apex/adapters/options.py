@@ -27,9 +27,12 @@ def require_bounded_credential(
     if not isinstance(value, str) or not value:
         raise ValueError(f"{label} must be a non-empty string")
     try:
-        encoded = value.encode("utf-8")
-    except UnicodeError as exc:
-        raise ValueError(f"{label} must contain valid UTF-8 text") from exc
+        encoded: bytes | None = value.encode("utf-8")
+    except UnicodeError:
+        # UnicodeEncodeError retains the complete credential on ``.object``.
+        encoded = None
+    if encoded is None:
+        raise ValueError(f"{label} must contain valid UTF-8 text")
     if len(encoded) > max_bytes:
         raise ValueError(f"{label} must not exceed {max_bytes} UTF-8 bytes")
     if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
@@ -61,8 +64,11 @@ def normalize_host_port_endpoint(value: Any, *, secure: bool) -> tuple[str, bool
     try:
         parsed = urlsplit(candidate)
         port = parsed.port
-    except (TypeError, ValueError) as exc:
-        raise ValueError("s3 endpoint must contain a valid host and optional port") from exc
+    except (TypeError, ValueError):
+        parsed = None
+        port = None
+    if parsed is None:
+        raise ValueError("s3 endpoint must contain a valid host and optional port")
     if (
         parsed.scheme not in {"http", "https"}
         or parsed.hostname is None
@@ -74,9 +80,7 @@ def normalize_host_port_endpoint(value: Any, *, secure: bool) -> tuple[str, bool
         or parsed.netloc.endswith(":")
         or (port is not None and not 1 <= port <= 65_535)
     ):
-        raise ValueError(
-            "s3 endpoint must not contain credentials, a path, query, or fragment"
-        )
+        raise ValueError("s3 endpoint must not contain credentials, a path, query, or fragment")
     hostname = parsed.hostname
     if any(character in hostname for character in "/\\?#@"):
         raise ValueError("s3 endpoint contains an invalid host")

@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
+import type { GateInterrupt } from '@/api/hooks/useThreadState'
 import { GateModule, type GateModuleHandle } from '@/hitl/GateModule'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
@@ -26,7 +27,11 @@ vi.mock('@uiw/react-codemirror', async () => {
   }
 })
 
-function renderContract(threadId: string, interruptId: string) {
+function renderContract(
+  threadId: string,
+  interruptId: string,
+  interrupt: GateInterrupt = promptInterrupt(interruptId),
+) {
   const handleRef = createRef<GateModuleHandle | null>()
   const onOutcome = vi.fn()
   render(
@@ -34,7 +39,7 @@ function renderContract(threadId: string, interruptId: string) {
       <MemoryRouter>
         <GateModule
           threadId={threadId}
-          interrupt={promptInterrupt(interruptId)}
+          interrupt={interrupt}
           compact
           onOutcome={onOutcome}
           handleRef={handleRef}
@@ -88,5 +93,25 @@ describe('GateModule (inbox contract)', () => {
     expect(screen.getByTestId('gate-superseded')).toHaveTextContent(
       'Another operator resumed this gate',
     )
+  })
+
+  it('does not advertise or invoke actions for a schema-drifted gate', async () => {
+    const threadId = 'th-contract-drift'
+    const interrupt = promptInterrupt('int-c-drift')
+    interrupt.payload = {
+      schema_version: 1,
+      kind: 'prompt_review',
+      phase: 'test_planning',
+      actions: ['approve', 'modify', 'skip_phase', 'abort'],
+    }
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [interrupt]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const { handleRef } = renderContract(threadId, 'int-c-drift', interrupt)
+
+    await screen.findByTestId('gate-payload-drift')
+    expect(handleRef.current?.isActionable()).toBe(false)
+    expect(handleRef.current?.invoke('approve')).toBe(false)
+    expect(resume.captured.calls).toHaveLength(0)
   })
 })

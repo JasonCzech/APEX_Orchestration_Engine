@@ -17,6 +17,7 @@ import { queryKeys } from '@/api/queryKeys'
 
 import {
   gatedDetail,
+  engineRetryInterrupt,
   mutableDetailHandler,
   phaseInterrupt,
   promptInterrupt,
@@ -32,6 +33,25 @@ function harness() {
 }
 
 describe('useGate discovery', () => {
+  it('discovers an engine recovery interrupt instead of dropping the provider lease gate', async () => {
+    const threadId = 'th-recovery'
+    const { handler } = mutableDetailHandler(
+      threadId,
+      gatedDetail(threadId, [engineRetryInterrupt('int-recovery')]),
+    )
+    server.use(handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    expect(result.current.gate).toMatchObject({
+      interrupt_id: 'int-recovery',
+      kind: 'engine_cleanup_retry',
+      phase: 'execution',
+    })
+    expect(result.current.gate?.payload?.actions).toEqual(['retry'])
+  })
+
   it('discovers the pending interrupt, clears to superseded, opens a NEW instance on a fresh id', async () => {
     const threadId = 'th-disc'
     const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-1')]))
@@ -133,6 +153,67 @@ describe('useGate discovery', () => {
 })
 
 describe('useGate resume wiring', () => {
+  it('fails closed when the payload kind does not match the interrupt envelope', async () => {
+    const threadId = 'th-envelope-drift'
+    const mismatched = promptInterrupt('int-envelope-drift')
+    mismatched.kind = 'phase_review'
+    ;(mismatched.payload as Record<string, unknown>)['sensitive'] = 'payload-secret-canary'
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [mismatched]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    expect(result.current.gate).toMatchObject({ kind: 'phase_review', payload: null })
+    act(() => result.current.submit('approve'))
+
+    expect(resume.captured.calls).toEqual([])
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('payload-secret-canary')
+  })
+
+  it('rejects an advertised action that is invalid for the gate kind', async () => {
+    const threadId = 'th-action-drift'
+    const drifted = promptInterrupt('int-action-drift')
+    const payload = drifted.payload as Record<string, unknown>
+    payload['actions'] = ['approve', 'revise']
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [drifted]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    act(() => result.current.submit('revise'))
+
+    expect(result.current.state.tag).toBe('open')
+    expect(resume.captured.calls).toEqual([])
+  })
+
+  it('does not submit an action when the pending payload failed contract parsing', async () => {
+    const threadId = 'th-drift'
+    const malformed = promptInterrupt('int-drift')
+    malformed.payload = {
+      schema_version: 1,
+      kind: 'prompt_review',
+      phase: 'test_planning',
+      actions: ['approve', 'modify', 'skip_phase', 'abort'],
+    }
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [malformed]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    expect(result.current.gate?.payload).toBeNull()
+    act(() => result.current.submit('approve'))
+
+    expect(result.current.state.tag).toBe('open')
+    expect(resume.captured.calls).toEqual([])
+  })
+
   it('terminal 202 suppresses a stale same-id snapshot echo', async () => {
     const threadId = 'th-202'
     const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-a')]))
@@ -184,6 +265,68 @@ describe('useGate resume wiring', () => {
     if (reopened.tag !== 'open') throw new Error('expected same-id gate to reopen')
     expect(reopened.draft.prompt?.system).toBe('EDITED SYSTEM')
     expect(reopened.dirty).toBe(false)
+  })
+
+  it('uses the pre-submit generation when a same-id retry reopens before the 202 response', async () => {
+    const threadId = 'th-retry-pre-202'
+    const interrupt = engineRetryInterrupt('int-reused')
+    const { handler, ref } = mutableDetailHandler(
+      threadId,
+      gatedDetail(threadId, [interrupt]),
+    )
+    let releaseResponse!: () => void
+    const waitForResponse = new Promise<void>((resolve) => {
+      releaseResponse = resolve
+    })
+    const resume = resumeHandler(202, { waitForResponse })
+    server.use(handler, resume.handler)
+    const { queryClient, wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    act(() => result.current.submit('retry'))
+    await waitFor(() => expect(resume.captured.calls).toHaveLength(1))
+
+    // The engine re-interrupts with the same deterministic id/payload before
+    // the resume endpoint returns. This must count as the next generation.
+    const refreshed = gatedDetail(threadId, [engineRetryInterrupt('int-reused')])
+    refreshed.updated_at = '2026-06-12T10:00:01+00:00'
+    ref.current = refreshed
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(threadId) })
+    })
+    expect(result.current.state.tag).toBe('submitting')
+
+    act(() => releaseResponse())
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    expect(result.current.gate?.interrupt_id).toBe('int-reused')
+  })
+
+  it('coalesces same-tick double submits into one resume request', async () => {
+    const threadId = 'th-double-submit'
+    const { handler } = mutableDetailHandler(
+      threadId,
+      gatedDetail(threadId, [promptInterrupt('int-double')]),
+    )
+    let releaseResponse!: () => void
+    const waitForResponse = new Promise<void>((resolve) => {
+      releaseResponse = resolve
+    })
+    const resume = resumeHandler(202, { waitForResponse })
+    server.use(handler, resume.handler)
+    const { wrapper } = harness()
+    const { result } = renderHook(() => useGate(threadId), { wrapper })
+
+    await waitFor(() => expect(result.current.state.tag).toBe('open'))
+    act(() => {
+      result.current.submit('approve')
+      result.current.submit('approve')
+    })
+    await waitFor(() => expect(resume.captured.calls).toHaveLength(1))
+    expect(result.current.state.tag).toBe('submitting')
+
+    act(() => releaseResponse())
+    await waitFor(() => expect(result.current.state.tag).toBe('no_gate'))
   })
 
   it('leaves awaiting_agent when a refreshed run settles without reopening a gate', async () => {

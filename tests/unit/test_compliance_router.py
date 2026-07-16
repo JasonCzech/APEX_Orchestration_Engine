@@ -1,6 +1,8 @@
 """Compliance endpoints require a platform-wide, not merely role-admin, identity."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
@@ -99,3 +101,87 @@ def test_audit_export_admission_is_bounded_and_released_after_stream(
     reacquired = limiter.try_acquire()
     assert reacquired is not None
     reacquired.release()
+
+
+@pytest.mark.anyio
+async def test_audit_export_stream_detaches_database_failure_context() -> None:
+    secret = "audit-export-database-secret-canary"
+
+    async def failing_lines():  # noqa: ANN202
+        yield "first"
+        raise RuntimeError(secret)
+
+    stream = compliance_module._stable_audit_export(failing_lines())
+
+    assert await anext(stream) == "first\n"
+    with pytest.raises(compliance_module._AuditExportStreamError) as exc_info:
+        await anext(stream)
+
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert secret not in repr(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_audit_export_consumer_close_closes_provider_iterator() -> None:
+    class TrackingIterator:
+        def __init__(self) -> None:
+            self.sent = False
+            self.closed = False
+
+        def __aiter__(self) -> "TrackingIterator":
+            return self
+
+        async def __anext__(self) -> str:
+            if self.sent:
+                await asyncio.Event().wait()
+            self.sent = True
+            return "first"
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    lines = TrackingIterator()
+    stream: Any = compliance_module._stable_audit_export(lines)
+    assert await anext(stream) == "first\n"
+
+    await stream.aclose()
+
+    assert lines.closed is True
+
+
+@pytest.mark.anyio
+async def test_audit_export_cleanup_failure_never_replaces_stable_read_failure() -> None:
+    read_secret = "audit-read-secret-canary"
+    close_secret = "audit-close-secret-canary"
+
+    class FailingIterator:
+        def __init__(self) -> None:
+            self.reads = 0
+            self.closed = False
+
+        def __aiter__(self) -> "FailingIterator":
+            return self
+
+        async def __anext__(self) -> str:
+            self.reads += 1
+            if self.reads == 1:
+                return "first"
+            raise RuntimeError(read_secret)
+
+        async def aclose(self) -> None:
+            self.closed = True
+            raise RuntimeError(close_secret)
+
+    lines = FailingIterator()
+    stream = compliance_module._stable_audit_export(lines)
+    assert await anext(stream) == "first\n"
+
+    with pytest.raises(compliance_module._AuditExportStreamError) as exc_info:
+        await anext(stream)
+
+    assert lines.closed is True
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert read_secret not in repr(exc_info.value)
+    assert close_secret not in repr(exc_info.value)

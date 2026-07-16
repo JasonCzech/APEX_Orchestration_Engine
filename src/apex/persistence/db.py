@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -13,6 +14,30 @@ from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_s
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
+
+
+async def dispose_engine_instance_definitively(engine: Any) -> None:
+    """Dispose one async engine without abandoning it on repeated cancellation."""
+
+    dispose_task = asyncio.create_task(engine.dispose())
+    interrupted = False
+    while not dispose_task.done():
+        try:
+            await asyncio.shield(dispose_task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    error: BaseException | None = None
+    try:
+        dispose_task.result()
+    except BaseException as exc:
+        # Retrieve every child outcome before preserving caller cancellation.
+        error = exc
+    if interrupted:
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
 
 
 def get_engine() -> AsyncEngine:
@@ -50,7 +75,7 @@ async def dispose_engine() -> None:
     _engine = None
     _sessionmaker = None
     if engine is not None:
-        await engine.dispose()
+        await dispose_engine_instance_definitively(engine)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

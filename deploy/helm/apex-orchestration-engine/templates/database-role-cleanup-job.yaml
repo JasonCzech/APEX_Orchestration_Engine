@@ -239,19 +239,23 @@ spec:
                                   "rolbypassrls",
                               )
                           )
-                          parents = {
-                              row["rolname"]
-                              for row in await conn.fetch(
-                                  """
-                                  SELECT parent.rolname
-                                  FROM pg_auth_members AS membership
-                                  JOIN pg_roles AS parent ON parent.oid = membership.roleid
-                                  JOIN pg_roles AS member ON member.oid = membership.member
-                                  WHERE member.rolname = $1
-                                  """,
-                                  role_name,
+                          parent_memberships = await conn.fetch(
+                              """
+                              SELECT parent.rolname,
+                                     membership.admin_option AS admin_option
+                              FROM pg_auth_members AS membership
+                              JOIN pg_roles AS parent ON parent.oid = membership.roleid
+                              JOIN pg_roles AS member ON member.oid = membership.member
+                              WHERE member.rolname = $1
+                              """,
+                              role_name,
+                          )
+                          if any(row["admin_option"] for row in parent_memberships):
+                              raise SystemExit(
+                                  f"refusing database-role cleanup because role "
+                                  f"{role_name!r} has an administrable parent membership"
                               )
-                          }
+                          parents = {row["rolname"] for row in parent_memberships}
                           children = {
                               row["rolname"]
                               for row in await conn.fetch(

@@ -7,6 +7,7 @@ import httpx
 import pytest
 import respx
 
+from apex.adapters.elk import log_search as elk_mod
 from apex.adapters.elk.log_search import (
     MAX_PAGE_SIZE,
     PROVIDER_SEARCH_TIMEOUT,
@@ -315,6 +316,31 @@ async def test_transport_error_maps_to_runtime_error() -> None:
     search_route().mock(side_effect=httpx.ConnectError("connection refused"))
     with pytest.raises(RuntimeError, match="base_url and network reachability"):
         await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+
+async def test_transport_error_does_not_invoke_hostile_exception_metaclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HostileMeta(type):
+        called = False
+
+        @property
+        def __name__(cls) -> str:  # type: ignore[override]
+            HostileMeta.called = True
+            raise RuntimeError("hostile exception type metadata was invoked")
+
+    class HostileTransportError(httpx.HTTPError, metaclass=HostileMeta):
+        pass
+
+    async def fail(*_args: object, **_kwargs: object) -> httpx.Response:
+        raise HostileTransportError("network unavailable")
+
+    monkeypatch.setattr(elk_mod, "resilient_request", fail)
+
+    with pytest.raises(RuntimeError, match=r"failed \(unknown\)"):
+        await make_adapter().search(LogQuery(query="x", filters={}), window=WINDOW, page=PAGE)
+
+    assert HostileMeta.called is False
 
 
 @respx.mock

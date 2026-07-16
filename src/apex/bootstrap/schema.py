@@ -20,17 +20,32 @@ from apex.domain.input_limits import (
     NoNulStr,
     ScopeId,
 )
-from apex.services.connection_credentials import reject_raw_secret_options, validate_secret_ref
+from apex.services.connection_credentials import (
+    reject_credential_text,
+    reject_raw_secret_options,
+    validate_secret_ref,
+)
 
 
-class HostSpec(BaseModel):
+class _CredentialFreeBootstrapModel(BaseModel):
+    """Reject raw credentials from every validated scalar in bootstrap models."""
+
+    @field_validator("*")
+    @classmethod
+    def _scalar_is_credential_free(cls, value: Any) -> Any:
+        if type(value) is str:
+            reject_credential_text(value, label="bootstrap text field")
+        return value
+
+
+class HostSpec(_CredentialFreeBootstrapModel):
     model_config = ConfigDict(extra="forbid")
 
     hostname: NoNulStr = Field(min_length=1, max_length=1024)
     role: NoNulStr | None = Field(default=None, max_length=255)
 
 
-class ApplicationSpec(BaseModel):
+class ApplicationSpec(_CredentialFreeBootstrapModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: ScopeId
@@ -38,7 +53,7 @@ class ApplicationSpec(BaseModel):
     description: NoNulStr | None = Field(default=None, max_length=MAX_DESCRIPTION_CHARS)
 
 
-class EnvironmentSpec(BaseModel):
+class EnvironmentSpec(_CredentialFreeBootstrapModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: ScopeId
@@ -67,7 +82,7 @@ class EnvironmentSpec(BaseModel):
         return hosts
 
 
-class ConnectionSpec(BaseModel):
+class ConnectionSpec(_CredentialFreeBootstrapModel):
     model_config = ConfigDict(extra="forbid")
 
     name: NoNulStr = Field(min_length=1, max_length=255)
@@ -90,14 +105,14 @@ class ConnectionSpec(BaseModel):
         return validate_secret_ref(value)
 
 
-class ScopeSpec(BaseModel):
+class ScopeSpec(_CredentialFreeBootstrapModel):
     model_config = ConfigDict(extra="forbid")
 
     project_id: ScopeId
     app_id: ScopeId | None = None
 
 
-class AdminConsumerSpec(BaseModel):
+class AdminConsumerSpec(_CredentialFreeBootstrapModel):
     """Initial API consumer. The plaintext key is read from ``key_env`` at apply
     time (sourced from a Secret/Key Vault), hashed, and never persisted/logged."""
 

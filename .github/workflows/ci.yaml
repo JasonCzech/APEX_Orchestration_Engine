@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -19,8 +22,7 @@ jobs:
         run: |
           uv run langgraph validate
           uv run langgraph dockerfile /tmp/apex-langgraph.Dockerfile
-          grep -Fx 'FROM langchain/langgraph-api:0.10.0-py3.12@sha256:812e919f12ad9605c9a2b443c95fcdc7d4f8cfecaf11de02181f04943864f27c' /tmp/apex-langgraph.Dockerfile
-          ! grep -F '.env' /tmp/apex-langgraph.Dockerfile
+          uv run python scripts/validate_langgraph_recipe.py /tmp/apex-langgraph.Dockerfile
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
@@ -43,6 +45,7 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run -w @apex/pipeline-events typecheck
+      - run: npm run -w @apex/pipeline-events lint
       - run: npm run -w @apex/pipeline-events test
       - name: Generated-types drift gate
         run: |
@@ -59,13 +62,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+        with:
+          version: ${{ steps.tool_versions.outputs.helm }}
       - name: Install kubeconform
+        env:
+          KUBECONFORM_VERSION: ${{ steps.tool_versions.outputs.kubeconform }}
+          KUBECONFORM_SHA256: ${{ steps.tool_versions.outputs.kubeconform_linux_amd64_sha256 }}
         run: |
           curl -fsSLo /tmp/kubeconform.tar.gz \
-            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-          echo '95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  /tmp/kubeconform.tar.gz' \
-            | sha256sum --check -
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          printf '%s  %s\n' "$KUBECONFORM_SHA256" /tmp/kubeconform.tar.gz \
+            | sha256sum --check --strict -
           tar -xzf /tmp/kubeconform.tar.gz kubeconform
           sudo install kubeconform /usr/local/bin/
       - name: Lint (strict)
@@ -93,19 +104,114 @@ jobs:
             exit 1
           fi
           if helm template smoke "$CHART" --set-string image.digest="$digest" \
-            --set dashboard.enabled=true > "$out/missing-dashboard-digest-invalid.yaml"; then
+            --set dashboard.enabled=true \
+            --set dashboard.backendUpstream=http://apex:80 \
+            > "$out/missing-dashboard-digest-invalid.yaml"; then
             echo "locked chart unexpectedly accepted a mutable dashboard tag" >&2
             exit 1
           fi
           render --set image.repository=registry.example/apex \
             --set-string image.digest="$digest" \
             --set dashboard.enabled=true \
+            --set dashboard.backendUpstream=http://apex:80 \
             --set dashboard.image.repository=registry.example/dashboard \
             --set-string dashboard.image.digest="$digest" > "$out/digests.yaml"
           grep -F "image: \"registry.example/apex@$digest\"" "$out/digests.yaml"
           grep -F "image: \"registry.example/dashboard@$digest\"" "$out/digests.yaml"
           if render --set-string image.digest=sha256:invalid > "$out/digest-invalid.yaml"; then
             echo "invalid application image digest unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-string secretBackend.mode=unsupported \
+            > "$out/secret-backend-mode-invalid.yaml"; then
+            echo "unsupported secret backend mode unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-json 'bootstrap.document={"connections":[{"name":"unsafe","options":{"private_key":"plaintext"}}]}' \
+            > "$out/bootstrap-nested-secret-invalid.yaml"; then
+            echo "secret-bearing nested bootstrap option unexpectedly accepted" >&2
+            exit 1
+          fi
+          for field in connection_string database_uri database_url db_uri postgres_uri \
+            postgresql_url redis_url broker_uri amqp_url mongo_uri mongodb_url dsn sas \
+            ssh_key signing_key encryption_key authentication; do
+            if render --set-string \
+              "bootstrap.document.connections[0].options.$field=plaintext" \
+              > "$out/bootstrap-${field//_/-}-invalid.yaml"; then
+              echo "secret-bearing bootstrap field $field unexpectedly accepted" >&2
+              exit 1
+            fi
+          done
+          render --set-json 'bootstrap.document={"connections":[{"options":{"access_key":"apex","access_key_id":"identifier"}}]}' \
+            > "$out/bootstrap-access-key-identifiers-valid.yaml"
+          render \
+            --set-json 'bootstrap.document={"authorship":"safe","auth_mode":"oauth","authenticationType":"oidc","authenticationModeValue":"oauth","authenticationModeData":"metadata","metadata":"safe","tokenCount":42,"tokenCountValue":"42","signatureAlgorithm":"sha256","signatureAlgorithmValue":"sha256","publicKey":"identifier","secretKeyRef":"identifier","secretKeyIdentifier":"identifier","access_key_id":"identifier","aws_access_key_id":"identifier","project_key":"identifier","monkey":"identifier"}' \
+            > "$out/bootstrap-noncredential-fields-valid.yaml"
+          for field in providerToken providerSignature providerTokenValue providerSignatureValue; do
+            if render --set-string "bootstrap.document.$field=opaque" \
+              > "$out/bootstrap-terminal-credential-key-invalid.yaml"; then
+              echo "terminal credential-bearing bootstrap field $field unexpectedly accepted" >&2
+              exit 1
+            fi
+          done
+          for value in 'Authorization: Bearer plaintext' \
+            'postgresql://user:plaintext@example.test/db' \
+            'password=plaintext'; do
+            if render --set-string "bootstrap.document.ordinary=$value" \
+              > "$out/bootstrap-credential-text-invalid.yaml"; then
+              echo "credential-bearing bootstrap text unexpectedly accepted" >&2
+              exit 1
+            fi
+          done
+          for value in \
+            'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhcGV4LXVzZXIifQ.c2lnbmF0dXJlLWNhbmFyeQ' \
+            'ghp_0123456789abcdefghijklmnopqrstuvwxyz' \
+            'AIza0123456789abcdefghijklmnopqrstuvwxy' \
+            'ya29.0123456789abcdefghijklmnopqrstuvwxyz' \
+            'SG.0123456789abcdefghijkl.0123456789abcdefghijklmnopqrstuvwxyzABCDEFG' \
+            'dckr_pat_0123456789abcdefghijklmnopqrstuv' \
+            '0123456789abcd.atlasv1.0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWX_=' \
+            '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnAZDOwxyz'; do
+            if render --set-string "bootstrap.document.ordinary=$value" \
+              > "$out/bootstrap-standalone-credential-signature-invalid.yaml"; then
+              echo "standalone credential signature in bootstrap text unexpectedly accepted" >&2
+              exit 1
+            fi
+          done
+          if render \
+            --set-json 'bootstrap.document={"ordinary":"-----BEGIN PRIVATE KEY-----\ncHJpdmF0ZS1rZXktY2FuYXJ5\n-----END PRIVATE KEY-----"}' \
+            > "$out/bootstrap-private-key-block-invalid.yaml"; then
+            echo "private-key block in bootstrap text unexpectedly accepted" >&2
+            exit 1
+          fi
+          render \
+            --set-json 'bootstrap.document={"alpha":"eyJshort.short.sig","beta":"ghp_short","gamma":"-----BEGIN PUBLIC KEY-----\ncHVibGljLWtleQ==\n-----END PUBLIC KEY-----","delta":"AIza_short","epsilon":"short.atlasv1.short"}' \
+            > "$out/bootstrap-credential-signature-controls-valid.yaml"
+          render --set-string bootstrap.document.ordinary=https://example.test/path \
+            > "$out/bootstrap-benign-url-valid.yaml"
+          if render --set-string bootstrap.document.oauth_token=plaintext \
+            > "$out/bootstrap-unknown-secret-invalid.yaml"; then
+            echo "secret-bearing unknown bootstrap field unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-string bootstrap.document=plaintext \
+            > "$out/bootstrap-scalar-invalid.yaml"; then
+            echo "non-map bootstrap document unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-json 'bootstrap.document={"connections":[{"secret_ref":false}]}' \
+            > "$out/bootstrap-secret-ref-bool-invalid.yaml"; then
+            echo "non-string boolean bootstrap secret_ref unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-json 'bootstrap.document={"connections":[{"secret_ref":null}]}' \
+            > "$out/bootstrap-secret-ref-null-invalid.yaml"; then
+            echo "null bootstrap secret_ref unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set-json 'bootstrap.document={"connections":[{"secret_ref":{"env":"NAME"}}]}' \
+            > "$out/bootstrap-secret-ref-map-invalid.yaml"; then
+            echo "map bootstrap secret_ref unexpectedly accepted" >&2
             exit 1
           fi
           render --set migrations.enabled=true --set bootstrap.enabled=true \
@@ -137,14 +243,236 @@ jobs:
             --set networkPolicy.egress.allowAll=true > "$out/netpol.yaml"
           render --set serviceAccount.create=true --set rbac.create=true \
             --set rbac.clusterScope=true > "$out/rbac.yaml"
-          render --set secretBackend.mode=secretsStoreCSI \
-            --set secretBackend.csi.keyvaultName=kv --set secretBackend.csi.tenantId=t \
-            --set workloadIdentity.enabled=true --set workloadIdentity.clientId=c > "$out/csi.yaml"
-          render --set secretBackend.mode=secretsStoreCSI \
-            --set secretBackend.csi.keyvaultName=kv --set secretBackend.csi.tenantId=t \
-            --set workloadIdentity.enabled=true --set workloadIdentity.clientId=c \
+          csi_args=(
+            --set secretBackend.mode=secretsStoreCSI
+            --set secretBackend.csi.keyvaultName=kv
+            --set secretBackend.csi.tenantId=t
+            --set workloadIdentity.enabled=true
+            --set workloadIdentity.clientId=c
+          )
+          if render "${csi_args[@]}" \
+            > "$out/csi-without-post-cleanup-invalid.yaml"; then
+            echo "locked CSI deployment unexpectedly retained privileged hook material" >&2
+            exit 1
+          fi
+          render "${csi_args[@]}" \
+            --set secretBackend.csi.cleanup.enabled=true \
+            > "$out/csi.yaml"
+          render "${csi_args[@]}" \
+            --set secretBackend.csi.cleanup.enabled=true \
+            --show-only templates/csi-cleanup-job.yaml > "$out/csi-pre-cleanup.yaml"
+          python3 - "$out/csi-pre-cleanup.yaml" <<'PY'
+          import sys
+          from pathlib import Path
+
+          rendered = Path(sys.argv[1]).read_text()
+          hook_secrets = {
+              "apex-database-bootstrap",
+              "apex-database-role-claim",
+              "apex-hook-auth",
+          }
+          runtime_secrets = {
+              "apex-database",
+              "apex-redis",
+              "apex-langgraph-license",
+              "apex-auth",
+          }
+          assert 'resources: ["secrets"]' in rendered
+          assert 'verbs: ["get", "delete"]' in rendered
+          for name in hook_secrets:
+              # Once in exact-name RBAC and once as a separate shell argv item.
+              assert rendered.count(f'- "{name}"') == 2, name
+          for name in runtime_secrets:
+              assert f'- "{name}"' not in rendered, name
+          script = rendered.split("            - |\n", 1)[1].split(
+              "            - cleanup\n", 1
+          )[0]
+          assert "{{" not in script
+          assert 'shift 12' in script
+          assert 'self_name="${10}"' in script
+          assert 'prior_binding_name="${11}"' in script
+          assert 'protected_runtime_names="${12}"' in script
+          assert 'delete_resource secret "$secret_name"' in script
+          assert 'delete "$resource"' in script
+          assert '--ignore-not-found=true' in script
+          assert '2>/dev/null || true' not in script
+          assert rendered.count("hook-succeeded,hook-failed") == 5
+          PY
+          render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"new-admin","secretName":"new-hook-secret","key":"ADMIN"}]' \
+            --set-json 'secretBackend.csi.cleanup.previousHookSecretNames=["old-hook-secret"]' \
+            --show-only templates/csi-cleanup-job.yaml > "$out/csi-renamed-secret-cleanup.yaml"
+          render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"new-admin","secretName":"new-hook-secret","key":"ADMIN"}]' \
+            --set-json 'secretBackend.csi.cleanup.previousHookSecretNames=["old-hook-secret"]' \
+            --show-only templates/csi-hook-secret-ledger-role.yaml \
+            > "$out/csi-renamed-secret-ledger.yaml"
+          python3 - "$out/csi-renamed-secret-cleanup.yaml" \
+            "$out/csi-renamed-secret-ledger.yaml" <<'PY'
+          import sys
+          from pathlib import Path
+
+          cleanup = Path(sys.argv[1]).read_text()
+          ledger = Path(sys.argv[2]).read_text()
+          for name in ("old-hook-secret", "new-hook-secret"):
+              # The cleanup Role and argv are exact; the unbound ordinary Role
+              # carries the same names forward for the following upgrade.
+              assert cleanup.count(f'- "{name}"') == 2, name
+              assert ledger.count(f'- "{name}"') == 1, name
+          for runtime_name in ("apex-database", "apex-redis", "apex-auth"):
+              assert f'- "{runtime_name}"' not in cleanup, runtime_name
+              assert f'- "{runtime_name}"' not in ledger, runtime_name
+          assert "kind: RoleBinding" not in ledger
+          assert "jsonpath={.rules[0].resourceNames[*]}" in cleanup
+          PY
+          # Simulate two consecutive releases: the old ordinary Role remains
+          # unchanged while the new pre-upgrade hook runs, and its temporary
+          # RoleBinding therefore authorizes deletion of only the old name.
+          render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"old-admin","secretName":"old-ledger-secret","key":"ADMIN"}]' \
+            --show-only templates/csi-hook-secret-ledger-role.yaml \
+            > "$out/csi-old-release-ledger.yaml"
+          render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"new-admin","secretName":"new-ledger-secret","key":"ADMIN"}]' \
+            --show-only templates/csi-cleanup-job.yaml \
+            > "$out/csi-new-release-pre-cleanup.yaml"
+          python3 - "$out/csi-old-release-ledger.yaml" \
+            "$out/csi-new-release-pre-cleanup.yaml" <<'PY'
+          import sys
+          from pathlib import Path
+
+          old_ledger = Path(sys.argv[1]).read_text()
+          new_cleanup = Path(sys.argv[2]).read_text()
+          ledger_role = "smoke-apex-orchestration-engine-csi-hook-secret-ledger"
+          assert '- "old-ledger-secret"' in old_ledger
+          assert '- "new-ledger-secret"' not in old_ledger
+          assert '- "new-ledger-secret"' in new_cleanup
+          assert '- "old-ledger-secret"' not in new_cleanup
+          assert f"name: {ledger_role}" in new_cleanup
+          assert "previous successful" in new_cleanup
+          assert "jsonpath={.rules[0].resourceNames[*]}" in new_cleanup
+          PY
+          render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.objects=[{"objectName":"runtime","secretName":"reused-secret","key":"RUNTIME"}]' \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"new-admin","secretName":"new-hook-secret","key":"ADMIN"}]' \
+            --show-only templates/csi-cleanup-job.yaml \
+            > "$out/csi-prior-name-now-runtime.yaml"
+          python3 - "$out/csi-prior-name-now-runtime.yaml" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import textwrap
+          from pathlib import Path
+
+          rendered = Path(sys.argv[1]).read_text()
+          raw_script, tail = rendered.split("            - |\n", 1)[1].split(
+              "            - cleanup\n", 1
+          )
+          script = textwrap.dedent(raw_script)
+          arg_block = tail.split("          env:\n", 1)[0]
+          args = ["cleanup"]
+          for line in arg_block.splitlines():
+              stripped = line.strip()
+              if stripped.startswith("- "):
+                  args.append(json.loads(stripped[2:]))
+
+          assert "reused-secret" in args[12].split()
+          assert 'if [ "$secret_name" = "$runtime_secret_name" ]' in script
+          assert "two-stage name migration" in script
+          assert "--ignore-not-found=true" in script
+          assert "2>/dev/null || true" not in script
+
+          with tempfile.TemporaryDirectory() as directory:
+              directory_path = Path(directory)
+              log = directory_path / "kubectl.log"
+              kubectl = directory_path / "kubectl"
+              kubectl.write_text(
+                  "#!/bin/sh\n"
+                  'printf "%s\\n" "$*" >> "$KUBECTL_LOG"\n'
+                  'case "$*" in\n'
+                  '  *" get role "*)\n'
+                  '    if [ "${FAIL_LEDGER_GET:-}" = 1 ]; then exit 9; fi\n'
+                  '    printf "%s" reused-secret\n'
+                  "    ;;\n"
+                  "esac\n"
+              )
+              kubectl.chmod(0o755)
+              env = {
+                  **os.environ,
+                  "PATH": f"{directory}:{os.environ['PATH']}",
+                  "POD_NAMESPACE": "default",
+                  "KUBECTL_LOG": str(log),
+              }
+              conflict = subprocess.run(
+                  ["sh", "-ec", script, *args], env=env, check=False
+              )
+              assert conflict.returncode == 2, conflict.returncode
+              assert " delete secret " not in f" {log.read_text()} "
+              assert " delete job " not in f" {log.read_text()} "
+
+              log.write_text("")
+              env["FAIL_LEDGER_GET"] = "1"
+              api_failure = subprocess.run(
+                  ["sh", "-ec", script, *args], env=env, check=False
+              )
+              assert api_failure.returncode != 0
+              assert " delete secret " not in f" {log.read_text()} "
+              assert " delete job " not in f" {log.read_text()} "
+          PY
+          render "${csi_args[@]}" \
+            --set secretBackend.csi.cleanup.enabled=true \
             --set migrations.enabled=true --set bootstrap.enabled=true \
             --set bootstrap.adminKeySecret.existingSecret=apex-admin > "$out/csi-hooks.yaml"
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"admin","secretName":"apex-admin;touch-pwned","key":"ADMIN"}]' \
+            > "$out/csi-hook-secret-name-injection-invalid.yaml"; then
+            echo "CSI hook Secret name with shell metacharacters unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.objects=[{"objectName":"runtime","secretName":"Apex-Runtime","key":"RUNTIME"}]' \
+            > "$out/csi-runtime-secret-name-invalid.yaml"; then
+            echo "invalid CSI runtime Secret DNS name unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"../serviceaccount/token","secretName":"apex-admin","key":"ADMIN"}]' \
+            > "$out/csi-object-path-invalid.yaml"; then
+            echo "CSI object path traversal name unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.objects=[{"objectName":"runtime","secretName":"apex-runtime","key":"BAD/KEY"}]' \
+            > "$out/csi-secret-key-invalid.yaml"; then
+            echo "invalid CSI Secret data key unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.hookObjects=[{"objectName":"admin","secretName":"apex-auth","key":"ADMIN"}]' \
+            > "$out/csi-shared-hook-runtime-secret-invalid.yaml"; then
+            echo "CSI hook credential unexpectedly reused a persistent runtime Secret" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set hookServiceAccountName=smoke-apex-orchestration-engine \
+            > "$out/csi-shared-service-account-invalid.yaml"; then
+            echo "CSI hook identity unexpectedly reused the runtime ServiceAccount" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.cleanup.previousHookSecretNames=["old;touch-pwned"]' \
+            > "$out/csi-previous-secret-name-injection-invalid.yaml"; then
+            echo "invalid prior CSI hook Secret name unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render "${csi_args[@]}" --set secretBackend.csi.cleanup.enabled=true \
+            --set-json 'secretBackend.csi.cleanup.previousHookSecretNames=["apex-database"]' \
+            > "$out/csi-previous-runtime-secret-invalid.yaml"; then
+            echo "prior CSI hook Secret unexpectedly reused a runtime Secret name" >&2
+            exit 1
+          fi
           grep -F 'name: "apex-database-bootstrap"' "$out/csi-hooks.yaml"
           render -f deploy/azure/helm/values-azure.yaml \
             --show-only templates/csi-sync-job.yaml > "$out/csi-sync.yaml"
@@ -244,6 +572,42 @@ jobs:
             --set metrics.podAnnotations=true > "$out/metrics.yaml"
           render --set dashboard.enabled=true \
             --set dashboard.backendUpstream=http://apex:80 > "$out/dashboard.yaml"
+          if render --set dashboard.enabled=true \
+            --set-string 'dashboard.config.apexOrigin=https://api.example.test/\";location /injected {}' \
+            > "$out/dashboard-origin-injection-invalid.yaml"; then
+            echo "dashboard origin syntax injection unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set dashboard.enabled=true \
+            --set-string 'dashboard.backendUpstream=http://apex:80;location /injected {}' \
+            > "$out/dashboard-upstream-injection-invalid.yaml"; then
+            echo "dashboard upstream syntax injection unexpectedly accepted" >&2
+            exit 1
+          fi
+          if render --set dashboard.enabled=true \
+            --set-string dashboard.backendUpstream=http://apex:65536 \
+            > "$out/dashboard-upstream-port-invalid.yaml"; then
+            echo "dashboard upstream invalid TCP port unexpectedly accepted" >&2
+            exit 1
+          fi
+          for field in apexOrigin langgraphOrigin; do
+            if render --set dashboard.enabled=true \
+              --set-string dashboard.backendUpstream=http://apex:80 \
+              --set-string "dashboard.config.$field=http://api.example.test" \
+              > "$out/dashboard-${field}-plaintext-invalid.yaml"; then
+              echo "plaintext explicit dashboard $field unexpectedly accepted" >&2
+              exit 1
+            fi
+          done
+          if render --set dashboard.enabled=true \
+            > "$out/dashboard-unwired-invalid.yaml"; then
+            echo "dashboard with no API origin or reverse proxy unexpectedly accepted" >&2
+            exit 1
+          fi
+          render --set dashboard.enabled=true \
+            --set-string dashboard.config.apexOrigin=https://api.example.test \
+            --set-string dashboard.config.langgraphOrigin=https://langgraph.example.test \
+            > "$out/dashboard-explicit-origins.yaml"
           # Exercise a valid Helm release whose base fullname reaches 63 chars.
           # Derived names must keep their suffixes instead of colliding/truncating.
           long_release=this-is-a-very-long-apex-production-release-name
@@ -292,12 +656,12 @@ jobs:
           runtime_spc_name="$(awk '$1 == "metadata:" { in_metadata=1; next }
             in_metadata && $1 == "name:" { print $2; exit }' "$out/runtime-spc.yaml")"
           grep -F "secretProviderClass: $runtime_spc_name" "$out/runtime-deployment.yaml"
-          ! grep -F 'secretName: apex-database' "$out/runtime-spc.yaml"
+          ! grep -F 'secretName: "apex-database"' "$out/runtime-spc.yaml"
           grep -F 'name: "apex-database-active"' "$out/runtime-deployment.yaml"
           grep -F 'name: schema-readiness' "$out/runtime-deployment.yaml"
           grep -F 'apex.persistence.schema_readiness' "$out/runtime-deployment.yaml"
           for runtime_secret in apex-redis apex-langgraph-license apex-auth apex-minio; do
-            grep -F "secretName: $runtime_secret" "$out/runtime-spc.yaml"
+            grep -F "secretName: \"$runtime_secret\"" "$out/runtime-spc.yaml"
             grep -F "$runtime_secret" "$out/runtime-deployment.yaml"
           done
           render -f deploy/azure/helm/values-azure.yaml \
@@ -305,18 +669,18 @@ jobs:
           render -f deploy/azure/helm/values-azure.yaml \
             --show-only templates/csi-runtime-hook-secretproviderclass.yaml \
             > "$out/runtime-hook-spc.yaml"
-          grep -F 'secretName: apex-database-bootstrap' "$out/hook-spc.yaml"
-          grep -F 'secretName: apex-hook-auth' "$out/hook-spc.yaml"
-          ! grep -F 'secretName: apex-database' "$out/runtime-hook-spc.yaml"
-          grep -F 'objectName: database-runtime-uri' "$out/hook-spc.yaml"
+          grep -F 'secretName: "apex-database-bootstrap"' "$out/hook-spc.yaml"
+          grep -F 'secretName: "apex-hook-auth"' "$out/hook-spc.yaml"
+          ! grep -F 'secretName: "apex-database"' "$out/runtime-hook-spc.yaml"
+          grep -F 'objectName: "database-runtime-uri"' "$out/hook-spc.yaml"
           # Cleanup is opt-in generically, enabled by the Azure overlay, and
           # remains renderable on the transition upgrade away from CSI.
           ! grep -F 'app.kubernetes.io/component: csi-cleanup' "$out/default.yaml"
           render -f deploy/azure/helm/values-azure.yaml \
             --show-only templates/csi-cleanup-job.yaml > "$out/cleanup-azure.yaml"
-          grep -F -- '--wait=true --timeout=120s' "$out/cleanup-azure.yaml"
+          grep -F -- '--wait=true --timeout=30s' "$out/cleanup-azure.yaml"
           ! grep -F -- '--wait=false' "$out/cleanup-azure.yaml"
-          test "$(grep -c 'resourceNames:' "$out/cleanup-azure.yaml")" -eq 4
+          test "$(grep -c 'resourceNames:' "$out/cleanup-azure.yaml")" -eq 7
           for cleanup_target in \
             smoke-apex-orchestration-engine-csi-sync \
             apex-orchestration-engine-hooks \
@@ -329,7 +693,8 @@ jobs:
             -f deploy/azure/helm/values-azure.yaml \
             --set secretBackend.mode=externalSecrets \
             --show-only templates/csi-cleanup-job.yaml > "$out/cleanup-transition.yaml"
-          grep -F '"helm.sh/hook": pre-upgrade,post-delete' "$out/cleanup-transition.yaml"
+          grep -F '"helm.sh/hook": pre-upgrade,post-delete,post-rollback' \
+            "$out/cleanup-transition.yaml"
           ! grep -F 'CREATE ON DATABASE' "$out/long-names.yaml"
           grep -F 'await transfer_relations("apex", migration_owner_name, migration_owner)' \
             "$out/long-names.yaml"
@@ -557,8 +922,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
+          terraform_version: ${{ steps.tool_versions.outputs.terraform }}
           terraform_wrapper: false
       - name: fmt + validate (no backend)
         run: |

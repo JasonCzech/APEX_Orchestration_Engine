@@ -15,7 +15,16 @@ from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
-from apex.domain.integrations import SecretValue, WorkItem
+from apex.domain.integrations import (
+    FileContent,
+    LogEntry,
+    LogQuery,
+    LogSearchResult,
+    Page,
+    SecretValue,
+    TimeWindow,
+    WorkItem,
+)
 from apex.persistence.models import Connection, HostMapping
 from apex.persistence.repositories.connections import (
     ConnectionsRepository,
@@ -25,11 +34,16 @@ from apex.ports.artifact_store import StoredArtifact
 from apex.routers.connections import (
     PROBE_CALLS,
     _probe_artifact_store,
+    _probe_documents,
+    _probe_log_search,
+    _probe_source_control,
+    _probe_work_tracking,
     get_connections_repository,
     router,
 )
 from apex.services.connection_credentials import (
     connection_options_require_repair,
+    reject_raw_secret_options,
     sanitize_connection_options_for_output,
 )
 
@@ -173,6 +187,104 @@ async def test_connections_repository_rejects_nul_from_non_http_writers() -> Non
 
 
 @pytest.mark.asyncio
+async def test_connections_repository_rejects_credentials_in_scalar_labels() -> None:
+    repo = ConnectionsRepository(cast(Any, object()))
+    connection = _make_connection(kind="work_tracking", provider="stub", name="tracker")
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+
+    with pytest.raises(ValueError, match="credential material"):
+        await repo.create(kind="work_tracking", provider="stub", name=credential)
+    with pytest.raises(ValueError, match="credential material"):
+        await repo.update(connection, {"name": credential})
+    with pytest.raises(ValueError, match="credential material"):
+        await repo.replace_host_mappings(
+            connection,
+            [{"pattern": credential, "target": "10.0.0.1"}],
+        )
+
+    assert connection.name == "tracker"
+    assert connection.host_mappings == []
+
+
+@pytest.mark.asyncio
+async def test_connections_repository_rejects_unknown_invalid_and_unbounded_updates() -> None:
+    repo = ConnectionsRepository(cast(Any, object()))
+    connection = _make_connection(kind="work_tracking", provider="stub", name="tracker")
+
+    for changes in ({"id": "forged"}, {"unknown": "value"}):
+        with pytest.raises(ValueError, match="unsupported connection fields"):
+            await repo.update(connection, changes)
+    with pytest.raises(ValueError, match="must be a boolean"):
+        await repo.update(connection, {"enabled": "yes"})
+    with pytest.raises(ValueError, match="1-255 character"):
+        await repo.update(connection, {"name": "x" * 256})
+    with pytest.raises(ValueError, match="1-255 character"):
+        await repo.create(kind="work_tracking", provider="stub", name="x" * 256)
+    with pytest.raises(ValueError, match="1-64 character"):
+        await repo.update(connection, {"provider": ""})
+    with pytest.raises(ValueError, match="must be a boolean"):
+        await repo.set_enabled(connection, cast(Any, 1))
+
+    assert connection.id != "forged"
+    assert connection.name == "tracker"
+    assert connection.provider == "stub"
+    assert connection.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_connections_repository_never_executes_hostile_change_or_mapping_hooks() -> None:
+    class HostileDict(dict[Any, Any]):
+        called = False
+
+        def __iter__(self) -> Iterator[Any]:
+            self.called = True
+            raise AssertionError("custom dictionary iteration must not execute")
+
+        def keys(self) -> Any:
+            self.called = True
+            raise AssertionError("custom dictionary keys must not execute")
+
+    repo = ConnectionsRepository(cast(Any, object()))
+    connection = _make_connection(kind="work_tracking", provider="stub", name="tracker")
+    changes = HostileDict(name="forged")
+    mapping = HostileDict(pattern="*.example.test", target="10.0.0.1")
+
+    with pytest.raises(ValueError, match="unsupported connection fields"):
+        await repo.update(connection, changes)
+    with pytest.raises(ValueError, match="host mapping must contain only"):
+        await repo.replace_host_mappings(connection, [mapping])
+
+    assert changes.called is False
+    assert mapping.called is False
+    assert connection.name == "tracker"
+    assert connection.host_mappings == []
+
+
+@pytest.mark.asyncio
+async def test_connections_repository_validates_complete_host_mapping_shape() -> None:
+    repo = ConnectionsRepository(cast(Any, object()))
+    connection = _make_connection(kind="work_tracking", provider="stub", name="tracker")
+
+    invalid: list[Any] = [
+        ({"pattern": "*.example.test", "target": "10.0.0.1"},),
+        [{"pattern": "*.example.test", "target": "10.0.0.1", "extra": True}],
+        [{"pattern": "*.example.test", "target": "10.0.0.1", "enabled": 1}],
+        [{"pattern": "", "target": "10.0.0.1"}],
+        [{"pattern": "x" * 1_025, "target": "10.0.0.1"}],
+    ]
+    for mappings in invalid:
+        with pytest.raises(ValueError):
+            await repo.replace_host_mappings(connection, cast(Any, mappings))
+    with pytest.raises(ValueError, match="at most 256"):
+        await repo.replace_host_mappings(
+            connection,
+            [{"pattern": f"host-{index}", "target": "10.0.0.1"} for index in range(257)],
+        )
+
+    assert connection.host_mappings == []
+
+
+@pytest.mark.asyncio
 async def test_connections_repository_does_not_reenable_legacy_unsafe_row() -> None:
     repo = ConnectionsRepository(cast(Any, object()))
     connection = _make_connection(
@@ -183,10 +295,77 @@ async def test_connections_repository_does_not_reenable_legacy_unsafe_row() -> N
     )
     connection.enabled = False
 
-    with pytest.raises(ValueError, match="credential-bearing"):
+    with pytest.raises(ValueError, match="credential"):
         await repo.set_enabled(connection, True)
 
     assert connection.enabled is False
+
+
+@pytest.mark.parametrize(
+    ("provider", "options"),
+    [
+        ("jira", {}),
+        ("jira", {"project_key": ""}),
+        ("ado", {}),
+        ("ado", {"project": " "}),
+    ],
+)
+async def test_connections_repository_requires_external_project_on_scoped_real_trackers(
+    provider: str, options: dict[str, Any]
+) -> None:
+    repository = ConnectionsRepository(cast(Any, object()))
+
+    with pytest.raises(ValueError, match="requires a bounded external project"):
+        await repository.create(
+            kind="work_tracking",
+            provider=provider,
+            name="direct-writer",
+            project_id="project-1",
+            options=options,
+        )
+
+    legacy = _make_connection(
+        kind="work_tracking",
+        provider=provider,
+        name="legacy",
+        project_id="project-1",
+        options=options,
+    )
+    with pytest.raises(ValueError, match="requires a bounded external project"):
+        await repository.update(legacy, {"name": "still-legacy"})
+    assert legacy.name == "legacy"
+
+    legacy.enabled = False
+    with pytest.raises(ValueError, match="requires a bounded external project"):
+        await repository.set_enabled(legacy, True)
+    assert legacy.enabled is False
+
+
+async def test_connections_repository_accepts_complete_scoped_jira_direct_write() -> None:
+    class Session:
+        def __init__(self) -> None:
+            self.added: Connection | None = None
+
+        def add(self, row: Connection) -> None:
+            self.added = row
+
+        async def commit(self) -> None:
+            return None
+
+        async def refresh(self, _row: Connection) -> None:
+            return None
+
+    session = Session()
+    row = await ConnectionsRepository(cast(Any, session)).create(
+        kind="work_tracking",
+        provider="jira",
+        name="scoped-jira",
+        project_id="project-1",
+        options={"project_key": "PHX"},
+    )
+
+    assert session.added is row
+    assert row.options == {"project_key": "PHX"}
 
 
 class FakeConnectionsRepository:
@@ -393,6 +572,54 @@ def test_create_connection_rejects_nul_text_before_repository_mutation(
     assert repo.connections == {}
 
 
+def test_create_rejects_scoped_jira_without_external_project(
+    admin: TestClient,
+    repo: FakeConnectionsRepository,
+) -> None:
+    response = admin.post(
+        "/admin/connections",
+        json={
+            "kind": "work_tracking",
+            "provider": "jira",
+            "name": "scoped-jira",
+            "project_id": "demo",
+            "options": {},
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "scoped work-tracking connection requires an external project"
+    )
+    assert repo.connections == {}
+
+
+def test_update_and_enable_reject_scoped_jira_without_external_project(
+    admin: TestClient,
+    repo: FakeConnectionsRepository,
+) -> None:
+    connection = _make_connection(
+        kind="work_tracking",
+        provider="jira",
+        name="scoped-jira",
+        project_id="demo",
+        options={"project_key": "PHX"},
+    )
+    repo.connections[connection.id] = connection
+
+    updated = admin.patch(f"/admin/connections/{connection.id}", json={"options": {}})
+
+    assert updated.status_code == 422
+    assert connection.options == {"project_key": "PHX"}
+
+    connection.options = {}
+    connection.enabled = False
+    enabled = admin.post(f"/admin/connections/{connection.id}/enable")
+
+    assert enabled.status_code == 422
+    assert connection.enabled is False
+
+
 @pytest.mark.parametrize("secret_ref", ["vault:path/to/key", "file:/run/secrets/key"])
 def test_create_rejects_secret_schemes_without_a_registered_resolver(
     admin: TestClient, repo: FakeConnectionsRepository, secret_ref: str
@@ -471,6 +698,38 @@ def test_validation_error_does_not_reflect_secret_bearing_options(
     assert repo.connections == {}
 
 
+def test_connection_api_rejects_credentials_in_scalar_labels_without_reflection(
+    repo: FakeConnectionsRepository,
+) -> None:
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(router)
+    app.dependency_overrides[get_connections_repository] = lambda: repo
+    app.dependency_overrides[get_current_identity] = lambda: identity(Role.ADMIN)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/admin/connections",
+            json={"kind": "work_tracking", "provider": "stub", "name": credential},
+        )
+        safe = client.post(
+            "/admin/connections",
+            json={"kind": "work_tracking", "provider": "stub", "name": "safe-name"},
+        )
+        patched = client.patch(
+            f"/admin/connections/{safe.json()['id']}",
+            json={"name": credential},
+        )
+
+    assert created.status_code == 422
+    assert patched.status_code == 422
+    assert credential.encode() not in created.content
+    assert credential.encode() not in patched.content
+    assert len(repo.connections) == 1
+    assert next(iter(repo.connections.values())).name == "safe-name"
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -486,6 +745,29 @@ def test_validation_error_does_not_reflect_secret_bearing_options(
         {"session_id": "opaque-session-id-canary"},
         {"client_certificate": "opaque-client-certificate-canary"},
         {"private_pem": "opaque-private-pem-canary"},
+        {"connection_string": "opaque-connection-string-canary"},
+        {"database_uri": "opaque-database-uri-canary"},
+        {"postgres_url": "opaque-postgres-url-canary"},
+        {"redis_url": "opaque-redis-url-canary"},
+        {"broker_uri": "opaque-broker-uri-canary"},
+        {"amqp_url": "opaque-amqp-url-canary"},
+        {"mongodb_uri": "opaque-mongodb-uri-canary"},
+        {"dsn": "opaque-dsn-canary"},
+        {"sas": "opaque-sas-canary"},
+        {"ssh_key": "opaque-ssh-key-canary"},
+        {"signing_key": "opaque-signing-key-canary"},
+        {"encryption_key": "opaque-encryption-key-canary"},
+        {"authentication": "opaque-authentication-canary"},
+        {"header": "Authorization: Bearer opaque-auth-scheme-canary"},
+        {"ordinary": "postgresql://user:opaque-uri-canary@example.test/db"},
+        {"items": ["Authorization: Bearer opaque-nested-auth-canary"]},
+        {"value": "ghp_0123456789abcdefghijklmnopqrstuvwxyz"},
+        {"value": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhcGV4LXVzZXIifQ.c2lnbmF0dXJlLWNhbmFyeQ"},
+        {
+            "value": "-----BEGIN PRIVATE KEY-----\n"
+            "cHJpdmF0ZS1rZXktY2FuYXJ5\n"
+            "-----END PRIVATE KEY-----"
+        },
         {
             "callback": (
                 "https://operator:opaque-url-canary@example.test/callback"
@@ -518,6 +800,7 @@ def test_create_rejects_nonstandard_legacy_credential_options_without_reflection
     assert b"opaque-basic-auth-canary" not in response.content
     assert b"opaque-url-canary" not in response.content
     assert b"opaque-query-canary" not in response.content
+    assert b"opaque-" not in response.content
     for value in options.values():
         if isinstance(value, str):
             assert value.encode() not in response.content
@@ -887,6 +1170,24 @@ def test_legacy_credentials_require_unscoped_repair_and_are_never_serialized(
     assert raw_secret_ref.encode() not in unscoped_ref.content
 
 
+def test_legacy_connection_credential_label_is_redacted_from_output(
+    repo: FakeConnectionsRepository,
+) -> None:
+    credential = "ghp_0123456789abcdefghijklmnopqrstuvwxyz"
+    repo.connections["legacy-label"] = _make_connection(
+        id="legacy-label",
+        kind="work_tracking",
+        provider="stub",
+        name=credential,
+    )
+
+    response = make_client(repo, identity(Role.ADMIN)).get("/admin/connections/legacy-label")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "[REDACTED]"
+    assert credential.encode() not in response.content
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -904,6 +1205,19 @@ def test_legacy_credentials_require_unscoped_repair_and_are_never_serialized(
         "session_id",
         "client_certificate",
         "private_pem",
+        "connection_string",
+        "database_uri",
+        "postgres_url",
+        "redis_url",
+        "broker_uri",
+        "amqp_url",
+        "mongodb_uri",
+        "dsn",
+        "sas",
+        "ssh_key",
+        "signing_key",
+        "encryption_key",
+        "authentication",
     ],
 )
 def test_legacy_credential_alias_options_are_quarantined_atomically(field: str) -> None:
@@ -919,11 +1233,68 @@ def test_legacy_credential_alias_options_are_quarantined_atomically(field: str) 
 @pytest.mark.parametrize(
     "options",
     [
+        {
+            "safe_sibling": "visible-only-if-safe",
+            "header": "Authorization: Bearer legacy-auth-scheme-canary",
+        },
+        {
+            "safe_sibling": "visible-only-if-safe",
+            "ordinary": "postgresql://user:legacy-uri-canary@example.test/db",
+        },
+        {
+            "safe_sibling": "visible-only-if-safe",
+            "items": ["Authorization: Bearer legacy-nested-auth-canary"],
+        },
+    ],
+)
+def test_legacy_credential_values_under_innocuous_keys_are_quarantined_atomically(
+    options: dict[str, str],
+) -> None:
+    assert connection_options_require_repair(options) is True
+    projected = sanitize_connection_options_for_output(options)
+
+    assert projected == {"_apex_repair_required": True}
+    assert "legacy-auth-scheme-canary" not in repr(projected)
+    assert "legacy-uri-canary" not in repr(projected)
+    assert "legacy-nested-auth-canary" not in repr(projected)
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhcGV4LXVzZXIifQ.c2lnbmF0dXJlLWNhbmFyeQ",
+        "-----BEGIN PRIVATE KEY-----\ncHJpdmF0ZS1rZXktY2FuYXJ5\n-----END PRIVATE KEY-----",
+    ],
+)
+def test_standalone_credential_signatures_under_innocuous_keys_are_quarantined(
+    credential: str,
+) -> None:
+    options = {"safe_sibling": "must-not-survive", "value": credential}
+
+    assert connection_options_require_repair(options) is True
+    projected = sanitize_connection_options_for_output(options)
+
+    assert projected == {"_apex_repair_required": True}
+    assert credential not in repr(projected)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
         {"auth_mode": "bearer"},
         {"access_key": "non-secret-s3-access-key-id"},
         {"access_key_id": "non-secret-cloud-access-key-id"},
         {"aws_access_key_id": "non-secret-aws-access-key-id"},
         {"project_key": "PHX"},
+        {"header": "application/json"},
+        {"ordinary": "https://example.test/path"},
+        {"tokenCount": "42"},
+        {"tokenCountValue": "42"},
+        {"signatureAlgorithm": "HMAC-SHA256"},
+        {"signatureAlgorithmValue": "HMAC-SHA256"},
+        {"authenticationMode": "bearer"},
+        {"authenticationModeValue": "bearer"},
     ],
 )
 def test_known_nonsecret_connection_identifiers_remain_serializable(
@@ -931,6 +1302,15 @@ def test_known_nonsecret_connection_identifiers_remain_serializable(
 ) -> None:
     assert connection_options_require_repair(options) is False
     assert sanitize_connection_options_for_output(options) == options
+
+
+@pytest.mark.parametrize("field", ["accessToken", "sessionToken", "requestSignature"])
+def test_terminal_token_and_signature_options_remain_credential_bearing(field: str) -> None:
+    options = {field: "must-remain-secret"}
+
+    assert connection_options_require_repair(options) is True
+    with pytest.raises(ValueError, match="secret_ref"):
+        reject_raw_secret_options(options)
 
 
 def test_scoped_admin_cannot_create_adopt_or_enable_ambient_kubernetes_identity(
@@ -1379,10 +1759,11 @@ async def test_artifact_probe_verifies_bytes_without_exposing_a_signed_url() -> 
         async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
             assert data == b"probe"
             assert content_type == "text/plain"
-            return StoredArtifact(key=key, uri="s3://private/probe", size=len(data))
+            return StoredArtifact(key=key, uri=f"s3://private/{key}", size=len(data))
 
-        async def get(self, key: str) -> bytes:
-            return b"probe"
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            assert chunk_size == len(b"probe") + 1
+            yield b"probe"
 
         async def get_url(self, key: str) -> str:
             self.get_url_called = True
@@ -1401,6 +1782,96 @@ async def test_artifact_probe_verifies_bytes_without_exposing_a_signed_url() -> 
     assert "secret" not in detail
 
 
+async def test_artifact_probe_rejects_noncanonical_ack_and_still_cleans_up() -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.iter_called = False
+
+        async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
+            return StoredArtifact(key=key, uri="s3://private/wrong-key", size=len(data))
+
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            self.iter_called = True
+            yield b"probe"
+
+        async def delete(self, key: str) -> None:
+            self.deleted.append(key)
+
+    store = Store()
+
+    with pytest.raises(RuntimeError, match="invalid object metadata"):
+        await _probe_artifact_store(store)
+
+    assert store.iter_called is False
+    assert len(store.deleted) == 1
+
+
+async def test_artifact_probe_never_invokes_unknown_model_dump_and_cleans_up() -> None:
+    class HostileAcknowledgement:
+        called = False
+
+        def model_dump(self, **_kwargs: Any) -> dict[str, Any]:
+            self.called = True
+            raise AssertionError("provider model_dump must not be called")
+
+    acknowledgement = HostileAcknowledgement()
+
+    class Store:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def put(self, key: str, data: bytes, *, content_type: str) -> Any:
+            return acknowledgement
+
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            raise AssertionError("invalid acknowledgement must fail before read")
+            yield b""  # pragma: no cover - makes this an async generator
+
+        async def delete(self, key: str) -> None:
+            self.deleted.append(key)
+
+    store = Store()
+
+    with pytest.raises(RuntimeError, match="invalid object metadata"):
+        await _probe_artifact_store(store)
+
+    assert acknowledgement.called is False
+    assert len(store.deleted) == 1
+
+
+async def test_artifact_probe_rejects_bytes_subclass_without_invoking_equality() -> None:
+    class HostileBytes(bytes):
+        called = False
+
+        def __eq__(self, other: object) -> bool:
+            self.called = True
+            raise AssertionError("provider bytes equality must not be called")
+
+    payload = HostileBytes(b"probe")
+
+    class Store:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
+            return StoredArtifact(key=key, uri=f"s3://private/{key}", size=len(data))
+
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            yield payload
+
+        async def delete(self, key: str) -> None:
+            self.deleted.append(key)
+
+    store = Store()
+
+    with pytest.raises(RuntimeError, match="bounded payload"):
+        await _probe_artifact_store(store)
+
+    assert payload.called is False
+    assert len(store.deleted) == 1
+
+
 async def test_artifact_probe_requires_cleanup_support_before_upload() -> None:
     class StoreWithoutDelete:
         def __init__(self) -> None:
@@ -1408,11 +1879,11 @@ async def test_artifact_probe_requires_cleanup_support_before_upload() -> None:
 
         async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
             self.put_called = True
-            return StoredArtifact(key=key, uri="s3://private/probe", size=len(data))
+            return StoredArtifact(key=key, uri=f"s3://private/{key}", size=len(data))
 
     store = StoreWithoutDelete()
 
-    with pytest.raises(ValueError, match="safe probe cleanup"):
+    with pytest.raises(ValueError, match="safe bounded probe"):
         await _probe_artifact_store(store)
     assert store.put_called is False
 
@@ -1423,10 +1894,10 @@ async def test_artifact_probe_waits_for_cleanup_when_cancelled() -> None:
 
     class Store:
         async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
-            return StoredArtifact(key=key, uri="s3://private/probe", size=len(data))
+            return StoredArtifact(key=key, uri=f"s3://private/{key}", size=len(data))
 
-        async def get(self, key: str) -> bytes:
-            return b"probe"
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            yield b"probe"
 
         async def delete(self, key: str) -> None:
             delete_started.set()
@@ -1436,11 +1907,195 @@ async def test_artifact_probe_waits_for_cleanup_when_cancelled() -> None:
     await delete_started.wait()
     task.cancel()
     await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
 
     assert task.done() is False
     release_delete.set()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_artifact_probe_bounds_streamed_provider_output_and_cleans_up() -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
+            return StoredArtifact(key=key, uri=f"s3://private/{key}", size=len(data))
+
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            yield b"probe"
+            yield b"provider-controlled-overflow"
+
+        async def delete(self, key: str) -> None:
+            self.deleted.append(key)
+
+    store = Store()
+    with pytest.raises(RuntimeError, match="bounded payload"):
+        await _probe_artifact_store(store)
+    assert len(store.deleted) == 1
+
+
+async def test_artifact_probe_timeout_can_interrupt_endless_empty_chunks() -> None:
+    class Store:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
+            return StoredArtifact(key=key, uri=f"s3://private/{key}", size=len(data))
+
+        async def iter_bytes(self, key: str, *, chunk_size: int):
+            while True:
+                await asyncio.sleep(0)
+                yield b""
+
+        async def delete(self, key: str) -> None:
+            self.deleted.append(key)
+
+    store = Store()
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.01):
+            await _probe_artifact_store(store)
+    assert len(store.deleted) == 1
+
+
+async def test_work_tracking_probe_never_invokes_unknown_model_dump() -> None:
+    class HostileWorkItem(dict[str, Any]):
+        called = False
+
+        def model_dump(self, **_kwargs: Any) -> dict[str, Any]:
+            self.called = True
+            raise AssertionError("provider model_dump must not be called")
+
+        def __iter__(self) -> Iterator[str]:
+            self.called = True
+            raise AssertionError("provider mapping must not be iterated")
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("provider mapping length must not be read")
+
+    item = HostileWorkItem()
+
+    class Adapter:
+        async def get_item(self, key: str) -> Any:
+            return item
+
+    with pytest.raises(RuntimeError, match="invalid work item"):
+        await _probe_work_tracking(Adapter())
+
+    assert item.called is False
+
+
+async def test_log_probe_rejects_hostile_entry_list_without_traversal() -> None:
+    class HostileEntries(list[LogEntry]):
+        called = False
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("provider list length must not be called")
+
+        def __iter__(self) -> Iterator[LogEntry]:
+            self.called = True
+            raise AssertionError("provider list iteration must not be called")
+
+    entries = HostileEntries([LogEntry(at="2026-06-10T11:59:59Z", message="safe")])
+    result = LogSearchResult.model_construct(entries=entries, total=1)
+
+    class Adapter:
+        async def search(
+            self,
+            query: LogQuery,
+            *,
+            window: TimeWindow,
+            page: Page,
+        ) -> LogSearchResult:
+            return result
+
+    with pytest.raises(RuntimeError, match="invalid log result"):
+        await _probe_log_search(Adapter())
+
+    assert entries.called is False
+
+
+async def test_log_probe_rejects_arbitrary_entry_without_reading_spoofed_class() -> None:
+    class HostileEntry:
+        class_called = False
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                type(self).class_called = True
+                raise AssertionError("provider __class__ descriptor must not be called")
+            return object.__getattribute__(self, name)
+
+    entry = HostileEntry()
+    result = LogSearchResult.model_construct(entries=[entry], total=1)
+
+    class Adapter:
+        async def search(
+            self,
+            query: LogQuery,
+            *,
+            window: TimeWindow,
+            page: Page,
+        ) -> LogSearchResult:
+            return result
+
+    with pytest.raises(RuntimeError, match="invalid provider model"):
+        await _probe_log_search(Adapter())
+
+    assert entry.class_called is False
+
+
+async def test_document_probe_rejects_hostile_result_list_without_traversal() -> None:
+    class HostileHits(list[Any]):
+        called = False
+
+        def __len__(self) -> int:
+            self.called = True
+            raise AssertionError("provider list length must not be called")
+
+        def __iter__(self) -> Iterator[Any]:
+            self.called = True
+            raise AssertionError("provider list iteration must not be called")
+
+    hits = HostileHits()
+
+    class Adapter:
+        async def search(self, query: str, *, scope: Any, k: int) -> Any:
+            return hits
+
+    with pytest.raises(RuntimeError, match="invalid result list"):
+        await _probe_documents(Adapter())
+
+    assert hits.called is False
+
+
+async def test_probe_rejects_forged_model_key_before_rehashing_it() -> None:
+    class HostileKey(str):
+        hash_calls = 0
+
+        def __hash__(self) -> int:
+            self.hash_calls += 1
+            if self.hash_calls > 1:
+                raise AssertionError("forged provider key must not be rehashed")
+            return str.__hash__(self)
+
+    file = FileContent(path="README.md", text="safe")
+    state = cast(dict[Any, Any], file.__dict__)
+    state.pop("media_type")
+    key = HostileKey("media_type")
+    state[key] = "text/plain"
+
+    class Adapter:
+        async def get_file(self, repo: Any, path: str) -> FileContent:
+            return file
+
+    with pytest.raises(RuntimeError, match="invalid provider model"):
+        await _probe_source_control(Adapter())
+
+    assert key.hash_calls == 1
 
 
 def test_probe_ok_for_stub_connection(admin: TestClient) -> None:
@@ -1558,6 +2213,98 @@ def test_probe_closes_temporary_adapter(admin: TestClient, probe_fails: bool) ->
     assert response.json()["ok"] is (not probe_fails)
     assert len(instances) == 1
     assert instances[0].closed is True
+
+
+def test_probe_timeout_is_inline_and_still_closes_adapter(
+    admin: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = "test-probe-timeout"
+    instances: list[Any] = []
+
+    class HangingAdapter:
+        def __init__(
+            self, conn: ConnectionConfig | None = None, secret: SecretValue | None = None
+        ) -> None:
+            self.closed = False
+            instances.append(self)
+
+        async def get_item(self, key: str) -> Any:
+            await asyncio.Event().wait()
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(HangingAdapter)
+    monkeypatch.setattr("apex.routers.connections.CONNECTION_PROBE_TIMEOUT_S", 0.01)
+    try:
+        conn_id = admin.post(
+            "/admin/connections",
+            json={"kind": "work_tracking", "provider": provider, "name": provider},
+        ).json()["id"]
+        response = admin.post(f"/admin/connections/{conn_id}/test")
+    finally:
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert response.json()["detail"] == "connection probe failed; check server logs for details"
+    assert len(instances) == 1
+    assert instances[0].closed is True
+
+
+def test_probe_releases_nested_secret_checkout(
+    admin: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = "test-probe-secret-release"
+
+    class SecretCheckout:
+        def __init__(self) -> None:
+            self.released = False
+
+        async def resolve(self, secret_ref: str) -> SecretValue:
+            assert secret_ref == "env:APEX_INTEGRATION_TRACKER_TOKEN"
+            return SecretValue(value="probe-secret")
+
+        async def aclose(self) -> None:
+            self.released = True
+
+    secret_checkout = SecretCheckout()
+
+    class Resolver:
+        async def resolve(self, kind: PortKind) -> SecretCheckout:
+            assert kind is PortKind.SECRETS
+            return secret_checkout
+
+    class Adapter:
+        def __init__(
+            self, conn: ConnectionConfig | None = None, secret: SecretValue | None = None
+        ) -> None:
+            assert secret is not None
+
+        async def get_item(self, key: str) -> WorkItem:
+            return WorkItem(key=key, title="connection probe")
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(Adapter)
+    monkeypatch.setattr("apex.routers.connections.get_connection_resolver", Resolver)
+    try:
+        conn_id = admin.post(
+            "/admin/connections",
+            json={
+                "kind": "work_tracking",
+                "provider": provider,
+                "name": provider,
+                "secret_ref": "env:APEX_INTEGRATION_TRACKER_TOKEN",
+            },
+        ).json()["id"]
+        response = admin.post(f"/admin/connections/{conn_id}/test")
+    finally:
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert secret_checkout.released is True
 
 
 def test_probe_rejects_private_base_url(admin: TestClient, repo: FakeConnectionsRepository) -> None:

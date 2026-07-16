@@ -4,14 +4,17 @@ import pytest
 
 from apex.domain.pipeline import MAX_TOOL_CALL_RECORDS
 from apex.graphs.pipeline.state import (
+    MAX_DURABLE_APPROVALS,
     MAX_DURABLE_ARTIFACTS,
     MAX_DURABLE_DIALOGUE_ENTRIES,
     MAX_DURABLE_PHASE_DIAGNOSTICS,
     append_unique_by_id,
+    merge_application_reviews,
     merge_artifacts,
     merge_context_packets,
     merge_dialogue,
     merge_phase_results,
+    merge_prompt_reviews,
 )
 from apex.services import run_validation
 
@@ -25,6 +28,43 @@ def test_append_unique_by_id_dedupes() -> None:
 def test_append_unique_handles_none() -> None:
     assert append_unique_by_id(None, [{"id": "x"}]) == [{"id": "x"}]
     assert append_unique_by_id([{"id": "x"}], None) == [{"id": "x"}]
+
+
+def test_append_unique_canonicalizes_null_ids_and_repairs_inherited_duplicates() -> None:
+    legacy = {"id": None, "value": "legacy"}
+
+    first = append_unique_by_id([legacy, legacy], [])
+
+    assert len(first) == 1
+    assert type(first[0]["id"]) is str
+    assert first[0]["id"].startswith("derived-")
+    assert append_unique_by_id(first, [legacy]) == first
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ([{"value": "legacy"}], [{"id": None, "value": "legacy"}]),
+        ([{"id": None, "value": "legacy"}], [{"value": "legacy"}]),
+    ],
+)
+def test_append_unique_treats_missing_and_null_ids_as_the_same_entry(
+    left: list[dict[str, object]],
+    right: list[dict[str, object]],
+) -> None:
+    merged = append_unique_by_id(left, right)
+
+    assert len(merged) == 1
+    assert merged[0]["value"] == "legacy"
+    assert type(merged[0]["id"]) is str
+    assert merged[0]["id"].startswith("derived-")
+
+
+def test_append_unique_dedupes_duplicate_ids_already_on_one_side() -> None:
+    assert append_unique_by_id(
+        [{"id": "same", "value": "first"}, {"id": "same", "value": "second"}],
+        [],
+    ) == [{"id": "same", "value": "first"}]
 
 
 def test_artifact_reducer_retains_bounded_recent_unique_window() -> None:
@@ -154,6 +194,64 @@ def test_merge_preserves_untouched_phases() -> None:
     assert set(merged) == {"story_analysis", "env_triage"}
 
 
+def test_merge_revalidates_untouched_inherited_phase() -> None:
+    with pytest.raises(ValueError, match="credential material") as raised:
+        merge_phase_results(
+            {
+                "story_analysis": {
+                    "attempt": 1,
+                    "summary": "Authorization: Bearer inherited-sibling-secret-canary",
+                },
+                "execution": {"attempt": 1, "status": "running"},
+            },
+            {"execution": {"attempt": 1, "status": "succeeded"}},
+        )
+
+    assert "inherited-sibling-secret-canary" not in str(raised.value)
+
+
+@pytest.mark.parametrize("incoming_attempt", [1, 4])
+def test_merge_rejects_attempt_rollback_or_jump(incoming_attempt: int) -> None:
+    with pytest.raises(ValueError, match="attempt is not monotonic"):
+        merge_phase_results(
+            {"execution": {"attempt": 2, "status": "running"}},
+            {"execution": {"attempt": incoming_attempt, "status": "running"}},
+        )
+
+
+@pytest.mark.parametrize("incoming_status", ["running", "failed", "aborted"])
+def test_merge_does_not_reopen_or_replace_terminal_attempt(incoming_status: str) -> None:
+    with pytest.raises(ValueError, match="terminal phase status is immutable"):
+        merge_phase_results(
+            {"execution": {"attempt": 2, "status": "succeeded"}},
+            {"execution": {"attempt": 2, "status": incoming_status}},
+        )
+
+
+def test_merge_allows_exact_terminal_replay_to_enrich_diagnostics() -> None:
+    merged = merge_phase_results(
+        {"execution": {"attempt": 2, "status": "failed"}},
+        {
+            "execution": {
+                "attempt": 2,
+                "status": "failed",
+                "errors": ["provider failed"],
+            }
+        },
+    )
+
+    assert merged["execution"]["status"] == "failed"
+    assert merged["execution"]["errors"] == ["provider failed"]
+
+
+def test_merge_rejects_entry_bound_to_another_phase() -> None:
+    with pytest.raises(ValueError, match="bound to another phase"):
+        merge_phase_results(
+            {"story_analysis": {"phase": "execution", "attempt": 1}},
+            {"execution": {"attempt": 1}},
+        )
+
+
 def test_merge_caps_durable_tool_call_history() -> None:
     left = {
         "reporting": {
@@ -190,3 +288,111 @@ def test_merge_caps_phase_diagnostics_on_merge_and_new_attempt() -> None:
 
     assert initial["errors"] == oversized[-MAX_DURABLE_PHASE_DIAGNOSTICS:]
     assert replacement["warnings"] == oversized[-MAX_DURABLE_PHASE_DIAGNOSTICS:]
+
+
+def test_phase_reducer_fails_closed_on_credential_bearing_current_diagnostics() -> None:
+    with pytest.raises(ValueError, match="credential material") as raised:
+        merge_phase_results(
+            {
+                "execution": {
+                    "attempt": 1,
+                    "warnings": ["Authorization: Bearer reducer-secret-canary"],
+                }
+            },
+            {"execution": {"attempt": 1, "status": "succeeded", "warnings": []}},
+        )
+
+    assert "reducer-secret-canary" not in str(raised.value)
+
+
+def test_id_bearing_reducer_entries_are_validated_and_approvals_are_bounded() -> None:
+    with pytest.raises(ValueError, match="credential material") as raised:
+        append_unique_by_id(
+            [],
+            [
+                {
+                    "id": "approval-1",
+                    "note": "password=reducer-entry-secret-canary",
+                }
+            ],
+        )
+    assert "reducer-entry-secret-canary" not in str(raised.value)
+
+    approvals = [{"id": f"approval-{index}"} for index in range(MAX_DURABLE_APPROVALS + 10)]
+    merged = merge_phase_results(
+        {},
+        {"execution": {"attempt": 1, "approvals": approvals}},
+    )["execution"]
+    assert len(merged["approvals"]) == MAX_DURABLE_APPROVALS
+    assert merged["approvals"][0]["id"] == "approval-10"
+
+
+def test_phase_reducer_validates_whole_entry_before_copy_or_merge() -> None:
+    oversized = {f"field-{index}": index for index in range(129)}
+    with pytest.raises(ValueError, match="reducer entry is invalid"):
+        merge_phase_results({}, {"execution": oversized})
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        merge_phase_results(
+            {"execution": {"attempt": 1, "summary": "password=phase-secret-canary"}},
+            {"execution": {"attempt": 1, "status": "succeeded"}},
+        )
+
+    assert "phase-secret-canary" not in str(raised.value)
+
+
+def test_phase_reducer_rejects_unknown_or_oversized_phase_maps() -> None:
+    with pytest.raises(ValueError, match="phase name is invalid"):
+        merge_phase_results({}, {"attacker_phase": {"attempt": 1}})
+
+    oversized = {
+        **{
+            phase: {"attempt": 1}
+            for phase in (
+                "story_analysis",
+                "test_planning",
+                "env_triage",
+                "script_scenario",
+                "execution",
+                "reporting",
+                "postmortem",
+            )
+        },
+        "extra": {"attempt": 1},
+    }
+    with pytest.raises(ValueError, match="phase name is invalid"):
+        merge_phase_results(oversized, {})
+
+
+def test_review_reducers_reject_poisoned_current_state_before_merge() -> None:
+    with pytest.raises(ValueError, match="credential material") as raised:
+        merge_prompt_reviews(
+            {"story_analysis": {"system": "Authorization: Bearer reducer-review-secret-canary"}},
+            {"reporting": {"system": "safe"}},
+        )
+    assert "reducer-review-secret-canary" not in str(raised.value)
+
+    with pytest.raises(ValueError, match="application prompt reviews are invalid"):
+        merge_application_reviews(
+            {"app-1": {"content": "one"}, "app-2": {"content": "two"}},
+            {"app-3": {"content": "three"}},
+        )
+
+    assert (
+        merge_application_reviews(
+            {"app-1": {"content": "password=legacy-secret-canary"}},
+            {},
+        )
+        == {}
+    )
+
+
+def test_review_reducers_reject_unknown_phase_and_oversized_entry() -> None:
+    with pytest.raises(ValueError, match="prompt reviews key is invalid"):
+        merge_prompt_reviews({}, {"unknown": {"system": "safe"}})
+
+    with pytest.raises(ValueError, match="prompt review is too large"):
+        merge_prompt_reviews(
+            {},
+            {"story_analysis": {f"field-{index}": "x" * 13_000 for index in range(31)}},
+        )

@@ -125,6 +125,16 @@ async def test_schema_readiness_rejects_mutated_known_lineage() -> None:
         await schema_readiness.validate_schema_head(_Engine(_Connection(["0028"], lineage=lineage)))
 
 
+async def test_schema_readiness_does_not_reflect_database_revision_labels() -> None:
+    canary = "database-revision-secret-canary\nforged-log-line"
+
+    with pytest.raises(schema_readiness.SchemaNotReadyError) as caught:
+        await schema_readiness.validate_schema_head(_Engine(_Connection([canary])))
+
+    assert canary not in str(caught.value)
+    assert "forged-log-line" not in str(caught.value)
+
+
 async def test_schema_readiness_sanitizes_database_failures() -> None:
     failure = OperationalError("SELECT secret", {"password": "do-not-leak"}, Exception("boom"))
 
@@ -148,6 +158,8 @@ async def test_schema_readiness_sanitizes_engine_configuration_failures(
 
     assert "do-not-leak" not in str(caught.value)
     assert "schema is unavailable" in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_packaged_schema_head_tracks_latest_revision() -> None:

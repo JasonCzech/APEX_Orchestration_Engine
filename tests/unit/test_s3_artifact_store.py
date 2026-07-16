@@ -20,11 +20,31 @@ from minio.error import S3Error
 
 import apex.adapters.s3.artifact_store as s3_module
 from apex.adapters.network_safety import SafePoolManager
+from apex.adapters.options import normalize_host_port_endpoint, require_bounded_credential
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.s3 import S3ArtifactStore
 from apex.adapters.stubs import EnvSecretsAdapter
 from apex.domain.integrations import SecretValue
 from apex.ports.artifact_store import ArtifactStoreBusyError, ArtifactStorePort
+
+
+def test_option_validation_does_not_retain_raw_credential_or_endpoint_text() -> None:
+    credential_canary = "bare-credential-canary\ud800"
+    with pytest.raises(ValueError, match="valid UTF-8") as credential_error:
+        require_bounded_credential(credential_canary, label="provider credential")
+
+    assert credential_error.value.__cause__ is None
+    assert credential_error.value.__context__ is None
+    assert "bare-credential-canary" not in str(credential_error.value)
+
+    endpoint_canary = "bare-endpoint-port-canary"
+    with pytest.raises(ValueError, match="valid host") as endpoint_error:
+        normalize_host_port_endpoint(f"storage.example:{endpoint_canary}", secure=True)
+
+    assert endpoint_error.value.__cause__ is None
+    assert endpoint_error.value.__context__ is None
+    assert endpoint_canary not in str(endpoint_error.value)
+
 
 # --- fixtures / fakes ---------------------------------------------------------
 
@@ -197,6 +217,22 @@ async def test_put_stream_uploads_chunks_and_enforces_hard_cap() -> None:
             max_bytes=5,
         )
     assert ("apex-artifacts", "runs/r1/too-big.bin") not in fake.objects
+
+
+async def test_direct_get_rejects_oversized_remote_object_and_closes_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(s3_module, "MAX_DIRECT_GET_BYTES", 4)
+    fake = FakeMinio(existing_buckets={"apex-artifacts"})
+    fake.objects[("apex-artifacts", "oversized.bin")] = (b"12345", "application/octet-stream")
+    store = S3ArtifactStore(_conn(), client=fake)
+
+    with pytest.raises(ValueError, match="maximum direct-read size"):
+        await store.get("oversized.bin")
+
+    [response] = fake.responses
+    assert response.closed is True
+    assert response.released is True
 
 
 async def test_put_stream_spool_writes_do_not_run_on_event_loop(
@@ -560,8 +596,39 @@ async def test_bucket_option_drives_uri_and_default_bucket() -> None:
 
 async def test_get_missing_key_raises_keyerror() -> None:
     store = S3ArtifactStore(_conn(), client=FakeMinio())
-    with pytest.raises(KeyError, match="missing/key"):
+    with pytest.raises(KeyError, match="missing/key") as excinfo:
         await store.get("missing/key")
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+
+
+async def test_get_provider_failure_detaches_s3_diagnostics() -> None:
+    canary = "s3-provider-response-secret-canary"
+
+    class FailingMinio(FakeMinio):
+        def get_object(self, bucket_name: str, object_name: str) -> FakeObjectResponse:
+            raise S3Error(
+                cast(Any, None),
+                code="AccessDenied",
+                message=canary,
+                resource=f"/{bucket_name}/{object_name}?token={canary}",
+                request_id=canary,
+                host_id=canary,
+                bucket_name=bucket_name,
+                object_name=object_name,
+            )
+
+    store = S3ArtifactStore(
+        _conn(),
+        client=FailingMinio(existing_buckets={"apex-artifacts"}),
+    )
+
+    with pytest.raises(RuntimeError, match="S3 artifact download failed") as excinfo:
+        await store.get("private/object")
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
 
 
 # --- unit: bucket ensure -------------------------------------------------------

@@ -248,11 +248,49 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- if eq .Values.secretBackend.mode "secretsStoreCSI" -}}
 {{- $defaultSecret = "apex-database-bootstrap" -}}
 {{- end -}}
+{{- $databaseSecret := .Values.bootstrap.databaseSecret | default $defaultSecret -}}
+- name: DATABASE_URI
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.bootstrap.langgraphDatabaseSecret | default $databaseSecret | quote }}
+      key: {{ .Values.bootstrap.langgraphDatabaseKey | default .Values.database.uriKey | quote }}
 - name: APEX_DATABASE__URI
   valueFrom:
     secretKeyRef:
-      name: {{ .Values.bootstrap.databaseSecret | default $defaultSecret | quote }}
+      name: {{ $databaseSecret | quote }}
       key: {{ .Values.bootstrap.databaseKey | default .Values.database.apexUriKey | quote }}
+{{- end }}
+
+{{/*
+Non-secret settings for hook processes. Pre-install hooks cannot consume the
+ordinary settings ConfigMap, so reproduce its derived LangGraph CORS contract
+here instead of silently validating a different configuration.
+*/}}
+{{- define "apex.hookSettingsEnv" -}}
+{{- if and (hasKey .Values.apexSettings "APEX_CORS_ORIGINS") (not (hasKey .Values.apexSettings "CORS_CONFIG")) }}
+- name: CORS_CONFIG
+  value: {{ dict
+    "allow_origins" (get .Values.apexSettings "APEX_CORS_ORIGINS" | fromJsonArray)
+    "allow_methods" (list "GET" "POST" "PUT" "PATCH" "DELETE" "OPTIONS")
+    "allow_headers" (list "authorization" "content-type" "idempotency-key" "last-event-id" "x-api-key" "x-request-id")
+    "allow_credentials" true
+    "expose_headers" (list "content-location" "retry-after" "x-pagination-next" "x-pagination-total")
+    "max_age" 600
+    | toJson | quote }}
+{{- end }}
+{{- range $key, $value := .Values.apexSettings }}
+- name: {{ $key }}
+  value: {{ $value | quote }}
+{{- end }}
+{{- end }}
+
+{{/* Bootstrap validates the same distributed-limit settings as the server. */}}
+{{- define "apex.bootstrapRedisEnv" -}}
+- name: REDIS_URI
+  valueFrom:
+    secretKeyRef:
+      name: {{ required "redis.existingSecret is required" .Values.redis.existingSecret | quote }}
+      key: {{ required "redis.uriKey is required" .Values.redis.uriKey | quote }}
 {{- end }}
 
 {{/* Runtime API-key pepper. Empty is allowed for auth-disabled/unlocked installs. */}}
@@ -298,9 +336,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
-Reject secret-looking keys recursively before bootstrap options are serialized
-into a ConfigMap or retained in Helm release history. Runtime bootstrap repeats
-this validation, but that is too late to protect Kubernetes/Helm storage.
+Reject secret-looking keys recursively before the bootstrap document is
+serialized into a ConfigMap or retained in Helm release history. Runtime
+bootstrap repeats this validation, but that is too late to protect
+Kubernetes/Helm storage. `secret_ref` is the sole credential-bearing field and
+may carry only the reference grammar supported by the runtime secrets adapter.
 */}}
 {{- define "apex.assertSecretFreeOptions" -}}
 {{- $value := .value -}}
@@ -308,14 +348,55 @@ this validation, but that is too late to protect Kubernetes/Helm storage.
 {{- if kindIs "map" $value -}}
 {{- range $key, $nested := $value -}}
 {{- $normalizedKey := regexReplaceAll "[^A-Za-z0-9]" (lower (toString $key)) "" -}}
-{{- if regexMatch "(password|token|secret|apikey|credential|authorization)" $normalizedKey -}}
+{{- if eq $normalizedKey "secretref" -}}
+{{- if not (kindIs "string" $nested) -}}
+{{- fail (printf "%s.%s must be a nonempty string using the supported env:NAME reference format" $label $key) -}}
+{{- end -}}
+{{- $secretRef := toString $nested -}}
+{{- if not (regexMatch "^env:[A-Za-z_][A-Za-z0-9_]{0,254}$" $secretRef) -}}
+{{- fail (printf "%s.%s must use the supported env:NAME reference format" $label $key) -}}
+{{- end -}}
+{{- else -}}
+{{- $nonCredentialNames := list "authmode" "authenticationmode" "authtype" "authenticationtype" -}}
+{{- $nonCredential := or (eq $normalizedKey "accesskey") (has $normalizedKey $nonCredentialNames) (regexMatch "accesskey(id|identifier)$" $normalizedKey) -}}
+{{- $separatedCredential := regexMatch "(?i)(^|[^A-Za-z0-9])(password|passwd|pwd|passphrase|secret|client[_-]?secret|personal[_-]?access[_-]?token|pat|bearer|jwt|psk|(access|refresh|identity|id|session|security|api)?[_-]?token|api[_-]?key|access[_-]?key|(private|ssh|signing|encryption|shared|account|storage|subscription|session)[_-]?key|session[_-]?id|client[_-]?(certificate|cert)|private[_-]?pem|pfx|pkcs12|keystore|(set[_-]?)?cookie|(connection|database|db|postgres(ql)?|redis|broker|amqp|mongo(db)?)[_-]?(string|uri|url)|dsn|authorization|auth|credential|signature|sig|sas|x-amz-(credential|signature|security-token)|x-goog-signature)([^A-Za-z0-9]|$)" (toString $key) -}}
+{{- $credentialSuffix := "(password|passwd|pwd|passphrase|secret|secretkey|clientsecret|personalaccesstoken|pat|bearer|jwt|psk|apikey|accesskey|privatekey|sshkey|signingkey|encryptionkey|sharedkey|accountkey|storagekey|subscriptionkey|sessionkey|accesstoken|refreshtoken|identitytoken|idtoken|sessiontoken|securitytoken|authtoken|sastoken|token|authheader|authorizationheader|basicauth|httpauth|sessionid|clientcertificate|clientcert|privatepem|pfx|pkcs12|keystore|authorization|authentication|credential|credentials|signature|connectionstring|databaseuri|databaseurl|postgresuri|postgresurl|postgresqluri|postgresqlurl|redisuri|redisurl|brokeruri|brokerurl|amqpuri|amqpurl|mongouri|mongourl|mongodburi|mongodburl|dsn|cookie|cookies|cookiejar)$" -}}
+{{- $terminalCredential := regexMatch $credentialSuffix $normalizedKey -}}
+{{- $wrappedCredential := false -}}
+{{- $wrappedNonCredential := false -}}
+{{- $candidate := $normalizedKey -}}
+{{- if and (not $nonCredential) (not $separatedCredential) (not $terminalCredential) -}}
+{{- range until 3 -}}
+{{- $wrapper := regexFind "(value|string|binary|text|data|hash)$" $candidate -}}
+{{- if $wrapper -}}
+{{- $candidate = trimSuffix $wrapper $candidate -}}
+{{- if or (has $candidate $nonCredentialNames) (regexMatch "accesskey(id|identifier)$" $candidate) -}}
+{{- $wrappedNonCredential = true -}}
+{{- else if regexMatch $credentialSuffix $candidate -}}
+{{- $wrappedCredential = true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and (not $nonCredential) (or $separatedCredential $terminalCredential (and (not $wrappedNonCredential) $wrappedCredential)) -}}
 {{- fail (printf "%s contains a secret-bearing key %q; store credentials outside bootstrap.document and use secret_ref" $label $key) -}}
+{{- end -}}
 {{- end -}}
 {{- include "apex.assertSecretFreeOptions" (dict "value" $nested "label" $label) -}}
 {{- end -}}
 {{- else if kindIs "slice" $value -}}
 {{- range $nested := $value -}}
 {{- include "apex.assertSecretFreeOptions" (dict "value" $nested "label" $label) -}}
+{{- end -}}
+{{- else if kindIs "string" $value -}}
+{{- $authScheme := regexMatch "(?i)(^|[^A-Za-z0-9])(bearer|basic|digest)[[:space:]]+[^[:space:],;]+" $value -}}
+{{- $uriUserinfo := regexMatch "(?i)[a-z][a-z0-9+.-]*://[^/@[:space:]?#]+@" $value -}}
+{{- $credentialAssignment := regexMatch "(?i)(password|passwd|pwd|passphrase|token|secret|api[_-]?key|dsn|connection[_-]?(string|uri|url)|database[_-]?(string|uri|url)|db[_-]?(string|uri|url)|postgres(ql)?[_-]?(string|uri|url)|redis[_-]?(string|uri|url)|broker[_-]?(string|uri|url)|amqp[_-]?(string|uri|url)|mongo(db)?[_-]?(string|uri|url))[[:space:]]*[:=][[:space:]]*[^[:space:],;}&]+" $value -}}
+{{- $compactJwt := regexMatch "(^|[^A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}[.][A-Za-z0-9_-]{8,}($|[^A-Za-z0-9_-])" $value -}}
+{{- $privateKeyBlock := regexMatch "-----BEGIN ((RSA|EC|DSA|OPENSSH|ENCRYPTED) )?PRIVATE KEY-----" $value -}}
+{{- $providerToken := regexMatch "(^|[^A-Za-z0-9_-])(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9_-]{20,}|xapp-[A-Za-z0-9_-]{20,}|[sr]k_(live|test)_[A-Za-z0-9]{16,}|sk-(proj-)?[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{20,}|pypi-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{35}|ya29[.][A-Za-z0-9._-]{20,}|SG[.][A-Za-z0-9_-]{22}[.][A-Za-z0-9_-]{43}|dckr_(pat|oat)_[A-Za-z0-9_-]{20,}|(?i:[a-z0-9]{14}[.]atlasv1[.][a-z0-9_=-]{60,70})|[A-Za-z0-9]{76}AZDO[A-Za-z0-9]{4})($|[^A-Za-z0-9_-])" $value -}}
+{{- if or $authScheme $uriUserinfo $credentialAssignment $compactJwt $privateKeyBlock $providerToken -}}
+{{- fail (printf "%s contains credential-shaped text; store credentials outside bootstrap.document and use secret_ref" $label) -}}
 {{- end -}}
 {{- end -}}
 {{- end }}

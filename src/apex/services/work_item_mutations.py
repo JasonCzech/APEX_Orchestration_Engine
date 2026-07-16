@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import re
 import threading
 from collections.abc import Callable, Coroutine
 from datetime import UTC, datetime, timedelta
@@ -14,7 +15,8 @@ from uuid import uuid4
 import structlog
 
 from apex.adapters.registry import PortKind
-from apex.auth.identity import ConsumerIdentity
+from apex.auth.identity import ConsumerIdentity, Role
+from apex.domain.diagnostics import contains_credential_material, safe_type_name
 from apex.domain.durable_evidence import sanitize_durable_text
 from apex.domain.integrations import Enrichment, WorkItem, WorkItemDraft
 from apex.persistence.db import get_sessionmaker
@@ -32,7 +34,8 @@ from apex.ports.work_tracking import (
     WorkTrackingMutationRejectedError,
     WorkTrackingMutationTargetNotFoundError,
 )
-from apex.services.connections import ConnectionResolver, get_connection_resolver
+from apex.services.connections import ConnectionResolver, close_adapter, get_connection_resolver
+from apex.services.work_items import validated_provider_work_item
 from apex.settings import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -42,15 +45,15 @@ TERMINAL_REPLAY_RETENTION = timedelta(days=30)
 _RETRY_DELAY = timedelta(seconds=30)
 _MAX_RETRY_DELAY = timedelta(hours=1)
 _LEASE_HEARTBEAT_S = 60.0
+_WORK_ITEM_TARGET_KEY = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 
 
 class _PermanentMutationFailure(Exception):
     """A provider response proves that retrying the durable operation is unsafe/useless."""
 
-    def __init__(self, error_kind: str, cause: Exception) -> None:
-        super().__init__(str(cause))
+    def __init__(self, error_kind: str) -> None:
+        super().__init__(f"work-item mutation permanently failed ({error_kind})")
         self.error_kind = error_kind
-        self.cause = cause
 
 
 class WorkItemMutationOutcomeAmbiguousError(RuntimeError):
@@ -62,13 +65,13 @@ class WorkItemMutationOutcomeAmbiguousError(RuntimeError):
     """
 
     def __init__(self, row: WorkItemMutation, *, operation: str) -> None:
-        self.mutation_id = row.id
-        self.provider_marker = row.provider_marker
-        self.operation = operation
+        self.mutation_id = sanitize_durable_text(row.id, 255) or "unknown"
+        self.provider_marker = sanitize_durable_text(row.provider_marker, 255) or "unknown"
+        self.operation = operation if operation in {"create", "comment"} else "mutation"
         super().__init__(
-            f"work-item {operation} dispatch outcome is ambiguous; mutation "
-            f"{row.id!r} will not be redispatched automatically (provider marker "
-            f"{row.provider_marker!r})"
+            f"work-item {self.operation} dispatch outcome is ambiguous; mutation "
+            f"{self.mutation_id!r} will not be redispatched automatically (provider marker "
+            f"{self.provider_marker!r})"
         )
 
 
@@ -98,6 +101,7 @@ class WorkItemMutationService:
     ) -> WorkItem:
         # Fail before persisting an intent that the reconciler could never run.
         _require_idempotent_adapter(adapter)
+        draft = _validated_durable_draft(draft)
         repository = self._repository_for(connection_persisted)
         payload = {"draft": draft.model_dump(mode="json")}
         row = await repository.reserve(
@@ -133,8 +137,8 @@ class WorkItemMutationService:
         connection_version: datetime | None,
         idempotency_key: str,
     ) -> WorkItem:
-        if "\x00" in key:
-            raise ValueError("work-item key must not contain U+0000")
+        key = _validated_target_key(key)
+        enrichment = _validated_durable_enrichment(enrichment)
         if not enrichment.fields and not enrichment.comment:
             raise ValueError("work-item enrichment must include fields or a comment")
         # Fail before persisting an intent that the reconciler could never run.
@@ -177,9 +181,11 @@ class WorkItemMutationService:
     ) -> WorkItem | None:
         """Replay a terminal result without constructing a provider adapter."""
 
+        draft = _validated_durable_draft(draft)
         payload = {"draft": draft.model_dump(mode="json")}
         return await self._inspect_replay(
             connection_persisted=connection_persisted,
+            project_id=project_id,
             scope=_scope(
                 identity=identity,
                 project_id=project_id,
@@ -205,13 +211,14 @@ class WorkItemMutationService:
     ) -> WorkItem | None:
         """Replay a terminal enrichment without constructing a provider adapter."""
 
-        if "\x00" in key:
-            raise ValueError("work-item key must not contain U+0000")
+        key = _validated_target_key(key)
+        enrichment = _validated_durable_enrichment(enrichment)
         if not enrichment.fields and not enrichment.comment:
             raise ValueError("work-item enrichment must include fields or a comment")
         payload = {"key": key, "enrichment": enrichment.model_dump(mode="json")}
         return await self._inspect_replay(
             connection_persisted=connection_persisted,
+            project_id=project_id,
             scope=_scope(
                 identity=identity,
                 project_id=project_id,
@@ -227,6 +234,7 @@ class WorkItemMutationService:
         self,
         *,
         connection_persisted: bool,
+        project_id: str | None,
         scope: MutationScope,
         payload: dict[str, Any],
         connection_version: datetime | None,
@@ -236,6 +244,7 @@ class WorkItemMutationService:
             scope=scope,
             payload_hash=_payload_hash(payload),
             payload=payload,
+            project_id=project_id,
             connection_version=_required_connection_version(
                 connection_version, persisted=connection_persisted
             ),
@@ -317,6 +326,7 @@ class WorkItemMutationService:
                 return await self._execute_enrich(repository, claimed, adapter, claim_token)
             raise RuntimeError(f"unknown work-item mutation operation {claimed.operation!r}")
 
+        permanent_error_kind: str | None = None
         try:
             return await _run_with_lease_heartbeat(
                 repository,
@@ -338,18 +348,29 @@ class WorkItemMutationService:
                 claimed.id,
                 claim_token=claim_token,
                 error_kind=exc.error_kind,
-                error=exc.cause.__class__.__name__,
+                error=(
+                    "WorkTrackingMutationTargetNotFoundError"
+                    if exc.error_kind == "not_found"
+                    else "WorkTrackingMutationRejectedError"
+                ),
             )
-            raise exc.cause from exc
+            permanent_error_kind = exc.error_kind
         except BaseException as exc:
             await _release_after_interruption(
                 repository,
                 claimed.id,
                 claim_token,
-                exc.__class__.__name__,
+                safe_type_name(exc),
                 attempt_count=int(claimed.attempt_count or 0),
             )
             raise
+        if permanent_error_kind == "not_found":
+            raise WorkTrackingMutationTargetNotFoundError(
+                "work tracker rejected the mutation target"
+            )
+        if permanent_error_kind is not None:
+            raise WorkTrackingMutationRejectedError("work tracker rejected the mutation")
+        raise RuntimeError("work-item mutation ended without a result")  # pragma: no cover
 
     async def _execute_create(
         self,
@@ -365,10 +386,13 @@ class WorkItemMutationService:
                 # a POST may have reached the provider, only reconciliation may
                 # complete this row; automatically issuing a second POST is unsafe.
                 raise WorkItemMutationOutcomeAmbiguousError(row, operation="create")
+            draft = None
             try:
                 draft = WorkItemDraft.model_validate(row.payload["draft"])
-            except ValueError as exc:
-                raise _PermanentMutationFailure("rejected", exc) from exc
+            except ValueError:
+                pass
+            if draft is None:
+                raise _PermanentMutationFailure("rejected")
             await _run_optional_validator(
                 adapter,
                 "validate_create_item_idempotent",
@@ -379,17 +403,25 @@ class WorkItemMutationService:
                 row.id,
                 claim_token=claim_token,
             )
+            permanent_error_kind = None
+            ambiguous = False
             try:
                 item = await adapter.create_item_idempotent(
                     draft,
                     marker=row.provider_marker,
                 )
-            except WorkTrackingMutationRejectedError as exc:
-                raise _PermanentMutationFailure("rejected", exc) from exc
+            except WorkTrackingMutationRejectedError:
+                permanent_error_kind = "rejected"
             except asyncio.CancelledError:
                 raise
-            except BaseException as exc:
-                raise WorkItemMutationOutcomeAmbiguousError(row, operation="create") from exc
+            except BaseException:
+                ambiguous = True
+            if permanent_error_kind is not None:
+                raise _PermanentMutationFailure(permanent_error_kind)
+            if ambiguous:
+                raise WorkItemMutationOutcomeAmbiguousError(row, operation="create")
+        if item is None:
+            raise RuntimeError("work tracker returned no created item")
         return await self._complete(repository, row.id, claim_token, item)
 
     async def _execute_enrich(
@@ -402,10 +434,13 @@ class WorkItemMutationService:
         key = row.target_key
         if not key:
             raise RuntimeError("enrichment mutation is missing its target key")
+        enrichment = None
         try:
             enrichment = Enrichment.model_validate(row.payload["enrichment"])
-        except ValueError as exc:
-            raise _PermanentMutationFailure("rejected", exc) from exc
+        except ValueError:
+            pass
+        if enrichment is None:
+            raise _PermanentMutationFailure("rejected")
 
         if row.fields_status != "completed" and row.fields_status != "skipped":
             # Jira issue edits and ADO JSON-patch add operations are exact
@@ -416,12 +451,15 @@ class WorkItemMutationService:
                 "validate_update_item_fields_idempotent",
                 enrichment.fields,
             )
+            permanent_error_kind = None
             try:
                 await adapter.update_item_fields_idempotent(key, enrichment.fields)
-            except WorkTrackingMutationTargetNotFoundError as exc:
-                raise _PermanentMutationFailure("not_found", exc) from exc
-            except WorkTrackingMutationRejectedError as exc:
-                raise _PermanentMutationFailure("rejected", exc) from exc
+            except WorkTrackingMutationTargetNotFoundError:
+                permanent_error_kind = "not_found"
+            except WorkTrackingMutationRejectedError:
+                permanent_error_kind = "rejected"
+            if permanent_error_kind is not None:
+                raise _PermanentMutationFailure(permanent_error_kind)
             row = await repository.mark_step(
                 row.id,
                 claim_token=claim_token,
@@ -429,12 +467,17 @@ class WorkItemMutationService:
             )
 
         if row.comment_status != "completed" and row.comment_status != "skipped":
+            permanent_error_kind = None
             try:
                 has_marker = await adapter.has_comment_idempotency_marker(key, row.provider_marker)
-            except WorkTrackingMutationTargetNotFoundError as exc:
-                raise _PermanentMutationFailure("not_found", exc) from exc
-            except WorkTrackingMutationRejectedError as exc:
-                raise _PermanentMutationFailure("rejected", exc) from exc
+            except WorkTrackingMutationTargetNotFoundError:
+                permanent_error_kind = "not_found"
+                has_marker = False
+            except WorkTrackingMutationRejectedError:
+                permanent_error_kind = "rejected"
+                has_marker = False
+            if permanent_error_kind is not None:
+                raise _PermanentMutationFailure(permanent_error_kind)
             if not has_marker:
                 if row.comment_attempted_at is not None:
                     raise WorkItemMutationOutcomeAmbiguousError(row, operation="comment")
@@ -448,23 +491,29 @@ class WorkItemMutationService:
                     row.id,
                     claim_token=claim_token,
                 )
+                permanent_error_kind = None
+                ambiguous = False
                 try:
                     await adapter.add_item_comment_idempotent(
                         key,
                         enrichment.comment,
                         marker=row.provider_marker,
                     )
-                except WorkTrackingMutationTargetNotFoundError as exc:
-                    raise _PermanentMutationFailure("not_found", exc) from exc
-                except WorkTrackingMutationRejectedError as exc:
-                    raise _PermanentMutationFailure("rejected", exc) from exc
+                except WorkTrackingMutationTargetNotFoundError:
+                    permanent_error_kind = "not_found"
+                except WorkTrackingMutationRejectedError:
+                    permanent_error_kind = "rejected"
                 except asyncio.CancelledError:
                     raise
-                except BaseException as exc:
+                except BaseException:
+                    ambiguous = True
+                if permanent_error_kind is not None:
+                    raise _PermanentMutationFailure(permanent_error_kind)
+                if ambiguous:
                     raise WorkItemMutationOutcomeAmbiguousError(
                         row,
                         operation="comment",
-                    ) from exc
+                    )
             row = await repository.mark_step(
                 row.id,
                 claim_token=claim_token,
@@ -511,6 +560,10 @@ class _EphemeralMutationRepository:
                     raise MutationPayloadConflictError(
                         "idempotency key is already bound to a different work-item mutation payload"
                     )
+                if row.project_id != values["project_id"]:
+                    raise MutationConnectionChangedError(
+                        "work-item mutation project binding changed"
+                    )
                 return row
             row_id = uuid4().hex
             row = WorkItemMutation(
@@ -550,6 +603,8 @@ class _EphemeralMutationRepository:
                 raise MutationPayloadConflictError(
                     "idempotency key is already bound to a different work-item mutation payload"
                 )
+            if row.project_id != values["project_id"]:
+                raise MutationConnectionChangedError("work-item mutation project binding changed")
             return row
 
     async def claim(self, mutation_id: str, *, ignore_backoff: bool) -> WorkItemMutation:
@@ -687,34 +742,68 @@ def _scope(
     operation: str,
     idempotency_key: str,
 ) -> MutationScope:
-    key = idempotency_key.strip()
-    if not key or len(key) > 255:
-        raise ValueError("Idempotency-Key must contain 1-255 non-whitespace characters")
-    if "\x00" in key:
-        raise ValueError("Idempotency-Key must not contain U+0000")
-    if not connection_id or len(connection_id) > 32:
-        raise ValueError("resolved work-tracking connection id must contain 1-32 characters")
-    if "\x00" in connection_id:
-        raise ValueError("resolved work-tracking connection id must not contain U+0000")
-    if not identity.consumer_id or len(identity.consumer_id) > 255:
-        raise ValueError("consumer id must contain 1-255 characters")
-    if "\x00" in identity.consumer_id:
-        raise ValueError("consumer id must not contain U+0000")
-    if project_id is not None and "\x00" in project_id:
-        raise ValueError("project id must not contain U+0000")
+    key = _validated_mutation_scope_text(
+        idempotency_key,
+        label="Idempotency-Key",
+        max_chars=255,
+    )
+    safe_connection_id = _validated_mutation_scope_text(
+        connection_id,
+        label="resolved work-tracking connection id",
+        max_chars=32,
+    )
+    consumer_id = _validated_mutation_scope_text(
+        identity.consumer_id,
+        label="consumer id",
+        max_chars=255,
+    )
+    safe_project_id = (
+        _validated_mutation_scope_text(project_id, label="project id", max_chars=255)
+        if project_id is not None
+        else None
+    )
+    if type(operation) is not str or operation not in {"create", "enrich"}:
+        raise ValueError("work-item mutation operation is invalid")
+    allowed = identity.role.at_least(Role.OPERATOR) and (
+        identity.is_unscoped
+        or (
+            safe_project_id is not None
+            and any(
+                scope.project_id == safe_project_id and scope.app_id is None
+                for scope in identity.scopes
+            )
+        )
+    )
+    if not allowed:
+        raise PermissionError("work-item mutations require project-wide operator scope")
 
     # Bind the key to the stable provider target, not the caller's current
     # authorization breadth. An administrator may become project-scoped (or the
     # reverse) between an ambiguous response and its retry; that must not create
     # a second provider mutation for the same consumer, connection, and project.
-    tenant = {"project_id": project_id}
+    tenant = {"project_id": safe_project_id}
     return MutationScope(
         tenant_scope=hashlib.sha256(_canonical_json(tenant)).hexdigest(),
-        consumer_id=identity.consumer_id,
-        connection_id=connection_id,
+        consumer_id=consumer_id,
+        connection_id=safe_connection_id,
         operation=operation,
         idempotency_key=key,
     )
+
+
+def _validated_mutation_scope_text(value: Any, *, label: str, max_chars: int) -> str:
+    """Validate an identity/idempotency component before normalization or scanning."""
+
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= max_chars
+        or value != value.strip()
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+    ):
+        raise ValueError(f"{label} must contain 1-{max_chars} canonical characters")
+    if contains_credential_material(value):
+        raise ValueError(f"{label} must not contain credential material")
+    return value
 
 
 def _required_connection_version(value: datetime | None, *, persisted: bool) -> datetime:
@@ -727,6 +816,44 @@ def _required_connection_version(value: datetime | None, *, persisted: bool) -> 
     return datetime.now(UTC)
 
 
+def _validated_durable_draft(draft: WorkItemDraft) -> WorkItemDraft:
+    """Revalidate even a model constructed without Pydantic validation."""
+
+    validated: WorkItemDraft | None = None
+    try:
+        raw = draft.model_dump(mode="json", warnings="error")
+        validated = WorkItemDraft.model_validate(raw)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("work item draft is invalid or contains credential material")
+    return validated
+
+
+def _validated_durable_enrichment(enrichment: Enrichment) -> Enrichment:
+    """Revalidate before any enrichment value can enter durable JSONB."""
+
+    validated: Enrichment | None = None
+    try:
+        raw = enrichment.model_dump(mode="json", warnings="error")
+        validated = Enrichment.model_validate(raw)
+    except Exception:
+        pass
+    if validated is None:
+        raise ValueError("work item enrichment is invalid or contains credential material")
+    return validated
+
+
+def _validated_target_key(key: str) -> str:
+    if (
+        type(key) is not str
+        or _WORK_ITEM_TARGET_KEY.fullmatch(key) is None
+        or contains_credential_material(key)
+    ):
+        raise ValueError("work-item key must be a safe identifier of at most 255 characters")
+    return key
+
+
 def _as_utc_datetime(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
@@ -736,16 +863,20 @@ def _payload_hash(payload: dict[str, Any]) -> str:
 
 
 def _canonical_json(value: Any) -> bytes:
+    encoded: bytes | None = None
     try:
-        return json.dumps(
+        encoded = json.dumps(
             value,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
         ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ValueError("work-item mutation payload must be canonical JSON") from exc
+    except (TypeError, ValueError):
+        pass
+    if encoded is None:
+        raise ValueError("work-item mutation payload must be canonical JSON")
+    return encoded
 
 
 def _scope_key(scope: MutationScope) -> tuple[str, str, str, str, str]:
@@ -768,16 +899,21 @@ def _require_idempotent_adapter(adapter: Any) -> None:
 def _stored_result(row: WorkItemMutation) -> WorkItem:
     if row.status != "completed" or row.result is None:
         raise RuntimeError("completed work-item mutation has no durable result")
-    return WorkItem.model_validate(row.result)
+    result: WorkItem | None = None
+    try:
+        result = validated_provider_work_item(row.result)
+    except Exception:
+        # Legacy or corrupted rows must fail closed instead of replaying secrets.
+        pass
+    if result is None:
+        raise RuntimeError("completed work-item mutation has an invalid durable result")
+    return result
 
 
 def _durable_work_item_result(item: WorkItem) -> dict[str, Any]:
-    """Normalize provider strings so PostgreSQL JSONB can persist the result."""
+    """Normalize provider output before PostgreSQL JSONB can persist it."""
 
-    return {
-        key: value.replace("\x00", "\ufffd") if isinstance(value, str) else value
-        for key, value in item.model_dump(mode="json").items()
-    }
+    return validated_provider_work_item(item).model_dump(mode="json")
 
 
 def _safe_error_text(error: str) -> str:
@@ -808,21 +944,39 @@ async def _release_after_interruption(
             claim_token=claim_token,
             error=error,
             retry_delay=_retry_delay(mutation_id, attempt_count),
-        )
+        ),
+        name=f"work-item-mutation-release-{mutation_id}",
     )
+    interrupted = False
+    while not release.done():
+        try:
+            await asyncio.shield(release)
+        except asyncio.CancelledError:
+            # Repeated caller cancellation must not detach a transaction that
+            # still owns a connection or row lock. Finish it, then restore the
+            # caller's cancellation outcome.
+            interrupted = True
+            continue
+        except BaseException:
+            break
+
+    release_error: BaseException | None = None
     try:
-        await asyncio.shield(release)
-    except asyncio.CancelledError:
-        # Preserve caller cancellation. The independently scheduled release is
-        # allowed to finish; if loop shutdown prevents it, lease expiry is the
-        # conservative recovery path.
-        raise
-    except Exception as exc:
+        release.result()
+    except BaseException as exc:
+        release_error = exc
+    if isinstance(release_error, Exception):
         logger.warning(
             "work_item_mutations.release_failed",
             mutation_id=mutation_id,
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(release_error),
         )
+    if interrupted:
+        raise asyncio.CancelledError from None
+    if isinstance(release_error, asyncio.CancelledError):
+        raise release_error
+    if release_error is not None and not isinstance(release_error, Exception):
+        raise release_error
 
 
 async def _run_optional_validator(
@@ -834,14 +988,17 @@ async def _run_optional_validator(
     validator = getattr(adapter, name, None)
     if not callable(validator):
         return
+    permanent_error_kind: str | None = None
     try:
         result = validator(*args, **kwargs)
         if isawaitable(result):
             await result
-    except WorkTrackingMutationTargetNotFoundError as exc:
-        raise _PermanentMutationFailure("not_found", exc) from exc
-    except (WorkTrackingMutationRejectedError, ValueError) as exc:
-        raise _PermanentMutationFailure("rejected", exc) from exc
+    except WorkTrackingMutationTargetNotFoundError:
+        permanent_error_kind = "not_found"
+    except (WorkTrackingMutationRejectedError, ValueError):
+        permanent_error_kind = "rejected"
+    if permanent_error_kind is not None:
+        raise _PermanentMutationFailure(permanent_error_kind)
 
 
 async def _run_with_lease_heartbeat(
@@ -869,10 +1026,39 @@ async def _run_with_lease_heartbeat(
         await heartbeat_task
         raise RuntimeError("work-item mutation lease heartbeat stopped unexpectedly")
     finally:
-        for task in (operation_task, heartbeat_task):
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(operation_task, heartbeat_task, return_exceptions=True)
+        await _cancel_tasks_definitively(operation_task, heartbeat_task)
+
+
+async def _cancel_tasks_definitively(*tasks: asyncio.Task[Any]) -> None:
+    """Cancel owned tasks without detaching their provider/resource cleanup."""
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    interrupted = False
+    current = asyncio.current_task()
+    for task in tasks:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # `shield` also raises when the owned task reaches its expected
+                # cancelled state. Distinguish that from another cancellation
+                # request directed at this coordinator task.
+                if current is not None and current.cancelling():
+                    interrupted = True
+                if task.done():
+                    break
+                continue
+            except BaseException:
+                break
+        if task.done():
+            try:
+                task.result()
+            except BaseException:
+                pass
+    if interrupted:
+        raise asyncio.CancelledError from None
 
 
 def _retry_delay(mutation_id: str, attempt_count: int) -> timedelta:
@@ -909,59 +1095,64 @@ async def reconcile_work_item_mutations_once(
         row = await service._repository.get(mutation_id)
         if row is None:
             continue
+        resolved = None
         try:
-            resolved = await resolver.resolve_with_metadata(
-                PortKind.WORK_TRACKING,
-                connection_id=row.connection_id,
-                project_id=row.project_id,
-            )
-            if not resolved.persisted:
-                raise RuntimeError("durable mutation resolved to a non-persisted connection")
-            if resolved.connection_version is None or _as_utc_datetime(
-                resolved.connection_version
-            ) != _as_utc_datetime(row.connection_version):
-                raise MutationConnectionChangedError(
-                    "work-tracking connection version no longer matches the durable mutation"
-                )
-        except asyncio.CancelledError:
-            raise
-        except MutationClaimedError:
-            continue
-        except Exception as exc:
             try:
-                await service.defer_resolution(
-                    mutation_id,
-                    exc.__class__.__name__,
+                resolved = await resolver.resolve_with_metadata(
+                    PortKind.WORK_TRACKING,
+                    connection_id=row.connection_id,
+                    project_id=row.project_id,
                 )
+                if not resolved.persisted:
+                    raise RuntimeError("durable mutation resolved to a non-persisted connection")
+                if resolved.connection_version is None or _as_utc_datetime(
+                    resolved.connection_version
+                ) != _as_utc_datetime(row.connection_version):
+                    raise MutationConnectionChangedError(
+                        "work-tracking connection version no longer matches the durable mutation"
+                    )
             except asyncio.CancelledError:
                 raise
             except MutationClaimedError:
                 continue
-            except Exception as defer_exc:
+            except Exception as exc:
+                try:
+                    await service.defer_resolution(
+                        mutation_id,
+                        safe_type_name(exc),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except MutationClaimedError:
+                    continue
+                except Exception as defer_exc:
+                    logger.warning(
+                        "work_item_mutations.resolution_defer_failed",
+                        mutation_id=mutation_id,
+                        error_type=safe_type_name(defer_exc),
+                    )
                 logger.warning(
-                    "work_item_mutations.resolution_defer_failed",
+                    "work_item_mutations.connection_resolution_failed",
                     mutation_id=mutation_id,
-                    error_type=defer_exc.__class__.__name__,
+                    error_type=safe_type_name(exc),
                 )
-            logger.warning(
-                "work_item_mutations.connection_resolution_failed",
-                mutation_id=mutation_id,
-                error_type=exc.__class__.__name__,
-            )
-            continue
-        try:
-            await service.resume(mutation_id, resolved.adapter)
-            reconciled += 1
-        except asyncio.CancelledError:
-            raise
-        except MutationClaimedError:
-            continue
-        except Exception as exc:
-            logger.warning(
-                "work_item_mutations.reconcile_failed",
-                mutation_id=mutation_id,
-                error_type=exc.__class__.__name__,
-            )
+                continue
+            try:
+                await service.resume(mutation_id, resolved.adapter)
+                reconciled += 1
+            except asyncio.CancelledError:
+                raise
+            except MutationClaimedError:
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "work_item_mutations.reconcile_failed",
+                    mutation_id=mutation_id,
+                    error_type=safe_type_name(exc),
+                )
+        finally:
+            if resolved is not None:
+                await close_adapter(resolved.adapter)
     try:
         await service.retire_terminal()
     except asyncio.CancelledError:
@@ -969,7 +1160,7 @@ async def reconcile_work_item_mutations_once(
     except Exception as exc:
         logger.warning(
             "work_item_mutations.retirement_failed",
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(exc),
         )
     return reconciled
 
@@ -986,7 +1177,7 @@ async def run_work_item_mutation_reconciler(
         except Exception as exc:
             logger.warning(
                 "work_item_mutations.reconciler_failed",
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
         if heartbeat is not None:
             heartbeat()

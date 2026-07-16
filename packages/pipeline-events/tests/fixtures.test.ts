@@ -22,11 +22,19 @@
  */
 import { describe, expect, it } from "vitest";
 
+import publicEngineRetryGate from "./fixtures/public-engine-retry-gate.json";
+
 import {
   AgentErrorEventSchema,
   AgentMessageEventSchema,
+  EngineCollectionErrorEventSchema,
+  EngineCollectionIndexErrorEventSchema,
+  EngineCollectionSettleErrorEventSchema,
   EnginePollErrorEventSchema,
   EnginePollEventSchema,
+  EngineProvisionErrorEventSchema,
+  EngineRetryDecisionSchema,
+  EngineRetryPayloadSchema,
   GateDecisionSchema,
   GateInterruptPayloadSchema,
   GateOpenedEventSchema,
@@ -112,6 +120,37 @@ const enginePollError = {
   consecutive_errors: 2,
 };
 
+const engineProvisionError = {
+  schema_version: 1,
+  type: "engine_provision_error",
+  phase: "execution",
+  attempt: 1,
+  failure: 2,
+  error: "provider create response was ambiguous",
+};
+
+const engineCollectionError = {
+  schema_version: 1,
+  type: "engine_collection_error",
+  phase: "execution",
+  attempt: 1,
+  external_run_id: "sim-0f3a9c1e2b7d4e61",
+  failure: 2,
+  error: "artifact store was unavailable",
+};
+
+const engineCollectionIndexError = {
+  ...engineCollectionError,
+  type: "engine_collection_index_error",
+  error: "artifact ownership index was unavailable",
+};
+
+const engineCollectionSettleError = {
+  ...engineCollectionError,
+  type: "engine_collection_settle_error",
+  error: "provider teardown was unavailable",
+};
+
 // Field set from execution_phase._poll_event; live_stats keys asserted exactly
 // in test_engine_poll_custom_events_streamed.
 const enginePollRunning = {
@@ -143,6 +182,18 @@ describe("custom event schemas", () => {
     ["agent_message", AgentMessageEventSchema, agentMessage],
     ["agent_error", AgentErrorEventSchema, agentError],
     ["engine_poll_error", EnginePollErrorEventSchema, enginePollError],
+    ["engine_provision_error", EngineProvisionErrorEventSchema, engineProvisionError],
+    ["engine_collection_error", EngineCollectionErrorEventSchema, engineCollectionError],
+    [
+      "engine_collection_index_error",
+      EngineCollectionIndexErrorEventSchema,
+      engineCollectionIndexError,
+    ],
+    [
+      "engine_collection_settle_error",
+      EngineCollectionSettleErrorEventSchema,
+      engineCollectionSettleError,
+    ],
     ["engine_poll running", EnginePollEventSchema, enginePollRunning],
     ["engine_poll completed", EnginePollEventSchema, enginePollCompleted],
   ] as const)("parses the backend fixture: %s", (_name, schema, fixture) => {
@@ -291,13 +342,35 @@ const phaseReviewExecution = {
   actions: ["approve", "revise", "discuss", "abort"],
 };
 
+const engineCleanupRetry = {
+  schema_version: 1,
+  kind: "engine_cleanup_retry",
+  phase: "execution",
+  attempt: 2,
+  thread_id: "thread-recovery-1",
+  actions: ["retry"],
+  error: "provider abort unavailable",
+  message: "Resume the exact durable provider attempt.",
+};
+
 describe("gate interrupt payload schemas", () => {
+  it("parses the exact public gate row produced by PipelineReadService", () => {
+    expect(parseGateInterrupt(publicEngineRetryGate.payload)).toMatchObject({
+      kind: "engine_cleanup_retry",
+      phase: "execution",
+      actions: ["retry"],
+      thread_id: "t-1",
+      attempt: 2,
+    });
+  });
+
   it.each([
     ["prompt_review", promptReview],
     ["prompt_review after gate edit", promptReviewAfterEdit],
     ["prompt_review with error", promptReviewWithError],
     ["phase_review with dialogue", phaseReview],
     ["phase_review execution", phaseReviewExecution],
+    ["engine cleanup retry", engineCleanupRetry],
   ] as const)("parses the backend fixture: %s", (_name, fixture) => {
     expect(GateInterruptPayloadSchema.safeParse(fixture).success).toBe(true);
   });
@@ -307,6 +380,8 @@ describe("gate interrupt payload schemas", () => {
     expect(prompt.actions).toEqual(["approve", "modify", "skip_phase", "abort"]);
     const phase = PhaseReviewPayloadSchema.parse(phaseReview);
     expect(phase.actions).toEqual(["approve", "revise", "discuss", "abort"]);
+    const recovery = EngineRetryPayloadSchema.parse(engineCleanupRetry);
+    expect(recovery.actions).toEqual(["retry"]);
   });
 
   it("rejects mutated bad fixtures", () => {
@@ -331,6 +406,73 @@ describe("gate interrupt payload schemas", () => {
     expect(
       PhaseReviewPayloadSchema.safeParse({ ...phaseReview, schema_version: 2 }).success,
     ).toBe(false);
+    expect(
+      EngineRetryPayloadSchema.safeParse({ ...engineCleanupRetry, phase: "reporting" }).success,
+    ).toBe(false);
+    expect(
+      EngineRetryPayloadSchema.safeParse({ ...engineCleanupRetry, actions: ["approve"] }).success,
+    ).toBe(false);
+    expect(
+      EngineRetryPayloadSchema.safeParse({ ...engineCleanupRetry, thread_id: "" }).success,
+    ).toBe(false);
+    expect(
+      PromptReviewPayloadSchema.safeParse({
+        ...promptReview,
+        prompt: {
+          system: null,
+          user: " ",
+          application: null,
+          source: { origin: null, ref: null },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      PhaseReviewPayloadSchema.safeParse({
+        ...phaseReview,
+        summary: null,
+        result_preview: { summary: null, reasoning_digest: null },
+        artifacts: [],
+        warnings: [],
+        dialogue_tail: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps nullable supporting fields when visible review evidence remains", () => {
+    expect(
+      PromptReviewPayloadSchema.safeParse({
+        ...promptReview,
+        prompt: {
+          ...promptReview.prompt,
+          application: null,
+          source: { origin: "catalog", ref: null },
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      PhaseReviewPayloadSchema.safeParse({
+        ...phaseReview,
+        summary: null,
+        result_preview: { summary: null, reasoning_digest: null },
+        artifacts: [],
+        warnings: ["Review this warning."],
+        dialogue_tail: [],
+      }).success,
+    ).toBe(true);
+  });
+
+  it("keeps an explicitly blank prompt review when its provenance is concrete", () => {
+    expect(
+      PromptReviewPayloadSchema.safeParse({
+        ...promptReview,
+        prompt: {
+          system: "",
+          user: "",
+          application: null,
+          source: { origin: "run_override", ref: null },
+        },
+      }).success,
+    ).toBe(true);
   });
 
   it("union rejects unknown kinds and routes to the drift hook", () => {
@@ -369,6 +511,8 @@ describe("gate decision (resume body) schemas", () => {
     expect(GateDecisionSchema.safeParse({}).success).toBe(false);
     expect(PromptReviewDecisionSchema.safeParse({ action: "revise" }).success).toBe(false);
     expect(PhaseReviewDecisionSchema.safeParse({ action: "skip_phase" }).success).toBe(false);
+    expect(EngineRetryDecisionSchema.safeParse({ action: "retry" }).success).toBe(true);
+    expect(EngineRetryDecisionSchema.safeParse({ action: "approve" }).success).toBe(false);
   });
 });
 

@@ -257,12 +257,7 @@ def test_create_rejects_recursive_draft_credentials_without_reflection() -> None
     payloads = [
         {"nested": {"api_key": canaries["field"]}},
         {"nested": [{"content": f"Bearer {canaries['bearer']}"}]},
-        {
-            "request": (
-                "https://example.test/object?"
-                f"X-Amz-Signature={canaries['signed']}"
-            )
-        },
+        {"request": (f"https://example.test/object?X-Amz-Signature={canaries['signed']}")},
     ]
 
     for payload in payloads:
@@ -311,10 +306,7 @@ def test_read_redacts_legacy_draft_credentials_for_shared_audience() -> None:
         "client_secret": canaries["field"],
         "nested": [
             f"Bearer {canaries['bearer']}",
-            (
-                "https://example.test/object?"
-                f"X-Goog-Signature={canaries['signed']}"
-            ),
+            (f"https://example.test/object?X-Goog-Signature={canaries['signed']}"),
         ],
         "safe": {"request": "ordinary wizard text"},
     }

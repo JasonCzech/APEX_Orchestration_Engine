@@ -7,6 +7,7 @@ artifacts. Process-local by design; the MinIO/S3 adapter lands in M3.
 
 from collections.abc import AsyncIterable, AsyncIterator
 from typing import ClassVar
+from urllib.parse import quote
 
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.integrations import SecretValue
@@ -24,7 +25,8 @@ class MemoryArtifactStore:
 
     async def put(self, key: str, data: bytes, *, content_type: str) -> StoredArtifact:
         self._objects[key] = (bytes(data), content_type)
-        return StoredArtifact(key=key, uri=f"memory://{key}", size=len(data))
+        encoded_key = quote(key, safe="/-._~")
+        return StoredArtifact(key=key, uri=f"memory://{encoded_key}", size=len(data))
 
     async def put_stream(
         self,
@@ -42,10 +44,10 @@ class MemoryArtifactStore:
         return await self.put(key, bytes(payload), content_type=content_type)
 
     async def get(self, key: str) -> bytes:
-        try:
-            return self._objects[key][0]
-        except KeyError:
-            raise KeyError(f"artifact {key!r} not found in memory store") from None
+        stored = self._objects.get(key)
+        if stored is None:
+            raise KeyError(f"artifact {key!r} not found in memory store")
+        return stored[0]
 
     async def delete(self, key: str) -> None:
         self._objects.pop(key, None)

@@ -97,8 +97,7 @@ async function fetchThreadState(threadId: string): Promise<ThreadStateSnapshot> 
   if (!parsed.success) {
     // Mirror policy: state schemas never blank the page — log and render raw.
     console.warn('[useThreadState] PipelineState mirror rejected thread values', {
-      threadId,
-      issues: parsed.error.issues,
+      issueCount: parsed.error.issues.length,
     })
   }
   return {

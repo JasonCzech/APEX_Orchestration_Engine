@@ -11,9 +11,13 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
 
-from apex.domain.diagnostics import bounded_diagnostic, is_credential_field
+from apex.domain.diagnostics import (
+    bounded_diagnostic,
+    contains_credential_material,
+    is_credential_field,
+)
 from apex.domain.input_limits import NoNulStr, validate_json_object
 
 MAX_CONTEXT_ID_CHARS = 128
@@ -23,6 +27,7 @@ MAX_CONTEXT_SUMMARY_CHARS = 4_000
 MAX_CONTEXT_REF_CHARS = 2_048
 MAX_CONTEXT_TEXT_CHARS = 150_000
 MAX_GATE_TEXT_CHARS = 20_000
+MAX_GATE_DECISION_TEXT_CHARS = 50_000
 MAX_TOOL_CALL_RECORDS = 80
 MAX_TOOL_ARGS_PREVIEW_BYTES = 8_192
 
@@ -104,12 +109,21 @@ class ArtifactRef(BaseModel):
 
 
 class ApprovalRecord(BaseModel):
-    id: str = Field(default_factory=new_id)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    id: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=256)
     gate: Literal["prompt_review", "phase_review"]
-    action: str
-    actor: str = "unknown"
-    at: str = Field(default_factory=utcnow_iso)
-    note: str | None = Field(default=None, max_length=MAX_GATE_TEXT_CHARS)
+    action: NoNulStr = Field(min_length=1, max_length=32)
+    actor: NoNulStr = Field(default="unknown", min_length=1, max_length=255)
+    at: NoNulStr = Field(default_factory=utcnow_iso, min_length=1, max_length=64)
+    note: NoNulStr | None = Field(default=None, max_length=MAX_GATE_DECISION_TEXT_CHARS)
+
+    @field_validator("actor", "note")
+    @classmethod
+    def reject_credential_material(cls, value: str | None) -> str | None:
+        if value is not None and contains_credential_material(value):
+            raise ValueError("approval attribution must not contain credential material")
+        return value
 
 
 class ToolCallRecord(BaseModel):
@@ -135,12 +149,21 @@ class ToolCallRecord(BaseModel):
 
 
 class DialogueEntry(BaseModel):
-    id: str = Field(default_factory=new_id)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    id: NoNulStr = Field(default_factory=new_id, min_length=1, max_length=256)
     phase: Phase
-    attempt: int = Field(default=1, ge=1)
+    attempt: int = Field(default=1, ge=1, le=1_000_000)
     role: Literal["operator", "agent"]
-    content: str = Field(max_length=MAX_GATE_TEXT_CHARS)
-    at: str = Field(default_factory=utcnow_iso)
+    content: NoNulStr = Field(max_length=MAX_GATE_DECISION_TEXT_CHARS)
+    at: NoNulStr = Field(default_factory=utcnow_iso, min_length=1, max_length=64)
+
+    @field_validator("content")
+    @classmethod
+    def reject_dialogue_credentials(cls, value: str) -> str:
+        if contains_credential_material(value):
+            raise ValueError("dialogue must not contain credential material")
+        return value
 
 
 class ContextPacket(BaseModel):
@@ -187,11 +210,15 @@ class ExternalResults(BaseModel):
             or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
         ):
             raise ValueError("external results uri must be a bounded http(s) URL")
+        parsed = None
+        port = None
         try:
             parsed = urlsplit(value)
             port = parsed.port
-        except ValueError as exc:
-            raise ValueError("external results uri must be a bounded http(s) URL") from exc
+        except ValueError:
+            parsed = None
+        if parsed is None:
+            raise ValueError("external results uri must be a bounded http(s) URL")
         if (
             parsed.scheme not in {"http", "https"}
             or parsed.hostname is None
@@ -216,6 +243,14 @@ class ExternalResults(BaseModel):
                 raise ValueError("KPI values must be between -1e12 and 1e12")
         return values
 
+    @model_validator(mode="after")
+    def reject_credential_material(self) -> "ExternalResults":
+        """Revalidate direct-graph and legacy replay inputs at the domain boundary."""
+
+        if contains_credential_material(self.model_dump(mode="json")):
+            raise ValueError("external results must not contain credential material")
+        return self
+
 
 ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL = (
     "engine run lacks durable execution-connection affinity; identify the original "
@@ -231,7 +266,7 @@ class EngineConnectionAffinityMissingError(RuntimeError):
 
 
 class EngineHandle(BaseModel):
-    model_config = ConfigDict(hide_input_in_errors=True)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     engine: NoNulStr = Field(min_length=1, max_length=64)
     connection_id: NoNulStr | None = Field(default=None, max_length=256)
@@ -257,6 +292,14 @@ class EngineHandle(BaseModel):
             raise ValueError("engine handle extras must not exceed 16384 aggregate characters")
         return values
 
+    @model_validator(mode="after")
+    def reject_credential_material(self) -> "EngineHandle":
+        """Keep executable provider identity capability-free at every consumer."""
+
+        if contains_credential_material(self.model_dump(mode="json")):
+            raise ValueError("engine handle must not contain credential material")
+        return self
+
 
 class ResolvedPromptSource(BaseModel):
     origin: Literal["catalog", "assistant_pin", "run_override", "gate_edit"]
@@ -267,7 +310,7 @@ class ResolvedPromptSource(BaseModel):
 class PhaseResult(BaseModel):
     phase: Phase
     status: PhaseStatus = PhaseStatus.PENDING
-    attempt: int = 1
+    attempt: int = Field(default=1, ge=1, le=1_000_000)
     started_at: str | None = None
     ended_at: str | None = None
     duration_s: float | None = None

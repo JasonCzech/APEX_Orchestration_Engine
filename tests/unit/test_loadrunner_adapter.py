@@ -124,6 +124,12 @@ def mock_authenticate(*tokens: str) -> respx.Route:
     return respx.post(AUTH_URL).mock(side_effect=responses)
 
 
+def mock_owned_run() -> respx.Route:
+    return respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=run_json())
+    )
+
+
 def assert_all_calls_authed() -> None:
     """Authenticate calls carry basic creds; every API call carries the LWSSO cookie."""
     assert respx.calls, "expected at least one mocked call"
@@ -322,6 +328,23 @@ async def test_provision_adopts_lowest_run_carrying_the_comment_marker() -> None
     assert handle.external_run_id == "lre-1042"
     assert handle.extras["run_id"] == "1042"
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_provision_rejects_duplicate_exact_idempotency_markers() -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                run_json(run_id=1042, comment="apex-orch:key-1"),
+                run_json(run_id=1043, comment="apex-orch:key-1"),
+            ],
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="attached to multiple runs"):
+        await make_adapter().provision(make_spec())
 
 
 @respx.mock
@@ -562,6 +585,51 @@ async def test_start_adopts_run_when_create_response_is_lost(
     assert handle.external_run_id == "lre-1042"
 
 
+@pytest.mark.parametrize("mismatch", ["test_id", "marker"])
+@respx.mock
+async def test_start_reconciles_wrong_target_create_acknowledgement(mismatch: str) -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        side_effect=[
+            httpx.Response(200, json=[]),
+            httpx.Response(200, json=[run_json(state="Initializing")]),
+        ]
+    )
+    wrong_run = run_json(run_id=999, state="Initializing")
+    if mismatch == "test_id":
+        wrong_run["TestID"] = 99
+    else:
+        wrong_run["RunComment"] = "apex-orch:another-run"
+    create = respx.post(f"{PROJECT_BASE}/Runs").mock(
+        return_value=httpx.Response(201, json=wrong_run)
+    )
+    handle = provisioned_handle()
+
+    await make_adapter().start(handle)
+
+    assert create.call_count == 1
+    assert handle.extras["run_id"] == "1042"
+    assert handle.external_run_id == "lre-1042"
+
+
+@respx.mock
+async def test_start_rejects_marker_match_from_wrong_test() -> None:
+    mock_authenticate()
+    wrong_run = run_json(state="Initializing")
+    wrong_run["TestID"] = 99
+    respx.get(f"{PROJECT_BASE}/Runs", params=RUNS_QUERY).mock(
+        return_value=httpx.Response(200, json=[wrong_run])
+    )
+    create = respx.post(f"{PROJECT_BASE}/Runs").mock(
+        return_value=httpx.Response(201, json=run_json(state="Initializing"))
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test"):
+        await make_adapter().start(provisioned_handle())
+
+    assert not create.called
+
+
 # ── get_status (state mapping table) ──────────────────────────────────────────
 
 STATE_TABLE = [
@@ -606,6 +674,23 @@ async def test_get_status_maps_every_documented_lre_state(
     assert_all_calls_authed()
 
 
+@pytest.mark.parametrize("mismatch", ["run_id", "test_id", "marker"])
+@respx.mock
+async def test_get_status_rejects_wrong_target_run_response(mismatch: str) -> None:
+    mock_authenticate()
+    payload = run_json(state="Running")
+    if mismatch == "run_id":
+        payload["ID"] = 999
+    elif mismatch == "test_id":
+        payload["TestID"] = 99
+    else:
+        payload["RunComment"] = "apex-orch:another-run"
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(200, json=payload))
+
+    with pytest.raises(RuntimeError, match="unexpected run ID|unexpected test|idempotency marker"):
+        await make_adapter().get_status(started_handle())
+
+
 @respx.mock
 async def test_get_status_unknown_state_stays_nonterminal() -> None:
     mock_authenticate()
@@ -623,12 +708,24 @@ async def test_get_status_rejects_malformed_run_state(state: Any) -> None:
     mock_authenticate()
     payload = run_json()
     payload["RunState"] = state
-    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
-        return_value=httpx.Response(200, json=payload)
-    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(200, json=payload))
 
     with pytest.raises(RuntimeError, match="RunState"):
         await make_adapter().get_status(started_handle())
+
+
+@respx.mock
+async def test_get_status_rejects_provider_token_state_before_public_message() -> None:
+    canary = "ghp_" + ("D" * 24)
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=run_json(state=canary))
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe material") as raised:
+        await make_adapter().get_status(started_handle())
+
+    assert canary not in str(raised.value)
 
 
 @pytest.mark.parametrize("duration", [True, -1, "2", 1_000_000_001])
@@ -637,12 +734,28 @@ async def test_get_status_rejects_malformed_provider_duration(duration: Any) -> 
     mock_authenticate()
     payload = run_json(state="Running")
     payload["Duration"] = duration
-    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
-        return_value=httpx.Response(200, json=payload)
-    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(200, json=payload))
 
     with pytest.raises(RuntimeError, match="Duration"):
         await make_adapter().get_status(started_handle())
+
+
+@respx.mock
+async def test_get_status_invalid_handle_duration_does_not_retain_raw_value() -> None:
+    canary = "bare-handle-duration-secret-canary"
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=run_json(state="Running", duration_min=1))
+    )
+    handle = started_handle()
+    handle.extras["duration_s"] = canary
+
+    with pytest.raises(ValueError, match="finite non-negative number") as excinfo:
+        await make_adapter().get_status(handle)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -728,9 +841,7 @@ async def test_abort_logs_only_non_content_reason_metadata() -> None:
     respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
         return_value=httpx.Response(200, json=run_json(state="Running"))
     )
-    respx.post(f"{PROJECT_BASE}/Runs/1042/stop").mock(
-        return_value=httpx.Response(200, json={})
-    )
+    respx.post(f"{PROJECT_BASE}/Runs/1042/stop").mock(return_value=httpx.Response(200, json={}))
 
     with capture_logs() as logs:
         await make_adapter().abort(started_handle(), reason=secret_reason)
@@ -739,6 +850,22 @@ async def test_abort_logs_only_non_content_reason_metadata() -> None:
     event = next(log for log in logs if log.get("event") == "loadrunner.abort")
     assert event["reason_present"] is True
     assert event["reason_length"] == len(secret_reason)
+
+
+@respx.mock
+async def test_abort_rejects_wrong_target_precheck_without_stopping() -> None:
+    mock_authenticate()
+    payload = run_json(state="Running")
+    payload["RunComment"] = "apex-orch:another-run"
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(200, json=payload))
+    stop = respx.post(f"{PROJECT_BASE}/Runs/1042/stop").mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    with pytest.raises(RuntimeError, match="idempotency marker"):
+        await make_adapter().abort(started_handle(), reason="operator request")
+
+    assert not stop.called
 
 
 @respx.mock
@@ -816,6 +943,16 @@ async def test_teardown_never_raises_and_makes_no_calls() -> None:
     await make_adapter().teardown(EngineHandle(engine="loadrunner"))
 
 
+async def test_teardown_does_not_log_untrusted_handle_id() -> None:
+    canary = "opaque-loadrunner-handle-canary-46dc"
+    handle = EngineHandle(engine="loadrunner", external_run_id=canary)
+
+    with capture_logs() as logs:
+        await make_adapter().teardown(handle)
+
+    assert canary not in repr(logs)
+
+
 # ── collect_artifacts ─────────────────────────────────────────────────────────
 
 RESULTS = [
@@ -829,6 +966,7 @@ RESULTS = [
 @respx.mock
 async def test_collect_artifacts_streams_report_zips_into_the_store() -> None:
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=RESULTS)
     )
@@ -859,6 +997,7 @@ async def test_collect_artifacts_streams_report_zips_into_the_store() -> None:
 @respx.mock
 async def test_collect_artifacts_retries_transient_stream_status() -> None:
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=[RESULTS[0]])
     )
@@ -883,6 +1022,7 @@ async def test_collect_artifacts_retries_transient_stream_status() -> None:
 @respx.mock
 async def test_collect_artifacts_keeps_duplicate_result_names_distinct() -> None:
     mock_authenticate()
+    mock_owned_run()
     duplicates = [
         {"ID": 2001, "Name": "Report.zip", "Type": "HTML Report", "RunID": 1042},
         {"ID": 2002, "Name": "Report.zip", "Type": "HTML Report", "RunID": 1042},
@@ -925,6 +1065,7 @@ async def test_collect_artifacts_caps_large_stream_error_preview() -> None:
             self.closed = True
 
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=[RESULTS[0]])
     )
@@ -943,6 +1084,7 @@ async def test_collect_artifacts_caps_large_stream_error_preview() -> None:
 @respx.mock
 async def test_collect_artifacts_enforces_configured_stream_limit() -> None:
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=[RESULTS[0]])
     )
@@ -960,6 +1102,7 @@ async def test_collect_artifacts_enforces_configured_stream_limit() -> None:
 async def test_collect_artifacts_falls_back_to_raw_results() -> None:
     # Collation failed -> no report-typed results; raw data is still preserved.
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=[RESULTS[2]])
     )
@@ -973,6 +1116,7 @@ async def test_collect_artifacts_falls_back_to_raw_results() -> None:
 @respx.mock
 async def test_collect_artifacts_rejects_provider_result_count_budget() -> None:
     mock_authenticate()
+    mock_owned_run()
     results = [
         {"ID": 3000 + index, "Name": f"report-{index}.zip", "Type": "HTML Report"}
         for index in range(loadrunner_engine._MAX_RESULT_ARTIFACTS + 1)
@@ -1002,10 +1146,12 @@ async def test_collect_artifacts_rejects_unsafe_provider_text_before_download_or
     field: str, value: object
 ) -> None:
     mock_authenticate()
+    mock_owned_run()
     result: dict[str, object] = {
         "ID": 2001,
         "Name": "Report.zip",
         "Type": "HTML Report",
+        "RunID": 1042,
     }
     result[field] = value
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
@@ -1022,10 +1168,41 @@ async def test_collect_artifacts_rejects_unsafe_provider_text_before_download_or
     assert MemoryArtifactStore._objects == {}
 
 
+@respx.mock
+async def test_collect_artifacts_rejects_provider_token_metadata_before_durable_output() -> None:
+    canary = "ghp_" + ("E" * 24)
+    mock_authenticate()
+    mock_owned_run()
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "ID": 2001,
+                    "Name": f"{canary}.zip",
+                    "Type": "HTML Report",
+                    "RunID": 1042,
+                }
+            ],
+        )
+    )
+    download = respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"must-not-be-read")
+    )
+
+    with pytest.raises(RuntimeError, match="unsafe material") as raised:
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+    assert canary not in str(raised.value)
+    assert download.call_count == 0
+    assert MemoryArtifactStore._objects == {}
+
+
 @pytest.mark.parametrize("payload", [{}, {"Results": None}, {"Results": {}}])
 @respx.mock
 async def test_collect_artifacts_requires_explicit_results_list(payload: object) -> None:
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=payload)
     )
@@ -1037,6 +1214,7 @@ async def test_collect_artifacts_requires_explicit_results_list(payload: object)
 @respx.mock
 async def test_collection_failure_never_deletes_successful_deterministic_object() -> None:
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=RESULTS[:2])
     )
@@ -1059,6 +1237,7 @@ async def test_collect_artifacts_enforces_aggregate_byte_budget(
 ) -> None:
     monkeypatch.setattr(loadrunner_engine, "_MAX_TOTAL_ARTIFACT_BYTES", 4)
     mock_authenticate()
+    mock_owned_run()
     respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
         return_value=httpx.Response(200, json=RESULTS[:2])
     )
@@ -1070,6 +1249,53 @@ async def test_collect_artifacts_enforces_aggregate_byte_budget(
     )
 
     with pytest.raises(ValueError, match="maximum size of 1 bytes"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+
+@respx.mock
+async def test_collect_artifacts_rejects_wrong_target_before_results_download() -> None:
+    mock_authenticate()
+    wrong = run_json()
+    wrong["TestID"] = 99
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(200, json=wrong))
+    results = respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=RESULTS)
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected test"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+    assert not results.called
+
+
+@respx.mock
+async def test_collect_artifacts_rejects_result_from_wrong_run_before_download() -> None:
+    mock_authenticate()
+    mock_owned_run()
+    wrong_result = {**RESULTS[0], "RunID": 999}
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=[wrong_result])
+    )
+    download = respx.get(f"{PROJECT_BASE}/Runs/1042/Results/2001/data").mock(
+        return_value=httpx.Response(200, content=b"must-not-be-read")
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected run"):
+        await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
+
+    assert not download.called
+
+
+@respx.mock
+async def test_collect_artifacts_rejects_duplicate_result_ids() -> None:
+    mock_authenticate()
+    mock_owned_run()
+    duplicate = [{**RESULTS[0]}, {**RESULTS[0], "Name": "Other.zip"}]
+    respx.get(f"{PROJECT_BASE}/Runs/1042/Results").mock(
+        return_value=httpx.Response(200, json=duplicate)
+    )
+
+    with pytest.raises(RuntimeError, match="duplicate result ID"):
         await make_adapter().collect_artifacts(started_handle(), MemoryArtifactStore())
 
 
@@ -1108,9 +1334,7 @@ async def test_fetch_summary_rejects_malformed_sla_status(sla: Any) -> None:
     mock_authenticate()
     payload = run_json(state="Finished")
     payload["RunSLAStatus"] = sla
-    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
-        return_value=httpx.Response(200, json=payload)
-    )
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(return_value=httpx.Response(200, json=payload))
 
     with pytest.raises(RuntimeError, match="RunSLAStatus"):
         await make_adapter().fetch_summary(started_handle())

@@ -221,15 +221,21 @@ class RedisDistributedLimitBackend:
         self._redis = client
 
     async def _eval(self, script: str, keys: tuple[str, ...], *args: Any) -> int:
+        backend_unavailable = False
         try:
             result = await self._redis.eval(script, len(keys), *keys, *args)
-            return int(result)
+            parsed_result = int(result)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            raise LimitBackendUnavailable("distributed limit backend is unavailable") from exc
+        except Exception:
+            backend_unavailable = True
+            parsed_result = 0
+        if backend_unavailable:
+            raise LimitBackendUnavailable("distributed limit backend is unavailable")
+        return parsed_result
 
     async def check_ready(self) -> None:
+        readiness_failed = False
         try:
             if not await self._redis.ping():
                 raise LimitBackendUnavailable("distributed limit backend readiness check failed")
@@ -237,10 +243,10 @@ class RedisDistributedLimitBackend:
             raise
         except LimitBackendUnavailable:
             raise
-        except Exception as exc:
-            raise LimitBackendUnavailable(
-                "distributed limit backend readiness check failed"
-            ) from exc
+        except Exception:
+            readiness_failed = True
+        if readiness_failed:
+            raise LimitBackendUnavailable("distributed limit backend readiness check failed")
 
     @staticmethod
     def _key(namespace: str, subject: str) -> str:
@@ -330,13 +336,68 @@ class RedisDistributedLimitBackend:
             redis_keys.append(self._key("sse-credential", keys[1]))
             limits.append(max(int(credential_limit), 1))
         lease = StreamLease(id=secrets.token_hex(16), redis_keys=tuple(redis_keys))
-        acquired = await self._eval(
-            _STREAM_ACQUIRE_SCRIPT,
-            lease.redis_keys,
-            lease.id,
-            max(int(lease_ttl_s), 1) * 1000,
-            *limits,
+        acquire_task = asyncio.create_task(
+            self._eval(
+                _STREAM_ACQUIRE_SCRIPT,
+                lease.redis_keys,
+                lease.id,
+                max(int(lease_ttl_s), 1) * 1000,
+                *limits,
+            ),
+            name="apex-stream-lease-acquire",
         )
+
+        async def compensate_ambiguous_acquire() -> None:
+            async def release_exact_lease() -> None:
+                try:
+                    await self.release_stream(lease)
+                except LimitBackendUnavailable:
+                    # The expiring lease remains the final outage fallback.
+                    pass
+
+            release_task = asyncio.create_task(
+                release_exact_lease(),
+                name="apex-ambiguous-stream-lease-release",
+            )
+            interrupted = False
+            while not release_task.done():
+                try:
+                    await asyncio.shield(release_task)
+                except asyncio.CancelledError:
+                    interrupted = True
+            release_task.result()
+            if interrupted:
+                raise asyncio.CancelledError from None
+
+        try:
+            acquired = await asyncio.shield(acquire_task)
+        except asyncio.CancelledError:
+            # Do not let caller cancellation cancel the Redis command itself.
+            # A release sent before an in-flight acquire settles could execute
+            # first and still leave the later lease orphaned.  Establish command
+            # ordering by owning and definitively settling the acquire task,
+            # despite repeated cancellation, before exact-id compensation.
+            while not acquire_task.done():
+                try:
+                    await asyncio.shield(acquire_task)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            try:
+                acquire_task.result()
+            except BaseException:
+                # Caller cancellation remains authoritative.  Exact release is
+                # safe whether the script denied, succeeded, or lost its reply.
+                pass
+            await compensate_ambiguous_acquire()
+            raise
+        except LimitBackendUnavailable:
+            # A transport failure can arrive after Redis committed the Lua
+            # script but before its reply reached this process.  The caller
+            # receives the original backend error only after exact-id cleanup.
+            await compensate_ambiguous_acquire()
+            raise
         return lease if acquired == 1 else None
 
     async def renew_stream(self, lease: StreamLease, *, lease_ttl_s: int) -> bool:
@@ -352,9 +413,12 @@ class RedisDistributedLimitBackend:
         await self._eval(_STREAM_RELEASE_SCRIPT, lease.redis_keys, lease.id)
 
     async def close(self) -> None:
+        close_failed = False
         try:
             await self._redis.aclose()
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            raise LimitBackendUnavailable("distributed limit backend close failed") from exc
+        except Exception:
+            close_failed = True
+        if close_failed:
+            raise LimitBackendUnavailable("distributed limit backend close failed")

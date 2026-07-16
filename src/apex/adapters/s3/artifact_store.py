@@ -22,6 +22,7 @@ from functools import partial
 from io import BytesIO
 from tempfile import SpooledTemporaryFile
 from typing import Any, cast
+from urllib.parse import quote
 
 import certifi
 from minio import Minio
@@ -44,6 +45,7 @@ STREAM_SPOOL_BYTES = 8 * 1024 * 1024
 STREAM_WORKER_LIMIT = 8
 SDK_WORKER_LIMIT = 8
 MAX_PROCESS_SPOOL_BYTES = 1024 * 1024 * 1024
+MAX_DIRECT_GET_BYTES = 64 * 1024 * 1024
 _BUCKET_NAME = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
 # make_bucket races between concurrent writers are benign — first writer wins.
@@ -384,8 +386,19 @@ class S3ArtifactStore:
                 content_type=content_type,
             )
 
-        await _run_sdk_worker(_put)
-        return StoredArtifact(key=key, uri=f"s3://{self._bucket}/{key}", size=len(payload))
+        provider_failed = False
+        try:
+            await _run_sdk_worker(_put)
+        except S3Error:
+            provider_failed = True
+        if provider_failed:
+            raise RuntimeError("S3 artifact upload failed")
+        encoded_key = quote(key, safe="/-._~")
+        return StoredArtifact(
+            key=key,
+            uri=f"s3://{self._bucket}/{encoded_key}",
+            size=len(payload),
+        )
 
     async def put_stream(
         self,
@@ -421,8 +434,19 @@ class S3ArtifactStore:
 
                 # Cancellation waits for the worker before this context closes
                 # the spool or releases its process-wide byte reservation.
-                await _run_sdk_worker(_put)
-        return StoredArtifact(key=key, uri=f"s3://{self._bucket}/{key}", size=size)
+                provider_failed = False
+                try:
+                    await _run_sdk_worker(_put)
+                except S3Error:
+                    provider_failed = True
+                if provider_failed:
+                    raise RuntimeError("S3 artifact upload failed")
+        encoded_key = quote(key, safe="/-._~")
+        return StoredArtifact(
+            key=key,
+            uri=f"s3://{self._bucket}/{encoded_key}",
+            size=size,
+        )
 
     async def get(self, key: str) -> bytes:
         await self._ensure_bucket()
@@ -430,21 +454,50 @@ class S3ArtifactStore:
         def _get() -> bytes:
             response = self._client.get_object(self._bucket, key)
             try:
-                return response.read()
+                payload = bytearray()
+                while True:
+                    remaining = MAX_DIRECT_GET_BYTES + 1 - len(payload)
+                    if remaining <= 0:
+                        raise ValueError(
+                            "artifact exceeds the maximum direct-read size; use iter_bytes instead"
+                        )
+                    chunk = response.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        return bytes(payload)
+                    if not isinstance(chunk, bytes) or len(chunk) > remaining:
+                        raise RuntimeError("S3 get_object returned an invalid response chunk")
+                    payload.extend(chunk)
             finally:  # minio response hygiene: close + return the conn to the pool
                 response.close()
                 response.release_conn()
 
+        payload: bytes | None = None
+        missing = False
+        provider_failed = False
         try:
-            return await _run_sdk_worker(_get)
+            payload = await _run_sdk_worker(_get)
         except S3Error as exc:
             if exc.code == "NoSuchKey":
-                raise KeyError(f"artifact {key!r} not found in bucket {self._bucket!r}") from None
-            raise
+                missing = True
+            else:
+                provider_failed = True
+        if missing:
+            raise KeyError(f"artifact {key!r} not found in bucket {self._bucket!r}")
+        if provider_failed:
+            raise RuntimeError("S3 artifact download failed")
+        if payload is None:  # pragma: no cover - SDK contract invariant
+            raise RuntimeError("S3 get_object returned no payload")
+        return payload
 
     async def delete(self, key: str) -> None:
         await self._ensure_bucket()
-        await _run_sdk_worker(self._client.remove_object, self._bucket, key)
+        provider_failed = False
+        try:
+            await _run_sdk_worker(self._client.remove_object, self._bucket, key)
+        except S3Error:
+            provider_failed = True
+        if provider_failed:
+            raise RuntimeError("S3 artifact deletion failed")
 
     async def iter_bytes(self, key: str, *, chunk_size: int = 64 * 1024) -> AsyncIterator[bytes]:
         if chunk_size < 1:
@@ -455,6 +508,8 @@ class S3ArtifactStore:
         try:
             if not self._bucket_ensured:
                 await _run_stream_worker(self._ensure_bucket_sync)
+            missing = False
+            provider_failed = False
             try:
                 response = await _run_stream_worker(
                     self._client.get_object,
@@ -466,10 +521,15 @@ class S3ArtifactStore:
                     raise RuntimeError("S3 get_object returned no response")
             except S3Error as exc:
                 if exc.code == "NoSuchKey":
-                    raise KeyError(
-                        f"artifact {key!r} not found in bucket {self._bucket!r}"
-                    ) from None
-                raise
+                    missing = True
+                else:
+                    provider_failed = True
+            if missing:
+                raise KeyError(f"artifact {key!r} not found in bucket {self._bucket!r}")
+            if provider_failed:
+                raise RuntimeError("S3 artifact download failed")
+            if response is None:  # pragma: no cover - SDK contract invariant
+                raise RuntimeError("S3 get_object returned no response")
             while True:
                 chunk = await _run_stream_worker(response.read, chunk_size)
                 if not chunk:
@@ -487,12 +547,22 @@ class S3ArtifactStore:
     async def get_url(self, key: str, *, ttl_s: int = 3600) -> str:
         """Presigned GET URL. Signing is local — no existence check, no network."""
         await self._ensure_bucket()
-        return await _run_sdk_worker(
-            self._client.presigned_get_object,
-            self._bucket,
-            key,
-            expires=timedelta(seconds=ttl_s),
-        )
+        url: str | None = None
+        provider_failed = False
+        try:
+            url = await _run_sdk_worker(
+                self._client.presigned_get_object,
+                self._bucket,
+                key,
+                expires=timedelta(seconds=ttl_s),
+            )
+        except S3Error:
+            provider_failed = True
+        if provider_failed:
+            raise RuntimeError("S3 artifact URL signing failed")
+        if url is None:  # pragma: no cover - SDK contract invariant
+            raise RuntimeError("S3 artifact URL signing returned no URL")
+        return url
 
     async def aclose(self) -> None:
         http_pool = getattr(self._client, "_http", None)
@@ -511,10 +581,23 @@ class S3ArtifactStore:
         with self._ensure_lock:
             if self._bucket_ensured:
                 return
-            if not self._client.bucket_exists(self._bucket):
+            exists: bool | None = None
+            provider_failed = False
+            try:
+                exists = self._client.bucket_exists(self._bucket)
+            except S3Error:
+                provider_failed = True
+            if provider_failed:
+                raise RuntimeError("S3 artifact bucket check failed")
+            if exists is None:  # pragma: no cover - SDK contract invariant
+                raise RuntimeError("S3 artifact bucket check returned no result")
+            if not exists:
+                bucket_race = False
                 try:
                     self._client.make_bucket(self._bucket)
                 except S3Error as exc:
-                    if exc.code not in _BUCKET_RACE_CODES:
-                        raise
+                    bucket_race = exc.code in _BUCKET_RACE_CODES
+                    provider_failed = not bucket_race
+                if provider_failed:
+                    raise RuntimeError("S3 artifact bucket creation failed")
             self._bucket_ensured = True

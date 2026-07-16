@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterable, Mapping
-from ipaddress import IPv4Address, IPv6Address, ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 from typing import Any, cast
 
 import httpcore
@@ -46,9 +46,40 @@ DENIED_HOSTS = frozenset(
         "localhost.localdomain",
         "metadata",
         "metadata.google.internal",
+        "api.metadata.cloud.ibm.com",
+        "instance-data.ec2.internal",
+        "metadata.tencentyun.com",
     }
 )
 DENIED_HOST_SUFFIXES = (".metadata.google.internal",)
+UNCONDITIONALLY_DENIED_HOSTS = frozenset(
+    {
+        "metadata",
+        "metadata.google.internal",
+        "api.metadata.cloud.ibm.com",
+        "instance-data.ec2.internal",
+        "metadata.tencentyun.com",
+    }
+)
+UNCONDITIONALLY_DENIED_HOST_SUFFIXES = (".metadata.google.internal",)
+_APPROVED_PRIVATE_NETWORKS = (
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("fc00::/7"),
+)
+_UNCONDITIONALLY_DENIED_ADDRESSES = frozenset(
+    {
+        # Cloud instance metadata/control-plane endpoints remain forbidden even
+        # when an operator approves private application targets.
+        ip_address("169.254.169.254"),
+        ip_address("fd00:ec2::254"),
+        ip_address("fd20:ce::254"),
+        ip_address("168.63.129.16"),
+        ip_address("100.100.100.200"),
+        ip_address("192.0.0.192"),
+    }
+)
 DNS_WORKER_LIMIT = 8
 DNS_RESOLUTION_TIMEOUT_S = 5.0
 MAX_CONNECT_CANDIDATES = 8
@@ -69,10 +100,41 @@ try:
 except BaseException:
     raise SystemExit(2)
 """
+_DESTINATION_ERROR_DETAILS = frozenset(
+    {
+        "adapter host could not be resolved",
+        "adapter host DNS resolution timed out",
+        "adapter host is unconditionally forbidden",
+        "private adapter hosts are disabled",
+        "adapter host resolved to an invalid address",
+        "adapter host resolved to a forbidden address",
+        "destination host is empty",
+        "destination host is invalid",
+        "destination port is invalid",
+    }
+)
 
 
 class UnsafeDestinationError(ValueError):
     """A destination cannot be connected to under the outbound network policy."""
+
+
+def _safe_destination_error_detail(exc: UnsafeDestinationError) -> str:
+    """Project only fixed module-owned policy errors across transport layers."""
+
+    if type(exc) is UnsafeDestinationError:
+        try:
+            arguments = BaseException.__dict__["args"].__get__(exc, UnsafeDestinationError)
+        except Exception:
+            arguments = ()
+        if (
+            type(arguments) is tuple
+            and len(arguments) == 1
+            and type(arguments[0]) is str
+            and arguments[0] in _DESTINATION_ERROR_DETAILS
+        ):
+            return arguments[0]
+    return "adapter host could not be resolved"
 
 
 def _dns_command(host: str, port: int) -> tuple[str, ...]:
@@ -80,10 +142,14 @@ def _dns_command(host: str, port: int) -> tuple[str, ...]:
 
 
 def _parse_dns_output(output: bytes) -> list[str]:
+    decoded: Any = None
+    malformed = False
     try:
         decoded = json.loads(output.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise UnsafeDestinationError("adapter host could not be resolved") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        malformed = True
+    if malformed:
+        raise UnsafeDestinationError("adapter host could not be resolved")
     if not isinstance(decoded, list) or any(not isinstance(item, str) for item in decoded):
         raise UnsafeDestinationError("adapter host could not be resolved")
     return decoded[:256]
@@ -105,6 +171,8 @@ def _resolve_hostname_sync(
         remaining = budget - (time.monotonic() - started)
         if remaining <= 0:
             raise UnsafeDestinationError("adapter host DNS resolution timed out")
+        completed: subprocess.CompletedProcess[bytes] | None = None
+        timed_out = False
         try:
             completed = subprocess.run(  # noqa: S603 — fixed interpreter/script, argv only
                 _dns_command(host, port),
@@ -113,8 +181,12 @@ def _resolve_hostname_sync(
                 timeout=remaining,
                 env=dict(_DNS_WORKER_ENV),
             )
-        except subprocess.TimeoutExpired as exc:
-            raise UnsafeDestinationError("adapter host DNS resolution timed out") from exc
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        if timed_out:
+            raise UnsafeDestinationError("adapter host DNS resolution timed out")
+        if completed is None:  # pragma: no cover - subprocess contract invariant
+            raise UnsafeDestinationError("adapter host could not be resolved")
         if completed.returncode != 0:
             raise UnsafeDestinationError("adapter host could not be resolved")
         return _parse_dns_output(completed.stdout)
@@ -148,6 +220,42 @@ async def _terminate_dns_process(process: asyncio.subprocess.Process) -> None:
         raise asyncio.CancelledError
 
 
+async def _spawn_dns_process(host: str, port: int) -> asyncio.subprocess.Process:
+    """Transfer child ownership atomically despite cancellation during spawn."""
+
+    spawn_task = asyncio.create_task(
+        asyncio.create_subprocess_exec(
+            *_dns_command(host, port),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=dict(_DNS_WORKER_ENV),
+        )
+    )
+    interrupted = False
+    while not spawn_task.done():
+        try:
+            await asyncio.shield(spawn_task)
+        except asyncio.CancelledError:
+            interrupted = True
+        except BaseException:
+            break
+    process: asyncio.subprocess.Process | None = None
+    error: BaseException | None = None
+    try:
+        process = spawn_task.result()
+    except BaseException as exc:
+        error = exc
+    if interrupted:
+        if process is not None and process.returncode is None:
+            await _terminate_dns_process(process)
+        raise asyncio.CancelledError from None
+    if error is not None:
+        raise error
+    if process is None:  # pragma: no cover - task result invariant
+        raise RuntimeError("DNS resolver process did not start")
+    return process
+
+
 async def _resolve_hostname_async(
     host: str,
     port: int,
@@ -158,22 +266,19 @@ async def _resolve_hostname_async(
 
     process: asyncio.subprocess.Process | None = None
     acquired = False
+    addresses: list[str] | None = None
+    timed_out = False
     try:
         async with asyncio.timeout(min(DNS_RESOLUTION_TIMEOUT_S, max(timeout_s, 0.0))):
             await _acquire_dns_admission()
             acquired = True
-            process = await asyncio.create_subprocess_exec(
-                *_dns_command(host, port),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                env=dict(_DNS_WORKER_ENV),
-            )
+            process = await _spawn_dns_process(host, port)
             stdout, _stderr = await process.communicate()
             if process.returncode != 0:
                 raise UnsafeDestinationError("adapter host could not be resolved")
-            return _parse_dns_output(stdout)
-    except TimeoutError as exc:
-        raise UnsafeDestinationError("adapter host DNS resolution timed out") from exc
+            addresses = _parse_dns_output(stdout)
+    except TimeoutError:
+        timed_out = True
     finally:
         try:
             if process is not None and process.returncode is None:
@@ -181,6 +286,11 @@ async def _resolve_hostname_async(
         finally:
             if acquired:
                 _DNS_ADMISSION.release()
+    if timed_out:
+        raise UnsafeDestinationError("adapter host DNS resolution timed out")
+    if addresses is None:  # pragma: no cover - resolver process contract invariant
+        raise UnsafeDestinationError("adapter host could not be resolved")
+    return addresses
 
 
 async def _resolve_destination_async(
@@ -192,6 +302,7 @@ async def _resolve_destination_async(
 ) -> tuple[IPv4Address | IPv6Address, ...]:
     """Resolve without blocking the event loop and validate the complete answer."""
 
+    _validate_destination_port(port)
     normalized, literal = _normalize_destination(host, allow_private_hosts=allow_private_hosts)
     if literal is not None:
         raw_addresses = [str(literal)]
@@ -228,6 +339,7 @@ def resolve_destination(
     a private address while leaving a public address present as camouflage.
     """
 
+    _validate_destination_port(port)
     normalized, literal = _normalize_destination(host, allow_private_hosts=allow_private_hosts)
     if literal is not None:
         raw_addresses = [str(literal)]
@@ -241,9 +353,20 @@ def resolve_destination(
 def _normalize_destination(
     host: str, *, allow_private_hosts: bool
 ) -> tuple[str, IPv4Address | IPv6Address | None]:
+    if (
+        type(host) is not str
+        or not 1 <= len(host) <= 253
+        or host != host.strip()
+        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in host)
+    ):
+        raise UnsafeDestinationError("destination host is invalid")
     normalized = host.rstrip(".").lower()
     if not normalized:
         raise UnsafeDestinationError("destination host is empty")
+    if is_unconditionally_denied_host(normalized):
+        # Private-host approval is for an operator-selected application target,
+        # never a cloud control-plane credential endpoint.
+        raise UnsafeDestinationError("adapter host is unconditionally forbidden")
     if not allow_private_hosts and (
         normalized in DENIED_HOSTS or normalized.endswith(DENIED_HOST_SUFFIXES)
     ):
@@ -255,16 +378,27 @@ def _normalize_destination(
         return normalized, None
 
 
+def _validate_destination_port(port: Any) -> None:
+    if type(port) is not int or not 1 <= port <= 65_535:
+        raise UnsafeDestinationError("destination port is invalid")
+
+
 def _validate_addresses(
     raw_addresses: Iterable[str], *, allow_private_hosts: bool
 ) -> tuple[IPv4Address | IPv6Address, ...]:
     addresses: list[IPv4Address | IPv6Address] = []
     seen: set[IPv4Address | IPv6Address] = set()
     for raw_address in raw_addresses:
+        address: IPv4Address | IPv6Address | None = None
+        invalid_address = False
         try:
             address = ip_address(raw_address)
-        except ValueError as exc:
-            raise UnsafeDestinationError("adapter host resolved to an invalid address") from exc
+        except ValueError:
+            invalid_address = True
+        if invalid_address:
+            raise UnsafeDestinationError("adapter host resolved to an invalid address")
+        if address is None:  # pragma: no cover - ipaddress contract invariant
+            raise UnsafeDestinationError("adapter host resolved to an invalid address")
         if address in seen:
             continue
         seen.add(address)
@@ -272,11 +406,78 @@ def _validate_addresses(
 
     if not addresses:
         raise UnsafeDestinationError("adapter host could not be resolved")
-    if not allow_private_hosts and any(not address.is_global for address in addresses):
-        raise UnsafeDestinationError("private adapter hosts are disabled")
+    if any(
+        not destination_address_allowed(
+            address,
+            allow_private_hosts=allow_private_hosts,
+        )
+        for address in addresses
+    ):
+        detail = (
+            "adapter host resolved to a forbidden address"
+            if allow_private_hosts
+            else "private adapter hosts are disabled"
+        )
+        raise UnsafeDestinationError(detail)
     # Validate every bounded DNS answer above, but only attempt a small prefix.
     # A hostile record must not multiply one connect budget hundreds of times.
     return tuple(addresses[:MAX_CONNECT_CANDIDATES])
+
+
+def is_unconditionally_denied_host(host: str) -> bool:
+    """Return whether a hostname denotes a platform metadata endpoint."""
+
+    if type(host) is not str or not 1 <= len(host) <= 253:
+        return True
+    normalized = host.rstrip(".").lower()
+    return normalized in UNCONDITIONALLY_DENIED_HOSTS or normalized.endswith(
+        UNCONDITIONALLY_DENIED_HOST_SUFFIXES
+    )
+
+
+def destination_address_allowed(
+    address: IPv4Address | IPv6Address,
+    *,
+    allow_private_hosts: bool,
+) -> bool:
+    """Apply an explicit global/RFC1918/loopback/ULA destination policy.
+
+    ``ipaddress.is_private`` includes metadata, documentation, benchmark,
+    unspecified, and reserved ranges. Operator approval must not accidentally
+    grant all of those. IPv4-mapped IPv6 addresses are assessed as IPv4 so they
+    cannot bypass the same range policy.
+    """
+
+    if isinstance(address, IPv6Address) and address.scope_id is not None:
+        return False
+    effective: IPv4Address | IPv6Address = (
+        address.ipv4_mapped
+        if isinstance(address, IPv6Address) and address.ipv4_mapped is not None
+        else address
+    )
+    if effective in _UNCONDITIONALLY_DENIED_ADDRESSES:
+        return False
+    if (
+        effective.is_unspecified
+        or effective.is_link_local
+        or effective.is_multicast
+        or getattr(effective, "is_site_local", False)
+    ):
+        return False
+    if effective.is_loopback:
+        return allow_private_hosts
+    if effective.is_reserved:
+        return False
+    if isinstance(effective, IPv6Address) and (
+        effective.sixtofour is not None or effective.teredo is not None
+    ):
+        return False
+    if effective.is_global:
+        return True
+    return allow_private_hosts and any(
+        effective.version == network.version and effective in network
+        for network in _APPROVED_PRIVATE_NETWORKS
+    )
 
 
 def _timeout_deadline(timeout: float | None) -> float | None:
@@ -364,6 +565,8 @@ class _PinnedSyncBackend(SyncBackend):
         resolution_timeout = _remaining_timeout(timeout, effective_deadline)
         if resolution_timeout is not None and resolution_timeout <= 0:
             raise httpcore.ConnectTimeout("total connect timeout exceeded")
+        addresses: tuple[IPv4Address | IPv6Address, ...] | None = None
+        resolution_error: str | None = None
         try:
             addresses = resolve_destination(
                 host,
@@ -372,7 +575,11 @@ class _PinnedSyncBackend(SyncBackend):
                 timeout_s=resolution_timeout,
             )
         except UnsafeDestinationError as exc:
-            raise httpcore.ConnectError(str(exc)) from exc
+            resolution_error = _safe_destination_error_detail(exc)
+        if resolution_error is not None:
+            raise httpcore.ConnectError(resolution_error)
+        if addresses is None:  # pragma: no cover - resolver contract invariant
+            raise httpcore.ConnectError("adapter host could not be resolved")
 
         last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
         for address in addresses:
@@ -414,6 +621,8 @@ class _PinnedAsyncBackend(AutoBackend):
         resolution_timeout = _remaining_timeout(timeout, deadline)
         if resolution_timeout is not None and resolution_timeout <= 0:
             raise httpcore.ConnectTimeout("total connect timeout exceeded")
+        addresses: tuple[IPv4Address | IPv6Address, ...] | None = None
+        resolution_error: str | None = None
         try:
             addresses = await _resolve_destination_async(
                 host,
@@ -422,7 +631,11 @@ class _PinnedAsyncBackend(AutoBackend):
                 timeout_s=resolution_timeout,
             )
         except UnsafeDestinationError as exc:
-            raise httpcore.ConnectError(str(exc)) from exc
+            resolution_error = _safe_destination_error_detail(exc)
+        if resolution_error is not None:
+            raise httpcore.ConnectError(resolution_error)
+        if addresses is None:  # pragma: no cover - resolver contract invariant
+            raise httpcore.ConnectError("adapter host could not be resolved")
 
         last_error: httpcore.ConnectError | httpcore.ConnectTimeout | None = None
         for address in addresses:
@@ -457,7 +670,7 @@ class SafeHTTPTransport(httpx.HTTPTransport):
             not math.isfinite(total_timeout_s) or total_timeout_s <= 0
         ):
             raise ValueError("total_timeout_s must be finite and greater than zero")
-        super().__init__(verify=verify, trust_env=False)
+        super().__init__(verify=_normalized_httpx_verify(verify), trust_env=False)
         self._pool._network_backend = _PinnedSyncBackend(  # pyright: ignore[reportPrivateUsage]
             allow_private_hosts=allow_private_hosts,
             total_timeout_s=total_timeout_s,
@@ -473,10 +686,20 @@ class SafeAsyncHTTPTransport(httpx.AsyncHTTPTransport):
         allow_private_hosts: bool = False,
         verify: ssl.SSLContext | str | bool = True,
     ) -> None:
-        super().__init__(verify=verify, trust_env=False)
+        super().__init__(verify=_normalized_httpx_verify(verify), trust_env=False)
         self._pool._network_backend = _PinnedAsyncBackend(  # pyright: ignore[reportPrivateUsage]
             allow_private_hosts=allow_private_hosts
         )
+
+
+def _normalized_httpx_verify(
+    verify: ssl.SSLContext | str | bool,
+) -> ssl.SSLContext | bool:
+    """Convert a CA-file path to HTTPX's durable SSL-context interface."""
+
+    if isinstance(verify, str):
+        return ssl.create_default_context(cafile=verify)
+    return verify
 
 
 def safe_http_client(
@@ -526,6 +749,8 @@ class _PinnedUrllib3ConnectionMixin:
             float(original_timeout) if isinstance(original_timeout, int | float) else None
         )
         deadline = _timeout_deadline(numeric_timeout)
+        addresses: tuple[IPv4Address | IPv6Address, ...] | None = None
+        resolution_error: str | None = None
         try:
             addresses = resolve_destination(
                 self._dns_host,
@@ -534,7 +759,13 @@ class _PinnedUrllib3ConnectionMixin:
                 timeout_s=numeric_timeout,
             )
         except UnsafeDestinationError as exc:
-            raise NewConnectionError(cast(HTTPConnection, self), str(exc)) from exc
+            resolution_error = _safe_destination_error_detail(exc)
+        if resolution_error is not None:
+            raise NewConnectionError(cast(HTTPConnection, self), resolution_error)
+        if addresses is None:  # pragma: no cover - resolver contract invariant
+            raise NewConnectionError(
+                cast(HTTPConnection, self), "adapter host could not be resolved"
+            )
 
         original_host = self._dns_host
         last_error: NewConnectionError | ConnectTimeoutError | None = None

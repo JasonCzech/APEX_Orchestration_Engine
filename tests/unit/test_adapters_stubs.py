@@ -145,8 +145,10 @@ async def test_documents_search_and_fetch() -> None:
 
 
 async def test_documents_fetch_unknown_ref_raises() -> None:
-    with pytest.raises(KeyError, match="doc-nope"):
+    with pytest.raises(KeyError, match="doc-nope") as excinfo:
         await StubDocumentsAdapter().fetch(DocRef(id="doc-nope"))
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
 
 
 # --- cluster inventory ---------------------------------------------------------
@@ -186,8 +188,10 @@ async def test_env_secrets_resolves_from_environ(monkeypatch: pytest.MonkeyPatch
 
 async def test_env_secrets_missing_var_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APEX_INTEGRATION_TEST_MISSING", raising=False)
-    with pytest.raises(KeyError, match="APEX_INTEGRATION_TEST_MISSING"):
+    with pytest.raises(KeyError, match="APEX_INTEGRATION_TEST_MISSING") as excinfo:
         await EnvSecretsAdapter().resolve("env:APEX_INTEGRATION_TEST_MISSING")
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
 
 
 async def test_env_secrets_rejects_disallowed_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -208,8 +212,13 @@ async def test_env_secrets_cannot_resolve_platform_apex_settings(
 
 
 async def test_env_secrets_rejects_unknown_scheme() -> None:
-    with pytest.raises(ValueError, match="vault:path#key"):
-        await EnvSecretsAdapter().resolve("vault:path#key")
+    canary = "ghp_" + "A" * 24
+    with pytest.raises(ValueError, match="expected 'env:NAME'") as excinfo:
+        await EnvSecretsAdapter().resolve(canary)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
 
 
 # --- artifact store ----------------------------------------------------------------
@@ -233,7 +242,9 @@ async def test_artifact_store_is_shared_across_instances() -> None:
 
 async def test_artifact_store_unknown_key_raises() -> None:
     store = MemoryArtifactStore()
-    with pytest.raises(KeyError, match="missing/key"):
+    with pytest.raises(KeyError, match="missing/key") as excinfo:
         await store.get("missing/key")
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
     with pytest.raises(KeyError, match="missing/key"):
         await store.get_url("missing/key")

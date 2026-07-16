@@ -182,12 +182,34 @@ def test_startup_validation_errors_do_not_render_secret_inputs() -> None:
     assert provider_key not in rendered
 
 
+def test_custom_settings_diagnostics_do_not_reflect_environment_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cors_secret = "cors-origin-secret-canary"
+    monkeypatch.setenv(
+        "APEX_CORS_ORIGINS",
+        json.dumps([f"https://user:{cors_secret}@dashboard.example.com:not-a-port"]),
+    )
+    with pytest.raises(ValidationError, match="invalid CORS origin") as cors_error:
+        CleanEnvSettings()
+    assert cors_secret not in str(cors_error.value)
+
+    proxy_secret = "trusted-proxy-secret-canary"
+    with pytest.raises(ValidationError, match="invalid trusted proxy CIDR") as proxy_error:
+        RateLimitSettings(trusted_proxy_cidrs=[proxy_secret])
+    assert proxy_secret not in str(proxy_error.value)
+
+    environment_secret = "hostile-environment-secret-canary"
+    monkeypatch.delenv("APEX_CORS_ORIGINS")
+    with pytest.raises(ValidationError, match="Unsafe locked-environment") as env_error:
+        CleanEnvSettings(environment=environment_secret)
+    assert environment_secret not in str(env_error.value)
+
+
 def test_nested_settings_validation_errors_hide_inputs_when_built_directly() -> None:
     secret = "direct-nested-settings-secret-canary"
     factories = (
-        lambda: DatabaseSettings(
-            uri=f"postgresql://user:{secret}@db.example/app?ssl=a&ssl=b"
-        ),
+        lambda: DatabaseSettings(uri=f"postgresql://user:{secret}@db.example/app?ssl=a&ssl=b"),
         lambda: LLMSettings(
             anthropic_api_key=secret,
             default_model="missing",
@@ -279,6 +301,10 @@ def test_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
     monkeypatch.setenv("REDIS_URI", "rediss://redis.example.com:6380/0")
     monkeypatch.setenv("APEX_RATE_LIMIT__BACKEND", "redis")
+    monkeypatch.setenv(
+        "DATABASE_URI",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full&sslrootcert=system",
+    )
     settings = CleanEnvSettings()
     assert settings.environment == "staging"
     assert settings.distributed_remote_creation_lock is True
@@ -314,6 +340,50 @@ def test_locked_down_env_rejects_dev_api_key(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("APEX_AUTH__DEV_API_KEY", "dev")
     with pytest.raises(ValidationError, match="auth.dev_api_key"):
         CleanEnvSettings()
+
+
+def test_local_env_caps_previous_pepper_count() -> None:
+    previous = [f"pepper-{index}" for index in range(17)]
+
+    with pytest.raises(ValidationError, match="at most 16 entries"):
+        AuthSettings(previous_api_key_hash_peppers=previous)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dev_api_key", "é" * 2_049),
+        ("api_key_hash_pepper", "é" * 2_049),
+        ("previous_api_key_hash_peppers", ["é" * 2_049]),
+    ],
+)
+def test_local_env_caps_auth_secret_bytes(field: str, value: object) -> None:
+    with pytest.raises(ValidationError, match="byte limit"):
+        AuthSettings.model_validate({field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("dev_api_key", "\ud800"),
+        ("api_key_hash_pepper", "\ud800"),
+        ("previous_api_key_hash_peppers", ["\ud800"]),
+    ],
+)
+def test_local_env_rejects_non_unicode_auth_secrets_without_exception_chain(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError, match="valid string") as exc_info:
+        AuthSettings.model_validate({field: value})
+
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+
+
+def test_local_env_rejects_empty_previous_pepper_item() -> None:
+    with pytest.raises(ValidationError, match="at least 1 character"):
+        AuthSettings(previous_api_key_hash_peppers=[""])
 
 
 @pytest.mark.parametrize(
@@ -409,6 +479,10 @@ def test_locked_down_env_accepts_authenticated_database_ssl_mode(
     monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
     monkeypatch.setenv("REDIS_URI", "rediss://redis.example.com:6380/0")
     monkeypatch.setenv("APEX_RATE_LIMIT__BACKEND", "redis")
+    monkeypatch.setenv(
+        "DATABASE_URI",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full&sslrootcert=system",
+    )
 
     settings = CleanEnvSettings()
 
@@ -428,6 +502,10 @@ def test_locked_down_env_accepts_asyncpg_ssl_query(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
     monkeypatch.setenv("REDIS_URI", "rediss://redis.example.com:6380/0")
     monkeypatch.setenv("APEX_RATE_LIMIT__BACKEND", "redis")
+    monkeypatch.setenv(
+        "DATABASE_URI",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full&sslrootcert=system",
+    )
 
     settings = CleanEnvSettings()
 
@@ -471,6 +549,29 @@ def test_langgraph_database_uri_rejects_ambiguous_tls_controls(
     monkeypatch.setenv("DATABASE_URI", uri)
 
     with pytest.raises(ValidationError, match="unambiguous TLS option"):
+        CleanEnvSettings()
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        " postgresql://u:p@db:5432/x?sslmode=verify-full",
+        "postgresql://u:p@db:5432\\x?sslmode=verify-full",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full\x1f",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full\x85",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full&pad=" + ("x" * 16_384),
+    ],
+)
+def test_database_uris_reject_unsafe_raw_text_before_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+    uri: str,
+) -> None:
+    with pytest.raises(ValidationError, match="bounded and free of unsafe characters"):
+        DatabaseSettings(uri=uri)
+
+    _set_valid_locked_environment(monkeypatch)
+    monkeypatch.setenv("DATABASE_URI", uri)
+    with pytest.raises(ValidationError, match="DATABASE_URI must be bounded"):
         CleanEnvSettings()
 
 
@@ -579,6 +680,20 @@ def _set_valid_locked_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APEX_DISTRIBUTED_REMOTE_CREATION_LOCK", "true")
     monkeypatch.setenv("REDIS_URI", "rediss://redis.example.com:6380/0")
     monkeypatch.setenv("APEX_RATE_LIMIT__BACKEND", "redis")
+    monkeypatch.setenv(
+        "DATABASE_URI",
+        "postgresql://u:p@db:5432/x?sslmode=verify-full&sslrootcert=system",
+    )
+
+
+def test_locked_down_environment_requires_langgraph_database_uri(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_valid_locked_environment(monkeypatch)
+    monkeypatch.delenv("DATABASE_URI")
+
+    with pytest.raises(ValidationError, match="DATABASE_URI is required"):
+        CleanEnvSettings()
 
 
 @pytest.mark.parametrize(

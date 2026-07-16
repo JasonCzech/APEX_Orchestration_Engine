@@ -17,12 +17,12 @@ from apex.auth.service import extract_api_key
 from apex.domain.input_limits import NoNulStr, ResourceId, ScopeId
 from apex.persistence.db import release_read_transactions
 from apex.persistence.repositories.documents import DocumentsRepository
-from apex.routers.work_tracking import (
-    resolve_scoped_work_tracking_adapter,
-    select_work_tracking_project,
+from apex.routers.work_tracking import select_work_tracking_project
+from apex.services.context import (
+    ContextRunStartError,
+    collect_context_evidence,
+    start_context_summary,
 )
-from apex.services.connections import ConnectionResolver
-from apex.services.context import collect_context_evidence, start_context_summary
 from apex.services.documents import (
     DocumentContextNotFoundError,
     get_documents_repository,
@@ -32,9 +32,9 @@ from apex.services.langgraph_client import loopback_client
 from apex.services.run_validation import (
     MAX_WORK_ITEM_KEY_CHARS,
     MAX_WORK_ITEM_KEYS_HARD,
+    ContextRunInput,
     validate_context_run_input,
 )
-from apex.services.work_tracking import get_work_tracking_resolver
 from apex.settings import get_settings
 
 router = APIRouter(prefix="/context", tags=["context"])
@@ -55,7 +55,6 @@ def _loopback_client_after_scope(request: Request) -> Any:
 
 LoopbackClient = Annotated[Any, Depends(get_loopback_client)]
 OperatorIdentity = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
-WorkTrackingResolver = Annotated[ConnectionResolver, Depends(get_work_tracking_resolver)]
 DocumentsRepo = Annotated[DocumentsRepository, Depends(get_documents_repository)]
 
 
@@ -104,7 +103,6 @@ async def create_context_summary(
     body: ContextSummaryRequest,
     identity: OperatorIdentity,
     request: Request,
-    resolver: WorkTrackingResolver,
     documents: DocumentsRepo,
 ) -> ContextSummaryAccepted:
     selected_project = select_work_tracking_project(identity, body.project_id)
@@ -116,6 +114,8 @@ async def create_context_summary(
         )
     if len(set(body.document_ids)) != len(body.document_ids):
         raise HTTPException(status_code=422, detail="document_ids must not contain duplicates")
+    request_error: HTTPException | None = None
+    validated: ContextRunInput | None = None
     try:
         validated = validate_context_run_input(
             {
@@ -125,22 +125,23 @@ async def create_context_summary(
                 "project_id": selected_project,
             }
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid context summary request") from exc
-    if validated.work_item_keys:
-        # The graph fetches keys outside the HTTP dependency chain. Prove here
-        # that its resolved real-provider adapter is bound to the caller's project.
-        await resolve_scoped_work_tracking_adapter(
-            resolver,
-            identity,
-            project=selected_project,
-        )
+    except ValueError:
+        request_error = HTTPException(status_code=422, detail="invalid context summary request")
+    if request_error is not None:
+        raise request_error
+    assert validated is not None
+    request_error = None
+    document_packets: list[dict[str, Any]] | None = None
     try:
         document_packets = await uploaded_document_context_packets(
             documents, identity, body.document_ids
         )
-    except DocumentContextNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="document context not found") from exc
+    except DocumentContextNotFoundError:
+        request_error = HTTPException(status_code=404, detail="document context not found")
+    if request_error is not None:
+        raise request_error
+    assert document_packets is not None
+    request_error = None
     try:
         validated = validate_context_run_input(
             {
@@ -150,20 +151,33 @@ async def create_context_summary(
                 "project_id": validated.project_id,
             }
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid context summary request") from exc
+    except ValueError:
+        request_error = HTTPException(status_code=422, detail="invalid context summary request")
+    if request_error is not None:
+        raise request_error
+    assert validated is not None
     await release_read_transactions(documents)
     client = _loopback_client_after_scope(request)
-    result = await start_context_summary(
-        client,
-        subject=validated.subject,
-        work_item_keys=validated.work_item_keys,
-        document_packets=[
-            packet.model_dump(mode="json", exclude_none=True)
-            for packet in validated.document_packets
-        ],
-        project_id=validated.project_id,
-    )
+    request_error = None
+    result: dict[str, str] | None = None
+    try:
+        result = await start_context_summary(
+            client,
+            subject=validated.subject,
+            work_item_keys=validated.work_item_keys,
+            document_packets=[
+                packet.model_dump(mode="json", exclude_none=True)
+                for packet in validated.document_packets
+            ],
+            project_id=validated.project_id,
+        )
+    except ValueError:
+        request_error = HTTPException(status_code=422, detail="invalid context summary request")
+    except ContextRunStartError:
+        request_error = HTTPException(status_code=502, detail="context runtime unavailable")
+    if request_error is not None:
+        raise request_error
+    assert result is not None
     return ContextSummaryAccepted(**result)
 
 
@@ -178,6 +192,8 @@ async def list_context_evidence(
 ) -> list[EvidencePacket]:
     ensure_scope(identity, project_id=project)
     client = _loopback_client_after_scope(request)
+    lookup_error: HTTPException | None = None
+    packets: list[dict[str, Any]] | None = None
     try:
         packets = await collect_context_evidence(
             client,
@@ -186,6 +202,11 @@ async def list_context_evidence(
             limit=limit,
             offset=offset,
         )
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail="context thread not found") from exc
+    except LookupError:
+        lookup_error = HTTPException(status_code=404, detail="context thread not found")
+    except Exception:
+        lookup_error = HTTPException(status_code=502, detail="context runtime unavailable")
+    if lookup_error is not None:
+        raise lookup_error
+    assert packets is not None
     return [EvidencePacket(**packet) for packet in packets]

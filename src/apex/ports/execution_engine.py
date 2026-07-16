@@ -45,7 +45,7 @@ class EngineProviderRunNotFoundError(KeyError):
 class LiveStats(BaseModel):
     """Normalized live metrics; engines that lack a metric report it as 0/None upstream."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     vusers: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000)
     tps: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000_000)
@@ -54,7 +54,7 @@ class LiveStats(BaseModel):
 
 
 class EngineRunStatus(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     phase: EngineRunPhase
     progress_pct: FiniteFloat = Field(default=0.0, ge=0, le=100)
@@ -70,18 +70,28 @@ class ExecutionEnginePort(Protocol):
         """Get-or-create by spec.idempotency_key; safe to re-execute after a crash."""
         ...
 
-    async def start(self, handle: EngineHandle) -> None: ...
+    async def start(self, handle: EngineHandle) -> None:
+        """Start idempotently; crash recovery and concurrent replay may repeat this call."""
+        ...
 
     async def get_status(self, handle: EngineHandle) -> EngineRunStatus:
         """Cheap and poll-safe: called every limits.poll_interval_s for hours."""
         ...
 
-    async def abort(self, handle: EngineHandle, *, reason: str) -> None: ...
+    async def abort(self, handle: EngineHandle, *, reason: str) -> None:
+        """Request abort idempotently; cleanup retries until terminal confirmation."""
+        ...
 
     async def collect_artifacts(
         self, handle: EngineHandle, store: ArtifactStorePort
     ) -> list[dict[str, Any]]:
-        """Persist engine outputs via the store; returns ArtifactRef-shaped dicts."""
+        """Persist outputs via the scoped store and return ArtifactRef-shaped dicts.
+
+        The runtime may canonicalize each requested key to a replay-stable ordinal
+        slot. Implementations must build refs from the returned ``StoredArtifact``
+        key/URI rather than assuming the requested key was retained. Collection
+        must be replay-safe because a process can exit before its graph checkpoint.
+        """
         ...
 
     async def fetch_summary(self, handle: EngineHandle) -> TestResultSummary: ...

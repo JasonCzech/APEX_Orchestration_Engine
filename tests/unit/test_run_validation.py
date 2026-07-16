@@ -16,10 +16,12 @@ from apex.graphs.pipeline.gates import parse_gate_decision
 from apex.graphs.pipeline.graph import plan_resolver
 from apex.graphs.pipeline.state import PipelineState
 from apex.services.run_validation import (
+    MAX_MODEL_PHASE_OVERRIDES,
     PlaygroundPrompt,
     validate_context_packets,
     validate_context_run_input,
     validate_gate_payload,
+    validate_model_by_phase,
     validate_pipeline_input,
     validate_playground_render_budget,
     validate_playground_run_input,
@@ -71,6 +73,28 @@ def test_pipeline_config_rejects_model_outside_deployment_allowlist(
 
     with pytest.raises(ValidationError, match="APEX_LLM__ALLOWED_MODELS"):
         PipelineConfigurable(model_by_phase={Phase.REPORTING: "expensive-unapproved"})
+
+
+def test_direct_model_allowlist_rejects_normalization_and_hostile_scalar_hooks() -> None:
+    settings = ApexSettings(llm=LLMSettings(default_model="allowed", allowed_models=["allowed"]))
+    calls: list[str] = []
+
+    class HostileModel(str):
+        def strip(self, *_args: object, **_kwargs: object) -> str:
+            calls.append("strip")
+            raise AssertionError("hostile model hook ran")
+
+    for values in (
+        {Phase.REPORTING: " allowed "},
+        {Phase.REPORTING: "x" * 201},
+        {Phase.REPORTING: HostileModel("allowed")},
+        {str(index): "allowed" for index in range(MAX_MODEL_PHASE_OVERRIDES + 1)},
+    ):
+        with pytest.raises(ValueError, match="model_by_phase"):
+            validate_model_by_phase(values, settings=settings)
+
+    assert calls == []
+    validate_model_by_phase({Phase.REPORTING: "allowed"}, settings=settings)
 
 
 @pytest.mark.parametrize(
@@ -135,6 +159,30 @@ def test_gate_parser_rejects_oversized_direct_langgraph_resume() -> None:
     assert "exceeds" in parsed["error"]
 
 
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"action": "discuss", "message": "Authorization: Bearer direct-secret"},
+        {"action": "revise", "instructions": "password=direct-secret"},
+        {"action": "approve", "note": "https://user:direct-secret@example.test"},
+        {"action": "modify", "prompt": {"system": "private_key=direct-secret"}},
+    ],
+)
+def test_gate_parser_rejects_credential_bearing_direct_langgraph_resume(
+    decision: dict[str, Any],
+) -> None:
+    parsed = parse_gate_decision(
+        decision,
+        ["approve", "discuss", "modify", "revise"],
+    )
+
+    assert parsed == {
+        "action": None,
+        "error": "gate decision must not contain credential material",
+    }
+    assert "direct-secret" not in str(parsed)
+
+
 @pytest.mark.parametrize("number", [nan, inf, -inf])
 def test_gate_payload_rejects_nonfinite_numbers(number: float) -> None:
     with pytest.raises(ValueError, match="finite"):
@@ -164,6 +212,45 @@ def test_rendered_model_input_has_final_budget() -> None:
     settings = ApexSettings(runs=RunControlSettings(max_model_input_chars=10_000))
     with pytest.raises(ValueError, match="rendered model input"):
         validate_rendered_model_input("s" * 5_001, "u" * 5_000, settings=settings)
+
+
+def test_rendered_model_input_rejects_credentials_before_provider_call() -> None:
+    secret = "model-provider-secret-canary"
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        validate_rendered_model_input(
+            "safe system",
+            f"fetched result: Authorization: Bearer {secret}",
+        )
+
+    assert secret not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("validator", "payload"),
+    [
+        (
+            validate_pipeline_input,
+            {"title": "direct", "request": "password=direct-pipeline-secret"},
+        ),
+        (
+            validate_context_run_input,
+            {"subject": "Authorization: Bearer direct-context-secret"},
+        ),
+        (
+            validate_playground_run_input,
+            {"prompt": {"system": "safe", "user": "password=direct-playground-secret"}},
+        ),
+    ],
+)
+def test_graph_input_validators_reject_credentials_without_auth_middleware(
+    validator: Any,
+    payload: dict[str, Any],
+) -> None:
+    with pytest.raises(ValueError, match="credential material") as raised:
+        validator(payload)
+
+    assert "direct-" not in str(raised.value)
 
 
 def test_plan_resolver_revalidates_direct_langgraph_context_input() -> None:
@@ -227,7 +314,10 @@ def test_public_run_input_rejects_nul_before_checkpoint_persistence(
 def test_public_run_input_rejects_credential_bearing_external_results_uri(
     uri: str,
 ) -> None:
-    with pytest.raises(ValidationError, match="external results uri") as raised:
+    with pytest.raises(
+        ValueError,
+        match="credential material|external_results is invalid",
+    ) as raised:
         validate_public_run_input({"external_results": {"source": "dashboard", "uri": uri}})
 
     rendered = str(raised.value)
@@ -260,6 +350,24 @@ def test_wrapped_pydantic_errors_do_not_reflect_rejected_values() -> None:
         with pytest.raises(ValueError) as raised:
             validate()
         assert canary not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "validate",
+    [
+        lambda: validate_context_packets([{"id": "", "source": "sdk", "title": "packet"}]),
+        lambda: validate_pipeline_input({"project_id": ""}),
+        lambda: validate_pipeline_input({"external_results": {}}),
+        lambda: validate_context_run_input({"subject": 42}),
+        lambda: validate_playground_run_input({"prompt": {"user": 42}}),
+    ],
+)
+def test_wrapped_validation_errors_detach_rejected_input_context(validate: Any) -> None:
+    with pytest.raises(ValueError) as raised:
+        validate()
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 def test_context_run_input_strictly_bounds_provider_fanout() -> None:
@@ -344,6 +452,79 @@ def test_stateless_json_budget_bounds_bytes_nodes_depth_and_types() -> None:
 def test_stateless_run_input_rejects_nul_json(payload: dict[str, Any]) -> None:
     with pytest.raises(ValueError, match="U\\+0000"):
         validate_playground_run_input(payload)
+
+
+def test_native_input_validators_reject_primitive_and_container_subclasses_without_hooks() -> None:
+    calls: list[str] = []
+
+    class MappingBomb(dict[str, Any]):
+        def __iter__(self) -> Any:
+            calls.append("mapping-iter")
+            raise AssertionError("mapping subclass must not be iterated")
+
+    class ListBomb(list[Any]):
+        def __iter__(self) -> Any:
+            calls.append("list-iter")
+            raise AssertionError("list subclass must not be iterated")
+
+    class StringBomb(str):
+        def strip(self, *_args: Any, **_kwargs: Any) -> str:
+            calls.append("string-strip")
+            raise AssertionError("string subclass must not be normalized")
+
+    class IntegerBomb(int):
+        def bit_length(self) -> int:
+            calls.append("integer-bits")
+            raise AssertionError("integer subclass must not be inspected")
+
+    checks = (
+        lambda: validate_context_run_input(MappingBomb(subject="incident")),
+        lambda: validate_playground_run_input(MappingBomb(sample_input={})),
+        lambda: validate_context_packets(ListBomb()),
+        lambda: validate_context_packets([MappingBomb(id="packet", source="sdk", title="Packet")]),
+        lambda: validate_pipeline_input({"title": StringBomb("unsafe")}),
+        lambda: validate_playground_run_input({"sample_input": {"value": IntegerBomb(1)}}),
+    )
+
+    for check in checks:
+        with pytest.raises(ValueError):
+            check()
+    assert calls == []
+
+
+def test_invalid_raw_run_inputs_never_retain_credentials_on_exception_chains() -> None:
+    canary = "raw-validation-secret-canary"
+    checks = (
+        lambda: validate_pipeline_input({"title": f"api_key={canary}" + "x" * 501}),
+        lambda: validate_context_packets(
+            [
+                {
+                    "id": "packet",
+                    "source": "sdk",
+                    "title": f"api_key={canary}" + "x" * 501,
+                }
+            ]
+        ),
+        lambda: validate_context_run_input({"subject": f"api_key={canary}" + "x" * 2_001}),
+        lambda: validate_playground_run_input(
+            {"prompt": {"system": f"api_key={canary}" + "x" * 100_001}}
+        ),
+    )
+
+    for check in checks:
+        with pytest.raises(ValueError) as raised:
+            check()
+        current: BaseException | None = raised.value
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            assert canary not in repr(current)
+            current = current.__cause__ or current.__context__
+
+
+def test_stateless_json_budget_rejects_oversized_integer_before_serialization() -> None:
+    with pytest.raises(ValueError, match="256 bits"):
+        validate_playground_run_input({"sample_input": {"value": 1 << 10_000}})
 
 
 @pytest.mark.parametrize(

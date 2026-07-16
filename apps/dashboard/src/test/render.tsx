@@ -4,6 +4,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { Role } from '@/api/apexClient'
+import { queryKeys } from '@/api/queryKeys'
 import { ApiKeyGate } from '@/auth/ApiKeyGate'
 import { AuthProvider, type AuthState } from '@/auth/AuthProvider'
 import { TopbarContributionProvider } from '@/components/layout/TopbarContributionProvider'
@@ -43,11 +44,20 @@ export function renderApp({
   initialEntries = ['/'],
   authState,
   queryClient = createTestQueryClient(),
+  seedSystemInfo = true,
 }: {
   initialEntries?: string[]
   authState?: AuthState
   queryClient?: QueryClient
+  /** Set false only when the test is exercising the connectivity request itself. */
+  seedSystemInfo?: boolean
 } = {}) {
+  // A static authenticated session is already pre-validated. Seed the matching
+  // query so unrelated full-shell tests do not race an extra MSW response body
+  // against the route request they actually assert. Connectivity tests opt out.
+  if (seedSystemInfo && authState?.status === 'authenticated') {
+    queryClient.setQueryData(queryKeys.system.info(), authState.systemInfo)
+  }
   const router = createMemoryRouter(appRoutes, { initialEntries })
   const result = render(
     <QueryClientProvider client={queryClient}>

@@ -6,7 +6,7 @@ backend). They prove that externally-supplied results let an analysis-only run
 """
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from langchain_core.runnables import RunnableConfig
@@ -14,9 +14,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
 import apex.graphs.pipeline.phase_subgraph as ps
-from apex.domain.pipeline import Phase
+from apex.domain.pipeline import ExternalResults, Phase
+from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.graphs.pipeline.graph import builder
-from apex.graphs.pipeline.state import PipelineState
+from apex.graphs.pipeline.state import PipelineState, merge_phase_results
 
 AUTO = {"prompt_review": "auto", "output_review": "auto"}
 
@@ -126,6 +127,18 @@ def test_graph_revalidation_rejects_signed_external_results_uri() -> None:
     assert "graph-signed-url-secret" not in str(raised.value)
 
 
+def test_external_results_legacy_replay_rejects_credentials_without_reflection() -> None:
+    secret = "external-results-secret-canary"
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        ExternalResults(
+            source="legacy-dashboard",
+            notes=f"Authorization: Bearer {secret}",
+        )
+
+    assert secret not in str(raised.value)
+
+
 def test_anthropic_backend_without_key_degrades_to_stub(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         ps, "get_settings", lambda: SimpleNamespace(llm=SimpleNamespace(anthropic_api_key=None))
@@ -155,10 +168,338 @@ def test_default_backend_uses_stub() -> None:
     assert "warnings" not in entry
 
 
+def test_stub_summary_is_bounded_before_checkpoint() -> None:
+    update = ps._stub_agent_body(
+        Phase.STORY_ANALYSIS,
+        {
+            "title": "t" * 500,
+            "request": "r" * 20_000,
+            "phase_results": {"story_analysis": {"attempt": 1}},
+        },
+        config("bounded-stub"),
+    )
+
+    summary = update["phase_results"]["story_analysis"]["summary"]
+    assert len(summary) <= ps.MAX_GATE_TEXT_CHARS
+
+
 def test_message_text_handles_string_and_blocks() -> None:
     assert ps._message_text(SimpleNamespace(content="hello  ")) == "hello"
     blocks = [{"type": "thinking", "thinking": "..."}, {"type": "text", "text": "answer"}]
     assert ps._message_text(SimpleNamespace(content=blocks)) == "answer"
+
+
+def test_message_text_bounds_and_redacts_huge_single_block() -> None:
+    secret = "model-output-secret-canary"
+    text = f"Authorization: Bearer {secret}\n" + ("x" * 1_000_000)
+
+    rendered = ps._message_text(SimpleNamespace(content=text))
+
+    assert secret not in rendered
+    assert "[REDACTED]" in rendered
+    assert len(rendered) <= ps.MAX_GATE_TEXT_CHARS
+
+
+def test_message_text_bounds_provider_block_count_before_join() -> None:
+    blocks = [
+        {"type": "text", "text": f"block-{index}"}
+        for index in range(ps.MAX_AGENT_RESPONSE_BLOCKS + 10_000)
+    ]
+
+    rendered = ps._message_text(SimpleNamespace(content=blocks))
+
+    assert "block-0" in rendered
+    assert f"block-{ps.MAX_AGENT_RESPONSE_BLOCKS - 1}" in rendered
+    assert f"block-{ps.MAX_AGENT_RESPONSE_BLOCKS}" not in rendered
+    assert len(rendered) <= ps.MAX_GATE_TEXT_CHARS
+
+
+def test_provider_response_fields_do_not_execute_dynamic_dict_descriptor() -> None:
+    class HostileResponse:
+        called = False
+
+        @property
+        def __dict__(self) -> dict[str, Any]:  # type: ignore[override]
+            self.called = True
+            raise AssertionError("provider descriptor must not execute")
+
+    response = HostileResponse()
+
+    assert ps._message_text(response) == ""
+    assert ps._response_tool_calls(response) == []
+    assert response.called is False
+
+
+def test_llm_agent_revalidates_legacy_resolved_prompt_before_provider_use() -> None:
+    secret = "legacy-resolved-prompt-secret-canary"
+    state: PipelineState = {
+        "title": "legacy",
+        "request": "resume",
+        "phase_results": {
+            "story_analysis": {
+                "attempt": 1,
+                "resolved_prompt": {
+                    "system": f"Authorization: Bearer {secret}",
+                    "user": "analyze",
+                    "application": None,
+                },
+                "resolved_prompt_source": {"origin": "catalog"},
+            }
+        },
+    }
+    cfg = PipelineConfigurable.from_config(config("legacy-agent", agent_backend="anthropic"))
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        ps._llm_agent_body(
+            Phase.STORY_ANALYSIS,
+            state,
+            config("legacy-agent", agent_backend="anthropic"),
+            cfg,
+            state["phase_results"]["story_analysis"],
+            1,
+        )
+
+    assert secret not in str(raised.value)
+
+
+def test_prompt_gate_rejects_credential_bearing_checkpoint_context_before_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "legacy-context-packet-secret-canary"
+    interrupted = False
+
+    def fail_interrupt(_payload: Any) -> Any:
+        nonlocal interrupted
+        interrupted = True
+        raise AssertionError("unsafe context must not reach the gate interrupt")
+
+    monkeypatch.setattr(ps, "interrupt", fail_interrupt)
+    state: PipelineState = {
+        "context_packets": [
+            {
+                "id": "legacy-packet",
+                "source": "legacy",
+                "title": f"Authorization: Bearer {secret}",
+            }
+        ],
+        "phase_results": {"story_analysis": {"attempt": 1}},
+        "prompt_reviews": {
+            "story_analysis": {
+                "system": "system",
+                "phase_prompt": "analyze",
+                "application": None,
+                "additional_context": "",
+                "source": {"origin": "catalog"},
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "updated_by": "system",
+            }
+        },
+    }
+    cfg = config(
+        "unsafe-context-gate",
+        gates={"story_analysis": {"prompt_review": "gated", "output_review": "auto"}},
+    )
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        ps._make_prompt_gate(Phase.STORY_ANALYSIS)(state, cfg)
+
+    assert interrupted is False
+    assert secret not in str(raised.value)
+
+
+def test_output_gate_rejects_credential_bearing_checkpoint_summary_before_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "legacy-output-summary-secret-canary"
+    interrupted = False
+
+    def fail_interrupt(_payload: Any) -> Any:
+        nonlocal interrupted
+        interrupted = True
+        raise AssertionError("unsafe summary must not reach the gate interrupt")
+
+    monkeypatch.setattr(ps, "interrupt", fail_interrupt)
+    state: PipelineState = {
+        "phase_results": {
+            "story_analysis": {
+                "attempt": 1,
+                "summary": f"Authorization: Bearer {secret}",
+            }
+        }
+    }
+    cfg = config(
+        "unsafe-summary-gate",
+        gates={"story_analysis": {"prompt_review": "auto", "output_review": "gated"}},
+    )
+
+    with pytest.raises(ValueError, match="phase summary") as raised:
+        ps._make_output_gate(Phase.STORY_ANALYSIS)(state, cfg)
+
+    assert interrupted is False
+    assert secret not in str(raised.value)
+
+
+def test_output_gate_never_interrupts_without_visible_review_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_interrupt(_payload: Any) -> Any:
+        raise AssertionError("an unactionable review must not be checkpointed")
+
+    monkeypatch.setattr(ps, "interrupt", fail_interrupt)
+    state: PipelineState = {"phase_results": {"story_analysis": {"attempt": 1}}}
+    cfg = config(
+        "empty-output-gate",
+        gates={"story_analysis": {"prompt_review": "auto", "output_review": "gated"}},
+    )
+
+    result = ps._make_output_gate(Phase.STORY_ANALYSIS)(state, cfg)
+
+    assert result.goto == "finalize"
+    assert result.update is not None
+    entry = result.update["phase_results"]["story_analysis"]
+    assert entry["status"] == "failed"
+    assert entry["errors"] == ["phase review requires visible result evidence"]
+
+
+@pytest.mark.parametrize(
+    "entry,state_update",
+    [
+        ({"summary": "password=transcript-secret-canary"}, {}),
+        ({"resolved_prompt": {"system": "private_key=transcript-secret-canary"}}, {}),
+        ({"warnings": ["Authorization: Bearer transcript-secret-canary"]}, {}),
+        (
+            {},
+            {
+                "dialogue": [
+                    {
+                        "id": "dialogue-1",
+                        "phase": "story_analysis",
+                        "attempt": 1,
+                        "role": "operator",
+                        "content": "password=transcript-secret-canary",
+                        "at": "2026-01-01T00:00:00+00:00",
+                    }
+                ]
+            },
+        ),
+    ],
+)
+def test_transcript_rejects_credential_bearing_legacy_checkpoint_fields(
+    entry: dict[str, Any],
+    state_update: dict[str, Any],
+) -> None:
+    phase_entry = {"attempt": 1, **entry}
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {"story_analysis": phase_entry},
+            **state_update,
+        },
+    )
+
+    with pytest.raises(ValueError, match="unsafe material") as raised:
+        ps._transcript_bytes(
+            state,
+            Phase.STORY_ANALYSIS,
+            phase_entry,
+            attempt=1,
+            status="failed",
+        )
+
+    assert "transcript-secret-canary" not in str(raised.value)
+
+
+def test_finalize_overwrites_unsafe_summary_and_timestamp_before_terminal_merge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_transcript(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("transcript unavailable")
+
+    monkeypatch.setattr(ps, "_persist_transcript", fail_transcript)
+    entry = {
+        "attempt": 1,
+        "status": "running",
+        "summary": "password=terminal-summary-secret-canary",
+        "started_at": "Authorization: Bearer terminal-timestamp-secret-canary",
+    }
+    state: PipelineState = {"phase_results": {"story_analysis": entry}}
+
+    update = ps._make_finalize(Phase.STORY_ANALYSIS)(state, config("terminal-sanitize"))
+    merged = merge_phase_results(
+        state["phase_results"],
+        update["phase_results"],
+    )["story_analysis"]
+
+    assert merged["summary"] is None
+    assert merged["started_at"] is None
+    assert "terminal-summary-secret-canary" not in repr(update)
+    assert "terminal-timestamp-secret-canary" not in repr(update)
+
+
+def test_checkpoint_scalar_validation_never_hashes_or_compares_hostile_values() -> None:
+    calls: list[str] = []
+
+    class HashBomb:
+        def __hash__(self) -> int:
+            calls.append("hash")
+            raise AssertionError("checkpoint scalar must not be hashed")
+
+    class EqualityBomb:
+        def __eq__(self, _other: Any) -> bool:
+            calls.append("eq")
+            raise AssertionError("checkpoint scalar must not be compared")
+
+    class BoolBomb:
+        def __bool__(self) -> bool:
+            calls.append("bool")
+            raise AssertionError("checkpoint scalar must not be truth-tested")
+
+    review = {
+        "system": "system",
+        "phase_prompt": "prompt",
+        "application": None,
+        "additional_context": "",
+        "source": {"origin": HashBomb()},
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "updated_by": "system",
+    }
+    with pytest.raises(ValueError, match="prompt review"):
+        ps._validated_prompt_review(review)
+    with pytest.raises(ValueError, match="status"):
+        ps._prerequisite_error(
+            {"phase_results": {"story_analysis": {"status": EqualityBomb()}}},
+            Phase.TEST_PLANNING,
+        )
+    with pytest.raises(ValueError, match="dialogue"):
+        ps._transcript_bytes(
+            {
+                "dialogue": [
+                    {"phase": EqualityBomb(), "attempt": 1},
+                ]
+            },
+            Phase.STORY_ANALYSIS,
+            {},
+            attempt=1,
+            status="failed",
+        )
+    route = ps._make_route_after_prepare(Phase.STORY_ANALYSIS)
+    with pytest.raises(ValueError, match="status"):
+        route({"phase_results": {"story_analysis": {"status": EqualityBomb(), "errors": []}}})
+    with pytest.raises(ValueError, match="errors"):
+        route({"phase_results": {"story_analysis": {"status": "failed", "errors": BoolBomb()}}})
+    assert calls == []
+
+
+def test_model_tool_call_shapes_are_bounded_before_copy_or_execution() -> None:
+    with pytest.raises(ValueError, match="too many tool calls"):
+        ps._response_tool_calls(
+            SimpleNamespace(tool_calls=[{}] * (ps.MAX_AGENT_TOOL_CALLS_PER_RESPONSE + 1))
+        )
+
+    secret = "model-tool-secret-canary"
+    with pytest.raises(ValueError, match="character limit") as raised:
+        ps._tool_call_args({"url": f"https://results.test/?token={secret}" + ("x" * 20_000)})
+    assert secret not in str(raised.value)
 
 
 def test_compose_system_layers_application_context() -> None:

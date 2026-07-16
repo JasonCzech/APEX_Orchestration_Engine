@@ -17,7 +17,8 @@ from langgraph.types import Command, StateSnapshot
 from apex.adapters.stubs import MemoryArtifactStore
 from apex.domain.pipeline import PHASE_ORDER, Phase, PhaseStatus
 from apex.graphs.pipeline import phase_subgraph
-from apex.graphs.pipeline.graph import builder, graph, plan_resolver
+from apex.graphs.pipeline.configurable import PipelineConfigurable
+from apex.graphs.pipeline.graph import builder, graph, plan_resolver, route_next_phase
 from apex.graphs.pipeline.state import PipelineState
 from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import engine_runs
@@ -105,6 +106,42 @@ def test_execution_rerun_clears_previous_top_level_engine_handle() -> None:
 
     assert update["engine_handle"] is None
     assert update["phase_results"]["execution"]["attempt"] == 2
+
+
+def test_plan_resolver_forces_accumulated_channel_revalidation() -> None:
+    update = plan_resolver(
+        cast(PipelineState, {"title": "Demo"}),
+        config("revalidate-channels", phases=["story_analysis"]),
+    )
+
+    assert update["artifacts"] == []
+    assert update["dialogue"] == []
+    assert update["context_packets"] == []
+
+
+def test_plan_resolver_rejects_unsafe_legacy_top_level_engine_handle() -> None:
+    canary = "legacy-handle-secret-canary"
+    state = cast(
+        PipelineState,
+        {
+            "title": "Demo",
+            "engine_handle": {
+                "engine": "sim",
+                "connection_id": "dev-engine-sim",
+                "external_run_id": f"Authorization: Bearer {canary}",
+                "idempotency_key": "legacy-execution-a1",
+                "extras": {},
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="engine handle is invalid") as raised:
+        plan_resolver(
+            state,
+            config("reject-legacy-handle", phases=["story_analysis"]),
+        )
+
+    assert canary not in str(raised.value)
 
 
 def test_graph_input_schema_drops_forged_internal_state() -> None:
@@ -292,6 +329,231 @@ def test_all_auto_runs_all_seven_phases() -> None:
     assert len(result["artifacts"]) == len(PHASE_ORDER) + 1  # + engine results artifact
 
 
+def test_finalize_tolerates_malformed_legacy_start_timestamp() -> None:
+    finalize = phase_subgraph._make_finalize(Phase.STORY_ANALYSIS)
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "story_analysis": {
+                    "attempt": 1,
+                    "status": PhaseStatus.RUNNING.value,
+                    "started_at": "not-a-timestamp",
+                    "summary": "completed output",
+                }
+            }
+        },
+    )
+
+    update = finalize(state, config("legacy-started-at"))
+    entry = update["phase_results"]["story_analysis"]
+
+    assert entry["status"] == PhaseStatus.SUCCEEDED.value
+    assert entry["duration_s"] is None
+    assert entry["ended_at"]
+
+
+def test_script_scenario_preserves_explicit_zero_ramp() -> None:
+    state = cast(PipelineState, {"title": "Immediate ramp"})
+    cfg = config("zero-ramp", load_test={"ramp_s": 0})
+
+    spec = phase_subgraph._script_scenario_load_test_spec(state, cfg, 1)
+
+    assert spec["ramp_s"] == 0
+
+
+def test_script_scenario_rejects_credential_bearing_checkpointed_title() -> None:
+    canary = "checkpointed-title-secret-canary"
+    state = cast(PipelineState, {"title": f"api_key={canary}"})
+
+    with pytest.raises(ValueError, match="credential material") as raised:
+        phase_subgraph._script_scenario_load_test_spec(
+            state,
+            config("unsafe-title"),
+            1,
+        )
+
+    assert canary not in str(raised.value)
+
+
+def test_finalize_fails_closed_for_unknown_checkpointed_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_persistence(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("transcript unavailable")
+
+    monkeypatch.setattr(phase_subgraph, "_persist_transcript", fail_persistence)
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "story_analysis": {
+                    "attempt": 1,
+                    "status": "unknown-terminal-state",
+                }
+            }
+        },
+    )
+
+    update = phase_subgraph._make_finalize(Phase.STORY_ANALYSIS)(
+        state,
+        config("invalid-terminal-status"),
+    )
+    entry = update["phase_results"]["story_analysis"]
+
+    assert entry["status"] == PhaseStatus.FAILED.value
+    assert "checkpointed phase terminal transition was invalid" in entry["errors"]
+
+
+def test_execution_finalize_rejects_malformed_collection_witness_and_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_persistence(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("transcript unavailable")
+
+    monkeypatch.setattr(phase_subgraph, "_persist_transcript", fail_persistence)
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "execution": {
+                    "attempt": 1,
+                    "status": PhaseStatus.RUNNING.value,
+                    "engine_collection_settled": "true",
+                    "engine_collection_final_status": PhaseStatus.SUCCEEDED.value,
+                    "engine_collection_next": "finalize",
+                }
+            }
+        },
+    )
+
+    update = phase_subgraph._make_finalize(Phase.EXECUTION)(
+        state,
+        config("invalid-collection-witness"),
+    )
+    entry = update["phase_results"]["execution"]
+
+    assert entry["status"] == PhaseStatus.FAILED.value
+    assert entry["engine_collection_settled"] is False
+    assert entry["engine_collection_final_status"] is None
+    assert entry["engine_collection_next"] is None
+
+
+def test_finalize_validates_diagnostics_before_observational_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def persistence(*_args: Any, **_kwargs: Any) -> Any:
+        calls.append("transcript")
+        raise AssertionError("invalid diagnostics must be rejected first")
+
+    monkeypatch.setattr(phase_subgraph, "_persist_transcript", persistence)
+    monkeypatch.setattr(
+        phase_subgraph.usage_events,
+        "record_phase_usage_sync",
+        lambda *_args, **_kwargs: calls.append("usage"),
+    )
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "story_analysis": {
+                    "attempt": 1,
+                    "status": PhaseStatus.RUNNING.value,
+                    "warnings": "not-a-list",
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match="phase warnings are invalid"):
+        phase_subgraph._make_finalize(Phase.STORY_ANALYSIS)(
+            state,
+            config("invalid-finalize-diagnostics"),
+        )
+
+    assert calls == []
+
+
+def test_router_rejects_plan_that_differs_from_durable_selection() -> None:
+    durable = PipelineConfigurable(phases=[Phase.STORY_ANALYSIS])
+    state = cast(
+        PipelineState,
+        {
+            "run_config": durable.snapshot(),
+            "phases_plan": [Phase.EXECUTION.value],
+            "phase_results": {},
+        },
+    )
+
+    with pytest.raises(ValueError, match="phase plan does not match"):
+        route_next_phase(
+            state,
+            config("poisoned-phase-plan", phases=[Phase.STORY_ANALYSIS.value]),
+        )
+
+
+async def test_transcript_resource_closes_survive_repeated_cancellation() -> None:
+    started: set[str] = set()
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+    closed: set[str] = set()
+
+    async def close(name: str) -> None:
+        started.add(name)
+        if len(started) == 2:
+            both_started.set()
+        await release.wait()
+        closed.add(name)
+
+    class Store:
+        async def aclose(self) -> None:
+            await close("store")
+
+    class Resolver:
+        async def close(self) -> None:
+            await close("resolver")
+
+    task = asyncio.create_task(
+        phase_subgraph._close_transcript_resources_definitively(Store(), Resolver())
+    )
+    await both_started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed == {"store", "resolver"}
+
+
+def test_finalize_rejects_live_config_drift_before_best_effort_persistence() -> None:
+    finalize = phase_subgraph._make_finalize(Phase.STORY_ANALYSIS)
+    durable = PipelineConfigurable(project_id="project-a", app_id="app-a")
+    state = cast(
+        PipelineState,
+        {
+            "run_config": durable.snapshot(),
+            "phase_results": {
+                "story_analysis": {
+                    "attempt": 1,
+                    "status": PhaseStatus.RUNNING.value,
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="does not match its durable checkpoint"):
+        finalize(
+            state,
+            config("finalize-config-drift", project_id="project-b", app_id="app-b"),
+        )
+
+
 def test_gated_run_pauses_for_prompt_review_then_approve() -> None:
     g = compiled()
     cfg = config("t2")  # default gate policy: everything gated
@@ -428,6 +690,21 @@ def test_discuss_appends_dialogue_and_reinterrupts() -> None:
     dialogue = [d for d in result["dialogue"] if d["phase"] == "story_analysis"]
     assert [d["role"] for d in dialogue] == ["operator", "agent"]
     assert result["phase_results"]["story_analysis"]["status"] == "succeeded"
+
+
+def test_max_length_discussion_remains_checkpointable() -> None:
+    g = compiled()
+    gates = {"story_analysis": {"prompt_review": "auto", "output_review": "gated"}}
+    cfg = config("dialogue-max", gates=gates, phases=["story_analysis"])
+    g.invoke({"title": "Demo"}, cfg)
+    message = "m" * 20_000
+
+    result = g.invoke(Command(resume={"action": "discuss", "message": message}), cfg)
+
+    tail = pending_interrupt(result)["dialogue_tail"]
+    assert tail[0]["content"] == message
+    assert tail[1]["content"].endswith(message)
+    assert len(tail[1]["content"]) <= 50_000
 
 
 def test_new_attempt_gets_fresh_dialogue_budget_and_prunes_old_attempt() -> None:
@@ -602,18 +879,51 @@ def test_application_review_is_app_wide_across_phases() -> None:
     g = compiled()
     cfg = config(
         "t15",
-        gates=all_auto(),
+        gates={
+            phase: {"prompt_review": "gated", "output_review": "auto"}
+            for phase in ("story_analysis", "test_planning")
+        },
         phases=["story_analysis", "test_planning"],
         project_id="p1",
         app_id="a1",
     )
     g.invoke({"title": "Demo", "request": "r"}, cfg)
-    g.update_state(
+    modified = g.invoke(
+        Command(
+            resume={
+                "action": "modify",
+                "prompt": {"application": "App-wide requirements."},
+            }
+        ),
         cfg,
+    )
+    assert pending_interrupt(modified)["prompt"]["application"] == "App-wide requirements."
+    next_phase = g.invoke(Command(resume={"action": "approve"}), cfg)
+    assert pending_interrupt(next_phase)["phase"] == "test_planning"
+    assert pending_interrupt(next_phase)["prompt"]["application"] == "App-wide requirements."
+    result = g.invoke(Command(resume={"action": "approve"}), cfg)
+    # A single run-scoped override resolves into every phase's application prompt.
+    for phase in ("story_analysis", "test_planning"):
+        entry = result["phase_results"][phase]
+        assert entry["resolved_prompt"]["application"] == "App-wide requirements."
+
+
+def test_new_run_resets_application_review_before_a_different_app_edit() -> None:
+    g = compiled()
+    first_cfg = config(
+        "application-review-reset",
+        gates=all_auto(),
+        phases=["story_analysis"],
+        project_id="p1",
+        app_id="a1",
+    )
+    g.invoke({"title": "First", "request": "r"}, first_cfg)
+    g.update_state(
+        first_cfg,
         {
             "application_reviews": {
                 "a1": {
-                    "content": "App-wide requirements.",
+                    "content": "First app requirements.",
                     "source": {"origin": "run_override", "editor": "op"},
                     "updated_at": "2026-06-01T00:00:00+00:00",
                     "updated_by": "op",
@@ -622,8 +932,36 @@ def test_application_review_is_app_wide_across_phases() -> None:
         },
         as_node="plan_resolver",
     )
-    result = g.invoke({"title": "Demo", "request": "r"}, cfg)
-    # A single run-scoped override resolves into every phase's application prompt.
-    for phase in ("story_analysis", "test_planning"):
-        entry = result["phase_results"][phase]
-        assert entry["resolved_prompt"]["application"] == "App-wide requirements."
+
+    second_cfg = config(
+        "application-review-reset",
+        gates=all_auto(),
+        phases=["story_analysis"],
+        project_id="p1",
+        app_id="a2",
+    )
+    result = g.invoke({"title": "Second", "request": "r"}, second_cfg)
+
+    assert result["application_reviews"] == {}
+    g.update_state(
+        second_cfg,
+        {
+            "application_reviews": {
+                "a2": {
+                    "content": "Second app requirements.",
+                    "source": {"origin": "run_override", "editor": "op"},
+                    "updated_at": "2026-06-02T00:00:00+00:00",
+                    "updated_by": "op",
+                }
+            }
+        },
+        as_node="plan_resolver",
+    )
+    assert g.get_state(second_cfg).values["application_reviews"] == {
+        "a2": {
+            "content": "Second app requirements.",
+            "source": {"origin": "run_override", "editor": "op"},
+            "updated_at": "2026-06-02T00:00:00+00:00",
+            "updated_by": "op",
+        }
+    }

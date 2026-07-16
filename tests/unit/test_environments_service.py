@@ -66,13 +66,16 @@ async def test_rejects_unapproved_or_empty_target(approved: bool, base_url: str 
 
 
 async def test_revalidates_target_against_private_address_policy() -> None:
-    with pytest.raises(EnvironmentTargetNotFoundError, match="no approved HTTP target"):
+    with pytest.raises(EnvironmentTargetNotFoundError, match="no approved HTTP target") as raised:
         await resolve_environment_target(
             FakeEnvironmentRepository(environment(base_url="http://169.254.169.254/latest")),
             "env-1",
             project_id="proj-a",
             app_id="app-a",
         )
+
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
 
 @pytest.mark.parametrize(
@@ -122,3 +125,17 @@ async def test_cross_app_environment_is_hidden() -> None:
             project_id="proj-a",
             app_id="app-b",
         )
+
+
+async def test_missing_environment_does_not_reflect_lookup_identifier() -> None:
+    canary = "environment-lookup-secret-canary"
+
+    with pytest.raises(EnvironmentTargetNotFoundError) as raised:
+        await resolve_environment_target(
+            FakeEnvironmentRepository(None),
+            canary,
+            project_id="proj-a",
+            app_id="app-a",
+        )
+
+    assert canary not in str(raised.value)

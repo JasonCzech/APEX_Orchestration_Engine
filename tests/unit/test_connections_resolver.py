@@ -29,9 +29,16 @@ def stored(
     project_id: str | None = None,
     enabled: bool = True,
     runtime_version: datetime | None = None,
+    options: dict[str, Any] | None = None,
 ) -> StoredConnection:
     return StoredConnection(
-        config=ConnectionConfig(id=connection_id, kind=kind, provider=provider, name=connection_id),
+        config=ConnectionConfig(
+            id=connection_id,
+            kind=kind,
+            provider=provider,
+            name=connection_id,
+            options=options or {},
+        ),
         project_id=project_id,
         enabled=enabled,
         runtime_version=runtime_version or datetime(2026, 1, 1, tzinfo=UTC),
@@ -67,6 +74,34 @@ def _conn_id(adapter: object) -> str:
     config = getattr(adapter, "_conn", None)
     assert config is not None
     return config.id
+
+
+def test_internal_project_binding_never_executes_or_coerces_adapter_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileBinding:
+        def __str__(self) -> str:
+            calls.append("str")
+            raise AssertionError("binding coercion hook ran")
+
+    class HostileAdapter:
+        @property
+        def apex_project_id(self) -> str:
+            calls.append("property")
+            raise AssertionError("binding descriptor hook ran")
+
+    assert connections_service.internal_project_binding(HostileAdapter()) is None
+    assert (
+        connections_service.internal_project_binding(
+            SimpleNamespace(apex_project_id=HostileBinding())
+        )
+        is None
+    )
+    assert (
+        connections_service.internal_project_binding(SimpleNamespace(apex_project_id="project-a"))
+        == "project-a"
+    )
+    assert calls == []
 
 
 # ── precedence: connection_id > project > global > static ───────────────────
@@ -150,6 +185,25 @@ async def test_db_error_fails_closed_in_locked_environment(
 
     with pytest.raises(RuntimeError, match="connection store unavailable"):
         await resolver.resolve(PortKind.WORK_TRACKING)
+
+
+async def test_locked_store_failure_does_not_retain_raw_database_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canary = "bare-database-driver-canary"
+    store = FakeStore()
+    store.error = SQLAlchemyError(canary)
+    monkeypatch.setattr(
+        connections_service, "get_settings", lambda: SimpleNamespace(is_locked_down=True)
+    )
+    resolver = ConnectionResolver(store=store)
+
+    with pytest.raises(RuntimeError, match="connection store unavailable") as excinfo:
+        await resolver.resolve(PortKind.WORK_TRACKING)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
 
 
 async def test_empty_store_does_not_fall_back_in_locked_environment(
@@ -291,6 +345,49 @@ async def test_options_overlay_cannot_change_target_or_trust_policy(key: str) ->
         )
 
 
+@pytest.mark.parametrize(
+    ("provider", "option_name", "configured", "override"),
+    [
+        ("jira", "project_key", "PHX", "OTHER"),
+        ("jira", "project_key", "PHX", None),
+        ("ado", "project", "Phoenix", "Sibling"),
+        ("ado", "project", "Phoenix", None),
+    ],
+)
+async def test_scoped_tracker_overlay_cannot_change_external_project_before_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    option_name: str,
+    configured: str,
+    override: str | None,
+) -> None:
+    row = stored(
+        "scoped-tracker",
+        provider=provider,
+        project_id="project-1",
+        options={option_name: configured},
+    )
+    resolver = ConnectionResolver(store=FakeStore([row]))
+    builds = 0
+
+    async def build(*args: object, **kwargs: object) -> object:
+        nonlocal builds
+        builds += 1
+        return SimpleNamespace(provider=provider, project_id=configured)
+
+    monkeypatch.setattr(resolver, "_build_cached", build)
+
+    with pytest.raises(ValueError, match="provider project boundary"):
+        await resolver.resolve_with_metadata(
+            PortKind.WORK_TRACKING,
+            project_id="project-1",
+            options_overlay={option_name: override},
+        )
+
+    # The overlay is rejected before a checkout exists, so there is no lease to leak.
+    assert builds == 0
+
+
 def test_locked_environment_requires_https_for_public_adapter_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -310,6 +407,66 @@ def test_locked_environment_preserves_explicit_trusted_private_http_target(
         "http://minio.apex.svc.cluster.local:9000",
         allow_private_hosts=True,
     )
+
+
+def test_adapter_url_rejects_hostile_string_and_approval_subclasses_without_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hooks: list[str] = []
+
+    class HostileUrl(str):
+        def strip(self, *args: object, **kwargs: object) -> str:
+            hooks.append("strip")
+            raise AssertionError("hostile URL hook executed")
+
+    class HostileApproval:
+        def __bool__(self) -> bool:
+            hooks.append("bool")
+            raise AssertionError("hostile approval hook executed")
+
+    monkeypatch.setattr(connections_service, "get_settings", _locked_settings)
+    with pytest.raises(ValueError, match="must be a string"):
+        connections_service.validate_adapter_base_url(HostileUrl("https://safe.example"))
+    with pytest.raises(ValueError, match="approval must be a boolean"):
+        connections_service.validate_adapter_base_url(
+            "https://safe.example",
+            allow_private_hosts=HostileApproval(),  # type: ignore[arg-type]
+        )
+
+    assert hooks == []
+
+
+def test_connection_row_rejects_hostile_or_unbounded_options_before_copy_hooks() -> None:
+    hooks: list[str] = []
+
+    class HostileOptions(dict[str, Any]):
+        def items(self):  # type: ignore[no-untyped-def]
+            hooks.append("items")
+            raise AssertionError("hostile mapping hook executed")
+
+    def row(options: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            id="conn-1",
+            kind="work_tracking",
+            provider="stub",
+            name="connection",
+            base_url=None,
+            options=options,
+            secret_ref=None,
+        )
+
+    with pytest.raises(ValueError, match="options require repair"):
+        connections_service.connection_config_from_row(row(HostileOptions()))
+
+    cycle: dict[str, Any] = {}
+    cycle["cycle"] = cycle
+    with pytest.raises(ValueError, match="repeated or circular"):
+        connections_service.connection_config_from_row(row(cycle))
+
+    with pytest.raises(ValueError, match="node limit"):
+        connections_service.connection_config_from_row(row({"items": [None] * 2_001}))
+
+    assert hooks == []
 
 
 def test_locked_environment_rejects_disabled_tls_verification(
@@ -486,7 +643,16 @@ async def test_work_tracking_uses_internal_binding_not_external_project_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     resolver = ConnectionResolver(
-        store=FakeStore([stored("jira-p1", provider="jira", project_id="internal-project-1")])
+        store=FakeStore(
+            [
+                stored(
+                    "jira-p1",
+                    provider="jira",
+                    project_id="internal-project-1",
+                    options={"project_key": "PHX"},
+                )
+            ]
+        )
     )
 
     async def jira(*args: object, **kwargs: object) -> object:
@@ -498,6 +664,69 @@ async def test_work_tracking_uses_internal_binding_not_external_project_name(
 
     assert adapter.project_id == "PHX"
     assert adapter.apex_project_id == "internal-project-1"
+
+
+async def test_scoped_jira_without_external_project_is_rejected_before_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver = ConnectionResolver(
+        store=FakeStore(
+            [stored("jira-p1", provider="jira", project_id="internal-project-secret-canary")]
+        )
+    )
+    built = False
+
+    async def jira(*args: object, **kwargs: object) -> object:
+        nonlocal built
+        built = True
+        return SimpleNamespace(provider="jira", project_id=None)
+
+    monkeypatch.setattr(resolver, "_build_cached", jira)
+
+    with pytest.raises(ValueError) as error:
+        await resolver.resolve(
+            PortKind.WORK_TRACKING,
+            project_id="internal-project-secret-canary",
+        )
+
+    assert built is False
+    assert "internal-project-secret-canary" not in str(error.value)
+
+
+async def test_scoped_real_tracker_missing_runtime_project_closes_rejected_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = 0
+
+    class MissingProjectAdapter:
+        provider = "jira"
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    resolver = ConnectionResolver(
+        store=FakeStore(
+            [
+                stored(
+                    "jira-p1",
+                    provider="jira",
+                    project_id="internal-project-1",
+                    options={"project_key": "PHX"},
+                )
+            ]
+        )
+    )
+
+    async def jira(*args: object, **kwargs: object) -> object:
+        return MissingProjectAdapter()
+
+    monkeypatch.setattr(resolver, "_build_cached", jira)
+
+    with pytest.raises(ValueError, match="requires a bounded external project"):
+        await resolver.resolve(PortKind.WORK_TRACKING, project_id="internal-project-1")
+
+    assert closed == 1
 
 
 async def test_global_real_work_tracking_connection_rejected_for_scoped_project(
@@ -822,6 +1051,319 @@ async def test_resolver_close_closes_cached_adapters(
     await resolver.close()
 
     assert closed == ["global-wt"]
+
+
+async def test_close_failure_and_proxy_class_projection_do_not_invoke_adapter_class_hook() -> None:
+    hooks: list[str] = []
+
+    class HostileCloseAdapter:
+        def __getattribute__(self, name: str) -> Any:
+            if name == "__class__":
+                hooks.append(name)
+                raise AssertionError("adapter __class__ hook executed")
+            return object.__getattribute__(self, name)
+
+        async def aclose(self) -> None:
+            raise OSError("close failed")
+
+    managed = connections_service._ManagedAdapter(HostileCloseAdapter())
+    checkout = managed.checkout()
+    assert checkout.__class__ is HostileCloseAdapter
+    await checkout.aclose()
+    assert managed.closed is False
+    await managed.retire()
+
+    assert managed.closed is True
+    assert hooks == []
+
+
+async def test_sync_adapter_result_descriptor_is_rejected_without_execution() -> None:
+    hooks: list[str] = []
+
+    class HostileResult:
+        @property
+        def __aiter__(self) -> Any:
+            hooks.append("__aiter__")
+            raise AssertionError("hostile result descriptor executed")
+
+    class SyncAdapter:
+        def result(self) -> HostileResult:
+            return HostileResult()
+
+    managed = connections_service._ManagedAdapter(SyncAdapter())
+    checkout = managed.checkout()
+    with pytest.raises(TypeError, match="unsupported asynchronous result"):
+        checkout.result()
+    await checkout.aclose()
+
+    assert hooks == []
+
+
+async def test_cancelled_proxy_close_still_finishes_retired_adapter_cleanup() -> None:
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    class SlowCloseAdapter:
+        async def aclose(self) -> None:
+            close_started.set()
+            await allow_close.wait()
+            close_finished.set()
+
+    managed = connections_service._ManagedAdapter(SlowCloseAdapter())
+    checkout = managed.checkout()
+    await checkout.aclose()
+    close_task = asyncio.create_task(managed.retire())
+    await asyncio.wait_for(close_started.wait(), timeout=1)
+
+    close_task.cancel()
+    await asyncio.sleep(0)
+    close_task.cancel()
+    await asyncio.sleep(0)
+    assert close_task.done() is False
+    assert managed.retired is True
+    assert managed.closed is False
+
+    allow_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+    assert close_finished.is_set()
+    assert managed.active_calls == 0
+    assert managed.closed is True
+
+
+async def test_adapter_close_survives_repeated_caller_cancellation() -> None:
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    close_finished = asyncio.Event()
+
+    class SlowCloseAdapter:
+        async def aclose(self) -> None:
+            close_started.set()
+            await allow_close.wait()
+            close_finished.set()
+
+    close_task = asyncio.create_task(connections_service.close_adapter(SlowCloseAdapter()))
+    await close_started.wait()
+    close_task.cancel()
+    await asyncio.sleep(0)
+    close_task.cancel()
+    await asyncio.sleep(0)
+
+    assert close_task.done() is False
+    allow_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+    assert close_finished.is_set()
+
+
+async def test_proxy_close_releases_checkout_without_retiring_shared_generation() -> None:
+    closed = 0
+
+    class Adapter:
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    managed = connections_service._ManagedAdapter(Adapter())
+    first = managed.checkout()
+    await first.aclose()
+
+    assert managed.active_calls == 0
+    assert managed.retired is False
+    assert managed.closed is False
+
+    second = managed.checkout()
+    await second.aclose()
+    await managed.retire()
+    assert managed.closed is True
+    assert closed == 1
+
+
+async def test_nested_secret_checkout_is_released_after_adapter_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = "test-secret-checkout-release"
+    monkeypatch.setenv("APEX_INTEGRATION_TRACKER_TOKEN", "secret-checkout-value")
+
+    class Adapter:
+        def __init__(self, conn: ConnectionConfig, secret: object | None = None) -> None:
+            assert secret is not None
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(Adapter)
+    resolver = ConnectionResolver(
+        connections=[
+            ConnectionConfig(
+                id="tracker-with-secret",
+                kind=PortKind.WORK_TRACKING,
+                provider=provider,
+                name="tracker with secret",
+                secret_ref="env:APEX_INTEGRATION_TRACKER_TOKEN",
+            ),
+            ConnectionConfig(
+                id="secret-source",
+                kind=PortKind.SECRETS,
+                provider="env",
+                name="secret source",
+            ),
+        ]
+    )
+    try:
+        checkout = await resolver.resolve(PortKind.WORK_TRACKING)
+        cache = resolver._cache_for_current_loop()
+        secret_managed = cache.instances["secret-source"][1]
+        assert secret_managed.active_calls == 0
+        assert secret_managed.retired is False
+        await checkout.aclose()
+    finally:
+        await resolver.close()
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+
+async def test_nested_secret_checkout_is_released_when_adapter_factory_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = "test-secret-checkout-factory-failure"
+    monkeypatch.setenv("APEX_INTEGRATION_TRACKER_TOKEN", "secret-checkout-value")
+
+    def fail_factory(conn: ConnectionConfig, secret: object | None = None) -> None:
+        assert secret is not None
+        raise RuntimeError("factory failed")
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(fail_factory)
+    resolver = ConnectionResolver(
+        connections=[
+            ConnectionConfig(
+                id="failing-tracker-with-secret",
+                kind=PortKind.WORK_TRACKING,
+                provider=provider,
+                name="failing tracker with secret",
+                secret_ref="env:APEX_INTEGRATION_TRACKER_TOKEN",
+            ),
+            ConnectionConfig(
+                id="secret-source",
+                kind=PortKind.SECRETS,
+                provider="env",
+                name="secret source",
+            ),
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="factory failed"):
+            await resolver.resolve(PortKind.WORK_TRACKING)
+        cache = resolver._cache_for_current_loop()
+        assert cache.instances["secret-source"][1].active_calls == 0
+        assert "failing-tracker-with-secret" not in cache.instances
+    finally:
+        await resolver.close()
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+
+
+async def test_cancelled_iterator_close_still_releases_retired_adapter_lease() -> None:
+    iterator_close_started = asyncio.Event()
+    allow_iterator_close = asyncio.Event()
+    adapter_closed = asyncio.Event()
+
+    class SlowIterator:
+        def __aiter__(self) -> "SlowIterator":
+            return self
+
+        async def __anext__(self) -> bytes:
+            return b"chunk"
+
+        async def aclose(self) -> None:
+            iterator_close_started.set()
+            await allow_iterator_close.wait()
+
+    class CloseableAdapter:
+        async def aclose(self) -> None:
+            adapter_closed.set()
+
+    managed = connections_service._ManagedAdapter(CloseableAdapter())
+    iterator = connections_service._LeasedAsyncIterator(
+        managed,
+        SlowIterator(),
+        asyncio.get_running_loop(),
+    )
+    await managed.retire()
+
+    close_task = asyncio.create_task(iterator.aclose())
+    await asyncio.wait_for(iterator_close_started.wait(), timeout=1)
+    close_task.cancel()
+    await asyncio.sleep(0)
+    close_task.cancel()
+    await asyncio.sleep(0)
+    assert close_task.done() is False
+    assert managed.active_calls == 1
+
+    allow_iterator_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+    assert adapter_closed.is_set()
+    assert managed.active_calls == 0
+    assert managed.closed is True
+
+
+async def test_cancelled_resolver_close_still_retires_every_cached_adapter() -> None:
+    close_started = [asyncio.Event(), asyncio.Event()]
+    allow_close = asyncio.Event()
+    close_finished = [asyncio.Event(), asyncio.Event()]
+    created = 0
+    provider = "test-cancelled-resolver-close"
+
+    class SlowCloseAdapter:
+        def __init__(self, conn: ConnectionConfig, secret: object | None = None) -> None:
+            nonlocal created
+            self.index = created
+            created += 1
+
+        async def aclose(self) -> None:
+            close_started[self.index].set()
+            await allow_close.wait()
+            close_finished[self.index].set()
+
+    AdapterRegistry.register(PortKind.WORK_TRACKING, provider)(SlowCloseAdapter)
+    AdapterRegistry.register(PortKind.LOG_SEARCH, provider)(SlowCloseAdapter)
+    resolver = ConnectionResolver(
+        connections=[
+            ConnectionConfig(
+                id="slow-work-tracking",
+                kind=PortKind.WORK_TRACKING,
+                provider=provider,
+                name="slow work tracking",
+            ),
+            ConnectionConfig(
+                id="slow-log-search",
+                kind=PortKind.LOG_SEARCH,
+                provider=provider,
+                name="slow log search",
+            ),
+        ]
+    )
+    try:
+        work_tracking = await resolver.resolve(PortKind.WORK_TRACKING)
+        log_search = await resolver.resolve(PortKind.LOG_SEARCH)
+        del work_tracking, log_search
+        await asyncio.sleep(0)
+
+        close_task = asyncio.create_task(resolver.close())
+        await asyncio.gather(*(event.wait() for event in close_started))
+        close_task.cancel()
+        await asyncio.sleep(0)
+        close_task.cancel()
+        await asyncio.sleep(0)
+        assert close_task.done() is False
+
+        # A repeated shutdown attempt sees the detached cache, but the first
+        # owned close task must still retain and retire its complete snapshot.
+        await resolver.close()
+        allow_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await close_task
+        assert all(event.is_set() for event in close_finished)
+    finally:
+        AdapterRegistry._factories.pop((PortKind.WORK_TRACKING, provider), None)
+        AdapterRegistry._factories.pop((PortKind.LOG_SEARCH, provider), None)
 
 
 def test_shared_resolver_isolates_and_closes_adapters_per_event_loop() -> None:

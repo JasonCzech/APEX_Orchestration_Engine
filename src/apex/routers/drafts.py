@@ -129,9 +129,10 @@ def _reject_draft_credentials(value: dict[str, Any]) -> None:
         current = stack.pop()
         if isinstance(current, dict):
             for key, nested in current.items():
-                if is_credential_field(key) or bounded_diagnostic(
-                    key, max_chars=max(1, len(key))
-                ) != key:
+                if (
+                    is_credential_field(key)
+                    or bounded_diagnostic(key, max_chars=max(1, len(key))) != key
+                ):
                     raise ValueError("draft payload must not contain credential material")
                 stack.append(nested)
         elif isinstance(current, list):
@@ -169,9 +170,10 @@ def _redact_legacy_draft_value(value: Any) -> Any:
     if isinstance(value, dict):
         projected: dict[str, Any] = {}
         for key, nested in value.items():
-            if is_credential_field(key) or bounded_diagnostic(
-                key, max_chars=max(1, len(key))
-            ) != key:
+            if (
+                is_credential_field(key)
+                or bounded_diagnostic(key, max_chars=max(1, len(key))) != key
+            ):
                 continue
             projected[key] = _redact_legacy_draft_value(nested)
         return projected

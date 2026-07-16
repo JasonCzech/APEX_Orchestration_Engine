@@ -12,7 +12,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { GateModuleView } from '@/hitl/GateModule'
 import { initialDraftFor, type GateMachineState } from '@/hitl/gateMachine'
 
-import { gateInstanceOf, phaseInterrupt, promptInterrupt } from './gateFixtures'
+import {
+  engineRetryInterrupt,
+  gateInstanceOf,
+  phaseInterrupt,
+  promptInterrupt,
+} from './gateFixtures'
 
 vi.mock('@uiw/react-codemirror', async () => {
   const { createElement } = await import('react')
@@ -40,6 +45,8 @@ vi.mock('@uiw/react-codemirror', async () => {
 
 const promptGate = gateInstanceOf(promptInterrupt('int-1'))
 const phaseGate = gateInstanceOf(phaseInterrupt('int-2'))
+const recoveryGate = gateInstanceOf(engineRetryInterrupt('int-3'))
+const driftGate = { ...promptGate, payload: null }
 
 function renderState(state: GateMachineState, overrides: Partial<Parameters<typeof GateModuleView>[0]> = {}) {
   const onEdit = vi.fn()
@@ -99,6 +106,54 @@ describe('GateModuleView machine states', () => {
     expect(screen.getByTestId('gate-awaiting')).toHaveTextContent(
       'Agent working on your prompt edits — the gate will reopen.',
     )
+  })
+
+  it('renders a provider recovery gate and submits its exact retry action', async () => {
+    const user = userEvent.setup()
+    const { onSubmit } = renderState({
+      tag: 'open',
+      gate: recoveryGate,
+      draft: {},
+      dirty: false,
+    })
+
+    expect(screen.getByRole('heading')).toHaveTextContent('Engine cleanup recovery — Execution')
+    expect(screen.getByTestId('engine-retry-message')).toHaveTextContent(
+      'Resume the exact durable provider attempt.',
+    )
+    expect(screen.getByTestId('gate-reinterrupt-error')).toHaveTextContent(
+      'Provider operation paused: provider abort unavailable',
+    )
+    await user.click(screen.getByRole('button', { name: 'Retry provider operation' }))
+    expect(onSubmit).toHaveBeenCalledWith('retry')
+  })
+
+  it('shows schema drift without synthesizing blind review actions', () => {
+    const { onSubmit } = renderState({
+      tag: 'open',
+      gate: driftGate,
+      draft: {},
+      dirty: false,
+    })
+
+    expect(screen.getByTestId('gate-payload-drift')).toHaveTextContent(
+      'Actions are unavailable because the pending operation cannot be resumed safely',
+    )
+    expect(screen.queryByRole('button', { name: '▶ Execute Phase' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Abort' })).not.toBeInTheDocument()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('does not offer failed-state retry when the gate contract drifted', () => {
+    renderState({
+      tag: 'failed',
+      gate: driftGate,
+      action: 'approve',
+      draft: {},
+      error: new Error('resume exploded'),
+    })
+
+    expect(screen.queryByRole('button', { name: 'Retry approve' })).not.toBeInTheDocument()
   })
 
   it('superseded(conflict) says another operator resumed; View current resets', async () => {

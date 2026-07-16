@@ -4,11 +4,11 @@ export async function handleDevApexRequest(request: Request): Promise<Response |
   return getDevDataStore()?.handleApexRequest(request) ?? null
 }
 
-export function getDevApexFetch(): ((input: Request) => Promise<Response>) | undefined {
+export function getDevApexFetch(): typeof fetch | undefined {
   if (!getDevDataStore()) return undefined
-  return async (request: Request) => {
+  return async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init)
     const response = await handleDevApexRequest(request)
     return response ?? fetch(request)
   }
 }
-

@@ -17,10 +17,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 
 from apex.adapters.registry import PortKind
-from apex.persistence.db import get_sessionmaker
+from apex.domain.diagnostics import contains_credential_material, safe_type_name
+from apex.persistence.db import dispose_engine_instance_definitively, get_sessionmaker
 from apex.persistence.models import ArtifactReference, ArtifactUploadIntent, Connection
-from apex.ports.artifact_store import ArtifactStorePort, StoredArtifact
-from apex.services.connections import ConnectionResolver, get_connection_resolver
+from apex.ports.artifact_store import (
+    ArtifactStorePort,
+    StoredArtifact,
+    validate_stored_artifact_ack,
+)
+from apex.services.connections import ConnectionResolver, close_adapter, get_connection_resolver
 from apex.settings import database_asyncpg_uri, database_ssl_connect_args, get_settings
 
 logger = structlog.get_logger(__name__)
@@ -133,12 +138,9 @@ async def persist_artifact_with_intent(
 def _verify_stored_artifact(
     stored: StoredArtifact, expected_key: str, *, expected_size: int
 ) -> None:
-    if stored.key != expected_key:
-        # Provider-returned keys are untrusted and may contain signed material
-        # or arbitrarily large text. Do not reflect either key into diagnostics.
-        raise RuntimeError("artifact store returned a key different from the reserved key")
-    if stored.size != expected_size:
-        raise RuntimeError("artifact store returned a size different from the uploaded payload")
+    # Provider-returned fields are untrusted and may contain signed material or
+    # arbitrarily large text. The shared validator keeps all failures fixed.
+    validate_stored_artifact_ack(stored, expected_key, expected_size=expected_size)
 
 
 def _canonical_stored_artifact(artifact_key: str, *, size: int) -> StoredArtifact:
@@ -163,8 +165,14 @@ def _validate_bounded_text(
         if required:
             raise ValueError(f"{label} is required")
         return
-    if not value or len(value) > max_chars or "\x00" in value:
+    if type(value) is not str or not value or len(value) > max_chars or "\x00" in value:
         raise ValueError(f"{label} must contain 1-{max_chars} characters without U+0000")
+    if value != value.strip() or any(
+        ord(character) < 0x20 or ord(character) == 0x7F for character in value
+    ):
+        raise ValueError(f"{label} contains unsafe characters")
+    if contains_credential_material(value):
+        raise ValueError(f"{label} must not contain credential material")
 
 
 def _validate_reference_identity(
@@ -356,8 +364,7 @@ async def _stage_upload_intent(
     connection = await session.scalar(
         select(Connection).where(Connection.id == values["connection_id"]).with_for_update()
     )
-    if connection is None or not connection.enabled or connection.kind != "artifact_store":
-        raise RuntimeError("artifact-store connection is missing or disabled")
+    _require_artifact_store_project_binding(connection, values["project_id"])
 
     reference = await session.scalar(
         select(ArtifactReference).where(ArtifactReference.artifact_key == values["artifact_key"])
@@ -407,8 +414,16 @@ async def _stage_upload_intent(
 
 
 async def _finalize_upload_intent(session: AsyncSession, values: dict[str, Any]) -> None:
-    # Lock the intent first. Concurrent finalizers then observe the first one's
-    # committed reference instead of racing two inserts for the same key.
+    # Connection lifecycle mutations lock this row before checking references
+    # and intents. Take the same lock first so disable/delete cannot observe the
+    # gap between deleting an intent and publishing its replacement reference.
+    connection = await session.scalar(
+        select(Connection).where(Connection.id == values["connection_id"]).with_for_update()
+    )
+    _require_artifact_store_project_binding(connection, values["project_id"])
+
+    # Concurrent finalizers then observe the first one's committed reference
+    # instead of racing two inserts for the same key.
     intent = await session.scalar(
         select(ArtifactUploadIntent)
         .where(ArtifactUploadIntent.artifact_key == values["artifact_key"])
@@ -461,6 +476,19 @@ def _intent_matches(row: ArtifactUploadIntent, values: dict[str, Any]) -> bool:
     return all(getattr(row, field) == values[field] for field in _INTENT_FIELDS)
 
 
+def _require_artifact_store_project_binding(
+    connection: Any,
+    project_id: str | None,
+) -> None:
+    """Require an enabled store whose persisted scope can own this artifact."""
+
+    if connection is None or not connection.enabled or connection.kind != "artifact_store":
+        raise RuntimeError("artifact-store connection is missing or disabled")
+    connection_project_id = getattr(connection, "project_id", None)
+    if connection_project_id is not None and connection_project_id != project_id:
+        raise RuntimeError("artifact-store connection is not available for the artifact project")
+
+
 async def _resolved_upload_state(
     session_factory: async_sessionmaker[AsyncSession], values: dict[str, Any]
 ) -> tuple[str, str | None]:
@@ -507,7 +535,7 @@ async def _rollback_quietly(session: AsyncSession) -> None:
 
 async def _dispose_engine(engine: Any, *, operation: str, succeeded: bool) -> None:
     try:
-        await engine.dispose()
+        await dispose_engine_instance_definitively(engine)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -515,7 +543,7 @@ async def _dispose_engine(engine: Any, *, operation: str, succeeded: bool) -> No
             "artifact_upload_intents.engine_dispose_failed",
             operation=operation,
             operation_succeeded=succeeded,
-            error_type=exc.__class__.__name__,
+            error_type=safe_type_name(exc),
         )
 
 
@@ -593,8 +621,7 @@ async def record_artifact_references(
             connection = await session.scalar(
                 select(Connection).where(Connection.id == connection_id).with_for_update()
             )
-            if connection is None or not connection.enabled or connection.kind != "artifact_store":
-                raise RuntimeError("artifact-store connection is missing or disabled")
+            _require_artifact_store_project_binding(connection, project_id)
             if session.get_bind().dialect.name == "postgresql":
                 statement = pg_insert(ArtifactReference).values(values)
             elif session.get_bind().dialect.name == "sqlite":
@@ -611,7 +638,7 @@ async def record_artifact_references(
             indexing_succeeded = True
     finally:
         try:
-            await engine.dispose()
+            await dispose_engine_instance_definitively(engine)
         except asyncio.CancelledError:
             # Cancellation remains observable to the caller.  Execution callers
             # must not compensate on cancellation because the commit may already
@@ -625,7 +652,7 @@ async def record_artifact_references(
             logger.warning(
                 "artifact_references.engine_dispose_failed",
                 indexing_succeeded=indexing_succeeded,
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
 
 
@@ -707,7 +734,7 @@ async def reconcile_pending_artifact_uploads_once(
             logger.warning(
                 "artifact_upload_intents.replay_failed",
                 artifact_key=claim.artifact_key,
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
             await _record_replay_failure(claim.artifact_key, claim.claim_token, exc)
 
@@ -783,22 +810,9 @@ async def replay_artifact_upload(
 ) -> None:
     """Idempotently PUT the durable payload and publish its ownership row."""
 
-    store, _connection_id = await resolver.resolve_with_connection_id(
-        PortKind.ARTIFACT_STORE,
-        connection_id=upload.connection_id,
-        project_id=upload.project_id,
-    )
-    stored = await store.put(
-        upload.artifact_key,
-        upload.payload,
-        content_type=upload.content_type,
-    )
-    _verify_stored_artifact(
-        stored,
-        upload.artifact_key,
-        expected_size=len(upload.payload),
-    )
-    await finalize_artifact_upload(
+    # Legacy/corrupted outbox rows bypass the foreground reservation boundary.
+    # Revalidate every provider-directed field before resolving or writing.
+    _upload_values(
         artifact_key=upload.artifact_key,
         connection_id=upload.connection_id,
         kind=upload.kind,
@@ -809,6 +823,44 @@ async def replay_artifact_upload(
         content_type=upload.content_type,
         ownership_known=upload.ownership_known,
     )
+    store, resolved_connection_id = await resolver.resolve_with_connection_id(
+        PortKind.ARTIFACT_STORE,
+        connection_id=upload.connection_id,
+        project_id=upload.project_id,
+    )
+    try:
+        _validate_bounded_text(
+            resolved_connection_id,
+            label="resolved artifact connection id",
+            max_chars=32,
+        )
+        if resolved_connection_id != upload.connection_id:
+            raise RuntimeError(
+                "artifact-store resolver did not honor the upload connection affinity"
+            )
+        stored = await store.put(
+            upload.artifact_key,
+            upload.payload,
+            content_type=upload.content_type,
+        )
+        _verify_stored_artifact(
+            stored,
+            upload.artifact_key,
+            expected_size=len(upload.payload),
+        )
+        await finalize_artifact_upload(
+            artifact_key=upload.artifact_key,
+            connection_id=upload.connection_id,
+            kind=upload.kind,
+            thread_id=upload.thread_id,
+            project_id=upload.project_id,
+            app_id=upload.app_id,
+            payload=upload.payload,
+            content_type=upload.content_type,
+            ownership_known=upload.ownership_known,
+        )
+    finally:
+        await close_adapter(store)
 
 
 async def _record_replay_failure(
@@ -830,7 +882,7 @@ async def _record_replay_failure(
             if intent is None:
                 return
             intent.attempt_count += 1
-            intent.last_error = exc.__class__.__name__
+            intent.last_error = safe_type_name(exc)
             await session.commit()
     except asyncio.CancelledError:
         raise
@@ -838,7 +890,7 @@ async def _record_replay_failure(
         logger.warning(
             "artifact_upload_intents.retry_telemetry_failed",
             artifact_key=artifact_key,
-            error_type=telemetry_exc.__class__.__name__,
+            error_type=safe_type_name(telemetry_exc),
         )
 
 
@@ -856,7 +908,7 @@ async def run_artifact_upload_reconciler(
         except Exception as exc:
             logger.warning(
                 "artifact_upload_intents.reconciler_failed",
-                error_type=exc.__class__.__name__,
+                error_type=safe_type_name(exc),
             )
         if heartbeat is not None:
             heartbeat()

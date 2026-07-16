@@ -74,25 +74,29 @@ spec:
                           claim_context_from_environment(),
                       )
                       runtime = await conn.fetchval("SELECT quote_ident($1)", runtime_owner_name)
-                      await conn.execute(f"GRANT USAGE ON SCHEMA apex TO {runtime}")
-                      await conn.execute(
-                          f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA apex TO {runtime}"
-                      )
-                      await conn.execute(
-                          f"REVOKE INSERT, UPDATE, DELETE ON TABLE "
-                          f"apex.alembic_version, apex.alembic_revision_lineage FROM {runtime}"
-                      )
-                      await conn.execute(
-                          f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA apex TO {runtime}"
-                      )
-                      await conn.execute(
-                          f"ALTER DEFAULT PRIVILEGES IN SCHEMA apex "
-                          f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime}"
-                      )
-                      await conn.execute(
-                          f"ALTER DEFAULT PRIVILEGES IN SCHEMA apex "
-                          f"GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime}"
-                      )
+                      # Publish the broad runtime grants and the migration-table
+                      # denial atomically. Otherwise a killed hook between the
+                      # GRANT and REVOKE leaves schema lineage forgeable.
+                      async with conn.transaction():
+                          await conn.execute(f"GRANT USAGE ON SCHEMA apex TO {runtime}")
+                          await conn.execute(
+                              f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA apex TO {runtime}"
+                          )
+                          await conn.execute(
+                              f"REVOKE INSERT, UPDATE, DELETE ON TABLE "
+                              f"apex.alembic_version, apex.alembic_revision_lineage FROM {runtime}"
+                          )
+                          await conn.execute(
+                              f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA apex TO {runtime}"
+                          )
+                          await conn.execute(
+                              f"ALTER DEFAULT PRIVILEGES IN SCHEMA apex "
+                              f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {runtime}"
+                          )
+                          await conn.execute(
+                              f"ALTER DEFAULT PRIVILEGES IN SCHEMA apex "
+                              f"GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO {runtime}"
+                          )
                   finally:
                       await conn.close()
 

@@ -49,6 +49,9 @@ env:
   BACKUP_TF_DIR: deploy/terraform/backup
   NAMESPACE: apex
   RELEASE: apex
+  DEPLOY_ENVIRONMENT: ${{ inputs.environment }}
+  AZURE_TFSTATE_RG: ${{ vars.AZURE_TFSTATE_RG }}
+  AZURE_TFSTATE_SA: ${{ vars.AZURE_TFSTATE_SA }}
 
 jobs:
   verify:
@@ -60,13 +63,48 @@ jobs:
           enable-cache: true
       - run: uv python install 3.12
       - run: uv sync --frozen
+      - name: Validate pinned LangGraph image recipe
+        run: |
+          uv run langgraph validate
+          uv run langgraph dockerfile /tmp/apex-langgraph.Dockerfile
+          uv run python scripts/validate_langgraph_recipe.py /tmp/apex-langgraph.Dockerfile
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run pyright
-      - run: uv run pytest tests/unit -q
+      - run: uv run pytest --cov=src/apex --cov-report=term-missing --cov-fail-under=88
+      - run: uv run pip-audit
+      - name: OpenAPI contract drift gate
+        run: |
+          uv run python scripts/export_openapi.py
+          git diff --exit-code docs/api/
+
+  verify-dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run -w @apex/pipeline-events typecheck
+      - run: npm run -w @apex/pipeline-events lint
+      - run: npm run -w @apex/pipeline-events test
+      - name: Generated-types drift gate
+        run: |
+          npm run generate:sdks
+          git diff --exit-code packages/api-client/src/schema.d.ts
+      - run: npm run -w @apex/api-client typecheck
+      - run: npm run -w @apex/dashboard typecheck
+      - run: npm run -w @apex/dashboard lint
+      - run: npm run -w @apex/dashboard test
+      - run: npm run -w @apex/dashboard test:coverage
+      - run: npm run -w @apex/dashboard build
 
   plan-infrastructure:
-    needs: verify
+    needs: [verify, verify-dashboard]
+    timeout-minutes: 60
     # The state backend is private in staging/prod, so planning and applying use
     # the same private-network runner class as kubectl/Helm.
     runs-on:
@@ -80,6 +118,9 @@ jobs:
       plan_sha256: ${{ steps.plan.outputs.sha256 }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -87,6 +128,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
+          terraform_version: ${{ steps.tool_versions.outputs.terraform }}
           terraform_wrapper: false
       - name: Terraform init (remote state)
         working-directory: ${{ env.TF_DIR }}
@@ -98,10 +140,10 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
         run: |
           terraform init -input=false \
-            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
-            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="resource_group_name=$AZURE_TFSTATE_RG" \
+            -backend-config="storage_account_name=$AZURE_TFSTATE_SA" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=apex-${{ inputs.environment }}.tfstate" \
+            -backend-config="key=apex-$DEPLOY_ENVIRONMENT.tfstate" \
             -backend-config="use_azuread_auth=true"
       - name: Create and enforce saved Terraform plan
         id: plan
@@ -125,23 +167,20 @@ jobs:
           TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
         run: |
           umask 077
-          test "${#TFPLAN_PASSPHRASE}" -ge 32
-          terraform plan -input=false -out=tfplan -var-file="env/${{ inputs.environment }}.tfvars"
-          terraform show -json tfplan \
-            | python3 ../../scripts/terraform_plan_policy.py "${{ inputs.environment }}" -
-          terraform show -no-color tfplan > tfplan.txt
-          sha256sum tfplan | tee tfplan.sha256
-          echo "sha256=$(cut -d' ' -f1 tfplan.sha256)" >> "$GITHUB_OUTPUT"
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
-            -in tfplan -out tfplan.enc -pass env:TFPLAN_PASSPHRASE
-          rm -f tfplan
+          plan_passphrase="$TFPLAN_PASSPHRASE"
+          unset TFPLAN_PASSPHRASE
+          test "${#plan_passphrase}" -ge 32
+          rm -f tfplan tfplan.enc tfplan.sha256
+          terraform plan -input=false -out=tfplan -var-file="env/$DEPLOY_ENVIRONMENT.tfvars"
+          plan_sha256="$(TFPLAN_PASSPHRASE="$plan_passphrase" \
+            python3 ../../scripts/seal_terraform_plan.py \
+            "$DEPLOY_ENVIRONMENT" tfplan tfplan.enc tfplan.sha256)"
+          unset plan_passphrase
+          echo "sha256=$plan_sha256" >> "$GITHUB_OUTPUT"
           {
             echo '### Main infrastructure saved plan'
             echo
-            echo '```text'
-            sed -n '/Plan:/,$p' tfplan.txt | tail -30
-            echo '```'
-            echo
+            echo 'The policy-checked binary plan is encrypted in the approval artifact.'
             echo "SHA-256: \`$(cut -d' ' -f1 tfplan.sha256)\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -150,16 +189,16 @@ jobs:
           path: |
             deploy/terraform/tfplan.enc
             deploy/terraform/tfplan.sha256
-            deploy/terraform/tfplan.txt
           retention-days: 1
           if-no-files-found: error
       - name: Remove local main-plan files
         if: always()
         working-directory: ${{ env.TF_DIR }}
-        run: rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt
+        run: rm -f tfplan tfplan.enc tfplan.sha256
 
   provision:
     needs: plan-infrastructure
+    timeout-minutes: 90
     runs-on:
       group: apex-aks
       labels: [self-hosted, linux]
@@ -187,6 +226,9 @@ jobs:
       database_credential_generation: ${{ steps.tf.outputs.database_credential_generation }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -194,6 +236,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
+          terraform_version: ${{ steps.tool_versions.outputs.terraform }}
           terraform_wrapper: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -209,42 +252,53 @@ jobs:
           ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
+          EXPECTED_PLAN_SHA256: ${{ needs.plan-infrastructure.outputs.plan_sha256 }}
         run: |
           umask 077
-          trap 'rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt' EXIT
-          test "${#TFPLAN_PASSPHRASE}" -ge 32
+          trap 'rm -f tfplan tfplan.enc tfplan.sha256' EXIT
+          plan_passphrase="$TFPLAN_PASSPHRASE"
+          unset TFPLAN_PASSPHRASE
+          test "${#plan_passphrase}" -ge 32
           terraform init -input=false \
-            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
-            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="resource_group_name=$AZURE_TFSTATE_RG" \
+            -backend-config="storage_account_name=$AZURE_TFSTATE_SA" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=apex-${{ inputs.environment }}.tfstate" \
+            -backend-config="key=apex-$DEPLOY_ENVIRONMENT.tfstate" \
             -backend-config="use_azuread_auth=true"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-            -in tfplan.enc -out tfplan -pass env:TFPLAN_PASSPHRASE
-          test "$(cut -d' ' -f1 tfplan.sha256)" = "${{ needs.plan-infrastructure.outputs.plan_sha256 }}"
-          sha256sum --check tfplan.sha256
-          terraform apply -input=false tfplan
-          {
-            echo "acr=$(terraform output -raw acr_login_server)"
-            echo "aks=$(terraform output -raw aks_cluster_name)"
-            echo "rg=$(terraform output -raw resource_group)"
-            echo "location=$(terraform output -raw location)"
-            echo "deployer_object_id=$(terraform output -raw deployer_object_id)"
-            echo "kv=$(terraform output -raw key_vault_name)"
-            echo "hook_kv=$(terraform output -raw hook_key_vault_name)"
-            echo "tenant=$(terraform output -raw tenant_id)"
-            echo "client_id=$(terraform output -raw workload_identity_client_id)"
-            echo "hook_client_id=$(terraform output -raw hook_identity_client_id)"
-            echo "backup_client_id=$(terraform output -raw backup_identity_client_id)"
-            echo "backup_principal_id=$(terraform output -raw backup_identity_principal_id)"
-            echo "service_account=$(terraform output -raw workload_service_account)"
-            echo "hook_service_account=$(terraform output -raw workload_hook_service_account)"
-            echo "backup_service_account=$(terraform output -raw backup_service_account)"
-            echo "database_credential_generation=$(terraform output -raw database_credential_generation)"
-          } >> "$GITHUB_OUTPUT"
+          test "$(cut -d' ' -f1 tfplan.sha256)" = "$EXPECTED_PLAN_SHA256"
+          TFPLAN_PASSPHRASE="$plan_passphrase" \
+            python3 ../../scripts/apply_terraform_plan.py \
+            "$EXPECTED_PLAN_SHA256" tfplan.enc
+          unset plan_passphrase
+          rm -f tfplan.enc tfplan.sha256
+          write_output() {
+            local name="$1" value="$2"
+            if [[ -z "$value" || ${#value} -gt 4096 || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+              echo "Terraform output $name is empty, oversized, or multiline" >&2
+              exit 2
+            fi
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+          }
+          write_output acr "$(terraform output -raw acr_login_server)"
+          write_output aks "$(terraform output -raw aks_cluster_name)"
+          write_output rg "$(terraform output -raw resource_group)"
+          write_output location "$(terraform output -raw location)"
+          write_output deployer_object_id "$(terraform output -raw deployer_object_id)"
+          write_output kv "$(terraform output -raw key_vault_name)"
+          write_output hook_kv "$(terraform output -raw hook_key_vault_name)"
+          write_output tenant "$(terraform output -raw tenant_id)"
+          write_output client_id "$(terraform output -raw workload_identity_client_id)"
+          write_output hook_client_id "$(terraform output -raw hook_identity_client_id)"
+          write_output backup_client_id "$(terraform output -raw backup_identity_client_id)"
+          write_output backup_principal_id "$(terraform output -raw backup_identity_principal_id)"
+          write_output service_account "$(terraform output -raw workload_service_account)"
+          write_output hook_service_account "$(terraform output -raw workload_hook_service_account)"
+          write_output backup_service_account "$(terraform output -raw backup_service_account)"
+          write_output database_credential_generation "$(terraform output -raw database_credential_generation)"
 
   plan-backup:
     needs: provision
+    timeout-minutes: 60
     runs-on:
       group: apex-aks
       labels: [self-hosted, linux]
@@ -256,6 +310,9 @@ jobs:
       plan_sha256: ${{ steps.plan.outputs.sha256 }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -263,6 +320,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
+          terraform_version: ${{ steps.tool_versions.outputs.terraform }}
           terraform_wrapper: false
       - name: Initialize independent backup state
         working-directory: ${{ env.BACKUP_TF_DIR }}
@@ -274,10 +332,10 @@ jobs:
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
         run: |
           terraform init -input=false \
-            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
-            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="resource_group_name=$AZURE_TFSTATE_RG" \
+            -backend-config="storage_account_name=$AZURE_TFSTATE_SA" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=apex-${{ inputs.environment }}-backup.tfstate" \
+            -backend-config="key=apex-$DEPLOY_ENVIRONMENT-backup.tfstate" \
             -backend-config="use_azuread_auth=true"
       - name: Create and enforce backup saved plan
         id: plan
@@ -289,29 +347,29 @@ jobs:
           ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
+          LOCATION: ${{ needs.provision.outputs.location }}
+          BACKUP_IDENTITY_PRINCIPAL_ID: ${{ needs.provision.outputs.backup_principal_id }}
+          DEPLOYER_OBJECT_ID: ${{ needs.provision.outputs.deployer_object_id }}
         run: |
           umask 077
-          test "${#TFPLAN_PASSPHRASE}" -ge 32
+          plan_passphrase="$TFPLAN_PASSPHRASE"
+          unset TFPLAN_PASSPHRASE
+          test "${#plan_passphrase}" -ge 32
+          rm -f tfplan tfplan.enc tfplan.sha256
           terraform plan -input=false -out=tfplan \
-            -var="environment=${{ inputs.environment }}" \
-            -var="location=${{ needs.provision.outputs.location }}" \
-            -var="backup_identity_principal_id=${{ needs.provision.outputs.backup_principal_id }}" \
-            -var="deployer_object_id=${{ needs.provision.outputs.deployer_object_id }}"
-          terraform show -json tfplan \
-            | python3 ../../../scripts/terraform_plan_policy.py "${{ inputs.environment }}" -
-          terraform show -no-color tfplan > tfplan.txt
-          sha256sum tfplan | tee tfplan.sha256
-          echo "sha256=$(cut -d' ' -f1 tfplan.sha256)" >> "$GITHUB_OUTPUT"
-          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
-            -in tfplan -out tfplan.enc -pass env:TFPLAN_PASSPHRASE
-          rm -f tfplan
+            -var="environment=$DEPLOY_ENVIRONMENT" \
+            -var="location=$LOCATION" \
+            -var="backup_identity_principal_id=$BACKUP_IDENTITY_PRINCIPAL_ID" \
+            -var="deployer_object_id=$DEPLOYER_OBJECT_ID"
+          plan_sha256="$(TFPLAN_PASSPHRASE="$plan_passphrase" \
+            python3 ../../../scripts/seal_terraform_plan.py \
+            "$DEPLOY_ENVIRONMENT" tfplan tfplan.enc tfplan.sha256)"
+          unset plan_passphrase
+          echo "sha256=$plan_sha256" >> "$GITHUB_OUTPUT"
           {
             echo '### Independent backup saved plan'
             echo
-            echo '```text'
-            sed -n '/Plan:/,$p' tfplan.txt | tail -30
-            echo '```'
-            echo
+            echo 'The policy-checked binary plan is encrypted in the approval artifact.'
             echo "SHA-256: \`$(cut -d' ' -f1 tfplan.sha256)\`"
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -320,16 +378,16 @@ jobs:
           path: |
             deploy/terraform/backup/tfplan.enc
             deploy/terraform/backup/tfplan.sha256
-            deploy/terraform/backup/tfplan.txt
           retention-days: 1
           if-no-files-found: error
       - name: Remove local backup-plan files
         if: always()
         working-directory: ${{ env.BACKUP_TF_DIR }}
-        run: rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt
+        run: rm -f tfplan tfplan.enc tfplan.sha256
 
   provision-backup:
     needs: [provision, plan-backup]
+    timeout-minutes: 90
     runs-on:
       group: apex-aks
       labels: [self-hosted, linux]
@@ -341,6 +399,9 @@ jobs:
       storage_account: ${{ steps.tf.outputs.storage_account }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -348,6 +409,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
+          terraform_version: ${{ steps.tool_versions.outputs.terraform }}
           terraform_wrapper: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -363,25 +425,34 @@ jobs:
           ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           TFPLAN_PASSPHRASE: ${{ secrets.APEX_TERRAFORM_PLAN_PASSPHRASE }}
+          EXPECTED_PLAN_SHA256: ${{ needs.plan-backup.outputs.plan_sha256 }}
         run: |
           umask 077
-          trap 'rm -f tfplan tfplan.enc tfplan.sha256 tfplan.txt' EXIT
-          test "${#TFPLAN_PASSPHRASE}" -ge 32
+          trap 'rm -f tfplan tfplan.enc tfplan.sha256' EXIT
+          plan_passphrase="$TFPLAN_PASSPHRASE"
+          unset TFPLAN_PASSPHRASE
+          test "${#plan_passphrase}" -ge 32
           terraform init -input=false \
-            -backend-config="resource_group_name=${{ vars.AZURE_TFSTATE_RG }}" \
-            -backend-config="storage_account_name=${{ vars.AZURE_TFSTATE_SA }}" \
+            -backend-config="resource_group_name=$AZURE_TFSTATE_RG" \
+            -backend-config="storage_account_name=$AZURE_TFSTATE_SA" \
             -backend-config="container_name=tfstate" \
-            -backend-config="key=apex-${{ inputs.environment }}-backup.tfstate" \
+            -backend-config="key=apex-$DEPLOY_ENVIRONMENT-backup.tfstate" \
             -backend-config="use_azuread_auth=true"
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-            -in tfplan.enc -out tfplan -pass env:TFPLAN_PASSPHRASE
-          test "$(cut -d' ' -f1 tfplan.sha256)" = "${{ needs.plan-backup.outputs.plan_sha256 }}"
-          sha256sum --check tfplan.sha256
-          terraform apply -input=false tfplan
-          echo "storage_account=$(terraform output -raw storage_account_name)" >> "$GITHUB_OUTPUT"
+          test "$(cut -d' ' -f1 tfplan.sha256)" = "$EXPECTED_PLAN_SHA256"
+          TFPLAN_PASSPHRASE="$plan_passphrase" \
+            python3 ../../../scripts/apply_terraform_plan.py \
+            "$EXPECTED_PLAN_SHA256" tfplan.enc
+          unset plan_passphrase
+          rm -f tfplan.enc tfplan.sha256
+          storage_account="$(terraform output -raw storage_account_name)"
+          if [[ -z "$storage_account" || ${#storage_account} -gt 4096 || "$storage_account" == *$'\n'* || "$storage_account" == *$'\r'* ]]; then
+            echo "Terraform storage-account output is empty, oversized, or multiline" >&2
+            exit 2
+          fi
+          printf 'storage_account=%s\n' "$storage_account" >> "$GITHUB_OUTPUT"
 
   build-push:
-    needs: [provision, verify]
+    needs: [provision, verify, verify-dashboard]
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     permissions:
@@ -403,15 +474,47 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --frozen
       - name: ACR login
-        run: az acr login --name "$(echo '${{ needs.provision.outputs.acr }}' | cut -d. -f1)"
-      - name: Build + push images
+        env:
+          ACR: ${{ needs.provision.outputs.acr }}
+        run: az acr login --name "${ACR%%.*}"
+      - name: Build images
+        env:
+          ACR: ${{ needs.provision.outputs.acr }}
+          TAG: sha-${{ github.sha }}
+        run: |
+          uv run langgraph build -t "$ACR/apex-orchestration-engine:$TAG" \
+            --build-arg "APEX_BUILD_VERSION=$TAG"
+          docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
+      - name: Scan server image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: "${{ needs.provision.outputs.acr }}/apex-orchestration-engine:sha-${{ github.sha }}"
+          version: v0.70.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "false"
+          exit-code: "1"
+          format: table
+      - name: Scan dashboard image for high and critical vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: "${{ needs.provision.outputs.acr }}/apex-dashboard:sha-${{ github.sha }}"
+          version: v0.70.0
+          scanners: vuln
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          ignore-unfixed: "false"
+          exit-code: "1"
+          format: table
+      - name: Push scanned images
         id: images
         env:
           ACR: ${{ needs.provision.outputs.acr }}
           TAG: sha-${{ github.sha }}
         run: |
-          uv run langgraph build -t "$ACR/apex-orchestration-engine:$TAG"
-          docker build -f apps/dashboard/Dockerfile -t "$ACR/apex-dashboard:$TAG" .
           docker push "$ACR/apex-orchestration-engine:$TAG"
           docker push "$ACR/apex-dashboard:$TAG"
           backend_repo_digest="$(docker image inspect \
@@ -429,6 +532,7 @@ jobs:
 
   deploy:
     needs: [provision, provision-backup, build-push]
+    timeout-minutes: 90
     # Staging/prod use a private AKS API endpoint. This runner must have the
     # `apex-aks` runner group, VNet/private-DNS reachability, kubectl, and kubelogin.
     runs-on:
@@ -440,21 +544,29 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Load pinned infrastructure tool versions
+        id: tool_versions
+        run: python3 scripts/tool_versions.py >> "$GITHUB_OUTPUT"
       - uses: azure/login@eec3c95657c1536435858eda1f3ff5437fee8474 # v2.3.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+        with:
+          version: ${{ steps.tool_versions.outputs.helm }}
       - name: Cluster credentials
+        env:
+          RESOURCE_GROUP: ${{ needs.provision.outputs.rg }}
+          AKS_CLUSTER: ${{ needs.provision.outputs.aks }}
         run: |
           command -v kubelogin >/dev/null || {
             echo "The private AKS runner must provide kubelogin" >&2
             exit 2
           }
           az aks get-credentials \
-            --resource-group "${{ needs.provision.outputs.rg }}" \
-            --name "${{ needs.provision.outputs.aks }}" \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$AKS_CLUSTER" \
             --overwrite-existing --format exec
           kubelogin convert-kubeconfig -l azurecli
           for attempt in {1..30}; do
@@ -524,7 +636,76 @@ jobs:
           DASHBOARD_DIGEST: ${{ needs.build-push.outputs.dashboard_digest }}
           APEX_HOSTNAME: ${{ inputs.hostname }}
           TLS_SECRET_NAME: ${{ inputs.tls_secret_name }}
+          KEY_VAULT_NAME: ${{ needs.provision.outputs.kv }}
+          HOOK_KEY_VAULT_NAME: ${{ needs.provision.outputs.hook_kv }}
+          TENANT_ID: ${{ needs.provision.outputs.tenant }}
+          WORKLOAD_CLIENT_ID: ${{ needs.provision.outputs.client_id }}
+          HOOK_CLIENT_ID: ${{ needs.provision.outputs.hook_client_id }}
+          BACKUP_CLIENT_ID: ${{ needs.provision.outputs.backup_client_id }}
+          SERVICE_ACCOUNT: ${{ needs.provision.outputs.service_account }}
+          HOOK_SERVICE_ACCOUNT: ${{ needs.provision.outputs.hook_service_account }}
+          BACKUP_SERVICE_ACCOUNT: ${{ needs.provision.outputs.backup_service_account }}
+          DATABASE_CREDENTIAL_GENERATION: ${{ needs.provision.outputs.database_credential_generation }}
         run: |
+          cleanup_required=1
+          cleanup_pid=
+          forward_cleanup_signal() {
+            local signal_name="$1"
+            if [[ -n "$cleanup_pid" ]]; then
+              kill -s "$signal_name" "$cleanup_pid" 2>/dev/null || true
+            fi
+          }
+          cleanup_failed_csi_hooks() {
+            result=$?
+            trap - EXIT
+            # Bash may receive runner cancellation without forwarding it to a
+            # child. Forward every signal explicitly; the helper contracts its
+            # aggregate deadline to eight seconds and terminates kubectl groups.
+            trap 'forward_cleanup_signal HUP' HUP
+            trap 'forward_cleanup_signal INT' INT
+            trap 'forward_cleanup_signal TERM' TERM
+            if [[ "$cleanup_required" == 1 ]]; then
+              cleanup_timeout=120s
+              case "$result" in
+                129|130|143) cleanup_timeout=8s ;;
+              esac
+              # Helm hooks are not ordinary release resources. This explicit
+              # compensation also covers first-adoption upgrades whose rollback
+              # target predates the chart's post-rollback cleanup hook.
+              python3 scripts/cleanup_csi_hook_material.py --timeout "$cleanup_timeout" \
+                --namespace "$NAMESPACE" --release "$RELEASE" \
+                --hook-secret apex-database-admin \
+                --hook-secret apex-database-role-claim \
+                --hook-secret apex-database-bootstrap \
+                --hook-secret apex-database-migration \
+                --hook-secret apex-admin \
+                --hook-secret apex-hook-auth &
+              cleanup_pid=$!
+              cleanup_status=0
+              # wait(1) returns early after a trapped signal while the child is
+              # still alive. Resume waiting so the bounded compensation process
+              # is not orphaned on the persistent runner.
+              while :; do
+                if wait "$cleanup_pid"; then
+                  cleanup_status=0
+                else
+                  cleanup_status=$?
+                fi
+                if ! kill -0 "$cleanup_pid" 2>/dev/null; then
+                  break
+                fi
+              done
+              cleanup_pid=
+              if [[ "$cleanup_status" -ne 0 ]]; then
+                echo "CSI hook cleanup was incomplete; deployment remains failed" >&2
+              fi
+            fi
+            exit "$result"
+          }
+          trap cleanup_failed_csi_hooks EXIT
+          trap 'exit 129' HUP
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
           validate_dns_hostname() {
             local value="$1" label
             [[ ${#value} -le 253 && "$value" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || return 1
@@ -572,30 +753,45 @@ jobs:
             --set-string "ingress.tls[0].hosts[0]=$APEX_HOSTNAME" \
             --set-string "ingress.tls[0].secretName=$TLS_SECRET_NAME" \
             --set-string "apexSettings.APEX_CORS_ORIGINS=[\"https://$APEX_HOSTNAME\"]" \
-            --set secretBackend.csi.keyvaultName="${{ needs.provision.outputs.kv }}" \
-            --set secretBackend.csi.hookKeyvaultName="${{ needs.provision.outputs.hook_kv }}" \
-            --set secretBackend.csi.tenantId="${{ needs.provision.outputs.tenant }}" \
-            --set workloadIdentity.clientId="${{ needs.provision.outputs.client_id }}" \
-            --set hookWorkloadIdentity.clientId="${{ needs.provision.outputs.hook_client_id }}" \
-            --set backupWorkloadIdentity.clientId="${{ needs.provision.outputs.backup_client_id }}" \
-            --set serviceAccount.name="${{ needs.provision.outputs.service_account }}" \
-            --set hookServiceAccountName="${{ needs.provision.outputs.hook_service_account }}" \
-            --set backupWorkloadIdentity.serviceAccountName="${{ needs.provision.outputs.backup_service_account }}" \
-            --set-string databaseRoleProvisioning.credentialGeneration="${{ needs.provision.outputs.database_credential_generation }}" \
-            --wait --timeout 15m
+            --set secretBackend.csi.keyvaultName="$KEY_VAULT_NAME" \
+            --set secretBackend.csi.hookKeyvaultName="$HOOK_KEY_VAULT_NAME" \
+            --set secretBackend.csi.tenantId="$TENANT_ID" \
+            --set workloadIdentity.clientId="$WORKLOAD_CLIENT_ID" \
+            --set hookWorkloadIdentity.clientId="$HOOK_CLIENT_ID" \
+            --set backupWorkloadIdentity.clientId="$BACKUP_CLIENT_ID" \
+            --set serviceAccount.name="$SERVICE_ACCOUNT" \
+            --set hookServiceAccountName="$HOOK_SERVICE_ACCOUNT" \
+            --set backupWorkloadIdentity.serviceAccountName="$BACKUP_SERVICE_ACCOUNT" \
+            --set-string databaseRoleProvisioning.credentialGeneration="$DATABASE_CREDENTIAL_GENERATION" \
+            --atomic --cleanup-on-fail --wait --timeout 15m
+          cleanup_required=0
+          trap - EXIT HUP INT TERM
           kubectl -n "$NAMESPACE" rollout restart \
             "deployment/$FULLNAME" \
             "deployment/$DASHBOARD_NAME"
           kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME" --timeout=15m
           kubectl -n "$NAMESPACE" rollout status "deployment/$DASHBOARD_NAME" --timeout=15m
+      - name: Cleanup CSI hook material after an interrupted deployment
+        if: ${{ failure() || cancelled() }}
+        run: |
+          exec python3 scripts/cleanup_csi_hook_material.py --timeout 120s \
+            --namespace "$NAMESPACE" --release "$RELEASE" \
+            --hook-secret apex-database-admin \
+            --hook-secret apex-database-role-claim \
+            --hook-secret apex-database-bootstrap \
+            --hook-secret apex-database-migration \
+            --hook-secret apex-admin \
+            --hook-secret apex-hook-auth
       - name: MinIO artifact store
+        env:
+          STORAGE_ACCOUNT: ${{ needs.provision-backup.outputs.storage_account }}
         run: |
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/minio.yaml
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/networkpolicy.yaml
           kubectl -n "$NAMESPACE" rollout restart deployment/apex-minio
           kubectl -n "$NAMESPACE" rollout status deployment/apex-minio --timeout=5m
           kubectl -n "$NAMESPACE" create configmap apex-minio-backup-config \
-            --from-literal=AZURE_STORAGE_ACCOUNT="${{ needs.provision-backup.outputs.storage_account }}" \
+            --from-literal=AZURE_STORAGE_ACCOUNT="$STORAGE_ACCOUNT" \
             --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -n "$NAMESPACE" -f deploy/azure/k8s/minio/backup-cronjob.yaml
       - name: Exercise and verify artifact backup

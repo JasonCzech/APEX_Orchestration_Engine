@@ -36,6 +36,7 @@ from apex.routers.engines import (
 )
 from apex.services.connections import ResolvedAdapter
 from apex.services.engine_abort import (
+    EngineAbortResult,
     EngineAbortService,
     EngineGraphFinalizationPendingError,
     EngineProviderAbortError,
@@ -723,6 +724,53 @@ def test_abort_rejects_nul_bearing_provider_reason() -> None:
     assert adapter.aborts == []
 
 
+def test_abort_rejects_credential_bearing_provider_reason_without_reflection() -> None:
+    secret = "abort-reason-secret-canary"
+    _repo, _runs, adapter, _resolver, client = abort_fixture(
+        states={"t-1": current_execution_state()}
+    )
+
+    with client:
+        response = client.post(
+            "/v1/engines/runs/t-1/abort",
+            json={"reason": f"Authorization: Bearer {secret}"},
+        )
+
+    assert response.status_code == 422
+    assert secret not in response.text
+    assert adapter.aborts == []
+
+
+def test_abort_result_redacts_legacy_credential_identifiers() -> None:
+    secret = "legacy-abort-result-secret-canary"
+    result = EngineAbortResult(
+        thread_id="thread-1",
+        engine=f"password={secret}",
+        external_run_id=f"Authorization: Bearer {secret}",
+    )
+
+    assert secret not in repr(result)
+    assert "[REDACTED]" in result.engine
+    assert "[REDACTED]" in str(result.external_run_id)
+
+
+def test_abort_result_projects_huge_legacy_identifiers_to_fixed_domain_bounds() -> None:
+    secret = "huge-abort-result-secret-canary"
+    result = EngineAbortResult(
+        thread_id="thread-1",
+        engine=f"password={secret}" + ("e" * 1_000_000),
+        external_run_id=f"Authorization: Bearer {secret} " + ("r" * 1_000_000),
+    )
+
+    assert len(result.engine) <= 64
+    assert result.external_run_id is not None
+    assert len(result.external_run_id) <= 255
+    assert secret not in result.engine
+    assert secret not in result.external_run_id
+    assert "[REDACTED]" in result.engine
+    assert "[REDACTED]" in result.external_run_id
+
+
 def test_abort_preserves_captured_monitor_and_does_not_touch_replacement_attempt() -> None:
     repo = FakeEngineRunsRepository()
     first = repo.seed(thread_id="t-race", attempt=1, status="running", handle=STATE_HANDLE)
@@ -931,6 +979,37 @@ def test_abort_fails_closed_when_active_run_snapshot_exceeds_cap() -> None:
     )
 
 
+@pytest.mark.parametrize("failure", ["oversized", "unsafe_id"])
+def test_abort_fails_closed_on_malformed_native_active_run_page(failure: str) -> None:
+    class MalformedRuns(FakeRuns):
+        async def list(
+            self,
+            thread_id: str,
+            *,
+            status: str | None = None,
+            limit: int = 100,
+            **_kwargs: Any,
+        ) -> list[JsonDict]:
+            assert thread_id == "thread-1"
+            if status != "running":
+                return []
+            if failure == "oversized":
+                return [{"run_id": f"run-{index}"} for index in range(limit + 1)]
+            return [{"run_id": "password=engine-abort-native-id-secret-canary"}]
+
+    runs = MalformedRuns()
+    service = EngineAbortService(
+        FakeClient(FakeThreads(), runs),
+        FakeEngineRunsRepository(),
+        resolver=FakeResolver(FakeEngineAdapter()),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="invalid") as excinfo:
+        asyncio.run(service._active_graph_runs_once("thread-1"))
+
+    assert "engine-abort-native-id-secret-canary" not in str(excinfo.value)
+
+
 def test_abort_falls_back_to_projection_handle() -> None:
     repo = FakeEngineRunsRepository()
     projection_handle = {
@@ -1084,6 +1163,47 @@ def test_locked_abort_rejects_connection_generation_drift_before_provider_io(
 
     assert adapter.aborts == []
     assert calls == ["close"]
+
+
+@pytest.mark.asyncio
+async def test_abort_resolution_does_not_invoke_polymorphic_connection_id() -> None:
+    hooks: list[str] = []
+
+    class HostileId(str):
+        def __eq__(self, _other: object) -> bool:
+            hooks.append("eq")
+            return True
+
+        def __ne__(self, _other: object) -> bool:
+            hooks.append("ne")
+            return False
+
+    adapter = FakeEngineAdapter()
+
+    class Resolver:
+        async def resolve_with_metadata(self, *_args: Any, **_kwargs: Any) -> ResolvedAdapter:
+            return ResolvedAdapter(
+                adapter=adapter,
+                connection_id=HostileId("engine-connection"),
+                connection_version=None,
+                persisted=False,
+            )
+
+    service = object.__new__(EngineAbortService)
+    service._resolver = Resolver()  # type: ignore[attr-defined]
+    target = engine_abort_service._AbortTarget(
+        handle=EngineHandle(
+            engine="sim",
+            connection_id="engine-connection",
+            external_run_id="sim-affinity",
+            idempotency_key="abort-affinity",
+        )
+    )
+
+    with pytest.raises(EngineProviderAbortError, match="could not be resolved"):
+        await service._resolve_abort_adapter(target)
+
+    assert hooks == []
 
 
 def test_locked_abort_rejects_state_only_legacy_run_without_connection_affinity(
@@ -1421,6 +1541,29 @@ def test_abort_state_without_handle_falls_back_then_404() -> None:
     assert adapter.aborts == []
 
 
+def test_abort_backlog_error_does_not_reflect_thread_identifier() -> None:
+    canary = "engine-thread-secret-canary"
+
+    class OverloadedAbortService:
+        async def abort(self, thread_id: str, *, reason: str | None = None) -> None:
+            assert thread_id == canary
+            assert reason is None
+            raise TooManyActiveRunsError(thread_id, limit=17)
+
+    with make_client(
+        FakeEngineRunsRepository(),
+        OPERATOR,
+        OverloadedAbortService(),  # type: ignore[arg-type]
+    ) as client:
+        response = client.post(f"/v1/engines/runs/{canary}/abort", json={})
+
+    assert response.status_code == 409
+    assert response.json()["title"] == (
+        "the engine thread exceeds the bounded abort limit (17); use the operator cleanup runbook"
+    )
+    assert canary not in response.text
+
+
 def test_abort_running_checkpoint_without_monitor_requires_recovery() -> None:
     repo, fake_runs, adapter, _, client = abort_fixture(states={"t-1": current_execution_state()})
     with client:
@@ -1557,6 +1700,38 @@ def test_abort_does_not_treat_provider_parser_keyerror_as_disappearance(
     assert fake_runs.cancelled == []
     assert adapter.teardowns == []
     assert repo.rows[0].status == "running"
+
+
+@pytest.mark.asyncio
+async def test_abort_provider_diagnostics_are_detached_from_public_errors() -> None:
+    canary = "bare-engine-abort-provider-canary"
+
+    class FailingStatusAdapter:
+        async def get_status(self, _handle: EngineHandle) -> EngineRunStatus:
+            raise RuntimeError(canary)
+
+    service = object.__new__(EngineAbortService)
+    handle = EngineHandle(
+        engine="sim",
+        connection_id="engine-1",
+        external_run_id="sim-1234567890abcdef",
+        idempotency_key="safe-abort-attempt",
+    )
+
+    with pytest.raises(EngineProviderAbortError, match="status check failed") as status_error:
+        await service._provider_phase(FailingStatusAdapter(), handle)
+
+    assert status_error.value.__cause__ is None
+    assert status_error.value.__context__ is None
+    assert canary not in str(status_error.value)
+
+    invalid_phase = f"invalid-{canary}"
+    with pytest.raises(ValueError, match="provider status is invalid") as phase_error:
+        engine_abort_service._provider_status_phase({"phase": invalid_phase})
+
+    assert phase_error.value.__cause__ is None
+    assert phase_error.value.__context__ is None
+    assert canary not in str(phase_error.value)
 
 
 def test_abort_without_monitor_returns_retryable_503_while_stopping(

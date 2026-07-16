@@ -51,7 +51,7 @@ from apex.adapters.http_resilience import (
 from apex.adapters.network_safety import private_hosts_allowed, safe_async_http_client
 from apex.adapters.options import coerce_bool
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
 from apex.domain.integrations import (
     MAX_INVENTORY_SERVICES,
     EnvironmentSnapshot,
@@ -182,13 +182,20 @@ class KubernetesClusterInventoryAdapter:
     # ── port surface ──────────────────────────────────────────────────────────
 
     async def scan_environment(self, env_ref: EnvRef) -> EnvironmentSnapshot:
+        snapshot: EnvironmentSnapshot | None = None
+        timed_out = False
         try:
             async with asyncio.timeout(MAX_SCAN_DURATION_S):
-                return await self._scan_environment(env_ref)
-        except TimeoutError as exc:
+                snapshot = await self._scan_environment(env_ref)
+        except TimeoutError:
+            timed_out = True
+        if timed_out:
             raise RuntimeError(
                 f"kubernetes inventory scan exceeded its {MAX_SCAN_DURATION_S:g}s deadline"
-            ) from exc
+            )
+        if snapshot is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("kubernetes inventory scan completed without a snapshot")
+        return snapshot
 
     async def _scan_environment(self, env_ref: EnvRef) -> EnvironmentSnapshot:
         services: list[ServiceInfo] = []
@@ -301,6 +308,8 @@ class KubernetesClusterInventoryAdapter:
         tolerate_404: bool = False,
     ) -> dict[str, Any] | None:
         client = self._client_for_loop()
+        response: httpx.Response | None = None
+        request_failure: RuntimeError | None = None
         try:
             response = await resilient_request(
                 client,
@@ -308,18 +317,22 @@ class KubernetesClusterInventoryAdapter:
                 path,
                 max_response_bytes=budget.next_response_limit(),
             )
-        except ResponseTooLargeError as exc:
-            raise RuntimeError(
+        except ResponseTooLargeError:
+            request_failure = RuntimeError(
                 "kubernetes inventory scan exceeded its decoded-body response budget"
-            ) from exc
+            )
         except httpx.HTTPError as exc:
             detail = bounded_diagnostic(exc)
-            raise RuntimeError(
+            request_failure = RuntimeError(
                 bounded_diagnostic(
                     f"kubernetes API request failed for GET {path} on {self._base_url}: "
-                    f"{exc.__class__.__name__}: {detail}"
+                    f"{safe_type_name(exc)}: {detail}"
                 )
-            ) from exc
+            )
+        if request_failure is not None:
+            raise request_failure
+        if response is None:  # pragma: no cover - defensive invariant
+            raise RuntimeError("kubernetes API request completed without a response")
         if response.status_code in (401, 403):
             raise RuntimeError(
                 f"kubernetes API denied GET {path} ({response.status_code}): "
@@ -339,13 +352,17 @@ class KubernetesClusterInventoryAdapter:
                 f"{_status_message(response)}"
             )
         budget.consume(len(response.content))
+        payload: Any = None
+        invalid_json = False
         try:
             payload = parse_json_response(
                 response,
                 context=f"kubernetes API response for GET {path}",
             )
-        except RuntimeError as exc:
-            raise RuntimeError(f"kubernetes API returned invalid JSON for GET {path}") from exc
+        except RuntimeError:
+            invalid_json = True
+        if invalid_json:
+            raise RuntimeError(f"kubernetes API returned invalid JSON for GET {path}")
         if not isinstance(payload, dict):
             raise RuntimeError(f"kubernetes API returned a non-object JSON body for GET {path}")
         return payload
@@ -440,25 +457,35 @@ def _validated_bearer_token(value: object, *, source: str) -> str:
 
 def _read_service_account_token(path: str) -> str:
     """Read a projected token with a hard byte cap and strict header validation."""
+    raw: bytes | None = None
+    unreadable = False
     try:
         with Path(path).open("rb") as token_file:
             raw = token_file.read(MAX_SERVICE_ACCOUNT_TOKEN_BYTES + 1)
-    except OSError as exc:
+    except OSError:
+        unreadable = True
+    if unreadable:
         raise RuntimeError(
             "in_cluster kubernetes auth: ServiceAccount token not readable at "
             f"{path}; is the pod's serviceaccount token mounted?"
-        ) from exc
+        )
+    if raw is None:  # pragma: no cover - defensive invariant
+        raise RuntimeError("in_cluster kubernetes auth: ServiceAccount token could not be read")
     if len(raw) > MAX_SERVICE_ACCOUNT_TOKEN_BYTES:
         raise RuntimeError(
             f"in_cluster kubernetes auth: ServiceAccount token exceeds "
             f"{MAX_SERVICE_ACCOUNT_TOKEN_BYTES} bytes"
         )
+    decoded: str | None = None
+    invalid_utf8 = False
     try:
         decoded = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise RuntimeError(
-            "in_cluster kubernetes auth: ServiceAccount token is not valid UTF-8"
-        ) from exc
+    except UnicodeDecodeError:
+        invalid_utf8 = True
+    if invalid_utf8:
+        raise RuntimeError("in_cluster kubernetes auth: ServiceAccount token is not valid UTF-8")
+    if decoded is None:  # pragma: no cover - defensive invariant
+        raise RuntimeError("in_cluster kubernetes auth: ServiceAccount token could not be decoded")
     return _validated_bearer_token(decoded, source="ServiceAccount token")
 
 
@@ -486,14 +513,21 @@ def _service_info(deployment: dict[str, Any]) -> ServiceInfo:
         raise RuntimeError("kubernetes deployment response contains non-string name or image")
     if isinstance(ready_replicas, bool) or not isinstance(ready_replicas, int):
         raise RuntimeError("kubernetes deployment readyReplicas must be an integer")
+    service: ServiceInfo | None = None
+    invalid_service = False
     try:
-        return ServiceInfo(
+        service = ServiceInfo(
             name=name,
             replicas=ready_replicas,
             image=image,
         )
-    except (TypeError, ValueError, ValidationError) as exc:
-        raise RuntimeError("kubernetes deployment response contains invalid service data") from exc
+    except (TypeError, ValueError, ValidationError):
+        invalid_service = True
+    if invalid_service:
+        raise RuntimeError("kubernetes deployment response contains invalid service data")
+    if service is None:  # pragma: no cover - defensive invariant
+        raise RuntimeError("kubernetes deployment response contains invalid service data")
+    return service
 
 
 def _status_message(response: httpx.Response) -> str:

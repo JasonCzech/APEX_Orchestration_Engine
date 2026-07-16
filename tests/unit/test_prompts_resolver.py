@@ -10,10 +10,15 @@ from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.persistence.models import PromptVersion
 from apex.services.prompts import (
     DEFAULT_PHASE_PROMPTS,
+    PromptCatalogUnavailableError,
+    PromptCredentialMaterialError,
     PromptResolver,
+    ResolvedPhasePrompt,
+    prompt_review_from_resolved,
     render_template,
     resolve_phase_prompt,
     resolve_phase_prompt_sync,
+    resolved_from_prompt_review,
 )
 
 VARS = {"title": "Demo", "request": "Load test checkout"}
@@ -73,6 +78,62 @@ async def test_catalog_beats_builtin_with_version_refs() -> None:
     assert resolved["source"]["ref"] == (
         "phase/story_analysis/system@v3,phase/story_analysis/user@v2"
     )
+
+
+async def test_legacy_catalog_credentials_cannot_enter_resolved_prompt() -> None:
+    store = FakeStore(
+        {
+            ("phase", "story_analysis/system"): version(
+                "Authorization: Bearer legacy-catalog-secret-canary",
+                3,
+            )
+        }
+    )
+
+    with pytest.raises(PromptCredentialMaterialError) as excinfo:
+        await resolve_phase_prompt(
+            Phase.STORY_ANALYSIS,
+            cfg(),
+            variables=VARS,
+            store=store,
+        )
+
+    assert "legacy-catalog-secret-canary" not in str(excinfo.value)
+
+
+async def test_rendered_prompt_cannot_assemble_credential_assignment() -> None:
+    store = FakeStore({("phase", "story_analysis/system"): version("password={title}", 3)})
+
+    with pytest.raises(PromptCredentialMaterialError):
+        await resolve_phase_prompt(
+            Phase.STORY_ANALYSIS,
+            cfg(),
+            variables={"title": "assembled-secret", "request": "safe"},
+            store=store,
+        )
+
+
+def test_legacy_prompt_review_credentials_cannot_be_replayed_or_recheckpointed() -> None:
+    with pytest.raises(PromptCredentialMaterialError):
+        resolved_from_prompt_review(
+            {
+                "system": "safe",
+                "phase_prompt": "safe",
+                "additional_context": "private_key=legacy-review-secret",
+            }
+        )
+
+    safe_resolved: ResolvedPhasePrompt = {
+        "system": "safe",
+        "user": "safe",
+        "application": None,
+        "source": {"origin": "builtin", "ref": "safe", "editor": None},
+    }
+    with pytest.raises(PromptCredentialMaterialError):
+        prompt_review_from_resolved(
+            safe_resolved,
+            additional_context="Authorization: Bearer legacy-review-secret",
+        )
 
 
 async def test_application_prompt_loaded_for_selected_app() -> None:
@@ -166,6 +227,8 @@ async def test_db_down_falls_through_to_builtin(monkeypatch: pytest.MonkeyPatch)
 async def test_catalog_failure_fails_closed_in_locked_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    canary = "password=locked-prompt-catalog-secret-canary"
+
     class FailingStore:
         async def get_active_version(
             self,
@@ -174,17 +237,21 @@ async def test_catalog_failure_fails_closed_in_locked_environment(
             *,
             allow_application: bool = False,
         ) -> PromptVersion | None:
-            raise RuntimeError("catalog down")
+            raise RuntimeError(canary)
 
     monkeypatch.setattr(
         "apex.services.prompts.get_settings",
         lambda: SimpleNamespace(is_locked_down=True),
     )
 
-    with pytest.raises(RuntimeError, match="catalog down"):
+    with pytest.raises(PromptCatalogUnavailableError, match="catalog is unavailable") as excinfo:
         await PromptResolver(store=FailingStore()).resolve_phase_prompt(
             Phase.TEST_PLANNING, cfg(), variables=VARS
         )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
 
 
 def test_sync_bridge_resolves_without_running_loop(monkeypatch: pytest.MonkeyPatch) -> None:

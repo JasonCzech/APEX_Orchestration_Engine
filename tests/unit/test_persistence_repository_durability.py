@@ -149,7 +149,7 @@ def test_runtime_connection_mutations_advance_generation() -> None:
         (
             "create",
             {"base_url": "https://user:must-never-be-persisted@example.com"},
-            "base_url contains unsafe credential-bearing configuration",
+            "base_url must not contain credential material",
         ),
         (
             "update",
@@ -233,6 +233,42 @@ def test_dev_document_connection_id_is_normalized_before_fk_insert() -> None:
 
             assert persisted is not None
             assert persisted.artifact_connection_id is None
+    finally:
+        engine.dispose()
+
+
+def test_document_upload_rejects_cross_project_artifact_affinity() -> None:
+    engine = _schema_engine("apex.documents")
+    document_id = "x" * 32
+    try:
+        with Session(engine, expire_on_commit=False) as session:
+            session.add(
+                Connection(
+                    id="b" * 32,
+                    kind="artifact_store",
+                    provider="memory",
+                    name="project-two-artifacts",
+                    project_id="p2",
+                    options={},
+                    enabled=True,
+                )
+            )
+            session.commit()
+            repository = DocumentsRepository(cast(AsyncSession, _AsyncFacade(session)))
+            document = Document(
+                id=document_id,
+                name="cross-project.txt",
+                media_type="text/plain",
+                size_bytes=3,
+                artifact_key=f"documents/{document_id}/cross-project.txt",
+                artifact_connection_id="b" * 32,
+                project_id="p1",
+            )
+
+            with pytest.raises(RuntimeError, match="outside the document project"):
+                asyncio.run(repository.stage_upload(document))
+
+            assert session.get(Document, document_id) is None
     finally:
         engine.dispose()
 
@@ -356,8 +392,7 @@ def test_document_durable_diagnostics_redact_credentials_before_persistence() ->
                 repository.defer_cleanup(
                     document.id,
                     error=(
-                        "cleanup failed for "
-                        f"https://storage.example/blob?X-Amz-Signature={canary}"
+                        f"cleanup failed for https://storage.example/blob?X-Amz-Signature={canary}"
                     ),
                 )
             )

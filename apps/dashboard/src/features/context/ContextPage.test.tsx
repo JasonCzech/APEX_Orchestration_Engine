@@ -3,6 +3,7 @@ import { File as NodeFile } from 'node:buffer'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { http, HttpResponse } from 'msw'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -84,6 +85,127 @@ describe('ContextPage', () => {
     await user.click(screen.getByRole('button', { name: 'Generate summary' }))
     await within(await screen.findByTestId('summary-accepted')).findByText('run-2')
     expect(within(screen.getByTestId('summary-history')).getAllByRole('listitem')).toHaveLength(2)
+  })
+
+  it('summary stream does not reflect a terminal backend error payload', async () => {
+    const canary = 'summary-provider-secret-canary'
+    const redirectModes: RequestRedirect[] = []
+    server.use(
+      http.post('*/v1/context/summaries', () =>
+        HttpResponse.json(
+          { run_id: 'run-stream-error', stream_url: '/summary-stream-error' },
+          { status: 202 },
+        ),
+      ),
+      http.get('*/summary-stream-error', ({ request }) => {
+        redirectModes.push(request.redirect)
+        return HttpResponse.text(`event: error\ndata: ${canary}\n\n`, {
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      }),
+    )
+    const user = userEvent.setup()
+    renderContext()
+
+    await user.type(
+      await screen.findByRole('textbox', { name: 'Summary subject' }),
+      'Summary with a failed stream',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate summary' }))
+    const accepted = await screen.findByTestId('summary-accepted')
+    await user.click(within(accepted).getByRole('button', { name: 'Open live stream' }))
+
+    expect(await within(accepted).findByText('Unable to read the summary stream.')).toBeInTheDocument()
+    expect(within(accepted).queryByText(canary)).not.toBeInTheDocument()
+    expect(redirectModes).toEqual(['error'])
+  })
+
+  it('summary stream fails closed when the response exceeds its byte budget', async () => {
+    server.use(
+      http.post('*/v1/context/summaries', () =>
+        HttpResponse.json(
+          { run_id: 'run-stream-large', stream_url: '/summary-stream-large' },
+          { status: 202 },
+        ),
+      ),
+      http.get('*/summary-stream-large', () =>
+        HttpResponse.text('x'.repeat(4 * 1024 * 1024 + 1), {
+          headers: { 'content-type': 'text/event-stream' },
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    renderContext()
+
+    await user.type(
+      await screen.findByRole('textbox', { name: 'Summary subject' }),
+      'Summary with an oversized stream',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate summary' }))
+    const accepted = await screen.findByTestId('summary-accepted')
+    await user.click(within(accepted).getByRole('button', { name: 'Open live stream' }))
+
+    expect(await within(accepted).findByText('Unable to read the summary stream.')).toBeInTheDocument()
+  })
+
+  it('summary stream rejects a media type that only prefixes the SSE type', async () => {
+    const canary = 'malformed-sse-media-type-canary'
+    server.use(
+      http.post('*/v1/context/summaries', () =>
+        HttpResponse.json(
+          { run_id: 'run-stream-wrong-media', stream_url: '/summary-stream-wrong-media' },
+          { status: 202 },
+        ),
+      ),
+      http.get('*/summary-stream-wrong-media', () =>
+        HttpResponse.text(`data: ${JSON.stringify({ summary: canary })}\n\n`, {
+          headers: { 'content-type': 'text/event-streaming' },
+        }),
+      ),
+    )
+    const user = userEvent.setup()
+    renderContext()
+
+    await user.type(
+      await screen.findByRole('textbox', { name: 'Summary subject' }),
+      'Summary with the wrong stream media type',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate summary' }))
+    const accepted = await screen.findByTestId('summary-accepted')
+    await user.click(within(accepted).getByRole('button', { name: 'Open live stream' }))
+
+    expect(await within(accepted).findByText('Unable to read the summary stream.')).toBeInTheDocument()
+    expect(within(accepted).queryByText(canary)).not.toBeInTheDocument()
+  })
+
+  it('summary stream fails closed on malformed UTF-8', async () => {
+    server.use(
+      http.post('*/v1/context/summaries', () =>
+        HttpResponse.json(
+          { run_id: 'run-stream-invalid-utf8', stream_url: '/summary-stream-invalid-utf8' },
+          { status: 202 },
+        ),
+      ),
+      http.get(
+        '*/summary-stream-invalid-utf8',
+        () =>
+          new HttpResponse(new Uint8Array([0x64, 0x61, 0x74, 0x61, 0x3a, 0x20, 0xff]), {
+            headers: { 'content-type': 'Text/Event-Stream; Charset=UTF-8' },
+          }),
+      ),
+    )
+    const user = userEvent.setup()
+    renderContext()
+
+    await user.type(
+      await screen.findByRole('textbox', { name: 'Summary subject' }),
+      'Summary with malformed stream bytes',
+    )
+    await user.click(screen.getByRole('button', { name: 'Generate summary' }))
+    const accepted = await screen.findByTestId('summary-accepted')
+    await user.click(within(accepted).getByRole('button', { name: 'Open live stream' }))
+
+    expect(await within(accepted).findByText('Unable to read the summary stream.')).toBeInTheDocument()
   })
 
   it('documents: lists with filters, uploads multipart, deletes after confirm', async () => {

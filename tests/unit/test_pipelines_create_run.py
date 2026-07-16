@@ -18,7 +18,11 @@ import apex.services.pipeline_read as pipeline_read
 from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.persistence.repositories.documents import DocumentsRepository
 from apex.services.langgraph_client import LAUNCH_ROOT_FINGERPRINT_METADATA_KEY
-from apex.services.pipeline_read import LaunchIdempotencyConflictError, PipelineReadService
+from apex.services.pipeline_read import (
+    LaunchIdempotencyConflictError,
+    LaunchProviderError,
+    PipelineReadService,
+)
 
 
 def _identity(project_ids: list[str]) -> ConsumerIdentity:
@@ -42,8 +46,10 @@ class FakeDocsRepo:
 class FakeCatalogRepo:
     def __init__(self, environments: dict[str, Any] | None = None) -> None:
         self.environments = environments or {}
+        self.environment_get_calls: list[str] = []
 
     async def get_environment(self, environment_id: str) -> Any:
+        self.environment_get_calls.append(environment_id)
         return self.environments.get(environment_id)
 
 
@@ -427,15 +433,141 @@ async def test_start_run_builds_config_and_input() -> None:
     }
 
 
+@pytest.mark.parametrize("boundary", ["thread", "run"])
+async def test_start_run_rejects_credential_shaped_native_ids(boundary: str) -> None:
+    client = FakeClient()
+    canary = "pipeline-native-id-secret-canary"
+
+    if boundary == "thread":
+
+        async def unsafe_thread(metadata: Any = None) -> dict[str, Any]:
+            client.threads.metadata = metadata
+            return {"thread_id": f"password={canary}"}
+
+        cast(Any, client.threads).create = unsafe_thread
+    else:
+
+        async def unsafe_run(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            client.runs.args = (*args, kwargs)
+            return {"run_id": f"Authorization: Bearer {canary}"}
+
+        cast(Any, client.runs).create = unsafe_run
+
+    with pytest.raises(LaunchProviderError, match="runtime .* creation failed") as excinfo:
+        await PipelineReadService(client).start_run(title="Analyze")
+
+    assert canary not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    if boundary == "thread":
+        assert client.runs.args == ()
+    else:
+        assert client.runs.args
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"title": "x" * (pipeline_read.MAX_LAUNCH_TITLE_CHARS + 1)},
+        {"title": "Analyze", "request": "x" * 20_001},
+        {
+            "title": "Analyze",
+            "idempotency_key": "x" * (pipeline_read.MAX_LAUNCH_IDEMPOTENCY_KEY_CHARS + 1),
+        },
+        {"title": "Analyze", "project_id": " project-with-ambiguous-whitespace "},
+    ],
+)
+async def test_start_run_service_bounds_durable_launch_fields_before_provider_io(
+    kwargs: dict[str, Any],
+) -> None:
+    client = FakeClient()
+
+    with pytest.raises(ValueError):
+        await PipelineReadService(client).start_run(**kwargs)
+
+    assert client.threads.metadata is None
+    assert client.runs.args == ()
+
+
+async def test_start_run_rejects_polymorphic_thread_response_without_invoking_hooks() -> None:
+    hooks: list[str] = []
+
+    class HostileThread(dict[str, Any]):
+        def get(self, *_args: Any, **_kwargs: Any) -> Any:
+            hooks.append("get")
+            raise AssertionError("provider mapping hook ran")
+
+    client = FakeClient()
+
+    async def hostile_thread(metadata: Any = None) -> dict[str, Any]:
+        client.threads.metadata = metadata
+        return cast(dict[str, Any], HostileThread(thread_id="thr-1"))
+
+    cast(Any, client.threads).create = hostile_thread
+
+    with pytest.raises(LaunchProviderError, match="thread creation failed"):
+        await PipelineReadService(client).start_run(title="Analyze")
+
+    assert hooks == []
+    assert client.runs.args == ()
+
+
+async def test_idempotent_start_does_not_invoke_provider_fingerprint_equality() -> None:
+    hooks: list[str] = []
+
+    class HostileFingerprint:
+        def __eq__(self, _other: object) -> bool:
+            hooks.append("eq")
+            raise AssertionError("provider equality hook ran")
+
+        def __ne__(self, _other: object) -> bool:
+            hooks.append("ne")
+            raise AssertionError("provider equality hook ran")
+
+    client = AtomicClient()
+
+    async def hostile_thread(**kwargs: Any) -> dict[str, Any]:
+        return {
+            "thread_id": kwargs["thread_id"],
+            "metadata": {"launch_idempotency_fingerprint": HostileFingerprint()},
+        }
+
+    cast(Any, client.threads).create = hostile_thread
+
+    with pytest.raises(LaunchIdempotencyConflictError):
+        await PipelineReadService(client).start_run(
+            title="Analyze",
+            idempotency_key="retry-1",
+            principal_id="principal-1",
+        )
+
+    assert hooks == []
+    assert client.runs.successful_creates == 0
+
+
+async def test_idempotent_start_rejects_drifted_thread_creation_response() -> None:
+    client = AtomicClient()
+
+    async def drifted_thread(**kwargs: Any) -> dict[str, Any]:
+        return {"thread_id": "different-thread", "metadata": kwargs["metadata"]}
+
+    cast(Any, client.threads).create = drifted_thread
+
+    with pytest.raises(LaunchIdempotencyConflictError):
+        await PipelineReadService(client).start_run(
+            title="Analyze",
+            idempotency_key="retry-1",
+            principal_id="principal-1",
+        )
+
+    assert client.runs.successful_creates == 0
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"request": "Authorization: Bearer launch-secret-canary"},
-        {
-            "configurable": {
-                "pre_execution_context": ["database_password=launch-secret-canary"]
-            }
-        },
+        {"configurable": {"pre_execution_context": ["database_password=launch-secret-canary"]}},
         {
             "context_packets": [
                 {
@@ -484,9 +616,11 @@ async def test_launch_does_not_persist_raw_idempotency_key_or_principal() -> Non
 async def test_ambiguous_run_create_keeps_thread_for_reconciliation() -> None:
     client = AmbiguousClient()
 
-    with pytest.raises(httpx.ReadTimeout, match="response lost"):
+    with pytest.raises(LaunchProviderError, match="run creation failed") as excinfo:
         await PipelineReadService(client).start_run(title="Ambiguous launch")
 
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
     assert client.runs.accepted == ["thr-1"]
     assert client.threads.deleted == []
 
@@ -494,9 +628,11 @@ async def test_ambiguous_run_create_keeps_thread_for_reconciliation() -> None:
 async def test_definitive_run_create_4xx_deletes_fresh_random_thread() -> None:
     client = DefinitivelyRejectedClient()
 
-    with pytest.raises(NotFoundError, match="assistant not found"):
+    with pytest.raises(LaunchProviderError, match="run creation failed") as excinfo:
         await PipelineReadService(client).start_run(title="Rejected launch")
 
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
     assert client.threads.deleted == ["thr-1"]
 
 
@@ -507,10 +643,71 @@ async def test_retryable_run_create_4xx_preserves_thread_for_reconciliation(
     client: Any = DefinitivelyRejectedClient()
     client.runs = RetryableClientErrorRuns(status_code)
 
-    with pytest.raises(APIStatusError, match="retryable client response"):
+    with pytest.raises(LaunchProviderError, match="run creation failed") as excinfo:
         await PipelineReadService(client).start_run(title="Retryable launch")
 
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
     assert client.threads.deleted == []
+
+
+async def test_thread_create_failure_detaches_sdk_request_and_body() -> None:
+    canary = "Bearer launch-thread-create-secret-canary"
+
+    class Threads(FakeThreads):
+        async def create(self, metadata: Any = None) -> dict[str, str]:
+            del metadata
+            request = httpx.Request(
+                "POST",
+                "http://loopback/threads",
+                headers={"Authorization": canary},
+            )
+            raise APIStatusError(
+                "thread create failed",
+                response=httpx.Response(503, request=request),
+                body={"diagnostic": canary},
+            )
+
+    client = FakeClient()
+    client.threads = Threads()
+
+    with pytest.raises(LaunchProviderError, match="thread creation failed") as excinfo:
+        await PipelineReadService(client).start_run(title="Thread failure")
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
+
+
+async def test_launch_conflict_reconciliation_miss_detaches_sdk_request() -> None:
+    canary = "Bearer launch-conflict-secret-canary"
+
+    class Runs(AtomicRuns):
+        async def create(self, thread_id: str, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            request = httpx.Request(
+                "POST",
+                f"http://loopback/threads/{thread_id}/runs",
+                headers={"Authorization": canary},
+            )
+            raise ConflictError(
+                "active run exists",
+                response=httpx.Response(409, request=request),
+                body={"diagnostic": canary},
+            )
+
+    client = AtomicClient()
+    client.runs = Runs()
+
+    with pytest.raises(LaunchIdempotencyConflictError) as excinfo:
+        await PipelineReadService(client).start_run(
+            title="Conflict",
+            idempotency_key="launch-conflict-1",
+            principal_id="consumer-1",
+        )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
 
 
 async def test_start_run_idempotency_is_atomic_for_concurrent_retries() -> None:
@@ -711,8 +908,72 @@ async def test_start_run_preserves_assistant_and_full_configurable() -> None:
 
 async def test_start_run_rejects_unknown_phase() -> None:
     service = PipelineReadService(FakeClient())
-    with pytest.raises(ValueError, match="unknown phase"):
-        await service.start_run(title="x", phases=["bogus"])
+    canary = "ghp_" + "A" * 24
+    with pytest.raises(ValueError, match="unknown pipeline phase") as excinfo:
+        await service.start_run(title="x", configurable={"phases": [canary]})
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
+
+
+async def test_create_pipeline_detaches_raw_service_validation_error() -> None:
+    canary = "bare-pipeline-validation-canary"
+
+    class FailingService:
+        async def start_run(self, **_kwargs: Any) -> dict[str, Any]:
+            raise ValueError(canary)
+
+    identity = _identity(["proj-1"])
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: FailingService()}
+        )
+    )
+
+    with pytest.raises(HTTPException, match="invalid pipeline configuration") as excinfo:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(title="Invalid run"),
+            identity,
+            cast(DocumentsRepository, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo()),
+            cast(Any, request),
+        )
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in str(excinfo.value)
+
+
+async def test_create_pipeline_maps_detached_provider_failure_to_502() -> None:
+    canary = "pipeline-provider-boundary-secret-canary"
+
+    class FailingService:
+        async def start_run(self, **_kwargs: Any) -> dict[str, Any]:
+            error = LaunchProviderError("pipeline runtime run creation failed")
+            error.__context__ = RuntimeError(canary)
+            raise error
+
+    identity = _identity(["proj-1"])
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: FailingService()}
+        )
+    )
+
+    with pytest.raises(HTTPException, match="pipeline runtime unavailable") as excinfo:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(title="Provider failure"),
+            identity,
+            cast(DocumentsRepository, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo()),
+            cast(Any, request),
+        )
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert canary not in repr(excinfo.value)
 
 
 async def test_start_run_rejects_unbounded_controls_before_creating_thread() -> None:
@@ -806,6 +1067,37 @@ async def test_create_pipeline_rejects_ambiguous_scope_before_thread_create() ->
 
     assert exc.value.status_code == 403
     assert exc.value.detail == "pipeline scope is not authorized"
+    assert client.threads.metadata is None
+
+
+async def test_create_pipeline_rejects_oversized_environment_id_before_catalog_io() -> None:
+    identity = _identity(["proj-1"])
+    client = FakeClient()
+    service = PipelineReadService(client)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: service}
+        )
+    )
+    catalog = FakeCatalogRepo()
+
+    with pytest.raises(HTTPException) as exc:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(
+                title="Oversized environment",
+                configurable={"environment_id": "e" * 33},
+            ),
+            identity,
+            cast(DocumentsRepository, FakeDocsRepo({})),
+            cast(Any, catalog),
+            cast(Any, request),
+        )
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail == (
+        "configurable.environment_id must be a non-empty catalog identifier"
+    )
+    assert catalog.environment_get_calls == []
     assert client.threads.metadata is None
 
 
