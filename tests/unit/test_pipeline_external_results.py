@@ -31,6 +31,17 @@ EXTERNAL = {
 }
 
 
+def test_external_results_accepts_a_safe_apex_load_console_fragment() -> None:
+    results = ExternalResults.model_validate(
+        {
+            **EXTERNAL,
+            "uri": "https://apexload.example/#/test/tenant:test-789",
+        }
+    )
+
+    assert results.uri == "https://apexload.example/#/test/tenant:test-789"
+
+
 def compiled() -> CompiledStateGraph[Any, Any, Any, Any]:
     return builder.compile(checkpointer=InMemorySaver())
 
@@ -125,6 +136,18 @@ def test_graph_revalidation_rejects_signed_external_results_uri() -> None:
         )
 
     assert "graph-signed-url-secret" not in str(raised.value)
+
+
+def test_external_results_allows_safe_apex_load_console_test_link() -> None:
+    result = ExternalResults.model_validate(
+        {
+            **EXTERNAL,
+            "engine": "apex_load",
+            "uri": "https://apexload.example/#/test/native-run-1",
+        }
+    )
+
+    assert result.uri == "https://apexload.example/#/test/native-run-1"
 
 
 def test_external_results_legacy_replay_rejects_credentials_without_reflection() -> None:

@@ -62,6 +62,7 @@ import math
 import re
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import structlog
@@ -83,13 +84,14 @@ from apex.adapters.options import require_bounded_credential
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.remote_idempotency import remote_create_guard
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
+from apex.domain.input_limits import validate_json_object
 from apex.domain.integrations import (
     LoadTestSpec,
     SecretValue,
     TestResultSummary,
     ValidationReport,
 )
-from apex.domain.pipeline import ArtifactRef, EngineHandle
+from apex.domain.pipeline import MAX_CONTEXT_REF_CHARS, ArtifactRef, EngineHandle
 from apex.ports.artifact_store import ArtifactStorePort, engine_artifact_key
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
@@ -121,8 +123,36 @@ _MAX_PROVIDER_TIMELINE_POINTS = 100_000
 _MAX_PROVIDER_ACTIONS = 10_000
 _MAX_PROVIDER_COUNT = 1_000_000_000
 _MAX_PROVIDER_DURATION_S = 366 * 24 * 60 * 60
+_MAX_NATIVE_CONTROL_ROWS = 5_000
+_MAX_CONSOLE_URL_CHARS = MAX_CONTEXT_REF_CHARS - len("/#/test/") - 255
 _CONFLICT_RECHECK_ATTEMPTS = 6
 _CONFLICT_RECHECK_DELAY_S = 0.05
+
+_ARCHIVE_REPORT = (
+    "report",
+    "engine_report",
+    "apex-load-report.json",
+    "APEX Load archive report",
+)
+_NATIVE_ARCHIVE_EVIDENCE = (
+    ("manifest", "engine_manifest", "apex-load-manifest.json", "APEX Load archive manifest"),
+    _ARCHIVE_REPORT,
+    ("summaries", "engine_summaries", "apex-load-summaries.json", "APEX Load archive summaries"),
+    (
+        "transactions",
+        "engine_transactions",
+        "apex-load-transactions.json",
+        "APEX Load archive transactions",
+    ),
+    ("resources", "engine_resources", "apex-load-resources.json", "APEX Load archive resources"),
+    ("analysis", "engine_analysis", "apex-load-analysis.json", "APEX Load archive analysis"),
+    (
+        "root-cause",
+        "engine_root_cause",
+        "apex-load-root-cause.json",
+        "APEX Load archive root-cause evidence",
+    ),
+)
 
 # ManagedTest.Status values -> EngineRunPhase (see module docstring).
 _PHASE_BY_STATUS: dict[str, EngineRunPhase] = {
@@ -308,6 +338,31 @@ def _goal_config_from_slas(slas: dict[str, float]) -> dict[str, float]:
     if "error_rate" in slas:
         goal["max_error_pct"] = float(slas["error_rate"]) * 100.0
     return goal
+
+
+def _test_request_body(name: str, spec: LoadTestSpec, script_ids: list[str]) -> dict[str, Any]:
+    """Build the shared APEX Load create/estimate/preflight request shape."""
+    ramp = format_go_duration(spec.ramp_s)
+    groups = [
+        {
+            "name": f"group-{index + 1}",
+            "script_id": script_id,
+            "vusers": vusers,
+            "ramp_up": ramp,
+        }
+        for index, (script_id, vusers) in enumerate(
+            zip(script_ids, _split_vusers(spec.vusers, len(script_ids)), strict=True)
+        )
+    ]
+    body: dict[str, Any] = {
+        "name": name,
+        "duration": format_go_duration(spec.duration_s),
+        "groups": groups,
+    }
+    goal = _goal_config_from_slas(spec.slas)
+    if goal:
+        body["goal_config"] = goal
+    return body
 
 
 def _revalidate_spec(spec: LoadTestSpec) -> LoadTestSpec:
@@ -729,6 +784,38 @@ class ApexLoadExecutionEngine:
         self._conn = conn
         self._base_url = base_url
         self._allow_private_hosts = private_hosts_allowed(options)
+        raw_console_url = options.get("console_url", base_url)
+        if (
+            not isinstance(raw_console_url, str)
+            or not raw_console_url
+            or raw_console_url != raw_console_url.strip()
+            or len(raw_console_url.rstrip("/")) > _MAX_CONSOLE_URL_CHARS
+            or "\\" in raw_console_url
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in raw_console_url)
+        ):
+            raise ValueError("apex_load console_url must be a non-empty URL")
+        try:
+            console = urlsplit(raw_console_url)
+            console_port = console.port
+        except ValueError as exc:
+            raise ValueError("apex_load console_url must be a valid URL") from exc
+        if (
+            console.scheme not in {"http", "https"}
+            or console.hostname is None
+            or console.username is not None
+            or console.password is not None
+            or console.query
+            or console.fragment
+            or (console_port is not None and not 1 <= console_port <= 65_535)
+        ):
+            raise ValueError(
+                "apex_load console_url must not contain credentials, query, or fragment"
+            )
+        self._console_url = raw_console_url.rstrip("/")
+        raw_native_control_enabled = options.get("native_control_enabled", False)
+        if type(raw_native_control_enabled) is not bool:
+            raise ValueError("apex_load native_control_enabled must be a boolean")
+        self._native_control_enabled = raw_native_control_enabled
         raw_project_id = options.get("project_id")
         if raw_project_id in (None, ""):
             self._project_id = None
@@ -736,6 +823,8 @@ class ApexLoadExecutionEngine:
             self._project_id = raw_project_id
         else:
             raise ValueError("apex_load project_id must be a safe string of at most 255 characters")
+        if self._native_control_enabled and self._project_id is None:
+            raise ValueError("apex_load native control requires options['project_id']")
         raw_max_report_bytes = options.get("max_report_bytes", _DEFAULT_MAX_REPORT_BYTES)
         if isinstance(raw_max_report_bytes, bool) or not isinstance(raw_max_report_bytes, int):
             raise ValueError("apex_load max_report_bytes must be an integer")
@@ -773,6 +862,68 @@ class ApexLoadExecutionEngine:
             await self._http.aclose()
         self._http = None
         self._http_loop = None
+
+    @property
+    def native_control_enabled(self) -> bool:
+        return self._native_control_enabled
+
+    @property
+    def native_project_id(self) -> str | None:
+        """Configured provider project; native control must never cross it."""
+        return self._project_id
+
+    def native_console_url(self, run_id: str) -> str:
+        safe_run_id = _provider_identifier(run_id, "native console run id")
+        return f"{self._console_url}/#/test/{safe_run_id}"
+
+    def _require_native_control(self) -> None:
+        if not self._native_control_enabled:
+            raise RuntimeError("APEX Load native control is disabled for this connection")
+
+    def _configured_native_project_id(self) -> str:
+        self._require_native_control()
+        if self._project_id is None:  # pragma: no cover - constructor invariant
+            raise RuntimeError("APEX Load native control requires a configured provider project")
+        return self._project_id
+
+    def _native_params(self, **params: Any) -> dict[str, Any]:
+        result = dict(params)
+        if self._project_id is not None:
+            result["project_id"] = self._project_id
+        return result
+
+    def _native_draft(self, value: dict[str, Any], *, label: str) -> dict[str, Any]:
+        if type(value) is not dict:
+            raise ValueError(f"{label} must be an object")
+        validate_json_object(value, label=label, max_bytes=_MAX_JSON_RESPONSE_BYTES)
+        if contains_credential_material(value):
+            raise ValueError(f"{label} must not contain credential material")
+        return value
+
+    def _native_project_draft(self, value: dict[str, Any], *, label: str) -> dict[str, Any]:
+        body = dict(self._native_draft(value, label=label))
+        project_id = self._configured_native_project_id()
+        supplied_project_id = body.get("project_id")
+        if supplied_project_id is not None and supplied_project_id != project_id:
+            raise ValueError(f"{label} cannot target another APEX Load project")
+        body["project_id"] = project_id
+        return body
+
+    def _native_id(self, value: str, *, label: str) -> str:
+        if not _is_safe_named_ref(value):
+            raise ValueError(f"{label} must be a safe APEX Load identifier")
+        return value
+
+    async def probe(self) -> str:
+        """Read-only authenticated probe that is valid without a workload draft."""
+        response = await self._request(
+            "GET",
+            "/api/v1/tests",
+            params=self._native_params(summary=True, limit=1, offset=0),
+        )
+        data = _json_object(response, "APEX Load connection probe")
+        _provider_list_field(data, "tests", "APEX Load connection probe", max_items=1)
+        return "authenticated APEX Load test catalog access"
 
     async def _request(
         self,
@@ -849,7 +1000,13 @@ class ApexLoadExecutionEngine:
             )
         return response
 
-    async def _stream_download(self, path: str, *, not_found: str) -> httpx.Response:
+    async def _stream_download(
+        self,
+        path: str,
+        *,
+        not_found: str,
+        params: dict[str, Any] | None = None,
+    ) -> httpx.Response:
         """Open a bounded-consumer streaming response; caller must ``aclose`` it."""
         response: httpx.Response | None = None
         request_failure: RuntimeError | None = None
@@ -858,6 +1015,7 @@ class ApexLoadExecutionEngine:
                 self._client(),
                 "GET",
                 path,
+                params=params,
                 timeout=_DOWNLOAD_TIMEOUT_S,
                 retry=retry_policy(total_timeout_s=_DOWNLOAD_TOTAL_TIMEOUT_S),
                 breaker=self._breaker,
@@ -974,6 +1132,7 @@ class ApexLoadExecutionEngine:
         response = await self._request(
             "GET",
             f"/api/v1/tests/{run_id}",
+            params=self._native_params(),
             not_found=f"apex load test {run_id!r} not found",
         )
         test = _json_object(response, f"GET /api/v1/tests/{run_id}")
@@ -983,6 +1142,19 @@ class ApexLoadExecutionEngine:
             context=context,
             expected_name=test_name_for(handle.idempotency_key),
         )
+
+    async def _get_native_test(self, run_id: str, *, context: str) -> dict[str, Any]:
+        safe_id = self._native_id(run_id, label="test id")
+        self._configured_native_project_id()
+        response = await self._request(
+            "GET",
+            f"/api/v1/tests/{safe_id}",
+            params=self._native_params(),
+            not_found=f"APEX Load test {safe_id!r} not found",
+        )
+        test = _json_object(response, f"GET /api/v1/tests/{safe_id}")
+        self._require_test_resource_identity(test, run_id=safe_id, context=context)
+        return test
 
     @staticmethod
     def _require_mutation_acknowledgement(
@@ -999,6 +1171,356 @@ class ApexLoadExecutionEngine:
         if returned_id != run_id:
             raise RuntimeError(f"apex load {context} returned an unexpected test id")
 
+    # ── native control plane ──────────────────────────────────────────────────
+
+    async def native_capabilities(self) -> dict[str, Any]:
+        self._configured_native_project_id()
+        matrix_response, template_response = await asyncio.gather(
+            self._request(
+                "GET", "/api/v1/scenarios/load-models/support-matrix", params=self._native_params()
+            ),
+            self._request(
+                "GET", "/api/v1/scenarios/load-models/templates", params=self._native_params()
+            ),
+        )
+        return {
+            "load_models": _json_object(matrix_response, "APEX Load load-model support matrix"),
+            "templates": _json_object(template_response, "APEX Load load-model templates"),
+            "console_url": self._console_url,
+        }
+
+    async def list_native_scenarios(self) -> list[dict[str, Any]]:
+        self._configured_native_project_id()
+        response = await self._request("GET", "/api/v1/scenarios", params=self._native_params())
+        data = _json_object(response, "GET /api/v1/scenarios")
+        scenarios = _provider_list_field(
+            data, "scenarios", "GET /api/v1/scenarios", max_items=_MAX_NATIVE_CONTROL_ROWS
+        )
+        result = [dict(scenario) for scenario in scenarios]
+        for scenario in result:
+            self._require_native_project(scenario, context="scenario list response")
+        return result
+
+    async def get_native_scenario(self, scenario_id: str) -> dict[str, Any]:
+        self._configured_native_project_id()
+        safe_id = self._native_id(scenario_id, label="scenario id")
+        response = await self._request(
+            "GET",
+            f"/api/v1/scenarios/{safe_id}",
+            params=self._native_params(),
+            not_found=f"APEX Load scenario {safe_id!r} not found",
+        )
+        scenario = _json_object(response, "GET APEX Load scenario")
+        self._require_native_project(scenario, context="scenario response")
+        return scenario
+
+    async def create_native_scenario(self, draft: dict[str, Any]) -> dict[str, Any]:
+        body = self._native_project_draft(draft, label="APEX Load scenario draft")
+        response = await self._request(
+            "POST", "/api/v1/scenarios", json=body, params=self._native_params()
+        )
+        scenario = _json_object(response, "POST APEX Load scenario")
+        self._require_native_project(scenario, context="created scenario")
+        return scenario
+
+    async def update_native_scenario(
+        self, scenario_id: str, draft: dict[str, Any], *, expected_revision: int | None = None
+    ) -> dict[str, Any]:
+        self._configured_native_project_id()
+        safe_id = self._native_id(scenario_id, label="scenario id")
+        await self.get_native_scenario(safe_id)
+        body = self._native_project_draft(draft, label="APEX Load scenario draft")
+        if expected_revision is not None:
+            if type(expected_revision) is not int or not 0 <= expected_revision <= 1_000_000_000:
+                raise ValueError("expected scenario revision is invalid")
+            body.setdefault("expected_revision", expected_revision)
+        response = await self._request(
+            "PUT", f"/api/v1/scenarios/{safe_id}", json=body, params=self._native_params()
+        )
+        scenario = _json_object(response, "PUT APEX Load scenario")
+        self._require_native_project(scenario, context="updated scenario")
+        return scenario
+
+    async def delete_native_scenario(self, scenario_id: str) -> None:
+        self._configured_native_project_id()
+        safe_id = self._native_id(scenario_id, label="scenario id")
+        await self.get_native_scenario(safe_id)
+        await self._request("DELETE", f"/api/v1/scenarios/{safe_id}", params=self._native_params())
+
+    async def validate_native_scenario(self, draft: dict[str, Any]) -> dict[str, Any]:
+        body = self._native_project_draft(draft, label="APEX Load scenario draft")
+        response = await self._request(
+            "POST",
+            "/api/v1/scenarios/validate-load-model",
+            json=body,
+            params=self._native_params(),
+        )
+        return _json_object(response, "APEX Load scenario load-model validation")
+
+    async def size_native_scenario(self, request: dict[str, Any]) -> dict[str, Any]:
+        body = self._native_project_draft(request, label="APEX Load goal-sizing request")
+        response = await self._request(
+            "POST",
+            "/api/v1/scenarios/size-from-goal",
+            json=body,
+            params=self._native_params(),
+        )
+        return _json_object(response, "APEX Load scenario goal sizing")
+
+    async def _native_capacity_preflight(
+        self, native_body: dict[str, Any]
+    ) -> tuple[list[str], list[str]]:
+        """Return native launch blockers and warnings for one materialized test body."""
+
+        self._configured_native_project_id()
+        estimate_response, preflight_response = await asyncio.gather(
+            self._request(
+                "POST",
+                "/api/v1/tests/estimate",
+                json=native_body,
+                params=self._native_params(),
+            ),
+            self._request(
+                "POST",
+                "/api/v1/tests/preflight",
+                json={"intent": "immediate", **native_body},
+                params=self._native_params(),
+            ),
+        )
+        estimate = _json_object(estimate_response, "APEX Load capacity estimate")
+        preflight = _json_object(preflight_response, "APEX Load launch preflight")
+        issues: list[str] = []
+        warnings: list[str] = []
+        for warning in _provider_list_field(
+            preflight,
+            "warnings",
+            "APEX Load launch preflight",
+            max_items=_MAX_PROVIDER_MESSAGES,
+            required=False,
+        ):
+            if type(warning) is dict:
+                message = warning.get("message")
+                if type(message) is str:
+                    warnings.append(bounded_diagnostic(message, max_chars=2_048))
+        if not _provider_boolean(preflight, "start_now_allowed", "APEX Load launch preflight"):
+            if not _provider_boolean(preflight, "queue_allowed", "APEX Load launch preflight"):
+                for conflict in _provider_list_field(
+                    preflight,
+                    "blocking_conflicts",
+                    "APEX Load launch preflight",
+                    max_items=_MAX_PROVIDER_MESSAGES,
+                    required=False,
+                ):
+                    if type(conflict) is dict:
+                        message = conflict.get("message")
+                        if type(message) is str:
+                            issues.append(bounded_diagnostic(message, max_chars=2_048))
+                if not issues:
+                    issues.append("APEX Load launch preflight does not allow this workload")
+            else:
+                warnings.append("APEX Load will queue this workload until capacity is available")
+        recommendation = estimate.get("recommended_generators")
+        if type(recommendation) is int and recommendation > 0:
+            warnings.append(f"APEX Load capacity estimate recommends {recommendation} generators")
+        return issues, warnings
+
+    async def list_native_schedules(self, scenario_id: str) -> list[dict[str, Any]]:
+        self._configured_native_project_id()
+        safe_id = self._native_id(scenario_id, label="scenario id")
+        await self.get_native_scenario(safe_id)
+        response = await self._request(
+            "GET", f"/api/v1/scenarios/{safe_id}/schedules", params=self._native_params()
+        )
+        data = _json_object(response, "GET APEX Load scenario schedules")
+        schedules = _provider_list_field(
+            data,
+            "schedules",
+            "GET APEX Load scenario schedules",
+            max_items=_MAX_NATIVE_CONTROL_ROWS,
+        )
+        result = [dict(schedule) for schedule in schedules]
+        for schedule in result:
+            self._require_native_project(schedule, context="schedule list response")
+        return result
+
+    async def _get_native_schedule(self, scenario_id: str, schedule_id: str) -> dict[str, Any]:
+        safe_scenario_id = self._native_id(scenario_id, label="scenario id")
+        safe_schedule_id = self._native_id(schedule_id, label="schedule id")
+        schedules = await self.list_native_schedules(safe_scenario_id)
+        for schedule in schedules:
+            if schedule.get("id") == safe_schedule_id:
+                return schedule
+        raise KeyError(f"APEX Load schedule {safe_schedule_id!r} not found")
+
+    async def create_native_schedule(
+        self, scenario_id: str, draft: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._configured_native_project_id()
+        safe_id = self._native_id(scenario_id, label="scenario id")
+        await self.get_native_scenario(safe_id)
+        response = await self._request(
+            "POST",
+            f"/api/v1/scenarios/{safe_id}/schedules",
+            json=self._native_project_draft(draft, label="APEX Load schedule draft"),
+            params=self._native_params(),
+        )
+        schedule = _json_object(response, "POST APEX Load scenario schedule")
+        self._require_native_project(schedule, context="created schedule")
+        return schedule
+
+    async def update_native_schedule(
+        self,
+        scenario_id: str,
+        schedule_id: str,
+        draft: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        self._configured_native_project_id()
+        safe_scenario_id = self._native_id(scenario_id, label="scenario id")
+        safe_schedule_id = self._native_id(schedule_id, label="schedule id")
+        await self._get_native_schedule(safe_scenario_id, safe_schedule_id)
+        body = self._native_project_draft(draft, label="APEX Load schedule draft")
+        if expected_revision is not None:
+            if type(expected_revision) is not int or not 0 <= expected_revision <= 1_000_000_000:
+                raise ValueError("expected schedule revision is invalid")
+            body.setdefault("expected_revision", expected_revision)
+        response = await self._request(
+            "PUT",
+            f"/api/v1/scenarios/{safe_scenario_id}/schedules/{safe_schedule_id}",
+            json=body,
+            params=self._native_params(),
+        )
+        schedule = _json_object(response, "PUT APEX Load scenario schedule")
+        self._require_native_project(schedule, context="updated schedule")
+        return schedule
+
+    async def delete_native_schedule(self, scenario_id: str, schedule_id: str) -> None:
+        self._configured_native_project_id()
+        safe_scenario_id = self._native_id(scenario_id, label="scenario id")
+        safe_schedule_id = self._native_id(schedule_id, label="schedule id")
+        await self._get_native_schedule(safe_scenario_id, safe_schedule_id)
+        await self._request(
+            "DELETE",
+            f"/api/v1/scenarios/{safe_scenario_id}/schedules/{safe_schedule_id}",
+            params=self._native_params(),
+        )
+
+    async def list_native_schedule_occurrences(
+        self, scenario_id: str, schedule_id: str
+    ) -> list[dict[str, Any]]:
+        self._configured_native_project_id()
+        safe_scenario_id = self._native_id(scenario_id, label="scenario id")
+        safe_schedule_id = self._native_id(schedule_id, label="schedule id")
+        await self._get_native_schedule(safe_scenario_id, safe_schedule_id)
+        response = await self._request(
+            "GET",
+            f"/api/v1/scenarios/{safe_scenario_id}/schedules/{safe_schedule_id}/occurrences",
+            params=self._native_params(limit=250, offset=0),
+        )
+        data = _json_object(response, "GET APEX Load schedule occurrences")
+        occurrences = _provider_list_field(
+            data,
+            "occurrences",
+            "GET APEX Load schedule occurrences",
+            max_items=250,
+        )
+        result = [dict(occurrence) for occurrence in occurrences]
+        for occurrence in result:
+            self._require_native_project(occurrence, context="schedule occurrence response")
+        return result
+
+    async def decide_native_schedule_approval(
+        self, scenario_id: str, schedule_id: str, approval_id: str, *, approved: bool
+    ) -> dict[str, Any]:
+        self._configured_native_project_id()
+        safe_scenario_id = self._native_id(scenario_id, label="scenario id")
+        safe_schedule_id = self._native_id(schedule_id, label="schedule id")
+        safe_approval_id = self._native_id(approval_id, label="schedule approval id")
+        await self._get_native_schedule(safe_scenario_id, safe_schedule_id)
+        decision = "approve" if approved else "reject"
+        response = await self._request(
+            "POST",
+            f"/api/v1/scenarios/{safe_scenario_id}/schedules/{safe_schedule_id}/approvals/"
+            f"{safe_approval_id}/{decision}",
+            params=self._native_params(),
+        )
+        approval = _json_object(response, "APEX Load schedule approval")
+        self._require_native_project(approval, context="schedule approval response")
+        return approval
+
+    async def native_schedule_health(self) -> dict[str, Any]:
+        self._configured_native_project_id()
+        response = await self._request(
+            "GET", "/api/v1/schedules/health", params=self._native_params()
+        )
+        return _json_object(response, "APEX Load schedule health")
+
+    async def native_run_calendar(self) -> dict[str, Any]:
+        self._configured_native_project_id()
+        response = await self._request("GET", "/api/v1/run-calendar", params=self._native_params())
+        return _json_object(response, "APEX Load run calendar")
+
+    async def list_native_runs(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        self._configured_native_project_id()
+        runs: list[dict[str, Any]] = []
+        for offset in range(0, _MAX_NATIVE_CONTROL_ROWS, _TEST_LIST_PAGE_SIZE):
+            response = await self._request(
+                "GET",
+                "/api/v1/tests",
+                params=self._native_params(
+                    summary=True,
+                    active_only=active_only,
+                    limit=_TEST_LIST_PAGE_SIZE,
+                    offset=offset,
+                ),
+            )
+            data = _json_object(response, "GET APEX Load tests")
+            page = _provider_list_field(
+                data, "tests", "GET APEX Load tests", max_items=_TEST_LIST_PAGE_SIZE
+            )
+            for test in page:
+                _provider_identifier(test.get("id"), "native test list response field 'id'")
+                self._require_native_project(test, context="native test list response")
+                runs.append(dict(test))
+            total = _provider_total(data, len(page), "GET APEX Load tests")
+            if total is None or len(runs) >= total or len(page) < _TEST_LIST_PAGE_SIZE:
+                return runs
+        raise RuntimeError("APEX Load native test list exceeds the reconciliation limit")
+
+    async def get_native_run(self, run_id: str) -> dict[str, Any]:
+        return await self._get_native_test(run_id, context="native run response")
+
+    async def native_run_metrics(self, run_id: str) -> dict[str, Any]:
+        safe_id = self._native_id(run_id, label="test id")
+        await self._get_native_test(safe_id, context="native metrics test response")
+        response = await self._request(
+            "GET",
+            f"/api/v1/tests/{safe_id}/metrics",
+            params=self._native_params(),
+            not_found=f"APEX Load test {safe_id!r} not found",
+        )
+        return _json_object(response, "GET APEX Load test metrics")
+
+    async def native_run_error_evidence(self, run_id: str, signature: str) -> dict[str, Any]:
+        safe_id = self._native_id(run_id, label="test id")
+        safe_signature = self._native_id(signature, label="error signature")
+        await self._get_native_test(safe_id, context="native error evidence test response")
+        response = await self._request(
+            "GET",
+            f"/api/v1/tests/{safe_id}/errors/evidence",
+            params=self._native_params(signature=safe_signature),
+            not_found=f"APEX Load test {safe_id!r} not found",
+        )
+        return _json_object(response, "GET APEX Load live error evidence")
+
+    def _require_native_project(self, resource: dict[str, Any], *, context: str) -> None:
+        project_id = self._configured_native_project_id()
+        if resource.get("project_id") != project_id:
+            raise RuntimeError(
+                f"apex load {context} returned a resource from an unexpected project"
+            )
+
     # ── port surface ──────────────────────────────────────────────────────────
 
     async def validate(self, spec: LoadTestSpec) -> ValidationReport:
@@ -1013,6 +1535,7 @@ class ApexLoadExecutionEngine:
                 issues=["load test specification failed structural validation"],
             )
         issues: list[str] = []
+        warnings: list[str] = []
         if spec.vusers < 1:
             issues.append("vusers must be >= 1")
         if spec.duration_s <= 0:
@@ -1057,7 +1580,7 @@ class ApexLoadExecutionEngine:
                 "(or provide script_refs)"
             )
         if issues:
-            return ValidationReport(ok=False, issues=issues)
+            return ValidationReport(ok=False, issues=issues, warnings=warnings)
 
         drafts = inline_scripts if spec.script_refs else [_default_script(spec)]
         for script in drafts:
@@ -1090,7 +1613,27 @@ class ApexLoadExecutionEngine:
                     issues,
                     _provider_messages(data, "issues", "script validation"),
                 )
-        return ValidationReport(ok=not issues, issues=issues)
+        if not issues and self._native_control_enabled and named_refs and not inline_scripts:
+            native_body = _test_request_body(
+                f"apex-preflight:{spec.idempotency_key}",
+                spec,
+                [ref for _, ref in named_refs],
+            )
+            if self._project_id is not None:
+                native_body["project_id"] = self._project_id
+            try:
+                native_issues, native_warnings = await self._native_capacity_preflight(native_body)
+            except ValueError as exc:
+                issues.append(bounded_diagnostic(exc, max_chars=2_048))
+            else:
+                _extend_validation_issues(issues, native_issues)
+                _extend_validation_issues(warnings, native_warnings)
+        elif not issues and self._native_control_enabled:
+            warnings.append(
+                "APEX Load capacity preflight will run after generated or inline scripts "
+                "materialize"
+            )
+        return ValidationReport(ok=not issues, issues=issues, warnings=warnings)
 
     async def provision(self, spec: LoadTestSpec) -> EngineHandle:
         """Get-or-create by spec.idempotency_key via the remote test NAME
@@ -1147,6 +1690,7 @@ class ApexLoadExecutionEngine:
         if self._project_id:
             extras["project_id"] = self._project_id
         external_run_id = _provider_identifier(test.get("id"), "test response field 'id'")
+        extras["console_url"] = self.native_console_url(external_run_id)
         return EngineHandle(
             engine=PROVIDER,
             connection_id=self._conn.id,
@@ -1211,10 +1755,23 @@ class ApexLoadExecutionEngine:
             message += " (unmapped status; treating as running)"
         if test.get("error"):
             message = bounded_diagnostic(f"{message}: {bounded_diagnostic(test['error'])}")
+        live_stats = _live_stats_from(test)
+        if self._native_control_enabled and phase not in TERMINAL_ENGINE_PHASES:
+            try:
+                metrics = await self.native_run_metrics(run_id)
+                raw_metrics = metrics.get("metrics")
+                if isinstance(raw_metrics, dict):
+                    live_stats = _live_stats_from({"live_metrics": raw_metrics})
+            except Exception as exc:  # metrics are additive; status remains authoritative
+                logger.warning(
+                    "apex_load.metrics_fallback",
+                    external_run_id=run_id,
+                    error=bounded_diagnostic(exc),
+                )
         return EngineRunStatus(
             phase=phase,
             progress_pct=_progress_pct(test, phase),
-            live_stats=_live_stats_from(test),
+            live_stats=live_stats,
             message=message,
         )
 
@@ -1292,41 +1849,110 @@ class ApexLoadExecutionEngine:
     async def _collect_artifacts(
         self, handle: EngineHandle, store: ArtifactStorePort
     ) -> list[dict[str, Any]]:
-        """Stream the archive report JSON into the artifact store. Runs aborted
-        before start never archive: a 404 yields zero artifacts, not an error."""
+        """Stream bounded archive evidence; native control enables richer evidence.
+
+        The raw provider ZIP is deliberately never fetched or re-hosted.  Every
+        object gets its own cap and all objects share the configured aggregate
+        budget, so an unusually rich native archive cannot bypass collection
+        limits through many individually-valid files.
+        """
         run_id = self._run_id(handle)
         await self._require_owned_test(
             handle,
             run_id=run_id,
             context="artifact collection preflight response",
         )
+        return await self._collect_archive_evidence(run_id, handle.idempotency_key, store)
+
+    async def collect_native_artifacts(
+        self, run_id: str, idempotency_key: str, store: ArtifactStorePort
+    ) -> list[dict[str, Any]]:
+        """Collect native-run evidence after proving the configured project boundary."""
+
+        artifacts: list[dict[str, Any]] | None = None
         try:
-            response = await self._stream_download(
-                f"/api/v1/tests/{run_id}/archive/report",
-                not_found=f"apex load archive for test {run_id!r} not found",
-            )
-        except KeyError:
-            logger.warning("apex_load.archive_missing", external_run_id=run_id)
-            return []
-        key = engine_artifact_key(handle.idempotency_key, "apex-load-report.json")
-        try:
-            stored = await store.put_stream(
-                key,
-                response.aiter_raw(),
-                content_type="application/json",
-                max_bytes=self._max_report_bytes,
-            )
-        finally:
-            await close_response_definitively(response)
-        ref = ArtifactRef(
-            kind="engine_report",
-            name="apex-load-report.json",
-            uri=stored.uri,
-            key=stored.key,
-            media_type="application/json",
-            summary=f"APEX Load archive report for test {run_id}",
+            async with asyncio.timeout(_COLLECTION_TOTAL_TIMEOUT_S):
+                self._configured_native_project_id()
+                safe_run_id = self._native_id(run_id, label="test id")
+                safe_idempotency_key = self._native_id(
+                    idempotency_key, label="artifact idempotency key"
+                )
+                response = await self._request(
+                    "GET",
+                    f"/api/v1/tests/{safe_run_id}",
+                    params=self._native_params(),
+                    not_found=f"apex load test {safe_run_id!r} not found",
+                )
+                test = _json_object(response, f"GET /api/v1/tests/{safe_run_id}")
+                self._require_test_resource_identity(
+                    test,
+                    run_id=safe_run_id,
+                    context="native artifact collection preflight response",
+                )
+                artifacts = await self._collect_archive_evidence(
+                    safe_run_id, safe_idempotency_key, store
+                )
+        except TimeoutError:
+            raise RuntimeError(
+                "APEX Load artifact collection exceeded its total deadline"
+            ) from None
+        if artifacts is None:  # pragma: no cover - collection contract invariant
+            raise RuntimeError("APEX Load artifact collection returned no result")
+        return artifacts
+
+    async def _collect_archive_evidence(
+        self, run_id: str, idempotency_key: str, store: ArtifactStorePort
+    ) -> list[dict[str, Any]]:
+        """Collect only the bounded JSON evidence set, never the raw archive ZIP."""
+        archive_specs = (
+            _NATIVE_ARCHIVE_EVIDENCE if self._native_control_enabled else (_ARCHIVE_REPORT,)
         )
-        return [ref.model_dump(mode="json")]
+        remaining = self._max_report_bytes
+        per_file_limit = (
+            self._max_report_bytes
+            if not self._native_control_enabled
+            else max(1, self._max_report_bytes // len(_NATIVE_ARCHIVE_EVIDENCE))
+        )
+        artifacts: list[dict[str, Any]] = []
+        for endpoint, kind, name, description in archive_specs:
+            if remaining <= 0:
+                logger.warning("apex_load.archive_budget_exhausted", external_run_id=run_id)
+                break
+            try:
+                response = await self._stream_download(
+                    f"/api/v1/tests/{run_id}/archive/{endpoint}",
+                    not_found=f"apex load archive for test {run_id!r} not found",
+                    params=self._native_params(),
+                )
+            except KeyError:
+                if endpoint == "report" and not artifacts:
+                    logger.warning("apex_load.archive_missing", external_run_id=run_id)
+                continue
+            key = engine_artifact_key(idempotency_key, name)
+            try:
+                stored = await store.put_stream(
+                    key,
+                    response.aiter_raw(),
+                    content_type="application/json",
+                    max_bytes=min(remaining, per_file_limit),
+                )
+            finally:
+                await close_response_definitively(response)
+            if stored.size > remaining:
+                raise RuntimeError(
+                    "APEX Load artifact store exceeded the aggregate collection limit"
+                )
+            remaining -= stored.size
+            ref = ArtifactRef(
+                kind=kind,
+                name=name,
+                uri=stored.uri,
+                key=stored.key,
+                media_type="application/json",
+                summary=f"{description} for test {run_id}",
+            )
+            artifacts.append(ref.model_dump(mode="json"))
+        return artifacts
 
     async def fetch_summary(self, handle: EngineHandle) -> TestResultSummary:
         """passed/breaches from GET /tests/{id}/sla-status; KPIs from the archive
@@ -1335,6 +1961,7 @@ class ApexLoadExecutionEngine:
         sla_response = await self._request(
             "GET",
             f"/api/v1/tests/{run_id}/sla-status",
+            params=self._native_params(),
             not_found=f"apex load test {run_id!r} not found",
         )
         sla = _json_object(sla_response, f"GET /api/v1/tests/{run_id}/sla-status")
@@ -1354,6 +1981,7 @@ class ApexLoadExecutionEngine:
             report_response = await self._stream_download(
                 f"/api/v1/tests/{run_id}/archive/report",
                 not_found=f"apex load archive for test {run_id!r} not found",
+                params=self._native_params(),
             )
         except KeyError:
             kpis = await self._live_kpis(run_id)
@@ -1423,6 +2051,7 @@ class ApexLoadExecutionEngine:
             response = await self._request(
                 "GET",
                 f"/api/v1/tests/{run_id}",
+                params=self._native_params(),
                 not_found=f"apex load test {run_id!r} not found",
             )
         except KeyError:
@@ -1652,28 +2281,19 @@ class ApexLoadExecutionEngine:
                 )
             )
 
-        ramp = format_go_duration(spec.ramp_s)
-        groups = [
-            {
-                "name": f"group-{index + 1}",
-                "script_id": script_id,
-                "vusers": vusers,
-                "ramp_up": ramp,
-            }
-            for index, (script_id, vusers) in enumerate(
-                zip(script_ids, _split_vusers(spec.vusers, len(script_ids)), strict=True)
-            )
-        ]
-        body: dict[str, Any] = {
-            "name": name,
-            "duration": format_go_duration(spec.duration_s),
-            "groups": groups,
-        }
+        body = _test_request_body(name, spec, script_ids)
         if self._project_id:
             body["project_id"] = self._project_id
-        goal = _goal_config_from_slas(spec.slas)
-        if goal:
-            body["goal_config"] = goal
+        if self._native_control_enabled:
+            preflight_issues, preflight_warnings = await self._native_capacity_preflight(body)
+            if preflight_issues:
+                raise ValueError(bounded_diagnostic("; ".join(preflight_issues), max_chars=2_048))
+            if preflight_warnings:
+                logger.info(
+                    "apex_load.native_preflight",
+                    test_name=name,
+                    warning_count=len(preflight_warnings),
+                )
         idempotency_key = require_bounded_credential(
             spec.idempotency_key,
             label="apex_load test idempotency key",

@@ -433,6 +433,48 @@ async def test_start_run_builds_config_and_input() -> None:
     }
 
 
+async def test_start_run_runs_pre_start_hook_before_creating_run() -> None:
+    events: list[str] = []
+
+    class OrderedRuns(FakeRuns):
+        async def create(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+            events.append("run")
+            return await super().create(*args, **kwargs)
+
+    client = FakeClient()
+    client.runs = OrderedRuns()
+
+    async def collect_artifacts(thread_id: str) -> list[dict[str, Any]]:
+        assert thread_id == "thr-1"
+        events.append("artifacts")
+        return [
+            {
+                "id": "apex-load-artifact-1",
+                "source": "apex_load",
+                "title": "Native report",
+                "ref": "/v1/artifacts/engine-runs/hash/report.json",
+            }
+        ]
+
+    await PipelineReadService(client).start_run(
+        title="Analyze",
+        project_id="proj-1",
+        context_packets=[{"id": "existing", "source": "operator", "title": "Context"}],
+        before_run_start=collect_artifacts,
+    )
+
+    assert events == ["artifacts", "run"]
+    assert client.runs.args[2]["context_packets"] == [
+        {"id": "existing", "source": "operator", "title": "Context"},
+        {
+            "id": "apex-load-artifact-1",
+            "source": "apex_load",
+            "title": "Native report",
+            "ref": "/v1/artifacts/engine-runs/hash/report.json",
+        },
+    ]
+
+
 @pytest.mark.parametrize("boundary", ["thread", "run"])
 async def test_start_run_rejects_credential_shaped_native_ids(boundary: str) -> None:
     client = FakeClient()

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.adapters.registry import ConnectionConfig, PortKind
 from apex.persistence.models import (
+    ApexLoadNativeRun,
     ArtifactReference,
     ArtifactUploadIntent,
     Connection,
@@ -32,7 +33,10 @@ from apex.services.connection_credentials import (
     reject_raw_secret_options,
     validate_secret_ref,
 )
-from apex.services.connections import validate_scoped_work_tracking_config
+from apex.services.connections import (
+    validate_apex_load_native_control_config,
+    validate_scoped_work_tracking_config,
+)
 
 _TERMINAL_ENGINE_STATUSES = ("completed", "failed", "aborted")
 _CONNECTION_TEXT_FIELDS = frozenset(
@@ -108,6 +112,17 @@ def _validate_scoped_work_tracking_values(values: dict[str, Any]) -> None:
     if base_url is not None:
         options.setdefault("base_url", base_url)
     validate_scoped_work_tracking_config(
+        ConnectionConfig(
+            id="repository-validation",
+            kind=kind,
+            provider=values["provider"],
+            name=values["name"],
+            options=options,
+            secret_ref=values["secret_ref"],
+        ),
+        internal_project_id=values["project_id"],
+    )
+    validate_apex_load_native_control_config(
         ConnectionConfig(
             id="repository-validation",
             kind=kind,
@@ -334,6 +349,13 @@ class ConnectionsRepository:
             )
             if legacy_active_run_id is not None:
                 return "active engine runs"
+            native_run_id = await self._session.scalar(
+                select(ApexLoadNativeRun.id)
+                .where(ApexLoadNativeRun.connection_id == conn.id)
+                .limit(1)
+            )
+            if native_run_id is not None:
+                return "mirrored APEX Load native runs"
         if conn.kind == "work_tracking":
             pending_mutation_id = await self._session.scalar(
                 select(WorkItemMutation.id)

@@ -75,6 +75,7 @@ export function RunRail({
   const groups = useMemo(() => groupArtifacts(state), [state])
   const approvals = useMemo(() => approvalHistory(state), [state])
   const gate = interrupts[0]
+  const consoleUrl = state.engine_handle?.console_url
   // The hydrated interrupt always wins; the hint only bridges the poll gap.
   const hint = gate ? null : normalizeGateHint(pendingGateHint)
 
@@ -183,6 +184,16 @@ export function RunRail({
               '—'
             )}
           </dd>
+          {consoleUrl && (
+            <>
+              <dt>Console</dt>
+              <dd>
+                <a href={consoleUrl} target="_blank" rel="noreferrer">
+                  Open in APEX Load
+                </a>
+              </dd>
+            </>
+          )}
           <dt>Created</dt>
           <dd>{formatTimestamp(detail.created_at)}</dd>
           <dt>Updated</dt>

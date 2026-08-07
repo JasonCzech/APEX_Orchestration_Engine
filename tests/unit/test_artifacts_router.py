@@ -1527,6 +1527,37 @@ def test_get_engine_artifact_uses_exact_durable_reference_after_thread_retention
     assert resolver.calls == [(PortKind.ARTIFACT_STORE, "artifacts-p1", "p1")]
 
 
+def test_get_native_engine_artifact_uses_exact_reference_without_engine_run() -> None:
+    key = "engine-runs/" + ("a" * 64) + "/apex-load-report.json"
+    selected = IsolatedArtifactStore()
+    selected.objects[key] = b"native durable"
+    resolver = FakeConnectionResolver(IsolatedArtifactStore())
+    resolver.stores["artifacts-p1"] = selected
+    references = FakeArtifactReferencesRepository()
+    references.rows[key] = artifact_reference_row(
+        key,
+        connection_id="artifacts-p1",
+        kind="engine_report",
+        thread_id="native-report-thread",
+        project_id="p1",
+        size_bytes=len(b"native durable"),
+        content_sha256=sha256(b"native durable").hexdigest(),
+    )
+    app = make_app(
+        FakeDocumentsRepository(),
+        identity([ScopeRef(project_id="p1")]),
+        resolver=resolver,
+        artifact_references=references,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/v1/artifacts/{key}")
+
+    assert response.status_code == 200
+    assert response.content == b"native durable"
+    assert resolver.calls == [(PortKind.ARTIFACT_STORE, "artifacts-p1", "p1")]
+
+
 def test_ambiguous_durable_reference_is_hidden_from_app_only_scope() -> None:
     key = "transcripts/t-legacy/execution/attempt-1.txt"
     put(key, b"legacy")

@@ -13,6 +13,7 @@ from apex.app.logging import configure_logging
 from apex.domain.diagnostics import safe_type_name
 from apex.persistence.db import dispose_engine
 from apex.persistence.schema_readiness import validate_schema_head
+from apex.services.apex_load_native import run_apex_load_native_reconciler
 from apex.services.artifact_references import run_artifact_upload_reconciler
 from apex.services.connections import get_connection_resolver
 from apex.services.documents import run_document_deletion_reconciler
@@ -231,7 +232,7 @@ def _assert_local_runtime_ready(app: FastAPI) -> None:
         if isinstance(raw_workers, (list, tuple))
         else ()
     )
-    if len(workers) != 3 or any(task.done() for task in workers):
+    if len(workers) != 4 or any(task.done() for task in workers):
         raise RuntimeNotReadyError("a required reconciliation worker is unavailable")
     heartbeats = getattr(app.state, "reconciler_heartbeats", None)
     if not isinstance(heartbeats, dict):
@@ -281,6 +282,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             "document-deletion-reconciler",
             "artifact-upload-reconciler",
             "work-item-mutation-reconciler",
+            "apex-load-native-reconciler",
         )
         app.state.reconciler_heartbeats = {worker_name: loop.time() for worker_name in worker_names}
 
@@ -308,6 +310,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     lambda: heartbeat(worker_names[2]),
                 ),
                 name=worker_names[2],
+            ),
+            asyncio.create_task(
+                run_apex_load_native_reconciler(
+                    deletion_stop,
+                    lambda: heartbeat(worker_names[3]),
+                ),
+                name=worker_names[3],
             ),
         ]
         app.state.reconciler_tasks = tuple(workers)

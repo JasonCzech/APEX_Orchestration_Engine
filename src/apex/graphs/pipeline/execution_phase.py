@@ -986,19 +986,24 @@ def _validated_engine_report(value: Any) -> ValidationReport:
     payload = _exact_provider_payload(
         value,
         model_type=ValidationReport,
-        allowed=frozenset({"ok", "issues"}),
+        allowed=frozenset({"ok", "issues", "warnings"}),
         required=frozenset(),
         label="engine validation report",
     )
     issues = payload.get("issues", [])
+    warnings = payload.get("warnings", [])
     if (
         type(payload.get("ok", True)) is not bool
         or type(issues) is not list
         or len(issues) > 128
         or any(not _provider_text(issue, max_chars=2_048) for issue in issues)
+        or type(warnings) is not list
+        or len(warnings) > 128
+        or any(not _provider_text(warning, max_chars=2_048) for warning in warnings)
     ):
         raise ValueError("engine validation report is invalid") from None
     payload["issues"] = list(issues)
+    payload["warnings"] = list(warnings)
     if contains_credential_material(payload, max_nodes=160, max_total_chars=300_000):
         raise ValueError("engine validation report must not contain credential material") from None
     validated: ValidationReport | None = None
@@ -1938,6 +1943,12 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
             # Provider methods receive isolated models. Validation/provisioning may
             # inspect but never rewrite the checkpointed target or idempotency key.
             report = _validated_engine_report(await adapter.validate(spec.model_copy(deep=True)))
+            if report.warnings:
+                logger.info(
+                    "engine.preflight_warnings",
+                    engine=cfg.engine,
+                    warning_count=len(report.warnings),
+                )
             if not report.ok:
                 return list(report.issues), None, False
             raw_provisioned = await adapter.provision(spec.model_copy(deep=True))

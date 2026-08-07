@@ -68,7 +68,6 @@ production build clean.
 
 | # | Gap | Where | Effort |
 |---|---|---|---|
-| F1 | "Open in APEX Load ↗" external link: `EngineHandle` carries no console URL (`engine/connection_id/external_run_id/extras` only — `src/apex/domain/pipeline.py`). RunRail shows engine + external_run_id chip without a link. Needs the backend to surface a console URL (e.g. in `extras`) before the UI can link out. | backend `apex_load` adapter + `features/runs/RunRail.tsx` | ~0.5 day (backend-led) |
 | F2 | `/v1/engines/runs*` read surface unused: `queryKeys.engines.*` was reserved (append-only factory) but no screen reads the engine-runs projection (`listEngineRuns`/`getEngineRuns`) or the engine-level kill (`abortEngineRun`). Run-level abort (fix 4) covers the legacy abort capability; an engine-run history panel would be additive. | new panel on run detail or admin | ~1 day |
 | F3 | Runs-grid `engine=`/`from=`/`to=` filters from the plan's route table: the `/v1/pipelines` façade only supports `status/q/project/limit/offset` (`src/apex/routers/pipelines.py`). Backend filter params first, then `runsFilters.ts` is built to extend. | backend façade + `features/runs/runsFilters.ts` | ~1 day |
 | F4 | Live playground output: `POST /v1/prompts/{id}/test` 202 renders an accepted card + run link; streaming the playground run inline is a noted follow-up in `PromptPlaygroundPage.tsx`. | `features/prompts/PromptPlaygroundPage.tsx` reusing `usePipelineStream` | ~1 day |

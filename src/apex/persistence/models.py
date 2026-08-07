@@ -652,6 +652,107 @@ class EngineRun(Base):
     summary: Mapped[dict[str, Any] | None] = mapped_column(JsonColumn)
 
 
+# ── APEX Load native control-plane mirror ────────────────────────────────────
+
+
+class ApexLoadNativeScenario(Base):
+    """A provider-owned scenario mirrored for audit and reconciliation only."""
+
+    __tablename__ = "apex_load_native_scenarios"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "connection_version", "remote_project_id", "remote_id"),
+        Index("ix_apex_load_native_scenarios_project_seen", "project_id", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"))
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    project_id: Mapped[str] = mapped_column(String(255))
+    remote_project_id: Mapped[str] = mapped_column(String(255))
+    remote_id: Mapped[str] = mapped_column(String(255))
+    revision: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(255))
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ApexLoadNativeSchedule(Base):
+    """A provider-owned schedule mirrored without becoming a second scheduler."""
+
+    __tablename__ = "apex_load_native_schedules"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "connection_version", "remote_project_id", "remote_id"),
+        Index("ix_apex_load_native_schedules_project_seen", "project_id", "last_seen_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"))
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    project_id: Mapped[str] = mapped_column(String(255))
+    remote_project_id: Mapped[str] = mapped_column(String(255))
+    remote_id: Mapped[str] = mapped_column(String(255))
+    scenario_remote_id: Mapped[str] = mapped_column(String(255))
+    revision: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(255))
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ApexLoadNativeRun(Base):
+    """Durable native-run import and exactly-once reporting-launch ledger."""
+
+    __tablename__ = "apex_load_native_runs"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "connection_version", "remote_project_id", "remote_id"),
+        Index("ix_apex_load_native_runs_project_started", "project_id", "started_at"),
+        Index("ix_apex_load_native_runs_launch", "terminal", "pipeline_status", "claimed_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"))
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    project_id: Mapped[str] = mapped_column(String(255))
+    remote_project_id: Mapped[str] = mapped_column(String(255))
+    remote_id: Mapped[str] = mapped_column(String(255))
+    scenario_remote_id: Mapped[str | None] = mapped_column(String(255))
+    schedule_remote_id: Mapped[str | None] = mapped_column(String(255))
+    revision: Mapped[int | None] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(64))
+    terminal: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    evidence: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    pipeline_status: Mapped[str] = mapped_column(String(32), default="pending")
+    pipeline_thread_id: Mapped[str | None] = mapped_column(String(255))
+    pipeline_run_id: Mapped[str | None] = mapped_column(String(255))
+    pipeline_launch_error: Mapped[str | None] = mapped_column(String(255))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 # ── Usage analytics (M6) ─────────────────────────────────────────────────────
 
 

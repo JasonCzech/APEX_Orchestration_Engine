@@ -585,11 +585,13 @@ async def _load_artifact_authorization_rows(
             namespace,
             allowed_scopes=allowed,
         )
-        if run is None:
-            return _ArtifactAuthorizationRows()
         reference = await repositories.artifact_references.get_exact(key)
+        if run is None and reference is not None and allowed is not None:
+            owner_run = await repositories.engine_runs.get_by_artifact_namespace(namespace)
+            if owner_run is not None:
+                return _ArtifactAuthorizationRows()
         return _ArtifactAuthorizationRows(
-            engine_run=_materialize_engine_run(run),
+            engine_run=_materialize_engine_run(run) if run is not None else None,
             artifact_reference=(
                 _materialize_artifact_reference(reference) if reference is not None else None
             ),
@@ -688,6 +690,9 @@ async def _authorize_materialized_artifact(
                 project_id=row.project_id,
                 connection_id=connection_id,
             )
+        durable_ref = rows.artifact_reference
+        if durable_ref is not None:
+            return _authorize_unbound_durable_engine_reference(key, identity, durable_ref)
         raise _artifact_not_found()
 
     if key.startswith(TRANSCRIPT_PREFIX):
@@ -752,6 +757,28 @@ def _authorize_durable_engine_reference(
         or not _reference_visible(identity, reference)
         or reference_connection_id is None
         or (run_connection_id is not None and run_connection_id != reference_connection_id)
+    ):
+        raise _artifact_not_found()
+    return AuthorizedArtifact(
+        media_type=FALLBACK_MEDIA_TYPE,
+        project_id=reference.project_id,
+        connection_id=reference_connection_id,
+        expected_size=reference.size_bytes,
+        content_sha256=reference.content_sha256,
+    )
+
+
+def _authorize_unbound_durable_engine_reference(
+    key: str,
+    identity: ConsumerIdentity,
+    reference: _ArtifactReferenceAuthorizationRow,
+) -> AuthorizedArtifact:
+    reference_connection_id = _connection_id(reference.connection_id)
+    if (
+        reference.artifact_key != key
+        or not reference.kind.startswith("engine_")
+        or not _reference_visible(identity, reference)
+        or reference_connection_id is None
     ):
         raise _artifact_not_found()
     return AuthorizedArtifact(

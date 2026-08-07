@@ -20,7 +20,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterable, AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -38,7 +38,7 @@ from apex.domain.integrations import LoadTestSpec, SecretValue
 from apex.domain.pipeline import EngineHandle
 from apex.graphs.pipeline import execution_phase, phase_subgraph
 from apex.graphs.pipeline.state import PipelineState
-from apex.ports.artifact_store import StoredArtifact, engine_artifact_key
+from apex.ports.artifact_store import ArtifactStorePort, StoredArtifact, engine_artifact_key
 from apex.ports.execution_engine import EngineProviderRunNotFoundError, EngineRunPhase
 
 BASE = "https://apexload.acme.test"
@@ -65,6 +65,138 @@ def make_adapter(**option_overrides: object) -> ApexLoadExecutionEngine:
 def test_constructor_rejects_report_limit_above_server_ceiling() -> None:
     with pytest.raises(ValueError, match="max_report_bytes"):
         make_adapter(max_report_bytes=apex_load_engine._HARD_MAX_REPORT_BYTES + 1)
+
+
+@pytest.mark.parametrize(
+    "console_url",
+    [
+        "https://user:secret@apexload.acme.test",
+        f"{BASE}?token=secret",
+        f"{BASE}#unsafe",
+        "https://apexload.acme.test:99999",
+        f"https://apexload.acme.test/{'x' * 1_800}",
+    ],
+)
+def test_constructor_rejects_unsafe_console_url(console_url: str) -> None:
+    with pytest.raises(ValueError, match="console_url"):
+        make_adapter(console_url=console_url)
+
+
+def test_native_console_url_derives_a_safe_test_link() -> None:
+    adapter = make_adapter(console_url="https://console.acme.test/load")
+    assert adapter.native_console_url(TEST_ID) == ("https://console.acme.test/load/#/test/test-789")
+    assert adapter.native_console_url("tenant:test-789") == (
+        "https://console.acme.test/load/#/test/tenant:test-789"
+    )
+
+
+def test_native_control_requires_a_configured_provider_project() -> None:
+    with pytest.raises(ValueError, match=r"native control requires options\['project_id'\]"):
+        make_adapter(native_control_enabled=True, project_id=None)
+
+
+async def test_native_artifact_collection_enforces_an_aggregate_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = make_adapter(native_control_enabled=True)
+
+    async def request(*_args: object, **_kwargs: object) -> httpx.Response:
+        return httpx.Response(200, json=managed_test_json())
+
+    async def collect(*_args: object, **_kwargs: object) -> list[dict[str, Any]]:
+        await asyncio.sleep(1)
+        return []
+
+    monkeypatch.setattr(adapter, "_request", request)
+    monkeypatch.setattr(adapter, "_collect_archive_evidence", collect)
+    monkeypatch.setattr(apex_load_engine, "_COLLECTION_TOTAL_TIMEOUT_S", 0.001)
+
+    with pytest.raises(RuntimeError, match="artifact collection exceeded its total deadline"):
+        await adapter.collect_native_artifacts(
+            TEST_ID, "native-artifacts-1", cast(ArtifactStorePort, object())
+        )
+
+
+@respx.mock
+async def test_native_scenario_forces_configured_provider_project() -> None:
+    def response(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["project_id"] == "proj-123"
+        return httpx.Response(201, json={"id": "scenario-1", "project_id": "proj-123"})
+
+    route = respx.post(f"{BASE}/api/v1/scenarios").mock(side_effect=response)
+
+    scenario = await make_adapter(native_control_enabled=True).create_native_scenario(
+        {"name": "checkout"}
+    )
+
+    assert route.called
+    assert scenario["id"] == "scenario-1"
+    assert route.calls.last.request.url.params["project_id"] == "proj-123"
+
+
+@respx.mock
+async def test_native_scenario_rejects_caller_supplied_foreign_project() -> None:
+    route = respx.post(f"{BASE}/api/v1/scenarios").mock(
+        return_value=httpx.Response(201, json={"id": "scenario-1", "project_id": "proj-123"})
+    )
+
+    with pytest.raises(ValueError, match="cannot target another APEX Load project"):
+        await make_adapter(native_control_enabled=True).create_native_scenario(
+            {"name": "checkout", "project_id": "other-project"}
+        )
+
+    assert not route.called
+
+
+@respx.mock
+async def test_native_schedule_mutation_rejects_a_foreign_schedule_before_delete() -> None:
+    scenario_route = respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(200, json={"id": "scenario-1", "project_id": "proj-123"})
+    )
+    schedule_route = respx.get(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(
+            200,
+            json={"schedules": [{"id": "schedule-1", "project_id": "other-project"}]},
+        )
+    )
+    delete_route = respx.delete(f"{BASE}/api/v1/scenarios/scenario-1/schedules/schedule-1").mock(
+        return_value=httpx.Response(204)
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected project"):
+        await make_adapter(native_control_enabled=True).delete_native_schedule(
+            "scenario-1", "schedule-1"
+        )
+
+    assert scenario_route.calls.last.request.url.params["project_id"] == "proj-123"
+    assert schedule_route.calls.last.request.url.params["project_id"] == "proj-123"
+    assert not delete_route.called
+
+
+@respx.mock
+async def test_native_metrics_reject_foreign_test_before_metrics_read() -> None:
+    test_route = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(project_id="other-project"))
+    )
+    metrics_route = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/metrics").mock(
+        return_value=httpx.Response(200, json={"metrics": live_metrics_json()})
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected project"):
+        await make_adapter(native_control_enabled=True).native_run_metrics(TEST_ID)
+
+    assert test_route.calls.last.request.url.params["project_id"] == "proj-123"
+    assert not metrics_route.called
+
+
+@respx.mock
+async def test_probe_uses_read_only_project_scoped_test_catalog() -> None:
+    route = respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+
+    assert await make_adapter().probe() == "authenticated APEX Load test catalog access"
+    assert route.calls.last.request.url.params["project_id"] == "proj-123"
 
 
 @pytest.mark.parametrize(
@@ -578,6 +710,89 @@ async def test_validate_named_ref_validates_existing_script() -> None:
     assert not report.ok
     assert any("script-gone" in issue for issue in report.issues)
     assert_all_calls_authed()
+
+
+@respx.mock
+async def test_native_validation_scopes_capacity_preflight_to_provider_project() -> None:
+    respx.post(f"{BASE}/api/v1/scripts/script-456/validate").mock(
+        return_value=httpx.Response(200, json=validation_response_json())
+    )
+    estimate = respx.post(f"{BASE}/api/v1/tests/estimate").mock(
+        return_value=httpx.Response(200, json={"recommended_generators": 2})
+    )
+    preflight = respx.post(f"{BASE}/api/v1/tests/preflight").mock(
+        return_value=httpx.Response(
+            200,
+            json={"start_now_allowed": True, "warnings": []},
+        )
+    )
+
+    report = await make_adapter(native_control_enabled=True).validate(
+        make_spec(script_refs=["script-456"])
+    )
+
+    assert report.ok
+    assert estimate.calls.last.request.url.params["project_id"] == "proj-123"
+    assert preflight.calls.last.request.url.params["project_id"] == "proj-123"
+
+
+@respx.mock
+async def test_native_provision_preflights_after_generated_script_materializes() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    respx.post(f"{BASE}/api/v1/scripts").mock(side_effect=created_script_response("script-456"))
+    estimate = respx.post(f"{BASE}/api/v1/tests/estimate").mock(
+        return_value=httpx.Response(200, json={"recommended_generators": 2})
+    )
+    preflight = respx.post(f"{BASE}/api/v1/tests/preflight").mock(
+        return_value=httpx.Response(
+            200,
+            json={"start_now_allowed": False, "queue_allowed": True, "warnings": []},
+        )
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(201, json=managed_test_json())
+    )
+
+    await make_adapter(native_control_enabled=True).provision(make_spec())
+
+    assert estimate.called
+    assert preflight.called
+    assert create.called
+    assert estimate.calls.last.request.url.params["project_id"] == "proj-123"
+    assert preflight.calls.last.request.url.params["project_id"] == "proj-123"
+
+
+@respx.mock
+async def test_native_provision_blocks_disallowed_execution() -> None:
+    respx.get(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(200, json={"tests": [], "count": 0})
+    )
+    respx.post(f"{BASE}/api/v1/tests/estimate").mock(
+        return_value=httpx.Response(200, json={"recommended_generators": 2})
+    )
+    respx.post(f"{BASE}/api/v1/tests/preflight").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "start_now_allowed": False,
+                "queue_allowed": False,
+                "warnings": [],
+                "blocking_conflicts": [{"message": "capacity is unavailable"}],
+            },
+        )
+    )
+    create = respx.post(f"{BASE}/api/v1/tests").mock(
+        return_value=httpx.Response(201, json=managed_test_json())
+    )
+
+    with pytest.raises(ValueError, match="capacity is unavailable"):
+        await make_adapter(native_control_enabled=True).provision(
+            make_spec(script_refs=["script-456"])
+        )
+
+    assert not create.called
 
 
 # ── provision (contract req. 1: get-or-create by idempotency key) ─────────────
@@ -1548,7 +1763,7 @@ async def test_teardown_is_a_noop_and_never_raises() -> None:
 async def test_collect_artifacts_streams_archive_report() -> None:
     mock_owned_test()
     report = archive_report_json()
-    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+    archive = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
         return_value=httpx.Response(200, json=report)
     )
     store = RecordingStore()
@@ -1569,6 +1784,7 @@ async def test_collect_artifacts_streams_archive_report() -> None:
     assert ref["key"] == expected_key
     assert ref["media_type"] == "application/json"
     assert TEST_ID in (ref["summary"] or "")
+    assert archive.calls.last.request.url.params["project_id"] == "proj-123"
     assert_all_calls_authed()
 
 

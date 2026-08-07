@@ -15,6 +15,7 @@ scope visibility server-side. Verified against langgraph_sdk 0.4.2:
 import asyncio
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -554,6 +555,7 @@ class PipelineReadService:
         external_results: JsonDict | None = None,
         context_packets: list[JsonDict] | None = None,
         principal_id: str | None = None,
+        before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None = None,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
 
@@ -738,6 +740,7 @@ class PipelineReadService:
                     run_input=run_input,
                     run_configurable=run_configurable,
                     recursion_limit=recursion_limit,
+                    before_run_start=before_run_start,
                 )
         return await self._create_or_get_run(
             metadata=metadata,
@@ -748,6 +751,7 @@ class PipelineReadService:
             run_input=run_input,
             run_configurable=run_configurable,
             recursion_limit=recursion_limit,
+            before_run_start=before_run_start,
         )
 
     async def _create_or_get_run(
@@ -761,6 +765,7 @@ class PipelineReadService:
         run_input: JsonDict,
         run_configurable: JsonDict,
         recursion_limit: int,
+        before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None,
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
         thread: JsonDict | None = None
@@ -824,6 +829,14 @@ class PipelineReadService:
                     "run_id": existing_run_id,
                     "stream_url": native_run_stream_url(thread_id, existing_run_id),
                 }
+
+        if before_run_start is not None:
+            generated_context_packets = await before_run_start(thread_id)
+            if generated_context_packets:
+                existing_context_packets = run_input.get("context_packets", [])
+                run_input["context_packets"] = validate_context_packets(
+                    [*existing_context_packets, *generated_context_packets]
+                )
 
         run_id: str | None = None
         create_conflict = False

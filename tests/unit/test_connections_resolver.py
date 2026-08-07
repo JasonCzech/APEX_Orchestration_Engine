@@ -388,6 +388,50 @@ async def test_scoped_tracker_overlay_cannot_change_external_project_before_chec
     assert builds == 0
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("project_id", "other-provider-project"),
+        ("native_control_enabled", False),
+        ("console_url", "https://other-console.example"),
+    ],
+)
+async def test_native_apex_load_overlay_cannot_change_project_binding_before_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: object,
+) -> None:
+    row = stored(
+        "native-apex-load",
+        kind=PortKind.EXECUTION_ENGINE,
+        provider="apex_load",
+        project_id="project-1",
+        options={
+            "base_url": "https://apexload.example",
+            "native_control_enabled": True,
+            "project_id": "provider-project-1",
+        },
+    )
+    resolver = ConnectionResolver(store=FakeStore([row]))
+    builds = 0
+
+    async def build(*_args: object, **_kwargs: object) -> object:
+        nonlocal builds
+        builds += 1
+        return SimpleNamespace()
+
+    monkeypatch.setattr(resolver, "_build_cached", build)
+
+    with pytest.raises(ValueError, match="provider project boundary"):
+        await resolver.resolve_with_metadata(
+            PortKind.EXECUTION_ENGINE,
+            project_id="project-1",
+            options_overlay={key: value},
+        )
+
+    assert builds == 0
+
+
 def test_locked_environment_requires_https_for_public_adapter_targets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

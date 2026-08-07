@@ -5,6 +5,7 @@ to avoid per-superstep revalidation and checkpoint/model-evolution traps. Valida
 boundaries with model_validate when typed access is needed.
 """
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -30,6 +31,7 @@ MAX_GATE_TEXT_CHARS = 20_000
 MAX_GATE_DECISION_TEXT_CHARS = 50_000
 MAX_TOOL_CALL_RECORDS = 80
 MAX_TOOL_ARGS_PREVIEW_BYTES = 8_192
+_SAFE_APEX_LOAD_TEST_FRAGMENT = re.compile(r"\A/test/[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 
 
 class Phase(StrEnum):
@@ -225,11 +227,13 @@ class ExternalResults(BaseModel):
             or parsed.username is not None
             or parsed.password is not None
             or parsed.query
-            or parsed.fragment
+            or (
+                parsed.fragment and _SAFE_APEX_LOAD_TEST_FRAGMENT.fullmatch(parsed.fragment) is None
+            )
             or (port is not None and not 1 <= port <= 65_535)
         ):
             raise ValueError(
-                "external results uri must not contain credentials, query, or fragment"
+                "external results uri must not contain credentials, query, or an unsafe fragment"
             )
         return value
 

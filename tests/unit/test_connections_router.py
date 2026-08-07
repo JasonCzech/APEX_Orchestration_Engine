@@ -115,6 +115,21 @@ async def test_execution_connection_guard_uses_active_foreign_key_lease() -> Non
 
 
 @pytest.mark.asyncio
+async def test_execution_connection_guard_includes_mirrored_apex_load_runs() -> None:
+    class ScalarSession:
+        def __init__(self) -> None:
+            self.values = iter([None, None, "native-run-1"])
+
+        async def scalar(self, _statement: object) -> object:
+            return next(self.values)
+
+    repo = ConnectionsRepository(cast(Any, ScalarSession()))
+    conn = _make_connection(kind="execution_engine", provider="apex_load", name="engine")
+
+    assert await repo.durable_reference_reason(conn) == "mirrored APEX Load native runs"
+
+
+@pytest.mark.asyncio
 async def test_execution_connection_legacy_guard_filters_json_in_sql_and_stops_at_one() -> None:
     class ScalarSession:
         def __init__(self) -> None:
@@ -543,6 +558,42 @@ def test_create_list_get_connection(admin: TestClient) -> None:
     )
     assert admin.get("/admin/connections", params={"kind": "log_search"}).json() == []
     assert admin.get(f"/admin/connections/{body['id']}").json()["name"] == "jira-demo"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "kind": "execution_engine",
+            "provider": "apex_load",
+            "name": "native-apex-global",
+            "options": {
+                "base_url": "https://apexload.example",
+                "native_control_enabled": True,
+                "project_id": "provider-project-1",
+            },
+        },
+        {
+            "kind": "execution_engine",
+            "provider": "apex_load",
+            "name": "native-apex-missing-provider-project",
+            "project_id": "demo",
+            "options": {"base_url": "https://apexload.example", "native_control_enabled": True},
+        },
+    ],
+)
+def test_create_native_apex_load_connection_requires_both_project_boundaries(
+    admin: TestClient,
+    repo: FakeConnectionsRepository,
+    payload: dict[str, Any],
+) -> None:
+    response = admin.post("/admin/connections", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "APEX Load native control requires a project-scoped connection and provider project"
+    )
+    assert repo.connections == {}
 
 
 @pytest.mark.parametrize(

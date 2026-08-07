@@ -29,6 +29,7 @@ const workItems = () => import('@/features/work-items/pages')
 const environments = () => import('@/features/environments/pages')
 const goldenConfigs = () => import('@/features/golden-configs/pages')
 const admin = () => import('@/features/admin/pages')
+const apexLoad = () => import('@/features/apex-load/pages')
 
 /**
  * The plan's reconciled route table (Part 2 — Information architecture).
@@ -158,6 +159,11 @@ export const appRoutes: RouteObject[] = [
             path: 'logs',
             handle: handle('Logs'),
             lazy: lazyPage(() => import('@/features/logs/pages'), 'LogsPage'),
+          },
+          {
+            path: 'apex-load',
+            handle: handle('APEX Load'),
+            lazy: lazyPage(apexLoad, 'ApexLoadWorkspacePage'),
           },
           {
             path: 'admin/connections',

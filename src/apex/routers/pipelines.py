@@ -200,6 +200,7 @@ class PendingGate(BaseModel):
 class PipelineEngineInfo(BaseModel):
     engine: str | None = None
     external_run_id: str | None = None
+    console_url: str | None = None
 
 
 class PipelineSummary(BaseModel):

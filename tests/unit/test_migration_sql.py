@@ -6,6 +6,7 @@ import inspect
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 from apex.persistence.audit_lock import AUDIT_CHAIN_LOCK_KEY
 from apex.persistence.database_role_claims import DATABASE_ROLE_LOCK_KEY
@@ -54,6 +55,9 @@ migration_0028 = importlib.import_module(
 )
 migration_0029 = importlib.import_module(
     "apex.persistence.migrations.versions.0029_saved_query_connection_affinity"
+)
+migration_0030 = importlib.import_module(
+    "apex.persistence.migrations.versions.0030_apex_load_native_control"
 )
 
 
@@ -277,11 +281,41 @@ def test_0029_adds_nullable_saved_query_affinity_and_guards_downgrade() -> None:
 def test_0029_orm_saved_query_affinity_is_nullable_indexed_and_not_a_foreign_key() -> None:
     from apex.persistence.models import SavedQuery
 
-    column = SavedQuery.__table__.c.connection_id
+    table = cast(Any, SavedQuery.__table__)
+    column = table.c.connection_id
 
     assert column.nullable is True
     assert not column.foreign_keys
     assert any(
         index.name == "ix_saved_queries_connection_id" and tuple(index.columns) == (column,)
-        for index in SavedQuery.__table__.indexes
+        for index in table.indexes
     )
+
+
+def test_0030_scopes_native_control_mirrors_to_a_connection_generation() -> None:
+    upgrade_source = inspect.getsource(migration_0030.upgrade)
+    common_source = inspect.getsource(migration_0030._common_columns)
+
+    assert migration_0030.down_revision == "0029"
+    assert '"apex_load_native_scenarios"' in upgrade_source
+    assert '"apex_load_native_schedules"' in upgrade_source
+    assert '"apex_load_native_runs"' in upgrade_source
+    assert '"connection_version", "remote_project_id", "remote_id"' in common_source
+    assert '"connection_version", "remote_project_id", "remote_id"' in upgrade_source
+
+
+def test_0030_orm_native_control_mirrors_are_generation_scoped() -> None:
+    from apex.persistence.models import (
+        ApexLoadNativeRun,
+        ApexLoadNativeScenario,
+        ApexLoadNativeSchedule,
+    )
+
+    expected = ("connection_id", "connection_version", "remote_project_id", "remote_id")
+    for model in (ApexLoadNativeScenario, ApexLoadNativeSchedule, ApexLoadNativeRun):
+        table = cast(Any, model.__table__)
+        assert any(
+            tuple(column.name for column in constraint.columns) == expected
+            for constraint in table.constraints
+            if constraint.__class__.__name__ == "UniqueConstraint"
+        )

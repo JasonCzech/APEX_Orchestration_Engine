@@ -16,6 +16,7 @@ options["base_url"] for the adapter factory.
 import asyncio
 import hashlib
 import json
+import re
 import threading
 import weakref
 from collections.abc import Iterable
@@ -38,7 +39,7 @@ from apex.adapters.network_safety import (
 )
 from apex.adapters.options import coerce_bool, normalize_host_port_endpoint
 from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
-from apex.domain.diagnostics import bounded_diagnostic, safe_type_name
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material, safe_type_name
 from apex.domain.input_limits import validate_json_object
 from apex.persistence.db import dispose_engine_instance_definitively
 from apex.ports.secrets import SecretsPort
@@ -63,6 +64,7 @@ TRUSTED_PRIVATE_HOST_OPTION = "_apex_trusted_private_host"
 NETWORK_TRUST_OPTION_KEYS = frozenset({"base_url", "endpoint", "secure", "verify_tls"})
 _MISSING_TYPE_ATTRIBUTE = object()
 _MAX_EXTERNAL_WORK_TRACKING_PROJECT_CHARS = 255
+_APEX_LOAD_NATIVE_PROJECT_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 
 
 async def _await_task_definitively[TaskResult](
@@ -758,6 +760,32 @@ def validate_scoped_work_tracking_config(
         _validate_external_work_tracking_project(config.options.get(option_name))
 
 
+def validate_apex_load_native_control_config(
+    config: ConnectionConfig,
+    *,
+    internal_project_id: str | None,
+) -> None:
+    """Require a stable local and remote project boundary for native APEX Load control."""
+
+    if config.kind is not PortKind.EXECUTION_ENGINE or config.provider.casefold() != "apex_load":
+        return
+    native_control_enabled = config.options.get("native_control_enabled", False)
+    if type(native_control_enabled) is not bool:
+        raise ValueError("APEX Load native control configuration is invalid")
+    if not native_control_enabled:
+        return
+    remote_project_id = config.options.get("project_id")
+    if (
+        internal_project_id is None
+        or type(remote_project_id) is not str
+        or _APEX_LOAD_NATIVE_PROJECT_ID.fullmatch(remote_project_id) is None
+        or contains_credential_material(remote_project_id)
+    ):
+        raise ValueError(
+            "APEX Load native control requires a project-scoped connection and provider project"
+        )
+
+
 def validate_resolved_work_tracking_project(
     adapter: Any,
     *,
@@ -992,6 +1020,10 @@ class ConnectionResolver:
             conn,
             internal_project_id=internal_project_id,
         )
+        validate_apex_load_native_control_config(
+            conn,
+            internal_project_id=internal_project_id,
+        )
         return ResolvedConnectionMetadata(
             config=conn,
             internal_project_id=internal_project_id,
@@ -1014,11 +1046,22 @@ class ConnectionResolver:
             conn,
             internal_project_id=metadata.internal_project_id,
         )
+        validate_apex_load_native_control_config(
+            conn,
+            internal_project_id=metadata.internal_project_id,
+        )
         if options_overlay:
+            apex_load_native = (
+                conn.kind is PortKind.EXECUTION_ENGINE and conn.provider.casefold() == "apex_load"
+            )
             forbidden_overlay = any(
                 key in NETWORK_TRUST_OPTION_KEYS
                 or key.startswith("_apex_")
                 or conn.kind is PortKind.WORK_TRACKING
+                or (
+                    apex_load_native
+                    and key in {"project_id", "native_control_enabled", "console_url"}
+                )
                 for key in options_overlay
             )
             if forbidden_overlay:
@@ -1029,6 +1072,10 @@ class ConnectionResolver:
             conn = conn.model_copy(update={"options": {**conn.options, **options_overlay}})
             validate_connection_config(conn)
             validate_scoped_work_tracking_config(
+                conn,
+                internal_project_id=metadata.internal_project_id,
+            )
+            validate_apex_load_native_control_config(
                 conn,
                 internal_project_id=metadata.internal_project_id,
             )

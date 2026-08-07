@@ -4,6 +4,7 @@ Graph nodes, services, and routers depend on these protocols only; concrete
 providers live under apex.adapters and are resolved through the AdapterRegistry.
 """
 
+from apex.ports.apex_load_control import ApexLoadControlPlanePort
 from apex.ports.artifact_store import ArtifactStorePort, StoredArtifact
 from apex.ports.cluster_inventory import ClusterInventoryPort
 from apex.ports.documents import DocumentRetrievalPort
@@ -23,6 +24,7 @@ from apex.ports.work_tracking import WorkTrackingPort
 __all__ = [
     "TERMINAL_ENGINE_PHASES",
     "ArtifactStorePort",
+    "ApexLoadControlPlanePort",
     "ClusterInventoryPort",
     "DocumentRetrievalPort",
     "EngineRunPhase",

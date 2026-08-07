@@ -102,6 +102,7 @@ export const EngineHandleSchema = z
     engine: z.string(),
     connection_id: z.string().nullish(),
     external_run_id: z.string().nullish(),
+    console_url: z.string().optional(),
     idempotency_key: z.string().optional(),
     extras: z.record(z.string()).optional(),
   })

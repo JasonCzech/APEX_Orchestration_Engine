@@ -18,6 +18,8 @@ from apex.app.security import (
     SecurityHeadersMiddleware,
 )
 from apex.routers.analytics import router as analytics_router
+from apex.routers.apex_load import index_router as apex_load_index_router
+from apex.routers.apex_load import router as apex_load_router
 from apex.routers.artifacts import router as artifacts_router
 from apex.routers.auth import router as auth_router
 from apex.routers.catalog import router as catalog_router
@@ -133,3 +135,5 @@ app.include_router(consumers_router, prefix="/v1")
 app.include_router(connections_router, prefix="/v1")
 app.include_router(compliance_router, prefix="/v1")
 app.include_router(analytics_router, prefix="/v1")
+app.include_router(apex_load_index_router, prefix="/v1")
+app.include_router(apex_load_router, prefix="/v1")

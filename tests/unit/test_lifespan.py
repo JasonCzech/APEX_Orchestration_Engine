@@ -43,11 +43,13 @@ async def test_lifespan_starts_and_stops_artifact_upload_reconciler(
         "documents": asyncio.Event(),
         "artifacts": asyncio.Event(),
         "work-items": asyncio.Event(),
+        "apex-load": asyncio.Event(),
     }
     stopped = {
         "documents": asyncio.Event(),
         "artifacts": asyncio.Event(),
         "work-items": asyncio.Event(),
+        "apex-load": asyncio.Event(),
     }
     stop_events: list[asyncio.Event] = []
 
@@ -95,6 +97,7 @@ async def test_lifespan_starts_and_stops_artifact_upload_reconciler(
         "run_work_item_mutation_reconciler",
         runner("work-items"),
     )
+    monkeypatch.setattr(lifespan_module, "run_apex_load_native_reconciler", runner("apex-load"))
     monkeypatch.setattr(lifespan_module, "get_connection_resolver", lambda: resolver)
 
     async def dispose_database() -> None:
@@ -126,7 +129,7 @@ async def test_runtime_readiness_rechecks_schema_redis_and_workers(
     async def worker() -> None:
         await stop.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     schema_checked = asyncio.Event()
 
@@ -172,7 +175,7 @@ async def test_runtime_readiness_coalesces_concurrent_public_probes(
         dependency_started.set()
         await release_dependency.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", validate_schema)
     probes = [asyncio.create_task(lifespan_module.check_runtime_readiness(app)) for _ in range(20)]
@@ -208,7 +211,7 @@ async def test_runtime_readiness_caches_only_opaque_dependency_failure(
         calls += 1
         raise RuntimeError(secret)
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", fail_schema)
     monkeypatch.setattr(lifespan_module, "READINESS_FAILURE_CACHE_S", 60.0)
@@ -235,7 +238,7 @@ async def test_runtime_readiness_fails_when_a_reconciler_exits(
     async def worker() -> None:
         return None
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     await asyncio.gather(*tasks)
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", _async_none)
@@ -258,6 +261,7 @@ async def test_runtime_readiness_fails_when_a_reconciler_heartbeat_is_stale(
         "document-deletion-reconciler",
         "artifact-upload-reconciler",
         "work-item-mutation-reconciler",
+        "apex-load-native-reconciler",
     )
     tasks = tuple(asyncio.create_task(worker(), name=worker_name) for worker_name in worker_names)
     app.state.reconciler_tasks = tasks
@@ -282,7 +286,7 @@ async def test_runtime_readiness_fails_when_reconciler_heartbeat_state_is_missin
     async def worker() -> None:
         await stop.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     app.state.reconciler_tasks = tasks
     app.state.reconciler_heartbeats = None
     try:
@@ -304,7 +308,7 @@ async def test_runtime_readiness_rejects_non_finite_or_non_numeric_heartbeats(
     async def worker() -> None:
         await stop.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     app.state.reconciler_heartbeats[tasks[0].get_name()] = invalid_heartbeat
     try:
@@ -330,7 +334,7 @@ async def test_runtime_readiness_does_not_trust_a_future_cache_timestamp(
         nonlocal schema_checked
         schema_checked = True
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     app.state.readiness_last_checked_at = asyncio.get_running_loop().time() + 60
     app.state.readiness_last_result = True
@@ -360,7 +364,7 @@ async def test_runtime_readiness_does_not_cache_success_when_worker_exits_mid_ch
         dependency_started.set()
         await release_dependency.wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", validate_schema)
     probe = asyncio.create_task(lifespan_module.check_runtime_readiness(app))
@@ -392,7 +396,7 @@ async def test_runtime_readiness_bounds_dependency_checks(
     async def hung_schema_check() -> None:
         await asyncio.Event().wait()
 
-    tasks = tuple(asyncio.create_task(worker()) for _ in range(3))
+    tasks = tuple(asyncio.create_task(worker()) for _ in range(4))
     _set_healthy_reconciler_state(app, tasks)
     monkeypatch.setattr(lifespan_module, "validate_schema_head", hung_schema_check)
     monkeypatch.setattr(lifespan_module, "READINESS_DEPENDENCY_TIMEOUT_S", 0.01)
@@ -429,6 +433,7 @@ async def test_lifespan_does_not_start_workers_when_schema_is_stale(
     monkeypatch.setattr(lifespan_module, "run_document_deletion_reconciler", worker)
     monkeypatch.setattr(lifespan_module, "run_artifact_upload_reconciler", worker)
     monkeypatch.setattr(lifespan_module, "run_work_item_mutation_reconciler", worker)
+    monkeypatch.setattr(lifespan_module, "run_apex_load_native_reconciler", worker)
 
     with pytest.raises(RuntimeError, match="stale schema"):
         async with lifespan_module.lifespan(FastAPI()):
@@ -519,6 +524,7 @@ async def test_lifespan_worker_failure_does_not_skip_other_cleanup(
     monkeypatch.setattr(lifespan_module, "run_document_deletion_reconciler", failed_worker)
     monkeypatch.setattr(lifespan_module, "run_artifact_upload_reconciler", waiting_worker)
     monkeypatch.setattr(lifespan_module, "run_work_item_mutation_reconciler", waiting_worker)
+    monkeypatch.setattr(lifespan_module, "run_apex_load_native_reconciler", waiting_worker)
     monkeypatch.setattr(lifespan_module, "get_connection_resolver", lambda: resolver)
 
     async with lifespan_module.lifespan(FastAPI()):
@@ -556,6 +562,7 @@ async def test_lifespan_disposes_database_when_an_earlier_closer_is_cancelled(
         "run_work_item_mutation_reconciler",
         waiting_worker,
     )
+    monkeypatch.setattr(lifespan_module, "run_apex_load_native_reconciler", waiting_worker)
     monkeypatch.setattr(lifespan_module, "get_connection_resolver", Resolver)
 
     async def dispose_database() -> None:
@@ -588,7 +595,7 @@ async def test_lifespan_shutdown_survives_repeated_cancellation_at_every_stage(
             await asyncio.Event().wait()
         finally:
             workers_stopping += 1
-            if workers_stopping == 3:
+            if workers_stopping == 4:
                 all_workers_stopping.set()
             await allow_workers.wait()
             workers_settled += 1
@@ -639,6 +646,7 @@ async def test_lifespan_shutdown_survives_repeated_cancellation_at_every_stage(
         "run_work_item_mutation_reconciler",
         waiting_worker,
     )
+    monkeypatch.setattr(lifespan_module, "run_apex_load_native_reconciler", waiting_worker)
     monkeypatch.setattr(lifespan_module, "get_connection_resolver", lambda: resolver)
 
     async def dispose_database() -> None:
@@ -680,7 +688,7 @@ async def test_lifespan_shutdown_survives_repeated_cancellation_at_every_stage(
 
     with pytest.raises(asyncio.CancelledError):
         await exit_task
-    assert workers_settled == 3
+    assert workers_settled == 4
     assert resolver.closed is True
     assert backend.closed is True
     assert database_disposed is True

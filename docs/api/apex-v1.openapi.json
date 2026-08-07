@@ -3103,6 +3103,85 @@
         "title": "LogSearchResponse",
         "type": "object"
       },
+      "NativeApprovalDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "approved"
+        ],
+        "title": "NativeApprovalDecision",
+        "type": "object"
+      },
+      "NativeConnectionSummary": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "project_id"
+        ],
+        "title": "NativeConnectionSummary",
+        "type": "object"
+      },
+      "NativeConsoleLink": {
+        "properties": {
+          "console_url": {
+            "title": "Console Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "console_url"
+        ],
+        "title": "NativeConsoleLink",
+        "type": "object"
+      },
+      "NativeObjectRequest": {
+        "additionalProperties": false,
+        "description": "Opaque provider draft, bounded before it reaches the adapter.",
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "maximum": 1000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "payload"
+        ],
+        "title": "NativeObjectRequest",
+        "type": "object"
+      },
       "Page": {
         "properties": {
           "limit": {
@@ -3415,6 +3494,17 @@
       },
       "PipelineEngineInfo": {
         "properties": {
+          "console_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Console Url"
+          },
           "engine": {
             "anyOf": [
               {
@@ -6922,6 +7012,1354 @@
         "summary": "Get Usage Analytics",
         "tags": [
           "analytics"
+        ]
+      }
+    },
+    "/v1/apex-load/connections": {
+      "get": {
+        "operationId": "listApexLoadNativeConnections",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "$ref": "#/components/schemas/NativeConnectionSummary"
+                    },
+                    "type": "array"
+                  },
+                  "title": "Response Listapexloadnativeconnections",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Native Connections",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/calendar": {
+      "get": {
+        "operationId": "getApexLoadRunCalendar",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Getapexloadruncalendar",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Calendar",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/capabilities": {
+      "get": {
+        "operationId": "getApexLoadCapabilities",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Getapexloadcapabilities",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Capabilities",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/mirrored-runs": {
+      "get": {
+        "description": "Read the local, crash-safe native-run ledger rather than provider metrics.",
+        "operationId": "listMirroredApexLoadRuns",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Listmirroredapexloadruns",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Mirrored Runs",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/runs": {
+      "get": {
+        "operationId": "listApexLoadRuns",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "active_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Active Only",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Listapexloadruns",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/runs/{run_id}/console": {
+      "get": {
+        "operationId": "getApexLoadRunConsole",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeConsoleLink"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Console",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/runs/{run_id}/evidence": {
+      "get": {
+        "operationId": "getApexLoadRunEvidence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "signature",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Signature",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Getapexloadrunevidence",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Evidence",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/runs/{run_id}/metrics": {
+      "get": {
+        "operationId": "getApexLoadRunMetrics",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Getapexloadrunmetrics",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Metrics",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios": {
+      "get": {
+        "operationId": "listApexLoadScenarios",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Listapexloadscenarios",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Scenarios",
+        "tags": [
+          "apex-load"
+        ]
+      },
+      "post": {
+        "operationId": "createApexLoadScenario",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Createapexloadscenario",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Scenario",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/sizing": {
+      "post": {
+        "operationId": "sizeApexLoadScenario",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Sizeapexloadscenario",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Size Scenario",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/validation": {
+      "post": {
+        "operationId": "validateApexLoadScenario",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Validateapexloadscenario",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Scenario",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/{scenario_id}": {
+      "delete": {
+        "operationId": "deleteApexLoadScenario",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Scenario",
+        "tags": [
+          "apex-load"
+        ]
+      },
+      "get": {
+        "operationId": "getApexLoadScenario",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Getapexloadscenario",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Scenario",
+        "tags": [
+          "apex-load"
+        ]
+      },
+      "put": {
+        "operationId": "updateApexLoadScenario",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Updateapexloadscenario",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Scenario",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/{scenario_id}/schedules": {
+      "get": {
+        "operationId": "listApexLoadSchedules",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Listapexloadschedules",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Schedules",
+        "tags": [
+          "apex-load"
+        ]
+      },
+      "post": {
+        "operationId": "createApexLoadSchedule",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Createapexloadschedule",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Schedule",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/{scenario_id}/schedules/{schedule_id}": {
+      "delete": {
+        "operationId": "deleteApexLoadSchedule",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Schedule",
+        "tags": [
+          "apex-load"
+        ]
+      },
+      "put": {
+        "operationId": "updateApexLoadSchedule",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeObjectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Updateapexloadschedule",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Schedule",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/{scenario_id}/schedules/{schedule_id}/approvals/{approval_id}": {
+      "post": {
+        "operationId": "decideApexLoadScheduleApproval",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeApprovalDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Decideapexloadscheduleapproval",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Schedule Approval",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/scenarios/{scenario_id}/schedules/{schedule_id}/occurrences": {
+      "get": {
+        "operationId": "listApexLoadScheduleOccurrences",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "schedule_id",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Schedule Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Listapexloadscheduleoccurrences",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Schedule Occurrences",
+        "tags": [
+          "apex-load"
+        ]
+      }
+    },
+    "/v1/apex-load/connections/{connection_id}/schedule-health": {
+      "get": {
+        "operationId": "getApexLoadScheduleHealth",
+        "parameters": [
+          {
+            "description": "Enabled APEX Load connection id",
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "description": "Enabled APEX Load connection id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Getapexloadschedulehealth",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Schedule Health",
+        "tags": [
+          "apex-load"
         ]
       }
     },

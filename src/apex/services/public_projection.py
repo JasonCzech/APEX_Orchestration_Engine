@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from apex.domain.diagnostics import bounded_diagnostic
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.input_limits import (
     MAX_JSON_KEY_CHARS,
     MAX_RESOURCE_ID_CHARS,
@@ -23,6 +23,7 @@ MAX_NATIVE_PAGE_DEPTH = 32
 MAX_PUBLIC_ENGINE_HANDLE_BYTES = 64 * 1024
 MAX_PUBLIC_TEST_RESULT_BYTES = 512 * 1024
 _NATIVE_IDENTIFIER = re.compile(r"\A[A-Za-z0-9_.:-]+\Z")
+_SAFE_APEX_LOAD_TEST_FRAGMENT = re.compile(r"\A/test/[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 
 
 def validated_native_identifier(value: Any, *, label: str) -> str:
@@ -239,10 +240,37 @@ def public_engine_handle_summary(value: Any) -> dict[str, str | None] | None:
             external_run_id,
             max_chars=max(1, len(external_run_id)),
         )
-    return {
+    result: dict[str, str | None] = {
         "engine": safe_engine,
         "external_run_id": external_run_id if type(external_run_id) is str else None,
     }
+    extras = value.get("extras")
+    console_url = extras.get("console_url") if type(extras) is dict else None
+    if (
+        type(console_url) is str
+        and len(console_url) <= 2_048
+        and "\\" not in console_url
+        and not any(ord(character) < 0x20 or ord(character) == 0x7F for character in console_url)
+    ):
+        try:
+            parsed = urlsplit(console_url)
+            port = parsed.port
+        except ValueError:
+            parsed = None
+            port = None
+        if (
+            parsed is not None
+            and parsed.scheme in {"http", "https"}
+            and parsed.hostname is not None
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and _SAFE_APEX_LOAD_TEST_FRAGMENT.fullmatch(parsed.fragment) is not None
+            and (port is None or 1 <= port <= 65_535)
+            and not contains_credential_material(console_url)
+        ):
+            result["console_url"] = console_url
+    return result
 
 
 def public_test_result_summary(value: Any) -> dict[str, Any] | None:

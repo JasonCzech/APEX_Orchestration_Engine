@@ -237,6 +237,30 @@ def test_public_engine_handle_rejects_hostile_mapping_and_string_without_hooks()
     assert hooks == []
 
 
+def test_public_engine_handle_exposes_only_safe_apex_load_console_links() -> None:
+    safe = public_engine_handle_summary(
+        {
+            "engine": "apex_load",
+            "external_run_id": "native-run-1",
+            "extras": {"console_url": "https://apexload.example/#/test/native-run-1"},
+        }
+    )
+    unsafe = public_engine_handle_summary(
+        {
+            "engine": "apex_load",
+            "external_run_id": "native-run-1",
+            "extras": {"console_url": "https://apexload.example/#/test/native-run-1/extra"},
+        }
+    )
+
+    assert safe == {
+        "engine": "apex_load",
+        "external_run_id": "native-run-1",
+        "console_url": "https://apexload.example/#/test/native-run-1",
+    }
+    assert unsafe == {"engine": "apex_load", "external_run_id": "native-run-1"}
+
+
 def test_public_test_result_rejects_hostile_mapping_and_primitives_without_hooks() -> None:
     hooks: list[str] = []
 

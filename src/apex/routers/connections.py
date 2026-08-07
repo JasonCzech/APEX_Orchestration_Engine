@@ -18,6 +18,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from inspect import isawaitable
 from typing import Annotated, Any, cast
 from uuid import uuid4
 
@@ -81,6 +82,7 @@ from apex.services.connections import (
     get_connection_resolver,
     validate_adapter_base_url,
     validate_adapter_transport_options,
+    validate_apex_load_native_control_config,
     validate_connection_config,
     validate_scoped_work_tracking_config,
 )
@@ -335,6 +337,15 @@ async def _probe_source_control(adapter: Any) -> str:
 
 
 async def _probe_execution_engine(adapter: Any) -> str:
+    probe = getattr(adapter, "probe", None)
+    if callable(probe):
+        probe_result = probe()
+        if not isawaitable(probe_result):
+            raise RuntimeError("execution-engine probe returned an invalid result")
+        detail = await probe_result
+        if type(detail) is not str or not detail or len(detail) > 1_024:
+            raise RuntimeError("execution-engine probe returned an invalid result")
+        return detail
     spec = LoadTestSpec(title="connection probe", vusers=1, ramp_s=0, duration_s=1)
     report = _validated_validation_report(await adapter.validate(spec.model_copy(deep=True)))
     return f"spec validation ok={report.ok}"
@@ -577,14 +588,24 @@ def _validated_file_content(value: Any) -> FileContent:
 
 
 def _validated_validation_report(value: Any) -> ValidationReport:
-    raw = _exact_model_payload(value, ValidationReport, {"issues", "ok"})
+    raw = _exact_model_payload(value, ValidationReport, {"issues", "ok", "warnings"})
     issues = raw["issues"]
-    if type(raw["ok"]) is not bool or type(issues) is not list or len(issues) > 128:
+    warnings = raw.get("warnings", [])
+    if (
+        type(raw["ok"]) is not bool
+        or type(issues) is not list
+        or len(issues) > 128
+        or type(warnings) is not list
+        or len(warnings) > 128
+    ):
         raise RuntimeError("connection probe returned an invalid validation report")
     normalized_issues = [_bounded_probe_text(issue, minimum=1, maximum=2_048) for issue in issues]
+    normalized_warnings = [
+        _bounded_probe_text(warning, minimum=1, maximum=2_048) for warning in warnings
+    ]
     if any(not issue.strip() for issue in normalized_issues):
         raise RuntimeError("connection probe returned an invalid validation report")
-    return ValidationReport(ok=raw["ok"], issues=normalized_issues)
+    return ValidationReport(ok=raw["ok"], issues=normalized_issues, warnings=normalized_warnings)
 
 
 _RUNTIME_IDENTITY_FIELDS = frozenset(
@@ -691,6 +712,36 @@ def _validate_scoped_work_tracking_target(
         validation_error = HTTPException(
             status_code=422,
             detail="scoped work-tracking connection requires an external project",
+        )
+    if validation_error is not None:
+        raise validation_error
+
+
+def _validate_apex_load_native_control_target(
+    *,
+    kind: PortKind | str,
+    provider: str,
+    project_id: str | None,
+    options: dict[str, Any],
+) -> None:
+    validation_error: HTTPException | None = None
+    try:
+        validate_apex_load_native_control_config(
+            ConnectionConfig(
+                id="connection-validation",
+                kind=PortKind(kind),
+                provider=provider,
+                name="connection-validation",
+                options=options,
+            ),
+            internal_project_id=project_id,
+        )
+    except ValueError:
+        validation_error = HTTPException(
+            status_code=422,
+            detail=(
+                "APEX Load native control requires a project-scoped connection and provider project"
+            ),
         )
     if validation_error is not None:
         raise validation_error
@@ -910,6 +961,12 @@ async def create_connection(
         project_id=body.project_id,
         options=body.options,
     )
+    _validate_apex_load_native_control_target(
+        kind=body.kind,
+        provider=body.provider,
+        project_id=body.project_id,
+        options=body.options,
+    )
     write_error: HTTPException | None = None
     conn = None
     try:
@@ -991,6 +1048,12 @@ async def update_connection(
         project_id=changes.get("project_id", conn.project_id),
         options=changes.get("options", conn.options),
     )
+    _validate_apex_load_native_control_target(
+        kind=conn.kind,
+        provider=changes.get("provider", conn.provider),
+        project_id=changes.get("project_id", conn.project_id),
+        options=changes.get("options", conn.options),
+    )
     write_error: HTTPException | None = None
     try:
         conn = await repo.update(conn, changes)
@@ -1022,6 +1085,12 @@ async def enable_connection(
     # must be repaired before they can be made available to runtime resolvers.
     _validate_connection_target(conn.base_url, conn.options, conn.secret_ref)
     _validate_scoped_work_tracking_target(
+        kind=conn.kind,
+        provider=conn.provider,
+        project_id=conn.project_id,
+        options=conn.options,
+    )
+    _validate_apex_load_native_control_target(
         kind=conn.kind,
         provider=conn.provider,
         project_id=conn.project_id,
