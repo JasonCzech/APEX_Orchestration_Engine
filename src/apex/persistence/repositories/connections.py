@@ -166,7 +166,11 @@ class ConnectionsRepository:
         self,
         *,
         kind: str | None = None,
+        provider: str | None = None,
+        enabled: bool | None = None,
+        native_control_enabled: bool | None = None,
         project: str | None = None,
+        allowed_project_ids: Sequence[str] | None = None,
         manageable_project_ids: Sequence[str] | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -175,8 +179,18 @@ class ConnectionsRepository:
         stmt = select(Connection).order_by(Connection.kind, Connection.name)
         if kind is not None:
             stmt = stmt.where(Connection.kind == kind)
+        if provider is not None:
+            stmt = stmt.where(Connection.provider == provider)
+        if enabled is not None:
+            stmt = stmt.where(Connection.enabled.is_(enabled))
+        if native_control_enabled is not None:
+            native_enabled = Connection.options["native_control_enabled"].as_boolean()
+            stmt = stmt.where(native_enabled.is_(native_control_enabled))
         if project is not None:
             stmt = stmt.where(Connection.project_id == project)
+        if allowed_project_ids is not None:
+            projects = tuple(dict.fromkeys(allowed_project_ids))
+            stmt = stmt.where(Connection.project_id.in_(projects) if projects else false())
         if manageable_project_ids is not None:
             projects = tuple(dict.fromkeys(manageable_project_ids))
             if not projects:

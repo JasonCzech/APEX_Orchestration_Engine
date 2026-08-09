@@ -59,6 +59,12 @@ migration_0029 = importlib.import_module(
 migration_0030 = importlib.import_module(
     "apex.persistence.migrations.versions.0030_apex_load_native_control"
 )
+migration_0031 = importlib.import_module(
+    "apex.persistence.migrations.versions.0031_apex_load_reconcile_leases"
+)
+migration_0032 = importlib.import_module(
+    "apex.persistence.migrations.versions.0032_apex_load_native_create_idempotency"
+)
 
 
 def test_offline_upgrade_locks_audit_chain_before_revision_table_work() -> None:
@@ -319,3 +325,22 @@ def test_0030_orm_native_control_mirrors_are_generation_scoped() -> None:
             for constraint in table.constraints
             if constraint.__class__.__name__ == "UniqueConstraint"
         )
+
+
+def test_0031_adds_durable_connection_reconciliation_leases() -> None:
+    upgrade_source = inspect.getsource(migration_0031.upgrade)
+
+    assert migration_0031.down_revision == "0030"
+    assert '"apex_load_native_reconcile_leases"' in upgrade_source
+    assert '"connection_version"' in upgrade_source
+    assert '"claim_token"' in upgrade_source
+    assert '"next_poll_at"' in upgrade_source
+
+
+def test_0032_persists_native_create_idempotency_fingerprints() -> None:
+    upgrade_source = inspect.getsource(migration_0032.upgrade)
+
+    assert migration_0032.down_revision == "0031"
+    assert '"idempotency_fingerprint"' in upgrade_source
+    assert '"uq_apex_load_native_scenario_idempotency"' in upgrade_source
+    assert '"uq_apex_load_native_schedule_idempotency"' in upgrade_source

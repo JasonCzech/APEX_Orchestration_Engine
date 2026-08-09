@@ -274,6 +274,7 @@ export function RunsListPage() {
     (total !== undefined
       ? filters.offset + items.length < total
       : items.length === filters.limit)
+  const partialSearch = Boolean(filters.q && data?.partial)
   const rangeCaption =
     items.length > 0
       ? `${filters.offset + 1}–${filters.offset + items.length}${total !== undefined ? ` of ${total}` : ''}`
@@ -299,6 +300,11 @@ export function RunsListPage() {
       {reachedResultWindow && (
         <p className="runs-result-window-note" role="status">
           Reached the runs result-window limit. Refine the filters to inspect later matches.
+        </p>
+      )}
+      {partialSearch && (
+        <p className="runs-result-window-note" role="status">
+          Search reached the recent-run scan limit. Refine the filters to search a smaller set.
         </p>
       )}
       <footer className="runs-pagination">

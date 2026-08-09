@@ -40,6 +40,7 @@ async function fetchAllInterruptedPipelines(signal?: AbortSignal): Promise<Pipel
   const items: PipelineSummary[] = []
   const seen = new Set<string>()
   let offset = 0
+  let partial = false
 
   for (;;) {
     const { data, error, response } = await getApexClient().GET('/v1/pipelines', {
@@ -57,6 +58,7 @@ async function fetchAllInterruptedPipelines(signal?: AbortSignal): Promise<Pipel
     }
 
     const page = data as PipelineListResponse
+    partial ||= page.partial
     if (page.items.length > INBOX_SCAN_LIMIT) {
       throw new Error('Approvals returned an invalid oversized page.')
     }
@@ -76,7 +78,13 @@ async function fetchAllInterruptedPipelines(signal?: AbortSignal): Promise<Pipel
       added === 0 ||
       (total !== undefined && nextOffset >= total)
     ) {
-      return { items, limit: INBOX_SCAN_LIMIT, offset: 0, ...(total !== undefined ? { total } : {}) }
+      return {
+        items,
+        limit: INBOX_SCAN_LIMIT,
+        offset: 0,
+        partial,
+        ...(total !== undefined ? { total } : {}),
+      }
     }
     if (nextOffset <= offset || nextOffset > MAX_LIST_OFFSET) {
       throw new Error('Approvals could not be loaded completely within the pagination limit.')

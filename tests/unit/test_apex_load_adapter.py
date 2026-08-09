@@ -119,18 +119,30 @@ async def test_native_artifact_collection_enforces_an_aggregate_deadline(
 
 @respx.mock
 async def test_native_scenario_forces_configured_provider_project() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios").mock(
+        return_value=httpx.Response(200, json={"scenarios": []})
+    )
+
     def response(request: httpx.Request) -> httpx.Response:
-        assert json.loads(request.content)["project_id"] == "proj-123"
-        return httpx.Response(201, json={"id": "scenario-1", "project_id": "proj-123"})
+        payload = json.loads(request.content)
+        assert payload["project_id"] == "proj-123"
+        assert "idempotency_key" not in payload
+        assert request.headers["Idempotency-Key"] == "native-scenario-1"
+        return httpx.Response(
+            201,
+            json={"id": "scenario-1", "name": "checkout", "project_id": "proj-123"},
+        )
 
     route = respx.post(f"{BASE}/api/v1/scenarios").mock(side_effect=response)
 
     scenario = await make_adapter(native_control_enabled=True).create_native_scenario(
-        {"name": "checkout"}
+        {"name": "checkout", "idempotency_key": "caller-value"},
+        idempotency_key="native-scenario-1",
     )
 
     assert route.called
     assert scenario["id"] == "scenario-1"
+    assert scenario["idempotency_key"] == "native-scenario-1"
     assert route.calls.last.request.url.params["project_id"] == "proj-123"
 
 
@@ -142,10 +154,356 @@ async def test_native_scenario_rejects_caller_supplied_foreign_project() -> None
 
     with pytest.raises(ValueError, match="cannot target another APEX Load project"):
         await make_adapter(native_control_enabled=True).create_native_scenario(
-            {"name": "checkout", "project_id": "other-project"}
+            {"name": "checkout", "project_id": "other-project"},
+            idempotency_key="native-scenario-1",
         )
 
     assert not route.called
+
+
+@respx.mock
+async def test_native_scenario_rejects_a_script_outside_the_configured_project() -> None:
+    respx.get(f"{BASE}/api/v1/scripts").mock(
+        return_value=httpx.Response(
+            200,
+            json={"scripts": [{"id": "owned-script", "project_id": "proj-123"}]},
+        )
+    )
+    list_route = respx.get(f"{BASE}/api/v1/scenarios").mock(
+        return_value=httpx.Response(200, json={"scenarios": []})
+    )
+    create_route = respx.post(f"{BASE}/api/v1/scenarios").mock(
+        return_value=httpx.Response(201, json={})
+    )
+
+    with pytest.raises(ValueError, match="outside the configured project"):
+        await make_adapter(native_control_enabled=True).create_native_scenario(
+            {"name": "checkout", "groups": [{"script_id": "foreign-script"}]},
+            idempotency_key="native-scenario-1",
+        )
+
+    assert not list_route.called
+    assert not create_route.called
+
+
+@respx.mock
+async def test_native_scenario_read_rejects_a_mismatched_resource_id() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "scenario-2", "project_id": "proj-123"},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected resource id"):
+        await make_adapter(native_control_enabled=True).get_native_scenario("scenario-1")
+
+
+@respx.mock
+async def test_native_schedule_create_adopts_an_existing_idempotent_resource() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "scenario-1", "project_id": "proj-123"},
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "schedules": [
+                    {
+                        "id": "schedule-1",
+                        "scenario_id": "scenario-1",
+                        "project_id": "proj-123",
+                        "idempotency_key": "native-schedule-1",
+                    }
+                ]
+            },
+        )
+    )
+    create_route = respx.post(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(500)
+    )
+
+    schedule = await make_adapter(native_control_enabled=True).create_native_schedule(
+        "scenario-1",
+        {"name": "nightly"},
+        idempotency_key="native-schedule-1",
+    )
+
+    assert schedule["id"] == "schedule-1"
+    assert not create_route.called
+
+
+@respx.mock
+async def test_native_schedule_list_rejects_a_missing_resource_id() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "scenario-1", "project_id": "proj-123"},
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(
+            200,
+            json={"schedules": [{"project_id": "proj-123"}]},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="safe non-empty identifier"):
+        await make_adapter(native_control_enabled=True).list_native_schedules("scenario-1")
+
+
+@respx.mock
+async def test_native_schedule_update_supplies_the_current_required_revision() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "scenario-1", "project_id": "proj-123"},
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "schedules": [
+                    {
+                        "id": "schedule-1",
+                        "scenario_id": "scenario-1",
+                        "project_id": "proj-123",
+                        "revision": 4,
+                    }
+                ]
+            },
+        )
+    )
+
+    def update_response(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["expected_revision"] == 4
+        return httpx.Response(
+            200,
+            json={
+                "id": "schedule-1",
+                "scenario_id": "scenario-1",
+                "project_id": "proj-123",
+                "revision": 5,
+            },
+        )
+
+    respx.put(f"{BASE}/api/v1/scenarios/scenario-1/schedules/schedule-1").mock(
+        side_effect=update_response
+    )
+
+    schedule = await make_adapter(native_control_enabled=True).update_native_schedule(
+        "scenario-1",
+        "schedule-1",
+        {"name": "nightly"},
+    )
+
+    assert schedule["revision"] == 5
+
+
+@respx.mock
+async def test_native_schedule_approval_unwraps_and_validates_the_provider_response() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "scenario-1", "project_id": "proj-123"},
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "schedules": [
+                    {
+                        "id": "schedule-1",
+                        "scenario_id": "scenario-1",
+                        "project_id": "proj-123",
+                        "revision": 4,
+                    }
+                ]
+            },
+        )
+    )
+    respx.post(
+        f"{BASE}/api/v1/scenarios/scenario-1/schedules/schedule-1/approvals/approval-1/approve"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "approval": {
+                    "id": "approval-1",
+                    "schedule_id": "schedule-1",
+                    "scenario_id": "scenario-1",
+                    "project_id": "proj-123",
+                    "status": "approved",
+                },
+                "schedule": {
+                    "id": "schedule-1",
+                    "scenario_id": "scenario-1",
+                    "project_id": "proj-123",
+                    "revision": 5,
+                },
+            },
+        )
+    )
+
+    approval = await make_adapter(native_control_enabled=True).decide_native_schedule_approval(
+        "scenario-1",
+        "schedule-1",
+        "approval-1",
+        approved=True,
+    )
+
+    assert approval["status"] == "approved"
+
+
+@respx.mock
+async def test_native_schedule_health_is_derived_from_the_configured_project() -> None:
+    respx.get(f"{BASE}/api/v1/scenarios").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "scenarios": [
+                    {"id": "scenario-1", "project_id": "proj-123"},
+                ]
+            },
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "scenario-1", "project_id": "proj-123"},
+        )
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/scenario-1/schedules").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "schedules": [
+                    {
+                        "id": "schedule-1",
+                        "scenario_id": "scenario-1",
+                        "project_id": "proj-123",
+                        "enabled": True,
+                        "next_run_at": "2026-01-01T00:00:00+00:00",
+                        "next_required_action": "approval_required",
+                    }
+                ]
+            },
+        )
+    )
+    global_health = respx.get(f"{BASE}/api/v1/schedules/health").mock(
+        return_value=httpx.Response(200, json={"total": 999})
+    )
+
+    health = await make_adapter(native_control_enabled=True).native_schedule_health()
+
+    assert health == {
+        "project_id": "proj-123",
+        "source": "project_schedule_snapshot",
+        "total": 1,
+        "enabled": 1,
+        "due": 1,
+        "blocked": 0,
+        "failed": 0,
+        "pending_approval": 1,
+    }
+    assert not global_health.called
+
+
+async def test_native_schedule_health_bounds_the_aggregate_project_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = make_adapter(native_control_enabled=True)
+
+    async def scenarios() -> list[dict[str, Any]]:
+        return [
+            {"id": "scenario-1", "project_id": "proj-123"},
+            {"id": "scenario-2", "project_id": "proj-123"},
+        ]
+
+    async def schedules(scenario_id: str) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"schedule-{scenario_id}",
+                "scenario_id": scenario_id,
+                "project_id": "proj-123",
+            }
+        ]
+
+    monkeypatch.setattr(adapter, "list_native_scenarios", scenarios)
+    monkeypatch.setattr(adapter, "list_native_schedules", schedules)
+    monkeypatch.setattr(apex_load_engine, "_MAX_NATIVE_CONTROL_ROWS", 1)
+
+    with pytest.raises(RuntimeError, match="schedule health exceeded its row limit"):
+        await adapter.native_schedule_health()
+
+
+@respx.mock
+async def test_native_scenario_retry_recovers_from_provider_idempotency_conflict() -> None:
+    scenario_lists = iter(
+        [
+            {"scenarios": []},
+            {
+                "scenarios": [
+                    {
+                        "id": "scenario-1",
+                        "name": "checkout",
+                        "project_id": "proj-123",
+                    }
+                ]
+            },
+        ]
+    )
+    respx.get(f"{BASE}/api/v1/scenarios").mock(
+        side_effect=lambda _request: httpx.Response(200, json=next(scenario_lists))
+    )
+    respx.post(f"{BASE}/api/v1/scenarios").mock(
+        return_value=httpx.Response(409, json={"error": "duplicate idempotency key"})
+    )
+
+    scenario = await make_adapter(native_control_enabled=True).create_native_scenario(
+        {"name": "checkout"},
+        idempotency_key="native-scenario-1",
+    )
+
+    assert scenario["id"] == "scenario-1"
+    assert scenario["idempotency_key"] == "native-scenario-1"
+
+
+@respx.mock
+async def test_native_run_scan_reports_a_bounded_partial_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(apex_load_engine, "_MAX_NATIVE_RUN_RECONCILIATION_ROWS", 400)
+
+    def response(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params["offset"])
+        return httpx.Response(
+            200,
+            json={
+                "tests": [
+                    {
+                        "id": f"run-{offset + index}",
+                        "project_id": "proj-123",
+                        "status": "COMPLETE",
+                    }
+                    for index in range(200)
+                ],
+                "total": 401,
+            },
+        )
+
+    route = respx.get(f"{BASE}/api/v1/tests").mock(side_effect=response)
+
+    snapshot = await make_adapter(native_control_enabled=True).scan_native_runs()
+
+    assert len(snapshot.items) == 400
+    assert snapshot.complete is False
+    assert route.call_count == 2
 
 
 @respx.mock
@@ -187,6 +545,43 @@ async def test_native_metrics_reject_foreign_test_before_metrics_read() -> None:
 
     assert test_route.calls.last.request.url.params["project_id"] == "proj-123"
     assert not metrics_route.called
+
+
+@respx.mock
+async def test_native_metrics_fall_back_to_the_owned_test_record() -> None:
+    metrics = live_metrics_json(tps=18.5)
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(live_metrics=metrics))
+    )
+    metrics_route = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/metrics").mock(
+        return_value=httpx.Response(404, json={"detail": "not available"})
+    )
+
+    result = await make_adapter(native_control_enabled=True).native_run_metrics(TEST_ID)
+
+    assert result == {"metrics": metrics, "source": "test_record"}
+    assert metrics_route.called
+
+
+@respx.mock
+async def test_native_error_evidence_accepts_provider_free_form_signatures() -> None:
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json())
+    )
+    evidence_route = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/errors/evidence").mock(
+        return_value=httpx.Response(
+            200,
+            json={"test_id": TEST_ID, "signature": "http 500 checkout", "evidence": []},
+        )
+    )
+
+    evidence = await make_adapter(native_control_enabled=True).native_run_error_evidence(
+        TEST_ID,
+        "http 500 checkout",
+    )
+
+    assert evidence["signature"] == "http 500 checkout"
+    assert evidence_route.calls.last.request.url.params["signature"] == "http 500 checkout"
 
 
 @respx.mock

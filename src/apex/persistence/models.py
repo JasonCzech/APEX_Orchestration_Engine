@@ -655,12 +655,40 @@ class EngineRun(Base):
 # ── APEX Load native control-plane mirror ────────────────────────────────────
 
 
+class ApexLoadNativeReconcileLease(Base):
+    """Durable ownership for one connection's provider snapshot poll."""
+
+    __tablename__ = "apex_load_native_reconcile_leases"
+    __table_args__ = (
+        Index("ix_apex_load_native_reconcile_leases_ready", "next_poll_at", "claimed_at"),
+    )
+
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("connections.id", ondelete="CASCADE"), primary_key=True
+    )
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    project_id: Mapped[str] = mapped_column(String(255))
+    claim_token: Mapped[str | None] = mapped_column(String(64))
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_poll_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ApexLoadNativeScenario(Base):
     """A provider-owned scenario mirrored for audit and reconciliation only."""
 
     __tablename__ = "apex_load_native_scenarios"
     __table_args__ = (
         UniqueConstraint("connection_id", "connection_version", "remote_project_id", "remote_id"),
+        UniqueConstraint(
+            "connection_id",
+            "connection_version",
+            "remote_project_id",
+            "idempotency_key",
+            name="uq_apex_load_native_scenario_idempotency",
+        ),
         Index("ix_apex_load_native_scenarios_project_seen", "project_id", "last_seen_at"),
     )
 
@@ -673,6 +701,7 @@ class ApexLoadNativeScenario(Base):
     revision: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str | None] = mapped_column(String(64))
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
+    idempotency_fingerprint: Mapped[str | None] = mapped_column(String(64))
     snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -689,6 +718,14 @@ class ApexLoadNativeSchedule(Base):
     __tablename__ = "apex_load_native_schedules"
     __table_args__ = (
         UniqueConstraint("connection_id", "connection_version", "remote_project_id", "remote_id"),
+        UniqueConstraint(
+            "connection_id",
+            "connection_version",
+            "remote_project_id",
+            "scenario_remote_id",
+            "idempotency_key",
+            name="uq_apex_load_native_schedule_idempotency",
+        ),
         Index("ix_apex_load_native_schedules_project_seen", "project_id", "last_seen_at"),
     )
 
@@ -702,6 +739,7 @@ class ApexLoadNativeSchedule(Base):
     revision: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str | None] = mapped_column(String(64))
     idempotency_key: Mapped[str | None] = mapped_column(String(255))
+    idempotency_fingerprint: Mapped[str | None] = mapped_column(String(64))
     snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn, default=dict)
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -188,7 +188,7 @@ export function compareDetailHandler(details: PipelineDetail[] = COMPARE_DETAILS
 /** Recent-runs list handler for the [Add run] picker. */
 export function compareListHandler(items: PipelineSummary[] = COMPARE_SUMMARIES) {
   return http.get('*/v1/pipelines', () => {
-    const body: PipelineListResponse = { items, limit: 10, offset: 0 }
+    const body: PipelineListResponse = { items, limit: 10, offset: 0, partial: false }
     return HttpResponse.json(body)
   })
 }

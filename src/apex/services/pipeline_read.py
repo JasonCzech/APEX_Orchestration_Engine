@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
@@ -74,6 +75,13 @@ from apex.services.run_validation import (
 )
 
 JsonDict = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PipelineListResult:
+    items: list[JsonDict]
+    partial: bool = False
+
 
 PIPELINE_GRAPH_ID = "pipeline"
 MAX_PIPELINE_QUERY_CHARS = 256
@@ -1016,13 +1024,13 @@ class PipelineReadService:
         q: str | None = None,
         limit: int = 20,
         offset: int = 0,
-    ) -> list[JsonDict]:
+    ) -> PipelineListResult:
         """Search threads and map them to pipeline summaries.
 
         Auth scoping is enforced server-side via the forwarded key. The `project`
-        filter passes through as a metadata filter. `q` is applied client-side to
-        the returned page (title/thread_id substring) because thread search has no
-        free-text filter — matches within the page only, documented contract quirk.
+        filter passes through as a metadata filter. Because thread search has no
+        free-text filter, `q` scans a bounded recent prefix and reports when the
+        result may be partial.
         """
         metadata = {"project_id": project} if project else None
         if not q:
@@ -1040,7 +1048,7 @@ class PipelineReadService:
                 requested_limit=limit,
                 label="pipeline thread search",
             )
-            return [map_thread_summary(thread) for thread in threads]
+            return PipelineListResult(items=[map_thread_summary(thread) for thread in threads])
 
         # LangGraph has no free-text search. Scan a fixed, recent prefix before
         # applying the dashboard offset. The hard aggregate cap prevents one
@@ -1052,6 +1060,7 @@ class PipelineReadService:
         needle = q.casefold()
         matches: list[JsonDict] = []
         scan_offset = 0
+        partial = False
         while scan_offset < MAX_PIPELINE_TEXT_SCAN_RECORDS:
             scan_limit = min(
                 PIPELINE_TEXT_SCAN_PAGE_SIZE,
@@ -1083,7 +1092,9 @@ class PipelineReadService:
             if len(page) < scan_limit:
                 break
             scan_offset += scan_limit
-        return matches[offset : offset + limit]
+            if scan_offset >= MAX_PIPELINE_TEXT_SCAN_RECORDS:
+                partial = True
+        return PipelineListResult(items=matches[offset : offset + limit], partial=partial)
 
     async def get_pipeline(self, thread_id: str) -> JsonDict:
         """Thread summary plus an explicit public checkpoint/gate projection."""

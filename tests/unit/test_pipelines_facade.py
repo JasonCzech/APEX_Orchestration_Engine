@@ -939,6 +939,7 @@ def test_list_pipelines_q_scan_has_a_hard_aggregate_record_cap() -> None:
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+    assert response.json()["partial"] is True
     assert len(fake.search_calls) == (
         MAX_PIPELINE_TEXT_SCAN_RECORDS // PIPELINE_TEXT_SCAN_PAGE_SIZE
     )

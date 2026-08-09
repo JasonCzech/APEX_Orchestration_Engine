@@ -221,6 +221,7 @@ class PipelineListResponse(BaseModel):
     items: list[PipelineSummary]
     limit: int
     offset: int
+    partial: bool = False
 
 
 class StartPipelineRequest(BaseModel):
@@ -562,19 +563,24 @@ async def list_pipelines(
 ) -> Any:
     ensure_scope(identity, project_id=project)
     service = _pipeline_read_service_after_scope(request)
-    items: list[dict[str, Any]] | None = None
+    result: Any = None
     runtime_failed = False
     try:
-        items = await service.list_pipelines(
+        result = await service.list_pipelines(
             project=project, status=status, q=q, limit=limit, offset=offset
         )
     except Exception:
         runtime_failed = True
     if runtime_failed:
         raise _pipeline_runtime_unavailable()
-    if items is None:  # pragma: no cover - service contract invariant
+    if result is None:  # pragma: no cover - service contract invariant
         raise _pipeline_runtime_unavailable()
-    return {"items": items, "limit": limit, "offset": offset}
+    return {
+        "items": result.items,
+        "limit": limit,
+        "offset": offset,
+        "partial": result.partial,
+    }
 
 
 @router.get("/{thread_id}", operation_id="getPipeline", response_model=PipelineDetail)

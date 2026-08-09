@@ -92,6 +92,7 @@ from apex.domain.integrations import (
     ValidationReport,
 )
 from apex.domain.pipeline import MAX_CONTEXT_REF_CHARS, ArtifactRef, EngineHandle
+from apex.ports.apex_load_control import NativeRunSnapshot
 from apex.ports.artifact_store import ArtifactStorePort, engine_artifact_key
 from apex.ports.execution_engine import (
     TERMINAL_ENGINE_PHASES,
@@ -124,6 +125,9 @@ _MAX_PROVIDER_ACTIONS = 10_000
 _MAX_PROVIDER_COUNT = 1_000_000_000
 _MAX_PROVIDER_DURATION_S = 366 * 24 * 60 * 60
 _MAX_NATIVE_CONTROL_ROWS = 5_000
+_MAX_NATIVE_RUN_RECONCILIATION_ROWS = 50_000
+_NATIVE_HEALTH_TIMEOUT_S = 30.0
+_NATIVE_HEALTH_CONCURRENCY = 8
 _MAX_CONSOLE_URL_CHARS = MAX_CONTEXT_REF_CHARS - len("/#/test/") - 255
 _CONFLICT_RECHECK_ATTEMPTS = 6
 _CONFLICT_RECHECK_DELAY_S = 0.05
@@ -914,6 +918,93 @@ class ApexLoadExecutionEngine:
             raise ValueError(f"{label} must be a safe APEX Load identifier")
         return value
 
+    def _native_idempotency_key(self, value: str) -> str:
+        return require_bounded_credential(
+            value,
+            label="APEX Load native idempotency key",
+            header_token=True,
+            max_bytes=255,
+        )
+
+    async def _require_native_scenario_draft_ownership(self, draft: dict[str, Any]) -> None:
+        groups = draft.get("groups")
+        if groups is None:
+            return
+        if type(groups) is not list or len(groups) > _MAX_NATIVE_CONTROL_ROWS:
+            raise ValueError("APEX Load scenario groups are invalid")
+        requested_script_ids: set[str] = set()
+        for group in groups:
+            if type(group) is not dict:
+                raise ValueError("APEX Load scenario group is invalid")
+            script_id = group.get("script_id")
+            if type(script_id) is not str or not _is_safe_named_ref(script_id):
+                raise ValueError("APEX Load scenario group script_id is invalid")
+            requested_script_ids.add(script_id)
+        if not requested_script_ids:
+            return
+        response = await self._request("GET", "/api/v1/scripts", params=self._native_params())
+        data = _json_object(response, "GET project APEX Load scripts")
+        scripts = _provider_list_field(
+            data,
+            "scripts",
+            "GET project APEX Load scripts",
+            max_items=_MAX_SCRIPT_RECONCILIATION_ROWS,
+        )
+        owned_script_ids: set[str] = set()
+        for script in scripts:
+            script_id = _provider_identifier(
+                script.get("id"),
+                "project script response field 'id'",
+            )
+            if "project_id" in script and script.get("project_id") != self._project_id:
+                raise RuntimeError("apex load project script response crossed its project boundary")
+            owned_script_ids.add(script_id)
+        if not requested_script_ids.issubset(owned_script_ids):
+            raise ValueError(
+                "APEX Load scenario references a script outside the configured project"
+            )
+
+    @staticmethod
+    def _find_idempotent_native_resource(
+        resources: list[dict[str, Any]], idempotency_key: str, *, label: str
+    ) -> dict[str, Any] | None:
+        matches = [item for item in resources if item.get("idempotency_key") == idempotency_key]
+        if len(matches) > 1:
+            raise RuntimeError(f"APEX Load {label} idempotency key matched multiple resources")
+        return matches[0] if matches else None
+
+    @staticmethod
+    def _find_reconciled_native_resource(
+        resources: list[dict[str, Any]],
+        *,
+        draft: dict[str, Any],
+        idempotency_key: str,
+        label: str,
+        prior_ids: set[str],
+        allow_prior_match: bool,
+    ) -> dict[str, Any] | None:
+        native_match = ApexLoadExecutionEngine._find_idempotent_native_resource(
+            resources,
+            idempotency_key,
+            label=label,
+        )
+        if native_match is not None:
+            return native_match
+        comparable = {
+            key: value
+            for key, value in draft.items()
+            if key not in {"expected_revision", "idempotency_key", "project_id"}
+        }
+        matches = [
+            item
+            for item in resources
+            if (allow_prior_match or item.get("id") not in prior_ids)
+            and all(item.get(key) == value for key, value in comparable.items())
+        ]
+        if len(matches) > 1:
+            raise RuntimeError(f"APEX Load {label} retry matched multiple resources")
+        return matches[0] if matches else None
+
     async def probe(self) -> str:
         """Read-only authenticated probe that is valid without a workload draft."""
         response = await self._request(
@@ -1198,7 +1289,10 @@ class ApexLoadExecutionEngine:
         )
         result = [dict(scenario) for scenario in scenarios]
         for scenario in result:
-            self._require_native_project(scenario, context="scenario list response")
+            self._require_native_resource_identity(
+                scenario,
+                context="scenario list response",
+            )
         return result
 
     async def get_native_scenario(self, scenario_id: str) -> dict[str, Any]:
@@ -1211,34 +1305,84 @@ class ApexLoadExecutionEngine:
             not_found=f"APEX Load scenario {safe_id!r} not found",
         )
         scenario = _json_object(response, "GET APEX Load scenario")
-        self._require_native_project(scenario, context="scenario response")
+        self._require_native_resource_identity(
+            scenario,
+            context="scenario response",
+            expected_id=safe_id,
+        )
         return scenario
 
-    async def create_native_scenario(self, draft: dict[str, Any]) -> dict[str, Any]:
+    async def create_native_scenario(
+        self, draft: dict[str, Any], *, idempotency_key: str
+    ) -> dict[str, Any]:
+        safe_key = self._native_idempotency_key(idempotency_key)
         body = self._native_project_draft(draft, label="APEX Load scenario draft")
-        response = await self._request(
-            "POST", "/api/v1/scenarios", json=body, params=self._native_params()
+        body.pop("idempotency_key", None)
+        await self._require_native_scenario_draft_ownership(body)
+        existing_resources = await self.list_native_scenarios()
+        existing = self._find_idempotent_native_resource(
+            existing_resources,
+            safe_key,
+            label="scenario",
         )
+        if existing is not None:
+            return existing
+        prior_ids = {item["id"] for item in existing_resources}
+        try:
+            response = await self._request(
+                "POST",
+                "/api/v1/scenarios",
+                json=body,
+                params=self._native_params(),
+                headers={"Idempotency-Key": safe_key},
+            )
+        except (_AmbiguousRequestError, _RemoteConflictError) as exc:
+            existing = self._find_reconciled_native_resource(
+                await self.list_native_scenarios(),
+                draft=body,
+                idempotency_key=safe_key,
+                label="scenario",
+                prior_ids=prior_ids,
+                allow_prior_match=(
+                    isinstance(exc, _RemoteConflictError)
+                    and "duplicate idempotency key" in str(exc).casefold()
+                ),
+            )
+            if existing is not None:
+                return {**existing, "idempotency_key": safe_key}
+            raise
         scenario = _json_object(response, "POST APEX Load scenario")
-        self._require_native_project(scenario, context="created scenario")
-        return scenario
+        self._require_native_resource_identity(scenario, context="created scenario")
+        return {**scenario, "idempotency_key": safe_key}
 
     async def update_native_scenario(
         self, scenario_id: str, draft: dict[str, Any], *, expected_revision: int | None = None
     ) -> dict[str, Any]:
         self._configured_native_project_id()
         safe_id = self._native_id(scenario_id, label="scenario id")
-        await self.get_native_scenario(safe_id)
+        current = await self.get_native_scenario(safe_id)
         body = self._native_project_draft(draft, label="APEX Load scenario draft")
+        await self._require_native_scenario_draft_ownership(body)
         if expected_revision is not None:
-            if type(expected_revision) is not int or not 0 <= expected_revision <= 1_000_000_000:
+            if type(expected_revision) is not int or not 1 <= expected_revision <= 1_000_000_000:
                 raise ValueError("expected scenario revision is invalid")
-            body.setdefault("expected_revision", expected_revision)
+            current_revision = _provider_integer(
+                current.get("revision"),
+                "scenario response field 'revision'",
+                minimum=1,
+            )
+            if current_revision != expected_revision:
+                raise ValueError("expected scenario revision is stale")
+        body.pop("expected_revision", None)
         response = await self._request(
             "PUT", f"/api/v1/scenarios/{safe_id}", json=body, params=self._native_params()
         )
         scenario = _json_object(response, "PUT APEX Load scenario")
-        self._require_native_project(scenario, context="updated scenario")
+        self._require_native_resource_identity(
+            scenario,
+            context="updated scenario",
+            expected_id=safe_id,
+        )
         return scenario
 
     async def delete_native_scenario(self, scenario_id: str) -> None:
@@ -1249,6 +1393,7 @@ class ApexLoadExecutionEngine:
 
     async def validate_native_scenario(self, draft: dict[str, Any]) -> dict[str, Any]:
         body = self._native_project_draft(draft, label="APEX Load scenario draft")
+        await self._require_native_scenario_draft_ownership(body)
         response = await self._request(
             "POST",
             "/api/v1/scenarios/validate-load-model",
@@ -1259,6 +1404,14 @@ class ApexLoadExecutionEngine:
 
     async def size_native_scenario(self, request: dict[str, Any]) -> dict[str, Any]:
         body = self._native_project_draft(request, label="APEX Load goal-sizing request")
+        baseline_test_id = body.get("baseline_test_id")
+        if baseline_test_id is not None:
+            if type(baseline_test_id) is not str:
+                raise ValueError("APEX Load goal-sizing baseline_test_id is invalid")
+            await self._get_native_test(
+                baseline_test_id,
+                context="native goal-sizing baseline response",
+            )
         response = await self._request(
             "POST",
             "/api/v1/scenarios/size-from-goal",
@@ -1340,7 +1493,16 @@ class ApexLoadExecutionEngine:
         )
         result = [dict(schedule) for schedule in schedules]
         for schedule in result:
-            self._require_native_project(schedule, context="schedule list response")
+            self._require_native_resource_identity(
+                schedule,
+                context="schedule list response",
+            )
+            self._require_native_resource_link(
+                schedule,
+                field="scenario_id",
+                expected_id=safe_id,
+                context="schedule list response",
+            )
         return result
 
     async def _get_native_schedule(self, scenario_id: str, schedule_id: str) -> dict[str, Any]:
@@ -1353,20 +1515,52 @@ class ApexLoadExecutionEngine:
         raise KeyError(f"APEX Load schedule {safe_schedule_id!r} not found")
 
     async def create_native_schedule(
-        self, scenario_id: str, draft: dict[str, Any]
+        self, scenario_id: str, draft: dict[str, Any], *, idempotency_key: str
     ) -> dict[str, Any]:
         self._configured_native_project_id()
         safe_id = self._native_id(scenario_id, label="scenario id")
-        await self.get_native_scenario(safe_id)
-        response = await self._request(
-            "POST",
-            f"/api/v1/scenarios/{safe_id}/schedules",
-            json=self._native_project_draft(draft, label="APEX Load schedule draft"),
-            params=self._native_params(),
+        safe_key = self._native_idempotency_key(idempotency_key)
+        body = self._native_project_draft(draft, label="APEX Load schedule draft")
+        body.pop("idempotency_key", None)
+        existing_resources = await self.list_native_schedules(safe_id)
+        existing = self._find_idempotent_native_resource(
+            existing_resources, safe_key, label="schedule"
         )
+        if existing is not None:
+            return existing
+        prior_ids = {item["id"] for item in existing_resources}
+        try:
+            response = await self._request(
+                "POST",
+                f"/api/v1/scenarios/{safe_id}/schedules",
+                json=body,
+                params=self._native_params(),
+                headers={"Idempotency-Key": safe_key},
+            )
+        except (_AmbiguousRequestError, _RemoteConflictError) as exc:
+            existing = self._find_reconciled_native_resource(
+                await self.list_native_schedules(safe_id),
+                draft=body,
+                idempotency_key=safe_key,
+                label="schedule",
+                prior_ids=prior_ids,
+                allow_prior_match=(
+                    isinstance(exc, _RemoteConflictError)
+                    and "duplicate idempotency key" in str(exc).casefold()
+                ),
+            )
+            if existing is not None:
+                return {**existing, "idempotency_key": safe_key}
+            raise
         schedule = _json_object(response, "POST APEX Load scenario schedule")
-        self._require_native_project(schedule, context="created schedule")
-        return schedule
+        self._require_native_resource_identity(schedule, context="created schedule")
+        self._require_native_resource_link(
+            schedule,
+            field="scenario_id",
+            expected_id=safe_id,
+            context="created schedule",
+        )
+        return {**schedule, "idempotency_key": safe_key}
 
     async def update_native_schedule(
         self,
@@ -1379,12 +1573,17 @@ class ApexLoadExecutionEngine:
         self._configured_native_project_id()
         safe_scenario_id = self._native_id(scenario_id, label="scenario id")
         safe_schedule_id = self._native_id(schedule_id, label="schedule id")
-        await self._get_native_schedule(safe_scenario_id, safe_schedule_id)
+        current = await self._get_native_schedule(safe_scenario_id, safe_schedule_id)
         body = self._native_project_draft(draft, label="APEX Load schedule draft")
-        if expected_revision is not None:
-            if type(expected_revision) is not int or not 0 <= expected_revision <= 1_000_000_000:
-                raise ValueError("expected schedule revision is invalid")
-            body.setdefault("expected_revision", expected_revision)
+        if expected_revision is None:
+            expected_revision = _provider_integer(
+                current.get("revision"),
+                "schedule response field 'revision'",
+                minimum=1,
+            )
+        elif type(expected_revision) is not int or not 1 <= expected_revision <= 1_000_000_000:
+            raise ValueError("expected schedule revision is invalid")
+        body["expected_revision"] = expected_revision
         response = await self._request(
             "PUT",
             f"/api/v1/scenarios/{safe_scenario_id}/schedules/{safe_schedule_id}",
@@ -1392,7 +1591,17 @@ class ApexLoadExecutionEngine:
             params=self._native_params(),
         )
         schedule = _json_object(response, "PUT APEX Load scenario schedule")
-        self._require_native_project(schedule, context="updated schedule")
+        self._require_native_resource_identity(
+            schedule,
+            context="updated schedule",
+            expected_id=safe_schedule_id,
+        )
+        self._require_native_resource_link(
+            schedule,
+            field="scenario_id",
+            expected_id=safe_scenario_id,
+            context="updated schedule",
+        )
         return schedule
 
     async def delete_native_schedule(self, scenario_id: str, schedule_id: str) -> None:
@@ -1427,7 +1636,22 @@ class ApexLoadExecutionEngine:
         )
         result = [dict(occurrence) for occurrence in occurrences]
         for occurrence in result:
-            self._require_native_project(occurrence, context="schedule occurrence response")
+            self._require_native_resource_identity(
+                occurrence,
+                context="schedule occurrence response",
+            )
+            self._require_native_resource_link(
+                occurrence,
+                field="scenario_id",
+                expected_id=safe_scenario_id,
+                context="schedule occurrence response",
+            )
+            self._require_native_resource_link(
+                occurrence,
+                field="schedule_id",
+                expected_id=safe_schedule_id,
+                context="schedule occurrence response",
+            )
         return result
 
     async def decide_native_schedule_approval(
@@ -1445,26 +1669,148 @@ class ApexLoadExecutionEngine:
             f"{safe_approval_id}/{decision}",
             params=self._native_params(),
         )
-        approval = _json_object(response, "APEX Load schedule approval")
-        self._require_native_project(approval, context="schedule approval response")
+        result = _json_object(response, "APEX Load schedule approval")
+        approval = result.get("approval")
+        schedule = result.get("schedule")
+        if type(approval) is not dict or type(schedule) is not dict:
+            raise RuntimeError("apex load schedule approval response is invalid")
+        self._require_native_resource_identity(
+            approval,
+            context="schedule approval response",
+            expected_id=safe_approval_id,
+        )
+        self._require_native_resource_link(
+            approval,
+            field="scenario_id",
+            expected_id=safe_scenario_id,
+            context="schedule approval response",
+        )
+        self._require_native_resource_link(
+            approval,
+            field="schedule_id",
+            expected_id=safe_schedule_id,
+            context="schedule approval response",
+        )
+        self._require_native_resource_identity(
+            schedule,
+            context="schedule approval schedule response",
+            expected_id=safe_schedule_id,
+        )
+        self._require_native_resource_link(
+            schedule,
+            field="scenario_id",
+            expected_id=safe_scenario_id,
+            context="schedule approval schedule response",
+        )
         return approval
 
     async def native_schedule_health(self) -> dict[str, Any]:
-        self._configured_native_project_id()
-        response = await self._request(
-            "GET", "/api/v1/schedules/health", params=self._native_params()
-        )
-        return _json_object(response, "APEX Load schedule health")
+        project_id = self._configured_native_project_id()
+        scenarios = await self.list_native_scenarios()
+
+        async def schedules_for(scenario: dict[str, Any]) -> list[dict[str, Any]]:
+            scenario_id = _provider_identifier(
+                scenario.get("id"),
+                "schedule health scenario field 'id'",
+            )
+            return await self.list_native_schedules(scenario_id)
+
+        schedules: list[dict[str, Any]] = []
+        try:
+            async with asyncio.timeout(_NATIVE_HEALTH_TIMEOUT_S):
+                for offset in range(0, len(scenarios), _NATIVE_HEALTH_CONCURRENCY):
+                    pages = await asyncio.gather(
+                        *(
+                            schedules_for(scenario)
+                            for scenario in scenarios[
+                                offset : offset + _NATIVE_HEALTH_CONCURRENCY
+                            ]
+                        )
+                    )
+                    for page in pages:
+                        if len(schedules) + len(page) > _MAX_NATIVE_CONTROL_ROWS:
+                            raise RuntimeError(
+                                "APEX Load project schedule health exceeded its row limit"
+                            )
+                        schedules.extend(page)
+        except TimeoutError:
+            raise RuntimeError("APEX Load project schedule health exceeded its deadline") from None
+        now = datetime.now(UTC)
+        due = 0
+        for schedule in schedules:
+            next_run_at = schedule.get("next_run_at")
+            if type(next_run_at) is not str or not next_run_at:
+                continue
+            try:
+                next_run = datetime.fromisoformat(next_run_at)
+            except ValueError:
+                raise RuntimeError(
+                    "apex load schedule health field 'next_run_at' must be an ISO-8601 timestamp"
+                ) from None
+            if next_run.tzinfo is None:
+                next_run = next_run.replace(tzinfo=UTC)
+            if next_run <= now:
+                due += 1
+        return {
+            "project_id": project_id,
+            "source": "project_schedule_snapshot",
+            "total": len(schedules),
+            "enabled": sum(schedule.get("enabled") is True for schedule in schedules),
+            "due": due,
+            "blocked": sum(bool(schedule.get("conflict_summary")) for schedule in schedules),
+            "failed": sum(bool(schedule.get("last_error")) for schedule in schedules),
+            "pending_approval": sum(
+                schedule.get("next_required_action") == "approval_required"
+                for schedule in schedules
+            ),
+        }
 
     async def native_run_calendar(self) -> dict[str, Any]:
-        self._configured_native_project_id()
+        project_id = self._configured_native_project_id()
         response = await self._request("GET", "/api/v1/run-calendar", params=self._native_params())
-        return _json_object(response, "APEX Load run calendar")
+        calendar = _json_object(response, "APEX Load run calendar")
+        events = _provider_list_field(
+            calendar,
+            "events",
+            "APEX Load run calendar",
+            max_items=_MAX_NATIVE_CONTROL_ROWS,
+        )
+        for event in events:
+            if event.get("project_id") != project_id:
+                raise RuntimeError(
+                    "apex load run calendar returned an event from an unexpected project"
+                )
+        capacity = calendar.get("capacity")
+        if type(capacity) is dict and capacity.get("project_id") not in {None, project_id}:
+            raise RuntimeError(
+                "apex load run calendar returned capacity from an unexpected project"
+            )
+        return calendar
 
     async def list_native_runs(self, *, active_only: bool = False) -> list[dict[str, Any]]:
+        return (
+            await self.scan_native_runs(
+                active_only=active_only,
+                max_items=_MAX_NATIVE_CONTROL_ROWS,
+            )
+        ).items
+
+    async def scan_native_runs(
+        self,
+        *,
+        active_only: bool = False,
+        max_items: int | None = None,
+    ) -> NativeRunSnapshot:
         self._configured_native_project_id()
+        scan_limit = _MAX_NATIVE_RUN_RECONCILIATION_ROWS if max_items is None else max_items
+        if (
+            type(scan_limit) is not int
+            or not _TEST_LIST_PAGE_SIZE <= scan_limit <= _MAX_NATIVE_RUN_RECONCILIATION_ROWS
+            or scan_limit % _TEST_LIST_PAGE_SIZE != 0
+        ):
+            raise ValueError("APEX Load native run scan limit is invalid")
         runs: list[dict[str, Any]] = []
-        for offset in range(0, _MAX_NATIVE_CONTROL_ROWS, _TEST_LIST_PAGE_SIZE):
+        for offset in range(0, scan_limit, _TEST_LIST_PAGE_SIZE):
             response = await self._request(
                 "GET",
                 "/api/v1/tests",
@@ -1484,27 +1830,45 @@ class ApexLoadExecutionEngine:
                 self._require_native_project(test, context="native test list response")
                 runs.append(dict(test))
             total = _provider_total(data, len(page), "GET APEX Load tests")
-            if total is None or len(runs) >= total or len(page) < _TEST_LIST_PAGE_SIZE:
-                return runs
-        raise RuntimeError("APEX Load native test list exceeds the reconciliation limit")
+            if total is not None and len(runs) >= total:
+                return NativeRunSnapshot(items=runs, complete=True)
+            if len(page) < _TEST_LIST_PAGE_SIZE:
+                return NativeRunSnapshot(items=runs, complete=True)
+        return NativeRunSnapshot(items=runs, complete=False)
 
     async def get_native_run(self, run_id: str) -> dict[str, Any]:
         return await self._get_native_test(run_id, context="native run response")
 
     async def native_run_metrics(self, run_id: str) -> dict[str, Any]:
         safe_id = self._native_id(run_id, label="test id")
-        await self._get_native_test(safe_id, context="native metrics test response")
-        response = await self._request(
-            "GET",
-            f"/api/v1/tests/{safe_id}/metrics",
-            params=self._native_params(),
-            not_found=f"APEX Load test {safe_id!r} not found",
-        )
+        test = await self._get_native_test(safe_id, context="native metrics test response")
+        try:
+            response = await self._request(
+                "GET",
+                f"/api/v1/tests/{safe_id}/metrics",
+                params=self._native_params(),
+                not_found=f"APEX Load metrics for test {safe_id!r} not found",
+            )
+        except EngineProviderRunNotFoundError:
+            live_metrics = test.get("live_metrics")
+            if live_metrics is None:
+                return {}
+            if type(live_metrics) is not dict:
+                raise RuntimeError(
+                    "APEX Load test field 'live_metrics' must be an object"
+                ) from None
+            return {"metrics": dict(live_metrics), "source": "test_record"}
         return _json_object(response, "GET APEX Load test metrics")
 
     async def native_run_error_evidence(self, run_id: str, signature: str) -> dict[str, Any]:
         safe_id = self._native_id(run_id, label="test id")
-        safe_signature = self._native_id(signature, label="error signature")
+        safe_signature = require_bounded_credential(
+            signature,
+            label="APEX Load error signature",
+            max_bytes=1_024,
+        )
+        if safe_signature != safe_signature.strip():
+            raise ValueError("APEX Load error signature must not have outer whitespace")
         await self._get_native_test(safe_id, context="native error evidence test response")
         response = await self._request(
             "GET",
@@ -1520,6 +1884,31 @@ class ApexLoadExecutionEngine:
             raise RuntimeError(
                 f"apex load {context} returned a resource from an unexpected project"
             )
+
+    def _require_native_resource_identity(
+        self,
+        resource: dict[str, Any],
+        *,
+        context: str,
+        expected_id: str | None = None,
+    ) -> str:
+        self._require_native_project(resource, context=context)
+        resource_id = _provider_identifier(resource.get("id"), f"{context} field 'id'")
+        if expected_id is not None and resource_id != expected_id:
+            raise RuntimeError(f"apex load {context} returned an unexpected resource id")
+        return resource_id
+
+    @staticmethod
+    def _require_native_resource_link(
+        resource: dict[str, Any],
+        *,
+        field: str,
+        expected_id: str,
+        context: str,
+    ) -> None:
+        linked_id = _provider_identifier(resource.get(field), f"{context} field {field!r}")
+        if linked_id != expected_id:
+            raise RuntimeError(f"apex load {context} returned an unexpected {field}")
 
     # ── port surface ──────────────────────────────────────────────────────────
 

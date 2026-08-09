@@ -109,6 +109,7 @@ export function pipelinesHandler(
       items,
       limit: Number(url.searchParams.get('limit') ?? '20'),
       offset: Number(url.searchParams.get('offset') ?? '0'),
+      partial: false,
       ...(options.total !== undefined ? { total: options.total } : {}),
     }
     return HttpResponse.json(body)
@@ -120,6 +121,6 @@ export function pipelinesHandler(
 export function pipelinesNeverResolves() {
   return http.get('*/v1/pipelines', async () => {
     await delay('infinite')
-    return HttpResponse.json({ items: [], limit: 25, offset: 0 })
+    return HttpResponse.json({ items: [], limit: 25, offset: 0, partial: false })
   })
 }

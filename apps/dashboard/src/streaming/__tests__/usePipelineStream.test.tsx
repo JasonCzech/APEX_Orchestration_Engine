@@ -78,6 +78,7 @@ function makeListResponse(threadId = 't1'): PipelineListResponse {
     ],
     limit: 25,
     offset: 0,
+    partial: false,
   }
 }
 

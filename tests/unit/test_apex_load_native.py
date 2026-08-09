@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from apex.persistence.repositories.apex_load_native import (
+    NativeConnectionClaim,
     NativeRunLaunchClaim,
     native_run_idempotency_key,
 )
@@ -36,11 +37,19 @@ async def test_terminal_run_launch_is_claimed_once_across_reconcile_retries(
             self.claimed = False
             self.launches: list[tuple[str, str]] = []
 
-        async def enabled_connections(self) -> list[object]:
+        async def claim_enabled_connections(
+            self, *, limit: int, exclude_connection_ids: frozenset[str]
+        ) -> list[NativeConnectionClaim]:
+            assert limit == 1
+            assert not exclude_connection_ids
             return []
 
-        async def claim_terminal_runs(self, *, limit: int) -> list[NativeRunLaunchClaim]:
-            assert limit == apex_load_native.MAX_NATIVE_PIPELINE_LAUNCHES_PER_PASS
+        async def claim_terminal_runs(
+            self, *, limit: int, exclude_run_ids: frozenset[str]
+        ) -> list[NativeRunLaunchClaim]:
+            assert limit == 1
+            if claim.id in exclude_run_ids:
+                return []
             return [] if self.claimed else [claim]
 
         async def mark_pipeline_launched(
@@ -178,6 +187,55 @@ def test_native_run_idempotency_key_isolated_by_connection_generation() -> None:
         "remote-project-2",
         "test-1",
     )
+
+
+async def test_connection_is_reconciled_only_once_per_pass(monkeypatch: Any) -> None:
+    claim = NativeConnectionClaim(
+        connection_id="connection-1",
+        connection_version=datetime(2026, 8, 7, tzinfo=UTC),
+        project_id="project-1",
+        claim_token="claim-token",
+    )
+
+    class Repository:
+        def __init__(self) -> None:
+            self.exclusions: list[frozenset[str]] = []
+            self.released: list[NativeConnectionClaim] = []
+
+        async def claim_enabled_connections(
+            self, *, limit: int, exclude_connection_ids: frozenset[str]
+        ) -> list[NativeConnectionClaim]:
+            assert limit == 1
+            self.exclusions.append(exclude_connection_ids)
+            return [] if claim.connection_id in exclude_connection_ids else [claim]
+
+        async def release_connection_claim(self, received: NativeConnectionClaim) -> None:
+            self.released.append(received)
+
+        async def claim_terminal_runs(
+            self, *, limit: int, exclude_run_ids: frozenset[str]
+        ) -> list[NativeRunLaunchClaim]:
+            assert limit == 1
+            assert not exclude_run_ids
+            return []
+
+    syncs: list[NativeConnectionClaim] = []
+
+    async def sync_connection(**kwargs: object) -> int:
+        syncs.append(cast(NativeConnectionClaim, kwargs["claim"]))
+        return 1
+
+    repository = Repository()
+    monkeypatch.setattr(apex_load_native, "_sync_connection", sync_connection)
+
+    assert await apex_load_native.reconcile_apex_load_native_once(
+        repository=cast(Any, repository),
+        resolver=cast(Any, object()),
+        pipeline_service=cast(Any, object()),
+    ) == 1
+    assert repository.exclusions == [frozenset(), frozenset({"connection-1"})]
+    assert repository.released == [claim]
+    assert syncs == [claim]
 
 
 async def test_connection_version_drift_stales_claim_without_starting_pipeline(

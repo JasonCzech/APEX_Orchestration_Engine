@@ -3,6 +3,7 @@
 import asyncio
 import math
 from collections.abc import Callable
+from datetime import datetime
 from functools import lru_cache
 from typing import Any, cast
 from urllib.parse import quote
@@ -15,6 +16,7 @@ from apex.domain.pipeline import ArtifactRef
 from apex.persistence.db import get_sessionmaker
 from apex.persistence.repositories.apex_load_native import (
     ApexLoadNativeRepository,
+    NativeConnectionClaim,
     NativeRunLaunchClaim,
 )
 from apex.ports.apex_load_control import ApexLoadControlPlanePort
@@ -26,6 +28,9 @@ from apex.services.pipeline_read import PipelineReadService
 logger = structlog.get_logger(__name__)
 
 RECONCILE_INTERVAL_S = 30.0
+NATIVE_CONNECTION_RECONCILE_TIMEOUT_S = 110.0
+NATIVE_PIPELINE_LAUNCH_TIMEOUT_S = 11 * 60.0
+MAX_NATIVE_CONNECTIONS_PER_PASS = 500
 MAX_NATIVE_PIPELINE_LAUNCHES_PER_PASS = 100
 
 
@@ -122,42 +127,48 @@ async def _sync_connection(
     *,
     repository: ApexLoadNativeRepository,
     resolver: ConnectionResolver,
-    connection_id: str,
-    project_id: str,
+    claim: NativeConnectionClaim,
 ) -> int:
     resolved = None
     try:
         resolved = await resolver.resolve_with_metadata(
             PortKind.EXECUTION_ENGINE,
-            connection_id=connection_id,
-            project_id=project_id,
+            connection_id=claim.connection_id,
+            project_id=claim.project_id,
             expected_provider="apex_load",
         )
-        if not resolved.persisted or resolved.connection_id != connection_id:
+        if not resolved.persisted or resolved.connection_id != claim.connection_id:
             raise ValueError("APEX Load connection affinity changed")
-        if resolved.connection_version is None:
-            raise ValueError("APEX Load persisted connection has no version")
+        connection_version = resolved.connection_version
+        if (
+            not isinstance(connection_version, datetime)
+            or connection_version != claim.connection_version
+        ):
+            raise ValueError("APEX Load connection generation changed before reconciliation")
         adapter = _native_control(resolved.adapter)
         remote_project_id = adapter.native_project_id
         if remote_project_id is None:  # pragma: no cover - _native_control invariant
             raise ValueError("APEX Load provider project binding is missing")
-        runs = await adapter.list_native_runs()
+        run_snapshot = await adapter.scan_native_runs()
         synced = await repository.sync_runs(
-            connection_id=connection_id,
-            project_id=project_id,
+            connection_id=claim.connection_id,
+            project_id=claim.project_id,
             remote_project_id=remote_project_id,
-            connection_version=resolved.connection_version,
-            runs=runs,
+            connection_version=connection_version,
+            claim_token=claim.claim_token,
+            runs=run_snapshot.items,
+            complete=run_snapshot.complete,
         )
         # Scenario/schedule mirrors are an audit aid. A transient authoring API
         # failure must not block terminal-run reporting after run reconciliation.
         try:
             scenarios = await adapter.list_native_scenarios()
             await repository.sync_scenarios(
-                connection_id=connection_id,
-                project_id=project_id,
+                connection_id=claim.connection_id,
+                project_id=claim.project_id,
                 remote_project_id=remote_project_id,
-                connection_version=resolved.connection_version,
+                connection_version=connection_version,
+                claim_token=claim.claim_token,
                 scenarios=scenarios,
             )
             for scenario in scenarios:
@@ -166,10 +177,11 @@ async def _sync_connection(
                     raise ValueError("APEX Load scenario response has no id")
                 schedules = await adapter.list_native_schedules(scenario_id)
                 await repository.sync_schedules(
-                    connection_id=connection_id,
-                    project_id=project_id,
+                    connection_id=claim.connection_id,
+                    project_id=claim.project_id,
                     remote_project_id=remote_project_id,
-                    connection_version=resolved.connection_version,
+                    connection_version=connection_version,
+                    claim_token=claim.claim_token,
                     scenario_remote_id=scenario_id,
                     schedules=schedules,
                 )
@@ -178,7 +190,7 @@ async def _sync_connection(
         except Exception as exc:
             logger.warning(
                 "apex_load_native.authoring_mirror_failed",
-                connection_id=connection_id,
+                connection_id=claim.connection_id,
                 error_type=safe_type_name(exc),
             )
         return synced
@@ -301,33 +313,62 @@ async def reconcile_apex_load_native_once(
     synced = 0
     if heartbeat is not None:
         heartbeat()
-    for target in await repository.enabled_connections():
+    visited_connection_ids: set[str] = set()
+    while len(visited_connection_ids) < MAX_NATIVE_CONNECTIONS_PER_PASS:
+        claims = await repository.claim_enabled_connections(
+            limit=1,
+            exclude_connection_ids=frozenset(visited_connection_ids),
+        )
+        if not claims:
+            break
+        claim = claims[0]
+        visited_connection_ids.add(claim.connection_id)
         if heartbeat is not None:
             heartbeat()
         try:
-            synced += await _sync_connection(
-                repository=repository,
-                resolver=resolver,
-                connection_id=target.connection_id,
-                project_id=target.project_id,
-            )
+            async with asyncio.timeout(NATIVE_CONNECTION_RECONCILE_TIMEOUT_S):
+                synced += await _sync_connection(
+                    repository=repository,
+                    resolver=resolver,
+                    claim=claim,
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning(
                 "apex_load_native.connection_reconcile_failed",
-                connection_id=target.connection_id,
+                connection_id=claim.connection_id,
                 error_type=safe_type_name(exc),
             )
-    for claim in await repository.claim_terminal_runs(limit=MAX_NATIVE_PIPELINE_LAUNCHES_PER_PASS):
+        finally:
+            await repository.release_connection_claim(claim)
+    visited_run_ids: set[str] = set()
+    while len(visited_run_ids) < MAX_NATIVE_PIPELINE_LAUNCHES_PER_PASS:
+        claims = await repository.claim_terminal_runs(
+            limit=1,
+            exclude_run_ids=frozenset(visited_run_ids),
+        )
+        if not claims:
+            break
+        claim = claims[0]
+        visited_run_ids.add(claim.id)
         if heartbeat is not None:
             heartbeat()
-        await _launch_reporting_pipeline(
-            repository=repository,
-            resolver=resolver,
-            pipeline_service=pipeline_service,
-            claim=claim,
-        )
+        try:
+            async with asyncio.timeout(NATIVE_PIPELINE_LAUNCH_TIMEOUT_S):
+                await _launch_reporting_pipeline(
+                    repository=repository,
+                    resolver=resolver,
+                    pipeline_service=pipeline_service,
+                    claim=claim,
+                )
+        except TimeoutError:
+            logger.warning(
+                "apex_load_native.pipeline_launch_timed_out",
+                connection_id=claim.connection_id,
+                remote_run_id=claim.remote_id,
+            )
+            await repository.release_launch_claim(claim, error_kind="TimeoutError")
     return synced
 
 

@@ -2357,6 +2357,29 @@ export interface components {
             /** Approved */
             approved: boolean;
         };
+        /** NativeCapabilitiesResponse */
+        NativeCapabilitiesResponse: {
+            /** Console Url */
+            console_url: string;
+            /** Load Models */
+            load_models?: {
+                [key: string]: unknown;
+            };
+            /** Templates */
+            templates?: {
+                [key: string]: unknown;
+            };
+        };
+        /** NativeConnectionListResponse */
+        NativeConnectionListResponse: {
+            /** Items */
+            items: components["schemas"]["NativeConnectionSummary"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** NativeConnectionSummary */
         NativeConnectionSummary: {
             /** Id */
@@ -2371,6 +2394,53 @@ export interface components {
             /** Console Url */
             console_url: string;
         };
+        /** NativeDetailsResponse */
+        NativeDetailsResponse: {
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+        };
+        /** NativeMirroredRunListResponse */
+        NativeMirroredRunListResponse: {
+            /** Items */
+            items: components["schemas"]["NativeMirroredRunProjection"][];
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** NativeMirroredRunProjection */
+        NativeMirroredRunProjection: {
+            /** Connection Version */
+            connection_version: string;
+            /** Console Url */
+            console_url?: string | null;
+            /** Ended At */
+            ended_at?: string | null;
+            /** Id */
+            id: string;
+            /** Last Seen At */
+            last_seen_at: string;
+            /** Pipeline Run Id */
+            pipeline_run_id?: string | null;
+            /** Pipeline Status */
+            pipeline_status: string;
+            /** Pipeline Thread Id */
+            pipeline_thread_id?: string | null;
+            /** Revision */
+            revision?: number | null;
+            /** Scenario Id */
+            scenario_id?: string | null;
+            /** Schedule Id */
+            schedule_id?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+            /** Terminal */
+            terminal: boolean;
+        };
         /**
          * NativeObjectRequest
          * @description Opaque provider draft, bounded before it reaches the adapter.
@@ -2382,6 +2452,39 @@ export interface components {
             payload: {
                 [key: string]: unknown;
             };
+        };
+        /** NativeResourceListResponse */
+        NativeResourceListResponse: {
+            /** Count */
+            count: number;
+            /** Items */
+            items: components["schemas"]["NativeResourceProjection"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /** NativeResourceProjection */
+        NativeResourceProjection: {
+            /** Console Url */
+            console_url?: string | null;
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+            /** Id */
+            id?: string | null;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /** Revision */
+            revision?: number | null;
+            /** Status */
+            status?: string | null;
         };
         /** Page */
         Page: {
@@ -2496,6 +2599,11 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
         };
         /** PipelineSummary */
         PipelineSummary: {
@@ -3878,9 +3986,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: components["schemas"]["NativeConnectionSummary"][];
-                    };
+                    "application/json": components["schemas"]["NativeConnectionListResponse"];
                 };
             };
         };
@@ -3903,9 +4009,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeDetailsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3937,9 +4041,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeCapabilitiesResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3974,9 +4076,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeMirroredRunListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4010,9 +4110,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4080,9 +4178,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeDetailsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4115,9 +4211,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeDetailsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4149,9 +4243,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4168,7 +4260,10 @@ export interface operations {
     createApexLoadScenario: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description Caller-stable key for retry-safe native resource creation. */
+                "Idempotency-Key": string;
+            };
             path: {
                 /** @description Enabled APEX Load connection id */
                 connection_id: string;
@@ -4187,9 +4282,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceProjection"];
                 };
             };
             /** @description Validation Error */
@@ -4225,9 +4318,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeDetailsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4263,9 +4354,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeDetailsResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4298,9 +4387,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceProjection"];
                 };
             };
             /** @description Validation Error */
@@ -4337,9 +4424,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceProjection"];
                 };
             };
             /** @description Validation Error */
@@ -4403,9 +4488,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4422,7 +4505,10 @@ export interface operations {
     createApexLoadSchedule: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description Caller-stable key for retry-safe native resource creation. */
+                "Idempotency-Key": string;
+            };
             path: {
                 scenario_id: string;
                 /** @description Enabled APEX Load connection id */
@@ -4442,9 +4528,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceProjection"];
                 };
             };
             /** @description Validation Error */
@@ -4482,9 +4566,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceProjection"];
                 };
             };
             /** @description Validation Error */
@@ -4555,9 +4637,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceProjection"];
                 };
             };
             /** @description Validation Error */
@@ -4591,9 +4671,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeResourceListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4625,9 +4703,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["NativeDetailsResponse"];
                 };
             };
             /** @description Validation Error */

@@ -6,9 +6,16 @@ that need those provider-native features resolve an execution-engine connection
 and require this protocol explicitly.
 """
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from apex.ports.artifact_store import ArtifactStorePort
+
+
+@dataclass(frozen=True)
+class NativeRunSnapshot:
+    items: list[dict[str, Any]]
+    complete: bool
 
 
 @runtime_checkable
@@ -34,7 +41,9 @@ class ApexLoadControlPlanePort(Protocol):
 
     async def get_native_scenario(self, scenario_id: str) -> dict[str, Any]: ...
 
-    async def create_native_scenario(self, draft: dict[str, Any]) -> dict[str, Any]: ...
+    async def create_native_scenario(
+        self, draft: dict[str, Any], *, idempotency_key: str
+    ) -> dict[str, Any]: ...
 
     async def update_native_scenario(
         self, scenario_id: str, draft: dict[str, Any], *, expected_revision: int | None = None
@@ -49,7 +58,7 @@ class ApexLoadControlPlanePort(Protocol):
     async def list_native_schedules(self, scenario_id: str) -> list[dict[str, Any]]: ...
 
     async def create_native_schedule(
-        self, scenario_id: str, draft: dict[str, Any]
+        self, scenario_id: str, draft: dict[str, Any], *, idempotency_key: str
     ) -> dict[str, Any]: ...
 
     async def update_native_schedule(
@@ -76,6 +85,10 @@ class ApexLoadControlPlanePort(Protocol):
     async def native_run_calendar(self) -> dict[str, Any]: ...
 
     async def list_native_runs(self, *, active_only: bool = False) -> list[dict[str, Any]]: ...
+
+    async def scan_native_runs(
+        self, *, active_only: bool = False, max_items: int | None = None
+    ) -> NativeRunSnapshot: ...
 
     async def get_native_run(self, run_id: str) -> dict[str, Any]: ...
 
