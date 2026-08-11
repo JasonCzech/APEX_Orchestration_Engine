@@ -421,9 +421,7 @@ async def _resolve_adapter(
                 adapter, resolved_connection_id = resolved_pair
             else:
                 if connection_id is None:
-                    raise ValueError(
-                        "legacy resolver cannot report the selected connection id"
-                    )
+                    raise ValueError("legacy resolver cannot report the selected connection id")
                 adapter = await resolver.resolve(
                     PortKind.WORK_TRACKING,
                     connection_id=connection_id,

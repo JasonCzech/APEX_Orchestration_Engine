@@ -137,9 +137,7 @@ class ContextRunInput(_StrictRunInputModel):
                 "work_tracking_connection_id is required when work_item_keys are present"
             )
         if not self.work_item_keys and connection_id is not None:
-            raise ValueError(
-                "work_tracking_connection_id requires at least one work_item_key"
-            )
+            raise ValueError("work_tracking_connection_id requires at least one work_item_key")
         return self
 
 

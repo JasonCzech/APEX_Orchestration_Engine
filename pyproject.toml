@@ -30,7 +30,11 @@ dev = [
     "langgraph-sdk>=0.1",
     "pytest>=8",
     "pytest-asyncio>=0.24",
-    "ruff>=0.6",
+    # Pinned exactly: the formatter's output changes between releases, so an
+    # unpinned range makes `ruff format --check` fail on files nobody touched
+    # as soon as a fresh sync resolves a newer version. Bump deliberately, in
+    # a standalone reformat commit.
+    "ruff==0.15.17",
     "pyright>=1.1.380",
     "langgraph-checkpoint-postgres>=3.1.0",
     "respx>=0.23.1",

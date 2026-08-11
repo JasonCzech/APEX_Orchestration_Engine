@@ -118,10 +118,7 @@ async def create_context_summary(
     if len(body.work_item_keys) > limits.max_work_item_keys:
         raise HTTPException(
             status_code=422,
-            detail=(
-                "work_item_keys exceeds the deployment limit "
-                f"({limits.max_work_item_keys})"
-            ),
+            detail=(f"work_item_keys exceeds the deployment limit ({limits.max_work_item_keys})"),
         )
     if len(set(body.work_item_keys)) != len(body.work_item_keys):
         raise HTTPException(status_code=422, detail="work_item_keys must not contain duplicates")

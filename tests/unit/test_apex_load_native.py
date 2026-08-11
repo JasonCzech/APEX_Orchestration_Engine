@@ -228,11 +228,14 @@ async def test_connection_is_reconciled_only_once_per_pass(monkeypatch: Any) -> 
     repository = Repository()
     monkeypatch.setattr(apex_load_native, "_sync_connection", sync_connection)
 
-    assert await apex_load_native.reconcile_apex_load_native_once(
-        repository=cast(Any, repository),
-        resolver=cast(Any, object()),
-        pipeline_service=cast(Any, object()),
-    ) == 1
+    assert (
+        await apex_load_native.reconcile_apex_load_native_once(
+            repository=cast(Any, repository),
+            resolver=cast(Any, object()),
+            pipeline_service=cast(Any, object()),
+        )
+        == 1
+    )
     assert repository.exclusions == [frozenset(), frozenset({"connection-1"})]
     assert repository.released == [claim]
     assert syncs == [claim]

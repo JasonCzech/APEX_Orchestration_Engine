@@ -27,9 +27,7 @@ _TEXT_BOUNDS = {
     "description": (0, MAX_DESCRIPTION_CHARS),
     "created_by": (1, 255),
 }
-_NULLABLE_TEXT_FIELDS = frozenset(
-    {"project_id", "connection_id", "description", "created_by"}
-)
+_NULLABLE_TEXT_FIELDS = frozenset({"project_id", "connection_id", "description", "created_by"})
 
 
 class SavedQueryNameConflictError(ValueError):

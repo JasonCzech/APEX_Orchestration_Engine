@@ -199,9 +199,7 @@ async def test_stale_pipeline_launch_claims_are_recoverable_after_a_crash() -> N
     session = _ClaimQuerySession()
     repository = ApexLoadNativeRepository(cast(async_sessionmaker[AsyncSession], lambda: session))
 
-    assert await repository.claim_terminal_runs(
-        exclude_run_ids=frozenset({"mirror-1"})
-    ) == []
+    assert await repository.claim_terminal_runs(exclude_run_ids=frozenset({"mirror-1"})) == []
 
     assert session.statement is not None
     compiled = session.statement.compile(dialect=postgresql.dialect())  # type: ignore[union-attr]
@@ -218,10 +216,13 @@ async def test_connection_claim_query_excludes_connections_seen_in_the_current_p
     session = _ClaimQuerySession()
     repository = ApexLoadNativeRepository(cast(async_sessionmaker[AsyncSession], lambda: session))
 
-    assert await repository.claim_enabled_connections(
-        limit=1,
-        exclude_connection_ids=frozenset({"connection-1"}),
-    ) == []
+    assert (
+        await repository.claim_enabled_connections(
+            limit=1,
+            exclude_connection_ids=frozenset({"connection-1"}),
+        )
+        == []
+    )
 
     assert session.statement is not None
     compiled = session.statement.compile(dialect=postgresql.dialect())  # type: ignore[union-attr]

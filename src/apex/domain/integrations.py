@@ -356,8 +356,7 @@ class ValidationReport(BaseModel):
     @classmethod
     def validate_warnings(cls, values: list[str]) -> list[str]:
         if any(
-            not warning.strip() or len(warning) > 2_048 or "\x00" in warning
-            for warning in values
+            not warning.strip() or len(warning) > 2_048 or "\x00" in warning for warning in values
         ):
             raise ValueError("validation warnings must be 1-2048 characters")
         return values

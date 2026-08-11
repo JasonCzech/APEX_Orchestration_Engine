@@ -220,11 +220,7 @@ class ApexLoadNativeRepository:
             )
             if excluded:
                 query = query.where(Connection.id.not_in(excluded))
-            rows = list(
-                (
-                    await session.scalars(query)
-                ).all()
-            )
+            rows = list((await session.scalars(query)).all())
             claims: list[NativeConnectionClaim] = []
             for row in rows:
                 if row.project_id is None:
@@ -382,9 +378,7 @@ class ApexLoadNativeRepository:
                 model.idempotency_key == idempotency_key,
             )
             if model is ApexLoadNativeSchedule:
-                key_statement = key_statement.where(
-                    model.scenario_remote_id == scenario_remote_id
-                )
+                key_statement = key_statement.where(model.scenario_remote_id == scenario_remote_id)
             key_row = await session.scalar(key_statement.with_for_update())
             if key_row is not None and (
                 key_row.remote_id != remote_id
@@ -784,11 +778,7 @@ class ApexLoadNativeRepository:
             )
             if excluded_values:
                 query = query.where(ApexLoadNativeRun.id.not_in(tuple(sorted(excluded_values))))
-            rows = list(
-                (
-                    await session.scalars(query)
-                ).all()
-            )
+            rows = list((await session.scalars(query)).all())
             claims: list[NativeRunLaunchClaim] = []
             for row in rows:
                 token = uuid4().hex

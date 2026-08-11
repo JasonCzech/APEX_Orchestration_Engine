@@ -1281,9 +1281,7 @@ def test_get_work_item_found_and_missing() -> None:
 
 def test_get_work_item_rejects_a_different_provider_key() -> None:
     adapter = FakeWorkTrackingAdapter()
-    adapter.items["PHX-1"] = adapter.items["PHX-1"].model_copy(
-        update={"key": "PHX-2"}
-    )
+    adapter.items["PHX-1"] = adapter.items["PHX-1"].model_copy(update={"key": "PHX-2"})
     app, _, _ = make_app(identity(), resolver=FakeResolver(adapter))
 
     with TestClient(app) as client:

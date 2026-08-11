@@ -1722,9 +1722,7 @@ class ApexLoadExecutionEngine:
                     pages = await asyncio.gather(
                         *(
                             schedules_for(scenario)
-                            for scenario in scenarios[
-                                offset : offset + _NATIVE_HEALTH_CONCURRENCY
-                            ]
+                            for scenario in scenarios[offset : offset + _NATIVE_HEALTH_CONCURRENCY]
                         )
                     )
                     for page in pages:

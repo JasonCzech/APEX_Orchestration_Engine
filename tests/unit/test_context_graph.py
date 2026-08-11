@@ -267,9 +267,7 @@ async def test_resolver_operational_errors_are_not_reported_as_empty_evidence(
 
     monkeypatch.setattr("apex.graphs.context.graph._make_resolver", FailingResolver)
     with pytest.raises(OSError, match="connection store unavailable"):
-        await context_graph._work_tracking_evidence(
-            ["PHX-241"], None, WORK_TRACKING_CONNECTION_ID
-        )
+        await context_graph._work_tracking_evidence(["PHX-241"], None, WORK_TRACKING_CONNECTION_ID)
 
 
 async def test_provider_operational_errors_are_not_reported_as_missing_evidence(
@@ -293,9 +291,7 @@ async def test_provider_operational_errors_are_not_reported_as_missing_evidence(
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
 
     with pytest.raises(RuntimeError, match="provider unavailable"):
-        await context_graph._work_tracking_evidence(
-            ["PHX-241"], None, WORK_TRACKING_CONNECTION_ID
-        )
+        await context_graph._work_tracking_evidence(["PHX-241"], None, WORK_TRACKING_CONNECTION_ID)
 
 
 async def test_provider_parser_key_error_is_not_reported_as_missing_evidence(
@@ -320,9 +316,7 @@ async def test_provider_parser_key_error_is_not_reported_as_missing_evidence(
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
 
     with pytest.raises(KeyError, match="missing-provider-field"):
-        await context_graph._work_tracking_evidence(
-            ["PHX-241"], None, WORK_TRACKING_CONNECTION_ID
-        )
+        await context_graph._work_tracking_evidence(["PHX-241"], None, WORK_TRACKING_CONNECTION_ID)
 
 
 async def test_provider_evidence_is_redacted_before_checkpoint_and_stream(
@@ -480,9 +474,7 @@ async def test_parent_cancellation_settles_all_evidence_children_before_resolver
 
     monkeypatch.setattr(context_graph, "_make_resolver", Resolver)
     task = asyncio.create_task(
-        context_graph._work_tracking_evidence(
-            ["ONE", "TWO"], None, WORK_TRACKING_CONNECTION_ID
-        )
+        context_graph._work_tracking_evidence(["ONE", "TWO"], None, WORK_TRACKING_CONNECTION_ID)
     )
     await asyncio.wait_for(started.wait(), timeout=1)
 
@@ -597,11 +589,7 @@ def test_context_provider_admission_is_shared_across_event_loops(
 
     def worker(key: str) -> None:
         start.wait()
-        asyncio.run(
-            context_graph._work_tracking_evidence(
-                [key], None, WORK_TRACKING_CONNECTION_ID
-            )
-        )
+        asyncio.run(context_graph._work_tracking_evidence([key], None, WORK_TRACKING_CONNECTION_ID))
 
     threads = [threading.Thread(target=worker, args=(f"KEY-{index}",)) for index in range(2)]
     for thread in threads:
