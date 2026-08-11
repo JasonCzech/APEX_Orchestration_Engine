@@ -35,6 +35,7 @@ RUN chmod +x /apex-entrypoint.sh
 USER 101
 ENV APEX_ORIGIN="" \
     LANGGRAPH_ORIGIN="" \
+    DASHBOARD_DATA_MODE="connected" \
     BACKEND_UPSTREAM=""
 EXPOSE 8080
 ENTRYPOINT ["/apex-entrypoint.sh"]

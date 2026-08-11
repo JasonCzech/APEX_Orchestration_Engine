@@ -43,21 +43,21 @@ describe('dev-data route smoke', () => {
   })
 
   it.each([
-    ['/', 'Checkout latency regression'],
-    ['/runs', 'Checkout latency regression'],
-    ['/runs/run-busy', 'Checkout latency regression'],
-    ['/runs/run-busy/artifacts/exec-report', /"tps_avg": 148\.2/],
-    ['/approvals', 'Nightly soak prompt review'],
-    ['/environments', 'staging'],
-    ['/work-items/saved', 'Open payment stories'],
-    ['/context?tab=documents', 'checkout-spec.pdf'],
+    ['/', 'eSIM upgrade active ramp'],
+    ['/runs', 'eSIM upgrade active ramp'],
+    ['/runs/run-active', 'eSIM upgrade active ramp'],
+    ['/runs/run-active/artifacts/exec-report', /"tps_avg": 84\.7/],
+    ['/approvals', 'PI 26.3 workload prompt review'],
+    ['/environments', 'PERF-DR'],
+    ['/work-items/saved', 'eSIM release scope'],
+    ['/context?tab=documents', 'eSIM-upgrade-architecture.pdf'],
     ['/prompts', 'story_analysis/system'],
-    ['/golden-configs', 'Release Gate Soak'],
+    ['/golden-configs', 'eSIM Release Certification'],
     ['/analytics', 'Agents / runs'],
-    ['/logs?q=gateway', 'gateway 502 spike during checkout ramp'],
-    ['/admin/connections', 'jira-prod'],
-    ['/admin/consumers', 'Read Only Reviewer'],
-    ['/admin/system', 'dev-dummy'],
+    ['/apex-load', 'IBM MQ backlog recovery'],
+    ['/admin/connections', 'Jira Align Portfolio'],
+    ['/admin/consumers', 'Nightly Certification'],
+    ['/admin/system', 'offline-demo'],
   ])('renders %s from dummy data', async (path, expectedText) => {
     renderApp({
       initialEntries: [path],
@@ -68,5 +68,46 @@ describe('dev-data route smoke', () => {
     })
 
     expect(await screen.findByText(expectedText, {}, { timeout: 4_000 })).toBeInTheDocument()
+  })
+
+  it.each([
+    ['/approvals', 'Approvals'],
+    ['/approvals/run-prompt-review/int-prompt', 'Approval'],
+    ['/runs', 'Test History'],
+    ['/runs/new?draft=draft-esim', 'New Test'],
+    ['/runs/compare?ids=run-baseline-a,run-baseline-b', 'Compare Runs'],
+    ['/runs/run-active', 'Run Detail'],
+    ['/runs/run-active/phases/execution', 'Phase Detail'],
+    ['/runs/run-active/timeline', 'Run Timeline'],
+    ['/runs/run-active/artifacts/exec-report', 'Artifact Viewer'],
+    ['/prompts', 'Prompts'],
+    ['/prompts/phase/story_analysis%2Fsystem', 'Prompt'],
+    ['/prompts/phase/story_analysis%2Fsystem/versions/2', 'Prompt Version'],
+    ['/prompts/phase/story_analysis%2Fsystem/playground', 'Prompt Playground'],
+    ['/golden-configs', 'Golden Configs'],
+    ['/golden-configs/asst-release', 'Golden Config'],
+    ['/work-items', 'Tickets/Defects'],
+    ['/work-items/saved', 'Saved Queries'],
+    ['/work-items/jira_align/feature%3A583?connection_id=conn-align', 'Work Item'],
+    ['/environments', 'Environment Configurations'],
+    ['/environments/env-perf', 'Environment'],
+    ['/context', 'Context'],
+    ['/analytics', 'Analytics'],
+    ['/logs', 'Logs'],
+    ['/apex-load', 'APEX Load'],
+    ['/admin/connections', 'Connections'],
+    ['/admin/connections/conn-align', 'Connection'],
+    ['/admin/consumers', 'Consumers'],
+    ['/admin/consumers/cons-ci', 'Consumer'],
+    ['/admin/system', 'System'],
+    ['/settings', 'Settings'],
+  ])('mounts every production dashboard route %s', async (path, heading) => {
+    renderApp({
+      initialEntries: [path],
+      authState: authenticatedState(),
+      seedSystemInfo: path !== '/admin/system',
+    })
+
+    expect(await screen.findByRole('heading', { name: heading, level: 1 }, { timeout: 4_000 })).toBeInTheDocument()
   })
 })

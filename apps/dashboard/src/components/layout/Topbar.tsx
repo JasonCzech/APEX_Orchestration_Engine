@@ -1,6 +1,7 @@
 import { useMatches } from 'react-router'
 
 import { isRouteHandle } from '@/routes/handle'
+import { isDemoDataMode } from '@/config/runtimeConfig'
 
 import { useTopbarContributionSlot } from './TopbarContributionProvider'
 
@@ -19,6 +20,7 @@ export function Topbar() {
     <header className="main-topbar">
       <div className="main-topbar-page">
         <h1 className="topbar-page-title">{title}</h1>
+        {isDemoDataMode() && <span className="topbar-meta-chip warning">DEMO · OFFLINE</span>}
       </div>
       {contribution !== null && (
         <div className="topbar-contribution-controls">{contribution}</div>

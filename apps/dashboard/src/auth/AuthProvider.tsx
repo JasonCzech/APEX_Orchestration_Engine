@@ -20,7 +20,7 @@ import {
 } from '@/api/apexClient'
 import { isApiError } from '@/api/errors'
 
-import { getDevSystemInfo, isDevAuthEnabled } from './devAuth'
+import { getDevSystemInfo, isBypassAuthEnabled } from './devAuth'
 import {
   bumpSessionRevision,
   clearApiKey,
@@ -65,7 +65,7 @@ export function AuthProvider({
 }) {
   const [state, setState] = useState<AuthState>(() =>
     staticState ??
-    (isDevAuthEnabled()
+    (isBypassAuthEnabled()
       ? createDevAuthState()
       : getApiKey()
         ? { status: 'validating' }
@@ -111,7 +111,7 @@ export function AuthProvider({
 
   useEffect(() => {
     if (staticState) return
-    if (isDevAuthEnabled()) {
+    if (isBypassAuthEnabled()) {
       setState(createDevAuthState())
       return
     }
@@ -169,9 +169,9 @@ export function AuthProvider({
     attemptRef.current += 1
     // Dev auth deliberately has no key subscription, so clear explicitly in
     // that mode. Production sessions clear synchronously via subscribeApiKey.
-    if (isDevAuthEnabled()) clearSessionCache()
+    if (isBypassAuthEnabled()) clearSessionCache()
     clearApiKey()
-    setState(isDevAuthEnabled() ? createDevAuthState() : { status: 'no-key' })
+    setState(isBypassAuthEnabled() ? createDevAuthState() : { status: 'no-key' })
   }, [clearSessionCache])
 
   const reconcileSystemInfo = useCallback(

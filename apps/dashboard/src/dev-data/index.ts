@@ -1,6 +1,6 @@
 export { useDevDataMode, type DevDataModeContextValue } from './DevDataContext'
 export { DevDataProvider } from './DevDataProvider'
-export { handleDevApexRequest, getDevApexFetch } from './apex'
+export { handleDevApexRequest, getDevApexFetch, getDevRawFetch } from './apex'
 export { getDevArtifactBytes } from './artifacts'
 export {
   DEV_DATA_STORAGE_KEY,

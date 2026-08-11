@@ -1,7 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, type ReactNode } from 'react'
 
 import { useAuth } from '@/auth/AuthProvider'
-import { isDevAuthEnabled } from '@/auth/devAuth'
+import { isBypassAuthEnabled } from '@/auth/devAuth'
+import { isDemoDataMode } from '@/config/runtimeConfig'
 
 import { useSystemHealth, type ConnectivityStatus } from './useSystemHealth'
 
@@ -16,9 +17,9 @@ export function ConnectivityProvider({ children }: { children: ReactNode }) {
   const { state, reconcileSystemInfo } = useAuth()
   const { status, systemInfo } = useSystemHealth(state.status === 'authenticated')
   useEffect(() => {
-    if (systemInfo && !isDevAuthEnabled()) reconcileSystemInfo(systemInfo)
+    if (systemInfo && !isBypassAuthEnabled()) reconcileSystemInfo(systemInfo)
   }, [systemInfo, reconcileSystemInfo])
-  const value = useMemo(() => ({ status }), [status])
+  const value = useMemo(() => ({ status: isDemoDataMode() ? ('ok' as const) : status }), [status])
   return <ConnectivityContext.Provider value={value}>{children}</ConnectivityContext.Provider>
 }
 

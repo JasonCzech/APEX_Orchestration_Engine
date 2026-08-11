@@ -5,6 +5,7 @@ import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
 import { useDevDataMode } from '@/dev-data'
+import { isDemoDataMode } from '@/config/runtimeConfig'
 import { useApprovalsInbox } from '@/features/approvals/useApprovalsInbox'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { isThemeName, THEME_LABELS, useTheme } from '@/theme/useTheme'
@@ -146,8 +147,16 @@ function initials(name: string): string {
 }
 
 function DevDataSwitch() {
-  const { available, enabled, setEnabled } = useDevDataMode()
+  const { available, enabled, setEnabled, reset } = useDevDataMode()
   if (!available) return null
+
+  if (isDemoDataMode()) {
+    return (
+      <button type="button" className="sidebar-devdata-switch on" onClick={reset}>
+        <span className="sidebar-devdata-label">Reset demo</span>
+      </button>
+    )
+  }
 
   return (
     <button
@@ -310,7 +319,7 @@ export function Sidebar() {
                 data-state={status}
                 data-testid="connection-status-dot"
               />
-              <span className="status-text">{STATUS_LABEL[status]}</span>
+              <span className="status-text">{isDemoDataMode() ? 'Offline simulation' : STATUS_LABEL[status]}</span>
             </div>
             <select
               className="theme-select"

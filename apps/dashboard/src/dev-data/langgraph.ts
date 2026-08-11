@@ -25,9 +25,12 @@ export function createDevLangGraphClient(): UsedLangGraphClient | null {
         payload?: { input?: unknown; config?: { configurable?: Record<string, unknown> } },
       ) => store.createRun(threadId, assistantId, payload),
       list: async (threadId: string) => store.listRuns(threadId),
-      joinStream: (threadId: string | undefined | null, runId: string, options?: { signal?: AbortSignal }) =>
+      joinStream: (
+        threadId: string | undefined | null,
+        runId: string,
+        options?: { signal?: AbortSignal; lastEventId?: string; streamMode?: string },
+      ) =>
         store.joinRunStream(threadId, runId, options),
     } as UsedLangGraphClient['runs'],
   }
 }
-

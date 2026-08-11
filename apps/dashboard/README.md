@@ -84,6 +84,7 @@ see [`.env.example`](./.env.example).)
 |---|---|
 | `npm run -w @apex/dashboard dev` | Vite dev server on :3000 with backend proxy |
 | `npm run -w @apex/dashboard test` | vitest (jsdom) — full suite |
+| `npm run -w @apex/dashboard test:e2e:demo` | production-build offline demo browser scenario |
 | `npm run -w @apex/dashboard typecheck` | `tsc -b` (strict) |
 | `npm run -w @apex/dashboard lint` | eslint 9 flat config |
 | `npm run -w @apex/dashboard build` | typecheck + production bundle to `dist/` |
@@ -96,11 +97,15 @@ environment. Before mounting, the app fetches `/config.json`
 
 ```json
 {
+  "dataMode": "connected",
   "apexOrigin": "",
   "langgraphOrigin": ""
 }
 ```
 
+- `dataMode` — `connected` (default) uses the real transports; `demo` activates
+  the bundled, deterministic telecom dataset and requires both origins to be
+  empty. It cannot be enabled by a URL parameter or local-storage flag.
 - `apexOrigin` — origin serving the `/v1` domain API. Empty string = same
   origin (the common case: vite proxy in dev, reverse proxy in prod).
 - `langgraphOrigin` — origin serving the LangGraph Assistants/Threads/Runs API.
@@ -116,6 +121,14 @@ its schema or either origin is invalid. Origins must be complete `http://` or
 generates an exact `connect-src` CSP from those validated origins. Static hosts
 using `public/_headers` default to same-origin only; explicitly allowlist both
 API origins there when serving them cross-origin.
+
+For a production-build offline demonstration, set `DASHBOARD_DATA_MODE=demo`
+on the dashboard container (or `dashboard.config.dataMode=demo` in Helm), keep
+`APEX_ORIGIN`, `LANGGRAPH_ORIGIN`, and `BACKEND_UPSTREAM` empty, and start the
+normal production image. The dashboard auto-authenticates a project-wide admin
+presenter and routes domain APIs, LangGraph operations, artifacts, context
+summaries, and APEX Load traffic to the bundled transport. “Reset Demo” clears
+the versioned `apex.demo.state.v1` browser journal and idempotency records.
 
 ## Architecture map
 

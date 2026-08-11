@@ -290,6 +290,12 @@ environments require HTTPS for both browser-visible origins (an in-cluster
 allowlist from those validated origins; non-container static hosts must mirror
 that allowlist when either API is cross-origin.
 
+The same image also contains the production-capable offline telecom demo. Set
+`dashboard.config.dataMode=demo` and leave `dashboard.backendUpstream`,
+`dashboard.config.apexOrigin`, and `dashboard.config.langgraphOrigin` empty.
+Chart validation rejects any backend route in demo mode; connected remains the
+default and retains the API-key gate and normal clients.
+
 ## Secret matrix
 
 | Secret | Compose (`docker-compose.yaml`) | Helm `existingSecret` | Key Vault (AKS) |

@@ -3,6 +3,14 @@ import type { Assistant, Run, Thread } from '@langchain/langgraph-sdk'
 
 import { PHASE_NAMES, type PhaseName, type PipelineState } from '@apex/pipeline-events'
 
+import { SCRIPT_VARIANT_PROMPTS, TELECOM_PHASE_PROMPTS } from './telecomPrompts'
+import {
+  deterministicAgentReply,
+  FLAGSHIP_ALIGN_QUERY,
+  TELECOM_DATASET_VERSION,
+  TELECOM_PROJECT_ID,
+} from './telecomFixtures'
+
 type Application = components['schemas']['ApplicationOut']
 type Connection = components['schemas']['ConnectionOut']
 type ConnectionCreate = components['schemas']['ConnectionCreate']
@@ -32,6 +40,10 @@ type SavedQuery = components['schemas']['SavedQueryOut']
 type SavedQueryCreate = components['schemas']['SavedQueryCreate']
 type SavedQueryUpdate = components['schemas']['SavedQueryUpdate']
 type SystemInfo = components['schemas']['SystemInfo']
+type StartPipelineRequest = components['schemas']['StartPipelineRequest']
+type StartPipelineResponse = components['schemas']['StartPipelineResponse']
+type RerunPipelineRequest = components['schemas']['RerunPipelineRequest']
+type RerunPipelineResponse = components['schemas']['RerunPipelineResponse']
 type TranslatedQuery = components['schemas']['ExecutableTranslatedQuery']
 type ResolvedTranslatedQuery = components['schemas']['ResolvedTranslatedQuery']
 type AgentAnalytics = components['schemas']['AgentAnalyticsResponse']
@@ -91,11 +103,60 @@ interface StoredArtifact {
   mediaType: string
 }
 
+interface DemoStreamEvent {
+  id: string
+  event: 'custom'
+  data: Record<string, unknown>
+}
+
+interface ContextSummaryJob {
+  runId: string
+  threadId: string
+  subject: string
+  summary: string
+}
+
 interface PromptRecord extends PromptDetail {
   versions: PromptVersionDetail[]
 }
 
+interface ArrayDelta<T> {
+  upsert: T[]
+  removed: string[]
+}
+
+interface MapDelta<T> {
+  upsert: Array<[string, T]>
+  removed: string[]
+}
+
+interface DemoBaseline {
+  applications: Application[]
+  environments: Environment[]
+  inventories: Map<string, InventoryView>
+  connections: Connection[]
+  hostMappings: Map<string, HostMappingOut[]>
+  consumers: Consumer[]
+  documents: DocumentOut[]
+  drafts: DraftRead[]
+  workItems: WorkItem[]
+  workItemProviders: Map<string, 'jira' | 'jira_align' | 'ado'>
+  savedQueries: SavedQuery[]
+  prompts: PromptRecord[]
+  pipelineDetails: Map<string, PipelineDetail>
+  runs: Map<string, Run[]>
+  assistants: Assistant[]
+  artifacts: Map<string, StoredArtifact>
+  runStages: Map<string, string>
+  apexScenarios: Array<Record<string, unknown>>
+  apexSchedules: Array<Record<string, unknown>>
+  apexOccurrences: Array<Record<string, unknown>>
+}
+
 const JSON_HEADERS = { 'content-type': 'application/json' }
+export const DEMO_STATE_STORAGE_KEY = 'apex.demo.state.v1'
+const DEMO_STATE_VERSION = 2
+const EXECUTION_SAMPLE_DELAY_MS = import.meta.env.MODE === 'test' ? 5 : 3_000
 const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test']
 const AGENT_SORTS: AgentSort[] = [
   'key',
@@ -129,6 +190,39 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+function arrayDelta<T>(current: T[], baseline: T[], keyOf: (item: T) => string): ArrayDelta<T> | undefined {
+  const before = new Map(baseline.map((item) => [keyOf(item), item]))
+  const after = new Map(current.map((item) => [keyOf(item), item]))
+  const upsert = current.filter((item) => JSON.stringify(before.get(keyOf(item))) !== JSON.stringify(item))
+  const removed = [...before.keys()].filter((key) => !after.has(key))
+  return upsert.length || removed.length ? { upsert: clone(upsert), removed } : undefined
+}
+
+function applyArrayDelta<T>(baseline: T[], delta: ArrayDelta<T> | undefined, keyOf: (item: T) => string): T[] {
+  const cleanBaseline = clone(baseline)
+  if (!delta) return cleanBaseline
+  const removed = new Set(delta.removed)
+  const cleanUpsert = clone(delta.upsert)
+  const updates = new Map(cleanUpsert.map((item) => [keyOf(item), item]))
+  const result = cleanBaseline.filter((item) => !removed.has(keyOf(item))).map((item) => updates.get(keyOf(item)) ?? item)
+  const baselineKeys = new Set(cleanBaseline.map(keyOf))
+  return [...cleanUpsert.filter((item) => !baselineKeys.has(keyOf(item))), ...result]
+}
+
+function mapDelta<T>(current: Map<string, T>, baseline: Map<string, T>): MapDelta<T> | undefined {
+  const upsert = [...current].filter(([key, value]) => JSON.stringify(baseline.get(key)) !== JSON.stringify(value))
+  const removed = [...baseline.keys()].filter((key) => !current.has(key))
+  return upsert.length || removed.length ? { upsert: clone(upsert), removed } : undefined
+}
+
+function applyMapDelta<T>(baseline: Map<string, T>, delta: MapDelta<T> | undefined): Map<string, T> {
+  const result = new Map<string, T>(clone([...baseline]))
+  if (!delta) return result
+  for (const key of delta.removed) result.delete(key)
+  for (const [key, value] of clone(delta.upsert)) result.set(key, value)
+  return result
+}
+
 function decodePart(value: string | undefined): string {
   return decodeURIComponent(value ?? '')
 }
@@ -149,8 +243,8 @@ function nowIso(): string {
   return new Date().toISOString()
 }
 
-function isoMinutesAgo(minutes: number): string {
-  return new Date(Date.now() - minutes * 60_000).toISOString()
+function isoMinutesAgo(minutes: number, anchor = nowIso()): string {
+  return new Date(new Date(anchor).getTime() - minutes * 60_000).toISOString()
 }
 
 function parseMulti(params: URLSearchParams, name: string): string[] {
@@ -267,6 +361,7 @@ function artifactRef(
   kind: string,
   mediaType: string,
   summary?: string,
+  anchor?: string,
 ) {
   return {
     id,
@@ -275,7 +370,7 @@ function artifactRef(
     media_type: mediaType,
     uri: `memory://reports/${id}`,
     summary: summary ?? null,
-    created_at: isoMinutesAgo(35),
+    created_at: isoMinutesAgo(35, anchor),
   }
 }
 
@@ -283,33 +378,35 @@ function makePipelineState(
   title: string,
   currentPhase: PhaseName,
   status: 'busy' | 'interrupted' | 'idle' | 'error',
+  anchor?: string,
 ): PipelineState {
-  const report = artifactRef('exec-report', 'load-report.json', 'report', 'application/json', 'Normalized KPI summary')
+  const report = artifactRef('exec-report', 'load-report.json', 'report', 'application/json', 'Normalized KPI summary', anchor)
   const transcript = artifactRef(
     'execution-transcript',
     'execution transcript.txt',
     'transcript',
     'text/plain',
     'Execution agent transcript',
+    anchor,
   )
-  const archive = artifactRef('results-archive', 'results.zip', 'archive', 'application/octet-stream', 'Raw engine results')
+  const archive = artifactRef('results-archive', 'results.zip', 'archive', 'application/octet-stream', 'Raw engine results', anchor)
   const promptReviews = Object.fromEntries(
     PHASE_NAMES.map((phase) => [
       phase,
       {
         system: `You are the ${phase.replaceAll('_', ' ')} phase operator.`,
         phase_prompt: `Prepare the ${phase.replaceAll('_', ' ')} deliverable for: ${title}.`,
-        application: 'Checkout-specific requirements: preserve carts through payment retries and report p95 latency.',
+        application: 'eSIM upgrade requirements: preserve order idempotency, monitor OMS p95, MQ depth, APIM limits, and AKS scaling.',
         additional_context: '',
         source: { origin: 'catalog', ref: `phase/${phase}@dev` },
-        updated_at: isoMinutesAgo(140),
+        updated_at: isoMinutesAgo(140, anchor),
         updated_by: 'system',
       },
     ]),
   ) as PipelineState['prompt_reviews']
   return {
     title,
-    request: 'Validate checkout and search latency before the release train.',
+    request: 'Certify the eSIM device-upgrade journey at peak load before the PI 26.3 release.',
     current_phase: currentPhase,
     phases_plan: [...PHASE_NAMES],
     prompt_reviews: promptReviews,
@@ -318,14 +415,14 @@ function makePipelineState(
         phase: 'story_analysis',
         status: 'succeeded',
         attempt: 1,
-        started_at: isoMinutesAgo(140),
-        ended_at: isoMinutesAgo(138),
+        started_at: isoMinutesAgo(140, anchor),
+        ended_at: isoMinutesAgo(138, anchor),
         duration_s: 105,
-        summary: 'Scoped checkout, search, and account-auth journeys from the linked stories.',
-        reasoning_digest: 'Focused on traffic paths with recent defect churn.',
+        summary: 'Resolved the Jira Align feature hierarchy and scoped CSR, retry/idempotency, MQ fulfillment, and Cassandra eligibility scenarios.',
+        reasoning_digest: 'Prioritized cross-system paths with asynchronous back-pressure and duplicate-order risk.',
         resolved_prompt: {
           system: 'You are the story analysis phase operator.',
-          user: 'Analyze PHX-101 and PHX-102 for load-test scope.',
+          user: 'Analyze feature:583 and story:9012 for performance-test scope.',
         },
         resolved_prompt_source: { origin: 'catalog', ref: 'phase/story_analysis/system@v3' },
       },
@@ -333,61 +430,62 @@ function makePipelineState(
         phase: 'test_planning',
         status: status === 'interrupted' && currentPhase === 'test_planning' ? 'awaiting_prompt_review' : 'succeeded',
         attempt: 1,
-        started_at: isoMinutesAgo(132),
-        ended_at: isoMinutesAgo(128),
+        started_at: isoMinutesAgo(132, anchor),
+        ended_at: isoMinutesAgo(128, anchor),
         duration_s: 220,
-        summary: 'Planned a 25 minute ramp/soak with checkout, search, and auth traffic mix.',
-        warnings: ['Checkout ramp is close to the configured p95 budget.'],
+        summary: 'Planned load, stress, and endurance coverage with a stepped ramp to 300 users and 85 TPS.',
+        warnings: ['OMS create-order is within 20% of its configured p95 budget.'],
       },
       env_triage: {
         phase: 'env_triage',
         status: 'succeeded',
         attempt: 1,
-        started_at: isoMinutesAgo(125),
-        ended_at: isoMinutesAgo(123),
+        started_at: isoMinutesAgo(125, anchor),
+        ended_at: isoMinutesAgo(123, anchor),
         duration_s: 94,
-        summary: 'Staging inventory is available; one search replica is under-provisioned.',
+        summary: 'PERF is reachable; order-mgmt-svc points at qc3-oms-oracle-scan and MQ has two consumers instead of four.',
+        warnings: ['QC Oracle endpoint would invalidate results until corrected.', 'MQ consumer capacity is below the approved reference.'],
       },
       script_scenario: {
         phase: 'script_scenario',
         status: 'succeeded',
         attempt: 1,
-        started_at: isoMinutesAgo(118),
-        ended_at: isoMinutesAgo(112),
+        started_at: isoMinutesAgo(118, anchor),
+        ended_at: isoMinutesAgo(112, anchor),
         duration_s: 360,
-        summary: 'Generated checkout and search scripts with explicit SLA assertions.',
+        summary: 'Generated correlated JMeter and VuGen scripts with synthetic eSIM data and explicit SLA assertions.',
         load_test_spec: {
           title,
-          target_environment: 'env-staging',
-          vusers: 450,
+          target_environment: 'env-perf',
+          vusers: 300,
           ramp_s: 300,
           duration_s: 1500,
-          slas: { p95_ms: 450, error_rate: 0.01 },
-          script_refs: ['memory://scripts/checkout.js', 'memory://scripts/search.js'],
+          slas: { p95_ms: 3000, error_rate: 0.02 },
+          script_refs: ['memory://scripts/esim-upgrade.jmx', 'memory://scripts/esim_upgrade.c'],
         },
       },
       execution: {
         phase: 'execution',
         status: status === 'busy' ? 'running' : status === 'error' ? 'failed' : 'succeeded',
         attempt: status === 'error' ? 2 : 1,
-        started_at: isoMinutesAgo(90),
-        ended_at: status === 'busy' ? null : isoMinutesAgo(58),
+        started_at: isoMinutesAgo(90, anchor),
+        ended_at: status === 'busy' ? null : isoMinutesAgo(58, anchor),
         duration_s: status === 'busy' ? null : 1920,
         summary:
           status === 'error'
-            ? 'Execution failed after the engine reported sustained gateway 502s.'
-            : 'Load test stayed inside p95 budget with a small payment retry spike.',
-        warnings: status === 'error' ? ['Gateway error rate exceeded 4% for three minutes.'] : [],
+            ? 'Execution orchestration failed while collecting the simulated engine result.'
+            : 'Execution reached 300 users; OMS p95 breached 3,000ms while MQ backlog recovered after a ramp hold.',
+        warnings: status === 'error' ? ['Result collection requires an operator retry.'] : ['OMS create-order p95 exceeded SLA and warrants a Jira Cloud defect.'],
         artifact_ids: [report.id, archive.id, transcript.id],
         engine: 'apexload',
-        engine_started_at: isoMinutesAgo(89),
-        engine_handle: { engine: 'apexload', connection_id: 'conn-engine', external_run_id: 'al-dev-42' },
+        engine_started_at: isoMinutesAgo(89, anchor),
+        engine_handle: { engine: 'apexload', connection_id: 'conn-apex-load', external_run_id: 'AL-DEMO-2603' },
         test_summary: {
           engine: 'apexload',
-          passed: status !== 'error',
-          kpis: { tps_avg: 148.2, p95_ms: status === 'error' ? 880 : 312, error_rate: status === 'error' ? 0.043 : 0.006, vusers_peak: 450 },
-          sla_breaches: status === 'error' ? ['p95_ms', 'error_rate'] : [],
-          notes: status === 'error' ? 'Payment gateway retries saturated.' : 'Within configured release gate.',
+          passed: false,
+          kpis: { tps_avg: 82.7, p95_ms: status === 'error' ? 0 : 3650, error_rate: status === 'error' ? 0 : 0.028, vusers_peak: 300 },
+          sla_breaches: status === 'error' ? [] : ['oms_create_order_p95_ms', 'error_rate'],
+          notes: status === 'error' ? 'Collection did not complete.' : 'Orchestration succeeded; the tested release is a conditional fail pending OMS/MQ remediation.',
         },
         transcript_ref: transcript,
       },
@@ -400,16 +498,16 @@ function makePipelineState(
               ? 'pending'
               : 'succeeded',
         attempt: status === 'busy' ? undefined : 1,
-        started_at: status === 'busy' ? null : isoMinutesAgo(50),
-        ended_at: status === 'busy' ? null : isoMinutesAgo(45),
+        started_at: status === 'busy' ? null : isoMinutesAgo(50, anchor),
+        ended_at: status === 'busy' ? null : isoMinutesAgo(45, anchor),
         duration_s: status === 'busy' ? null : 290,
-        summary: 'Drafted release summary and KPI comparison.',
+        summary: 'Drafted executive and technical reports with Jira Cloud defect PERF-248.',
       },
       postmortem: {
         phase: 'postmortem',
         status: status === 'error' ? 'running' : 'pending',
         attempt: status === 'error' ? 1 : undefined,
-        started_at: status === 'error' ? isoMinutesAgo(30) : null,
+        started_at: status === 'error' ? isoMinutesAgo(30, anchor) : null,
       },
     },
     artifacts: [report, archive, transcript],
@@ -418,27 +516,27 @@ function makePipelineState(
         id: 'dlg-1',
         phase: 'test_planning',
         role: 'operator',
-        content: 'Keep checkout at 70% of the mix and include payment retries.',
-        at: isoMinutesAgo(127),
+        content: 'Include asynchronous MQ backlog and retry-idempotency coverage.',
+        at: isoMinutesAgo(127, anchor),
       },
       {
         id: 'dlg-2',
         phase: 'test_planning',
         role: 'agent',
-        content: 'Traffic mix adjusted and retry assertions added to the plan.',
-        at: isoMinutesAgo(126),
+        content: 'The workload now covers both paths with stepped-ramp checkpoints.',
+        at: isoMinutesAgo(126, anchor),
       },
     ],
     context_packets: [
       {
         id: 'ctx-1',
-        source: 'jira',
-        title: 'PHX-101 acceptance criteria',
-        summary: 'Checkout must absorb gateway retries without dropping carts.',
-        ref: 'jira:PHX-101',
+        source: 'jira_align',
+        title: 'story:9012 acceptance criteria',
+        summary: 'eSIM upgrades must remain idempotent while fulfillment traverses IBM MQ.',
+        ref: 'story:9012',
       },
     ],
-    engine_handle: { engine: 'apexload', connection_id: 'conn-engine', external_run_id: 'al-dev-42' },
+    engine_handle: { engine: 'apexload', connection_id: 'conn-apex-load', external_run_id: 'AL-DEMO-2603' },
   }
 }
 
@@ -454,6 +552,7 @@ export class DevDataStore {
   private drafts: DraftRead[]
   private evidence: EvidencePacket[]
   private workItems: WorkItem[]
+  private workItemProviders = new Map<string, 'jira' | 'jira_align' | 'ado'>()
   private savedQueries: SavedQuery[]
   private prompts: PromptRecord[]
   private logs: LogEntry[]
@@ -461,97 +560,238 @@ export class DevDataStore {
   private runs = new Map<string, Run[]>()
   private assistants: Assistant[]
   private artifacts = new Map<string, StoredArtifact>()
+  private runStages = new Map<string, string>()
+  private runEvents = new Map<string, DemoStreamEvent[]>()
+  private completedRunStreams = new Set<string>()
+  private contextSummaryJobs = new Map<string, ContextSummaryJob>()
+  private apexIdempotency = new Map<string, { status: number; body: Record<string, unknown> }>()
+  private reportingTickets = new Map<string, string>()
+  private pipelineLaunches = new Map<string, StartPipelineResponse>()
+  private baseline!: DemoBaseline
+  private activationTime = nowIso()
+  private apexScenarios: Array<Record<string, unknown>> = [
+    { id: 'scenario-esim-peak', name: 'eSIM peak certification', status: 'ready', protocol: 'mixed-jmeter-vugen' },
+    { id: 'scenario-mq-recovery', name: 'IBM MQ backlog recovery', status: 'ready', protocol: 'jmeter' },
+  ]
+  private apexSchedules: Array<Record<string, unknown>> = [
+    { id: 'schedule-release', scenario_id: 'scenario-esim-peak', name: 'Release candidate certification', status: 'enabled', approval_id: 'approval-release' },
+    { id: 'schedule-nightly', scenario_id: 'scenario-esim-peak', name: 'Nightly eSIM baseline', status: 'enabled', approval_id: 'approval-nightly' },
+  ]
+  private apexOccurrences: Array<Record<string, unknown>> = [
+    { id: 'occurrence-1', schedule_id: 'schedule-release', status: 'approved', scheduled_offset_minutes: -240, approval_id: 'approval-release' },
+    { id: 'occurrence-2', schedule_id: 'schedule-nightly', status: 'pending_approval', scheduled_offset_minutes: -1_680, approval_id: 'approval-next' },
+  ]
 
   readonly systemInfo: SystemInfo = {
     name: 'APEX Orchestration Engine',
-    version: 'dev-dummy',
-    environment: 'development',
-      features: { engines: true, documents: true, dummy_data: true },
-      limits: { max_context_packets: 32 },
+    version: TELECOM_DATASET_VERSION,
+    environment: 'offline-demo',
+    features: { engines: true, documents: true, dummy_data: true },
+    limits: { max_context_packets: 32 },
     consumer: {
-      name: 'Dev Admin',
+      name: 'Demo Presenter',
       role: 'admin',
-      scopes: [{ project_id: 'proj-alpha', app_id: null }],
+      scopes: [{ project_id: TELECOM_PROJECT_ID, app_id: null }],
     },
   }
 
   constructor() {
-    const created = isoMinutesAgo(8_000)
-    const updated = isoMinutesAgo(20)
-    this.applications = [
-      { id: 'app-checkout', name: 'Checkout', project_id: 'proj-alpha', description: 'Payment funnel services', archived_at: null, created_at: created, updated_at: updated },
-      { id: 'app-search', name: 'Search', project_id: 'proj-alpha', description: 'Search and product discovery', archived_at: null, created_at: created, updated_at: updated },
-      { id: 'app-billing', name: 'Billing', project_id: 'proj-beta', description: 'Secondary project with sparse activity', archived_at: null, created_at: created, updated_at: updated },
-    ]
-    this.environments = [
-      this.environment('env-staging', 'app-checkout', 'staging', 'k8s', 'https://staging.checkout.example.com', false),
-      this.environment('env-prod', 'app-checkout', 'production', 'k8s', 'https://checkout.example.com', true),
-      this.environment('env-search-dev', 'app-search', 'dev', 'vm', null, false),
-    ]
-    this.seedInventories()
-    this.connections = [
-      // Adapters read base_url out of options, not the column, so both carry it.
-      this.connection('conn-jira', 'work_tracking', 'jira', 'jira-prod', 'proj-alpha', 'https://jira.example.com', true, { base_url: 'https://jira.example.com', user_email: 'qa@example.com', project_key: 'PHX' }, 'env:APEX_INTEGRATION_JIRA_API_TOKEN'),
-      this.connection('conn-align', 'work_tracking', 'jira_align', 'align-prod', 'proj-alpha', 'https://example.jiraalign.com', true, { base_url: 'https://example.jiraalign.com', program_id: '42' }, 'env:APEX_INTEGRATION_JIRA_ALIGN_TOKEN'),
-      this.connection('conn-ado', 'work_tracking', 'ado', 'ado-beta', 'proj-beta', 'https://dev.azure.com/example', true, { base_url: 'https://dev.azure.com/example', project: 'Billing' }, 'env:APEX_INTEGRATION_ADO_PAT'),
-      this.connection('conn-elk', 'log_search', 'elasticsearch', 'elk-global', null, 'https://elk.example.com:9200', false, {}, null),
-      this.connection('conn-engine', 'execution_engine', 'apex_load', 'apex-load-default', 'proj-alpha', null, true, { pool: 'dev' }, null),
-      this.connection('conn-docs', 'documents', 'stub', 'document-store', null, null, true, {}, null),
-      this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'staging-cluster', 'proj-alpha', null, true, { kube_context: 'staging' }, 'env:KUBECONFIG'),
-    ]
-    this.hostMappings.set('conn-jira', [
-      { id: 'map-1', pattern: '*.internal.example.com', target: 'proxy.example.com', enabled: true },
-      { id: 'map-2', pattern: 'jira.local', target: 'jira.example.com', enabled: false },
-    ])
-    this.consumers = [
-      this.consumer('cons-admin', 'Dev Admin', 'admin', 'dashboard', true, 'ad41de01'),
-      this.consumer('cons-operator', 'Load Operator', 'operator', 'dashboard', true, '0a0b0c0d'),
-      this.consumer('cons-viewer', 'Read Only Reviewer', 'viewer', 'dashboard', true, '1111aaaa'),
-      this.consumer('cons-ci', 'CI Smoke Runner', 'operator', 'headless', false, 'c1c2c3c4'),
-    ]
-    this.documents = [
-      this.document('doc-spec', 'checkout-spec.pdf', 'application/pdf', 2_097_152, 'Perf test requirements and acceptance criteria.'),
-      this.document('doc-runbook', 'perf-runbook.md', 'text/markdown', 11_264, 'Load-test response runbook.'),
-      this.document('doc-incident', 'gateway-incident.json', 'application/json', 4_512, 'Recent gateway incident export.'),
-    ]
-    this.drafts = [
-      this.draft('draft-checkout', 'Checkout regression run', 'proj-alpha', {
-        title: 'Checkout regression run',
-        request: 'Run checkout and search regression with payment retries.',
-        project_id: 'proj-alpha',
-      }),
-      this.draft('draft-beta', 'Billing smoke run', 'proj-beta', {
-        title: 'Billing smoke run',
-        request: 'Short billing smoke against beta.',
-        project_id: 'proj-beta',
-      }),
-    ]
-    this.evidence = [
-      { id: 'ev-jira-1', source: 'jira', title: 'PHX-101 acceptance criteria', summary: 'Checkout must absorb gateway retries without dropping carts.', ref: 'jira:PHX-101', thread_id: 'run-gated-prompt' },
-      { id: 'ev-elk-1', source: 'elk', title: '502 spike during ramp', summary: 'Gateway errors crossed 2% at 400 vusers.', ref: 'elk:gateway-502', thread_id: 'run-failed' },
-      { id: 'ev-doc-1', source: 'documents', title: 'Perf runbook', summary: 'Escalation and rollback checklist for load tests.', ref: 'doc-runbook', thread_id: null },
-    ]
-    this.workItems = [
-      { key: 'PHX-101', title: 'Checkout retries drop payments', kind: 'story', status: 'open', description: 'Retries on the payment gateway drop the cart.', url: 'https://tracker.example.com/browse/PHX-101', priority: 'P1', sprint: '24.3', assignee: 'Jamie Rivera', labels: ['payments', 'checkout'], parent_key: 'PHX-100' },
-      { key: 'PHX-102', title: 'Gateway 502s under load', kind: 'bug', status: 'in_progress', description: 'Gateway fails during peak ramp.', url: null, priority: 'P2', severity: 'Sev-2', assignee: 'Alex Chen', linked_keys: ['PHX-101'] },
-      { key: 'PHX-130', title: 'Search typeahead p95 budget', kind: 'story', status: 'ready_for_test', description: 'Search should stay below 280ms p95.', url: 'https://tracker.example.com/browse/PHX-130' },
-      { key: 'BILL-44', title: 'Billing export smoke', kind: 'task', status: 'open', description: 'Exercise secondary project scoping.', url: null },
-      // Jira Align keys are '<type>:<id>' and portfolio items use its own states.
-      { key: 'capability:9', title: 'Unified checkout capability', kind: 'capability', status: 'Pending Approval', description: 'Consolidate checkout across storefronts.', url: null, parent_key: 'epic:3' },
-      { key: 'feature:12', title: 'Retry-safe payment submission', kind: 'feature', status: 'Accepted', description: 'Idempotent submission across gateway retries.', url: null, parent_key: 'capability:9', priority: 'High' },
-      { key: 'story:13', title: 'Idempotency key on submit', kind: 'story', status: 'in_progress', description: 'Attach an idempotency key to every submit call.', url: null, parent_key: 'feature:12', sprint: 'PI 24.3 / S2', assignee: 'Jamie Rivera' },
-      { key: 'bug:481', title: 'Duplicate charge on retry', kind: 'bug', status: 'open', description: 'A retried submit occasionally double-charges.', url: null, severity: 'Sev-1', parent_key: 'story:13' },
-    ]
-    this.savedQueries = [
-      { id: 'sq-open', name: 'Open payment stories', provider: 'jira', query: 'project = PHX AND status in (Open, "In Progress")', description: 'Sprint triage pick list', project_id: 'proj-alpha', connection_id: 'conn-jira', created_by: 'ops', created_at: created, updated_at: updated },
-      { id: 'sq-bugs', name: 'Load bugs', provider: 'jira', query: 'project = PHX AND labels = load-test AND type = Bug', description: null, project_id: 'proj-alpha', connection_id: 'conn-jira', created_by: 'ops', created_at: created, updated_at: updated },
-      { id: 'sq-align', name: 'Align defects awaiting triage', provider: 'jira_align', query: "programId eq 42 and itemtype in ('bug') and state eq 0", description: 'Portfolio defect triage', project_id: 'proj-alpha', connection_id: 'conn-align', created_by: 'ops', created_at: created, updated_at: updated },
-    ]
+    this.activationTime = this.persistedActivationTime()
+    const created = isoMinutesAgo(8_000, this.activationTime)
+    const updated = isoMinutesAgo(20, this.activationTime)
+    this.applications = []
+    this.environments = []
+    this.connections = []
+    this.consumers = []
+    this.documents = []
+    this.drafts = []
+    this.evidence = []
+    this.workItems = []
+    this.savedQueries = []
+    this.seedTelecomCatalog(created, updated)
     this.prompts = this.makePrompts(created, updated)
     this.logs = this.makeLogs()
     this.assistants = this.makeAssistants(created, updated)
     this.seedPipelines()
     this.seedArtifacts()
+    this.baseline = this.captureBaseline()
+    this.restorePersistedState()
+  }
+
+  private persistedActivationTime(): string {
+    if (typeof localStorage === 'undefined') return nowIso()
+    try {
+      const parsed = JSON.parse(localStorage.getItem(DEMO_STATE_STORAGE_KEY) ?? 'null') as Record<string, unknown> | null
+      return parsed?.['version'] === DEMO_STATE_VERSION && typeof parsed['activationTime'] === 'string'
+        ? parsed['activationTime']
+        : nowIso()
+    } catch {
+      return nowIso()
+    }
+  }
+
+  private captureBaseline(): DemoBaseline {
+    return {
+      applications: clone(this.applications),
+      environments: clone(this.environments),
+      inventories: new Map(clone([...this.inventories])),
+      connections: clone(this.connections),
+      hostMappings: new Map(clone([...this.hostMappings])),
+      consumers: clone(this.consumers),
+      documents: clone(this.documents),
+      drafts: clone(this.drafts),
+      workItems: clone(this.workItems),
+      workItemProviders: new Map(clone([...this.workItemProviders])),
+      savedQueries: clone(this.savedQueries),
+      prompts: clone(this.prompts),
+      pipelineDetails: new Map(clone([...this.pipelineDetails])),
+      runs: new Map(clone([...this.runs])),
+      assistants: clone(this.assistants),
+      artifacts: new Map(clone([...this.artifacts])),
+      runStages: new Map(clone([...this.runStages])),
+      apexScenarios: clone(this.apexScenarios),
+      apexSchedules: clone(this.apexSchedules),
+      apexOccurrences: clone(this.apexOccurrences),
+    }
+  }
+
+  private restoreBaseline(): void {
+    this.applications = clone(this.baseline.applications)
+    this.environments = clone(this.baseline.environments)
+    this.inventories = new Map(clone([...this.baseline.inventories]))
+    this.connections = clone(this.baseline.connections)
+    this.hostMappings = new Map(clone([...this.baseline.hostMappings]))
+    this.consumers = clone(this.baseline.consumers)
+    this.documents = clone(this.baseline.documents)
+    this.drafts = clone(this.baseline.drafts)
+    this.workItems = clone(this.baseline.workItems)
+    this.workItemProviders = new Map(clone([...this.baseline.workItemProviders]))
+    this.savedQueries = clone(this.baseline.savedQueries)
+    this.prompts = clone(this.baseline.prompts)
+    this.pipelineDetails = new Map(clone([...this.baseline.pipelineDetails]))
+    this.runs = new Map(clone([...this.baseline.runs]))
+    this.assistants = clone(this.baseline.assistants)
+    this.artifacts = new Map(clone([...this.baseline.artifacts]))
+    this.runStages = new Map(clone([...this.baseline.runStages]))
+    this.runEvents.clear()
+    this.completedRunStreams.clear()
+    this.contextSummaryJobs.clear()
+    this.apexIdempotency.clear()
+    this.reportingTickets.clear()
+    this.pipelineLaunches.clear()
+    this.apexScenarios = clone(this.baseline.apexScenarios)
+    this.apexSchedules = clone(this.baseline.apexSchedules)
+    this.apexOccurrences = clone(this.baseline.apexOccurrences)
+  }
+
+  private seedTelecomCatalog(created: string, updated: string): void {
+    const project = TELECOM_PROJECT_ID
+    this.applications = [
+      { id: 'app-digital-device', name: 'Digital Device Upgrade', project_id: project, description: 'Salesforce and digital eSIM upgrade journey', archived_at: null, created_at: created, updated_at: updated },
+      { id: 'app-order-fulfillment', name: 'Order Fulfillment', project_id: project, description: 'Amdocs OMS and IBM MQ fulfillment services', archived_at: null, created_at: created, updated_at: updated },
+      { id: 'app-usage-billing', name: 'Usage & Billing', project_id: project, description: 'Amdocs BSSe/TLG and Cassandra usage services', archived_at: null, created_at: created, updated_at: updated },
+    ]
+    this.environments = [
+      this.environment('env-perf', 'app-digital-device', 'PERF', 'k8s', 'https://perf.device-upgrade.example.test', false),
+      this.environment('env-perf-dr', 'app-digital-device', 'PERF-DR', 'k8s', 'https://perf-dr.device-upgrade.example.test', true),
+      this.environment('env-qc-reference', 'app-order-fulfillment', 'QC-reference', 'vm', 'https://qc-reference.example.test', false),
+      this.environment('env-production', 'app-usage-billing', 'production-readonly', 'k8s', null, true),
+    ]
+    this.inventories.clear()
+    const inventoryServices = [
+      { name: 'device-upgrade-api', image: 'registry.example.test/device-upgrade:4.8.2', replicas: 4 },
+      { name: 'order-mgmt-svc', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
+      { name: 'mq-fulfillment-consumer', image: 'registry.example.test/mq-consumer:3.6.0', replicas: 2 },
+      { name: 'usage-profile-api', image: 'registry.example.test/usage-profile:2.9.4', replicas: 3 },
+    ]
+    for (const env of this.environments) {
+      this.inventories.set(env.id, { environment_id: env.id, snapshot: { scanned_at: updated, stale: env.id !== 'env-perf', services: inventoryServices.map((service) => ({ ...service, replicas: env.id === 'env-perf' ? service.replicas : Math.max(1, service.replicas - 1) })) } })
+    }
+    this.connections = [
+      this.connection('conn-align', 'work_tracking', 'jira_align', 'Jira Align Portfolio', project, 'https://align.example.test', true, { base_url: 'https://align.example.test', program_id: '42' }, null),
+      this.connection('conn-jira', 'work_tracking', 'jira', 'Jira Cloud Performance Defects', project, 'https://jira.example.test', true, { base_url: 'https://jira.example.test', user_email: 'demo-presenter@example.test', project_key: 'PERF' }, null),
+      this.connection('conn-apex-load', 'execution_engine', 'apex_load', 'APEX Load PERF Pool', project, null, true, { pool: 'perf-demo' }, null),
+      this.connection('conn-observe', 'observability', 'stub', 'Dynatrace + Prometheus', project, null, true, {}, null),
+      this.connection('conn-logs', 'log_search', 'elasticsearch', 'Telecom ELK', project, 'https://elk.example.test', true, {}, null),
+      this.connection('conn-docs', 'documents', 'stub', 'Performance Knowledge Base', project, null, true, {}, null),
+      this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'AKS PERF Cluster', project, null, true, { kube_context: 'aks-perf-demo' }, null),
+      this.connection('conn-source', 'source_control', 'stub', 'Script Repository', project, null, true, {}, null),
+      this.connection('conn-artifacts', 'artifact_store', 'stub', 'Demo Artifact Store', project, null, true, {}, null),
+    ]
+    this.hostMappings.clear()
+    this.hostMappings.set('conn-jira', [{ id: 'map-jira-1', pattern: 'jira.internal.example.test', target: 'jira.example.test', enabled: true }])
+    this.consumers = [
+      this.consumer('cons-admin', 'Demo Presenter', 'admin', 'dashboard', true, 'd3m00001'),
+      this.consumer('cons-operator', 'Performance Operator', 'operator', 'dashboard', true, 'd3m00002'),
+      this.consumer('cons-viewer', 'Release Reviewer', 'viewer', 'dashboard', true, 'd3m00003'),
+      this.consumer('cons-ci', 'Nightly Certification', 'operator', 'headless', true, 'd3m00004'),
+    ]
+    this.documents = [
+      this.document('doc-architecture', 'eSIM-upgrade-architecture.pdf', 'application/pdf', 1_420_000, 'Salesforce, Mulesoft, AKS, OMS, MQ, and billing architecture.'),
+      this.document('doc-sla', 'digital-channel-sla.md', 'text/markdown', 18_420, 'Production SLAs and release thresholds.'),
+      this.document('doc-traffic', 'peak-hour-traffic-profile.csv', 'text/csv', 9_810, 'Anonymized peak-hour transaction volumes.'),
+      this.document('doc-runbook', 'mq-backlog-response-runbook.md', 'text/markdown', 21_200, 'Ramp-hold and queue recovery procedure.'),
+      this.document('doc-baselines', 'historical-baselines.json', 'application/json', 14_660, 'Five synthetic baseline runs.'),
+      this.document('doc-data', 'synthetic-test-data-contract.md', 'text/markdown', 8_140, 'Non-PII account, device, and plan data contract.'),
+    ]
+    this.drafts = [
+      this.draft('draft-esim', 'eSIM Device Upgrade Peak Certification', project, {
+        launch_idempotency_key: 'demo-esim-launch',
+        title: 'eSIM Device Upgrade Peak Certification',
+        request: 'Certify the eSIM device-upgrade journey at peak load, including retry idempotency, IBM MQ fulfillment backlog, Cassandra lookups, and AKS scaling.',
+        scope: { project_id: project, app_id: 'app-digital-device', environment_id: 'env-perf' },
+        work_items: [
+          { key: 'feature:583', connection_id: 'conn-align', provider: 'jira_align' },
+          { key: 'story:9012', connection_id: 'conn-align', provider: 'jira_align' },
+        ],
+        document_ids: ['doc-architecture', 'doc-sla', 'doc-traffic', 'doc-data'],
+        context_summary_ids: [],
+        config: { engine: 'apexload', phases: null, prompt_focus_phase: 'story_analysis', gates_mode: 'all_gated', golden_config_id: 'asst-release', golden_configurable: null },
+        prompt_overrides: {}, prompt_override_removals: [],
+      }),
+    ]
+    this.evidence = Array.from({ length: 12 }, (_, index) => ({
+      id: `evidence-${index + 1}`,
+      source: index < 4 ? 'jira_align' : index < 8 ? 'observability' : 'documents',
+      title: ['eSIM acceptance criteria', 'OMS fulfillment path', 'Retry idempotency', 'Peak traffic objective', 'OMS latency baseline', 'MQ depth baseline', 'AKS HPA history', 'Cassandra read baseline', 'Architecture packet', 'SLA standard', 'Backlog runbook', 'Synthetic data contract'][index]!,
+      summary: ['CSR and digital upgrades must complete without duplicate orders.', 'Orders traverse Mulesoft, APIM, AKS, OMS, and MQ.', 'Every retry carries the same idempotency key.', 'Target is 85 TPS at 300 concurrent users.', 'Historical OMS p95 is 2.4 seconds.', 'Normal fulfillment depth is below 2,000.', 'HPA reaches six pods within two minutes.', 'Usage profile p95 is 180ms.', 'Approved architecture reference.', 'OMS create-order p95 must remain below 3,000ms.', 'Hold the ramp while backlog stabilizes.', 'All accounts and devices are synthetic.'][index]!,
+      ref: index < 4 ? ['feature:583', 'story:9012', 'story:9013', 'objective:77'][index]! : `demo:evidence:${index + 1}`,
+      thread_id: index % 3 === 0 ? 'run-conditional' : null,
+    }))
+    const align: WorkItem[] = [
+      { key: 'epic:310', title: 'Digital channel modernization', kind: 'epic', status: 'In Progress', description: 'Modernize sales and service journeys.', url: 'https://align.example.test/epics/310' },
+      { key: 'capability:420', title: 'Frictionless device lifecycle', kind: 'capability', status: 'In Progress', description: 'Upgrade and activate devices across channels.', url: 'https://align.example.test/capabilities/420', parent_key: 'epic:310' },
+      { key: 'feature:583', title: 'eSIM device upgrade orchestration', kind: 'feature', status: 'Ready for Test', description: 'Orchestrate CSR and digital eSIM upgrades through OMS with retry-safe submission and asynchronous fulfillment.', url: 'https://align.example.test/features/583', parent_key: 'capability:420', priority: 'Critical', sprint: 'PI 26.3' },
+      { key: 'story:9012', title: 'CSR completes eSIM upgrade with resilient order fulfillment', kind: 'story', status: 'In Progress', description: 'A CSR submits an eSIM upgrade from Salesforce. Mulesoft and APIM route it to AKS and Amdocs OMS; fulfillment events traverse IBM MQ. Duplicate retries must not create duplicate orders.', url: 'https://align.example.test/stories/9012', parent_key: 'feature:583', assignee: 'Morgan Lee', sprint: 'PI 26.3 / I2' },
+      { key: 'story:9013', title: 'Idempotent retry for upgrade submission', kind: 'story', status: 'Ready for Test', description: 'Reuse the original idempotency key on network retry.', url: 'https://align.example.test/stories/9013', parent_key: 'feature:583' },
+      { key: 'story:9014', title: 'Usage profile eligibility lookup', kind: 'story', status: 'Accepted', description: 'Read eligibility state from Cassandra before upgrade.', url: 'https://align.example.test/stories/9014', parent_key: 'feature:583' },
+      { key: 'bug:9441', title: 'Fulfillment events queue during peak upgrades', kind: 'bug', status: 'Open', description: 'IBM MQ depth rises when OMS consumers lag.', url: 'https://align.example.test/bugs/9441', parent_key: 'story:9012', severity: 'High' },
+      { key: 'objective:77', title: 'Peak-hour digital reliability', kind: 'objective', status: 'In Progress', description: 'Meet peak release certification targets.', url: 'https://align.example.test/objectives/77' },
+      { key: 'feature:590', title: 'Digital activation status', kind: 'feature', status: 'Pending Approval', description: 'Expose asynchronous activation status.', url: 'https://align.example.test/features/590', parent_key: 'capability:420' },
+      { key: 'story:9050', title: 'Customer activation polling', kind: 'story', status: 'Open', description: 'Poll status with bounded backoff.', url: 'https://align.example.test/stories/9050', parent_key: 'feature:590' },
+      { key: 'bug:9460', title: 'Activation polling ignores Retry-After', kind: 'bug', status: 'Open', description: 'Polling can overload APIM during delays.', url: 'https://align.example.test/bugs/9460', parent_key: 'story:9050' },
+      { key: 'story:9061', title: 'Bulk dealer eSIM upgrades', kind: 'story', status: 'Funnel', description: 'Bulk channel submits upgrade batches.', url: 'https://align.example.test/stories/9061', parent_key: 'feature:583' },
+    ]
+    const jira: WorkItem[] = [
+      { key: 'PERF-240', title: '[Perf] OMS create-order baseline drift', kind: 'bug', status: 'Done', description: 'Resolved baseline regression from the prior PI.', url: 'https://jira.example.test/browse/PERF-240', priority: 'Medium', labels: ['perf-test'] },
+      { key: 'PERF-241', title: '[Perf] MQ consumer scaling validation', kind: 'task', status: 'In Progress', description: 'Validate consumer scaling from two to four replicas.', url: 'https://jira.example.test/browse/PERF-241', priority: 'High', labels: ['perf-test', 'mq'], linked_keys: ['feature:583'] },
+      { key: 'PERF-242', title: '[Perf] APIM rate-limit headroom', kind: 'task', status: 'Open', description: 'Confirm peak headroom for upgrade APIs.', url: 'https://jira.example.test/browse/PERF-242', priority: 'Medium', labels: ['perf-test', 'apim'] },
+      { key: 'PERF-243', title: '[Perf] Cassandra eligibility read p95', kind: 'bug', status: 'Done', description: 'Track eligibility lookup latency.', url: 'https://jira.example.test/browse/PERF-243', priority: 'Low', labels: ['perf-test', 'cassandra'] },
+      { key: 'PERF-244', title: '[Perf] HPA stabilization window', kind: 'task', status: 'Open', description: 'Tune HPA stabilization for ramp tests.', url: 'https://jira.example.test/browse/PERF-244', priority: 'Medium', labels: ['perf-test', 'aks'] },
+      { key: 'PERF-245', title: '[Perf] Synthetic device pool refresh', kind: 'task', status: 'In Progress', description: 'Refresh synthetic eSIM inventory.', url: 'https://jira.example.test/browse/PERF-245', priority: 'Medium', labels: ['perf-test', 'test-data'] },
+      { key: 'PERF-246', title: '[Perf] Mulesoft connection pool telemetry', kind: 'task', status: 'Open', description: 'Add pool saturation telemetry.', url: 'https://jira.example.test/browse/PERF-246', priority: 'Low', labels: ['perf-test', 'mulesoft'] },
+      { key: 'PERF-247', title: '[Perf] Nightly eSIM certification', kind: 'task', status: 'Open', description: 'Schedule the release-candidate certification.', url: 'https://jira.example.test/browse/PERF-247', priority: 'High', labels: ['perf-test', 'release'] },
+    ]
+    this.workItems = [...align, ...jira]
+    this.workItemProviders.clear()
+    for (const item of align) this.workItemProviders.set(item.key, 'jira_align')
+    for (const item of jira) this.workItemProviders.set(item.key, 'jira')
+    this.savedQueries = [
+      { id: 'sq-align-esim', name: 'eSIM release scope', provider: 'jira_align', query: FLAGSHIP_ALIGN_QUERY, description: 'Flagship release scope', project_id: project, connection_id: 'conn-align', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
+      { id: 'sq-align-risk', name: 'Open Align delivery risks', provider: 'jira_align', query: "programId eq 42 and itemtype in ('bug') and state eq 'Open'", description: 'Portfolio risks', project_id: project, connection_id: 'conn-align', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
+      { id: 'sq-jira-open', name: 'Open performance defects', provider: 'jira', query: 'project = PERF AND status in (Open, "In Progress") AND labels = perf-test', description: 'Active engineering actions', project_id: project, connection_id: 'conn-jira', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
+      { id: 'sq-jira-release', name: 'Release blockers', provider: 'jira', query: 'project = PERF AND priority in (Highest, High) AND status != Done', description: 'Release review queue', project_id: project, connection_id: 'conn-jira', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
+    ]
   }
 
   async handleApexRequest(request: Request): Promise<Response | null> {
@@ -560,23 +800,27 @@ export class DevDataStore {
     const method = request.method.toUpperCase()
     if (!path.startsWith('/v1/')) return null
 
-    if (method === 'GET' && path === '/v1/system/info') return jsonResponse(this.systemInfo)
-    if (method === 'GET' && path === '/v1/analytics/agents') return jsonResponse(this.agentAnalytics(url.searchParams))
-    if (method === 'GET' && path === '/v1/analytics/usage') return jsonResponse(this.usage(url.searchParams))
-    if (method === 'POST' && path === '/v1/logs/search') return jsonResponse(await this.searchLogs(request))
-    if (path.startsWith('/v1/pipelines')) return this.handlePipelines(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/catalog/applications')) return this.handleApplications(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/catalog/environments')) return this.handleEnvironments(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/inventory/environments')) return this.handleInventory(method, path)
-    if (path.startsWith('/v1/work-tracking')) return this.handleWorkTracking(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/context')) return this.handleContext(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/documents')) return this.handleDocuments(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/drafts')) return this.handleDrafts(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/prompts')) return this.handlePrompts(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/admin/connections')) return this.handleConnections(method, path, request, url.searchParams)
-    if (path.startsWith('/v1/admin/consumers')) return this.handleConsumers(method, path, request)
+    let response: Response
+    if (method === 'GET' && path === '/v1/system/info') response = jsonResponse(this.systemInfo)
+    else if (method === 'GET' && path === '/v1/analytics/agents') response = jsonResponse(this.agentAnalytics(url.searchParams))
+    else if (method === 'GET' && path === '/v1/analytics/usage') response = jsonResponse(this.usage(url.searchParams))
+    else if (method === 'POST' && path === '/v1/logs/search') response = jsonResponse(await this.searchLogs(request))
+    else if (path.startsWith('/v1/pipelines')) response = await this.handlePipelines(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/catalog/applications')) response = await this.handleApplications(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/catalog/environments')) response = await this.handleEnvironments(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/inventory/environments')) response = this.handleInventory(method, path)
+    else if (path.startsWith('/v1/work-tracking')) response = await this.handleWorkTracking(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/context')) response = await this.handleContext(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/documents')) response = await this.handleDocuments(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/drafts')) response = await this.handleDrafts(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/prompts')) response = await this.handlePrompts(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/admin/connections')) response = await this.handleConnections(method, path, request, url.searchParams)
+    else if (path.startsWith('/v1/admin/consumers')) response = await this.handleConsumers(method, path, request)
+    else if (path.startsWith('/v1/apex-load')) response = await this.handleApexLoad(method, path, request, url.searchParams)
+    else response = problemResponse(501, 'demo_handler_missing', `Offline demo has no handler for ${method} ${path}.`)
 
-    return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
+    if (!['GET', 'HEAD'].includes(method) && response.ok) this.persistState()
+    return response
   }
 
   getArtifactBytes(url: string): DevArtifactBytes | null {
@@ -593,19 +837,58 @@ export class DevDataStore {
     return { blob, mediaType: artifact.mediaType, size: blob.size }
   }
 
+  getFixtureStats(): Record<string, number> {
+    return {
+      applications: this.applications.length,
+      environments: this.environments.length,
+      connections: this.connections.length,
+      consumers: this.consumers.length,
+      documents: this.documents.length,
+      evidencePackets: this.evidence.length,
+      jiraAlignItems: this.workItems.filter((item) => this.workItemProviders.get(item.key) === 'jira_align').length,
+      initialJiraCloudItems: this.workItems.filter((item) => this.workItemProviders.get(item.key) === 'jira').length,
+      savedQueries: this.savedQueries.length,
+      prompts: this.prompts.length,
+      seededRuns: this.pipelineDetails.size,
+      logs: this.logs.length,
+      phaseMetricEvents: this.agentMetricEvents('day').length,
+      usageDays: 14,
+      artifacts: this.artifacts.size,
+    }
+  }
+
+  handleRawRequest(request: Request): Response | null {
+    const path = new URL(request.url).pathname
+    const match = /^\/threads\/([^/]+)\/runs\/([^/]+)\/stream$/.exec(path)
+    if (!match) return null
+    const threadId = decodePart(match[1])
+    const runId = decodePart(match[2])
+    const job = this.contextSummaryJobs.get(runId)
+    if (!job || job.threadId !== threadId) {
+      return problemResponse(404, 'demo_summary_not_found', `Offline summary run ${runId} was not found.`)
+    }
+    const body = [
+      'event: values',
+      `data: ${JSON.stringify({ values: { summary: job.summary } })}`,
+      '',
+      '',
+    ].join('\n')
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' } })
+  }
+
   searchAssistants(): Assistant[] {
     return clone(this.assistants)
   }
 
   getAssistant(assistantId: string): Assistant {
     const assistant = this.assistants.find((item) => item.assistant_id === assistantId)
-    if (!assistant) throw new Error(`Dummy assistant ${assistantId} not found`)
+    if (!assistant) throw new Error(`Demo assistant ${assistantId} not found`)
     return clone(assistant)
   }
 
   updateAssistant(assistantId: string, payload: { config?: { configurable?: Record<string, unknown> } }): Assistant {
     const index = this.assistants.findIndex((item) => item.assistant_id === assistantId)
-    if (index === -1) throw new Error(`Dummy assistant ${assistantId} not found`)
+    if (index === -1) throw new Error(`Demo assistant ${assistantId} not found`)
     const current = this.assistants[index]!
     const updated: Assistant = {
       ...current,
@@ -614,15 +897,19 @@ export class DevDataStore {
       updated_at: nowIso(),
     }
     this.assistants[index] = updated
+    this.persistState()
     return clone(updated)
   }
 
   createThread(payload?: { metadata?: Record<string, unknown> }): Thread<Record<string, unknown>> {
     const id = this.id('thread')
     const created = nowIso()
-    const detail = this.pipelineDetail(id, 'Untitled dummy run', payload?.metadata?.['project_id'] as string | undefined, 'busy', 'story_analysis')
+    const detail = this.pipelineDetail(id, 'Untitled telecom certification', payload?.metadata?.['project_id'] as string | undefined, 'busy', 'story_analysis')
+    this.initializeFreshPipeline(detail, 'story_analysis')
     this.pipelineDetails.set(id, detail)
     this.runs.set(id, [])
+    this.runStages.set(id, 'story_analysis')
+    this.persistState()
     return {
       thread_id: id,
       created_at: created,
@@ -640,12 +927,12 @@ export class DevDataStore {
     const tid = threadId ?? this.createThread().thread_id
     const now = nowIso()
     const input = (payload?.input ?? {}) as Record<string, unknown>
-    const title = typeof input['title'] === 'string' ? input['title'] : this.pipelineDetails.get(tid)?.title || 'Dummy rerun'
+    const title = typeof input['title'] === 'string' ? input['title'] : this.pipelineDetails.get(tid)?.title || 'Telecom certification rerun'
     const firstPhase = Array.isArray(payload?.config?.configurable?.['phases'])
       ? (payload?.config?.configurable?.['phases'] as string[])[0]
-      : 'story_analysis'
+      : this.pipelineDetails.get(tid)?.current_phase ?? 'story_analysis'
     const phase = PHASE_NAMES.includes(firstPhase as PhaseName) ? (firstPhase as PhaseName) : 'story_analysis'
-    const detail = this.pipelineDetails.get(tid) ?? this.pipelineDetail(tid, title, 'proj-alpha', 'busy', phase)
+    const detail = this.pipelineDetails.get(tid) ?? this.pipelineDetail(tid, title, 'telecom-modernization', 'busy', phase)
     detail.title = title
     detail.thread_status = 'busy'
     detail.current_phase = phase
@@ -670,6 +957,8 @@ export class DevDataStore {
       multitask_strategy: 'reject',
     }
     this.runs.set(tid, [run, ...(this.runs.get(tid) ?? [])])
+    if (Array.isArray(payload?.config?.configurable?.['phases']) || !this.runStages.has(tid)) this.runStages.set(tid, phase)
+    this.persistState()
     return clone(run)
   }
 
@@ -680,51 +969,337 @@ export class DevDataStore {
   async *joinRunStream(
     threadId: string | undefined | null,
     runId: string,
-    options?: { signal?: AbortSignal },
+    options?: { signal?: AbortSignal; lastEventId?: string; streamMode?: string },
   ): AsyncGenerator<{ id?: string; event: string; data: unknown }> {
     const tid = threadId ?? 'thread'
+    const detail = this.pipelineDetails.get(tid)
+    if (!detail) return
+    const stage = this.runStages.get(tid) ?? 'story_analysis'
+    const committed = this.runEvents.get(runId) ?? []
+    let replayFrom = 0
+    if (options?.lastEventId) {
+      const cursorIndex = committed.findIndex((event) => event.id === options.lastEventId)
+      if (cursorIndex === -1) throw new Error(`Unknown resume cursor ${options.lastEventId}`)
+      replayFrom = cursorIndex + 1
+    }
+    for (const event of committed.slice(replayFrom)) yield clone(event)
+    if (this.completedRunStreams.has(runId)) return
+
+    const emit = (suffix: string, data: Record<string, unknown>): DemoStreamEvent | null => {
+      const id = `${runId}-${suffix}`
+      const history = this.runEvents.get(runId) ?? []
+      if (history.some((event) => event.id === id)) return null
+      const event: DemoStreamEvent = { id, event: 'custom', data: { schema_version: 1, ...data } }
+      history.push(event)
+      this.runEvents.set(runId, history)
+      this.persistState()
+      return event
+    }
+    const phase = async function* (name: PhaseName, attempt = 1) {
+      const start = emit(`${name}-start`, { type: 'phase_status', phase: name, status: 'running', attempt })
+      if (start) yield start
+      const agent = emit(`${name}-agent`, { type: 'agent_message', phase: name, model: 'offline-deterministic-template', chars: 640 + name.length * 17 })
+      if (agent) yield agent
+      const done = emit(`${name}-done`, { type: 'phase_status', phase: name, status: 'succeeded', attempt })
+      if (done) yield done
+    }
     const samples = [
-      { progress_pct: 0.12, vusers: 80, tps: 42, error_rate: 0.001, p95_ms: 240, status: 'provisioning' },
-      { progress_pct: 0.38, vusers: 220, tps: 96, error_rate: 0.004, p95_ms: 288, status: 'running' },
-      { progress_pct: 0.72, vusers: 450, tps: 151, error_rate: 0.006, p95_ms: 318, status: 'running' },
+      { progress_pct: 0.08, vusers: 0, tps: 0, error_rate: 0, p95_ms: 0, status: 'provisioning' },
+      { progress_pct: 0.24, vusers: 100, tps: 31, error_rate: 0.002, p95_ms: 680, status: 'running' },
+      { progress_pct: 0.45, vusers: 200, tps: 62, error_rate: 0.006, p95_ms: 1_820, status: 'running' },
+      { progress_pct: 0.62, vusers: 260, tps: 79, error_rate: 0.015, p95_ms: 3_180, status: 'running' },
+      { progress_pct: 0.76, vusers: 260, tps: 77, error_rate: 0.018, p95_ms: 3_420, status: 'running' },
+      { progress_pct: 0.91, vusers: 300, tps: 85, error_rate: 0.028, p95_ms: 3_650, status: 'running' },
+      { progress_pct: 1, vusers: 0, tps: 84.7, error_rate: 0.028, p95_ms: 3_650, status: 'completed' },
     ] as const
-    yield {
-      id: `${runId}-plan`,
-      event: 'custom',
-      data: { schema_version: 1, type: 'plan_resolved', phases: PHASE_NAMES },
-    }
-    yield {
-      id: `${runId}-tool`,
-      event: 'custom',
-      data: { schema_version: 1, type: 'tool_call', phase: 'execution', id: 'tool-dev-1', tool: 'apex_load.start', status: 'ok' },
-    }
-    for (const [index, sample] of samples.entries()) {
-      if (options?.signal?.aborted) return
-      yield {
-        id: `${runId}-engine-${index}`,
-        event: 'custom',
-        data: {
-          schema_version: 1,
-          type: 'engine_poll',
-          phase: 'execution',
-          attempt: 1,
-          engine: 'apexload',
-          external_run_id: `dummy-${tid}`,
-          status: sample.status,
-          progress_pct: sample.progress_pct,
-          live_stats: {
-            vusers: sample.vusers,
-            tps: sample.tps,
-            error_rate: sample.error_rate,
-            p95_ms: sample.p95_ms,
-          },
+    const rerunPhases = stage === 'rerun_subset'
+      ? ((detail.values?.['demo_rerun_phases'] as PhaseName[] | undefined) ?? [])
+      : []
+    const plan = emit('plan', {
+      type: 'plan_resolved',
+      phases: rerunPhases.length ? rerunPhases : PHASE_NAMES,
+    })
+    if (plan) yield plan
+
+    if (stage === 'rerun_subset') {
+      for (const rerunPhase of rerunPhases) {
+        const priorAttempt = detail.phase_strip.find((item) => item.phase === rerunPhase)?.attempt ?? 0
+        this.setPhaseState(detail, rerunPhase, 'running', priorAttempt + 1)
+        detail.current_phase = rerunPhase
+        for await (const event of phase(rerunPhase, priorAttempt + 1)) yield event
+        this.setPhaseState(
+          detail,
+          rerunPhase,
+          'succeeded',
+          priorAttempt + 1,
+          `Offline rerun regenerated the ${rerunPhase.replaceAll('_', ' ')} result from the checkpointed configuration.`,
+        )
+      }
+      const lastPhase = rerunPhases.at(-1)
+      const gatesMode = detail.values?.['demo_rerun_gates_mode']
+      if (lastPhase && gatesMode !== 'auto') {
+        const attempt = detail.phase_strip.find((item) => item.phase === lastPhase)?.attempt ?? 1
+        this.setPhaseState(detail, lastPhase, 'awaiting_output_review', attempt)
+        detail.current_phase = lastPhase
+        detail.thread_status = 'interrupted'
+        detail.values = { ...(detail.values ?? {}), demo_rerun_gate: true }
+        this.addPhaseGate(detail, lastPhase)
+        const gate = emit('rerun-gate', {
+          type: 'gate_opened',
+          gate: 'phase_review',
+          phase: lastPhase,
+          attempt,
+        })
+        if (gate) yield gate
+      } else {
+        detail.thread_status = 'idle'
+        detail.pending_gate = null
+        detail.interrupts = []
+        detail.values = { ...(detail.values ?? {}), demo_rerun_gate: false }
+      }
+    } else if (stage === 'rerun_reopen') {
+      const rerunPhase = detail.current_phase as PhaseName
+      const attempt = detail.phase_strip.find((item) => item.phase === rerunPhase)?.attempt ?? 1
+      this.setPhaseState(detail, rerunPhase, 'awaiting_output_review', attempt + 1)
+      detail.thread_status = 'interrupted'
+      detail.values = { ...(detail.values ?? {}), demo_rerun_gate: true }
+      this.addPhaseGate(detail, rerunPhase, true)
+      const gate = emit('rerun-regate', {
+        type: 'gate_opened',
+        gate: 'phase_review',
+        phase: rerunPhase,
+        attempt: attempt + 1,
+      })
+      if (gate) yield gate
+    } else if (stage === 'rerun_complete') {
+      const rerunPhase = detail.current_phase as PhaseName
+      const current = detail.phase_strip.find((item) => item.phase === rerunPhase)
+      if (current?.status !== 'skipped') {
+        this.setPhaseState(detail, rerunPhase, 'succeeded', current?.attempt ?? 1)
+      }
+      detail.thread_status = 'idle'
+      detail.pending_gate = null
+      detail.interrupts = []
+      detail.values = { ...(detail.values ?? {}), demo_rerun_gate: false }
+      const done = emit('rerun-complete', {
+        type: 'phase_status',
+        phase: rerunPhase,
+        status: current?.status === 'skipped' ? 'skipped' : 'succeeded',
+        attempt: current?.attempt ?? 1,
+      })
+      if (done) yield done
+    } else if (stage === 'story_analysis') {
+      for await (const event of phase('story_analysis')) yield event
+      this.setPhaseState(detail, 'story_analysis', 'succeeded', 1, 'Resolved the Jira Align hierarchy and peak-load scenarios.')
+      this.setPhaseState(detail, 'test_planning', 'awaiting_prompt_review')
+      detail.current_phase = 'test_planning'
+      detail.thread_status = 'interrupted'
+      this.addPromptGate(detail)
+      const event = emit('prompt-gate', { type: 'gate_opened', gate: 'prompt_review', phase: 'test_planning', attempt: 1 })
+      if (event) yield event
+    } else if (stage === 'prompt_reopen') {
+      this.setPhaseState(detail, 'test_planning', 'awaiting_prompt_review', 2)
+      this.addPromptGate(detail, true)
+      detail.thread_status = 'interrupted'
+      const event = emit('prompt-regate', { type: 'gate_opened', gate: 'prompt_review', phase: 'test_planning', attempt: 2 })
+      if (event) yield event
+    } else if (stage === 'env_triage' || stage === 'env_discuss' || stage === 'env_revised') {
+      if (stage === 'env_triage') for await (const event of phase('test_planning')) yield event
+      this.setPhaseState(detail, 'test_planning', 'succeeded', stage === 'env_triage' ? 1 : 2)
+      this.setPhaseState(
+        detail,
+        'env_triage',
+        'awaiting_output_review',
+        stage === 'env_revised' ? 2 : 1,
+        stage === 'env_revised'
+          ? 'PERF rescan is green after correcting the OMS endpoint and MQ consumer count.'
+          : 'QC Oracle target and insufficient MQ consumers require operator review.',
+      )
+      detail.current_phase = 'env_triage'
+      detail.thread_status = 'interrupted'
+      this.addPhaseGate(detail, 'env_triage', stage === 'env_revised')
+      const event = emit('env-gate', { type: 'gate_opened', gate: 'phase_review', phase: 'env_triage', attempt: stage === 'env_triage' ? 1 : 2 })
+      if (event) yield event
+    } else if (stage === 'execution') {
+      this.setPhaseState(detail, 'env_triage', 'succeeded', 2, 'PERF configuration correction and rescan passed.')
+      for await (const event of phase('script_scenario')) yield event
+      this.setPhaseState(detail, 'script_scenario', 'succeeded', 1, 'Validated JMeter and VuGen scenarios are ready.')
+      this.setPhaseState(detail, 'execution', 'running')
+      const provision = emit('provision-tool', { type: 'tool_call', phase: 'execution', id: `${runId}-apex-load`, tool: 'apex_load.start', status: 'ok' })
+      if (provision) yield provision
+      const started = emit('execution-start', { type: 'phase_status', phase: 'execution', status: 'running', attempt: 1 })
+      if (started) yield started
+      const committedProgress = Number(detail.values?.['execution_progress'] ?? -1)
+      for (const [index, sample] of samples.entries()) {
+        if (options?.signal?.aborted) return
+        if (sample.progress_pct <= committedProgress) continue
+        const event = emit(`engine-${index}`, { type: 'engine_poll', phase: 'execution', attempt: 1, engine: 'apexload', external_run_id: `AL-${tid}`, status: sample.status, progress_pct: sample.progress_pct, live_stats: { vusers: sample.vusers, tps: sample.tps, error_rate: sample.error_rate, p95_ms: sample.p95_ms }, mq_depth: index >= 3 ? 8_400 + index * 1_670 : 1_400, hpa_replicas: index < 3 ? 4 : index < 5 ? 6 : 8, note: index === 3 ? 'Ramp held while IBM MQ depth stabilizes.' : undefined })
+        if (event) yield event
+        detail.values = { ...(detail.values ?? {}), execution_progress: sample.progress_pct, live_metrics: sample }
+        this.persistState()
+        await new Promise((resolve) => setTimeout(resolve, EXECUTION_SAMPLE_DELAY_MS))
+      }
+      const done = emit('execution-done', { type: 'phase_status', phase: 'execution', status: 'succeeded', attempt: 1 })
+      if (done) yield done
+      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 1, 'OMS p95 exceeded SLA while orchestration completed successfully.')
+      detail.current_phase = 'execution'
+      detail.thread_status = 'interrupted'
+      this.addPhaseGate(detail, 'execution')
+      const gate = emit('execution-gate', { type: 'gate_opened', gate: 'phase_review', phase: 'execution', attempt: 1 })
+      if (gate) yield gate
+    } else if (stage === 'execution_reopen') {
+      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 2)
+      detail.current_phase = 'execution'
+      detail.thread_status = 'interrupted'
+      this.addPhaseGate(detail, 'execution', true)
+      const event = emit('execution-regate', { type: 'gate_opened', gate: 'phase_review', phase: 'execution', attempt: 2 })
+      if (event) yield event
+    } else if (stage === 'engine_recovery') {
+      const tool = emit('engine-reconcile', { type: 'tool_call', phase: 'execution', id: `${runId}-engine-reconcile`, tool: 'apex_load.reconcile', status: 'ok' })
+      if (tool) yield tool
+      const poll = emit('engine-recovered', { type: 'engine_poll', phase: 'execution', attempt: 2, engine: 'apexload', external_run_id: `AL-${tid}`, status: 'provisioning', progress_pct: 0.08, live_stats: { vusers: 0, tps: 0, error_rate: 0, p95_ms: 0 }, note: 'Checkpoint reconciliation reused the original idempotency key.' })
+      if (poll) yield poll
+      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 2, 'Provisioning reconciliation succeeded without creating a duplicate native run.')
+      detail.thread_status = 'interrupted'
+      this.addPhaseGate(detail, 'execution', true)
+      const gate = emit('engine-recovery-gate', { type: 'gate_opened', gate: 'phase_review', phase: 'execution', attempt: 2 })
+      if (gate) yield gate
+    } else if (stage === 'reporting') {
+      this.setPhaseState(detail, 'execution', 'succeeded', 1)
+      for await (const event of phase('reporting')) yield event
+      this.setPhaseState(detail, 'reporting', 'awaiting_output_review', 1, 'Executive and technical reports plus the Jira defect draft are ready.')
+      detail.current_phase = 'reporting'
+      detail.thread_status = 'interrupted'
+      this.addPhaseGate(detail, 'reporting')
+      const event = emit('report-gate', { type: 'gate_opened', gate: 'phase_review', phase: 'reporting', attempt: 1 })
+      if (event) yield event
+    } else if (stage === 'complete') {
+      const ticket = this.ensurePerf248(tid)
+      const jira = emit('jira-create', { type: 'tool_call', phase: 'reporting', id: `${runId}-jira-create`, tool: 'jira.create', status: 'ok', ticket_key: ticket.key })
+      if (jira) yield jira
+      this.setPhaseState(detail, 'reporting', 'succeeded', 1)
+      for await (const event of phase('postmortem')) yield event
+      this.setPhaseState(detail, 'postmortem', 'succeeded', 1, 'MQ consumer, HPA, and OMS remediation actions were recorded.')
+      detail.current_phase = 'postmortem'
+      detail.thread_status = 'idle'
+      detail.pending_gate = null
+      detail.interrupts = []
+      detail.values = { ...(detail.values ?? {}), generated_ticket: ticket, postmortem_actions: ['Scale IBM MQ fulfillment consumers from two to four.', 'Tune the AKS HPA stabilization window.', 'Optimize the OMS create-order dependency path.'] }
+    } else if (stage === 'prompt_playground') {
+      const promptPhase = PHASE_NAMES.includes(detail.current_phase as PhaseName)
+        ? (detail.current_phase as PhaseName)
+        : 'story_analysis'
+      for await (const event of phase(promptPhase)) yield event
+      this.setPhaseState(
+        detail,
+        promptPhase,
+        'succeeded',
+        1,
+        `Offline prompt simulation completed for ${String(detail.values?.['prompt_key'] ?? promptPhase)}.`,
+      )
+      detail.thread_status = 'idle'
+      detail.pending_gate = null
+      detail.interrupts = []
+      detail.values = {
+        ...(detail.values ?? {}),
+        prompt_playground_result: {
+          model: 'offline-deterministic-template',
+          summary: `Deterministic ${promptPhase.replaceAll('_', ' ')} response generated without an LLM.`,
+          sample_input: detail.values?.['sample_input'] ?? {},
         },
       }
-      await new Promise((resolve) => setTimeout(resolve, 25))
+    } else if (stage === 'aborted') {
+      this.setPhaseState(detail, detail.current_phase as PhaseName, 'aborted')
+      detail.thread_status = 'error'
+      detail.pending_gate = null
+      detail.interrupts = []
+      detail.values = { ...(detail.values ?? {}), run_aborted: true }
+      const event = emit('aborted', { type: 'phase_status', phase: detail.current_phase, status: 'aborted', attempt: 1 })
+      if (event) yield event
     }
+    detail.updated_at = nowIso()
+    this.runs.set(tid, (this.runs.get(tid) ?? []).map((run) => run.run_id === runId ? { ...run, updated_at: nowIso(), status: detail.thread_status === 'interrupted' ? 'interrupted' : detail.thread_status === 'idle' ? 'success' : detail.thread_status === 'error' ? 'error' : run.status } : run))
+    this.completedRunStreams.add(runId)
+    this.persistState()
   }
 
   private handlePipelines(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> | Response {
+    if (method === 'POST' && path === '/v1/pipelines') {
+      return request.json().then((raw) => {
+        const body = raw as StartPipelineRequest
+        const idempotencyKey = body.idempotency_key?.trim() || null
+        const replay = idempotencyKey ? this.pipelineLaunches.get(idempotencyKey) : null
+        if (replay) return jsonResponse(replay, 202)
+        const thread = this.createThread({ metadata: { project_id: body.project_id ?? TELECOM_PROJECT_ID } })
+        const configurable = { ...(body.configurable ?? {}) }
+        const configuredPhases = body.phases ?? configurable['phases']
+        if (Array.isArray(configuredPhases)) configurable['phases'] = configuredPhases
+        const run = this.createRun(thread.thread_id, body.assistant_id ?? 'pipeline', {
+          input: { title: body.title, request: body.request },
+          config: { configurable },
+        })
+        const detail = this.pipelineDetails.get(thread.thread_id)!
+        detail.project_id = body.project_id ?? TELECOM_PROJECT_ID
+        detail.app_id = body.app_id ?? 'app-digital-device'
+        const state = detail.values as PipelineState
+        state.context_packets = (body.context_packets ?? state.context_packets ?? []).map((packet, index) => ({
+          ...packet,
+          id: packet.id ?? `launch-context-${index + 1}`,
+        }))
+        state.run_config = configurable
+        detail.values = { ...state, document_ids: body.document_ids ?? [] } as Record<string, unknown>
+        const response: StartPipelineResponse = {
+          thread_id: thread.thread_id,
+          run_id: run.run_id,
+          stream_url: `/threads/${thread.thread_id}/runs/${run.run_id}/stream`,
+        }
+        if (idempotencyKey) this.pipelineLaunches.set(idempotencyKey, response)
+        this.persistState()
+        return jsonResponse(response, 202)
+      })
+    }
+    const rerunMatch = path.match(/^\/v1\/pipelines\/([^/]+)\/rerun$/)
+    if (method === 'POST' && rerunMatch) {
+      return request.json().then((raw) => {
+        const threadId = decodePart(rerunMatch[1]!)
+        const detail = this.pipelineDetails.get(threadId)
+        if (!detail) return problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
+        const body = raw as Partial<RerunPipelineRequest>
+        const phases = [...new Set(body.phases ?? [])].filter((phase): phase is PhaseName =>
+          PHASE_NAMES.includes(phase as PhaseName),
+        )
+        if (!body.idempotency_key?.trim() || !body.phases?.length || phases.length !== body.phases.length) {
+          return problemResponse(422, 'validation_error', 'Reruns require an idempotency key and one or more valid phases.')
+        }
+        if (!['inherit', 'gated', 'auto'].includes(body.gates_mode ?? '')) {
+          return problemResponse(422, 'validation_error', 'gates_mode must be inherit, gated, or auto.')
+        }
+        const launchKey = `rerun:${threadId}:${body.idempotency_key.trim()}`
+        const replay = this.pipelineLaunches.get(launchKey)
+        if (replay) return jsonResponse({ run_id: replay.run_id } satisfies RerunPipelineResponse, 202)
+        if (detail.thread_status === 'busy' || detail.thread_status === 'interrupted') {
+          return problemResponse(409, 'rerun_already_active', 'Finish or abort the active run before starting a rerun.')
+        }
+        const run = this.createRun(threadId, 'pipeline', {
+          input: { title: detail.title },
+          config: { configurable: { phases } },
+        })
+        detail.values = {
+          ...(detail.values ?? {}),
+          demo_rerun_phases: phases,
+          demo_rerun_gates_mode: body.gates_mode,
+          demo_rerun_gate: false,
+        }
+        this.runStages.set(threadId, 'rerun_subset')
+        this.pipelineLaunches.set(launchKey, {
+          thread_id: threadId,
+          run_id: run.run_id,
+          stream_url: `/threads/${threadId}/runs/${run.run_id}/stream`,
+        })
+        this.persistState()
+        return jsonResponse({ run_id: run.run_id } satisfies RerunPipelineResponse, 202)
+      })
+    }
     if (method === 'GET' && path === '/v1/pipelines') {
       let items = [...this.pipelineDetails.values()].map((detail) => this.toSummary(detail))
       const status = params.get('status')
@@ -797,13 +1372,71 @@ export class DevDataStore {
     if (method === 'POST' && parts[4] === 'gates' && parts[6] === 'resume') {
       return request.json().then((body) => {
         const detail = this.pipelineDetails.get(threadId)
-        if (detail) {
-          const action = (body as { action?: string }).action ?? 'approve'
-          detail.pending_gate = null
-          detail.interrupts = []
-          detail.thread_status = action === 'abort' ? 'error' : 'busy'
-          detail.current_phase = action === 'abort' ? detail.current_phase : 'execution'
-          detail.updated_at = nowIso()
+        if (!detail) return problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
+        const interruptId = decodePart(parts[5])
+        if (!detail.pending_gate || detail.pending_gate.interrupt_id !== interruptId) return problemResponse(409, 'gate_superseded', 'This gate was already actioned or replaced by a newer interrupt.')
+        const requestBody = body as { action?: string; message?: string | null; note?: string | null; instructions?: string | null; prompt?: Record<string, unknown> | null }
+        const action = requestBody.action ?? 'approve'
+        const gatePhase = detail.pending_gate.phase as PhaseName
+        const gateKind = detail.pending_gate.kind
+        const isRerunGate = detail.values?.['demo_rerun_gate'] === true
+        if (requestBody.message || requestBody.note || requestBody.instructions) this.appendDialogue(detail, gatePhase, requestBody.message ?? requestBody.note ?? requestBody.instructions ?? '')
+        if (requestBody.prompt) {
+          detail.values = { ...(detail.values ?? {}), prompt_edit_history: [...((detail.values?.['prompt_edit_history'] as unknown[]) ?? []), { at: nowIso(), interrupt_id: interruptId, prompt: requestBody.prompt }] }
+        }
+        detail.pending_gate = null
+        detail.interrupts = []
+        detail.thread_status = action === 'abort' ? 'error' : 'busy'
+        detail.updated_at = nowIso()
+        if (action === 'skip_phase') this.setPhaseState(detail, gatePhase, 'skipped')
+        if (action === 'abort') this.runStages.set(threadId, 'aborted')
+        else if (isRerunGate && ['discuss', 'revise'].includes(action)) this.runStages.set(threadId, 'rerun_reopen')
+        else if (isRerunGate) this.runStages.set(threadId, 'rerun_complete')
+        else if (action === 'modify') this.runStages.set(threadId, 'prompt_reopen')
+        else if (gateKind === 'engine_provision_retry' && action === 'retry') this.runStages.set(threadId, 'engine_recovery')
+        else if (gatePhase === 'test_planning') this.runStages.set(threadId, 'env_triage')
+        else if (gatePhase === 'env_triage' && action === 'discuss') this.runStages.set(threadId, 'env_discuss')
+        else if (gatePhase === 'env_triage' && action === 'revise') this.runStages.set(threadId, 'env_revised')
+        else if (gatePhase === 'env_triage') this.runStages.set(threadId, 'execution')
+        else if (gatePhase === 'execution' && ['discuss', 'revise'].includes(action)) this.runStages.set(threadId, 'execution_reopen')
+        else if (gatePhase === 'execution') this.runStages.set(threadId, 'reporting')
+        else if (gatePhase === 'reporting' && ['discuss', 'revise'].includes(action)) this.runStages.set(threadId, 'reporting')
+        else if (gatePhase === 'reporting') this.runStages.set(threadId, 'complete')
+        if (action === 'abort') {
+          const now = nowIso()
+          const run: Run = {
+            run_id: this.id('run'),
+            thread_id: threadId,
+            assistant_id: 'pipeline',
+            created_at: now,
+            updated_at: now,
+            status: 'running',
+            metadata: {},
+            multitask_strategy: 'reject',
+          }
+          this.runs.set(threadId, [run, ...(this.runs.get(threadId) ?? [])])
+          this.persistState()
+          return jsonResponse({ run_id: run.run_id }, 202)
+        }
+        const nextStage = this.runStages.get(threadId)
+        if (nextStage === 'env_triage') {
+          this.setPhaseState(detail, 'test_planning', 'succeeded', 2)
+          this.setPhaseState(detail, 'env_triage', 'running')
+        } else if (nextStage === 'env_discuss' || nextStage === 'env_revised') {
+          this.setPhaseState(detail, 'env_triage', 'running', nextStage === 'env_revised' ? 2 : 1)
+        } else if (nextStage === 'execution') {
+          this.setPhaseState(detail, 'env_triage', 'succeeded', 2)
+          this.setPhaseState(detail, 'script_scenario', 'succeeded', 1)
+          this.setPhaseState(detail, 'execution', 'running')
+        } else if (nextStage === 'execution_reopen' || nextStage === 'engine_recovery') {
+          this.setPhaseState(detail, 'execution', 'running', 2)
+        } else if (nextStage === 'reporting') {
+          this.setPhaseState(detail, 'execution', 'succeeded', 1)
+          this.setPhaseState(detail, 'reporting', 'running')
+        } else if (nextStage === 'complete') {
+          this.ensurePerf248(threadId)
+          this.setPhaseState(detail, 'reporting', 'succeeded', 1)
+          this.setPhaseState(detail, 'postmortem', 'running')
         }
         const run = this.createRun(threadId, 'pipeline', { input: {} })
         return jsonResponse({ run_id: run.run_id }, 202)
@@ -827,7 +1460,7 @@ export class DevDataStore {
         id: this.id('app'),
         name: body.name ?? 'New application',
         description: body.description ?? null,
-        project_id: body.project_id ?? 'proj-alpha',
+        project_id: body.project_id ?? 'telecom-modernization',
         archived_at: null,
         created_at: nowIso(),
         updated_at: nowIso(),
@@ -874,7 +1507,7 @@ export class DevDataStore {
     }
     if (method === 'POST' && path === '/v1/catalog/environments') {
       const body = (await request.json()) as Partial<Environment>
-      const env = this.environment(this.id('env'), body.application_id ?? 'app-checkout', body.name ?? 'new-env', body.kind ?? 'k8s', body.base_url ?? null, false)
+      const env = this.environment(this.id('env'), body.application_id ?? 'app-digital-device', body.name ?? 'new-env', body.kind ?? 'k8s', body.base_url ?? null, false)
       env.hosts = (body.hosts ?? []).map((host, index) => ({
         id: this.id(`host-${index}`),
         hostname: host.hostname,
@@ -930,9 +1563,9 @@ export class DevDataStore {
           scanned_at: nowIso(),
           stale: false,
           services: [
-            { name: 'checkout-api', image: 'ghcr.io/apex/checkout:1.47.0', replicas: 4 },
-            { name: 'payments-gateway', image: 'ghcr.io/apex/payments:2.11.3', replicas: 3 },
-            { name: 'search-indexer', image: 'ghcr.io/apex/search:0.93.1', replicas: 2 },
+            { name: 'device-upgrade-api', image: 'registry.example.test/device-upgrade:4.8.2', replicas: 4 },
+            { name: 'order-mgmt-svc', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
+            { name: 'mq-fulfillment-consumer', image: 'registry.example.test/mq-consumer:3.6.0', replicas: 4 },
           ],
         },
       }
@@ -950,13 +1583,16 @@ export class DevDataStore {
       const body = (await request.json()) as { text?: string; connection_id?: string }
       const text = body.text ?? 'open load test bugs'
       const lowered = text.toLowerCase()
-      const provider = lowered.includes('azure') ? 'ado' : lowered.includes('align') ? 'jira_align' : 'jira'
-      const binding = this.workTrackingBinding(body.connection_id, provider)
-      const jiraQuery = `project = PHX AND text ~ "${text}"`
+      const provider = lowered.includes('azure') ? 'ado' : lowered.includes('align') ? 'jira_align' : body.connection_id ? undefined : 'jira'
+      const binding = provider ? this.workTrackingBinding(undefined, provider) : this.workTrackingBinding(body.connection_id)
+      const jiraQuery = `project = PERF AND text ~ "${text}"`
+      const isEsimScope = /esim|device upgrade|flagship|release scope/.test(lowered)
       const queryByProvider: Record<string, string> = {
         jira: jiraQuery,
         ado: `SELECT [System.Id] FROM WorkItems WHERE [System.Title] CONTAINS '${text}'`,
-        jira_align: `programId eq 42 and contains(title,'${text}')`,
+        jira_align: isEsimScope
+          ? FLAGSHIP_ALIGN_QUERY
+          : `programId eq 42 and contains(title,'${text}')`,
       }
       return jsonResponse({
         ...binding,
@@ -974,7 +1610,27 @@ export class DevDataStore {
           'The query provider does not match the selected work-tracking connection.',
         )
       }
-      return jsonResponse(this.workItemPage(this.workItems, body.limit ?? 25, body.offset ?? 0, binding))
+      let rows = this.workItems.filter((item) => this.workItemProviders.get(item.key) === binding.provider)
+      const queryText = body.query?.query?.toLowerCase() ?? ''
+      if (binding.provider === 'jira_align') {
+        if (queryText.includes('esim')) {
+          rows = rows.filter((item) => ['feature:583', 'story:9012', 'story:9013', 'story:9014', 'story:9061'].includes(item.key))
+        }
+        const itemTypes = /itemtype\s+in\s*\(([^)]+)\)/i.exec(queryText)?.[1]
+          ?.split(',')
+          .map((value) => value.replaceAll(/["']/g, '').trim().toLowerCase())
+          .filter(Boolean)
+        if (itemTypes?.length) rows = rows.filter((item) => itemTypes.includes(item.kind.toLowerCase()))
+        if (/state\s+ne\s+['"]accepted['"]/i.test(queryText)) {
+          rows = rows.filter((item) => item.status.toLowerCase() !== 'accepted')
+        }
+        if (/state\s+eq\s+['"]open['"]/i.test(queryText)) {
+          rows = rows.filter((item) => item.status.toLowerCase() === 'open')
+        }
+      } else if (queryText.includes('status') && queryText.includes('open')) {
+        rows = rows.filter((item) => !['done', 'accepted'].includes(item.status.toLowerCase()))
+      }
+      return jsonResponse(this.workItemPage(rows, body.limit ?? 25, body.offset ?? 0, binding))
     }
     if (method === 'GET' && path === '/v1/work-tracking/saved-queries') {
       const project = params.get('project')
@@ -993,12 +1649,16 @@ export class DevDataStore {
     if (savedMatch) return this.handleSavedQuery(method, decodePart(savedMatch[1]), request)
     if (method === 'POST' && path === '/v1/work-tracking/items') {
       const body = (await request.json()) as WorkItemDraft
-      const key = `PHX-${200 + this.nextId++}`
+      const binding = this.workTrackingBinding(params.get('connection_id'))
+      if (binding.provider !== 'jira') return problemResponse(409, 'demo_ticket_destination', 'Offline demo ticket creation is supported through Jira Cloud only.')
+      const jiraNumbers = this.workItems.flatMap((item) => /^PERF-(\d+)$/.exec(item.key)?.[1] ? [Number(/^PERF-(\d+)$/.exec(item.key)![1])] : [])
+      const key = `PERF-${Math.max(248, ...jiraNumbers) + 1}`
       const item: WorkItem = { key, title: body.title, description: body.description ?? '', kind: body.kind ?? 'story', status: 'open', url: null }
       this.workItems.unshift(item)
+      this.workItemProviders.set(key, 'jira')
       return jsonResponse({
         ...item,
-        ...this.workTrackingBinding(params.get('connection_id')),
+        ...binding,
       } satisfies ResolvedWorkItem, 201)
     }
     const itemMatch = /^\/v1\/work-tracking\/items\/([^/]+)(?:\/enrich)?$/.exec(path)
@@ -1006,9 +1666,11 @@ export class DevDataStore {
       const key = decodePart(itemMatch[1])
       const item = this.workItems.find((row) => row.key === key)
       if (!item) return problemResponse(404, 'not_found', `Work item ${key} was not found.`)
+      const binding = this.workTrackingBinding(params.get('connection_id'))
+      if (this.workItemProviders.get(key) !== binding.provider) return problemResponse(404, 'not_found', `Work item ${key} is not available from ${binding.provider}.`)
       const resolved = {
         ...item,
-        ...this.workTrackingBinding(params.get('connection_id')),
+        ...binding,
       } satisfies ResolvedWorkItem
       if (method === 'GET') return jsonResponse(resolved)
       if (method === 'POST' && path.endsWith('/enrich')) {
@@ -1016,7 +1678,7 @@ export class DevDataStore {
         item.description = [item.description, body.comment].filter(Boolean).join('\n\n')
         return jsonResponse({
           ...item,
-          ...this.workTrackingBinding(params.get('connection_id')),
+          ...binding,
         } satisfies ResolvedWorkItem)
       }
     }
@@ -1049,16 +1711,107 @@ export class DevDataStore {
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for saved query ${method}.`)
   }
 
+  private async handleApexLoad(method: string, path: string, request: Request, _params: URLSearchParams): Promise<Response> {
+    void _params
+    const idempotencyHeader = request.headers.get('Idempotency-Key')
+    const idempotencyKey = idempotencyHeader ? `${method}:${path}:${idempotencyHeader}` : null
+    const replay = idempotencyKey ? this.apexIdempotency.get(idempotencyKey) : null
+    if (replay) return jsonResponse(replay.body, replay.status)
+    const remember = (body: Record<string, unknown>, status = 200): Response => {
+      if (idempotencyKey) this.apexIdempotency.set(idempotencyKey, { status, body: clone(body) })
+      return jsonResponse(body, status)
+    }
+    const connection = { id: 'conn-apex-load', name: 'APEX Load PERF Pool', project_id: 'telecom-modernization' }
+    if (method === 'GET' && path === '/v1/apex-load/connections') return jsonResponse({ items: [connection], truncated: false })
+    if (method === 'GET' && path.endsWith('/capabilities')) {
+      return jsonResponse({
+        templates: [
+          { id: 'esim-journey', name: 'eSIM device upgrade journey' },
+          { id: 'mq-recovery', name: 'IBM MQ recovery verification' },
+        ],
+        protocols: ['jmeter', 'vugen'],
+        scheduling: true,
+        approvals: true,
+      })
+    }
+    if (method === 'GET' && path.endsWith('/scenarios')) return jsonResponse({ items: this.apexScenarios, truncated: false })
+    if (method === 'GET' && path.endsWith('/runs')) {
+      return jsonResponse({
+        items: [
+          { id: 'native-run-2603', name: 'eSIM certification 26.3', status: 'COMPLETED', console_url: 'https://apex-load.example.test/#/test/native-run-2603' },
+          { id: 'native-run-active', name: 'eSIM active ramp', status: 'RUNNING', console_url: 'https://apex-load.example.test/#/test/native-run-active' },
+          { id: 'native-run-baseline', name: 'eSIM baseline 26.2.2', status: 'COMPLETED', console_url: 'https://apex-load.example.test/#/test/native-run-baseline' },
+          { id: 'native-run-recovery', name: 'MQ recovery rehearsal', status: 'FAILED', console_url: 'https://apex-load.example.test/#/test/native-run-recovery' },
+        ],
+        truncated: false,
+      })
+    }
+    if (method === 'GET' && path.endsWith('/mirrored-runs')) {
+      return jsonResponse({ items: ['run-active', 'run-baseline-a', 'run-baseline-b', 'run-engine-recovery'].map((thread_id, index) => ({ thread_id, native_run_id: ['native-run-active', 'native-run-2603', 'native-run-baseline', 'native-run-recovery'][index], status: index === 3 ? 'failed' : 'synchronized' })), limit: 25, offset: 0 })
+    }
+    if (method === 'GET' && path.endsWith('/schedule-health')) return jsonResponse({ details: { status: 'healthy', scheduler_lag_seconds: 0, next_occurrence_at: isoMinutesAgo(-240, this.activationTime) } })
+    if (method === 'GET' && path.endsWith('/calendar')) return jsonResponse({ details: { windows: [{ id: 'window-1', name: 'PERF reserved window', starts_at: isoMinutesAgo(-240, this.activationTime), ends_at: isoMinutesAgo(-330, this.activationTime) }] } })
+    if (method === 'GET' && path.endsWith('/occurrences')) return jsonResponse({ items: this.apexOccurrences.map((item) => ({ ...item, scheduled_for: isoMinutesAgo(Number(item['scheduled_offset_minutes'] ?? 0), this.activationTime) })), truncated: false })
+    if (method === 'GET' && /\/scenarios\/[^/]+\/schedules$/.test(path)) {
+      const scenarioId = decodePart(path.split('/').at(-2) ?? '')
+      return jsonResponse({ items: this.apexSchedules.filter((item) => item['scenario_id'] === scenarioId), truncated: false })
+    }
+    if (method === 'GET' && path.endsWith('/metrics')) return jsonResponse({ details: { tps_avg: 84.7, tps_peak: 91.2, p95_ms: 3_650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18_420, hpa_pods_peak: 8 } })
+    if (method === 'GET' && path.endsWith('/evidence')) return jsonResponse({ details: { signature: 'demo-sha256-a8248e', packets: this.evidence.slice(4, 9), immutable: true } })
+    if (method === 'POST' && path.endsWith('/validation')) return jsonResponse({ details: { valid: true, warnings: [], checks: ['correlation', 'synthetic-data', 'stepped-ramp', 'idempotency'] } })
+    if (method === 'POST' && path.endsWith('/sizing')) return jsonResponse({ details: { recommended_generators: 3, estimated_vusers: 300, estimated_tps: 85, headroom_percent: 25 } })
+    if (method === 'POST' && /\/scenarios$/.test(path)) {
+      const body = (await request.json()) as { payload?: Record<string, unknown> }
+      const created = { id: this.id('scenario'), name: String(body.payload?.['name'] ?? 'New telecom scenario'), status: 'draft', ...body.payload }
+      this.apexScenarios.unshift(created)
+      return remember({ ...created, details: created }, 201)
+    }
+    if (method === 'POST' && /\/scenarios\/[^/]+\/schedules$/.test(path)) {
+      const body = (await request.json()) as { payload?: Record<string, unknown> }
+      const scenarioId = decodePart(path.split('/').at(-2) ?? '')
+      const created = { id: this.id('schedule'), scenario_id: scenarioId, name: String(body.payload?.['name'] ?? 'New certification schedule'), status: 'pending_approval', approval_id: this.id('approval'), ...body.payload }
+      this.apexSchedules.unshift(created)
+      return remember({ ...created, details: created }, 201)
+    }
+    if (method === 'POST' && /\/approvals\/[^/]+$/.test(path)) {
+      const body = (await request.json()) as { approved?: boolean }
+      const approvalId = decodePart(path.split('/').at(-1) ?? '')
+      const approved = Boolean(body.approved)
+      for (const schedule of this.apexSchedules) {
+        if (schedule['approval_id'] === approvalId) schedule['status'] = approved ? 'enabled' : 'rejected'
+      }
+      for (const occurrence of this.apexOccurrences) {
+        if (occurrence['approval_id'] === approvalId) occurrence['status'] = approved ? 'approved' : 'rejected'
+      }
+      return remember({ details: { approved, decided_at: nowIso(), decided_by: 'Demo Presenter' } })
+    }
+    return problemResponse(501, 'demo_handler_missing', `Offline demo has no APEX Load handler for ${method} ${path}.`)
+  }
+
   private async handleContext(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
     if (method === 'GET' && path === '/v1/context/evidence') {
       const project = params.get('project')
       const threadId = params.get('thread_id')
-      return jsonResponse(this.evidence.filter((item) => (!threadId || item.thread_id === threadId) && (!project || true)))
+      return jsonResponse(
+        this.evidence.filter(
+          (item) => (!threadId || item.thread_id === threadId) && (!project || project === TELECOM_PROJECT_ID),
+        ),
+      )
     }
     if (method === 'POST' && path === '/v1/context/summaries') {
       const body = (await request.json()) as ContextSummaryRequest
-      const threadId = this.id('ctx-thread')
-      return jsonResponse({ run_id: this.id('ctx-run'), stream_url: `/threads/${threadId}/runs/${this.id('run')}/stream`, subject: body.subject }, 202)
+      const threadId = this.id('context-thread')
+      const runId = this.id('ctx-run')
+      const subject = body.subject.trim()
+      const lowered = subject.toLowerCase()
+      const focus = lowered.includes('mq') || lowered.includes('queue')
+        ? 'IBM MQ backlog risk is driven by two active consumers rather than the approved four; use a bounded ramp hold during recovery.'
+        : lowered.includes('sla') || lowered.includes('release')
+          ? 'Release certification is conditional because OMS create-order p95 reached 3,650ms against the 3,000ms SLA.'
+          : 'Peak risks are OMS p95 latency, IBM MQ consumer backlog, retry idempotency, Cassandra eligibility reads, and AKS HPA response.'
+      const summary = `${subject}: Jira Align feature:583 and story:9012 define the eSIM certification scope. ${focus} This summary was generated by the bundled deterministic offline agent.`
+      this.contextSummaryJobs.set(runId, { runId, threadId, subject, summary })
+      return jsonResponse({ run_id: runId, stream_url: `/threads/${threadId}/runs/${runId}/stream`, subject }, 202)
     }
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
   }
@@ -1076,8 +1829,8 @@ export class DevDataStore {
       const file = form.get('file')
       const name = file instanceof File ? file.name : 'uploaded-document.txt'
       const size = file instanceof File ? file.size : 0
-      const doc = this.document(this.id('doc'), name, file instanceof File ? file.type || 'application/octet-stream' : 'text/plain', size, String(form.get('summary') ?? 'Uploaded in dummy mode.'))
-      doc.project_id = String(form.get('project_id') ?? 'proj-alpha')
+      const doc = this.document(this.id('doc'), name, file instanceof File ? file.type || 'application/octet-stream' : 'text/plain', size, String(form.get('summary') ?? 'Uploaded in offline demo mode.'))
+      doc.project_id = String(form.get('project_id') ?? 'telecom-modernization')
       this.documents.unshift(doc)
       return jsonResponse(doc, 201)
     }
@@ -1163,7 +1916,32 @@ export class DevDataStore {
       prompt.updated_at = nowIso()
       return jsonResponse(this.promptDetail(prompt))
     }
-    if (method === 'POST' && parts[4] === 'test') return jsonResponse({ run_id: this.id('prompt-run'), thread_id: this.id('prompt-thread') }, 202)
+    if (method === 'POST' && parts[4] === 'test') {
+      const body = (await request.json()) as {
+        sample_input?: Record<string, unknown>
+        project_id?: string
+        app_id?: string
+        version_id?: string
+        content?: string
+      }
+      const thread = this.createThread({ metadata: { project_id: TELECOM_PROJECT_ID, kind: 'prompt_playground', prompt_id: prompt.id } })
+      const run = this.createRun(thread.thread_id, 'pipeline', { input: { title: `Prompt playground: ${prompt.key}`, request: `Render a deterministic offline response for ${prompt.key}.` }, config: { configurable: { phases: [prompt.namespace === 'phase' ? prompt.key.split('/')[0] : 'story_analysis'] } } })
+      const detail = this.pipelineDetails.get(thread.thread_id)!
+      detail.project_id = body.project_id ?? TELECOM_PROJECT_ID
+      detail.app_id = body.app_id || detail.app_id
+      detail.values = {
+        ...(detail.values ?? {}),
+        prompt_id: prompt.id,
+        prompt_key: prompt.key,
+        prompt_source: body.content
+          ? 'adhoc'
+          : body.version_id ?? prompt.active_version?.id ?? prompt.versions.at(-1)?.id ?? 'active',
+        sample_input: body.sample_input ?? {},
+      }
+      this.runStages.set(thread.thread_id, 'prompt_playground')
+      this.persistState()
+      return jsonResponse({ run_id: run.run_id, thread_id: thread.thread_id }, 202)
+    }
     if (method === 'GET' && parts[4] === 'versions' && parts.length === 5) {
       return jsonResponse(
         prompt.versions.map(({ id, version, note, created_by, created_at, parent_version_id }) => ({
@@ -1247,7 +2025,7 @@ export class DevDataStore {
       return jsonResponse(mappings)
     }
     if (method === 'POST' && parts[5] === 'test') {
-      const probe: ProbeResult = { ok: conn.enabled, detail: conn.enabled ? 'Dummy probe succeeded.' : 'Connection is disabled in dummy data.', latency_ms: conn.enabled ? 42 : 0 }
+      const probe: ProbeResult = { ok: conn.enabled, detail: conn.enabled ? 'Offline simulated probe succeeded.' : 'Connection is disabled in the demo dataset.', latency_ms: conn.enabled ? 42 : 0 }
       return jsonResponse(probe)
     }
     return problemResponse(501, 'dummy_handler_missing', `Dummy data has no handler for ${method} ${path}.`)
@@ -1304,64 +2082,49 @@ export class DevDataStore {
         { id: `${id}-host-2`, hostname: `${name}-node-2`, role: name === 'production' ? 'api' : null },
       ],
       options: { namespace: `${applicationId}-${name}` },
-      created_at: isoMinutesAgo(12_000),
-      updated_at: isoMinutesAgo(30),
-      last_snapshot: { scanned_at: isoMinutesAgo(stale ? 2_400 : 15), service_count: stale ? 2 : 4 },
-    }
-  }
-
-  private seedInventories(): void {
-    for (const env of this.environments) {
-      this.inventories.set(env.id, {
-        environment_id: env.id,
-        snapshot: {
-          scanned_at: env.last_snapshot?.scanned_at ?? isoMinutesAgo(15),
-          stale: env.id === 'env-prod',
-          services: [
-            { name: 'checkout-api', image: 'ghcr.io/apex/checkout:1.47.0', replicas: env.id === 'env-prod' ? 8 : 3 },
-            { name: 'payments-gateway', image: 'ghcr.io/apex/payments:2.11.3', replicas: 3 },
-            { name: 'search-api', image: 'ghcr.io/apex/search:0.93.1', replicas: env.id === 'env-search-dev' ? 1 : 2 },
-          ],
-        },
-      })
+      created_at: isoMinutesAgo(12_000, this.activationTime),
+      updated_at: isoMinutesAgo(30, this.activationTime),
+      last_snapshot: { scanned_at: isoMinutesAgo(stale ? 2_400 : 15, this.activationTime), service_count: stale ? 2 : 4 },
     }
   }
 
   private connection(id: string, kind: PortKind, provider: string, name: string, projectId: string | null, baseUrl: string | null, enabled: boolean, options: Record<string, unknown>, secretRef: string | null): Connection {
-    return { id, kind, provider, name, project_id: projectId, base_url: baseUrl, enabled, options, secret_ref: secretRef, created_at: isoMinutesAgo(8_000), updated_at: isoMinutesAgo(25) }
+    return { id, kind, provider, name, project_id: projectId, base_url: baseUrl, enabled, options, secret_ref: secretRef, created_at: isoMinutesAgo(8_000, this.activationTime), updated_at: isoMinutesAgo(25, this.activationTime) }
   }
 
   private consumer(id: string, name: string, role: Consumer['role'], consumerType: Consumer['consumer_type'], enabled: boolean, fingerprint: string): Consumer {
-    return { id, name, role, consumer_type: consumerType, enabled, scopes: [{ project_id: 'proj-alpha', app_id: null }], created_at: isoMinutesAgo(9_000), last_used_at: enabled ? isoMinutesAgo(12) : null, key_fingerprint: fingerprint, rotation_count: 0 }
+    return { id, name, role, consumer_type: consumerType, enabled, scopes: [{ project_id: 'telecom-modernization', app_id: null }], created_at: isoMinutesAgo(9_000, this.activationTime), last_used_at: enabled ? isoMinutesAgo(12, this.activationTime) : null, key_fingerprint: fingerprint, rotation_count: 0 }
   }
 
   private consumerCreated(id: string, name: string, role: Consumer['role'], consumerType: Consumer['consumer_type'], enabled: boolean, fingerprint: string): ConsumerCreated {
-    return { ...this.consumer(id, name, role, consumerType, enabled, fingerprint), api_key: `apex_dummy_${fingerprint}` }
+    return { ...this.consumer(id, name, role, consumerType, enabled, fingerprint), api_key: `apex_demo_${fingerprint}` }
   }
 
   private document(id: string, name: string, mediaType: string, sizeBytes: number, summary: string): DocumentOut {
-    return { id, name, media_type: mediaType, size_bytes: sizeBytes, artifact_key: `documents/${id}`, project_id: 'proj-alpha', app_id: null, summary, uploaded_by: 'dev', created_at: isoMinutesAgo(1_000) }
+    return { id, name, media_type: mediaType, size_bytes: sizeBytes, artifact_key: `documents/${id}`, project_id: 'telecom-modernization', app_id: null, summary, uploaded_by: 'Demo Presenter', created_at: isoMinutesAgo(1_000, this.activationTime) }
   }
 
   private draft(id: string, title: string, projectId: string | null, payload: Record<string, unknown>): DraftRead {
-    return { id, title, project_id: projectId, payload, created_by: 'dev', created_at: isoMinutesAgo(2_000), updated_at: isoMinutesAgo(20) }
+    return { id, title, project_id: projectId, payload, created_by: 'dev', created_at: isoMinutesAgo(2_000, this.activationTime), updated_at: isoMinutesAgo(20, this.activationTime) }
   }
 
   private makePrompts(created: string, updated: string): PromptRecord[] {
+    const phase = [...TELECOM_PHASE_PROMPTS, ...SCRIPT_VARIANT_PROMPTS].map((seed, index) =>
+      this.prompt(`prompt-phase-${index + 1}`, 'phase', seed.key, seed.description, seed.content, created, updated, false, `adapted from ${seed.source}`),
+    )
     return [
-      this.prompt('prompt-story', 'phase', 'story_analysis/system', 'Story analysis system prompt', 'You are the story analysis phase operator.', created, updated, false),
-      this.prompt('prompt-exec', 'phase', 'execution/system', 'Execution system prompt', 'Run the plan and report engine telemetry.', created, updated, false),
-      this.prompt('prompt-report', 'phase', 'reporting/system', 'Reporting system prompt', 'Summarize KPI deltas and release risk.', created, updated, false),
-      this.prompt('prompt-app-checkout', 'application', 'app-checkout', 'Checkout application prompt', 'Checkout-specific requirements: preserve carts through payment retries, watch gateway 5xx rates, and report p95 latency for cart and payment APIs.', created, updated, false),
-      this.prompt('prompt-app-billing', 'application', 'app-billing', 'Billing application prompt', 'Billing-specific requirements: validate export completion, ledger consistency, and invoice API p95 latency.', created, updated, false),
-      this.prompt('prompt-old', 'experimental', 'legacy/reporting', 'Archived draft prompt', 'Old archived prompt body.', created, updated, true),
+      ...phase,
+      this.prompt('prompt-app-device', 'application', 'app-digital-device', 'Digital device-upgrade requirements', 'Preserve order idempotency, exercise CSR and digital channels, monitor OMS p95, IBM MQ depth, APIM rate limits, and AKS scaling.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', 'Validate Amdocs OMS submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', 'Validate Cassandra eligibility reads plus Amdocs BSSe and TLG latency without using production account data.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-old', 'experimental', 'legacy/release-report', 'Archived pre-telecom prompt', 'Legacy release report instructions retained only to demonstrate prompt archival.', created, updated, true, 'archived demo history'),
     ]
   }
 
-  private prompt(id: string, namespace: string, key: string, description: string, content: string, created: string, updated: string, archived: boolean): PromptRecord {
-    const v1: PromptVersionDetail = { id: `${id}-v1`, version: 1, content, note: 'initial dummy version', created_by: 'dev', created_at: created, parent_version_id: null }
-    const v2: PromptVersionDetail = { id: `${id}-v2`, version: 2, content: `${content}\nBe concise and cite evidence.`, note: 'tighten output', created_by: 'dev', created_at: updated, parent_version_id: v1.id }
-    return { id, namespace, key, description, content: v2.content, note: v2.note, active_version: { id: v2.id, version: 2 }, archived_at: archived ? isoMinutesAgo(300) : null, updated_at: updated, versions: [v1, v2] }
+  private prompt(id: string, namespace: string, key: string, description: string, content: string, created: string, updated: string, archived: boolean, sourceNote = 'telecom demo seed'): PromptRecord {
+    const v1: PromptVersionDetail = { id: `${id}-v1`, version: 1, content, note: sourceNote, created_by: 'Demo Curator', created_at: created, parent_version_id: null }
+    const v2: PromptVersionDetail = { id: `${id}-v2`, version: 2, content: `${content}\n\nCite the supplied evidence and clearly label assumptions.`, note: `${sourceNote}; active evidence-attribution revision`, created_by: 'Demo Curator', created_at: updated, parent_version_id: v1.id }
+    return { id, namespace, key, description, content: v2.content, note: v2.note, active_version: { id: v2.id, version: 2 }, archived_at: archived ? isoMinutesAgo(300, this.activationTime) : null, updated_at: updated, versions: [v1, v2] }
   }
 
   private promptSummary(prompt: PromptRecord): PromptSummary {
@@ -1375,19 +2138,29 @@ export class DevDataStore {
   }
 
   private makeLogs(): LogEntry[] {
-    return [
-      { at: isoMinutesAgo(3), level: 'ERROR', service: 'payments-gateway', message: 'gateway 502 spike during checkout ramp', fields: { thread_id: 'run-failed', attempt: 2 } },
-      { at: isoMinutesAgo(5), level: 'WARN', service: 'checkout-api', message: 'p95 latency crossed warning threshold', fields: { thread_id: 'run-busy' } },
-      { at: isoMinutesAgo(8), level: 'INFO', service: 'apex-worker', message: 'engine poll collected live stats', fields: { external_run_id: 'al-dev-42' } },
-      { at: isoMinutesAgo(13), level: 'DEBUG', service: 'apex-api', message: 'resume gate request accepted', fields: { interrupt_id: 'int-report' } },
-    ]
+    const services = ['device-upgrade-api', 'order-mgmt-svc', 'mq-fulfillment-consumer', 'mulesoft-esb', 'apim-gateway', 'usage-profile-api', 'apex-worker']
+    return Array.from({ length: 40 }, (_, index) => {
+      const mqIncident = index >= 4 && index <= 9
+      const omsIncident = index >= 10 && index <= 15
+      return {
+        at: isoMinutesAgo(2 + index * 3, this.activationTime),
+        level: mqIncident ? 'WARN' : omsIncident ? 'ERROR' : index % 7 === 0 ? 'DEBUG' : 'INFO',
+        service: services[index % services.length]!,
+        message: mqIncident
+          ? `IBM MQ fulfillment depth ${4_200 + index * 920}; ramp hold checkpoint`
+          : omsIncident
+            ? `OMS create-order p95 ${3_100 + index * 55}ms exceeded 3000ms SLA`
+            : `telecom demo checkpoint ${index + 1} correlated successfully`,
+        fields: { thread_id: index < 20 ? 'run-conditional' : 'run-active', checkpoint: index + 1 },
+      }
+    })
   }
 
   private makeAssistants(created: string, updated: string): Assistant[] {
     return [
-      this.assistant('pipeline', 'pipeline', 'System default', null, {}, { created_by: 'system' }, 1, created, updated),
-      this.assistant('asst-release', 'pipeline', 'Release Gate Soak', 'Full gated release-candidate soak profile.', { project_id: 'proj-alpha', limits: { poll_interval_s: 5 } }, { created_by: 'dev' }, 3, created, updated),
-      this.assistant('asst-fast', 'pipeline', 'Fast Smoke', 'Short smoke test for UI iteration.', { project_id: 'proj-beta', phases: ['story_analysis', 'execution', 'reporting'] }, { created_by: 'dev' }, 2, created, updated),
+      this.assistant('pipeline', 'pipeline', 'Telecom system default', 'All seven phases with deterministic offline agents.', { project_id: 'telecom-modernization' }, { created_by: 'Demo Curator' }, 1, created, updated),
+      this.assistant('asst-release', 'pipeline', 'eSIM Release Certification', 'Full gated release-candidate certification profile.', { project_id: 'telecom-modernization', app_id: 'app-digital-device', environment_id: 'env-perf', engine: 'apexload', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
+      this.assistant('asst-fast', 'pipeline', 'Telecom Fast Smoke', 'Short story, execution, and reporting path.', { project_id: 'telecom-modernization', phases: ['story_analysis', 'execution', 'reporting'] }, { created_by: 'Demo Curator' }, 2, created, updated),
     ]
   }
 
@@ -1397,17 +2170,31 @@ export class DevDataStore {
 
   private seedPipelines(): void {
     const rows: Array<[string, string, string, 'busy' | 'interrupted' | 'idle' | 'error', PhaseName, 'prompt' | 'phase' | null]> = [
-      ['run-busy', 'Checkout latency regression', 'proj-alpha', 'busy', 'execution', null],
-      ['run-gated-prompt', 'Nightly soak prompt review', 'proj-alpha', 'interrupted', 'test_planning', 'prompt'],
-      ['run-gated-report', 'Report approval for search rollout', 'proj-alpha', 'interrupted', 'reporting', 'phase'],
-      ['run-succeeded', 'Search API release soak', 'proj-alpha', 'idle', 'postmortem', null],
-      ['run-failed', 'Gateway failure rehearsal', 'proj-alpha', 'error', 'postmortem', null],
-      ['run-beta-idle', 'Billing smoke baseline', 'proj-beta', 'idle', 'reporting', null],
+      ['run-active', 'eSIM upgrade active ramp', 'telecom-modernization', 'busy', 'execution', null],
+      ['run-prompt-review', 'PI 26.3 workload prompt review', 'telecom-modernization', 'interrupted', 'test_planning', 'prompt'],
+      ['run-report-review', 'Device upgrade release approval', 'telecom-modernization', 'interrupted', 'reporting', 'phase'],
+      ['run-baseline-a', 'eSIM baseline 26.2.1', 'telecom-modernization', 'idle', 'postmortem', null],
+      ['run-baseline-b', 'eSIM baseline 26.2.2', 'telecom-modernization', 'idle', 'postmortem', null],
+      ['run-conditional', 'OMS and MQ release rehearsal', 'telecom-modernization', 'idle', 'postmortem', null],
+      ['run-aborted', 'Shared environment contention rehearsal', 'telecom-modernization', 'error', 'env_triage', null],
+      ['run-engine-recovery', 'APEX Load provisioning recovery', 'telecom-modernization', 'interrupted', 'execution', null],
     ]
     for (const [id, title, project, status, phase, gate] of rows) {
       const detail = this.pipelineDetail(id, title, project, status, phase)
+      const state = detail.values as PipelineState
+      if (id === 'run-baseline-a' || id === 'run-baseline-b') {
+        const result = state.phase_results?.execution
+        if (result?.test_summary) {
+          result.test_summary.passed = true
+          result.test_summary.kpis = { tps_avg: id === 'run-baseline-a' ? 81.2 : 82.4, p95_ms: id === 'run-baseline-a' ? 2410 : 2520, error_rate: id === 'run-baseline-a' ? 0.006 : 0.007, vusers_peak: 300 }
+          result.test_summary.sla_breaches = []
+          result.test_summary.notes = 'Comparable eSIM baseline passed all release thresholds.'
+        }
+      }
+      if (id === 'run-aborted') state.run_aborted = true
       if (gate === 'prompt') this.addPromptGate(detail)
       if (gate === 'phase') this.addPhaseGate(detail)
+      if (id === 'run-engine-recovery') this.addEngineRetryGate(detail)
       this.pipelineDetails.set(id, detail)
       this.runs.set(id, [
         {
@@ -1421,16 +2208,66 @@ export class DevDataStore {
           multitask_strategy: 'reject',
         },
       ])
+      if (status === 'busy') this.runStages.set(id, phase)
     }
   }
 
+  private initializeFreshPipeline(detail: PipelineDetail, phase: PhaseName): void {
+    const state = detail.values as PipelineState
+    state.current_phase = phase
+    state.phase_results = {
+      [phase]: {
+        phase,
+        status: 'running',
+        attempt: 1,
+        started_at: nowIso(),
+      },
+    }
+    state.artifacts = []
+    state.dialogue = []
+    state.engine_handle = null
+    detail.current_phase = phase
+    detail.phase_strip = makeStrip({ [phase]: { status: 'running', attempt: 1 } })
+    detail.engine = null
+    detail.values = state as Record<string, unknown>
+  }
+
+  private setPhaseState(
+    detail: PipelineDetail,
+    phase: PhaseName,
+    status: 'pending' | 'running' | 'awaiting_prompt_review' | 'awaiting_output_review' | 'succeeded' | 'failed' | 'skipped' | 'aborted',
+    attempt = 1,
+    summary?: string,
+  ): void {
+    detail.current_phase = phase
+    detail.phase_strip = detail.phase_strip.map((entry) =>
+      entry.phase === phase ? { ...entry, status, attempt } : entry,
+    )
+    const state = detail.values as PipelineState
+    const existing = state.phase_results?.[phase] ?? {}
+    state.current_phase = phase
+    state.phase_results = {
+      ...(state.phase_results ?? {}),
+      [phase]: {
+        ...existing,
+        phase,
+        status,
+        attempt,
+        started_at: existing.started_at ?? nowIso(),
+        ended_at: ['succeeded', 'failed', 'skipped', 'aborted'].includes(status) ? nowIso() : null,
+        ...(summary ? { summary } : {}),
+      },
+    }
+    detail.values = state as Record<string, unknown>
+  }
+
   private pipelineDetail(id: string, title: string, projectId: string | undefined, status: 'busy' | 'interrupted' | 'idle' | 'error', phase: PhaseName): PipelineDetail {
-    const state = makePipelineState(title, phase, status)
+    const state = makePipelineState(title, phase, status, this.activationTime)
     return {
       thread_id: id,
       title,
-      project_id: projectId ?? 'proj-alpha',
-      app_id: projectId === 'proj-beta' ? 'app-billing' : 'app-checkout',
+      project_id: projectId ?? 'telecom-modernization',
+      app_id: 'app-digital-device',
       thread_status: status,
       current_phase: phase,
       phase_strip: makeStrip({
@@ -1442,20 +2279,21 @@ export class DevDataStore {
         reporting: { status: phase === 'reporting' && status === 'interrupted' ? 'awaiting_output_review' : status === 'busy' ? 'pending' : 'succeeded', attempt: status === 'busy' ? null : 1 },
         postmortem: { status: status === 'error' ? 'running' : status === 'idle' ? 'succeeded' : 'pending', attempt: status === 'error' || status === 'idle' ? 1 : null },
       }),
-      engine: { engine: 'apexload', external_run_id: 'al-dev-42' },
-      created_at: isoMinutesAgo(status === 'busy' ? 65 : 180),
-      updated_at: status === 'interrupted' ? isoMinutesAgo(24) : isoMinutesAgo(status === 'busy' ? 2 : 45),
+      engine: { engine: 'apexload', external_run_id: `AL-${id.toUpperCase()}` },
+      created_at: isoMinutesAgo(status === 'busy' ? 65 : 180, this.activationTime),
+      updated_at: status === 'interrupted' ? isoMinutesAgo(24, this.activationTime) : isoMinutesAgo(status === 'busy' ? 2 : 45, this.activationTime),
       pending_gate: null,
       values: state as Record<string, unknown>,
       interrupts: [],
     }
   }
 
-  private addPromptGate(detail: PipelineDetail): void {
-    detail.pending_gate = { interrupt_id: 'int-prompt', kind: 'prompt_review', phase: 'test_planning' }
+  private addPromptGate(detail: PipelineDetail, revised = false): void {
+    const interruptId = revised ? this.id('int-prompt-revision') : 'int-prompt'
+    detail.pending_gate = { interrupt_id: interruptId, kind: 'prompt_review', phase: 'test_planning' }
     detail.interrupts = [
       {
-        interrupt_id: 'int-prompt',
+        interrupt_id: interruptId,
         kind: 'prompt_review',
         phase: 'test_planning',
         payload: {
@@ -1464,11 +2302,13 @@ export class DevDataStore {
           phase: 'test_planning',
           prompt: {
             system: 'You are the test planning phase operator.',
-            user: 'Plan a checkout soak focused on retry behavior.',
-            source: { origin: 'catalog', ref: 'phase/test_planning/system@v2' },
+            user: revised
+              ? 'Plan concurrent CSR and digital eSIM upgrades with explicit bulk/dealer and asynchronous fulfillment coverage, retry idempotency, IBM MQ backlog recovery, and Cassandra lookup checks.'
+              : 'Plan concurrent CSR eSIM upgrades with retry idempotency, IBM MQ backlog, Cassandra lookup, and peak release thresholds.',
+            source: { origin: revised ? 'run_override' : 'catalog', ref: 'phase/test_planning/system@v2' },
           },
-          context_packets: [{ id: 'ctx-1', source: 'jira', title: 'PHX-101 acceptance criteria', summary: 'Retry behavior under load.' }],
-          tools: ['jira.lookup', 'documents.search'],
+          context_packets: [{ id: 'ctx-1', source: 'jira_align', title: 'story:9012 acceptance criteria', summary: 'CSR upgrade, resilient OMS fulfillment, and retry behavior under load.' }],
+          tools: ['jira_align.query', 'documents.search'],
           editable: true,
           actions: ['approve', 'modify', 'skip_phase', 'abort'],
         },
@@ -1476,41 +2316,162 @@ export class DevDataStore {
     ]
   }
 
-  private addPhaseGate(detail: PipelineDetail): void {
-    detail.pending_gate = { interrupt_id: 'int-report', kind: 'phase_review', phase: 'reporting' }
+  private addPhaseGate(detail: PipelineDetail, phase: PhaseName = 'reporting', revised = false): void {
+    const interruptId = this.id(`int-${phase}`)
+    const envSummary = revised
+      ? 'PERF rescan is green: order-mgmt-svc now targets the PERF service endpoint and four IBM MQ consumers are available.'
+      : 'Environment triage found order-mgmt-svc targeting a QC Oracle endpoint and only two IBM MQ consumers instead of four.'
+    const executionSummary = 'Execution completed successfully. OMS create-order p95 was 3,650ms against a 3,000ms SLA; IBM MQ depth peaked at 18,420 while AKS HPA scaled from four to eight pods.'
+    const reportSummary = 'Executive and technical reports are ready. Release certification is conditional, and Jira Cloud defect PERF-248 will be created on approval.'
+    const genericSummary = `The offline ${phase.replaceAll('_', ' ')} rerun completed and is ready for operator review.`
+    const summary = phase === 'env_triage'
+      ? envSummary
+      : phase === 'execution'
+        ? executionSummary
+        : phase === 'reporting'
+          ? reportSummary
+          : genericSummary
+    detail.pending_gate = { interrupt_id: interruptId, kind: 'phase_review', phase }
     detail.interrupts = [
       {
-        interrupt_id: 'int-report',
+        interrupt_id: interruptId,
         kind: 'phase_review',
-        phase: 'reporting',
+        phase,
         payload: {
           schema_version: 1,
           kind: 'phase_review',
-          phase: 'reporting',
-          summary: 'Draft report compiled; KPI deltas are inside tolerance except search replica saturation.',
-          result_preview: { summary: 'Release gate passes with monitoring note.', reasoning_digest: 'Search replica count is the main risk.' },
-          artifacts: [{ id: 'exec-report', kind: 'report', name: 'load-report.json' }],
-          warnings: ['Search replica count should be raised before production.'],
-          dialogue_tail: [],
+          phase,
+          summary,
+          result_preview: { summary, reasoning_digest: phase === 'env_triage' ? (revised ? 'Configuration correction and rescan passed.' : 'Oracle target and MQ consumer count require correction.') : 'Orchestration succeeded; the OMS SLA is the release risk.' },
+          artifacts: [{ id: phase === 'reporting' ? 'executive-report' : 'exec-report', kind: 'report', name: phase === 'reporting' ? 'eSIM-executive-report.md' : `${phase}-result.json` }],
+          warnings: revised
+            ? []
+            : phase === 'env_triage'
+              ? ['QC Oracle target detected.', 'Only two of four MQ consumers are active.']
+              : phase === 'execution' || phase === 'reporting'
+                ? ['OMS p95 exceeds the 3,000ms release SLA.']
+                : [],
+          dialogue_tail: (detail.values?.['dialogue'] as unknown[]) ?? [],
           actions: ['approve', 'revise', 'discuss', 'abort'],
         },
       },
     ]
   }
 
+  private appendDialogue(detail: PipelineDetail, phase: PhaseName, message: string): void {
+    const response = deterministicAgentReply(phase, message)
+    const dialogue = (detail.values?.['dialogue'] as unknown[]) ?? []
+    detail.values = { ...(detail.values ?? {}), dialogue: [...dialogue, { id: this.id('dialogue-operator'), role: 'operator', phase, content: message, at: nowIso() }, { id: this.id('dialogue-agent'), role: 'agent', phase, content: response, at: nowIso(), model: 'offline-deterministic-template' }] }
+  }
+
+  private ensurePerf248(threadId: string): WorkItem {
+    const findingKey = `${threadId}:reporting:oms-p95`
+    const mappedKey = this.reportingTickets.get(findingKey)
+    const mapped = mappedKey ? this.workItems.find((item) => item.key === mappedKey) : null
+    if (mapped) return mapped
+    const detail = this.pipelineDetails.get(threadId)
+    const isFlagship = detail?.title === 'eSIM Device Upgrade Peak Certification'
+    const jiraNumbers = this.workItems.flatMap((item) => /^PERF-(\d+)$/.exec(item.key)?.[1] ? [Number(/^PERF-(\d+)$/.exec(item.key)![1])] : [])
+    const ticketKey = isFlagship ? 'PERF-248' : `PERF-${Math.max(248, ...jiraNumbers) + 1}`
+    const existing = this.workItems.find((item) => item.key === ticketKey)
+    if (existing) {
+      this.reportingTickets.set(findingKey, existing.key)
+      return existing
+    }
+    const ticket: WorkItem = {
+      key: ticketKey,
+      title: '[Perf] OMS p95 exceeds SLA during eSIM peak certification',
+      kind: 'bug',
+      status: 'Open',
+      description: 'OMS create-order p95 reached 3,650ms against the 3,000ms SLA. IBM MQ fulfillment depth peaked at 18,420 while AKS HPA scaled from four to eight pods. Orchestration completed successfully.',
+      url: 'https://jira.example.test/browse/PERF-248',
+      priority: 'Highest',
+      severity: 'High',
+      labels: ['perf-test', 'esim', 'oms', 'release-blocker'],
+      linked_keys: ['feature:583', 'story:9012'],
+    }
+    this.workItems.unshift(ticket)
+    this.workItemProviders.set(ticket.key, 'jira')
+    this.reportingTickets.set(findingKey, ticket.key)
+    const artifactId = `${ticket.key}-jira-payload`
+    this.artifacts.set(`reports/${artifactId}`, { mediaType: 'application/json', body: JSON.stringify({ key: ticket.key, fields: ticket, source_thread_id: threadId, idempotency_key: findingKey }, null, 2) })
+    if (detail) {
+      const state = detail.values as PipelineState
+      const artifacts = state.artifacts ?? []
+      if (!artifacts.some((artifact) => artifact.id === artifactId)) {
+        state.artifacts = [
+          ...artifacts,
+          artifactRef(artifactId, `${ticket.key}-jira-payload.json`, 'jira_payload', 'application/json', `Created Jira Cloud defect ${ticket.key}.`),
+        ]
+        detail.values = state as Record<string, unknown>
+      }
+    }
+    return ticket
+  }
+
+  private addEngineRetryGate(detail: PipelineDetail): void {
+    detail.pending_gate = { interrupt_id: 'int-engine-retry', kind: 'engine_provision_retry', phase: 'execution' }
+    detail.interrupts = [
+      {
+        interrupt_id: 'int-engine-retry',
+        kind: 'engine_provision_retry',
+        phase: 'execution',
+        payload: {
+          schema_version: 1,
+          kind: 'engine_provision_retry',
+          phase: 'execution',
+          attempt: 1,
+          thread_id: detail.thread_id,
+          actions: ['retry'],
+          error: 'APEX Load reservation timed out after remote acceptance.',
+          message: 'Retry checkpointed provisioning reconciliation; the idempotency key prevents a duplicate native run.',
+        },
+      },
+    ]
+  }
+
   private seedArtifacts(): void {
-    this.artifacts.set('reports/exec-report', {
-      mediaType: 'application/json',
-      body: JSON.stringify({ engine: 'apexload', kpis: { tps_avg: 148.2, p95_ms: 312, error_rate: 0.006, vusers_peak: 450 } }, null, 2),
-    })
-    this.artifacts.set('reports/execution-transcript', {
-      mediaType: 'text/plain',
-      body: 'Execution started\nEngine provisioned\nPeak load reached\nReport generated\n',
-    })
-    this.artifacts.set('reports/results-archive', {
-      mediaType: 'application/octet-stream',
-      body: new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x01]),
-    })
+    const rows: Array<[string, string, string, string]> = [
+      ['exec-report', 'load-report.json', 'application/json', JSON.stringify({ engine: 'apexload', orchestration_status: 'succeeded', release_result: 'conditional_fail', kpis: { tps_avg: 84.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18420 } }, null, 2)],
+      ['execution-transcript', 'execution-transcript.txt', 'text/plain', 'APEX Load provisioned\nStepped ramp started\nRamp held for MQ backlog\nAKS HPA scaled 4 -> 8\nOMS SLA finding recorded\n'],
+      ['story-hierarchy', 'jira-align-hierarchy.json', 'application/json', JSON.stringify({ epic: 'epic:310', capability: 'capability:420', feature: 'feature:583', story: 'story:9012' }, null, 2)],
+      ['scope-analysis', 'story-analysis.md', 'text/markdown', '# eSIM scope\n\nConcurrent CSR, retry/idempotency, IBM MQ backlog, and Cassandra eligibility scenarios.'],
+      ['test-plan', 'test-plan.md', 'text/markdown', '# Peak certification plan\n\n300 concurrent users; stepped ramp to 85 TPS; bulk and async fulfillment coverage.'],
+      ['traffic-profile', 'traffic-profile.csv', 'text/csv', 'minute,vusers,target_tps\n0,0,0\n5,100,30\n10,200,60\n15,300,85\n'],
+      ['env-scan-before', 'environment-before.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'qc3-oms-oracle-scan.example.test', mq_consumers: 2, status: 'warning' }, null, 2)],
+      ['env-scan-after', 'environment-after.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'perf-oms-scan.example.test', mq_consumers: 4, status: 'green' }, null, 2)],
+      ['config-diff', 'perf-configuration.diff', 'text/plain', '- OMS_DB=qc3-oms-oracle-scan\n+ OMS_DB=perf-oms-scan\n- MQ_CONSUMERS=2\n+ MQ_CONSUMERS=4\n'],
+      ['jmeter-script', 'esim-device-upgrade.jmx', 'application/xml', '<jmeterTestPlan version="1.2"><hashTree><TestPlan testname="eSIM Upgrade"/><HeaderManager testname="Correlation and idempotency"/></hashTree></jmeterTestPlan>'],
+      ['vugen-script', 'esim_device_upgrade.c', 'text/x-c', 'Action(){ web_reg_save_param_json("ParamName=orderId", "QueryString=$.orderId", LAST); web_custom_request("upgrade", "URL=https://perf.device-upgrade.example.test/upgrade", LAST); return 0; }'],
+      ['jmeter-validation', 'jmeter-validation.json', 'application/json', JSON.stringify({ valid: true, checks: ['correlation', 'synthetic-data', 'stepped-ramp', 'sla-assertions'] }, null, 2)],
+      ['vugen-validation', 'vugen-validation.json', 'application/json', JSON.stringify({ valid: true, correlations: ['orderId', 'activationId'], transactions: 6 }, null, 2)],
+      ['synthetic-data', 'synthetic-esim-data.csv', 'text/csv', 'account_id,device_id,iccid\nSYN-1001,DEV-2001,8900000000000000001\nSYN-1002,DEV-2002,8900000000000000002\n'],
+      ['provision-request', 'apex-load-provision.json', 'application/json', JSON.stringify({ scenario: 'scenario-esim-peak', generators: 3, idempotency_key: 'demo-esim-2603' }, null, 2)],
+      ['ramp-timeline', 'ramp-timeline.csv', 'text/csv', 'elapsed_s,event,mq_depth,hpa_pods\n0,provisioned,900,4\n420,ramp_hold,12100,6\n600,resume,8400,8\n1500,complete,2100,8\n'],
+      ['mq-monitoring', 'mq-monitoring.md', 'text/markdown', '# IBM MQ timeline\n\nDepth peaked at 18,420. The bounded ramp hold allowed consumers to recover without aborting orchestration.'],
+      ['hpa-monitoring', 'aks-hpa-timeline.json', 'application/json', JSON.stringify({ replicas: [{ at_s: 0, value: 4 }, { at_s: 390, value: 6 }, { at_s: 560, value: 8 }] }, null, 2)],
+      ['oms-kpis', 'oms-kpis.csv', 'text/csv', 'metric,value,sla,result\ncreate_order_p95_ms,3650,3000,fail\nerror_rate,0.028,0.02,fail\ntps_avg,84.7,80,pass\n'],
+      ['technical-report', 'eSIM-technical-report.md', 'text/markdown', '# Technical report\n\nOrchestration succeeded. OMS latency and MQ backlog require remediation before production promotion.'],
+      ['executive-report', 'eSIM-executive-report.md', 'text/markdown', '# Executive result\n\nConditional certification: target throughput achieved; OMS p95 exceeded the release SLA.'],
+      ['trend-comparison', 'baseline-comparison.csv', 'text/csv', 'run,p95_ms,error_rate,tps\n26.2.1,2410,0.006,81.2\n26.2.2,2520,0.007,82.4\n26.3,3650,0.028,84.7\n'],
+      ['jira-draft', 'PERF-248-draft.json', 'application/json', JSON.stringify({ project: 'PERF', type: 'Bug', links: ['feature:583', 'story:9012'], finding: 'OMS p95 SLA breach' }, null, 2)],
+      ['evidence-manifest', 'evidence-manifest.json', 'application/json', JSON.stringify({ packets: 12, signed: true, source_types: ['jira_align', 'observability', 'documents'] }, null, 2)],
+      ['postmortem', 'postmortem.md', 'text/markdown', '# Postmortem\n\nScale MQ consumers, tune AKS HPA stabilization, and optimize the OMS create-order dependency path.'],
+      ['remediation-plan', 'remediation-plan.csv', 'text/csv', 'owner,action,due\nOMS team,Optimize create-order path,PI 26.3 I3\nPlatform,Scale MQ consumers to four,Before retest\nSRE,Tune HPA stabilization,Before retest\n'],
+      ['agent-dialogue', 'agent-dialogue.txt', 'text/plain', 'Operator: Why did the queue grow?\nAgent: Only two fulfillment consumers were active; use four and a bounded ramp hold.\n'],
+      ['prompt-history', 'prompt-edit-history.json', 'application/json', JSON.stringify({ versions: 2, edit: 'Added bulk/dealer and asynchronous fulfillment coverage.' }, null, 2)],
+      ['tool-calls', 'tool-calls.json', 'application/json', JSON.stringify({ calls: ['jira_align.query', 'inventory.scan', 'apex_load.start', 'jira.create'] }, null, 2)],
+      ['error-recovery', 'engine-recovery.md', 'text/markdown', '# Engine recovery\n\nThe native reservation was accepted; checkpoint reconciliation reused the idempotency key and avoided duplicate execution.'],
+      ['release-decision', 'release-decision.json', 'application/json', JSON.stringify({ decision: 'conditional', blockers: ['PERF-248'], approvals: ['performance-lead'] }, null, 2)],
+      ['results-archive', 'results.zip', 'application/octet-stream', 'PK\u0003\u0004offline-demo-results'],
+    ]
+    for (const [id, , mediaType, body] of rows) this.artifacts.set(`reports/${id}`, { mediaType, body })
+    const refs = rows.map(([id, name, mediaType]) => artifactRef(id, name, id.includes('report') ? 'report' : 'evidence', mediaType, `Offline telecom demo artifact: ${name}`))
+    for (const detail of this.pipelineDetails.values()) {
+      const values = detail.values as PipelineState
+      values.artifacts = refs
+      detail.values = values as Record<string, unknown>
+    }
   }
 
   private toSummary(detail: PipelineDetail): PipelineSummary {
@@ -1527,7 +2488,7 @@ export class DevDataStore {
     const order = params.get('order') === 'asc' ? 'asc' : 'desc'
     const limit = Math.min(Math.max(parsePositiveInt(params.get('limit'), 20), 1), 100)
     const offset = parsePositiveInt(params.get('offset'), 0)
-    const from = params.get('from') ?? isoMinutesAgo(bucket === 'hour' ? 8 * 60 : 7 * 1_440)
+    const from = params.get('from') ?? isoMinutesAgo(bucket === 'hour' ? 8 * 60 : 7 * 1_440, this.activationTime)
     const to = params.get('to') ?? nowIso()
     const fromTime = new Date(from).getTime()
     const toTime = new Date(to).getTime()
@@ -1686,7 +2647,7 @@ export class DevDataStore {
     details.forEach((detail, runIndex) => {
       PHASE_NAMES.forEach((phase, phaseIndex) => {
         const metric = phaseMetrics[phase]
-        const runScale = detail.project_id === 'proj-beta' ? 0.58 : 0.92 + runIndex * 0.07
+        const runScale = detail.thread_id === 'run-aborted' ? 0.68 : 0.92 + runIndex * 0.07
         const phaseScale = 1 + phaseIndex * 0.018
         const scale = runScale * phaseScale
         const input = Math.round(metric.input * scale)
@@ -1706,7 +2667,7 @@ export class DevDataStore {
             ? (details.length - 1 - runIndex) * 55 + (PHASE_NAMES.length - phaseIndex) * 4
             : (details.length - 1 - runIndex) * 1_440 + (PHASE_NAMES.length - phaseIndex) * 75
         events.push({
-          at: isoMinutesAgo(minutesAgo),
+          at: isoMinutesAgo(minutesAgo, this.activationTime),
           thread_id: detail.thread_id,
           thread_title: detail.title ?? detail.thread_id,
           project_id: detail.project_id ?? null,
@@ -1714,7 +2675,7 @@ export class DevDataStore {
           agent_name: `${phase}.worker`,
           model: metric.model,
           provider: 'anthropic',
-          status: detail.thread_id === 'run-failed' && (phase === 'execution' || phase === 'reporting') ? 'error' : 'ok',
+          status: detail.thread_id === 'run-aborted' && (phase === 'env_triage' || phase === 'execution') ? 'error' : 'ok',
           input_tokens: input,
           output_tokens: output,
           cache_read_tokens: cacheRead,
@@ -1730,8 +2691,9 @@ export class DevDataStore {
 
   private usage(params: URLSearchParams): UsageAnalytics {
     const bucket = (params.get('bucket') === 'hour' ? 'hour' : 'day') as 'day' | 'hour'
-    const buckets = Array.from({ length: bucket === 'hour' ? 8 : 7 }, (_, index) => ({
-      bucket_start: bucket === 'hour' ? isoMinutesAgo((7 - index) * 60) : isoMinutesAgo((6 - index) * 1_440),
+    const bucketCount = bucket === 'hour' ? 8 : 14
+    const buckets = Array.from({ length: bucketCount }, (_, index) => ({
+      bucket_start: bucket === 'hour' ? isoMinutesAgo((bucketCount - 1 - index) * 60, this.activationTime) : isoMinutesAgo((bucketCount - 1 - index) * 1_440, this.activationTime),
       events: 120 + index * 37,
       errors: index === 5 ? 22 : index + 2,
     }))
@@ -1765,7 +2727,7 @@ export class DevDataStore {
     if (service) rows = rows.filter((entry) => entry.service === service)
     if (threadId) rows = rows.filter((entry) => String(entry.fields?.['thread_id'] ?? '') === threadId)
     const page = { limit: body.limit, offset: body.offset, items: rows.slice(body.offset, body.offset + body.limit) }
-    return { entries: page.items, total: rows.length, limit: page.limit, offset: page.offset, window: { from: body.window?.from ?? isoMinutesAgo(60), to: body.window?.to ?? nowIso() } }
+    return { entries: page.items, total: rows.length, limit: page.limit, offset: page.offset, window: { from: body.window?.from ?? isoMinutesAgo(60, this.activationTime), to: body.window?.to ?? this.activationTime } }
   }
 
   private workTrackingBinding(
@@ -1798,6 +2760,118 @@ export class DevDataStore {
       items: rows.slice(offset, offset + limit),
       total: rows.length,
       page: { limit, offset },
+    }
+  }
+
+  private persistState(): void {
+    if (typeof localStorage === 'undefined') return
+    try {
+      const emptyMap = new Map<string, never>()
+      localStorage.setItem(
+        DEMO_STATE_STORAGE_KEY,
+        JSON.stringify({
+          version: DEMO_STATE_VERSION,
+          activationTime: this.activationTime,
+          nextId: this.nextId,
+          mutations: {
+            applications: arrayDelta(this.applications, this.baseline.applications, (item) => item.id),
+            environments: arrayDelta(this.environments, this.baseline.environments, (item) => item.id),
+            inventories: mapDelta(this.inventories, this.baseline.inventories),
+            connections: arrayDelta(this.connections, this.baseline.connections, (item) => item.id),
+            hostMappings: mapDelta(this.hostMappings, this.baseline.hostMappings),
+            consumers: arrayDelta(this.consumers, this.baseline.consumers, (item) => item.id),
+            documents: arrayDelta(this.documents, this.baseline.documents, (item) => item.id),
+            drafts: arrayDelta(this.drafts, this.baseline.drafts, (item) => item.id),
+            workItems: arrayDelta(this.workItems, this.baseline.workItems, (item) => item.key),
+            workItemProviders: mapDelta(this.workItemProviders, this.baseline.workItemProviders),
+            savedQueries: arrayDelta(this.savedQueries, this.baseline.savedQueries, (item) => item.id),
+            prompts: arrayDelta(this.prompts, this.baseline.prompts, (item) => item.id),
+            pipelineDetails: mapDelta(this.pipelineDetails, this.baseline.pipelineDetails),
+            runs: mapDelta(this.runs, this.baseline.runs),
+            assistants: arrayDelta(this.assistants, this.baseline.assistants, (item) => item.assistant_id),
+            artifacts: mapDelta(this.artifacts, this.baseline.artifacts),
+            runStages: mapDelta(this.runStages, this.baseline.runStages),
+            runEvents: mapDelta(this.runEvents, emptyMap),
+            contextSummaryJobs: mapDelta(this.contextSummaryJobs, emptyMap),
+            apexIdempotency: mapDelta(this.apexIdempotency, emptyMap),
+            reportingTickets: mapDelta(this.reportingTickets, emptyMap),
+            pipelineLaunches: mapDelta(this.pipelineLaunches, emptyMap),
+            apexScenarios: arrayDelta(this.apexScenarios, this.baseline.apexScenarios, (item) => String(item['id'])),
+            apexSchedules: arrayDelta(this.apexSchedules, this.baseline.apexSchedules, (item) => String(item['id'])),
+            apexOccurrences: arrayDelta(this.apexOccurrences, this.baseline.apexOccurrences, (item) => String(item['id'])),
+          },
+          completedRunStreams: [...this.completedRunStreams],
+        }),
+      )
+    } catch {
+      // Storage can be unavailable in private browsing; the in-memory demo remains usable.
+    }
+  }
+
+  private restorePersistedState(): void {
+    if (typeof localStorage === 'undefined') return
+    const raw = localStorage.getItem(DEMO_STATE_STORAGE_KEY)
+    if (!raw) return
+    try {
+      const state = JSON.parse(raw) as Record<string, unknown>
+      if (state['version'] !== DEMO_STATE_VERSION) throw new Error('incompatible demo journal')
+      if (typeof state['activationTime'] !== 'string' || Number.isNaN(Date.parse(state['activationTime']))) throw new Error('corrupt demo activation time')
+      if (!Number.isSafeInteger(state['nextId']) || Number(state['nextId']) < 1) throw new Error('corrupt demo sequence')
+      const mutations = state['mutations']
+      if (!mutations || typeof mutations !== 'object' || Array.isArray(mutations)) throw new Error('corrupt demo mutations')
+      const values = mutations as Record<string, unknown>
+      const readArray = <T>(name: string, keyOf: (item: T) => string): ArrayDelta<T> | undefined => {
+        const value = values[name]
+        if (value === undefined) return undefined
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`corrupt ${name} delta`)
+        const delta = value as { upsert?: unknown; removed?: unknown }
+        if (!Array.isArray(delta.upsert) || !Array.isArray(delta.removed) || !delta.removed.every((key) => typeof key === 'string')) throw new Error(`corrupt ${name} delta`)
+        for (const item of delta.upsert as T[]) if (!item || typeof item !== 'object' || !keyOf(item)) throw new Error(`corrupt ${name} item`)
+        return delta as ArrayDelta<T>
+      }
+      const readMap = <T>(name: string): MapDelta<T> | undefined => {
+        const value = values[name]
+        if (value === undefined) return undefined
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`corrupt ${name} delta`)
+        const delta = value as { upsert?: unknown; removed?: unknown }
+        if (!Array.isArray(delta.upsert) || !Array.isArray(delta.removed) || !delta.removed.every((key) => typeof key === 'string')) throw new Error(`corrupt ${name} delta`)
+        if (!delta.upsert.every((entry) => Array.isArray(entry) && entry.length === 2 && typeof entry[0] === 'string')) throw new Error(`corrupt ${name} entries`)
+        return delta as MapDelta<T>
+      }
+      const completed = state['completedRunStreams']
+      if (!Array.isArray(completed) || !completed.every((id) => typeof id === 'string')) throw new Error('corrupt completed stream cursors')
+
+      this.activationTime = state['activationTime']
+      this.nextId = Number(state['nextId'])
+      this.applications = applyArrayDelta(this.baseline.applications, readArray<Application>('applications', (item) => item.id), (item) => item.id)
+      this.environments = applyArrayDelta(this.baseline.environments, readArray<Environment>('environments', (item) => item.id), (item) => item.id)
+      this.inventories = applyMapDelta(this.baseline.inventories, readMap<InventoryView>('inventories'))
+      this.connections = applyArrayDelta(this.baseline.connections, readArray<Connection>('connections', (item) => item.id), (item) => item.id)
+      this.hostMappings = applyMapDelta(this.baseline.hostMappings, readMap<HostMappingOut[]>('hostMappings'))
+      this.consumers = applyArrayDelta(this.baseline.consumers, readArray<Consumer>('consumers', (item) => item.id), (item) => item.id)
+      this.documents = applyArrayDelta(this.baseline.documents, readArray<DocumentOut>('documents', (item) => item.id), (item) => item.id)
+      this.drafts = applyArrayDelta(this.baseline.drafts, readArray<DraftRead>('drafts', (item) => item.id), (item) => item.id)
+      this.workItems = applyArrayDelta(this.baseline.workItems, readArray<WorkItem>('workItems', (item) => item.key), (item) => item.key)
+      this.workItemProviders = applyMapDelta(this.baseline.workItemProviders, readMap<'jira' | 'jira_align' | 'ado'>('workItemProviders'))
+      this.savedQueries = applyArrayDelta(this.baseline.savedQueries, readArray<SavedQuery>('savedQueries', (item) => item.id), (item) => item.id)
+      this.prompts = applyArrayDelta(this.baseline.prompts, readArray<PromptRecord>('prompts', (item) => item.id), (item) => item.id)
+      this.pipelineDetails = applyMapDelta(this.baseline.pipelineDetails, readMap<PipelineDetail>('pipelineDetails'))
+      this.runs = applyMapDelta(this.baseline.runs, readMap<Run[]>('runs'))
+      this.assistants = applyArrayDelta(this.baseline.assistants, readArray<Assistant>('assistants', (item) => item.assistant_id), (item) => item.assistant_id)
+      this.artifacts = applyMapDelta(this.baseline.artifacts, readMap<StoredArtifact>('artifacts'))
+      this.runStages = applyMapDelta(this.baseline.runStages, readMap<string>('runStages'))
+      this.runEvents = applyMapDelta(new Map(), readMap<DemoStreamEvent[]>('runEvents'))
+      this.contextSummaryJobs = applyMapDelta(new Map(), readMap<ContextSummaryJob>('contextSummaryJobs'))
+      this.apexIdempotency = applyMapDelta(new Map(), readMap<{ status: number; body: Record<string, unknown> }>('apexIdempotency'))
+      this.reportingTickets = applyMapDelta(new Map(), readMap<string>('reportingTickets'))
+      this.pipelineLaunches = applyMapDelta(new Map(), readMap<StartPipelineResponse>('pipelineLaunches'))
+      this.apexScenarios = applyArrayDelta(this.baseline.apexScenarios, readArray<Record<string, unknown>>('apexScenarios', (item) => String(item['id'] ?? '')), (item) => String(item['id']))
+      this.apexSchedules = applyArrayDelta(this.baseline.apexSchedules, readArray<Record<string, unknown>>('apexSchedules', (item) => String(item['id'] ?? '')), (item) => String(item['id']))
+      this.apexOccurrences = applyArrayDelta(this.baseline.apexOccurrences, readArray<Record<string, unknown>>('apexOccurrences', (item) => String(item['id'] ?? '')), (item) => String(item['id']))
+      this.completedRunStreams = new Set(completed)
+    } catch {
+      this.restoreBaseline()
+      localStorage.removeItem(DEMO_STATE_STORAGE_KEY)
     }
   }
 

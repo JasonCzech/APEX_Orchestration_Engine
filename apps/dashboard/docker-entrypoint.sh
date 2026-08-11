@@ -47,14 +47,24 @@ normalize_http_origin() {
 
 apex_origin="$(normalize_http_origin APEX_ORIGIN "${APEX_ORIGIN:-}" true)"
 langgraph_origin="$(normalize_http_origin LANGGRAPH_ORIGIN "${LANGGRAPH_ORIGIN:-}" true)"
+data_mode="${DASHBOARD_DATA_MODE:-connected}"
+case "$data_mode" in
+    connected|demo) ;;
+    *) echo "DASHBOARD_DATA_MODE must be connected or demo" >&2; exit 2 ;;
+esac
 backend_upstream=""
 if [ -n "${BACKEND_UPSTREAM:-}" ]; then
     backend_upstream="$(normalize_http_origin BACKEND_UPSTREAM "$BACKEND_UPSTREAM" false)"
 fi
 
+if [ "$data_mode" = "demo" ] && { [ -n "$apex_origin" ] || [ -n "$langgraph_origin" ] || [ -n "$backend_upstream" ]; }; then
+    echo "demo data mode cannot configure API origins or BACKEND_UPSTREAM" >&2
+    exit 2
+fi
+
 # 1) Backend origins consumed by the SPA's runtimeConfig loader. Empty = same origin.
 cat > /tmp/config.json <<EOF
-{"apexOrigin":"${apex_origin}","langgraphOrigin":"${langgraph_origin}"}
+{"dataMode":"${data_mode}","apexOrigin":"${apex_origin}","langgraphOrigin":"${langgraph_origin}"}
 EOF
 
 # 2) Browser security headers. The API key is browser-held, so connect-src is

@@ -76,6 +76,10 @@
 {{- fail "dashboard.image.digest is required when the dashboard is enabled in a locked environment" -}}
 {{- end -}}
 {{- if .Values.dashboard.enabled -}}
+{{- $dataMode := default "connected" .Values.dashboard.config.dataMode -}}
+{{- if not (has $dataMode (list "connected" "demo")) -}}
+{{- fail "dashboard.config.dataMode must be connected or demo" -}}
+{{- end -}}
 {{- $originPattern := "^$|^https?://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:[0-9]{1,5})?/?$" -}}
 {{- $upstreamPattern := "^https?://[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(:[0-9]{1,5})?$" -}}
 {{- $apexOrigin := .Values.dashboard.config.apexOrigin -}}
@@ -107,7 +111,10 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if and (empty $backendUpstream) (or (empty $apexOrigin) (empty $langgraphOrigin)) -}}
+{{- if and (eq $dataMode "demo") (or $backendUpstream $apexOrigin $langgraphOrigin) -}}
+{{- fail "dashboard demo data mode cannot configure backendUpstream or API origins" -}}
+{{- end -}}
+{{- if and (eq $dataMode "connected") (empty $backendUpstream) (or (empty $apexOrigin) (empty $langgraphOrigin)) -}}
 {{- fail "dashboard requires backendUpstream or both explicit API origins; empty origins without the reverse proxy make the deployed UI nonfunctional" -}}
 {{- end -}}
 {{- end -}}

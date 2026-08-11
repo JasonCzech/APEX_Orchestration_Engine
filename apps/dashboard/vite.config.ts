@@ -1,9 +1,9 @@
-/// <reference types="vitest/config" />
 import { fileURLToPath } from 'node:url'
 import type { IncomingMessage } from 'node:http'
 
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 
 const proxyTarget = process.env.APEX_API_PROXY ?? 'http://127.0.0.1:2024'
 
@@ -19,19 +19,12 @@ function bypassHtmlNavigation(req: IncomingMessage): string | undefined {
   return req.headers.accept?.includes('text/html') ? '/index.html' : undefined
 }
 
-export default defineConfig(({ mode }) => {
-  const prodBuild = mode === 'production'
-
+export default defineConfig(() => {
   return {
     plugins: [react()],
     resolve: {
       alias: [
-        {
-          find: '@/dev-data',
-          replacement: fileURLToPath(
-            new URL(prodBuild ? './src/dev-data/prod.tsx' : './src/dev-data/index.ts', import.meta.url),
-          ),
-        },
+        { find: '@/dev-data', replacement: fileURLToPath(new URL('./src/dev-data/index.ts', import.meta.url)) },
         { find: '@', replacement: fileURLToPath(new URL('./src', import.meta.url)) },
       ],
     },
@@ -77,6 +70,7 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       globals: true,
       setupFiles: ['./src/test/setup.ts'],
+      exclude: [...configDefaults.exclude, 'e2e/**'],
       css: false,
       // Layered timeouts (D8 flake-hunt): RTL's waitFor/findBy* poll window is
       // raised to 10s in src/test/setup.ts (configure({ asyncUtilTimeout })) —

@@ -32,8 +32,10 @@ export function DevDataProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const reset = useCallback(() => {
+    void queryClient.cancelQueries()
+    queryClient.clear()
     resetDevDataStore()
-  }, [])
+  }, [queryClient])
 
   const value = useMemo<DevDataModeContextValue>(
     () => ({ ...snapshot, setEnabled, reset }),

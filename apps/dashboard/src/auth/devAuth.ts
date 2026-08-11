@@ -1,4 +1,5 @@
 import type { SystemInfo } from '@/api/apexClient'
+import { isDemoDataMode } from '@/config/runtimeConfig'
 
 const DEFAULT_DEV_API_KEY = 'dev-key-local'
 
@@ -11,6 +12,20 @@ export function getDevApiKey(): string {
 }
 
 export function getDevSystemInfo(): SystemInfo {
+  if (isDemoDataMode()) {
+    return {
+      name: 'APEX Orchestration Engine',
+      version: 'telecom-demo-1.0',
+      environment: 'offline-demo',
+      features: { engines: true, documents: true, dummy_data: true },
+      limits: { max_context_packets: 32 },
+      consumer: {
+        name: 'Demo Presenter',
+        role: 'admin',
+        scopes: [{ project_id: 'telecom-modernization', app_id: null }],
+      },
+    }
+  }
   return {
     name: 'APEX Orchestration Engine',
     version: 'dev',
@@ -23,4 +38,8 @@ export function getDevSystemInfo(): SystemInfo {
       scopes: [],
     },
   }
+}
+
+export function isBypassAuthEnabled(): boolean {
+  return isDemoDataMode() || isDevAuthEnabled()
 }

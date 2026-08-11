@@ -4,6 +4,8 @@ import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 
 const rawRuntimeConfigSchema = z
   .object({
+    /** Selects the connected control plane or the bundled, network-isolated demo transport. */
+    dataMode: z.enum(['connected', 'demo']).default('connected'),
     /** Origin serving the APEX /v1 domain API. Empty string = same origin (vite proxy in dev, reverse proxy in prod). */
     apexOrigin: z.string().default(''),
     /** Origin serving the LangGraph Assistants/Threads/Runs API. Empty string = same origin. */
@@ -14,6 +16,7 @@ const rawRuntimeConfigSchema = z
 export type RuntimeConfig = z.infer<typeof rawRuntimeConfigSchema>
 
 export const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
+  dataMode: 'connected',
   apexOrigin: '',
   langgraphOrigin: '',
 }
@@ -108,7 +111,10 @@ function parseRuntimeConfig(value: unknown): RuntimeConfig {
   if (apexOrigin === null || langgraphOrigin === null) {
     throw new Error(INVALID_RUNTIME_CONFIG)
   }
-  return { apexOrigin, langgraphOrigin }
+  if (parsed.data.dataMode === 'demo' && (apexOrigin !== '' || langgraphOrigin !== '')) {
+    throw new Error(INVALID_RUNTIME_CONFIG)
+  }
+  return { dataMode: parsed.data.dataMode, apexOrigin, langgraphOrigin }
 }
 
 async function readRuntimeConfig(response: Response, signal: AbortSignal): Promise<unknown> {
@@ -167,7 +173,7 @@ async function readRuntimeConfig(response: Response, signal: AbortSignal): Promi
   }
 }
 
-export function setRuntimeConfig(config: RuntimeConfig): RuntimeConfig {
+export function setRuntimeConfig(config: RuntimeConfig | Omit<RuntimeConfig, 'dataMode'>): RuntimeConfig {
   current = parseRuntimeConfig(config)
   return current
 }
@@ -228,4 +234,8 @@ export function resolveApexBaseUrl(): string {
 export function resolveLanggraphBaseUrl(): string {
   if (current.langgraphOrigin) return current.langgraphOrigin
   return typeof window !== 'undefined' ? window.location.origin : ''
+}
+
+export function isDemoDataMode(): boolean {
+  return current.dataMode === 'demo'
 }

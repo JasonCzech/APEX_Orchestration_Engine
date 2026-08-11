@@ -512,6 +512,7 @@ dashboard:
   # Explicit origins must use HTTPS outside local/development/test environments.
   # Enabling the dashboard requires backendUpstream or both explicit origins.
   config:
+    dataMode: connected              # connected | demo (demo is fully browser-local)
     apexOrigin: ""
     langgraphOrigin: ""
   backendUpstream: ""             # e.g. http://<release>-apex-orchestration-engine:80

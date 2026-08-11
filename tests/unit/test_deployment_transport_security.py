@@ -1135,6 +1135,7 @@ def _run_dashboard_entrypoint(
     apex_origin: str = "",
     langgraph_origin: str = "",
     backend_upstream: str = "",
+    data_mode: str = "connected",
 ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
     config_path = tmp_path / "config.json"
     proxy_path = tmp_path / "apex-proxy.conf"
@@ -1150,6 +1151,7 @@ def _run_dashboard_entrypoint(
         "APEX_ORIGIN": apex_origin,
         "LANGGRAPH_ORIGIN": langgraph_origin,
         "BACKEND_UPSTREAM": backend_upstream,
+        "DASHBOARD_DATA_MODE": data_mode,
     }
     completed = subprocess.run(
         ["sh", str(script_path), "true"],
@@ -1171,6 +1173,7 @@ def test_dashboard_entrypoint_generates_only_canonical_origins(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(config_path.read_text()) == {
+        "dataMode": "connected",
         "apexOrigin": "https://api.example.test",
         "langgraphOrigin": "https://langgraph.example.test:8443",
     }
@@ -1182,6 +1185,29 @@ def test_dashboard_entrypoint_generates_only_canonical_origins(tmp_path: Path) -
         "https://langgraph.example.test:8443 wss://langgraph.example.test:8443;" in security
     )
     assert "connect-src 'self' http: https: ws: wss:" not in security
+
+
+def test_dashboard_entrypoint_generates_network_isolated_demo_config(tmp_path: Path) -> None:
+    completed, config_path, proxy_path = _run_dashboard_entrypoint(tmp_path, data_mode="demo")
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(config_path.read_text()) == {
+        "dataMode": "demo",
+        "apexOrigin": "",
+        "langgraphOrigin": "",
+    }
+    assert proxy_path.read_text() == ""
+
+
+def test_dashboard_entrypoint_rejects_demo_backend_fallthrough(tmp_path: Path) -> None:
+    completed, config_path, _ = _run_dashboard_entrypoint(
+        tmp_path,
+        data_mode="demo",
+        backend_upstream="http://apex.default.svc:80",
+    )
+
+    assert completed.returncode != 0
+    assert not config_path.exists()
 
 
 @pytest.mark.parametrize(

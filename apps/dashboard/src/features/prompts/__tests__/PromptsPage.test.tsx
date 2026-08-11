@@ -85,7 +85,7 @@ describe('PromptsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /^ops/ }))
     expect(router.state.location.search).toContain('ns=ops')
     expect(screen.queryByTestId('prompt-row-p-story')).not.toBeInTheDocument()
-    expect(screen.getByTestId('prompt-row-p-ops')).toBeInTheDocument()
+    expect(await screen.findByTestId('prompt-row-p-ops')).toBeInTheDocument()
 
     // back to all, then search server-side (q)
     await userEvent.click(screen.getByRole('button', { name: /^All namespaces/ }))
@@ -94,7 +94,7 @@ describe('PromptsPage', () => {
     await waitFor(() =>
       expect(screen.queryByTestId('prompt-row-p-story')).not.toBeInTheDocument(),
     )
-    expect(screen.getByTestId('prompt-row-p-ops')).toBeInTheDocument()
+    expect(await screen.findByTestId('prompt-row-p-ops')).toBeInTheDocument()
     expect(catalog.calls.listRequests.some((search) => search.includes('q=summarize'))).toBe(true)
   })
 

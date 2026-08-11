@@ -11,6 +11,7 @@ import { notifyUnauthorized } from '@/api/apexClient'
 import { fetchWithoutRedirects } from '@/api/fetchPolicy'
 import { getApiKey, getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
+import { getDevRawFetch } from '@/dev-data'
 import { RequireRole } from '@/auth/RequireRole'
 import { formatRelative } from '@/utils/time'
 
@@ -106,7 +107,7 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
         throw new Error(SUMMARY_STREAM_ERROR)
       }
       const response = await withSummaryStreamIdleDeadline(
-        fetchWithoutRedirects(url, {
+        (getDevRawFetch() ?? fetchWithoutRedirects)(url, {
           headers: { ...(apiKey ? { 'x-api-key': apiKey } : {}) },
           signal: controller.signal,
         }),

@@ -16,6 +16,17 @@ afterEach(() => {
 })
 
 describe('runtime configuration boundary', () => {
+  it('accepts only network-isolated production demo configuration', () => {
+    expect(setRuntimeConfig({ dataMode: 'demo', apexOrigin: '', langgraphOrigin: '' })).toEqual({
+      dataMode: 'demo',
+      apexOrigin: '',
+      langgraphOrigin: '',
+    })
+    expect(() =>
+      setRuntimeConfig({ dataMode: 'demo', apexOrigin: 'https://api.example.test', langgraphOrigin: '' }),
+    ).toThrow('Dashboard runtime configuration is invalid.')
+  })
+
   it('canonicalizes complete HTTP origins before API clients consume them', async () => {
     vi.stubGlobal(
       'fetch',
@@ -31,10 +42,12 @@ describe('runtime configuration boundary', () => {
     )
 
     await expect(loadRuntimeConfig()).resolves.toEqual({
+      dataMode: 'connected',
       apexOrigin: 'https://api.example.test',
       langgraphOrigin: 'http://langgraph.example.test:2024',
     })
     expect(getRuntimeConfig()).toEqual({
+      dataMode: 'connected',
       apexOrigin: 'https://api.example.test',
       langgraphOrigin: 'http://langgraph.example.test:2024',
     })
@@ -55,6 +68,7 @@ describe('runtime configuration boundary', () => {
     )
 
     await expect(loadRuntimeConfig()).resolves.toEqual({
+      dataMode: 'connected',
       apexOrigin: 'http://[::1]:8080',
       langgraphOrigin: 'https://[2001:db8::1]',
     })

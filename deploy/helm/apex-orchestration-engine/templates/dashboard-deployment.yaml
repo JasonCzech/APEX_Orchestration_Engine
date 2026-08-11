@@ -37,6 +37,8 @@ spec:
               containerPort: {{ .Values.dashboard.containerPort }}
               protocol: TCP
           env:
+            - name: DASHBOARD_DATA_MODE
+              value: {{ .Values.dashboard.config.dataMode | quote }}
             - name: APEX_ORIGIN
               value: {{ .Values.dashboard.config.apexOrigin | quote }}
             - name: LANGGRAPH_ORIGIN

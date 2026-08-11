@@ -19,6 +19,8 @@ import {
   subscribeApiKey,
 } from '@/auth/keyStorage'
 import { getRuntimeConfig, resolveApexBaseUrl } from '@/config/runtimeConfig'
+import { isDemoDataMode } from '@/config/runtimeConfig'
+import { useDevDataMode } from '@/dev-data'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { THEME_LABELS, useTheme, type ThemeName } from '@/theme/useTheme'
 
@@ -86,6 +88,7 @@ type ReplaceState =
   | { kind: 'error'; message: string }
 
 function ApiKeySection() {
+  const { reset } = useDevDataMode()
   const { signOut } = useAuth()
   const storedKey = useSyncExternalStore(subscribeApiKey, getApiKey)
   const [draft, setDraft] = useState('')
@@ -101,6 +104,24 @@ function ApiKeySection() {
 
   const validating = state.kind === 'validating'
   const canSubmit = draft.trim() !== '' && !validating
+
+  if (isDemoDataMode()) {
+    return (
+      <section className="glass-panel settings-section" aria-label="Demo session">
+        <h3 className="settings-section-title">Offline demo session</h3>
+        <p className="settings-hint">
+          Telecom demo dataset v1.0 is running entirely in this browser. No API key, backend,
+          integration, execution engine, or LLM is contacted.
+        </p>
+        <div className="settings-signout-row">
+          <button type="button" className="btn btn-secondary btn-sm" onClick={reset}>
+            Reset Demo
+          </button>
+          <span className="settings-hint">Restores the canonical dataset and clears presenter changes.</span>
+        </div>
+      </section>
+    )
+  }
 
   async function replaceKey(event: FormEvent) {
     event.preventDefault()
@@ -229,6 +250,10 @@ function ConnectionSection() {
       <h3 className="settings-section-title">Connection</h3>
       <dl className="settings-kv">
         <div className="settings-kv-row">
+          <dt>Data mode</dt>
+          <dd>{runtime.dataMode}</dd>
+        </div>
+        <div className="settings-kv-row">
           <dt>APEX API origin</dt>
           <dd>{runtime.apexOrigin || 'same origin'}</dd>
         </div>
@@ -241,7 +266,7 @@ function ConnectionSection() {
           <dd>
             <span className={`settings-status settings-status--${status}`}>
               <span className="status-dot" data-state={status} data-testid="settings-status-dot" />
-              <span className="status-text">{CONNECTIVITY_LABEL[status]}</span>
+              <span className="status-text">{isDemoDataMode() ? 'Offline simulation' : CONNECTIVITY_LABEL[status]}</span>
             </span>
           </dd>
         </div>
