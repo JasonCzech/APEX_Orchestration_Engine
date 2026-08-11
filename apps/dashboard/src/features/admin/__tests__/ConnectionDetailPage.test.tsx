@@ -13,6 +13,7 @@ import {
   probeHandler,
   putHostMappingsHandler,
   updateConnectionHandler,
+  CONN_ALIGN,
   CONN_ENGINE,
   CONN_JIRA,
   CONN_KUBERNETES,
@@ -39,6 +40,29 @@ describe('ConnectionDetailPage', () => {
     expect(panel).toHaveTextContent('Connection healthy in 42 ms')
     expect(panel).toHaveTextContent('GET /rest/api/2/myself 200')
     expect(probe.callCount()).toBe(1)
+  })
+
+  it('probes once on arrival from create and strips the flag from the URL', async () => {
+    const probe = probeHandler({ ok: true, latency_ms: 41.6, detail: 'listed work items (total 3)' })
+    server.use(...connectionsReadHandlers(), probe.handler)
+    const { router } = renderDetail('/admin/connections/conn-jira?test=1')
+
+    const panel = await screen.findByTestId('probe-result')
+    expect(panel).toHaveTextContent('listed work items (total 3)')
+    expect(probe.callCount()).toBe(1)
+    // The flag is consumed so a reload or back-navigation does not re-probe.
+    await waitFor(() => expect(router.state.location.search).not.toContain('test=1'))
+    expect(probe.callCount()).toBe(1)
+  })
+
+  it('does not probe on arrival without the flag', async () => {
+    const probe = probeHandler({ ok: true, latency_ms: 41.6, detail: 'fetched work item PHX-241' })
+    server.use(...connectionsReadHandlers(), probe.handler)
+    renderDetail()
+
+    await screen.findByRole('form', { name: 'Connection config' })
+    expect(screen.queryByTestId('probe-result')).not.toBeInTheDocument()
+    expect(probe.callCount()).toBe(0)
   })
 
   it('renders the failure detail in an inline danger panel (not a toast)', async () => {
@@ -179,7 +203,7 @@ describe('ConnectionDetailPage', () => {
     const form = await screen.findByRole('form', { name: 'Connection config' })
     expect(within(form).getByText('Kind (immutable)')).toBeInTheDocument()
     // No editable control for kind — only the chip.
-    expect(within(form).queryByRole('combobox')).not.toBeInTheDocument()
+    expect(within(form).queryByRole('combobox', { name: 'Kind' })).not.toBeInTheDocument()
 
     const nameInput = within(form).getByRole('textbox', { name: 'Name' })
     await user.clear(nameInput)
@@ -192,8 +216,12 @@ describe('ConnectionDetailPage', () => {
       provider: 'jira',
       project_id: 'proj-alpha',
       base_url: 'https://jira.example.com',
-      secret_ref: 'env:JIRA_API_TOKEN',
-      options: { project_key: 'ALPHA' },
+      secret_ref: 'env:APEX_INTEGRATION_JIRA_API_TOKEN',
+      options: {
+        base_url: 'https://jira.example.com',
+        user_email: 'qa@example.com',
+        project_key: 'ALPHA',
+      },
     })
     expect(update.captured[0]).not.toHaveProperty('kind')
   })
@@ -474,5 +502,66 @@ describe('ConnectionDetailPage', () => {
 
     await waitFor(() => expect(del.captured).toEqual(['conn-jira']))
     await waitFor(() => expect(router.state.location.pathname).toBe('/admin/connections'))
+  })
+})
+
+describe('ConnectionDetailPage jira_align guided edit', () => {
+  it('infers auth style from stored options and PATCHes the guided body', async () => {
+    const update = updateConnectionHandler(CONN_ALIGN)
+    server.use(...connectionsReadHandlers([CONN_ALIGN]), update.handler)
+    const user = userEvent.setup()
+    renderDetail('/admin/connections/conn-align')
+
+    const form = await screen.findByRole('form', { name: 'Connection config' })
+    // No stored user_email → bearer, so the email field is hidden.
+    expect(within(form).getByRole('combobox', { name: 'Authentication' })).toHaveValue('bearer')
+    expect(within(form).queryByRole('textbox', { name: 'User email' })).not.toBeInTheDocument()
+    expect(within(form).getByRole('textbox', { name: 'Program id' })).toHaveValue('42')
+
+    // Switch to Atlassian Guard auth and save.
+    await user.selectOptions(
+      within(form).getByRole('combobox', { name: 'Authentication' }),
+      'basic',
+    )
+    await user.type(within(form).getByRole('textbox', { name: 'User email' }), 'qa@example.com')
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update.captured).toHaveLength(1))
+    expect(update.captured[0]).toMatchObject({
+      provider: 'jira_align',
+      base_url: 'https://acme.jiraalign.com',
+      options: {
+        base_url: 'https://acme.jiraalign.com',
+        program_id: '42',
+        user_email: 'qa@example.com',
+      },
+    })
+  })
+
+  it('dropping back to bearer removes the email from the saved body', async () => {
+    const withEmail = {
+      ...CONN_ALIGN,
+      options: { ...CONN_ALIGN.options, user_email: 'qa@example.com' },
+    }
+    const update = updateConnectionHandler(withEmail)
+    server.use(...connectionsReadHandlers([withEmail]), update.handler)
+    const user = userEvent.setup()
+    renderDetail('/admin/connections/conn-align')
+
+    const form = await screen.findByRole('form', { name: 'Connection config' })
+    expect(within(form).getByRole('combobox', { name: 'Authentication' })).toHaveValue('basic')
+
+    await user.selectOptions(
+      within(form).getByRole('combobox', { name: 'Authentication' }),
+      'bearer',
+    )
+    await user.click(within(form).getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => expect(update.captured).toHaveLength(1))
+    // Presence of user_email is what selects basic auth server-side.
+    expect(update.captured[0]?.options).toEqual({
+      base_url: 'https://acme.jiraalign.com',
+      program_id: '42',
+    })
   })
 })

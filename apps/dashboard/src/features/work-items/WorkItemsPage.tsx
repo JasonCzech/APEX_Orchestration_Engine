@@ -29,7 +29,7 @@ import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { canMutateAudience } from '@/auth/RequireRole'
 import { Dialog } from '@/components/Dialog'
 
-import { ExternalLink, KindChip, StatusBadge } from './workItemsBits'
+import { ExternalLink, KindChip, LabelChips, StatusBadge } from './workItemsBits'
 import {
   bindDurableMutationDraft,
   clearDurableMutationDraft,
@@ -40,11 +40,12 @@ import {
   type DurableMutationDraft,
   updateDurableMutationDraft,
 } from './durableMutationDraft'
-import { workItemPath } from './workItemsLogic'
+import { queryDialect, workItemPath } from './workItemsLogic'
 import './work-items.css'
 
 const LIMIT_OPTIONS = [10, 25, 50]
-const KIND_OPTIONS = ['story', 'task', 'bug', 'epic']
+// Jira Align adds portfolio types alongside the story/defect basics.
+const KIND_OPTIONS = ['story', 'task', 'bug', 'epic', 'capability', 'feature', 'objective']
 const WORK_ITEMS_MAX_WINDOW = 1_000
 
 type ConsoleMode = 'nl' | 'manual'
@@ -358,6 +359,9 @@ function ResultsTable({
             <th>Title</th>
             <th>Kind</th>
             <th>Status</th>
+            <th>Priority</th>
+            <th>Assignee</th>
+            <th>Sprint</th>
             <th className="wi-actions-cell">
               <span className="sr-only">Tracker link</span>
             </th>
@@ -374,13 +378,20 @@ function ResultsTable({
                   {item.key}
                 </Link>
               </td>
-              <td className="strong">{item.title}</td>
+              <td className="strong">
+                {item.title}
+                <LabelChips labels={item.labels} />
+              </td>
               <td>
                 <KindChip kind={item.kind} />
               </td>
               <td>
                 <StatusBadge status={item.status} />
               </td>
+              {/* Not every tracker exposes these; an em dash beats a blank cell. */}
+              <td>{item.priority?.trim() || '—'}</td>
+              <td>{item.assignee?.trim() || '—'}</td>
+              <td>{item.sprint?.trim() || '—'}</td>
               <td className="wi-actions-cell">
                 {item.url ? <ExternalLink url={item.url} itemKey={item.key} /> : null}
               </td>
@@ -708,6 +719,7 @@ export function WorkItemsPage() {
     !translate.isPending &&
     !execute.isPending
   const showQueryRow = mode === 'manual' || queryText !== '' || provider !== ''
+  const dialect = queryDialect(provider)
   const compatibleConnectionId =
     editorConnectionId ??
     (availableBinding?.provider.toLowerCase() === provider.trim().toLowerCase()
@@ -875,7 +887,14 @@ export function WorkItemsPage() {
 
         {showQueryRow && (
           <div className="wi-field" data-testid="provider-query">
-            <span className="wi-field-label">Provider query</span>
+            <span className="wi-field-label">
+              Provider query
+              {dialect && (
+                <span className="topbar-meta-chip wi-dialect-chip" title="Query language">
+                  {dialect.name}
+                </span>
+              )}
+            </span>
             <div className="wi-row">
               <input
                 className="field-input wi-mono"
@@ -907,7 +926,7 @@ export function WorkItemsPage() {
               <input
                 className="field-input wi-grow wi-mono"
                 aria-label="Provider query"
-                placeholder='project = PHX AND status = "Open"'
+                placeholder={dialect?.placeholder ?? 'project = PHX AND status = "Open"'}
                 value={queryText}
                 disabled={translate.isPending || execute.isPending}
                 onChange={(event) => setQueryText(event.target.value)}

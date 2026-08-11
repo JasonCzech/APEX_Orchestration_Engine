@@ -28,6 +28,16 @@ import { formatRelative } from '@/utils/time'
 import { groupConnectionsByKind, kindLabel, parseJsonObject } from './adminLogic'
 import { AdminGate, TogglePill } from './adminShared'
 import { scopedConnectionPolicyIssue } from './connectionPolicy'
+import { ProviderConnectionFields } from './ProviderConnectionFields'
+import {
+  buildOptions,
+  emptyDraft,
+  guidedBaseUrl,
+  guidedIssue,
+  providerSpec,
+  providersForKind,
+  type OptionsDraft,
+} from './providerCatalog'
 import './admin.css'
 
 const SKELETON_CARDS = 4
@@ -83,38 +93,64 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
   const create = useCreateConnection()
   const [kind, setKind] = useState<PortKind>('work_tracking')
   const [provider, setProvider] = useState('')
+  const [customProvider, setCustomProvider] = useState(providersForKind('work_tracking').length === 0)
   const [name, setName] = useState('')
   const [project, setProject] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
-  const [optionsText, setOptionsText] = useState('{}')
+  const [draft, setDraft] = useState<OptionsDraft>(emptyDraft)
   const [secretRef, setSecretRef] = useState('')
 
-  const optionsParse = parseJsonObject(optionsText)
+  const spec = customProvider ? null : providerSpec(kind, provider)
+  const guided = spec !== null && draft.mode === 'guided'
+  const rawParse = parseJsonObject(draft.rawText)
+  const options = guided ? buildOptions(spec, draft) : rawParse.ok ? rawParse.value : null
+  const missingField = guided ? guidedIssue(spec, draft) : null
+  // A guided base-URL field owns the column too: adapters read base_url from
+  // options (the server backfills it from the column only when options lacks
+  // it), so submitting both keeps the display column and the effective value
+  // from ever diverging.
+  const mirroredBaseUrl = guided ? guidedBaseUrl(spec, draft) : null
+  const ownsBaseUrl = guided && spec.optionFields.some((field) => field.mirrorsBaseUrl)
   const policyIssue =
-    !globalAdmin && optionsParse.ok
-      ? scopedConnectionPolicyIssue(kind, provider, optionsParse.value)
-      : null
+    !globalAdmin && options !== null ? scopedConnectionPolicyIssue(kind, provider, options) : null
   const canSubmit =
     provider.trim() !== '' &&
     name.trim() !== '' &&
-    optionsParse.ok &&
+    options !== null &&
+    missingField === null &&
     (globalAdmin || (projectScopes.includes(project) && policyIssue === null)) &&
     !create.isPending
 
+  function changeKind(next: PortKind) {
+    setKind(next)
+    setProvider('')
+    setCustomProvider(providersForKind(next).length === 0)
+    setDraft(emptyDraft())
+  }
+
+  function changeProvider(next: string, custom: boolean) {
+    setProvider(next)
+    setCustomProvider(custom)
+  }
+
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (!canSubmit || !optionsParse.ok) return
+    if (!canSubmit || options === null) return
     create.mutate(
       {
         kind,
         provider: provider.trim(),
         name: name.trim(),
         project_id: project.trim() || null,
-        base_url: baseUrl.trim() || null,
-        options: optionsParse.value,
+        base_url: (ownsBaseUrl ? mirroredBaseUrl : baseUrl.trim() || null) ?? null,
+        options,
         secret_ref: globalAdmin ? secretRef.trim() || null : null,
       },
-      { onSuccess: (created) => void navigate(`/admin/connections/${created.id}`) },
+      {
+        // Land on the detail page with the probe already running: a connection
+        // that cannot reach its provider should say so before anyone uses it.
+        onSuccess: (created) => void navigate(`/admin/connections/${created.id}?test=1`),
+      },
     )
   }
 
@@ -128,7 +164,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             className="field-select"
             aria-label="Kind"
             value={kind}
-            onChange={(event) => setKind(event.target.value as PortKind)}
+            onChange={(event) => changeKind(event.target.value as PortKind)}
           >
             {allowedKinds.map((option) => (
               <option key={option} value={option}>
@@ -137,18 +173,14 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             ))}
           </select>
         </label>
-        <label className="adm-field">
-          <span className="adm-field-label">Provider</span>
-          <input
-            type="text"
-            className="field-input"
-            aria-label="Provider"
-            placeholder="jira"
-            value={provider}
-            onChange={(event) => setProvider(event.target.value)}
-          />
-          <span className="adm-field-help">must be a registered provider</span>
-        </label>
+        <ProviderConnectionFields
+          kind={kind}
+          provider={provider}
+          customProvider={customProvider}
+          onProviderChange={changeProvider}
+          draft={draft}
+          onDraftChange={setDraft}
+        />
         <label className="adm-field">
           <span className="adm-field-label">Name</span>
           <input
@@ -179,7 +211,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             {projectScopes.map((projectId) => <option key={projectId} value={projectId}>{projectId}</option>)}
           </select>}
         </label>
-        <label className="adm-field">
+        {!ownsBaseUrl && <label className="adm-field">
           <span className="adm-field-label">Base URL (optional)</span>
           <input
             type="text"
@@ -189,34 +221,30 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
             value={baseUrl}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
-        </label>
+        </label>}
         {globalAdmin && <label className="adm-field">
           <span className="adm-field-label">Secret ref</span>
           <input
             type="text"
             className="field-input"
             aria-label="Secret ref"
-            placeholder="env:JIRA_API_TOKEN"
+            placeholder={spec?.secretRef?.placeholder ?? 'env:APEX_INTEGRATION_TOKEN'}
             value={secretRef}
             onChange={(event) => setSecretRef(event.target.value)}
           />
-          <span className="adm-field-help">env:NAME — references only, never raw secrets</span>
+          <span className="adm-field-help">
+            {spec?.secretRef?.help ?? 'env:NAME — references only, never raw secrets'}
+          </span>
         </label>}
       </div>
-      <label className="adm-field">
-        <span className="adm-field-label">Options (JSON)</span>
-        <textarea
-          className="field-input adm-json-input"
-          aria-label="Options JSON"
-          rows={4}
-          spellCheck={false}
-          value={optionsText}
-          onChange={(event) => setOptionsText(event.target.value)}
-        />
-      </label>
-      {!optionsParse.ok && (
+      {options === null && (
         <p className="adm-form-error" role="alert">
-          {optionsParse.message}
+          {rawParse.ok ? 'Options must be a JSON object.' : rawParse.message}
+        </p>
+      )}
+      {missingField && (
+        <p className="adm-form-error" role="alert">
+          {missingField}
         </p>
       )}
       {policyIssue && (

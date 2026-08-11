@@ -44,6 +44,13 @@ class TimeWindow(BaseModel):
 # --- work tracking ---------------------------------------------------------
 
 
+MAX_WORK_ITEM_LABELS = 32
+# Jira caps a label at 255 characters; matching that keeps legitimate provider
+# labels from failing validation and being dropped from triage context.
+MAX_WORK_ITEM_LABEL_CHARS = 255
+MAX_WORK_ITEM_LINKS = 32
+
+
 class WorkItem(BaseModel):
     # Provider responses cross a trust boundary and may be persisted in mutation
     # outbox JSONB. Bound every scalar before it reaches graph state or storage.
@@ -55,6 +62,31 @@ class WorkItem(BaseModel):
     status: NoNulStr = Field(default="open", max_length=255)
     description: NoNulStr = Field(default="", max_length=MAX_DESCRIPTION_CHARS)
     url: NoNulStr | None = Field(default=None, max_length=4096)
+    # Triage context. Optional because not every provider exposes every field;
+    # consumers must degrade gracefully rather than assume presence.
+    priority: NoNulStr | None = Field(default=None, max_length=64)
+    severity: NoNulStr | None = Field(default=None, max_length=64)
+    sprint: NoNulStr | None = Field(default=None, max_length=255)
+    assignee: NoNulStr | None = Field(default=None, max_length=255)
+    labels: list[NoNulStr] = Field(default_factory=list, max_length=MAX_WORK_ITEM_LABELS)
+    # Hierarchy and relations are carried as provider keys, not nested items, so
+    # a work item never fans out into an unbounded object graph.
+    parent_key: NoNulStr | None = Field(default=None, max_length=255)
+    linked_keys: list[NoNulStr] = Field(default_factory=list, max_length=MAX_WORK_ITEM_LINKS)
+
+    @field_validator("labels")
+    @classmethod
+    def validate_labels(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > MAX_WORK_ITEM_LABEL_CHARS for value in values):
+            raise ValueError(f"work item labels must be 1-{MAX_WORK_ITEM_LABEL_CHARS} characters")
+        return values
+
+    @field_validator("linked_keys")
+    @classmethod
+    def validate_linked_keys(cls, values: list[str]) -> list[str]:
+        if any(not value.strip() or len(value) > 255 for value in values):
+            raise ValueError("work item linked keys must be 1-255 characters")
+        return values
 
 
 class WorkItemPage(BaseModel):

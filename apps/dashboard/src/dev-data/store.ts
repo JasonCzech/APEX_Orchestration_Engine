@@ -490,8 +490,10 @@ export class DevDataStore {
     ]
     this.seedInventories()
     this.connections = [
-      this.connection('conn-jira', 'work_tracking', 'jira', 'jira-prod', 'proj-alpha', 'https://jira.example.com', true, { project_key: 'PHX' }, 'env:JIRA_TOKEN'),
-      this.connection('conn-ado', 'work_tracking', 'azure_devops', 'ado-beta', 'proj-beta', 'https://dev.azure.com/example', true, { project: 'Billing' }, 'env:ADO_TOKEN'),
+      // Adapters read base_url out of options, not the column, so both carry it.
+      this.connection('conn-jira', 'work_tracking', 'jira', 'jira-prod', 'proj-alpha', 'https://jira.example.com', true, { base_url: 'https://jira.example.com', user_email: 'qa@example.com', project_key: 'PHX' }, 'env:APEX_INTEGRATION_JIRA_API_TOKEN'),
+      this.connection('conn-align', 'work_tracking', 'jira_align', 'align-prod', 'proj-alpha', 'https://example.jiraalign.com', true, { base_url: 'https://example.jiraalign.com', program_id: '42' }, 'env:APEX_INTEGRATION_JIRA_ALIGN_TOKEN'),
+      this.connection('conn-ado', 'work_tracking', 'ado', 'ado-beta', 'proj-beta', 'https://dev.azure.com/example', true, { base_url: 'https://dev.azure.com/example', project: 'Billing' }, 'env:APEX_INTEGRATION_ADO_PAT'),
       this.connection('conn-elk', 'log_search', 'elasticsearch', 'elk-global', null, 'https://elk.example.com:9200', false, {}, null),
       this.connection('conn-engine', 'execution_engine', 'apex_load', 'apex-load-default', 'proj-alpha', null, true, { pool: 'dev' }, null),
       this.connection('conn-docs', 'documents', 'stub', 'document-store', null, null, true, {}, null),
@@ -530,14 +532,20 @@ export class DevDataStore {
       { id: 'ev-doc-1', source: 'documents', title: 'Perf runbook', summary: 'Escalation and rollback checklist for load tests.', ref: 'doc-runbook', thread_id: null },
     ]
     this.workItems = [
-      { key: 'PHX-101', title: 'Checkout retries drop payments', kind: 'story', status: 'open', description: 'Retries on the payment gateway drop the cart.', url: 'https://tracker.example.com/browse/PHX-101' },
-      { key: 'PHX-102', title: 'Gateway 502s under load', kind: 'bug', status: 'in_progress', description: 'Gateway fails during peak ramp.', url: null },
+      { key: 'PHX-101', title: 'Checkout retries drop payments', kind: 'story', status: 'open', description: 'Retries on the payment gateway drop the cart.', url: 'https://tracker.example.com/browse/PHX-101', priority: 'P1', sprint: '24.3', assignee: 'Jamie Rivera', labels: ['payments', 'checkout'], parent_key: 'PHX-100' },
+      { key: 'PHX-102', title: 'Gateway 502s under load', kind: 'bug', status: 'in_progress', description: 'Gateway fails during peak ramp.', url: null, priority: 'P2', severity: 'Sev-2', assignee: 'Alex Chen', linked_keys: ['PHX-101'] },
       { key: 'PHX-130', title: 'Search typeahead p95 budget', kind: 'story', status: 'ready_for_test', description: 'Search should stay below 280ms p95.', url: 'https://tracker.example.com/browse/PHX-130' },
       { key: 'BILL-44', title: 'Billing export smoke', kind: 'task', status: 'open', description: 'Exercise secondary project scoping.', url: null },
+      // Jira Align keys are '<type>:<id>' and portfolio items use its own states.
+      { key: 'capability:9', title: 'Unified checkout capability', kind: 'capability', status: 'Pending Approval', description: 'Consolidate checkout across storefronts.', url: null, parent_key: 'epic:3' },
+      { key: 'feature:12', title: 'Retry-safe payment submission', kind: 'feature', status: 'Accepted', description: 'Idempotent submission across gateway retries.', url: null, parent_key: 'capability:9', priority: 'High' },
+      { key: 'story:13', title: 'Idempotency key on submit', kind: 'story', status: 'in_progress', description: 'Attach an idempotency key to every submit call.', url: null, parent_key: 'feature:12', sprint: 'PI 24.3 / S2', assignee: 'Jamie Rivera' },
+      { key: 'bug:481', title: 'Duplicate charge on retry', kind: 'bug', status: 'open', description: 'A retried submit occasionally double-charges.', url: null, severity: 'Sev-1', parent_key: 'story:13' },
     ]
     this.savedQueries = [
       { id: 'sq-open', name: 'Open payment stories', provider: 'jira', query: 'project = PHX AND status in (Open, "In Progress")', description: 'Sprint triage pick list', project_id: 'proj-alpha', connection_id: 'conn-jira', created_by: 'ops', created_at: created, updated_at: updated },
       { id: 'sq-bugs', name: 'Load bugs', provider: 'jira', query: 'project = PHX AND labels = load-test AND type = Bug', description: null, project_id: 'proj-alpha', connection_id: 'conn-jira', created_by: 'ops', created_at: created, updated_at: updated },
+      { id: 'sq-align', name: 'Align defects awaiting triage', provider: 'jira_align', query: "programId eq 42 and itemtype in ('bug') and state eq 0", description: 'Portfolio defect triage', project_id: 'proj-alpha', connection_id: 'conn-align', created_by: 'ops', created_at: created, updated_at: updated },
     ]
     this.prompts = this.makePrompts(created, updated)
     this.logs = this.makeLogs()
@@ -941,11 +949,18 @@ export class DevDataStore {
     if (method === 'POST' && path === '/v1/work-tracking/query/translate') {
       const body = (await request.json()) as { text?: string; connection_id?: string }
       const text = body.text ?? 'open load test bugs'
-      const provider = text.toLowerCase().includes('azure') ? 'ado' : 'jira'
+      const lowered = text.toLowerCase()
+      const provider = lowered.includes('azure') ? 'ado' : lowered.includes('align') ? 'jira_align' : 'jira'
       const binding = this.workTrackingBinding(body.connection_id, provider)
+      const jiraQuery = `project = PHX AND text ~ "${text}"`
+      const queryByProvider: Record<string, string> = {
+        jira: jiraQuery,
+        ado: `SELECT [System.Id] FROM WorkItems WHERE [System.Title] CONTAINS '${text}'`,
+        jira_align: `programId eq 42 and contains(title,'${text}')`,
+      }
       return jsonResponse({
         ...binding,
-        query: binding.provider === 'jira' ? `project = PHX AND text ~ "${text}"` : `SELECT [System.Id] FROM WorkItems WHERE [System.Title] CONTAINS '${text}'`,
+        query: queryByProvider[binding.provider] ?? jiraQuery,
         confidence: 0.86,
       } satisfies ResolvedTranslatedQuery)
     }
@@ -1757,15 +1772,17 @@ export class DevDataStore {
     connectionId: string | null | undefined,
     providerHint?: string,
   ): WorkTrackingBinding {
+    const byConnection: Record<string, string> = {
+      'conn-ado': 'ado',
+      'conn-align': 'jira_align',
+      'conn-jira': 'jira',
+    }
     if (connectionId) {
-      return {
-        connection_id: connectionId,
-        provider: connectionId === 'conn-ado' ? 'ado' : 'jira',
-      }
+      return { connection_id: connectionId, provider: byConnection[connectionId] ?? 'jira' }
     }
     const normalizedProvider = providerHint?.toLowerCase()
-    if (normalizedProvider === 'ado') {
-      return { connection_id: 'conn-ado', provider: 'ado' }
+    for (const [connection, provider] of Object.entries(byConnection)) {
+      if (normalizedProvider === provider) return { connection_id: connection, provider }
     }
     return { connection_id: 'conn-jira', provider: 'jira' }
   }

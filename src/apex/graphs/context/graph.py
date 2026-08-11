@@ -80,6 +80,42 @@ def _make_resolver() -> ConnectionResolver:
     return ConnectionResolver(store=DbConnectionStore())
 
 
+# The evidence packet has a single summary field capped at the snippet limit,
+# so the triage prefix must leave the description most of that budget: a
+# packet that is all labels and no description would misinform the analysis.
+_TRIAGE_PREFIX_CHARS = 120
+
+
+def _work_item_summary(item: Any) -> str:
+    """One-line triage summary + description, matching the run wizard's packets.
+
+    Both context-packet doors — client-side wizard resolution and this
+    server-side evidence path — must describe a story or defect the same way,
+    or the analysis prompt's context depends on which door the run came
+    through. Linked keys are left out of the one-liner, as the wizard does.
+    Unlike the wizard packet, this packet has no separate text field, so the
+    triage prefix is bounded to keep the description in the snippet.
+    """
+
+    parts = [f"{item.kind} · {item.status}"]
+    for label, value in (
+        ("priority", item.priority),
+        ("severity", item.severity),
+        ("sprint", item.sprint),
+        ("assignee", item.assignee),
+        ("parent", item.parent_key),
+    ):
+        if value:
+            parts.append(f"{label} {value}")
+    if item.labels:
+        parts.append("labels " + ", ".join(item.labels))
+    triage = " · ".join(parts)
+    if len(triage) > _TRIAGE_PREFIX_CHARS:
+        triage = triage[: _TRIAGE_PREFIX_CHARS - 1].rstrip() + "…"
+    description = item.description.strip()
+    return f"{triage} — {description}" if description else triage
+
+
 def _packet(source: str, title: str, ref: str | None, summary: str | None) -> JsonDict:
     """Build a bounded, secret-free packet from an untrusted provider response."""
 
@@ -147,7 +183,7 @@ async def _gather_tracker_evidence(tracker: Any, keys: list[str]) -> list[JsonDi
             except WorkTrackingMutationTargetNotFoundError:
                 return index, None  # a definitive missing work-item is not evidence
             return index, _packet(
-                "work_tracking", item.title, item.url or item.key, item.description
+                "work_tracking", item.title, item.url or item.key, _work_item_summary(item)
             )
 
     tasks = [asyncio.create_task(fetch(index, key)) for index, key in enumerate(keys)]

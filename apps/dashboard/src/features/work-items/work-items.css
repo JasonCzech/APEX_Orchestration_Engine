@@ -298,6 +298,48 @@
   border-radius: var(--radius);
 }
 
+/* Triage facts + labels */
+
+.wi-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin: 0;
+}
+
+.wi-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wi-fact-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+
+.wi-fact-value {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.wi-label-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.wi-dialect-chip {
+  margin-left: 6px;
+}
+
 .wi-description p {
   margin: 0 0 8px;
   font-size: 12px;

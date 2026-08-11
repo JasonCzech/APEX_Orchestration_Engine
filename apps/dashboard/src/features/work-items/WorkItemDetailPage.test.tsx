@@ -18,6 +18,39 @@ function renderDetail(path = '/work-items/jira/PHX-101', role: 'operator' | 'vie
 describe('WorkItemDetailPage', () => {
   beforeEach(() => window.sessionStorage.clear())
 
+  it('renders a triage card whose related keys link to their own detail', async () => {
+    const item = {
+      ...ITEM_PAYMENT,
+      priority: 'P1',
+      sprint: '24.3',
+      assignee: 'Jamie Rivera',
+      parent_key: 'PHX-100',
+      linked_keys: ['PHX-300'],
+      labels: ['payments', 'checkout'],
+    }
+    server.use(getItemHandler([item]))
+    renderDetail()
+
+    const facts = await screen.findByTestId('wi-facts')
+    expect(within(facts).getByText('P1')).toBeInTheDocument()
+    expect(within(facts).getByText('24.3')).toBeInTheDocument()
+    expect(within(facts).getByText('Jamie Rivera')).toBeInTheDocument()
+    expect(within(facts).getByText('payments, checkout')).toBeInTheDocument()
+    expect(within(facts).getByRole('link', { name: 'PHX-100' })).toHaveAttribute(
+      'href',
+      '/work-items/jira/PHX-100?connection_id=conn-jira',
+    )
+    expect(within(facts).getByRole('link', { name: 'PHX-300' })).toBeInTheDocument()
+  })
+
+  it('omits the triage card entirely when the tracker exposes no context', async () => {
+    server.use(getItemHandler([ITEM_PAYMENT]))
+    renderDetail()
+
+    await screen.findByRole('heading', { name: 'Checkout retries drop payments' })
+    expect(screen.queryByTestId('wi-facts')).not.toBeInTheDocument()
+  })
+
   it('renders the item and enriches it (POST shape + refreshed detail)', async () => {
     const enrich = enrichHandler({ ...ITEM_PAYMENT, status: 'blocked' })
     server.use(getItemHandler([ITEM_PAYMENT]), enrich.handler)

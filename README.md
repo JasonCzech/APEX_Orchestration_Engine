@@ -87,7 +87,7 @@ Setup details (seeded backend, API keys, runtime config, deploy contract):
 - `langgraph.json` — binds graphs + custom HTTP app + auth to the server
 - `src/apex/graphs/` — pipeline master graph (7 phase subgraphs, HITL gates)
 - `src/apex/app/`, `src/apex/routers/` — `/v1` domain API composition root + routers
-- `src/apex/ports|adapters|services/` — integration seams (stubs, Jira/ADO, ELK, k8s, engines)
+- `src/apex/ports|adapters|services/` — integration seams (stubs, Jira/Jira Align/ADO, ELK, k8s, engines)
 - `src/apex/persistence/` — SQLAlchemy models + Alembic migrations (`apex` schema)
 - `apps/dashboard/` — `@apex/dashboard` web client (React + Vite)
 - `packages/api-client/` — `@apex/api-client`, TS types generated from the committed `/v1` spec

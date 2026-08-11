@@ -50,7 +50,7 @@ _STATUS_PATTERNS: tuple[tuple[str, str], ...] = (
     (STATUS_OPEN, r"\b(?:open|unresolved|outstanding|todo|to\s+do|new)\b"),
 )
 
-_KIND_PATTERNS: tuple[tuple[str, str], ...] = (
+KIND_PATTERNS: tuple[tuple[str, str], ...] = (
     ("bug", r"\b(?:bugs?|defects?)\b"),
     ("story", r"\b(?:stor(?:y|ies)|features?)\b"),
     ("task", r"\btasks?\b"),
@@ -111,12 +111,17 @@ def parse_work_query(
     *,
     default_project: str | None = None,
     context: QueryContext | None = None,
+    kind_patterns: tuple[tuple[str, str], ...] = KIND_PATTERNS,
 ) -> WorkQuerySpec:
     """Deterministically parse `natural_language` into a WorkQuerySpec.
 
     Project precedence: context hint "project" > explicit text mention >
     `default_project` (the adapter's configured project). Only an explicit
     text mention counts as a rule hit.
+
+    `kind_patterns` lets a tracker whose object model is richer than
+    bug/story/task recognize its own types. The default folds "feature" into
+    "story", which is right for Jira and ADO but wrong for portfolio trackers.
     """
     if (
         type(natural_language) is not str
@@ -137,7 +142,7 @@ def parse_work_query(
         hits += 1
 
     kinds: list[str] = []
-    for canonical, pattern in _KIND_PATTERNS:
+    for canonical, pattern in kind_patterns:
         if re.search(pattern, lowered):
             kinds.append(canonical)
     if kinds:

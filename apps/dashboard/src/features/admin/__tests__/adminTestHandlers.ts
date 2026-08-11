@@ -24,8 +24,29 @@ export const CONN_JIRA: Connection = {
   name: 'jira-prod',
   project_id: 'proj-alpha',
   base_url: 'https://jira.example.com',
-  options: { project_key: 'ALPHA' },
-  secret_ref: 'env:JIRA_API_TOKEN',
+  // The adapter reads base_url out of options, not the column, so a working
+  // connection carries it in both.
+  options: {
+    base_url: 'https://jira.example.com',
+    user_email: 'qa@example.com',
+    project_key: 'ALPHA',
+  },
+  secret_ref: 'env:APEX_INTEGRATION_JIRA_API_TOKEN',
+  enabled: true,
+  created_at: NOW,
+  updated_at: NOW,
+}
+
+export const CONN_ALIGN: Connection = {
+  id: 'conn-align',
+  kind: 'work_tracking',
+  provider: 'jira_align',
+  name: 'align-prod',
+  project_id: 'proj-alpha',
+  base_url: 'https://acme.jiraalign.com',
+  // Bearer auth: no user_email; the guided form must infer that.
+  options: { base_url: 'https://acme.jiraalign.com', program_id: '42' },
+  secret_ref: 'env:APEX_INTEGRATION_JIRA_ALIGN_TOKEN',
   enabled: true,
   created_at: NOW,
   updated_at: NOW,

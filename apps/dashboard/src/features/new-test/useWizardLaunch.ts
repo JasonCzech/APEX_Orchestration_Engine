@@ -14,6 +14,7 @@ import { ApiError, errorMessageOf } from '@/api/errors'
 import { fetchWorkItem } from '@/api/hooks/useWorkTracking'
 import { queryKeys } from '@/api/queryKeys'
 import type { LaunchedRun } from '@/features/runs/launchRun'
+import { workItemPacketSummary } from '@/features/work-items/workItemsLogic'
 import {
   getDurableIdempotencyAttempt,
   retireDurableIdempotencyAttempt,
@@ -76,7 +77,9 @@ async function resolveWorkItemPackets(draft: WizardDraft): Promise<ContextPacket
     id: `workitem-${index + 1}`,
     source: 'work_tracking',
     title: item.title,
-    summary: `${item.kind} · ${item.status}`,
+    // The summary is what story analysis reads about a linked story or defect,
+    // so it carries the triage context, not just kind and status.
+    summary: workItemPacketSummary(item),
     ref: item.url ?? item.key,
     ...(item.description.trim().length > 0 ? { text: item.description } : {}),
   }))

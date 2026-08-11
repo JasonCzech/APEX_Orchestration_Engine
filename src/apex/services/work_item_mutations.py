@@ -892,6 +892,13 @@ def _scope_key(scope: MutationScope) -> tuple[str, str, str, str, str]:
 
 
 def _require_idempotent_adapter(adapter: Any) -> None:
+    # A deliberately read-only provider is a definitive client error (422), not
+    # an upstream outage: presenting it as a 502 invites retries that can never
+    # succeed. Only an adapter that is writable-but-not-durable is a 502.
+    if getattr(adapter, "read_only", False) is True:
+        raise WorkTrackingMutationRejectedError(
+            "work-tracking connection is read-only; author work items in the tracker itself"
+        )
     if not isinstance(adapter, IdempotentWorkTrackingMutationPort):
         raise RuntimeError(
             "resolved work-tracking adapter does not implement durable mutation reconciliation"

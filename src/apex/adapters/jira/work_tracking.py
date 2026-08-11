@@ -49,6 +49,7 @@ from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.domain.diagnostics import bounded_diagnostic
 from apex.domain.input_limits import MAX_DESCRIPTION_CHARS
 from apex.domain.integrations import (
+    MAX_WORK_ITEM_LABEL_CHARS,
     Enrichment,
     Page,
     QueryContext,
@@ -77,8 +78,24 @@ from apex.services.work_tracking import (
 PROVIDER = "jira"
 _TIMEOUT_S = 15.0
 _MAX_RESULTS_PER_REQUEST = 100
-_ISSUE_FIELDS = ["summary", "status", "issuetype", "description", "project"]
-_RECONCILIATION_ISSUE_FIELDS = [*_ISSUE_FIELDS, "labels"]
+_ISSUE_FIELDS = [
+    "summary",
+    "status",
+    "issuetype",
+    "description",
+    "project",
+    # Triage context. "labels" also carries the idempotency marker used to
+    # reconcile an ambiguous create, so it must stay in every request.
+    "priority",
+    "labels",
+    "assignee",
+    "parent",
+    "issuelinks",
+]
+_MAX_LINKED_KEYS = 32
+_MAX_LINK_SCAN = 500
+_MAX_LABELS = 32
+_CUSTOM_FIELD_ID = re.compile(r"\Acustomfield_[0-9]{1,19}\Z")
 _MUTATION_MARKER = re.compile(r"\Aapex-idem-[0-9a-f]{32}\Z")
 _ISSUE_KEY = re.compile(r"\A(?P<project>[A-Za-z][A-Za-z0-9_]{0,254})-(?P<number>[0-9]{1,19})\Z")
 _COMMENT_PAGE_SIZE = 100
@@ -325,6 +342,14 @@ class JiraWorkTrackingAdapter:
                 label="jira project_key",
                 max_bytes=255,
             )
+        # Sprint and severity have no stable field id in Jira Cloud — both are
+        # per-site custom fields — so they are only requested when configured.
+        self._sprint_field = _custom_field_option(options, "sprint_field_id")
+        self._severity_field = _custom_field_option(options, "severity_field_id")
+        self._issue_fields = [
+            *_ISSUE_FIELDS,
+            *(field for field in (self._sprint_field, self._severity_field) if field),
+        ]
         self._allow_private_hosts = private_hosts_allowed(options)
         token = base64.b64encode(f"{user_email}:{api_token}".encode()).decode()
         self._headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
@@ -437,7 +462,7 @@ class JiraWorkTrackingAdapter:
             payload: dict[str, Any] = {
                 "jql": query.query,
                 "maxResults": min(_MAX_RESULTS_PER_REQUEST, target - len(fetched)),
-                "fields": _ISSUE_FIELDS,
+                "fields": self._issue_fields,
             }
             if token:
                 payload["nextPageToken"] = token
@@ -495,7 +520,7 @@ class JiraWorkTrackingAdapter:
         """Read and validate one project-owned issue with selected fields."""
 
         self._require_item_in_project(key)
-        selected_fields = _ISSUE_FIELDS if fields is None else fields
+        selected_fields = self._issue_fields if fields is None else fields
         response = await self._request(
             "GET",
             f"/rest/api/3/issue/{key}",
@@ -532,7 +557,7 @@ class JiraWorkTrackingAdapter:
                     f"project = {_jql_project(self._project_key)} AND labels = {_jql_quote(marker)}"
                 ),
                 "maxResults": 2,
-                "fields": _RECONCILIATION_ISSUE_FIELDS,
+                "fields": self._issue_fields,
             },
         )
         data = _json_object(response, "idempotency marker search")
@@ -611,7 +636,7 @@ class JiraWorkTrackingAdapter:
         if marker is not None:
             issue, item = await self._get_item_snapshot(
                 key,
-                fields=_RECONCILIATION_ISSUE_FIELDS,
+                fields=self._issue_fields,
             )
             if not _contains_exact_label(issue, marker):
                 # Jira's create response only contains an id/key. Refetch the
@@ -760,6 +785,101 @@ class JiraWorkTrackingAdapter:
 
     # ── mapping ───────────────────────────────────────────────────────────────
 
+    def _related_key(self, raw: Any) -> str | None:
+        """Return a linked issue key, dropping anything outside the scope.
+
+        A scoped connection must not hand back identifiers it would refuse to
+        read: `_require_item_in_project` rejects them, so surfacing one would
+        only produce a dead reference.
+        """
+
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise RuntimeError("jira issue response has a malformed linked issue")
+        key = raw.get("key")
+        if key is None:
+            return None
+        if not isinstance(key, str) or _ISSUE_KEY.fullmatch(key) is None:
+            raise RuntimeError("jira issue response has a malformed linked issue key")
+        if self._project_key is not None:
+            project = key.split("-", 1)[0]
+            if project.casefold() != self._project_key.casefold():
+                return None
+        return key
+
+    def _linked_keys(self, raw: Any) -> list[str]:
+        """Collect up to the cap of in-scope linked keys, best effort.
+
+        Jira does not paginate ``issuelinks``, so a heavily-linked issue can
+        carry hundreds of entries; links beyond the scan bound are dropped
+        rather than failing the item, because relations are display context,
+        not the item itself. Malformed entries still fail closed.
+        """
+
+        if raw is None:
+            return []
+        if not isinstance(raw, list):
+            raise RuntimeError("jira issue response has malformed issue links")
+        keys: list[str] = []
+        for link in raw[:_MAX_LINK_SCAN]:
+            if not isinstance(link, dict):
+                raise RuntimeError("jira issue response has a malformed issue link")
+            for side in ("outwardIssue", "inwardIssue"):
+                key = self._related_key(link.get(side))
+                if key is not None and key not in keys:
+                    keys.append(key)
+            if len(keys) >= _MAX_LINKED_KEYS:
+                break
+        return keys[:_MAX_LINKED_KEYS]
+
+    def _custom_field_text(
+        self, fields: dict[str, Any], field_id: str | None, *, limit: int
+    ) -> str | None:
+        """Read one configured custom field as bounded display text.
+
+        Custom-field payloads have no fixed shape across sites, so an
+        unrecognized one is dropped rather than failing the whole item, and an
+        overlong value is truncated: a misconfigured field id pointing at a
+        text field must not make every item read fail model validation.
+        """
+
+        if field_id is None:
+            return None
+        raw = fields.get(field_id)
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            return raw[:limit] or None
+        if isinstance(raw, dict):
+            for name in ("value", "name"):
+                candidate = raw.get(name)
+                if isinstance(candidate, str) and candidate:
+                    return candidate[:limit]
+        return None
+
+    def _sprint_of(self, fields: dict[str, Any]) -> str | None:
+        """Pick the active sprint, else the last one the issue belongs to."""
+
+        if self._sprint_field is None:
+            return None
+        raw = fields.get(self._sprint_field)
+        if isinstance(raw, str):
+            return raw[:255] or None
+        if not isinstance(raw, list):
+            return None
+        chosen: str | None = None
+        for entry in raw[:_MAX_RESULTS_PER_REQUEST]:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            if entry.get("state") == "active":
+                return name[:255]
+            chosen = name
+        return chosen[:255] if chosen is not None else None
+
     def _work_item_from_issue(self, issue: dict[str, Any]) -> WorkItem:
         raw_fields = issue.get("fields")
         if not isinstance(raw_fields, dict):
@@ -822,6 +942,13 @@ class JiraWorkTrackingAdapter:
                 status=status,
                 description=adf_to_text(description),
                 url=f"{self._base_url}/browse/{key}",
+                priority=_named_value(fields.get("priority"), context="priority", limit=64),
+                severity=self._custom_field_text(fields, self._severity_field, limit=64),
+                sprint=self._sprint_of(fields),
+                assignee=_display_name(fields.get("assignee")),
+                labels=_issue_labels(fields),
+                parent_key=self._related_key(fields.get("parent")),
+                linked_keys=self._linked_keys(fields.get("issuelinks")),
             )
         except (ValidationError, ValueError):
             invalid_item = True
@@ -830,6 +957,65 @@ class JiraWorkTrackingAdapter:
         if item is None:  # pragma: no cover - defensive invariant
             raise RuntimeError("jira returned an invalid work item")
         return item
+
+
+def _custom_field_option(options: dict[str, Any], name: str) -> str | None:
+    raw = options.get(name)
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str) or _CUSTOM_FIELD_ID.fullmatch(raw) is None:
+        raise ValueError(f"jira {name} must look like 'customfield_10020'")
+    return raw
+
+
+def _named_value(raw: Any, *, context: str, limit: int) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RuntimeError(f"jira issue response has a malformed {context}")
+    name = raw.get("name")
+    if name is None:
+        return None
+    if not isinstance(name, str):
+        raise RuntimeError(f"jira issue response has a malformed {context} name")
+    return name[:limit] or None
+
+
+def _display_name(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RuntimeError("jira issue response has a malformed assignee")
+    name = raw.get("displayName")
+    if name is None:
+        return None
+    if not isinstance(name, str):
+        raise RuntimeError("jira issue response has a malformed assignee name")
+    # Truncate like the other display fields: an overlong name must not fail
+    # the whole item against WorkItem's 255-char bound.
+    return name[:255] or None
+
+
+def _issue_labels(fields: dict[str, Any]) -> list[str]:
+    raw = fields.get("labels")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(label, str) for label in raw):
+        raise RuntimeError("jira issue response has malformed labels")
+    labels: list[str] = []
+    for label in raw:
+        stripped = label.strip()
+        if not stripped or len(stripped) > MAX_WORK_ITEM_LABEL_CHARS or stripped in labels:
+            continue
+        # Idempotency markers are APEX bookkeeping attached by durable create;
+        # they are not user labels and must not surface in triage context.
+        # Reconciliation reads the raw issue JSON, so it still sees them.
+        if _MUTATION_MARKER.fullmatch(stripped) is not None:
+            continue
+        labels.append(stripped)
+        if len(labels) >= _MAX_LABELS:
+            break
+    return labels
 
 
 def _error_text(response: httpx.Response) -> str:

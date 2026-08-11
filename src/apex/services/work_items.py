@@ -9,7 +9,15 @@ from urllib.parse import urlsplit
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.durable_evidence import sanitize_durable_text
 from apex.domain.input_limits import MAX_DESCRIPTION_CHARS
-from apex.domain.integrations import Page, TranslatedQuery, WorkItem, WorkItemPage
+from apex.domain.integrations import (
+    MAX_WORK_ITEM_LABEL_CHARS,
+    MAX_WORK_ITEM_LABELS,
+    MAX_WORK_ITEM_LINKS,
+    Page,
+    TranslatedQuery,
+    WorkItem,
+    WorkItemPage,
+)
 
 _WORK_ITEM_KEY = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}\Z")
 _INVALID_WORK_ITEM = "work-tracking adapter returned an invalid work item"
@@ -45,9 +53,26 @@ def _validated_provider_work_item(value: Any) -> WorkItem:
         source = value
     if type(source) is not dict:
         raise ValueError("work item is not an object")
+    # ``required`` stays at the original six fields. Mutation-outbox rows
+    # persisted before the triage fields existed are replayed through here, so
+    # widening ``required`` would fail every stored result.
     raw = _bounded_mapping(
         source,
-        allowed={"description", "key", "kind", "status", "title", "url"},
+        allowed={
+            "description",
+            "key",
+            "kind",
+            "status",
+            "title",
+            "url",
+            "assignee",
+            "labels",
+            "linked_keys",
+            "parent_key",
+            "priority",
+            "severity",
+            "sprint",
+        },
         required={"description", "key", "kind", "status", "title", "url"},
     )
     key = raw["key"]
@@ -83,14 +108,70 @@ def _validated_provider_work_item(value: Any) -> WorkItem:
         status=status,
         description=safe_description,
         url=url,
+        priority=_repaired_triage_text(raw.get("priority"), 64),
+        severity=_repaired_triage_text(raw.get("severity"), 64),
+        sprint=_repaired_triage_text(raw.get("sprint"), 255),
+        assignee=_repaired_triage_text(raw.get("assignee"), 255),
+        labels=_bounded_string_list(
+            raw.get("labels"),
+            max_entries=MAX_WORK_ITEM_LABELS,
+            max_chars=MAX_WORK_ITEM_LABEL_CHARS,
+        ),
+        parent_key=_bounded_related_key(raw.get("parent_key")),
+        linked_keys=_bounded_string_list(
+            raw.get("linked_keys"),
+            max_entries=MAX_WORK_ITEM_LINKS,
+            max_chars=255,
+        ),
     )
     if _WORK_ITEM_KEY.fullmatch(item.key) is None or not _credential_free(item.key):
         raise ValueError("unsafe work-item key")
     if not _credential_free(item.kind) or not _credential_free(item.status):
         raise ValueError("unsafe work-item category")
+    for label in item.labels:
+        if not _credential_free(label):
+            raise ValueError("unsafe work-item label")
+    for linked in item.linked_keys:
+        if _WORK_ITEM_KEY.fullmatch(linked) is None or not _credential_free(linked):
+            raise ValueError("unsafe work-item link")
     if item.url is not None:
         _validate_work_item_url(item.url)
     return item
+
+
+def _repaired_triage_text(value: object, limit: int) -> str | None:
+    """Bound one optional descriptive field, redacting embedded credentials."""
+
+    if value is None:
+        return None
+    if type(value) is not str or len(value) > limit * 4:
+        raise ValueError("unbounded work-item triage field")
+    return sanitize_durable_text(value, limit)
+
+
+def _bounded_string_list(value: object, *, max_entries: int, max_chars: int) -> list[str]:
+    """Return a fail-closed list of bounded strings; absent means empty."""
+
+    if value is None:
+        return []
+    if type(value) is not list or len(value) > max_entries:
+        raise ValueError("unbounded work-item list field")
+    for entry in value:
+        if type(entry) is not str or not entry.strip() or len(entry) > max_chars:
+            raise ValueError("unbounded work-item list entry")
+    return cast(list[str], list(value))
+
+
+def _bounded_related_key(value: object) -> str | None:
+    """Related keys stay executable identities, so they fail closed."""
+
+    if value is None:
+        return None
+    if type(value) is not str or _WORK_ITEM_KEY.fullmatch(value) is None:
+        raise ValueError("unsafe work-item parent key")
+    if not _credential_free(value):
+        raise ValueError("unsafe work-item parent key")
+    return value
 
 
 def validated_provider_work_item_page(
@@ -213,6 +294,21 @@ def _bounded_mapping(
     if len(keys) > len(allowed) or not required <= key_set or not key_set <= allowed:
         raise ValueError("provider fields do not match the expected schema")
     return {key: value[key] for key in keys}
+
+
+def safe_work_item_url(value: str) -> bool:
+    """True when the value would pass provider work-item URL validation.
+
+    Adapters use this to decide whether to keep a payload-supplied link: a
+    link this predicate rejects would otherwise fail the whole item read once
+    `validated_provider_work_item` runs, turning a droppable URL into a 502.
+    """
+
+    try:
+        _validate_work_item_url(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _validate_work_item_url(value: str) -> None:

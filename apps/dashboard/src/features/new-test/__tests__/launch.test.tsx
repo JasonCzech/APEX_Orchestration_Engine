@@ -144,6 +144,10 @@ describe('wizard launch', () => {
           url: 'https://tracker.example/PHX-241',
           connection_id: 'conn-1',
           provider: 'jira',
+          priority: 'P1',
+          sprint: '24.3',
+          assignee: 'Jamie Rivera',
+          labels: ['payments'],
         }),
       ),
       http.post('*/v1/pipelines', async ({ request }) => {
@@ -187,7 +191,8 @@ describe('wizard launch', () => {
           id: 'workitem-1',
           source: 'work_tracking',
           title: 'Checkout retries',
-          summary: 'story · open',
+          // Triage context reaches the story_analysis prompt, not just the UI.
+          summary: 'story · open · priority P1 · sprint 24.3 · assignee Jamie Rivera · labels payments',
           ref: 'https://tracker.example/PHX-241',
           text: 'Retry checkout without duplicate charges.',
         },

@@ -600,3 +600,44 @@ def test_context_provider_admission_is_shared_across_event_loops(
 
     assert all(not thread.is_alive() for thread in threads)
     assert maximum == 1
+
+
+def test_work_item_summary_matches_the_wizard_packet_shape() -> None:
+    """Both context-packet doors must describe a work item identically."""
+
+    rich = WorkItem(
+        key="bug:481",
+        title="Duplicate charge on retry",
+        kind="bug",
+        status="open",
+        description="A retried submit occasionally double-charges.",
+        severity="Sev-1",
+        assignee="Alex Chen",
+        parent_key="story:13",
+        labels=["payments"],
+        linked_keys=["story:14"],
+    )
+    assert context_graph._work_item_summary(rich) == (
+        "bug · open · severity Sev-1 · assignee Alex Chen · parent story:13 · "
+        "labels payments — A retried submit occasionally double-charges."
+    )
+    bare = WorkItem(key="PHX-241", title="Checkout p95 regression")
+    assert context_graph._work_item_summary(bare) == "story · open"
+
+
+def test_work_item_summary_bounds_the_triage_prefix_so_the_description_survives() -> None:
+    """The evidence packet is one 280-char snippet; a label-heavy item must not
+    starve the description out of it."""
+
+    noisy = WorkItem(
+        key="story:13",
+        title="Checkout",
+        kind="story",
+        status="open",
+        description="The description the analysis actually needs.",
+        labels=[f"label-{index:02d}-payments-checkout" for index in range(12)],
+    )
+    summary = context_graph._work_item_summary(noisy)
+    prefix, _, description = summary.partition(" — ")
+    assert len(prefix) <= 120
+    assert description == "The description the analysis actually needs."

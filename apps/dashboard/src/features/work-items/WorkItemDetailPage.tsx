@@ -23,7 +23,7 @@ import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 
-import { ExternalLink, KindChip, StatusBadge } from './workItemsBits'
+import { ExternalLink, FactsGrid, KindChip, LabelChips, StatusBadge } from './workItemsBits'
 import {
   bindDurableMutationDraft,
   clearDurableMutationDraft,
@@ -34,7 +34,12 @@ import {
   type DurableMutationDraft,
   updateDurableMutationDraft,
 } from './durableMutationDraft'
-import { descriptionParagraphs, parseJsonObject, workItemPath } from './workItemsLogic'
+import {
+  descriptionParagraphs,
+  parseJsonObject,
+  workItemFacts,
+  workItemPath,
+} from './workItemsLogic'
 import './work-items.css'
 
 interface EnrichDraftState {
@@ -307,6 +312,9 @@ export function WorkItemDetailPage() {
 
   const item = itemQuery.data
   const paragraphs = descriptionParagraphs(item.description)
+  // Trackers vary in what they expose; an item with no triage context simply
+  // renders no card rather than an empty one.
+  const facts = workItemFacts(item)
 
   return (
     <section className="wi-page animate-enter">
@@ -327,6 +335,7 @@ export function WorkItemDetailPage() {
             <KindChip kind={item.kind} />
             <StatusBadge status={item.status} />
             {item.url && <ExternalLink url={item.url} itemKey={item.key} />}
+            <LabelChips labels={item.labels} />
           </div>
         </div>
         {canMutate && (
@@ -342,6 +351,18 @@ export function WorkItemDetailPage() {
           </div>
         )}
       </header>
+
+      {facts.length > 0 && (
+        <div className="wi-detail-card glass-panel">
+          <span className="wi-field-label">Triage</span>
+          <FactsGrid
+            facts={facts}
+            provider={item.provider}
+            project={project}
+            connectionId={item.connection_id}
+          />
+        </div>
+      )}
 
       <div className="wi-detail-card glass-panel">
         <span className="wi-field-label">Description</span>

@@ -582,8 +582,8 @@ class SavedQuery(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
     name: Mapped[str] = mapped_column(String(255))
     project_id: Mapped[str | None] = mapped_column(String(255))  # null = global
-    provider: Mapped[str] = mapped_column(String(64))  # jira | ado | stub
-    query: Mapped[str] = mapped_column(Text)  # JQL / WIQL / stub expression
+    provider: Mapped[str] = mapped_column(String(64))  # jira | jira_align | ado | stub
+    query: Mapped[str] = mapped_column(Text)  # JQL / OData $filter / WIQL / stub expression
     # Nullable only for global templates and quarantined legacy rows. Deliberately
     # not a foreign key: development/static adapters have stable ids without a
     # connections-table row, and deleting a persisted connection must leave a

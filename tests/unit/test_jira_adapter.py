@@ -26,6 +26,20 @@ from apex.domain.integrations import (
 
 BASE = "https://acme.atlassian.net"
 EXPECTED_AUTH = "Basic " + base64.b64encode(b"qa@acme.test:jira-api-token").decode()
+# Requested on every read: the base issue plus the triage fields that populate
+# WorkItem's optional context. Custom-field ids are appended when configured.
+EXPECTED_FIELDS = [
+    "summary",
+    "status",
+    "issuetype",
+    "description",
+    "project",
+    "priority",
+    "labels",
+    "assignee",
+    "parent",
+    "issuelinks",
+]
 
 
 def make_adapter(**option_overrides: object) -> JiraWorkTrackingAdapter:
@@ -362,13 +376,7 @@ async def test_execute_query_follows_next_page_token() -> None:
     assert first_body == {
         "jql": "project = PHX ORDER BY updated DESC",
         "maxResults": 3,
-        "fields": [
-            "summary",
-            "status",
-            "issuetype",
-            "description",
-            "project",
-        ],
+        "fields": EXPECTED_FIELDS,
     }
     second_body = json.loads(route.calls[1].request.content)
     assert second_body["nextPageToken"] == "tok-2"
@@ -609,19 +617,10 @@ async def test_idempotent_create_adds_marker_label_and_can_reconcile_it() -> Non
     assert created.key == found.key == "PHX-901"  # type: ignore[union-attr]
     create_body = json.loads(create_route.calls[0].request.content)
     assert create_body["fields"]["labels"] == ["perf", marker]
-    assert get_route.calls[0].request.url.params["fields"] == ",".join(
-        ["summary", "status", "issuetype", "description", "project", "labels"]
-    )
+    assert get_route.calls[0].request.url.params["fields"] == ",".join(EXPECTED_FIELDS)
     search_body = json.loads(search_route.calls[0].request.content)
     assert search_body["maxResults"] == 2
-    assert search_body["fields"] == [
-        "summary",
-        "status",
-        "issuetype",
-        "description",
-        "project",
-        "labels",
-    ]
+    assert search_body["fields"] == EXPECTED_FIELDS
     assert marker in search_body["jql"]
 
 
@@ -977,3 +976,217 @@ def test_render_jql_quotes_unsafe_project_and_phrase() -> None:
     spec = WorkQuerySpec(project="my proj", phrases=('say "hi"',))
     jql = render_jql(spec)
     assert jql == 'project = "my proj" AND text ~ "say \\"hi\\"" ORDER BY updated DESC'
+
+
+# ── triage field mapping ──────────────────────────────────────────────────────
+
+
+def rich_issue_json(**field_overrides: object) -> dict[str, object]:
+    issue = issue_json("PHX-241")
+    fields = issue["fields"]
+    assert isinstance(fields, dict)
+    fields.update(
+        {
+            "priority": {"name": "P1", "id": "1"},
+            "labels": ["payments", "checkout", "payments"],
+            "assignee": {"displayName": "Jamie Rivera", "accountId": "acc-1"},
+            "parent": {"key": "PHX-100", "fields": {"summary": "Checkout epic"}},
+            "issuelinks": [
+                {"type": {"name": "Blocks"}, "outwardIssue": {"key": "PHX-300"}},
+                {"type": {"name": "Relates"}, "inwardIssue": {"key": "PHX-301"}},
+            ],
+        }
+    )
+    fields.update(field_overrides)
+    return issue
+
+
+@respx.mock
+async def test_get_item_maps_triage_fields() -> None:
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=rich_issue_json())
+    )
+    item = await make_adapter().get_item("PHX-241")
+    assert item.priority == "P1"
+    assert item.assignee == "Jamie Rivera"
+    assert item.labels == ["payments", "checkout"]  # deduped, order preserved
+    assert item.parent_key == "PHX-100"
+    assert item.linked_keys == ["PHX-300", "PHX-301"]
+    assert item.severity is None and item.sprint is None  # not configured
+    assert_all_calls_authed()
+
+
+@respx.mock
+async def test_get_item_without_triage_fields_uses_defaults() -> None:
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=issue_json("PHX-241"))
+    )
+    item = await make_adapter().get_item("PHX-241")
+    assert item.priority is None
+    assert item.assignee is None
+    assert item.parent_key is None
+    assert item.labels == []
+    assert item.linked_keys == []
+
+
+@respx.mock
+async def test_scoped_adapter_drops_related_keys_outside_the_project() -> None:
+    """A scoped connection refuses to read those keys, so it must not emit them."""
+
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(
+            200,
+            json=rich_issue_json(
+                parent={"key": "OPS-9"},
+                issuelinks=[
+                    {"outwardIssue": {"key": "OPS-10"}},
+                    {"inwardIssue": {"key": "PHX-301"}},
+                ],
+            ),
+        )
+    )
+    item = await make_adapter().get_item("PHX-241")
+    assert item.parent_key is None
+    assert item.linked_keys == ["PHX-301"]
+
+
+@respx.mock
+async def test_custom_fields_are_requested_and_mapped_when_configured() -> None:
+    route = respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(
+            200,
+            json=rich_issue_json(
+                customfield_10020=[
+                    {"name": "Sprint 24.2", "state": "closed"},
+                    {"name": "Sprint 24.3", "state": "active"},
+                ],
+                customfield_10050={"value": "Sev-2"},
+            ),
+        )
+    )
+    adapter = make_adapter(
+        sprint_field_id="customfield_10020",
+        severity_field_id="customfield_10050",
+    )
+    item = await adapter.get_item("PHX-241")
+    assert item.sprint == "Sprint 24.3"  # active wins over the most recent
+    assert item.severity == "Sev-2"
+    requested = route.calls[0].request.url.params["fields"].split(",")
+    assert requested[-2:] == ["customfield_10020", "customfield_10050"]
+
+
+@respx.mock
+async def test_sprint_falls_back_to_the_last_sprint_when_none_is_active() -> None:
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(
+            200,
+            json=rich_issue_json(
+                customfield_10020=[
+                    {"name": "Sprint 24.2", "state": "closed"},
+                    {"name": "Sprint 24.3", "state": "future"},
+                ]
+            ),
+        )
+    )
+    adapter = make_adapter(sprint_field_id="customfield_10020")
+    item = await adapter.get_item("PHX-241")
+    assert item.sprint == "Sprint 24.3"
+
+
+@respx.mock
+async def test_unrecognized_custom_field_shape_is_dropped_not_fatal() -> None:
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(
+            200, json=rich_issue_json(customfield_10050={"unexpected": ["shape"]})
+        )
+    )
+    adapter = make_adapter(severity_field_id="customfield_10050")
+    item = await adapter.get_item("PHX-241")
+    assert item.severity is None
+
+
+@pytest.mark.parametrize(
+    ("override", "match"),
+    [
+        ({"priority": "P1"}, "malformed priority"),
+        ({"priority": {"name": 7}}, "malformed priority name"),
+        ({"assignee": "Jamie"}, "malformed assignee"),
+        ({"assignee": {"displayName": 7}}, "malformed assignee name"),
+        ({"labels": "payments"}, "malformed labels"),
+        ({"parent": "PHX-100"}, "malformed linked issue"),
+        ({"parent": {"key": "not a key"}}, "malformed linked issue key"),
+        ({"issuelinks": {"key": "PHX-1"}}, "malformed issue links"),
+        ({"issuelinks": ["PHX-1"]}, "malformed issue link"),
+    ],
+)
+@respx.mock
+async def test_malformed_triage_fields_fail_closed(override: dict[str, object], match: str) -> None:
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=rich_issue_json(**override))
+    )
+    with pytest.raises(RuntimeError, match=match):
+        await make_adapter().get_item("PHX-241")
+
+
+@pytest.mark.parametrize("field", ["sprint_field_id", "severity_field_id"])
+def test_constructor_rejects_a_custom_field_id_that_is_not_a_field_id(field: str) -> None:
+    with pytest.raises(ValueError, match="customfield_10020"):
+        make_adapter(**{field: "sprint"})
+
+
+@respx.mock
+async def test_a_heavily_linked_issue_truncates_links_instead_of_failing() -> None:
+    """Jira does not paginate issuelinks; hundreds of links must not fail the item."""
+
+    links = [{"outwardIssue": {"key": f"PHX-{300 + index}"}} for index in range(150)]
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=rich_issue_json(issuelinks=links))
+    )
+    item = await make_adapter().get_item("PHX-241")
+    assert len(item.linked_keys) == 32
+    assert item.linked_keys[0] == "PHX-300"
+
+
+@respx.mock
+async def test_idempotency_marker_labels_never_surface_as_triage_labels() -> None:
+    marker = "apex-idem-0123456789abcdef0123456789abcdef"
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(
+            200, json=rich_issue_json(labels=["payments", marker, "checkout"])
+        )
+    )
+    item = await make_adapter().get_item("PHX-241")
+    assert item.labels == ["payments", "checkout"]
+
+
+@respx.mock
+async def test_overlong_display_fields_truncate_instead_of_failing_the_item() -> None:
+    """A misconfigured custom field pointing at long text must not break reads."""
+
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(
+            200,
+            json=rich_issue_json(
+                priority={"name": "P" * 200},
+                customfield_10050={"value": "S" * 200},
+                customfield_10020="Sprint " + "x" * 300,
+            ),
+        )
+    )
+    adapter = make_adapter(
+        sprint_field_id="customfield_10020",
+        severity_field_id="customfield_10050",
+    )
+    item = await adapter.get_item("PHX-241")
+    assert item.priority == "P" * 64
+    assert item.severity == "S" * 64
+    assert item.sprint is not None and len(item.sprint) == 255
+
+
+@respx.mock
+async def test_an_overlong_assignee_name_truncates_instead_of_failing_the_item() -> None:
+    respx.get(f"{BASE}/rest/api/3/issue/PHX-241").mock(
+        return_value=httpx.Response(200, json=rich_issue_json(assignee={"displayName": "N" * 300}))
+    )
+    item = await make_adapter().get_item("PHX-241")
+    assert item.assignee == "N" * 255

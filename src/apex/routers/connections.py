@@ -55,6 +55,7 @@ from apex.domain.integrations import (
     TimeWindow,
     ValidationReport,
     WorkItem,
+    WorkItemFilters,
 )
 from apex.persistence.db import get_session, release_read_transactions
 from apex.persistence.models import Connection
@@ -64,6 +65,7 @@ from apex.persistence.repositories.connections import (
 )
 from apex.ports.artifact_store import StoredArtifact, validate_stored_artifact_ack
 from apex.ports.secrets import SecretsPort
+from apex.ports.work_tracking import WorkTrackingMutationTargetNotFoundError
 from apex.services.connection_credentials import (
     connection_options_require_repair,
     connection_url_requires_repair,
@@ -87,7 +89,10 @@ from apex.services.connections import (
     validate_scoped_work_tracking_config,
 )
 from apex.services.inventory import validated_provider_snapshot
-from apex.services.work_items import validated_provider_work_item
+from apex.services.work_items import (
+    validated_provider_work_item,
+    validated_provider_work_item_page,
+)
 
 # This router validates provider names directly against the registry, so it
 # must establish the same built-in registry state as the runtime resolver even
@@ -277,7 +282,20 @@ class ProbeResult(BaseModel):
 
 
 async def _probe_work_tracking(adapter: Any) -> str:
-    raw_item = await adapter.get_item("PHX-241")
+    # "PHX-241" is the stub backlog's demo story. Real trackers use their own
+    # key formats and rarely hold that key, so a miss falls back to a listing:
+    # either call proves credentials and reachability, which is what a probe is
+    # for. The listing path is the only one available to a tracker whose keys
+    # are not Jira-shaped, such as Jira Align's "<type>:<id>".
+    requested = Page(limit=1)
+    try:
+        raw_item = await adapter.get_item("PHX-241")
+    except (WorkTrackingMutationTargetNotFoundError, KeyError):
+        page = validated_provider_work_item_page(
+            await adapter.list_items(WorkItemFilters(), page=requested.model_copy(deep=True)),
+            requested_page=requested,
+        )
+        return f"listed work items (total {page.total})"
     if type(raw_item) is not WorkItem:
         raise RuntimeError("work-tracking adapter returned an invalid work item")
     item = validated_provider_work_item(raw_item)

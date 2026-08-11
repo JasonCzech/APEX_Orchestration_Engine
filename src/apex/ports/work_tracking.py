@@ -1,5 +1,6 @@
-"""Work-tracking port (Jira / Azure DevOps / stub). Provider differences —
-JQL vs WIQL, field naming — live entirely inside adapters."""
+"""Work-tracking port (Jira / Jira Align / Azure DevOps / stub). Provider
+differences — JQL vs OData $filter vs WIQL, field naming — live entirely
+inside adapters."""
 
 from typing import Protocol, runtime_checkable
 

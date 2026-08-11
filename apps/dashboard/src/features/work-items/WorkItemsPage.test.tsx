@@ -7,10 +7,12 @@ import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 import {
+  ITEM_CAPABILITY,
   ITEM_PAYMENT,
   ITEM_BUG,
   SAVED_OPEN,
   TRANSLATED,
+  TRANSLATED_ALIGN,
   createItemHandler,
   createSavedQueryHandler,
   executeHandler,
@@ -80,6 +82,62 @@ describe('WorkItemsPage', () => {
       },
     ])
     expect(screen.getByText('1–2 of 2')).toBeInTheDocument()
+  })
+
+  it('shows triage columns, falling back to an em dash for absent fields', async () => {
+    const execute = executeHandler([
+      { ...ITEM_PAYMENT, priority: 'P1', assignee: 'Jamie Rivera', sprint: '24.3', labels: ['payments'] },
+      ITEM_BUG,
+    ])
+    server.use(translateHandler().handler, execute.handler, savedQueriesHandler([]))
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.type(await screen.findByLabelText('Find by description'), 'open payment stories')
+    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(await screen.findByRole('button', { name: 'Execute' }))
+
+    const rich = await screen.findByTestId('wi-row-PHX-101')
+    expect(within(rich).getByText('P1')).toBeInTheDocument()
+    expect(within(rich).getByText('Jamie Rivera')).toBeInTheDocument()
+    expect(within(rich).getByText('24.3')).toBeInTheDocument()
+    expect(within(rich).getByText('payments')).toHaveClass('dash-context-chip')
+
+    // A tracker that exposes none of this must not render blank cells.
+    const bare = screen.getByTestId('wi-row-PHX-102')
+    expect(within(bare).getAllByText('—')).toHaveLength(3)
+  })
+
+  it('labels a Jira Align query by its own dialect and renders portfolio items', async () => {
+    const translate = translateHandler(TRANSLATED_ALIGN)
+    const execute = executeHandler([ITEM_CAPABILITY])
+    server.use(
+      workTrackingBindingHandler({ connection_id: 'conn-align', provider: 'jira_align' }).handler,
+      translate.handler,
+      execute.handler,
+      savedQueriesHandler([]),
+    )
+    const user = userEvent.setup()
+    renderConsole()
+
+    await user.type(await screen.findByLabelText('Find by description'), 'align capabilities')
+    await user.click(screen.getByRole('button', { name: 'Translate' }))
+
+    expect(await screen.findByText('OData $filter')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Provider query' })).toHaveValue(
+      TRANSLATED_ALIGN.query,
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Execute' }))
+
+    const row = await screen.findByTestId('wi-row-capability:9')
+    expect(within(row).getByText('capability')).toHaveClass('dash-context-chip')
+    // Align's own workflow state, toned rather than dropped to neutral.
+    expect(within(row).getByText('Pending Approval')).toHaveClass('status-badge', 'warning')
+    expect(within(row).getByRole('link', { name: 'capability:9' })).toHaveAttribute(
+      'href',
+      '/work-items/jira_align/capability%3A9?project=proj-alpha&connection_id=conn-align',
+    )
   })
 
   it('serializes translation and execution so their responses cannot cross', async () => {

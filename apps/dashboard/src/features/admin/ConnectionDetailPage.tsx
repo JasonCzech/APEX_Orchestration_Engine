@@ -39,6 +39,16 @@ import {
   isRuntimeIdentityKind,
   scopedConnectionPolicyIssue,
 } from './connectionPolicy'
+import { ProviderConnectionFields } from './ProviderConnectionFields'
+import {
+  buildOptions,
+  emptyDraft,
+  guidedBaseUrl,
+  guidedIssue,
+  providerSpec,
+  splitOptions,
+  type OptionsDraft,
+} from './providerCatalog'
 import './admin.css'
 
 const TABS = ['config', 'host-mappings'] as const
@@ -95,26 +105,40 @@ function ConfigTab({ connection }: { connection: Connection }) {
   const update = useUpdateConnection(connection.id)
   const writeCount = usePendingMutationCount(connectionWriteMutationKey(connection.id))
   const [name, setName] = useState(connection.name)
+  const initialSpec = providerSpec(connection.kind, connection.provider)
   const [provider, setProvider] = useState(connection.provider)
+  const [customProvider, setCustomProvider] = useState(initialSpec === null)
   const [project, setProject] = useState(connection.project_id ?? '')
   const [baseUrl, setBaseUrl] = useState(connection.base_url ?? '')
   const [secretRef, setSecretRef] = useState(connection.secret_ref ?? '')
-  const [optionsText, setOptionsText] = useState(() =>
-    JSON.stringify(connection.options, null, 2),
-  )
+  const [draft, setDraft] = useState<OptionsDraft>(() => ({
+    ...emptyDraft(),
+    ...(initialSpec === null
+      ? { extras: connection.options }
+      : splitOptions(initialSpec, connection.options)),
+    mode: initialSpec === null ? 'raw' : 'guided',
+    rawText: JSON.stringify(connection.options, null, 2),
+  }))
 
   const runtimeIdentity = isRuntimeIdentityKind(connection.kind)
-  const optionsParse = parseJsonObject(optionsText)
+  const spec = customProvider ? null : providerSpec(connection.kind, provider)
+  const guided = spec !== null && draft.mode === 'guided'
+  const rawParse = parseJsonObject(draft.rawText)
+  const options = guided ? buildOptions(spec, draft) : rawParse.ok ? rawParse.value : null
+  const missingField = guided ? guidedIssue(spec, draft) : null
+  const mirroredBaseUrl = guided ? guidedBaseUrl(spec, draft) : null
+  const ownsBaseUrl = guided && spec.optionFields.some((field) => field.mirrorsBaseUrl)
   const policyIssue =
-    !globalAdmin && !runtimeIdentity && optionsParse.ok
-      ? scopedConnectionPolicyIssue(connection.kind, provider, optionsParse.value)
+    !globalAdmin && !runtimeIdentity && options !== null
+      ? scopedConnectionPolicyIssue(connection.kind, provider, options)
       : null
   const projectAllowed = runtimeIdentity || globalAdmin || projectScopes.includes(project)
   const canSave =
     name.trim() !== '' &&
     (runtimeIdentity ||
       (provider.trim() !== '' &&
-        optionsParse.ok &&
+        options !== null &&
+        missingField === null &&
         projectAllowed &&
         (globalAdmin || policyIssue === null))) &&
     writeCount === 0
@@ -126,16 +150,16 @@ function ConfigTab({ connection }: { connection: Connection }) {
       update.mutate({ connectionId: connection.id, body: { name: name.trim() } })
       return
     }
-    if (!optionsParse.ok) return
+    if (options === null) return
     update.mutate({
       connectionId: connection.id,
       body: {
         name: name.trim(),
         provider: provider.trim(),
         project_id: project.trim() || null,
-        base_url: baseUrl.trim() || null,
+        base_url: (ownsBaseUrl ? mirroredBaseUrl : baseUrl.trim() || null) ?? null,
         ...(globalAdmin ? { secret_ref: secretRef.trim() || null } : {}),
-        options: optionsParse.value,
+        options,
       },
     })
   }
@@ -147,20 +171,24 @@ function ConfigTab({ connection }: { connection: Connection }) {
           <span className="adm-field-label">Kind (immutable)</span>
           <span className="dash-context-chip adm-kind-chip">{connection.kind}</span>
         </div>
-        <label className="adm-field">
-          <span className="adm-field-label">Provider</span>
-          <input
-            type="text"
-            className="field-input"
-            aria-label="Provider"
-            value={provider}
-            readOnly={runtimeIdentity}
-            onChange={(event) => setProvider(event.target.value)}
+        {runtimeIdentity ? (
+          <label className="adm-field">
+            <span className="adm-field-label">Provider</span>
+            <input type="text" className="field-input" aria-label="Provider" value={provider} readOnly />
+          </label>
+        ) : (
+          <ProviderConnectionFields
+            kind={connection.kind}
+            provider={provider}
+            customProvider={customProvider}
+            onProviderChange={(next, custom) => {
+              setProvider(next)
+              setCustomProvider(custom)
+            }}
+            draft={draft}
+            onDraftChange={setDraft}
           />
-          {!runtimeIdentity && (
-            <span className="adm-field-help">must be a registered provider</span>
-          )}
-        </label>
+        )}
         <label className="adm-field">
           <span className="adm-field-label">Name</span>
           <input
@@ -197,7 +225,7 @@ function ConfigTab({ connection }: { connection: Connection }) {
             ))}
           </select>}
         </label>
-        <label className="adm-field">
+        {!ownsBaseUrl && <label className="adm-field">
           <span className="adm-field-label">Base URL (optional)</span>
           <input
             type="text"
@@ -207,42 +235,50 @@ function ConfigTab({ connection }: { connection: Connection }) {
             readOnly={runtimeIdentity}
             onChange={(event) => setBaseUrl(event.target.value)}
           />
-        </label>
+        </label>}
         {globalAdmin && <label className="adm-field">
           <span className="adm-field-label">Secret ref</span>
           <input
             type="text"
             className="field-input"
             aria-label="Secret ref"
-            placeholder="env:JIRA_API_TOKEN"
+            placeholder={spec?.secretRef?.placeholder ?? 'env:APEX_INTEGRATION_TOKEN'}
             value={secretRef}
             readOnly={runtimeIdentity}
             onChange={(event) => setSecretRef(event.target.value)}
           />
-          <span className="adm-field-help">env:NAME — references only, never raw secrets</span>
+          <span className="adm-field-help">
+            {spec?.secretRef?.help ?? 'env:NAME — references only, never raw secrets'}
+          </span>
         </label>}
       </div>
-      <label className="adm-field">
-        <span className="adm-field-label">Options (JSON)</span>
-        <textarea
-          className="field-input adm-json-input"
-          aria-label="Options JSON"
-          rows={6}
-          spellCheck={false}
-          value={optionsText}
-          readOnly={runtimeIdentity}
-          onChange={(event) => setOptionsText(event.target.value)}
-        />
-      </label>
+      {runtimeIdentity && (
+        <label className="adm-field">
+          <span className="adm-field-label">Options (JSON)</span>
+          <textarea
+            className="field-input adm-json-input"
+            aria-label="Options JSON"
+            rows={6}
+            spellCheck={false}
+            value={draft.rawText}
+            readOnly
+          />
+        </label>
+      )}
       {runtimeIdentity && (
         <p className="adm-field-help">
           Runtime identity fields are immutable. Create a replacement connection to change its
           provider, project, endpoint, secret, or options.
         </p>
       )}
-      {!runtimeIdentity && !optionsParse.ok && (
+      {!runtimeIdentity && options === null && (
         <p className="adm-form-error" role="alert">
-          {optionsParse.message}
+          {rawParse.ok ? 'Options must be a JSON object.' : rawParse.message}
+        </p>
+      )}
+      {!runtimeIdentity && missingField && (
+        <p className="adm-form-error" role="alert">
+          {missingField}
         </p>
       )}
       {policyIssue && (
@@ -562,6 +598,20 @@ function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
 
   const rawTab = searchParams.get('tab')
   const tab: DetailTab = isDetailTab(rawTab) ? rawTab : 'config'
+
+  // Arriving from the create panel with ?test=1 runs the probe once, so a
+  // connection that cannot reach its provider says so before anyone uses it.
+  const autoProbeRef = useRef(false)
+  const requestedProbe = searchParams.get('test') === '1'
+  const connectionLoaded = connection.data !== undefined
+  useEffect(() => {
+    if (!requestedProbe || !connectionLoaded || autoProbeRef.current) return
+    autoProbeRef.current = true
+    probe.mutate()
+    const params = new URLSearchParams(searchParams)
+    params.delete('test')
+    setSearchParams(params, { replace: true })
+  }, [requestedProbe, connectionLoaded, probe, searchParams, setSearchParams])
 
   function selectTab(next: DetailTab) {
     const params = new URLSearchParams(searchParams)

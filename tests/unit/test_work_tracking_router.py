@@ -2388,3 +2388,127 @@ def test_delete_saved_query_roles_and_scope() -> None:
     viewer_app, _, _ = make_app(identity(role=Role.VIEWER), repo=repo)
     with TestClient(viewer_app) as client:
         assert client.delete("/v1/work-tracking/saved-queries/s3").status_code == 403
+
+
+# ── jira_align program scoping ────────────────────────────────────────────────
+
+
+def align_response(query: str, *, program: str = "42", scopes: list[ScopeRef] | None = None):
+    resolver = FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="jira_align",
+            project_id=program,
+            internal_project_id="internal-project-1",
+        )
+    )
+    app, resolver, _ = make_app(
+        identity(scopes=scopes or [ScopeRef(project_id="internal-project-1")]),
+        resolver=resolver,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "jira_align", "query": query}},
+        )
+    return response, resolver
+
+
+def test_execute_query_injects_jira_align_program_scope() -> None:
+    response, resolver = align_response("itemtype in ('bug') and state eq 0")
+    assert response.status_code == 200
+    query, _ = resolver.adapter.execute_calls[0]
+    assert query.query == "programId eq 42 and (itemtype in ('bug') and state eq 0)"
+
+
+def test_execute_query_accepts_an_align_query_that_already_names_the_scope() -> None:
+    response, resolver = align_response("programId eq 42 and state eq 0")
+    assert response.status_code == 200
+    query, _ = resolver.adapter.execute_calls[0]
+    assert query.query == "programId eq 42 and (programId eq 42 and state eq 0)"
+
+
+def test_execute_query_rejects_an_align_query_naming_another_program() -> None:
+    response, _ = align_response("programId eq 99 and state eq 0")
+    assert response.status_code == 403
+    assert response.json()["title"] == "work query references a project outside scope"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "state eq 0)",
+        "contains(title,'unclosed",
+        "state eq 0; drop",
+        "state eq 0 -- comment",
+    ],
+)
+def test_execute_query_rejects_align_queries_that_could_escape_the_scope(query: str) -> None:
+    response, _ = align_response(query)
+    assert response.status_code == 422
+
+
+def test_execute_query_refuses_an_align_program_that_is_not_a_numeric_id() -> None:
+    """A non-numeric program cannot be rendered as an OData scalar, so refuse."""
+
+    response, _ = align_response("state eq 0", program="ACME")
+    assert response.status_code == 403
+    assert response.json()["title"] == (
+        "work-tracking provider does not support provable project scoping"
+    )
+
+
+def test_execute_query_still_refuses_an_unregistered_provider() -> None:
+    resolver = FakeResolver(
+        FakeWorkTrackingAdapter(
+            provider="rally",
+            project_id="R1",
+            internal_project_id="internal-project-1",
+        )
+    )
+    app, _, _ = make_app(
+        identity(scopes=[ScopeRef(project_id="internal-project-1")]), resolver=resolver
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/work-tracking/query/execute",
+            json={"query": {"provider": "rally", "query": "state = Open"}},
+        )
+    assert response.status_code == 403
+
+
+def test_mutations_on_a_read_only_connection_are_a_client_error_not_an_outage() -> None:
+    """A 502 reads as transient and invites retries that can never succeed."""
+
+    adapter = FakeWorkTrackingAdapter()
+    adapter.read_only = True  # type: ignore[attr-defined]
+    app, _, _ = make_app(identity(), resolver=FakeResolver(adapter))
+
+    with TestClient(app) as client:
+        create = client.post(
+            "/v1/work-tracking/items",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
+            json={"title": "New story", "kind": "story"},
+            headers={"Idempotency-Key": "create-read-only"},
+        )
+        enrich = client.post(
+            "/v1/work-tracking/items/PHX-1/enrich",
+            params={"connection_id": DEFAULT_CONNECTION_ID},
+            json={"comment": "note"},
+            headers={"Idempotency-Key": "enrich-read-only"},
+        )
+
+    assert create.status_code == 422
+    assert enrich.status_code == 422
+    assert adapter.created_by_marker == {}
+
+
+def test_constrain_align_refuses_a_multi_program_scope() -> None:
+    """The adapter re-renders one `programId eq N` per resource; an or-group
+    would ship verbatim with the wrong field name on portfolio objects."""
+
+    from apex.routers.work_tracking import _constrain_align
+
+    with pytest.raises(HTTPException) as raised:
+        _constrain_align("state eq 0", ("1", "2"))
+    assert raised.value.status_code == 403
+    assert "provable project scoping" in raised.value.detail

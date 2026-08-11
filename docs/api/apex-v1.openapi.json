@@ -4440,6 +4440,19 @@
       "ResolvedWorkItem": {
         "additionalProperties": false,
         "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
           "connection_id": {
             "maxLength": 32,
             "minLength": 1,
@@ -4467,12 +4480,82 @@
             "title": "Kind",
             "type": "string"
           },
+          "labels": {
+            "items": {
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Labels",
+            "type": "array"
+          },
+          "linked_keys": {
+            "items": {
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Linked Keys",
+            "type": "array"
+          },
+          "parent_key": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
           "provider": {
             "maxLength": 64,
             "minLength": 1,
             "pattern": "^[^\\x00]*$",
             "title": "Provider",
             "type": "string"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "sprint": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sprint"
           },
           "status": {
             "default": "open",
@@ -5763,6 +5846,19 @@
       "WorkItem": {
         "additionalProperties": false,
         "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Assignee"
+          },
           "description": {
             "default": "",
             "maxLength": 20000,
@@ -5782,6 +5878,76 @@
             "pattern": "^[^\\x00]*$",
             "title": "Kind",
             "type": "string"
+          },
+          "labels": {
+            "items": {
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Labels",
+            "type": "array"
+          },
+          "linked_keys": {
+            "items": {
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 32,
+            "title": "Linked Keys",
+            "type": "array"
+          },
+          "parent_key": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "sprint": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sprint"
           },
           "status": {
             "default": "open",

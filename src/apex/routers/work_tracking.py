@@ -996,6 +996,13 @@ _WIQL_PROJECT = re.compile(
     r"\[System\.TeamProject\]\s*(?P<operator>=|in)\s*",
     re.IGNORECASE,
 )
+# Jira Align scopes by program. The OData grammar spells equality `eq`; a
+# caller writing anything else stays constrained by the injected conjunction.
+_ALIGN_PROGRAM = re.compile(
+    r"\bprogramId\s+(?P<operator>eq)\s+",
+    re.IGNORECASE,
+)
+_ALIGN_PROGRAM_ID = re.compile(r"\A[0-9]{1,18}\Z")
 
 
 @dataclass(frozen=True)
@@ -1013,6 +1020,11 @@ _WIQL_DIALECT = _QueryDialect(
     backslash_escapes_quotes=False,
     doubled_quotes_escape=True,
     bracketed_identifiers=True,
+)
+# OData string literals are single-quoted and escape a quote by doubling it.
+_ALIGN_DIALECT = _QueryDialect(
+    backslash_escapes_quotes=False,
+    doubled_quotes_escape=True,
 )
 
 
@@ -1032,6 +1044,8 @@ def _constrain_translated_query(
         scoped = _constrain_jql(query.query, allowed)
     elif provider == "ado":
         scoped = _constrain_wiql(query.query, allowed)
+    elif provider == "jira_align":
+        scoped = _constrain_align(query.query, allowed)
     elif provider in {"stub", "fake"}:
         scoped = query.query
     else:
@@ -1084,6 +1098,38 @@ def _constrain_wiql(raw: str, allowed: tuple[str, ...]) -> str:
             return f"{prefix} {scope} AND ({predicate}){_prefixed(suffix)}"
         return f"{prefix} {scope}{_prefixed(suffix)}"
     return f"{head} WHERE {scope}{_prefixed(suffix)}"
+
+
+def _constrain_align(raw: str, allowed: tuple[str, ...]) -> str:
+    """Wrap a Jira Align predicate in the consumer's program scope.
+
+    Ordering is not part of the canonical query — the adapter always applies
+    its own ``$orderby`` — so unlike JQL/WIQL there is no suffix to preserve.
+
+    Exactly one program is supported. The adapter re-renders the scope term
+    per resource (portfolio objects name the field ``primaryProgramId``), and
+    its parser only extracts a single top-level ``programId eq N``; an
+    ``(a or b)`` scope group would ship verbatim with the wrong field name.
+    Adapter resolution binds one external program today, so this refuses the
+    hypothetical rather than emitting a scope the adapter cannot prove.
+    """
+
+    _validate_query_envelope(raw, dialect=_ALIGN_DIALECT)
+    _reject_conflicting_projects(
+        _project_references(raw, _ALIGN_PROGRAM, dialect=_ALIGN_DIALECT),
+        allowed,
+    )
+    if len(allowed) != 1 or _ALIGN_PROGRAM_ID.fullmatch(allowed[0]) is None:
+        # A non-numeric program cannot be rendered as an OData scalar, and a
+        # multi-program scope cannot be re-rendered per resource; in both
+        # cases the scope could not be proven, so refuse rather than widen.
+        raise HTTPException(
+            status_code=403,
+            detail="work-tracking provider does not support provable project scoping",
+        )
+    scope = f"programId eq {allowed[0]}"
+    predicate = raw.strip()
+    return f"{scope} and ({predicate})" if predicate else scope
 
 
 def _split_order_by(raw: str) -> tuple[str, str]:

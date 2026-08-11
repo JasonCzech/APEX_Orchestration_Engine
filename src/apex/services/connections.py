@@ -742,10 +742,11 @@ def validate_scoped_work_tracking_config(
 ) -> None:
     """Reject scoped built-in tracker configs without an upstream project boundary.
 
-    The persisted ``project_id`` is an APEX ownership boundary. Jira and Azure
-    DevOps credentials can span several upstream projects, so a scoped row must
-    separately declare the provider project used for authenticated calls.
-    Global rows intentionally retain their unscoped administrative semantics.
+    The persisted ``project_id`` is an APEX ownership boundary. Jira, Jira
+    Align, and Azure DevOps credentials can span several upstream projects, so
+    a scoped row must separately declare the provider project (Jira Align calls
+    it a program) used for authenticated calls. Global rows intentionally
+    retain their unscoped administrative semantics.
     """
 
     provider = config.provider.casefold()
@@ -755,7 +756,9 @@ def validate_scoped_work_tracking_config(
         or provider in {"stub", "fake"}
     ):
         return
-    option_name = {"jira": "project_key", "ado": "project"}.get(provider)
+    option_name = {"jira": "project_key", "ado": "project", "jira_align": "program_id"}.get(
+        provider
+    )
     if option_name is not None:
         _validate_external_work_tracking_project(config.options.get(option_name))
 

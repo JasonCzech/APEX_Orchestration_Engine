@@ -73,12 +73,14 @@ describe('ConnectionsPage', () => {
 
     await user.click(await screen.findByRole('button', { name: 'New connection' }))
     const panel = screen.getByRole('form', { name: 'New connection' })
-    expect(within(panel).getByText('must be a registered provider')).toBeInTheDocument()
     expect(
       within(panel).getByText('env:NAME — references only, never raw secrets'),
     ).toBeInTheDocument()
 
-    await user.type(within(panel).getByRole('textbox', { name: 'Provider' }), 'rally')
+    // A provider the catalog does not know still has to be reachable.
+    await user.selectOptions(within(panel).getByRole('combobox', { name: 'Provider' }), 'Custom…')
+    expect(within(panel).getByText('must be a registered provider')).toBeInTheDocument()
+    await user.type(within(panel).getByRole('textbox', { name: 'Provider name' }), 'rally')
     await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'rally-test')
     await user.click(within(panel).getByRole('button', { name: 'Create connection' }))
 
@@ -107,13 +109,14 @@ describe('ConnectionsPage', () => {
     await user.click(await screen.findByRole('button', { name: 'New connection' }))
     const panel = screen.getByRole('form', { name: 'New connection' })
     expect(within(panel).queryByRole('textbox', { name: 'Secret ref' })).not.toBeInTheDocument()
-    await user.type(within(panel).getByRole('textbox', { name: 'Provider' }), 'jira')
+    await user.selectOptions(within(panel).getByRole('combobox', { name: 'Provider' }), 'jira')
     await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'jira-project')
     await user.selectOptions(within(panel).getByRole('combobox', { name: 'Project' }), 'proj-alpha')
     await user.type(
       within(panel).getByRole('textbox', { name: 'Base URL' }),
       'https://jira.project.example.com',
     )
+    await user.type(within(panel).getByRole('textbox', { name: 'User email' }), 'qa@example.com')
     await user.click(within(panel).getByRole('button', { name: 'Create connection' }))
 
     await waitFor(() => expect(create.captured).toHaveLength(1))
@@ -121,7 +124,203 @@ describe('ConnectionsPage', () => {
       project_id: 'proj-alpha',
       base_url: 'https://jira.project.example.com',
       secret_ref: null,
+      // Adapters read base_url out of options, so the guided field fills both.
+      options: {
+        base_url: 'https://jira.project.example.com',
+        user_email: 'qa@example.com',
+      },
     })
+  })
+
+  it('requires a provider-specific field before the guided form can submit', async () => {
+    server.use(...connectionsReadHandlers([]))
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    await user.selectOptions(within(panel).getByRole('combobox', { name: 'Provider' }), 'jira')
+    await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'jira-prod')
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Base URL' }),
+      'https://acme.atlassian.net',
+    )
+
+    expect(within(panel).getByRole('alert')).toHaveTextContent(
+      'Jira Cloud requires user email.',
+    )
+    expect(within(panel).getByRole('button', { name: 'Create connection' })).toBeDisabled()
+  })
+
+  it('offers Jira Align with an auth style that reveals the Atlassian email field', async () => {
+    const create = createConnectionHandler()
+    server.use(...connectionsReadHandlers([]), create.handler)
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    await user.selectOptions(
+      within(panel).getByRole('combobox', { name: 'Provider' }),
+      'jira_align',
+    )
+    // A Jira Align API token is a bearer credential — no email involved.
+    expect(within(panel).queryByRole('textbox', { name: 'User email' })).not.toBeInTheDocument()
+    expect(within(panel).getByRole('textbox', { name: 'Secret ref' })).toHaveAttribute(
+      'placeholder',
+      'env:APEX_INTEGRATION_JIRA_ALIGN_TOKEN',
+    )
+
+    await user.selectOptions(
+      within(panel).getByRole('combobox', { name: 'Authentication' }),
+      'basic',
+    )
+    await user.type(within(panel).getByRole('textbox', { name: 'User email' }), 'qa@example.com')
+    await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'align-prod')
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Base URL' }),
+      'https://acme.jiraalign.com',
+    )
+    await user.type(within(panel).getByRole('textbox', { name: 'Program id' }), '42')
+    await user.click(within(panel).getByRole('button', { name: 'Create connection' }))
+
+    await waitFor(() => expect(create.captured).toHaveLength(1))
+    expect(create.captured[0]).toMatchObject({
+      provider: 'jira_align',
+      base_url: 'https://acme.jiraalign.com',
+      options: {
+        base_url: 'https://acme.jiraalign.com',
+        user_email: 'qa@example.com',
+        program_id: '42',
+      },
+    })
+  })
+
+  it('survives a detour through the provider placeholder without losing values', async () => {
+    server.use(...connectionsReadHandlers([]))
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    const providerSelect = within(panel).getByRole('combobox', { name: 'Provider' })
+    await user.selectOptions(providerSelect, 'jira')
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Base URL' }),
+      'https://acme.atlassian.net',
+    )
+    await user.type(within(panel).getByRole('textbox', { name: 'User email' }), 'qa@example.com')
+
+    await user.selectOptions(providerSelect, '')
+    await user.selectOptions(providerSelect, 'jira')
+
+    expect(within(panel).getByRole('textbox', { name: 'Base URL' })).toHaveValue(
+      'https://acme.atlassian.net',
+    )
+    expect(within(panel).getByRole('textbox', { name: 'User email' })).toHaveValue(
+      'qa@example.com',
+    )
+  })
+
+  it('keeps unparsable raw-JSON edits when switching to another catalog provider', async () => {
+    server.use(...connectionsReadHandlers([]))
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    const providerSelect = within(panel).getByRole('combobox', { name: 'Provider' })
+    await user.selectOptions(providerSelect, 'jira')
+    await user.click(within(panel).getByRole('button', { name: 'Edit as JSON' }))
+    const jsonBox = within(panel).getByRole('textbox', { name: 'Options JSON' })
+    await user.clear(jsonBox)
+    await user.paste('{"base_url": "https://half-typed')
+
+    await user.selectOptions(providerSelect, 'jira_align')
+
+    // The switch happens, but the live (invalid) edit is not regenerated over.
+    expect(within(panel).getByRole('textbox', { name: 'Options JSON' })).toHaveValue(
+      '{"base_url": "https://half-typed',
+    )
+  })
+
+  it('keeps live raw-JSON edits when switching to a custom provider', async () => {
+    server.use(...connectionsReadHandlers([]))
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    const providerSelect = within(panel).getByRole('combobox', { name: 'Provider' })
+    await user.selectOptions(providerSelect, 'jira')
+    await user.click(within(panel).getByRole('button', { name: 'Edit as JSON' }))
+    const jsonBox = within(panel).getByRole('textbox', { name: 'Options JSON' })
+    await user.clear(jsonBox)
+    await user.paste('{"webhook_secret_ref": "env:APEX_INTEGRATION_HOOK"}')
+
+    await user.selectOptions(providerSelect, 'Custom…')
+
+    expect(within(panel).getByRole('textbox', { name: 'Options JSON' })).toHaveValue(
+      '{"webhook_secret_ref": "env:APEX_INTEGRATION_HOOK"}',
+    )
+  })
+
+  it('keeps shared field values when switching between catalog providers', async () => {
+    server.use(...connectionsReadHandlers([]))
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    await user.selectOptions(within(panel).getByRole('combobox', { name: 'Provider' }), 'jira')
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Base URL' }),
+      'https://acme.example.com',
+    )
+    await user.type(within(panel).getByRole('textbox', { name: 'User email' }), 'qa@example.com')
+
+    await user.selectOptions(
+      within(panel).getByRole('combobox', { name: 'Provider' }),
+      'jira_align',
+    )
+
+    expect(within(panel).getByRole('textbox', { name: 'Base URL' })).toHaveValue(
+      'https://acme.example.com',
+    )
+    // A stored email means basic auth, so the switch infers the Atlassian style.
+    expect(within(panel).getByRole('combobox', { name: 'Authentication' })).toHaveValue('basic')
+    expect(within(panel).getByRole('textbox', { name: 'User email' })).toHaveValue(
+      'qa@example.com',
+    )
+  })
+
+  it('drops an option belonging to a field the current auth style hides', async () => {
+    const create = createConnectionHandler()
+    server.use(...connectionsReadHandlers([]), create.handler)
+    const user = userEvent.setup()
+    renderList()
+
+    await user.click(await screen.findByRole('button', { name: 'New connection' }))
+    const panel = screen.getByRole('form', { name: 'New connection' })
+    await user.selectOptions(
+      within(panel).getByRole('combobox', { name: 'Provider' }),
+      'jira_align',
+    )
+    const auth = within(panel).getByRole('combobox', { name: 'Authentication' })
+    await user.selectOptions(auth, 'basic')
+    await user.type(within(panel).getByRole('textbox', { name: 'User email' }), 'qa@example.com')
+    // Switching back to bearer must not leave the email behind: its presence is
+    // what selects basic auth on the server side.
+    await user.selectOptions(auth, 'bearer')
+    await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'align-prod')
+    await user.type(
+      within(panel).getByRole('textbox', { name: 'Base URL' }),
+      'https://acme.jiraalign.com',
+    )
+    await user.click(within(panel).getByRole('button', { name: 'Create connection' }))
+
+    await waitFor(() => expect(create.captured).toHaveLength(1))
+    expect(create.captured[0]?.options).toEqual({ base_url: 'https://acme.jiraalign.com' })
   })
 
   it('blocks scoped Kubernetes in-cluster identity before create', async () => {
@@ -140,7 +339,7 @@ describe('ConnectionsPage', () => {
       within(panel).getByRole('combobox', { name: 'Kind' }),
       'cluster_inventory',
     )
-    await user.type(within(panel).getByRole('textbox', { name: 'Provider' }), 'kubernetes')
+    await user.type(within(panel).getByRole('textbox', { name: 'Provider name' }), 'kubernetes')
     await user.type(within(panel).getByRole('textbox', { name: 'Name' }), 'in-cluster')
     await user.selectOptions(within(panel).getByRole('combobox', { name: 'Project' }), 'proj-alpha')
     const options = within(panel).getByRole('textbox', { name: 'Options JSON' })

@@ -21,6 +21,22 @@ import type {
 
 const NOW = '2026-06-12T12:00:00Z'
 
+/** Provider <-> connection pairing shared by every handler below. */
+const PROVIDER_CONNECTIONS: Record<string, string> = {
+  jira: 'conn-jira',
+  ado: 'conn-ado',
+  jira_align: 'conn-align',
+}
+
+export function connectionForProvider(provider: string): string {
+  return PROVIDER_CONNECTIONS[provider.toLowerCase()] ?? 'conn-jira'
+}
+
+export function providerForConnection(connectionId: string): string {
+  const match = Object.entries(PROVIDER_CONNECTIONS).find(([, id]) => id === connectionId)
+  return match?.[0] ?? 'jira'
+}
+
 export const ITEM_PAYMENT: WorkItem = {
   key: 'PHX-101',
   title: 'Checkout retries drop payments',
@@ -37,6 +53,27 @@ export const ITEM_BUG: WorkItem = {
   status: 'in_progress',
   description: '',
   url: null,
+}
+
+/** Jira Align portfolio item: '<type>:<id>' key, Align-specific status. */
+export const ITEM_CAPABILITY: WorkItem = {
+  key: 'capability:9',
+  title: 'Unified checkout capability',
+  kind: 'capability',
+  status: 'Pending Approval',
+  description: 'Consolidate checkout across storefronts.',
+  url: null,
+  parent_key: 'epic:3',
+  priority: 'High',
+  assignee: 'Jamie Rivera',
+  labels: ['portfolio'],
+}
+
+export const TRANSLATED_ALIGN: TranslatedQuery = {
+  provider: 'jira_align',
+  query: "programId eq 42 and itemtype in ('bug')",
+  confidence: 0.6,
+  connection_id: 'conn-align',
 }
 
 export const TRANSLATED: TranslatedQuery = {
@@ -89,7 +126,7 @@ export function resolvedWorkItemPage(
   items: WorkItem[],
   total = items.length,
   provider = 'jira',
-  connectionId = provider === 'ado' ? 'conn-ado' : 'conn-jira',
+  connectionId = connectionForProvider(provider),
 ): WorkItemPage {
   return {
     items,
@@ -142,7 +179,7 @@ export function executeHandler(items: WorkItem[] = [ITEM_PAYMENT, ITEM_BUG], tot
         items,
         total,
         provider,
-        body.connection_id ?? (provider === 'ado' ? 'conn-ado' : 'conn-jira'),
+        body.connection_id ?? (connectionForProvider(provider)),
       ),
     )
   })
@@ -217,7 +254,7 @@ export function getItemHandler(items: WorkItem[] = [ITEM_PAYMENT, ITEM_BUG]) {
       ? HttpResponse.json({
           ...item,
           connection_id: connectionId,
-          provider: connectionId === 'conn-ado' ? 'ado' : 'jira',
+          provider: providerForConnection(connectionId),
         } satisfies ResolvedWorkItem)
       : HttpResponse.json(
           { detail: `work item ${String(params.key)} not found` },
@@ -249,7 +286,7 @@ export function createItemHandler(key = 'PHX-300') {
     return HttpResponse.json({
       ...created,
       connection_id: connectionId,
-      provider: connectionId === 'conn-ado' ? 'ado' : 'jira',
+      provider: providerForConnection(connectionId),
     } satisfies ResolvedWorkItem, { status: 201 })
   })
   return { handler, captured, idempotencyKeys, connectionIds }
@@ -269,7 +306,7 @@ export function enrichHandler(result: WorkItem) {
     return HttpResponse.json({
       ...result,
       connection_id: connectionId,
-      provider: connectionId === 'conn-ado' ? 'ado' : 'jira',
+      provider: providerForConnection(connectionId),
     } satisfies ResolvedWorkItem)
   })
   return { handler, captured, idempotencyKeys, connectionIds }

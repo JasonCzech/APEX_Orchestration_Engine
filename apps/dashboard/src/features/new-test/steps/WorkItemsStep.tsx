@@ -353,7 +353,8 @@ export function WorkItemsStep({
   return (
     <section className="wizard-step" aria-label="Work items">
       <p className="wizard-step-hint">
-        Link the stories or defects this run covers — or skip; work items are optional.
+        Link the stories, defects, or portfolio items this run covers — or skip; work items are
+        optional.
       </p>
 
       <div className="wizard-field">
@@ -503,6 +504,7 @@ export function WorkItemsStep({
                     <th>Title</th>
                     <th>Kind</th>
                     <th>Status</th>
+                    <th>Priority</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -539,6 +541,7 @@ export function WorkItemsStep({
                         <td>{item.title}</td>
                         <td>{item.kind}</td>
                         <td>{item.status}</td>
+                        <td>{item.priority?.trim() || '—'}</td>
                       </tr>
                     )
                   })}

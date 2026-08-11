@@ -2744,6 +2744,8 @@ export interface components {
         };
         /** ResolvedWorkItem */
         ResolvedWorkItem: {
+            /** Assignee */
+            assignee?: string | null;
             /** Connection Id */
             connection_id: string;
             /**
@@ -2758,8 +2760,20 @@ export interface components {
              * @default story
              */
             kind: string;
+            /** Labels */
+            labels?: string[];
+            /** Linked Keys */
+            linked_keys?: string[];
+            /** Parent Key */
+            parent_key?: string | null;
+            /** Priority */
+            priority?: string | null;
             /** Provider */
             provider: string;
+            /** Severity */
+            severity?: string | null;
+            /** Sprint */
+            sprint?: string | null;
             /**
              * Status
              * @default open
@@ -3156,6 +3170,8 @@ export interface components {
         };
         /** WorkItem */
         WorkItem: {
+            /** Assignee */
+            assignee?: string | null;
             /**
              * Description
              * @default
@@ -3168,6 +3184,18 @@ export interface components {
              * @default story
              */
             kind: string;
+            /** Labels */
+            labels?: string[];
+            /** Linked Keys */
+            linked_keys?: string[];
+            /** Parent Key */
+            parent_key?: string | null;
+            /** Priority */
+            priority?: string | null;
+            /** Severity */
+            severity?: string | null;
+            /** Sprint */
+            sprint?: string | null;
             /**
              * Status
              * @default open

@@ -24,6 +24,7 @@ from apex.domain.integrations import (
     SecretValue,
     TimeWindow,
     WorkItem,
+    WorkItemPage,
 )
 from apex.persistence.models import Connection, HostMapping
 from apex.persistence.repositories.connections import (
@@ -31,6 +32,7 @@ from apex.persistence.repositories.connections import (
     DuplicateConnectionNameError,
 )
 from apex.ports.artifact_store import StoredArtifact
+from apex.ports.work_tracking import WorkTrackingMutationTargetNotFoundError
 from apex.routers.connections import (
     PROBE_CALLS,
     _probe_artifact_store,
@@ -323,6 +325,8 @@ async def test_connections_repository_does_not_reenable_legacy_unsafe_row() -> N
         ("jira", {"project_key": ""}),
         ("ado", {}),
         ("ado", {"project": " "}),
+        ("jira_align", {}),
+        ("jira_align", {"program_id": ""}),
     ],
 )
 async def test_connections_repository_requires_external_project_on_scoped_real_trackers(
@@ -2379,3 +2383,54 @@ def test_probe_rejects_private_base_url(admin: TestClient, repo: FakeConnections
 
 def test_probe_unknown_connection_is_404(admin: TestClient) -> None:
     assert admin.post("/admin/connections/nope/test").status_code == 404
+
+
+async def test_work_tracking_probe_falls_back_to_a_listing_for_other_key_formats() -> None:
+    """The demo key is Jira-shaped; a tracker like Jira Align uses its own."""
+
+    class Adapter:
+        def __init__(self) -> None:
+            self.listed = False
+
+        async def get_item(self, key: str) -> Any:
+            raise WorkTrackingMutationTargetNotFoundError(f"{key} not found")
+
+        async def list_items(self, filters: Any, *, page: Page) -> WorkItemPage:
+            self.listed = True
+            return WorkItemPage(
+                items=[WorkItem(key="story:13", title="Checkout", kind="story")],
+                total=1,
+                page=page,
+            )
+
+    adapter = Adapter()
+    detail = await _probe_work_tracking(adapter)
+
+    assert adapter.listed is True
+    assert detail == "listed work items (total 1)"
+
+
+async def test_work_tracking_probe_prefers_the_direct_item_read_when_it_succeeds() -> None:
+    class Adapter:
+        async def get_item(self, key: str) -> Any:
+            return WorkItem(key=key, title="Checkout p95 regression", kind="bug")
+
+        async def list_items(self, filters: Any, *, page: Page) -> WorkItemPage:
+            raise AssertionError("probe must not list when the direct read succeeds")
+
+    assert await _probe_work_tracking(Adapter()) == "fetched work item PHX-241"
+
+
+async def test_work_tracking_probe_double_failure_stays_a_bounded_adapter_error() -> None:
+    """When the demo key misses AND the listing fails, the probe must surface
+    the listing failure (an ok=false detail upstream), not an invalid-page 500."""
+
+    class Adapter:
+        async def get_item(self, key: str) -> Any:
+            raise WorkTrackingMutationTargetNotFoundError(f"{key} not found")
+
+        async def list_items(self, filters: Any, *, page: Page) -> WorkItemPage:
+            raise RuntimeError("align rejected credentials")
+
+    with pytest.raises(RuntimeError, match="rejected credentials"):
+        await _probe_work_tracking(Adapter())
