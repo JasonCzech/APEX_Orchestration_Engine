@@ -124,3 +124,20 @@ describe('ArtifactViewerPage', () => {
     )
   })
 })
+
+it('renders Markdown safely with a source toggle', async () => {
+  const { default: userEvent } = await import('@testing-library/user-event')
+  const user = userEvent.setup()
+  const markdown = '# Release report\n\n**SLA failed**.\n\n[unsafe](javascript:alert%281%29)\n\n<script>alert(1)</script>'
+  server.use(
+    pipelineDetailHandler({ ...PIPELINE_DETAIL, values: { ...PIPELINE_DETAIL.values, artifacts: [{ id: 'md-report', name: 'release.md', media_type: 'text/markdown', uri: 'apex-artifact:///reports/release.md' }] } }),
+    http.get('*/v1/artifacts/reports/release.md', () => new HttpResponse(markdown, { headers: { 'Content-Type': 'text/markdown' } })),
+  )
+  renderRunRoutes([`/runs/${THREAD_ID}/artifacts/md-report`])
+  expect(await screen.findByRole('heading', { name: 'Release report' })).toBeInTheDocument()
+  expect(screen.getByText('unsafe').getAttribute('href') ?? '').not.toMatch(/^javascript:/)
+  expect(document.querySelector('.markdown-report script')).toBeNull()
+  await user.click(screen.getByRole('button', { name: 'Source' }))
+  expect(screen.getByRole('button', { name: 'Rendered report' })).toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Release report' })).not.toBeInTheDocument()
+})

@@ -3,11 +3,15 @@
  * outstanding validation issues, and the collapsible launch plan. Work-item
  * keys and document ids are resolved into context packets at launch time.
  */
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import { useDocumentsList } from '@/api/hooks/useDocuments'
 
-import { summarizeContext } from '../contextFiles'
+import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
+import { useAssistants } from '@/api/hooks/useAssistants'
+import { useWorkItem } from '@/api/hooks/useWorkTracking'
+import { PHASE_LABELS } from '@/features/runs/runDisplay'
+import { parseStatusBadge, summarizeContext } from '../contextFiles'
 import type { StepProps } from '../NewRunWizard'
 import {
   allIssues,
@@ -17,6 +21,35 @@ import {
   STEP_LABELS,
   type WizardStepId,
 } from '../wizardState'
+
+function ReferenceName({ name, id }: { name?: string; id: string | null | undefined }) {
+  const [copyStatus, setCopyStatus] = useState('')
+  const copy = async () => {
+    try {
+      if (!id || !navigator.clipboard) throw new Error('Clipboard unavailable')
+      await navigator.clipboard.writeText(id)
+      setCopyStatus('Copied')
+    } catch {
+      setCopyStatus('Copy unavailable; select the ID to copy it')
+    }
+  }
+  return (
+    <span>
+      {name ?? (id ? 'Name unavailable' : 'None')}
+      {id && <small className="review-reference-id">
+        {id}
+        <button type="button" className="btn btn-ghost btn-sm" aria-label={`Copy ${id}`} onClick={() => void copy()}>Copy ID</button>
+        <span role="status">{copyStatus}</span>
+      </small>}
+    </span>
+  )
+}
+
+function WorkItemReview({ item, project }: { item: import('../wizardState').WizardWorkItemRef; project: string }) {
+  const canLoad = Boolean(item.connection_id && item.provider)
+  const query = useWorkItem(canLoad ? item.key : undefined, project, item.connection_id ?? undefined, item.provider ?? undefined)
+  return <li>{query.data?.title ?? (canLoad && query.isPending ? 'Loading work item…' : 'Title unavailable')} · <code>{item.key}</code>{!canLoad ? ' · Revalidation required' : ''}</li>
+}
 
 function ReviewCard({
   title,
@@ -54,6 +87,9 @@ export function ReviewStep({
 }: Pick<StepProps, 'draft' | 'maxContextPackets'> & {
   onEditStep: (step: WizardStepId) => void
 }) {
+  const applications = useApplications(draft.scope.project_id || undefined)
+  const environments = useEnvironments(draft.scope.app_id)
+  const configurations = useAssistants()
   const issues = allIssues(draft, maxContextPackets)
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
@@ -100,9 +136,9 @@ export function ReviewStep({
             <dt>Project</dt>
             <dd>{draft.scope.project_id.trim() || '—'}</dd>
             <dt>Application</dt>
-            <dd>{draft.scope.app_id ?? '—'}</dd>
+            <dd><ReferenceName id={draft.scope.app_id} name={applications.data?.find((item) => item.id === draft.scope.app_id)?.name} /></dd>
             <dt>Environment</dt>
-            <dd>{draft.scope.environment_id ?? '—'}</dd>
+            <dd><ReferenceName id={draft.scope.environment_id} name={environments.data?.find((item) => item.id === draft.scope.environment_id)?.name} /></dd>
           </dl>
         </ReviewCard>
 
@@ -110,22 +146,7 @@ export function ReviewStep({
           {draft.work_items.length === 0 ? (
             <p className="wizard-caption">None linked (optional)</p>
           ) : (
-            <div className="wizard-chip-row">
-              {draft.work_items.map((item) => (
-                <span
-                  key={`${item.connection_id ?? 'legacy'}:${item.key}`}
-                  className="wizard-chip"
-                  title={
-                    item.connection_id
-                      ? `${item.provider ?? 'unknown'} · ${item.connection_id}`
-                      : 'Legacy selection requires revalidation'
-                  }
-                >
-                  {item.key}
-                  {!item.connection_id || !item.provider ? ' · revalidate' : ''}
-                </span>
-              ))}
-            </div>
+            <ul>{draft.work_items.map((item) => <WorkItemReview key={`${item.connection_id}:${item.key}`} item={item} project={draft.scope.project_id} />)}</ul>
           )}
         </ReviewCard>
 
@@ -134,6 +155,11 @@ export function ReviewStep({
             {draft.document_ids.length} document{draft.document_ids.length === 1 ? '' : 's'}{' '}
             attached
           </p>
+          <ul>{draft.document_ids.map((id) => {
+            const doc = knownDocs.get(id)
+            const status = parseStatusBadge(doc?.parse_status)
+            return <li key={id}><ReferenceName id={id} name={doc?.name} /> — {doc ? `${status.label} · ${status.included ? 'Included' : 'Text not included'}` : 'Inclusion not verified'}</li>
+          })}</ul>
           {contextSummary.includedCount > 0 && (
             <p className="wizard-caption">
               {contextSummary.includedCount} parsed · ~
@@ -154,14 +180,12 @@ export function ReviewStep({
             <dd>{draft.config.engine}</dd>
             <dt>Phases</dt>
             <dd>
-              {draft.config.phases === null
-                ? 'all 7 (canonical order)'
-                : phases.map((phase) => phase.replaceAll('_', ' ')).join(' → ') || 'none'}
+              {phases.map((phase) => PHASE_LABELS[phase]).join(' → ') || 'None'}
             </dd>
             <dt>Gates</dt>
             <dd>{draft.config.gates_mode.replaceAll('_', ' ')}</dd>
             <dt>Golden config</dt>
-            <dd>{draft.config.golden_config_id ?? '—'}</dd>
+            <dd><ReferenceName id={draft.config.golden_config_id} name={configurations.data?.find((item) => item.assistantId === draft.config.golden_config_id)?.name} /></dd>
           </dl>
         </ReviewCard>
 
@@ -181,7 +205,7 @@ export function ReviewStep({
       </div>
 
       <details className="glass-panel wizard-accordion">
-        <summary className="wizard-accordion-summary">Launch plan</summary>
+        <summary className="wizard-accordion-summary">Technical details: launch JSON</summary>
         <pre className="wizard-json" data-testid="launch-payload-json">
           {JSON.stringify(preview, null, 2)}
         </pre>

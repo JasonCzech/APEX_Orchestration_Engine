@@ -128,7 +128,7 @@ describe('RunDetailPage', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const banner = await screen.findByTestId('gate-slim-banner')
-    expect(banner).toHaveTextContent('Phase review gate open on Reporting')
+    expect(banner).toHaveTextContent('Review phase results gate open on Reporting')
     expect(banner).toHaveTextContent('Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',

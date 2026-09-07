@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
 import { makeStrip } from '@/features/runs/runsTestHandlers'
 
-import { failedRuns, goVerdicts } from './homeLogic'
+import { failedRuns, passedTests } from './homeLogic'
 
 function idleRun(id: string, status: string): PipelineSummary {
   return {
@@ -22,19 +22,14 @@ function idleRun(id: string, status: string): PipelineSummary {
 }
 
 describe('home verdict totals', () => {
-  it('does not count failed, aborted, or still-running idle threads as GO', () => {
+  it('counts recorded test results without deriving passes from phase completion', () => {
     const runs = [
-      idleRun('succeeded', 'succeeded'),
-      idleRun('failed', 'failed'),
+      { ...idleRun('passed', 'succeeded'), execution_result: 'passed' as const },
+      { ...idleRun('failed-sla', 'succeeded'), execution_result: 'failed' as const },
+      idleRun('unknown', 'succeeded'),
       idleRun('aborted', 'aborted'),
-      idleRun('inconsistent', 'running'),
     ]
-
-    expect(goVerdicts(runs)).toBe(1)
-    expect(failedRuns(runs).map((run) => run.thread_id).sort()).toEqual([
-      'aborted',
-      'failed',
-      'inconsistent',
-    ])
+    expect(passedTests(runs)).toBe(1)
+    expect(failedRuns(runs).map((run) => run.thread_id)).toEqual(['failed-sla'])
   })
 })

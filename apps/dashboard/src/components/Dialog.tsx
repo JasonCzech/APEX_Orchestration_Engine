@@ -179,6 +179,7 @@ function getFocusable(root: HTMLElement): HTMLElement[] {
     (element) =>
       element.tabIndex >= 0 &&
       !element.hasAttribute('disabled') &&
+      !element.closest('[hidden]') &&
       element.getAttribute('aria-hidden') !== 'true',
   )
 }

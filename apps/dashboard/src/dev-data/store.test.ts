@@ -16,6 +16,27 @@ async function jsonOf<T>(response: Response | null): Promise<T> {
 describe('dev-data store', () => {
   beforeEach(() => localStorage.clear())
 
+  it('derives every demo summary from its corresponding phase state', async () => {
+    const store = createDevDataStore()
+    const list = await jsonOf<{ items: Array<import('@/api/hooks/usePipelines').PipelineSummary> }>(
+      await store.handleApexRequest(new Request('http://localhost/v1/pipelines?limit=100')),
+    )
+    for (const summary of list.items) {
+      const detail = await jsonOf<import('@/api/hooks/useThreadState').PipelineDetail>(
+        await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${summary.thread_id}`)),
+      )
+      const state = detail.values as import('@apex/pipeline-events').PipelineState
+      expect(summary.phase_strip).toEqual(detail.phase_strip)
+      for (const phase of summary.phase_strip) {
+        expect(phase.status).toBe(state.phases_plan && !state.phases_plan.includes(phase.phase as import('@apex/pipeline-events').PhaseName)
+          ? 'none' : state.phase_results?.[phase.phase as import('@apex/pipeline-events').PhaseName]?.status ?? 'pending')
+      }
+      const passed = state.phase_results?.execution?.test_summary?.passed
+      expect(summary.execution_result).toBe(passed === true ? 'passed' : passed === false ? 'failed' : null)
+    }
+    expect(list.items.find((run) => run.thread_id === 'run-conditional')?.execution_result).toBe('failed')
+  })
+
   it('filters and paginates pipeline summaries', async () => {
     const store = createDevDataStore()
 
@@ -395,7 +416,7 @@ describe('dev-data store', () => {
     }
     let run = store.createRun(thread.thread_id, 'pipeline', { input: { title: 'eSIM Device Upgrade Peak Certification' } })
     await consume(run.run_id)
-    let detail = await jsonOf<{ pending_gate: { interrupt_id: string; phase: string } }>(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
+    let detail = await jsonOf<{ execution_result?: string | null; pending_gate: { interrupt_id: string; phase: string } }>(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.phase).toBe('test_planning')
     expect(parseGateInterrupt((detail as unknown as { interrupts: Array<{ payload: unknown }> }).interrupts[0]?.payload)).not.toBeNull()
 
@@ -423,6 +444,7 @@ describe('dev-data store', () => {
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.phase).toBe('execution')
+    expect(detail.execution_result).toBe('failed')
     run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'approve' })) }
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))

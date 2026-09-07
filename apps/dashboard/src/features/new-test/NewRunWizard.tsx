@@ -431,8 +431,9 @@ function NewRunWizardContent({
   function jumpToTab(step: WizardStepId) {
     selectStep(step)
     afterNextPaint(() => {
-      document.getElementById('wizard-tabs')?.scrollIntoView({
-        behavior: 'smooth',
+      document.getElementById(`wizard-tab-${step}`)?.focus()
+      document.getElementById('wizard-tabs')?.scrollIntoView?.({
+        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
         block: 'start',
       })
     })
@@ -470,7 +471,7 @@ function NewRunWizardContent({
         description={copy.description}
         active={activeStep === step}
       >
-        <WizardStepContent
+        {(step !== 'review' || activeStep === 'review') && <WizardStepContent
           step={step}
           draft={draft}
           onChange={updateDraft}
@@ -480,7 +481,7 @@ function NewRunWizardContent({
           onStepPendingStart={beginStepPending}
           maxContextPackets={maxContextPackets}
           disabled={finalizing || !canOperate}
-        />
+        />}
       </WizardSection>
     )
   }
@@ -522,6 +523,8 @@ function NewRunWizardContent({
           <span
             className={`topbar-meta-chip${saveState === 'error' ? ' danger' : saveState === 'saved' ? ' success' : ''}`}
             data-testid="draft-save-state"
+            role="status"
+            aria-live="polite"
           >
             {SAVE_LABELS[saveState]}
           </span>
@@ -593,7 +596,7 @@ function NewRunWizardContent({
 
       <footer className="glass-panel wizard-footer">
         <div className="wizard-footer-copy">
-          <strong>Launch Pipeline</strong>
+          <strong>{activeStep === 'review' ? 'Launch Test' : 'Review Test'}</strong>
           <span className="wizard-caption">
             {issues.length === 0
               ? pendingStepCount > 0
@@ -640,19 +643,19 @@ function NewRunWizardContent({
               type="button"
               className="btn btn-primary"
               disabled={
-                issues.length > 0 ||
+                (activeStep === 'review' && issues.length > 0) ||
                 pendingStepCount > 0 ||
                 launch.isPending ||
                 loading ||
                 finalizing
               }
-              onClick={() => void handleLaunch()}
+              onClick={() => activeStep === 'review' ? void handleLaunch() : jumpToTab('review')}
             >
               {launch.isPending || finalizing
                 ? 'Launching…'
                 : pendingStepCount > 0
                   ? 'Finishing context…'
-                  : 'Launch Pipeline'}
+                  : activeStep === 'review' ? 'Launch Test' : 'Review Test'}
             </button>
           </RequireRole>
         </div>

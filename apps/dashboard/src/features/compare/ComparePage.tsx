@@ -11,12 +11,15 @@ import type { UseQueryResult } from '@tanstack/react-query'
 
 import {
   PHASE_LABELS,
+  normalizedPhases,
+  orchestrationStatusLabel,
   formatDuration,
   statusLabel,
   statusVisual,
 } from '../runs/runDisplay'
 import {
   COMPARE_KPIS,
+  kpiDifference,
   MAX_COMPARE_RUNS,
   bestWorst,
   kpiValue,
@@ -173,7 +176,7 @@ function ColumnHeader({
         ) : (
           <>
             <span className={`status-badge ${threadStatusTone(detail?.thread_status)}`}>
-              {detail?.thread_status ?? 'unknown'}
+              {orchestrationStatusLabel(detail?.thread_status)}
             </span>
             {detail?.engine?.engine && (
               <span
@@ -199,6 +202,7 @@ function ColumnHeader({
  */
 export function ComparePage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const [chosenBaseline, setChosenBaseline] = useState<string | null>(null)
   const ids = useMemo(() => parseCompareIds(searchParams.get('ids')), [searchParams])
 
   // Fixed hook slots (MAX_COMPARE_RUNS = 4) keep the hook order stable while
@@ -223,8 +227,16 @@ export function ComparePage() {
   const runs: CompareRun[] = ids.map((id, index) => ({ id, query: slots[index]! }))
   if (runs.some((run) => run.query.isPending)) return <CompareSkeleton />
 
-  const entriesFor = (phase: (typeof PHASE_NAMES)[number]): Array<PhaseResultEntry | undefined> =>
-    runs.map((run) => run.query.data?.state.phase_results?.[phase])
+  const baselineId = ids.includes(chosenBaseline ?? '') ? chosenBaseline : ids[0]
+  const baselineIndex = ids.indexOf(baselineId ?? '')
+  const entriesFor = (phase: (typeof PHASE_NAMES)[number]): Array<(Pick<PhaseResultEntry, 'attempt' | 'duration_s' | 'artifact_ids' | 'warnings'> & { status?: string | undefined }) | undefined> =>
+    runs.map((run) => {
+      const snapshot = run.query.data
+      if (!snapshot) return undefined
+      const normalized = normalizedPhases(snapshot.state, snapshot.detail.phase_strip, snapshot.stateParseFailed).find((entry) => entry.phase === phase)
+      if (normalized?.status === 'none') return { status: 'none' }
+      return { ...snapshot.state.phase_results?.[phase], status: normalized?.status, attempt: normalized?.attempt }
+    })
 
   const summaries: Array<TestResultSummary | undefined> = runs.map(
     (run) => run.query.data?.state.phase_results?.['execution']?.test_summary,
@@ -240,6 +252,7 @@ export function ComparePage() {
       <header className="compare-toolbar glass-panel">
         <h2 className="compare-title">Compare Runs</h2>
         <span className="compare-caption">{runs.length} runs</span>
+        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} onChange={(event) => setChosenBaseline(event.target.value)}>{runs.map((run) => <option key={run.id} value={run.id}>{run.query.data?.detail.title ?? run.id}</option>)}</select></label>
         <span className="spacer" />
         <AddRunPicker ids={ids} onAdd={(id) => setIds([...ids, id])} />
         <Link to="/runs" className="btn btn-ghost btn-sm">
@@ -258,6 +271,9 @@ export function ComparePage() {
         />
       )}
 
+      {runs.some((run) => run.query.data?.stateParseFailed) && (
+        <p role="status">Some run state could not be read. Unavailable phase statuses use summary data for those runs.</p>
+      )}
       <div className="data-table-wrap compare-table-wrap">
         <table className="data-table compare-table">
           <thead>
@@ -350,7 +366,7 @@ export function ComparePage() {
                   return (
                     <tr key={def.key}>
                       <th scope="row" className="compare-row-label">
-                        {def.label}
+                        {def.label}<small className="compare-difference">{def.better === 'higher' ? 'Higher' : 'Lower'} is better</small>
                       </th>
                       {runs.map((run, index) => {
                         const value = values[index] ?? null
@@ -371,7 +387,7 @@ export function ComparePage() {
                             {value === null ? (
                               <span className="compare-muted">{EM_DASH}</span>
                             ) : (
-                              <span className="compare-kpi-value">{def.format(value)}</span>
+                              <><span className="compare-kpi-value">{def.format(value)}</span><small className="compare-difference">{index === baselineIndex ? 'Baseline' : kpiDifference(value, values[baselineIndex] ?? null, def)}</small></>
                             )}
                           </td>
                         )

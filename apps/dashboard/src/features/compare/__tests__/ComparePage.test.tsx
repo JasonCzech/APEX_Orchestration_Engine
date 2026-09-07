@@ -80,11 +80,11 @@ describe('ComparePage', () => {
       'href',
       `/runs/${RUN_A_ID}`,
     )
-    expect(colA.getByText('idle')).toHaveClass('status-badge', 'success')
+    expect(colA.getByText('Execution stopped')).toHaveClass('status-badge', 'success')
     expect(colA.getByText('sim')).toHaveClass('dash-context-chip')
 
     const colB = within(screen.getByTestId(`compare-col-${RUN_B_ID}`))
-    expect(colB.getByText('error')).toHaveClass('status-badge', 'danger')
+    expect(colB.getByText('Orchestration failed')).toHaveClass('status-badge', 'danger')
     expect(colB.getByText('apexload')).toHaveClass('dash-context-chip')
 
     // Phase cells carry status + duration + attempt; unplanned phases render an em dash.
@@ -217,7 +217,7 @@ describe('ComparePage', () => {
     const colB = within(await screen.findByTestId(`compare-col-${RUN_B_ID}`))
     expect(colB.getByText('load failed')).toHaveClass('status-badge', 'danger')
     const colA = within(screen.getByTestId(`compare-col-${RUN_A_ID}`))
-    expect(colA.getByText('idle')).toBeInTheDocument()
+    expect(colA.getByText('Execution stopped')).toBeInTheDocument()
     expect(screen.getByTestId(`compare-phase-execution-${RUN_B_ID}`)).toHaveTextContent('—')
   })
 })

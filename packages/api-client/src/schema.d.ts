@@ -2562,6 +2562,8 @@ export interface components {
             /** Current Phase */
             current_phase?: string | null;
             engine?: components["schemas"]["PipelineEngineInfo"] | null;
+            /** Execution Result */
+            execution_result?: ("passed" | "failed") | null;
             /** Interrupts */
             interrupts?: components["schemas"]["GateInterrupt"][];
             pending_gate?: components["schemas"]["PendingGate"] | null;
@@ -2614,6 +2616,8 @@ export interface components {
             /** Current Phase */
             current_phase?: string | null;
             engine?: components["schemas"]["PipelineEngineInfo"] | null;
+            /** Execution Result */
+            execution_result?: ("passed" | "failed") | null;
             pending_gate?: components["schemas"]["PendingGate"] | null;
             /** Phase Strip */
             phase_strip: components["schemas"]["PhaseStripEntry"][];

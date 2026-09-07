@@ -86,18 +86,18 @@ describe('HomePage', () => {
     const failureCard = screen.getByText('Failures').closest('article')
     expect(failureCard).not.toBeNull()
     expect(within(failureCard as HTMLElement).getByText('1')).toBeInTheDocument()
-    const goCard = screen.getByText('GO Verdicts').closest('article')
+    const goCard = screen.getByText('Tests Passed').closest('article')
     expect(goCard).not.toBeNull()
-    expect(within(goCard as HTMLElement).getByText('1')).toBeInTheDocument()
+    expect(within(goCard as HTMLElement).getByText('0')).toBeInTheDocument()
     expect(
-      within(goCard as HTMLElement).getByText('successful outcomes loaded'),
+      within(goCard as HTMLElement).getByText('recorded test results'),
     ).toBeInTheDocument()
 
-    const release = screen.getByRole('heading', { name: 'Release Signal' }).closest('article')
+    const release = screen.getByRole('heading', { name: 'Test Results' }).closest('article')
     expect(release).not.toBeNull()
-    expect(within(release as HTMLElement).getByText('GO · 1')).toBeInTheDocument()
-    expect(within(release as HTMLElement).getByText('Conditional · 2')).toBeInTheDocument()
-    expect(within(release as HTMLElement).getByText('NO-GO · 1')).toBeInTheDocument()
+    expect(within(release as HTMLElement).getByText('Passed · 0')).toBeInTheDocument()
+    expect(within(release as HTMLElement).getByText('Not available · 5')).toBeInTheDocument()
+    expect(within(release as HTMLElement).getByText('Failed · 0')).toBeInTheDocument()
   })
 
   it('lists pending approvals oldest-first with deep links into the queue', async () => {
@@ -112,12 +112,12 @@ describe('HomePage', () => {
     ])
 
     const oldGate = links[0] as HTMLElement
-    expect(within(oldGate).getByText('prompt_review')).toHaveClass('topbar-meta-chip', 'warning')
+    expect(within(oldGate).getByText('Review prompts')).toHaveClass('topbar-meta-chip', 'warning')
     expect(within(oldGate).getByText('Oldest gated run')).toBeInTheDocument()
     expect(within(oldGate).getByText('test_planning')).toBeInTheDocument()
 
     const newGate = links[1] as HTMLElement
-    expect(within(newGate).getByText('phase_review')).toHaveClass('topbar-meta-chip', 'warning')
+    expect(within(newGate).getByText('Review phase results')).toHaveClass('topbar-meta-chip', 'warning')
     expect(within(newGate).getByText('Newest gated run')).toBeInTheDocument()
   })
 
@@ -163,7 +163,7 @@ describe('HomePage', () => {
 
     const row = await screen.findByTestId('home-recent-run-idle')
     expect(within(row).getByText('Completed smoke run')).toBeInTheDocument()
-    expect(within(row).getByText('idle')).toHaveClass('status-badge', 'success')
+    expect(within(row).getByText('Execution stopped')).toHaveClass('status-badge', 'success')
 
     await user.click(within(row).getByRole('link', { name: 'Completed smoke run' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-idle'))
@@ -315,7 +315,7 @@ describe('HomePage', () => {
     const recent = await screen.findByTestId('home-recent')
     expect(within(recent).getByText('Broken nightly run')).toBeInTheDocument()
     expect(within(recent).getByText('Checkout latency soak')).toBeInTheDocument()
-    expect(within(recent).getByText('error')).toHaveClass('status-badge', 'danger')
-    expect(within(recent).getByText('busy')).toHaveClass('status-badge', 'accent')
+    expect(within(recent).getByText('Orchestration failed')).toHaveClass('status-badge', 'danger')
+    expect(within(recent).getByText('Running')).toHaveClass('status-badge', 'accent')
   })
 })

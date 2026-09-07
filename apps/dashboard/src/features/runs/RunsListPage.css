@@ -265,3 +265,10 @@
 .runs-empty-cta {
   text-decoration: none;
 }
+
+.run-cards { display: grid; gap: 12px; }
+.run-card { padding: 16px; overflow-wrap: anywhere; }
+.run-card p { margin: 8px 0; }
+.run-card details { margin: 12px 0; }
+.run-card summary { cursor: pointer; padding: 8px 0; }
+.run-card dd { margin-left: 0; }

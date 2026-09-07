@@ -100,6 +100,8 @@ export function pipelinePhaseVisual(status: string | null | undefined): Pipeline
 }
 
 export function pipelineStatusLabel(status: string | null | undefined): string {
+  if (status === 'none') return 'Not selected'
+  if (status === 'aborted') return 'Aborted'
   switch (pipelinePhaseVisual(status)) {
     case 'prompt_review':
       return 'Prompt Review'
@@ -123,36 +125,45 @@ export function isPipelinePhaseComplete(status: string | null | undefined): bool
   return ['succeeded', 'failed', 'aborted', 'skipped'].includes(status ?? '')
 }
 
-export type PipelineVerdict = 'GO' | 'Conditional' | 'NO-GO' | '—'
+/** Execution success must never be inferred from orchestration completion. */
+export function executionResultLabel(run: { execution_result?: string | null }): string {
+  return run.execution_result === 'passed' ? 'Passed' : run.execution_result === 'failed' ? 'Failed' : 'Not available'
+}
 
-/**
- * Conservative fleet verdict derived from the outcomes the list facade
- * actually exposes. Thread `idle` only means execution stopped; it is GO only
- * when at least one selected phase completed successfully (or was skipped)
- * and no phase failed, aborted, or remained in flight.
- */
-export function pipelineVerdict(
-  run: Pick<PipelineSummary, 'phase_strip' | 'thread_status'>,
-): PipelineVerdict {
-  const statuses = run.phase_strip.map((entry) => entry.status)
-  if (statuses.some((status) => status === 'failed' || status === 'aborted')) return 'NO-GO'
-  switch (run.thread_status) {
-    case 'interrupted':
-      return 'Conditional'
-    case 'error':
-      return 'NO-GO'
-    case 'idle':
-      if (
-        statuses.some((status) =>
-          ['running', 'awaiting_prompt_review', 'awaiting_output_review'].includes(status),
-        )
-      ) {
-        return 'NO-GO'
-      }
-      return statuses.some((status) => status === 'succeeded' || status === 'skipped') ? 'GO' : '—'
-    default:
-      return '—'
-  }
+export function orchestrationStatusLabel(status: string | null | undefined): string {
+  return ({ busy: 'Running', interrupted: 'Awaiting approval', idle: 'Execution stopped', error: 'Orchestration failed' } as Record<string, string>)[status ?? ''] ?? 'Unknown'
+}
+
+export function gateLabel(kind: string | null | undefined): string {
+  return ({ prompt_review: 'Review prompts', phase_review: 'Review phase results', engine_provision_retry: 'Recover engine provisioning' } as Record<string, string>)[kind ?? ''] ?? 'Review required'
+}
+
+/** Shared snapshot projection for every detail/compare phase display. */
+export function normalizedPhases(
+  state: PipelineState,
+  fallback: PipelineSummary['phase_strip'] = [],
+  useFallback = false,
+) {
+  const plan = state.phases_plan?.every(isPhaseName) ? state.phases_plan : undefined
+  return PHASE_NAMES.map((phase) => {
+    if (plan && !plan.includes(phase)) return { phase, status: 'none', attempt: undefined }
+    const entry = state.phase_results?.[phase]
+    // useThreadState validates fields independently after schema drift. An
+    // unrelated invalid field must not replace a valid status with stale data.
+    if (entry?.status) return { phase, status: entry.status, attempt: entry.attempt }
+    const previous = useFallback ? fallback.find((item) => item.phase === phase) : undefined
+    return {
+      phase,
+      status: plan?.includes(phase) && (!previous?.status || previous.status === 'none')
+        ? 'pending' : previous?.status ?? 'none',
+      attempt: previous?.attempt ?? undefined,
+    }
+  })
+}
+
+export function phaseProgress(strip: PipelineSummary['phase_strip']) {
+  const included = strip.filter((entry) => entry.status !== 'none')
+  return { completed: included.filter((entry) => isPipelinePhaseComplete(entry.status)).length, total: included.length }
 }
 
 /** CSS color custom property per tone (status dots use currentColor). */
@@ -198,5 +209,5 @@ export function formatTimestamp(iso: string | null | undefined): string {
 
 /** Human label for a phase status ("awaiting_prompt_review" -> "awaiting prompt review"). */
 export function statusLabel(status: string | null | undefined): string {
-  return (status ?? 'pending').replaceAll('_', ' ')
+  return status === 'none' ? 'Not selected' : (status ?? 'pending').replaceAll('_', ' ')
 }

@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { Link, useSearchParams } from 'react-router'
+import { useSearchParams } from 'react-router'
 
 import type {
   ApprovalRecord,
@@ -13,6 +13,7 @@ import type {
 } from '@apex/pipeline-events'
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
+import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 import type { GateInstance, GateMachineState } from '@/hitl/gateMachine'
 
@@ -92,15 +93,6 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
-      {!promptGateEditorActive && (
-        <PromptReviewSection
-          key={JSON.stringify([threadId, phase])}
-          threadId={threadId}
-          phase={phase}
-          state={state}
-          appId={appId ?? null}
-        />
-      )}
       <div className="workspace-tabs" role="tablist" aria-label="Phase workspace tabs">
         {TABS.map((candidate) => (
           <button
@@ -134,6 +126,19 @@ export function PhaseWorkspace({
         </div>
       )}
       {tab === 'reasoning' && <ReasoningTab phase={phase} entry={entry} state={state} />}
+      {!promptGateEditorActive && (
+        <details className="prompt-configuration">
+          <summary>Prompt configuration</summary>
+        <PromptReviewSection
+          key={JSON.stringify([threadId, phase])}
+          threadId={threadId}
+          phase={phase}
+          state={state}
+          appId={appId ?? null}
+        />
+        </details>
+      )}
+
     </section>
   )
 }
@@ -232,7 +237,7 @@ function ArtifactCards({
       <h3 className="workspace-section-title">Artifacts</h3>
       <div className="artifact-card-grid">
         {rows.map((artifact) => (
-          <Link
+          <ArtifactLink
             key={artifact.id}
             className="artifact-card"
             to={artifactViewerPath(threadId, artifact.id)}
@@ -241,7 +246,7 @@ function ArtifactCards({
             <strong>{artifact.name ?? artifact.id}</strong>
             <span className="artifact-card-meta">{artifact.media_type ?? '—'}</span>
             <span className="artifact-card-summary">{artifact.summary ?? 'Open artifact'}</span>
-          </Link>
+          </ArtifactLink>
         ))}
       </div>
     </>

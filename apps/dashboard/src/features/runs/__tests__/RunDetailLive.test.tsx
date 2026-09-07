@@ -53,7 +53,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=output`])
 
     const chip = await screen.findByTestId('live-status-chip')
-    expect(chip).toHaveTextContent('live')
+    expect(chip).toHaveTextContent('Live updates connected')
     expect(chip).toHaveClass('live')
   })
 
@@ -115,7 +115,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     server.use(pipelineDetailHandler()) // no interrupts in the snapshot yet
     renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting?tab=details`])
 
-    expect(await screen.findByTestId('live-status-chip')).toHaveTextContent('live')
+    expect(await screen.findByTestId('live-status-chip')).toHaveTextContent('Live updates connected')
     expect(screen.queryByTestId('gate-hint')).not.toBeInTheDocument()
     expect(screen.queryByTestId('gate-slim-banner')).not.toBeInTheDocument()
   })
@@ -132,7 +132,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const banner = await screen.findByTestId('gate-slim-banner')
-    expect(banner).toHaveTextContent('Phase review gate open on Reporting')
+    expect(banner).toHaveTextContent('Review phase results gate open on Reporting')
     expect(screen.queryByTestId('gate-hint')).not.toBeInTheDocument()
   })
 })

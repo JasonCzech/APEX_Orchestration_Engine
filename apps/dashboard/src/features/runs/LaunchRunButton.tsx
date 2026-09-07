@@ -121,7 +121,7 @@ export function LaunchRunButton() {
     <RequireRole role="operator">
       <>
       <button type="button" className="btn btn-primary btn-sm" onClick={() => setOpen(true)}>
-        New run
+        New Test
       </button>
       {open && (
         <Dialog

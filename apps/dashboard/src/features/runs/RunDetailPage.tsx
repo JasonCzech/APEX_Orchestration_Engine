@@ -3,6 +3,7 @@ import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-route
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
+import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { RequireRole } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
@@ -17,7 +18,7 @@ import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
-import { isPhaseName, isPipelinePhaseComplete, statusVisual, targetPhaseFor } from './runDisplay'
+import { isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -46,6 +47,7 @@ export function RunDetailPage() {
 }
 
 function RunDetailContent({ threadId }: { threadId: string }) {
+  const compact = useCompactLayout()
   const { phase: phaseParam } = useParams()
   const { search } = useLocation()
   const navigate = useNavigate()
@@ -82,9 +84,8 @@ function RunDetailContent({ threadId }: { threadId: string }) {
   }
 
   const { detail, state, stateParseFailed } = query.data
-  const completedCount = PHASE_NAMES.filter((phase) =>
-    isPipelinePhaseComplete(state.phase_results?.[phase]?.status),
-  ).length
+  const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed)
+  const progress = phaseProgress(phaseStrip)
 
   if (!phaseParam) {
     // Preserve ?tab= etc. so launch deep links (/runs/:id?tab=activity) survive.
@@ -138,13 +139,13 @@ function RunDetailContent({ threadId }: { threadId: string }) {
       )}
       <header className="run-detail-header">
         <h2 className="run-detail-title">{detail.title ?? detail.thread_id}</h2>
-        <span className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
-          {detail.thread_status ?? 'unknown'}
+        <span role="status" aria-live="polite" className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
+          {orchestrationStatusLabel(detail.thread_status)}
         </span>
         {stateParseFailed && (
           <span
             className="topbar-meta-chip warning"
-            title="The state mirror schema rejected this thread's values; rendering the raw snapshot."
+            title="Some state fields could not be read. Valid fields are retained; unavailable phase statuses use summary data."
           >
             schema drift
           </span>
@@ -224,19 +225,22 @@ function RunDetailContent({ threadId }: { threadId: string }) {
           </div>
           <div className="run-pipeline-counter-group">
             <span className={`run-pipeline-counter${detail.thread_status === 'busy' ? ' live' : ''}`}>
-              {completedCount}/{PHASE_NAMES.length}
+              {progress.completed}/{progress.total}
             </span>
             <LiveStatusChip status={live.stream.status} />
           </div>
         </div>
+        <details key={compact ? 'compact' : 'wide'} className="run-phase-navigation" open={!compact}>
+        <summary>Phase navigation · {progress.completed}/{progress.total}</summary>
         <PhaseStrip
-          strip={detail.phase_strip}
+          strip={phaseStrip}
           size="lg"
           currentPhase={phaseParam}
           onSelect={(phase) => {
             void navigate({ pathname: `/runs/${threadId}/phases/${phase}`, search })
           }}
         />
+        </details>
       </section>
       <div className="run-detail-grid">
         <PhaseWorkspace

@@ -278,7 +278,7 @@ describe('WorkItemsStep', () => {
     await act(async () => releaseLookup())
     const selectedWorkItems = await screen.findByTestId('selected-work-items')
     expect(within(selectedWorkItems).getByText('PHX-241')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Review Test' })).toBeEnabled()
     await flushAndUnmountWizard(rendered)
   })
 })

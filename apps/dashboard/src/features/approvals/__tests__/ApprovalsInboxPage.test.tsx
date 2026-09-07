@@ -97,12 +97,12 @@ describe('ApprovalsInboxPage', () => {
     expect(rows[1]).toHaveAttribute('id', 'approvals-row-run-new-2')
 
     const oldRow = within(rows[0] as HTMLElement)
-    expect(oldRow.getByText('prompt_review')).toHaveClass('topbar-meta-chip', 'accent')
+    expect(oldRow.getByText('Review prompts')).toHaveClass('topbar-meta-chip', 'accent')
     expect(oldRow.getByText('test_planning')).toBeInTheDocument()
     expect(oldRow.getByText('proj-alpha')).toBeInTheDocument()
     // > 15m old -> amber pulsing age
     expect(oldRow.getByText(/ago$/)).toHaveClass('approvals-age', 'stale')
-    expect(within(rows[1] as HTMLElement).getByText('phase_review')).toHaveClass(
+    expect(within(rows[1] as HTMLElement).getByText('Review phase results')).toHaveClass(
       'topbar-meta-chip',
       'info',
     )

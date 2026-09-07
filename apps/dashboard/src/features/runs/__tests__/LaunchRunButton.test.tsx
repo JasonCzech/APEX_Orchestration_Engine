@@ -57,7 +57,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     const router = renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     const dialog = screen.getByRole('dialog', { name: 'Launch pipeline run' })
     expect(dialog).toBeInTheDocument()
 
@@ -89,7 +89,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     const router = renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Doomed run')
     await user.type(screen.getByLabelText('Request'), 'This will fail')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -118,7 +118,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Retryable run')
     await user.type(screen.getByLabelText('Request'), 'Retry without duplication')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -147,7 +147,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Original run')
     await user.type(screen.getByLabelText('Request'), 'Original request')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -178,7 +178,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Reverted run')
     await user.type(screen.getByLabelText('Request'), 'Original request')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -212,14 +212,14 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Reopened run')
     await user.type(screen.getByLabelText('Request'), 'Same request')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
     await screen.findByRole('alert')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Reopened run')
     await user.type(screen.getByLabelText('Request'), 'Same request')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -246,7 +246,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Reloaded run')
     await user.type(screen.getByLabelText('Request'), 'Same request after reload')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -254,7 +254,7 @@ describe('LaunchRunButton', () => {
     cleanup()
 
     renderButton()
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Reloaded run')
     await user.type(screen.getByLabelText('Request'), 'Same request after reload')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -286,7 +286,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     const router = renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Locked run')
     await user.type(screen.getByLabelText('Request'), 'Do not mutate in flight')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -324,7 +324,7 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     const router = renderButton()
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'Old-session run')
     await user.type(screen.getByLabelText('Request'), 'Do not navigate after identity changes')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
@@ -355,14 +355,14 @@ describe('LaunchRunButton', () => {
     const user = userEvent.setup()
     const router = renderButton({ persistent: true })
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.type(screen.getByLabelText('Title'), 'First run')
     await user.type(screen.getByLabelText('Request'), 'First request')
     await user.type(screen.getByLabelText('Application (optional)'), 'app-one')
     await user.click(screen.getByRole('button', { name: 'Launch run' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/thread-1'))
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     expect(screen.getByLabelText('Title')).toHaveValue('')
     expect(screen.getByLabelText('Request')).toHaveValue('')
     expect(screen.getByLabelText('Project')).toHaveValue('demo')
@@ -401,7 +401,7 @@ describe('LaunchRunButton', () => {
       ]),
     })
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     await user.selectOptions(
       screen.getByLabelText('Project / application scope'),
       JSON.stringify(['proj-b', 'app-checkout']),
@@ -439,7 +439,7 @@ describe('LaunchRunButton', () => {
       ]),
     })
 
-    await user.click(screen.getByRole('button', { name: 'New run' }))
+    await user.click(screen.getByRole('button', { name: 'New Test' }))
     expect(screen.getByLabelText('Project / application scope')).toHaveValue(
       JSON.stringify(['proj-wide', null]),
     )
@@ -455,6 +455,6 @@ describe('LaunchRunButton', () => {
   it('hides the entry point when a non-global operator has no usable scope', () => {
     renderButton({ authState: authenticatedState('operator', 'No Scope Ops', []) })
 
-    expect(screen.queryByRole('button', { name: 'New run' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New Test' })).not.toBeInTheDocument()
   })
 })

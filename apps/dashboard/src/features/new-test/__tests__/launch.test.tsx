@@ -61,7 +61,7 @@ describe('wizard launch', () => {
       screen.getByTestId('launch-payload-json').textContent ?? '{}',
     ) as Record<string, unknown>
 
-    await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
+    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
 
     await waitFor(() => expect(launchBodies).toHaveLength(1))
     expect(launchBodies[0]).toEqual({
@@ -274,12 +274,12 @@ describe('wizard launch', () => {
 
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
+    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
 
     expect(await screen.findByText('Launch failed: multitask reject')).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs/new')
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled() // retryable
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeEnabled() // retryable
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
     unmount()
@@ -310,7 +310,7 @@ describe('wizard launch', () => {
 
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
+    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
     await screen.findByText('Launch failed: ambiguous outage')
 
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
@@ -319,7 +319,7 @@ describe('wizard launch', () => {
     await user.clear(request)
     await user.type(request, 'Soak the checkout flow for 1h')
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Launch Pipeline' }))
+    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
 
     await waitFor(() => expect(keys).toHaveLength(2))
     expect(keys[1]).toBe(keys[0])

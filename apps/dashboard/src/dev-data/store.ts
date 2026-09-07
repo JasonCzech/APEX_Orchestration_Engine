@@ -1142,6 +1142,16 @@ export class DevDataStore {
       const done = emit('execution-done', { type: 'phase_status', phase: 'execution', status: 'succeeded', attempt: 1 })
       if (done) yield done
       this.setPhaseState(detail, 'execution', 'awaiting_output_review', 1, 'OMS p95 exceeded SLA while orchestration completed successfully.')
+      const execution = (detail.values as PipelineState).phase_results?.execution
+      if (execution) {
+        execution.test_summary = {
+          engine: 'apexload',
+          passed: false,
+          kpis: { tps_avg: 82.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300 },
+          sla_breaches: ['oms_create_order_p95_ms', 'error_rate'],
+          notes: 'The simulated test failed its SLA checks.',
+        }
+      }
       detail.current_phase = 'execution'
       detail.thread_status = 'interrupted'
       this.addPhaseGate(detail, 'execution')
@@ -1354,7 +1364,7 @@ export class DevDataStore {
     }
     if (method === 'GET' && parts.length === 4) {
       const detail = this.pipelineDetails.get(threadId)
-      return detail ? jsonResponse(detail) : problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
+      return detail ? jsonResponse(this.syncSummary(detail)) : problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
     }
     if (method === 'POST' && parts[4] === 'abort') {
       const detail = this.pipelineDetails.get(threadId)
@@ -2191,6 +2201,7 @@ export class DevDataStore {
           result.test_summary.notes = 'Comparable eSIM baseline passed all release thresholds.'
         }
       }
+      if (status === 'idle' && state.phase_results) state.phase_results.postmortem = { status: 'succeeded', attempt: 1, summary: 'Test review completed. See execution results and reports for release risks.' }
       if (id === 'run-aborted') state.run_aborted = true
       if (gate === 'prompt') this.addPromptGate(detail)
       if (gate === 'phase') this.addPhaseGate(detail)
@@ -2474,9 +2485,21 @@ export class DevDataStore {
     }
   }
 
+  private syncSummary(detail: PipelineDetail): PipelineDetail {
+    const state = detail.values as PipelineState
+    detail.phase_strip = PHASE_NAMES.map((phase) => ({
+      phase,
+      status: state.phases_plan && !state.phases_plan.includes(phase) ? 'none' : state.phase_results?.[phase]?.status ?? 'pending',
+      attempt: state.phase_results?.[phase]?.attempt,
+    }))
+    const passed = state.phase_results?.execution?.test_summary?.passed
+    detail.execution_result = passed === true ? 'passed' : passed === false ? 'failed' : null
+    return detail
+  }
+
   private toSummary(detail: PipelineDetail): PipelineSummary {
-    const { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate } = detail
-    return { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate }
+    const { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate, execution_result } = this.syncSummary(detail)
+    return { thread_id, title, project_id, app_id, thread_status, current_phase, phase_strip, engine, created_at, updated_at, pending_gate, execution_result }
   }
 
   private agentAnalytics(params: URLSearchParams): AgentAnalytics {

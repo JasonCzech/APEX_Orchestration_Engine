@@ -1,0 +1,84 @@
+/* Shared text and control colors checked by scripts/check_dashboard_contrast.py. */
+:root {
+  --text-muted: #7b899c;
+  --accent: #a580f8;
+  --danger: #f15e5e;
+  --info: #5190f7;
+  --accent-contrast: #000000;
+  --danger-contrast: #000000;
+  --focus-ring: #a580f8;
+}
+:root[data-theme='light'] {
+  --text-muted: #656f7d;
+  --success: #047653;
+  --warning: #9e5704;
+  --danger: #c62222;
+  --info: #235edf;
+  --warning-text: #ab4f09;
+  --accent-contrast: #ffffff;
+  --danger-contrast: #ffffff;
+  --focus-ring: #4f46e5;
+}
+:root[data-theme='solarized-dark'] {
+  --bg-elevated: #073642;
+  --text-secondary: #a5b3b4;
+  --text-muted: #99aaaa;
+  --accent: #70b8df;
+  --accent-hover: #75c7c0;
+  --success: #bbc65c;
+  --warning: #dfb855;
+  --danger: #f68b87;
+  --info: #70b8df;
+  --success-text: #bbc65c;
+  --warning-text: #dfb855;
+  --danger-text: #f68b87;
+  --info-text: #70b8df;
+  --accent-contrast: #000000;
+  --danger-contrast: #000000;
+  --focus-ring: #70b8df;
+}
+:root[data-theme='solarized-light'] {
+  --text-muted: #546a70;
+  --accent: #596700;
+  --accent-hover: #5a6700;
+  --success: #586500;
+  --warning: #795c00;
+  --danger: #ae2825;
+  --info: #506167;
+  --success-text: #586500;
+  --warning-text: #795c00;
+  --danger-text: #ae2825;
+  --info-text: #506167;
+  --accent-contrast: #ffffff;
+  --danger-contrast: #ffffff;
+  --focus-ring: #596700;
+}
+:root[data-theme='monokai-dimmed'] {
+  --text-muted: #a9aaa5;
+  --accent: #ff97b0;
+  --accent-hover: #ff96b0;
+  --danger: #fca77e;
+  --accent-contrast: #000000;
+  --danger-contrast: #000000;
+  --focus-ring: #ff97b0;
+}
+:root[data-theme='apex-light'] {
+  --text-muted: #666e79;
+  --accent: #00769d;
+  --accent-hover: #0075a5;
+  --success: #0b7c4f;
+  --warning: #976007;
+  --danger: #ca313f;
+  --info: #00769d;
+  --warning-text: #9b6008;
+  --info-text: #0075a5;
+  --accent-contrast: #ffffff;
+  --danger-contrast: #ffffff;
+  --focus-ring: #00769d;
+}
+
+.btn-primary { color: var(--accent-contrast); }
+.btn-danger { color: var(--danger-contrast); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}

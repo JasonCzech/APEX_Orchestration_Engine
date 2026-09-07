@@ -307,3 +307,5 @@
   text-decoration: none;
   white-space: nowrap;
 }
+
+.compare-difference { display: block; margin-top: 6px; font-size: 12px; color: var(--text-secondary); white-space: normal; }

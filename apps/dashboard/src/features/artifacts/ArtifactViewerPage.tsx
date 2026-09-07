@@ -1,4 +1,7 @@
-import { Link, useParams } from 'react-router'
+import { useState } from 'react'
+import Markdown from 'react-markdown'
+import { artifactReturnPath } from './ArtifactLink'
+import { Link, useLocation, useParams } from 'react-router'
 
 import { useQuery } from '@tanstack/react-query'
 
@@ -74,6 +77,11 @@ function downloadBlob(blob: Blob, filename: string) {
  */
 export function ArtifactViewerPage() {
   const { threadId = '', name = '' } = useParams()
+  const location = useLocation()
+  const returnPath = artifactReturnPath(location.state?.artifactReturnTo, threadId)
+  const returnLabel = returnPath.startsWith('/approvals') ? 'Back to approval' : returnPath.includes('/phases/') ? 'Back to phase' : 'Back to run'
+  const [sourceFor, setSourceFor] = useState<string | null>(null)
+  const showingSource = sourceFor === name
   const threadQuery = useThreadState(threadId)
 
   const ref = threadQuery.data ? findArtifact(threadQuery.data.state, name) : undefined
@@ -129,8 +137,8 @@ export function ArtifactViewerPage() {
       <div className="dash-empty">
         <h2>Artifact not found</h2>
         <p>No artifact with id “{name}” exists in this run’s state.</p>
-        <Link className="btn btn-secondary btn-sm" to={`/runs/${threadId}`}>
-          Back to run
+        <Link className="btn btn-secondary btn-sm" to={returnPath}>
+          {returnLabel}
         </Link>
       </div>
     )
@@ -152,8 +160,8 @@ export function ArtifactViewerPage() {
         <span className="meta">{loaded?.mediaType || ref.media_type || 'unknown type'}</span>
         {loaded && <span className="meta">{formatBytes(loaded.size)}</span>}
         <span className="spacer" />
-        <Link className="btn btn-ghost btn-sm" to={`/runs/${threadId}`}>
-          Back to run
+        <Link className="btn btn-ghost btn-sm" to={returnPath}>
+          {returnLabel}
         </Link>
         <button
           type="button"
@@ -199,7 +207,13 @@ export function ArtifactViewerPage() {
         </div>
       ) : loaded?.kind === 'text' ? (
         <div className="artifact-viewer-body">
-          <CodeViewer value={loaded.text ?? ''} ariaLabel={`${ref.name ?? ref.id} contents`} />
+          {loaded.mediaType.split(';')[0]?.trim().toLowerCase() === 'text/markdown' ? <>
+            <button className="btn btn-secondary" aria-pressed={showingSource} onClick={() => setSourceFor(showingSource ? null : name)}>{showingSource ? 'Rendered report' : 'Source'}</button>
+            {showingSource ? <CodeViewer value={loaded.text ?? ''} ariaLabel={`${ref.name ?? ref.id} source`} /> :
+              <article className="markdown-report" aria-label={`${ref.name ?? ref.id} contents`}>
+                <Markdown skipHtml urlTransform={(url) => /^(https?:|mailto:)/i.test(url) || url.startsWith('#') ? url : ''} components={{ img: ({ alt }) => <span>{alt ?? 'Image'}</span> }}>{loaded.text ?? ''}</Markdown>
+              </article>}
+          </> : <CodeViewer value={loaded.text ?? ''} ariaLabel={`${ref.name ?? ref.id} contents`} />}
         </div>
       ) : (
         <div

@@ -510,6 +510,22 @@ describe('WorkItemsPage', () => {
     expect(captured.at(-1)?.offset).toBe(950)
   })
 
+  it('keeps an unbound saved query active after resolution and clears its identity on a new route', async () => {
+    const execute = executeHandler([ITEM_PAYMENT], 1)
+    server.use(savedQueriesHandler([{ ...SAVED_OPEN, project_id: null, connection_id: null }]), execute.handler)
+    const user = userEvent.setup()
+    const { router } = renderConsole()
+    await user.selectOptions(await screen.findByLabelText('Saved queries'), SAVED_OPEN.id)
+    await screen.findByTestId('wi-row-PHX-101')
+    expect(screen.getByText(`${SAVED_OPEN.name} · Active query`)).toBeInTheDocument()
+    expect(screen.getByLabelText('Saved queries')).toHaveValue(SAVED_OPEN.id)
+    await user.type(screen.getByRole('textbox', { name: 'Provider query' }), ' AND priority = High')
+    expect(screen.getByText(`${SAVED_OPEN.name} · Modified query`)).toBeInTheDocument()
+    await act(async () => { await router.navigate('/work-items?provider=jira&query=project%20%3D%20OTHER') })
+    await waitFor(() => expect(screen.getByLabelText('Saved queries')).toHaveValue(''))
+    expect(screen.queryByText(`${SAVED_OPEN.name} · Modified query`)).not.toBeInTheDocument()
+  })
+
   it('runs a saved query on pick and saves the current query via the modal', async () => {
     const execute = executeHandler([ITEM_PAYMENT], 1)
     const create = createSavedQueryHandler()

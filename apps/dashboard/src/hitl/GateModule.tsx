@@ -56,11 +56,11 @@ function phaseLabel(phase: string): string {
 function gateKindLabel(kind: GateInstance['kind']): string {
   switch (kind) {
     case 'prompt_review':
-      return 'Prompt review'
+      return 'Review prompts'
     case 'phase_review':
-      return 'Phase review'
+      return 'Review phase results'
     case 'engine_provision_retry':
-      return 'Engine provisioning recovery'
+      return 'Recover engine provisioning'
     case 'engine_cleanup_retry':
       return 'Engine cleanup recovery'
     case 'engine_collection_retry':
@@ -98,7 +98,7 @@ export function GateModuleView({
   const kindLabel = gateKindLabel(gate.kind)
   const header = (
     <header className="gate-module-header">
-      <span className="kind-chip">{gate.kind}</span>
+      <details><summary>Technical details</summary><code>{gate.kind} · {gate.interrupt_id}</code></details>
       <h3 className="gate-module-title">
         {kindLabel} — {phaseLabel(gate.phase)}
       </h3>
@@ -207,6 +207,7 @@ export function GateModuleView({
       {payload?.kind === 'phase_review' && (
         <PhaseReviewPanel
           threadId={threadId}
+          returnTo={compact ? `/approvals/${encodeURIComponent(threadId)}/${encodeURIComponent(gate.interrupt_id)}` : undefined}
           payload={payload}
           draft={draft}
           disabled={disabled}

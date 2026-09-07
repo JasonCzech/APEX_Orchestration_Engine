@@ -28,6 +28,7 @@ import { useThreadState, type GateInterrupt } from '@/api/hooks/useThreadState'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
+import { gateLabel, isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
 import { GateModule } from '@/hitl/GateModule'
 
 import { ApprovalsQueue, gateKindTone, type QueueRow, type RowRemovalReason } from './ApprovalsQueue'
@@ -208,6 +209,7 @@ export function ApprovalsInboxPage() {
     }
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return
       if (isEditableTarget(event.target)) return
       if (event.key === '?') {
         event.preventDefault()
@@ -429,7 +431,7 @@ function GatePreview({
         </Link>
         {interrupt && (
           <span className={`topbar-meta-chip ${gateKindTone(interrupt.kind)}`}>
-            {interrupt.kind ?? 'review'} · {interrupt.phase ?? '?'}
+            {gateLabel(interrupt.kind)} · {isPhaseName(interrupt.phase) ? PHASE_LABELS[interrupt.phase] : 'Unknown phase'}
           </span>
         )}
         <span className="spacer" />

@@ -53,3 +53,7 @@
   min-height: 240px;
   animation: pulse 2s infinite;
 }
+
+.markdown-report { background: var(--bg-card); color: var(--text-primary); padding: 24px; line-height: 1.65; overflow-wrap: anywhere; }
+.markdown-report pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-report a { color: var(--accent); text-decoration: underline; }

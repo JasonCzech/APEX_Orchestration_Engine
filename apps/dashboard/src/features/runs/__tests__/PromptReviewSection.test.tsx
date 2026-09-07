@@ -73,16 +73,17 @@ function promptReviewHandlers(captured: { body?: unknown }) {
 }
 
 describe('PromptReviewSection', () => {
-  it('renders above workspace tabs and saves the full run-scoped draft', async () => {
+  it('renders after workspace tabs in a disclosure and saves the full run-scoped draft', async () => {
     const captured: { body?: unknown } = {}
     server.use(pipelineDetailHandler(), ...promptReviewHandlers(captured))
     const user = userEvent.setup()
     renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=details`])
 
+    await user.click(await screen.findByText('Prompt configuration'))
     const section = await screen.findByTestId('prompt-review-section')
     const workspaceTabs = screen.getByRole('tablist', { name: 'Phase workspace tabs' })
     expect(
-      section.compareDocumentPosition(workspaceTabs) & Node.DOCUMENT_POSITION_FOLLOWING,
+      section.compareDocumentPosition(workspaceTabs) & Node.DOCUMENT_POSITION_PRECEDING,
     ).toBeTruthy()
 
     const systemEditor = await within(section).findByLabelText('System Prompt')

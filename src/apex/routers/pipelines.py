@@ -211,6 +211,7 @@ class PipelineSummary(BaseModel):
     thread_status: str | None = None
     current_phase: str | None = None
     phase_strip: list[PhaseStripEntry]
+    execution_result: Literal["passed", "failed"] | None = None
     engine: PipelineEngineInfo | None = None
     created_at: str | None = None
     updated_at: str | None = None

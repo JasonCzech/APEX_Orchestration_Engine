@@ -75,14 +75,16 @@ describe('ConfigStep', () => {
     expect(hints).toHaveTextContent(
       'reporting requires execution earlier in this new run',
     )
-    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Review Test' }))
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeDisabled()
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
     await user.click(within(strip).getByRole('button', { name: 'execution' }))
     await waitFor(() =>
       expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument(),
     )
-    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Review Test' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
     rendered.unmount()

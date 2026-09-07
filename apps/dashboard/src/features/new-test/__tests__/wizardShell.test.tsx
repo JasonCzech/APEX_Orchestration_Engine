@@ -15,7 +15,7 @@ import {
 } from './wizardTestUtils'
 
 describe('NewRunWizard shell', () => {
-  it('renders each group as a horizontal tab and keeps Launch disabled until scope is valid', async () => {
+  it('renders each group as a horizontal tab and routes through review before launching', async () => {
     installWizardHandlers()
     const user = userEvent.setup()
     const rendered = renderWizard()
@@ -43,13 +43,17 @@ describe('NewRunWizard shell', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
 
-    const launch = screen.getByRole('button', { name: 'Launch Pipeline' })
-    expect(launch).toBeDisabled()
-    expect(screen.getAllByText('Scope: Title is required')).toHaveLength(2)
-    expect(screen.getAllByText('Scope: Request is required')).toHaveLength(2)
-
-    await fillScope(user, screen)
+    const launch = screen.getByRole('button', { name: 'Review Test' })
     expect(launch).toBeEnabled()
+    expect(screen.getAllByText('Scope: Title is required')).toHaveLength(1)
+    expect(screen.getAllByText('Scope: Request is required')).toHaveLength(1)
+
+    await user.click(launch)
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeDisabled()
+    await user.click(screen.getByRole('tab', { name: 'Scope' }))
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('button', { name: 'Review Test' }))
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeEnabled()
     await flushAndUnmountWizard(rendered)
   })
 

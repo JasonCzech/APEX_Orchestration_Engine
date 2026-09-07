@@ -9,6 +9,7 @@ import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { useTopbarContribution } from '@/components/layout/TopbarContributionProvider'
 import { ProblemCard } from '@/components/ProblemCard'
 import { useApprovalsInbox, type ApprovalItem } from '@/features/approvals/useApprovalsInbox'
+import { gateLabel, orchestrationStatusLabel } from '@/features/runs/runDisplay'
 import { formatRelative } from '@/utils/time'
 
 import {
@@ -19,8 +20,7 @@ import {
   avgDurationLabel,
   failedRuns,
   gateHref,
-  goVerdicts,
-  interruptedRuns,
+  passedTests,
   recentRuns,
   statusTone,
   totalRuns,
@@ -86,7 +86,7 @@ function ApprovalQueue({ gates }: { gates: ApprovalItem[] }) {
       {gates.map((gate) => (
         <li key={gate.thread_id}>
           <Link to={gateHref(gate.thread_id, gate.pending_gate.interrupt_id)} className="home-approval-row">
-            <span className="topbar-meta-chip warning">{gate.pending_gate.kind ?? 'review'}</span>
+            <span className="topbar-meta-chip warning">{gateLabel(gate.pending_gate.kind)}</span>
             <span className="home-approval-title">{gate.title}</span>
             <span className="home-approval-phase">{gate.pending_gate.phase ?? 'phase'}</span>
             <span className="home-approval-age">{gate.age}</span>
@@ -111,7 +111,7 @@ function RecentRunRow({ run }: { run: PipelineSummary }) {
       <td>{run.current_phase ?? '—'}</td>
       <td>
         <span className={`status-badge ${statusTone(run.thread_status)}`}>
-          {run.thread_status ?? 'unknown'}
+          {orchestrationStatusLabel(run.thread_status)}
         </span>
       </td>
       <td className="home-recent-time" title={run.updated_at ?? undefined}>
@@ -198,8 +198,9 @@ export function HomePage() {
 
   const usageRuns = usage.data?.runs
   const loaded = totalRuns(items)
-  const goCount = goVerdicts(items)
-  const conditionalCount = interruptedRuns(items)
+  const passedCount = passedTests(items)
+  const failedCount = items.filter((run) => run.execution_result === 'failed').length
+  const unknownCount = loaded - passedCount - failedCount
   const fleetScopeHint =
     loaded >= HOME_FLEET_LIMIT
       ? `latest ${HOME_FLEET_LIMIT}; fleet total unavailable`
@@ -207,15 +208,43 @@ export function HomePage() {
 
   return (
     <section className="home-page animate-enter">
+      <section className="glass-panel home-approval-panel" aria-label="Awaiting HITL Approval">
+        <div className="home-section-head">
+          <h3 className="home-section-title">Awaiting HITL Approval</h3>
+          <Link to="/approvals" className="home-view-all">
+            Open queue
+          </Link>
+        </div>
+        {inbox.isLoading ? (
+          <div role="status" aria-busy="true">
+            Loading pending approvals…
+          </div>
+        ) : inbox.error ? (
+          <QueryErrorNotice
+            title="Approvals unavailable"
+            error={inbox.error}
+            onRetry={inbox.refetch}
+          />
+        ) : (
+          <>
+            {inbox.refreshError && (
+              <CachedDataWarning error={inbox.refreshError} onRetry={inbox.refetch} />
+            )}
+            <ApprovalQueue gates={gates} />
+          </>
+        )}
+      </section>
+
+
       <section className="home-metrics" aria-label="Key metrics">
         <MetricCard label="Runs Loaded" value={loaded} hint={fleetScopeHint} />
         <MetricCard label="Active" value={active.length} tone="warning" hint="in loaded runs" />
         <MetricCard label="Failures" value={failures.length} tone="danger" hint="in loaded runs" />
         <MetricCard
-          label="GO Verdicts"
-          value={goCount}
+          label="Tests Passed"
+          value={passedCount}
           tone="success"
-          hint="successful outcomes loaded"
+          hint="recorded test results"
         />
         <MetricCard
           label="Avg Duration"
@@ -223,7 +252,6 @@ export function HomePage() {
           tone="results"
           hint="loaded runs"
         />
-        <MetricCard label="Tickets" value="—" hint="tracker count not exposed yet" />
       </section>
 
       <section className="home-signal-grid">
@@ -256,48 +284,21 @@ export function HomePage() {
 
         <article className="glass-panel home-signal-card">
           <div className="home-section-head">
-            <h3 className="home-section-title">Release Signal</h3>
-            <span className="home-signal-caption">loaded fleet snapshot proxy</span>
+            <h3 className="home-section-title">Test Results</h3>
+            <span className="home-signal-caption">loaded runs only</span>
           </div>
           <div className="home-release-badges">
-            <span className="topbar-meta-chip success">GO · {goCount}</span>
-            <span className="topbar-meta-chip warning">Conditional · {conditionalCount}</span>
-            <span className="topbar-meta-chip danger">NO-GO · {failures.length}</span>
+            <span className="topbar-meta-chip success">Passed · {passedCount}</span>
+            <span className="topbar-meta-chip warning">Not available · {unknownCount}</span>
+            <span className="topbar-meta-chip danger">Failed · {failedCount}</span>
           </div>
           <p className="home-release-note">
-            Verdict API fields and fleet totals are not exposed in the current list endpoint, so
-            this panel derives a conservative signal from phase outcomes in up to the latest{' '}
-            {HOME_FLEET_LIMIT} loaded runs.
+            Recorded execution outcomes in up to the latest {HOME_FLEET_LIMIT} loaded runs.
+            These results describe test thresholds, not release certification.
           </p>
         </article>
       </section>
 
-      <section className="glass-panel home-approval-panel" aria-label="Awaiting HITL Approval">
-        <div className="home-section-head">
-          <h3 className="home-section-title">Awaiting HITL Approval</h3>
-          <Link to="/approvals" className="home-view-all">
-            Open queue
-          </Link>
-        </div>
-        {inbox.isLoading ? (
-          <div role="status" aria-busy="true">
-            Loading pending approvals…
-          </div>
-        ) : inbox.error ? (
-          <QueryErrorNotice
-            title="Approvals unavailable"
-            error={inbox.error}
-            onRetry={inbox.refetch}
-          />
-        ) : (
-          <>
-            {inbox.refreshError && (
-              <CachedDataWarning error={inbox.refreshError} onRetry={inbox.refetch} />
-            )}
-            <ApprovalQueue gates={gates} />
-          </>
-        )}
-      </section>
 
       <section className="glass-panel home-recent" aria-label="Recent runs" data-testid="home-recent">
         <div className="home-section-head">

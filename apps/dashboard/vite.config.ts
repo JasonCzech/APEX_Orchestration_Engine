@@ -44,6 +44,9 @@ export default defineConfig(() => {
             const normalizedId = id.replaceAll('\\', '/')
             if (!normalizedId.includes('node_modules')) return undefined
             if (normalizedId.includes('/@langchain/')) return 'vendor-langgraph'
+            // Keep report parsing out of the dashboard's initial shared bundle.
+            if (/\/(?:react-markdown|remark-[^/]+|micromark[^/]*|mdast-[^/]+|hast-[^/]+|unist-[^/]+|unified|vfile[^/]*)\//.test(normalizedId))
+              return 'vendor-markdown'
             if (
               normalizedId.includes('/@codemirror/') ||
               normalizedId.includes('/@uiw/') ||

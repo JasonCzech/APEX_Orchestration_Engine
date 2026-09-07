@@ -3,7 +3,7 @@
  * view, artifact chips (linking into the run's artifact viewer), warning
  * cards, and the DialogueThread (dialogue_tail + discuss composer).
  */
-import { Link } from 'react-router'
+import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 
 import type { PhaseReviewPayload } from '@apex/pipeline-events'
 
@@ -15,6 +15,7 @@ import type { GateDraft, GateDraftPatch } from './gateMachine'
 
 export function PhaseReviewPanel({
   threadId,
+  returnTo,
   payload,
   draft,
   disabled,
@@ -22,6 +23,7 @@ export function PhaseReviewPanel({
   onEdit,
 }: {
   threadId: string
+  returnTo?: string
   payload: PhaseReviewPayload
   draft: GateDraft
   disabled: boolean
@@ -78,14 +80,15 @@ export function PhaseReviewPanel({
             <div className="gate-chip-row">
               {payload.artifacts.map((artifact, index) =>
                 artifact.id ? (
-                  <Link
+                  <ArtifactLink
+                    returnTo={returnTo}
                     key={artifact.id}
                     className="gate-artifact-chip"
                     to={artifactViewerPath(threadId, artifact.id)}
                   >
                     <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>
                     {artifact.name ?? artifact.id}
-                  </Link>
+                  </ArtifactLink>
                 ) : (
                   <span key={index} className="gate-artifact-chip">
                     <span className="kind-chip">{artifact.kind ?? 'artifact'}</span>

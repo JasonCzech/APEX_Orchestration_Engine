@@ -713,3 +713,5 @@
   min-width: 0;
   padding: 0;
 }
+
+.review-reference-id { display: block; color: var(--text-secondary); overflow-wrap: anywhere; }

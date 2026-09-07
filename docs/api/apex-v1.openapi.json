@@ -3729,6 +3729,21 @@
               }
             ]
           },
+          "execution_result": {
+            "anyOf": [
+              {
+                "enum": [
+                  "passed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Result"
+          },
           "interrupts": {
             "items": {
               "$ref": "#/components/schemas/GateInterrupt"
@@ -3928,6 +3943,21 @@
                 "type": "null"
               }
             ]
+          },
+          "execution_result": {
+            "anyOf": [
+              {
+                "enum": [
+                  "passed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Result"
           },
           "pending_gate": {
             "anyOf": [

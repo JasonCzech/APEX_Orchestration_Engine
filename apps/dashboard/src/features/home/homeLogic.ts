@@ -8,7 +8,6 @@
  * exactly one pipelines request beyond what the shell already polls.
  */
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
-import { pipelineVerdict } from '@/features/runs/runDisplay'
 
 /** One-page fleet scan — enough headroom for the grid/table/failure slices. */
 export const HOME_FLEET_LIMIT = 50
@@ -44,13 +43,13 @@ export function activeRuns(items: PipelineSummary[]): PipelineSummary[] {
     .sort(byUpdatedDesc)
 }
 
-/** Recent conservative NO-GO threads for the attention rail and metrics. */
+/** Recent failed tests or orchestration errors for the attention rail and metrics. */
 export function failedRuns(
   items: PipelineSummary[],
   limit: number = ATTENTION_FAILURES_LIMIT,
 ): PipelineSummary[] {
   return items
-    .filter((run) => pipelineVerdict(run) === 'NO-GO')
+    .filter((run) => run.execution_result === 'failed' || run.thread_status === 'error')
     .sort(byUpdatedDesc)
     .slice(0, limit)
 }
@@ -96,8 +95,8 @@ export function totalRuns(items: PipelineSummary[]): number {
   return items.length
 }
 
-export function goVerdicts(items: PipelineSummary[]): number {
-  return items.filter((run) => pipelineVerdict(run) === 'GO').length
+export function passedTests(items: PipelineSummary[]): number {
+  return items.filter((run) => run.execution_result === 'passed').length
 }
 
 export function interruptedRuns(items: PipelineSummary[]): number {

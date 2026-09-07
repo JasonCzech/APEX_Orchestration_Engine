@@ -30,14 +30,15 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await page.getByRole('button', { name: 'Run query' }).click()
   await expect(page.getByRole('checkbox', { name: 'Select feature:583' })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'Select story:9012' })).toBeChecked()
-  await page.getByRole('button', { name: 'Launch Pipeline' }).click()
+  await page.getByRole('button', { name: 'Review Test' }).click()
+  await page.getByRole('button', { name: 'Launch Test' }).click()
 
   await expect(page).toHaveURL(/\/runs\/([^/]+)\/phases\/test_planning/)
   const threadId = /\/runs\/([^/]+)/.exec(page.url())?.[1]
   expect(threadId).toBeTruthy()
   await expect(page.getByRole('button', { name: /execution — pending/i })).toBeVisible()
 
-  let gate = page.getByRole('region', { name: 'Prompt review gate' })
+  let gate = page.getByRole('region', { name: 'Review prompts gate' })
   await gate.getByRole('tab', { name: 'Phase Prompt' }).click()
   await gate.getByRole('textbox').fill(
     'Plan bulk dealer and asynchronous eSIM fulfillment coverage with retry idempotency and IBM MQ recovery.',
@@ -48,7 +49,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
 
   await page.getByRole('link', { name: 'Review' }).click()
   await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/phases/env_triage`))
-  gate = page.getByRole('region', { name: 'Phase review gate' })
+  gate = page.getByRole('region', { name: 'Review phase results gate' })
   const composer = gate.getByLabel('Discuss with the agent')
   const exactDiscussion = 'Why did the MQ queue grow and what is the release risk?'
   await composer.fill(exactDiscussion)
@@ -62,7 +63,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await gate.getByRole('button', { name: /Re-run with Changes/i }).click()
   await expect(gate.getByTestId('gate-summary')).toContainText(/PERF rescan is green/i)
   await page.reload()
-  gate = page.getByRole('region', { name: 'Phase review gate' })
+  gate = page.getByRole('region', { name: 'Review phase results gate' })
   await expect(gate.getByTestId('gate-summary')).toContainText(/PERF rescan is green/i)
   await gate.getByRole('button', { name: /Approve & Continue/i }).click()
   await expect(page.getByRole('button', { name: /execution — running/i })).toBeVisible({ timeout: 10_000 })
@@ -73,15 +74,15 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await page.reload()
   await expect(page.getByRole('heading', { name: 'eSIM Device Upgrade Peak Certification' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Live engine stats' })).toBeVisible({ timeout: 10_000 })
-  await expect(page.getByRole('region', { name: 'Phase review gate' })).toBeVisible({ timeout: 25_000 })
+  await expect(page.getByRole('region', { name: 'Review phase results gate' })).toBeVisible({ timeout: 25_000 })
 
   await page.reload()
-  gate = page.getByRole('region', { name: 'Phase review gate' })
+  gate = page.getByRole('region', { name: 'Review phase results gate' })
   await expect(gate.getByTestId('gate-summary')).toContainText(/OMS create-order p95 was 3,650ms/i)
   await gate.getByRole('button', { name: /Approve & Continue/i }).click()
   await page.getByRole('link', { name: 'Review' }).click()
   await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/phases/reporting`))
-  gate = page.getByRole('region', { name: 'Phase review gate' })
+  gate = page.getByRole('region', { name: 'Review phase results gate' })
   await expect(gate.getByTestId('gate-summary')).toContainText(/PERF-248 will be created/i)
   await gate.getByRole('button', { name: /Approve & Continue/i }).click()
   await expect(page.getByRole('button', { name: /postmortem — succeeded/i })).toBeVisible({ timeout: 10_000 })

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
-import { PHASE_NAMES } from '@apex/pipeline-events'
 
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
+import { PHASE_NAMES } from '@apex/pipeline-events'
+import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
@@ -15,7 +16,6 @@ import { formatRelative } from '@/utils/time'
 
 import { CompareSelectBar } from '../compare/CompareSelectBar'
 import { MAX_COMPARE_RUNS } from '../compare/compareModel'
-import { LaunchRunButton } from './LaunchRunButton'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
 import {
   hasActiveFilters,
@@ -30,7 +30,11 @@ import {
   isPipelinePhaseComplete,
   pipelineStatusLabel,
   pipelinePhaseVisual,
-  pipelineVerdict,
+  executionResultLabel,
+  orchestrationStatusLabel,
+  gateLabel,
+  phaseProgress,
+  normalizedPhases,
   targetPhaseFor,
 } from './runDisplay'
 import './RunsListPage.css'
@@ -62,12 +66,10 @@ function errorMessage(error: unknown): string {
 }
 
 function verdictTone(run: PipelineSummary): string {
-  switch (pipelineVerdict(run)) {
-    case 'GO':
+  switch (executionResultLabel(run)) {
+    case 'Passed':
       return 'success'
-    case 'Conditional':
-      return 'warning'
-    case 'NO-GO':
+        case 'Failed':
       return 'danger'
     default:
       return 'neutral'
@@ -114,6 +116,19 @@ function RunRow({
 }) {
   const navigate = useNavigate()
   const runPath = `/runs/${run.thread_id}`
+  const compact = useCompactLayout()
+  if (compact) return (
+    <article className="glass-panel run-card" data-testid={`runs-row-${run.thread_id}`}>
+      <Link to={runPath} className="runs-run-title">{run.title || 'Untitled run'}</Link>
+      <p><strong>{orchestrationStatusLabel(run.thread_status)}</strong></p>
+      <p>Test result: <strong>{executionResultLabel(run)}</strong></p>
+      <p>Progress: {completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases finished</p>
+      {run.pending_gate && <Link to={runPath}>{gateLabel(run.pending_gate.kind)}</Link>}
+      {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
+      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatRelative(run.created_at)}</dd><dt>Duration</dt><dd>{durationLabel(run)}</dd></dl></details>
+      <div className="runs-actions-stack"><button className="btn btn-secondary" onClick={() => onInspect(run.thread_id)}>Inspect</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
+    </article>
+  )
 
   return (
     <tr className="runs-row" data-testid={`runs-row-${run.thread_id}`}>
@@ -145,7 +160,7 @@ function RunRow({
       </td>
       <td>
         <span className="runs-phase-progress">
-          {completedPhases(run)}/{PHASE_NAMES.length}
+          {completedPhases(run)}/{phaseProgress(run.phase_strip).total}
         </span>
       </td>
       <td className="runs-time" title={run.created_at ?? undefined}>
@@ -153,12 +168,12 @@ function RunRow({
       </td>
       <td className="runs-time">{durationLabel(run)}</td>
       <td>
-        <span className={`status-badge ${verdictTone(run)}`}>{pipelineVerdict(run)}</span>
+        <span className={`status-badge ${verdictTone(run)}`}>{executionResultLabel(run)}</span>
       </td>
       <td>
         <div className="runs-status-cell">
           <span className={`status-badge ${statusTone(run.thread_status)}`}>
-            {run.thread_status ?? 'unknown'}
+            {orchestrationStatusLabel(run.thread_status)}
           </span>
           {run.pending_gate && (
             <Link
@@ -168,7 +183,7 @@ function RunRow({
                 run.pending_gate.phase ? `Pending gate on ${run.pending_gate.phase}` : undefined
               }
             >
-              gate: {run.pending_gate.kind ?? 'review'}
+              {gateLabel(run.pending_gate.kind)}
             </Link>
           )}
         </div>
@@ -211,6 +226,7 @@ function RunsSkeleton() {
  * keeps the previous page rendered during transitions.
  */
 export function RunsListPage() {
+  const compact = useCompactLayout()
   const consumer = useOptionalConsumer()
   const canRerun = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const [searchParams, setSearchParams] = useSearchParams()
@@ -358,7 +374,7 @@ export function RunsListPage() {
           <option value="">All statuses</option>
           {THREAD_STATUSES.map((status) => (
             <option key={status} value={status}>
-              {status}
+              {orchestrationStatusLabel(status)}
             </option>
           ))}
         </select>
@@ -376,7 +392,7 @@ export function RunsListPage() {
           Compare
         </button>
         {/* D2 minimal launch (live-UI agent); full wizard lands on /runs/new in D4. */}
-        <LaunchRunButton />
+        <Link to="/runs/new" className="btn btn-primary">New Test</Link>
       </header>
 
       {isError && (!data || isPlaceholderData) ? (
@@ -417,6 +433,30 @@ export function RunsListPage() {
               </button>
             </div>
           )}
+          {compact ? <div className="run-cards">                {items.map((run) => (
+                  <RunRow
+                    key={run.thread_id}
+                    run={run}
+                    onRerun={setRerunThreadId}
+                    canRerun={canRerun}
+                    onInspect={(threadId) => {
+                      setSelectedRunId(threadId)
+                      setSelectedInspectorPhase(null)
+                    }}
+                    inspected={selectedRunId === run.thread_id}
+                    selection={
+                      compareMode
+                        ? {
+                            selected: compareSelection.includes(run.thread_id),
+                            disabled:
+                              !compareSelection.includes(run.thread_id) &&
+                              compareSelection.length >= MAX_COMPARE_RUNS,
+                            onToggle: toggleCompareSelection,
+                          }
+                        : undefined
+                    }
+                  />
+                ))}</div> : (
           <div className="data-table-wrap">
             <table className="data-table striped runs-table">
               <thead>
@@ -427,12 +467,12 @@ export function RunsListPage() {
                     </th>
                   )}
                   <th>Run</th>
-                  <th>Stories</th>
+                  <th>Project</th>
                   <th>Applications</th>
                   <th>Phase</th>
                   <th>Created</th>
                   <th>Duration</th>
-                  <th>Verdict</th>
+                  <th>Test result</th>
                   <th>Status</th>
                   <th className="runs-actions-cell">
                     Inspect
@@ -467,6 +507,7 @@ export function RunsListPage() {
               </tbody>
             </table>
           </div>
+          )}
           {selectedRunId && (
             <section className="glass-panel runs-inspector" aria-label="Run inspector">
               <div className="runs-inspector-head">
@@ -494,9 +535,11 @@ export function RunsListPage() {
                       onRetry={() => void inspector.refetch()}
                     />
                   )}
+                  {inspector.data.stateParseFailed && (
+                    <p role="status">Run state could not be read. Unavailable phase statuses use summary data.</p>
+                  )}
                   <div className="runs-inspector-phases">
-                    {PHASE_NAMES.map((phase) => {
-                      const status = inspector.data.state.phase_results?.[phase]?.status
+                    {normalizedPhases(inspector.data.state, inspector.data.detail.phase_strip, inspector.data.stateParseFailed).map(({ phase, status }) => {
                       const visual = pipelinePhaseVisual(status)
                       return (
                         <button

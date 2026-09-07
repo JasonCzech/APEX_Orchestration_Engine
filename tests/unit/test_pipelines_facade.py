@@ -1913,3 +1913,37 @@ def test_list_pipelines_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     with TestClient(app) as client:
         response = client.get("/v1/pipelines")
     assert response.status_code == 401
+
+
+@pytest.mark.parametrize(
+    "passed,expected", [(True, "passed"), (False, "failed"), (None, None), ("true", None)]
+)
+def test_summary_uses_recorded_execution_outcome(passed: object, expected: str | None) -> None:
+    summary = map_thread_summary(
+        {
+            "thread_id": "outcome-run",
+            "status": "idle",
+            "values": {
+                "phase_results": {
+                    "execution": {
+                        "status": "succeeded",
+                        "test_summary": {"engine": "sim", "passed": passed},
+                    }
+                }
+            },
+        }
+    )
+    assert summary["execution_result"] == expected
+
+
+def test_phase_summary_respects_selected_plan() -> None:
+    strip = build_phase_strip(
+        {
+            "phases_plan": ["execution", "reporting"],
+            "phase_results": {"execution": {"status": "aborted"}},
+        }
+    )
+    by_phase = {entry["phase"]: entry["status"] for entry in strip}
+    assert by_phase["execution"] == "aborted"
+    assert by_phase["reporting"] == "pending"
+    assert by_phase["story_analysis"] == "none"

@@ -1,7 +1,6 @@
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import {
-  isPipelinePhaseComplete,
   PHASE_LABELS,
   pipelinePhaseVisual,
   pipelineStatusLabel,
@@ -70,7 +69,6 @@ export function PhaseStrip({
           const status = entry?.status ?? NONE
           const label = segmentLabel(phase, status, entry?.attempt)
           const visual = pipelinePhaseVisual(status)
-          const complete = isPipelinePhaseComplete(status)
           const className = [
             'phase-step',
             `phase-step--${visual}`,
@@ -83,11 +81,11 @@ export function PhaseStrip({
           const content = (
             <>
               <span className="phase-step-circle" aria-hidden="true">
-                {complete ? '✓' : index + 1}
+                {({ succeeded: '✓', failed: '✕', aborted: '■', skipped: '–', none: '–' } as Record<string, string>)[status] ?? index + 1}
               </span>
               <span className="phase-step-copy">
                 <span className="phase-step-name">{PHASE_LABELS[phase]}</span>
-                <span className="phase-step-status">{pipelineStatusLabel(status)}</span>
+                <span className="phase-step-status">{status === NONE ? 'Not selected' : pipelineStatusLabel(status)}</span>
               </span>
             </>
           )

@@ -48,7 +48,7 @@ describe('RunDetailPage gate mounting (D3)', () => {
 
     const workspace = await screen.findByRole('region', { name: 'Reporting workspace' })
     const module = within(workspace).getByTestId('gate-module')
-    expect(module).toHaveTextContent('Phase review — Reporting')
+    expect(module).toHaveTextContent('Review phase results — Reporting')
     expect(within(module).getByTestId('gate-summary')).toHaveTextContent(
       'Draft report compiled; KPI deltas within tolerance.',
     )
@@ -63,7 +63,7 @@ describe('RunDetailPage gate mounting (D3)', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=output`])
 
     const banner = await screen.findByTestId('gate-slim-banner')
-    expect(banner).toHaveTextContent('Phase review gate open on Reporting')
+    expect(banner).toHaveTextContent('Review phase results gate open on Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
       `/runs/${THREAD_ID}/phases/reporting`,

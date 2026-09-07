@@ -148,7 +148,7 @@ describe('ContextStep', () => {
     expect(screen.getByRole('button', { name: 'Finishing context…' })).toBeDisabled()
     await act(async () => releaseUpload())
     expect(await screen.findByText(/deferred\.txt/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Launch Pipeline' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Review Test' })).toBeEnabled()
     await flushAndUnmountWizard(rendered)
   })
 

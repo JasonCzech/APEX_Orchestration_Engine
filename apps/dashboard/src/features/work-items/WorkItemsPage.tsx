@@ -432,6 +432,7 @@ export function WorkItemsPage() {
   const [mode, setMode] = useState<ConsoleMode>(preloadQuery ? 'manual' : 'nl')
   const [nlText, setNlText] = useState('')
   const [provider, setProvider] = useState(preloadProvider ?? '')
+  const [activeSaved, setActiveSaved] = useState<{ id: string; name: string; provider: string; query: string; project: string; connection: string | null } | null>(null)
   const [queryText, setQueryText] = useState(preloadQuery ?? '')
   const [confidence, setConfidence] = useState<number | null>(null)
   const [editorConnectionId, setEditorConnectionId] = useState<string | null>(
@@ -485,6 +486,7 @@ export function WorkItemsPage() {
     setProject(routeProject)
     setMode(preloadQuery ? 'manual' : 'nl')
     setNlText('')
+    setActiveSaved(null)
     setProvider(preloadProvider ?? '')
     setQueryText(preloadQuery ?? '')
     setConfidence(null)
@@ -514,6 +516,7 @@ export function WorkItemsPage() {
     queryOperationRef.current += 1
     projectRef.current = nextProject
     setProject(nextProject)
+    setActiveSaved(null)
     setPage(null)
     setSubmitted(null)
     setOffset(0)
@@ -605,6 +608,12 @@ export function WorkItemsPage() {
           setOffset(nextOffset)
           bindingRequestRef.current += 1
           setEditorConnectionId(result.connection_id)
+          setActiveSaved((saved) => saved && saved.connection === null &&
+            saved.project === (requestProject ?? '') &&
+            saved.provider.trim() === submittedQuery.provider &&
+            saved.query.trim() === submittedQuery.query
+            ? { ...saved, connection: result.connection_id }
+            : saved)
           setAvailableBinding({
             connection_id: result.connection_id,
             provider: result.provider,
@@ -981,6 +990,7 @@ export function WorkItemsPage() {
 
         {savedQueries.data && savedQueries.data.length > 0 && (
           <div className="wi-field">
+            {activeSaved && <p role="status">{activeSaved.name}{activeSaved.provider !== provider || activeSaved.query !== queryText || activeSaved.project !== project || activeSaved.connection !== editorConnectionId ? ' · Modified query' : ' · Active query'}</p>}
             <label className="wi-field-label" htmlFor="wi-saved-query">
               Saved queries
             </label>
@@ -988,13 +998,14 @@ export function WorkItemsPage() {
               id="wi-saved-query"
               className="field-select"
               disabled={!projectSelected || translate.isPending || execute.isPending}
-              value=""
+              value={activeSaved?.id ?? ''}
               onChange={(event) => {
                 const saved = savedQueries.data.find((entry) => entry.id === event.target.value)
                 if (!saved) return
                 if (saved.project_id && !saved.connection_id) return
                 if (saved.connection_id) bindingRequestRef.current += 1
                 const savedProject = (saved.project_id ?? project) || undefined
+                const selectedSaved = { id: saved.id, name: saved.name, provider: saved.provider, query: saved.query, project: savedProject ?? '', connection: saved.connection_id ?? null }
                 if (saved.project_id && saved.project_id !== project) {
                   pendingSavedRunRef.current = {
                     provider: saved.provider,
@@ -1005,8 +1016,10 @@ export function WorkItemsPage() {
                       : {}),
                   }
                   changeProject(saved.project_id)
+                  setActiveSaved(selectedSaved)
                   return
                 }
+                setActiveSaved(selectedSaved)
                 setProvider(saved.provider)
                 setQueryText(saved.query)
                 setConfidence(null)

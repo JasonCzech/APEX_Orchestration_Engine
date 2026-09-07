@@ -104,6 +104,7 @@ PIPELINE_SUMMARY_SELECT = (
 PIPELINE_SUMMARY_EXTRACT = {
     "title": "values.title",
     "current_phase": "values.current_phase",
+    "phases_plan": "values.phases_plan",
     "phase_results": "values.phase_results",
     "engine_handle": "values.engine_handle",
 }
@@ -244,10 +245,13 @@ def build_phase_strip(values: JsonDict | None) -> list[JsonDict]:
     """Canonical-order strip from state ``phase_results``; absent phases -> "none"."""
     public_values = public_pipeline_state(values or {})
     results = public_values.get("phase_results") or {}
+    plan = public_values.get("phases_plan")
     strip: list[JsonDict] = []
     for phase in PHASE_ORDER:
         entry = results.get(phase.value)
-        if isinstance(entry, dict):
+        if isinstance(plan, list) and phase.value not in plan:
+            strip.append({"phase": phase.value, "status": "none", "attempt": None})
+        elif isinstance(entry, dict):
             strip.append(
                 {
                     "phase": phase.value,
@@ -256,7 +260,15 @@ def build_phase_strip(values: JsonDict | None) -> list[JsonDict]:
                 }
             )
         else:
-            strip.append({"phase": phase.value, "status": "none", "attempt": None})
+            strip.append(
+                {
+                    "phase": phase.value,
+                    "status": "pending"
+                    if isinstance(plan, list) and phase.value in plan
+                    else "none",
+                    "attempt": None,
+                }
+            )
     return strip
 
 
@@ -501,6 +513,15 @@ def _with_application_override(review: JsonDict, values: JsonDict, app_id: str |
     return review
 
 
+def execution_result_from_values(values: JsonDict) -> str | None:
+    """Only a recorded test outcome is evidence of a pass or failure."""
+    results = values.get("phase_results")
+    execution = results.get("execution") if isinstance(results, dict) else None
+    summary = execution.get("test_summary") if isinstance(execution, dict) else None
+    passed = summary.get("passed") if isinstance(summary, dict) else None
+    return "passed" if passed is True else "failed" if passed is False else None
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     raw_values = thread.get("values")
@@ -521,6 +542,7 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
         "thread_status": public_text(thread.get("status"), 32),
         "current_phase": public_values.get("current_phase"),
         "phase_strip": build_phase_strip(public_values),
+        "execution_result": execution_result_from_values(public_values),
         "engine": engine_info_from_values(public_values),
         "created_at": public_text(thread.get("created_at"), 64),
         "updated_at": public_text(thread.get("updated_at"), 64),

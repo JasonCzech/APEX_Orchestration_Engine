@@ -711,3 +711,9 @@
   color: var(--text-muted);
   font-style: italic;
 }
+
+.run-phase-navigation { width: 100%; }
+.run-phase-navigation > summary { cursor: pointer; padding: 12px; color: var(--text-primary); }
+@media (min-width: 769px) { .run-phase-navigation > summary { display: none; } }
+.prompt-configuration { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+.prompt-configuration > summary { cursor: pointer; padding: 12px; font-weight: 600; }

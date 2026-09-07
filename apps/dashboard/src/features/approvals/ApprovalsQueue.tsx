@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+import { gateLabel } from '@/features/runs/runDisplay'
 /**
  * Approvals queue pane (left, 360px): one row per pending gate, oldest first.
  * Pure presentation — selection/keyboard state lives in ApprovalsInboxPage.
@@ -30,6 +32,9 @@ export function ApprovalsQueue({
   selectedThreadId: string | null
   onSelect: (row: QueueRow) => void
 }) {
+  useEffect(() => {
+    if (selectedThreadId) document.getElementById(rowDomId(selectedThreadId))?.scrollIntoView?.({ block: 'nearest' })
+  }, [selectedThreadId])
   return (
     <ul
       className="approvals-queue"
@@ -54,6 +59,8 @@ export function ApprovalsQueue({
             className={classes}
             role="option"
             aria-selected={selected}
+            tabIndex={selected ? 0 : -1}
+            onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!row.removed) onSelect(row) } }}
             aria-disabled={row.removed ? true : undefined}
             onClick={() => {
               if (!row.removed) onSelect(row)
@@ -77,7 +84,7 @@ export function ApprovalsQueue({
                 </span>
               ) : (
                 <span className={`topbar-meta-chip ${gateKindTone(row.pending_gate.kind)}`}>
-                  {row.pending_gate.kind ?? 'review'}
+                  {gateLabel(row.pending_gate.kind)}
                 </span>
               )}
               <span className="approvals-row-phase">{row.pending_gate.phase ?? '—'}</span>

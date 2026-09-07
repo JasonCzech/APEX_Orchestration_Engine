@@ -182,7 +182,7 @@ function readStoredCollapsed(): boolean {
   }
 }
 
-export function Sidebar() {
+export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNavigate?: () => void }) {
   const [collapsed, setCollapsed] = useState(readStoredCollapsed)
   const location = useLocation()
   const consumer = useConsumer()
@@ -213,7 +213,7 @@ export function Sidebar() {
   }
 
   return (
-    <aside className={collapsed ? 'sidebar collapsed' : 'sidebar'} data-testid="sidebar">
+    <aside className={drawer ? 'sidebar sidebar-drawer' : collapsed ? 'sidebar collapsed' : 'sidebar'} data-testid="sidebar">
       <div className="sidebar-brand">
         <svg className="brand-icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
           <defs>
@@ -228,7 +228,7 @@ export function Sidebar() {
         <span className="brand-name">APEX Orchestration</span>
       </div>
 
-      <nav className="sidebar-nav" aria-label="Primary">
+      <nav className="sidebar-nav" aria-label="Primary" onClick={(event) => { if ((event.target as HTMLElement).closest('a')) onNavigate?.() }}>
         <div className="nav-section nav-section--flat">
           {PRIMARY_NAV_ITEMS.map((item) => (
             <NavLink
@@ -337,6 +337,7 @@ export function Sidebar() {
               ))}
             </select>
             <button
+              hidden={drawer}
               type="button"
               className="collapse-btn"
               aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}

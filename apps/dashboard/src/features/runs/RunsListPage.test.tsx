@@ -111,12 +111,12 @@ describe('RunsListPage', () => {
     expect(busyRow.getByText('app-storefront')).toBeInTheDocument()
     expect(busyRow.getByText('4/7')).toBeInTheDocument()
     expect(busyRow.getByText('30m')).toBeInTheDocument()
-    expect(busyRow.getByText('—')).toHaveClass('status-badge', 'neutral')
-    expect(busyRow.getByText('busy')).toHaveClass('status-badge', 'accent')
+    expect(busyRow.getByText('Not available')).toHaveClass('status-badge', 'neutral')
+    expect(busyRow.getByText('Running')).toHaveClass('status-badge', 'accent')
 
     const gatedRow = within(screen.getByTestId(`runs-row-${RUN_GATED.thread_id}`))
-    expect(gatedRow.getByText('Conditional')).toHaveClass('status-badge', 'warning')
-    expect(gatedRow.getByText('interrupted')).toHaveClass('status-badge', 'warning')
+    expect(gatedRow.getByText('Not available')).toHaveClass('status-badge', 'neutral')
+    expect(gatedRow.getByText('Awaiting approval')).toHaveClass('status-badge', 'warning')
     expect(gatedRow.getByText('—')).toBeInTheDocument()
   })
 
@@ -143,8 +143,8 @@ describe('RunsListPage', () => {
     renderRunsPage()
 
     for (const id of ['run-failed', 'run-aborted', 'run-inconsistent']) {
-      expect(within(await screen.findByTestId(`runs-row-${id}`)).getByText('NO-GO')).toHaveClass(
-        'danger',
+      expect(within(await screen.findByTestId(`runs-row-${id}`)).getByText('Not available')).toHaveClass(
+        'neutral',
       )
     }
   })
@@ -153,7 +153,7 @@ describe('RunsListPage', () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
 
-    const chip = await screen.findByRole('link', { name: 'gate: prompt_review' })
+    const chip = await screen.findByRole('link', { name: 'Review prompts' })
     expect(chip).toHaveClass('topbar-meta-chip', 'warning')
     expect(chip).toHaveAttribute('href', `/runs/${RUN_GATED.thread_id}`)
 

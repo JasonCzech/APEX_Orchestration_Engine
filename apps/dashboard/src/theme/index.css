@@ -12,6 +12,7 @@
 @import './themes.css';
 @import './apex-light.css';
 @import './primitives.css';
+@import './accessibility.css';
 
 /*
  * Base layout vars — derived from APEX Load's shell dimensions

@@ -126,3 +126,14 @@ export function bestWorst(
     ? { best: highest.index, worst: lowest.index }
     : { best: lowest.index, worst: highest.index }
 }
+
+/** Text equivalent of the comparison tint, including an explicit baseline. */
+export function kpiDifference(value: number | null, baseline: number | null, def: CompareKpiDef): string {
+  if (value === null || baseline === null) return 'Difference not available'
+  const delta = value - baseline
+  if (delta === 0) return 'No change'
+  const percent = baseline === 0 ? 'percentage not available' : `${Math.abs(delta / baseline * 100).toFixed(1)}%`
+  const better = def.better === 'higher' ? delta > 0 : delta < 0
+  const absolute = def.key === 'error_rate' ? `${(Math.abs(delta) * 100).toFixed(2)} percentage points` : def.format(Math.abs(delta))
+  return `${delta > 0 ? '+' : '−'}${absolute} (${percent}) · ${better ? 'Better' : 'Worse'}`
+}

@@ -5,12 +5,12 @@ import { LiveStatusChip } from '../LiveStatusChip'
 
 describe('LiveStatusChip', () => {
   it.each([
-    ['idle', 'idle'],
-    ['connecting', 'connecting'],
-    ['live', 'live'],
-    ['reconnecting', 'reconnecting'],
-    ['ended', 'stream ended'],
-    ['error', 'stream error'],
+    ['idle', 'Live updates paused'],
+    ['connecting', 'Connecting live updates'],
+    ['live', 'Live updates connected'],
+    ['reconnecting', 'Reconnecting live updates'],
+    ['ended', 'Live updates ended'],
+    ['error', 'Live updates unavailable'],
   ])('renders the %s state with tone class and explanatory title', (status, label) => {
     render(<LiveStatusChip status={status} />)
     const chip = screen.getByTestId('live-status-chip')
