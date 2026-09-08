@@ -1,0 +1,169 @@
+.cycle-workspace {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+}
+.cycle-heading {
+  display: flex;
+  gap: 1rem;
+  align-items: start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.cycle-heading h1,
+.cycle-heading h2 {
+  margin: 0.3rem 0;
+}
+.cycle-panel,
+.cycle-editor {
+  padding: 1.5rem;
+  min-width: 0;
+}
+.cycle-card-grid,
+.cycle-form-grid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+}
+.cycle-field {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0;
+  min-width: 0;
+  font-weight: 600;
+}
+.cycle-field input,
+.cycle-field textarea,
+.cycle-field select {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-weight: 400;
+  padding: 0.7rem;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.cycle-field textarea {
+  resize: vertical;
+}
+.cycle-field small {
+  font-weight: 400;
+  line-height: 1.5;
+}
+.cycle-workspace p,
+.cycle-workspace li,
+.cycle-workspace small,
+.cycle-workspace details {
+  overflow-wrap: anywhere;
+}
+.cycle-workspace p {
+  line-height: 1.6;
+}
+.cycle-actions,
+.cycle-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.cycle-nav button[aria-current='page'] {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  font-weight: 700;
+}
+.cycle-next {
+  border-left: 3px solid currentColor;
+  padding: 0.5rem 1rem;
+  margin: 0;
+}
+.cycle-editor fieldset {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.cycle-dependencies label {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  margin: 0.75rem 0;
+}
+.cycle-section {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.cycle-section p {
+  white-space: pre-wrap;
+}
+.cycle-diff .cycle-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+.cycle-diff h3 {
+  grid-column: 1 / -1;
+}
+.cycle-workspace button,
+.cycle-workspace a,
+.cycle-workspace input,
+.cycle-workspace textarea,
+.cycle-workspace select {
+  scroll-margin-top: 8rem;
+}
+@media (max-width: 767px) {
+  .cycle-panel,
+  .cycle-editor {
+    padding: 1rem;
+  }
+  .cycle-diff .cycle-section {
+    grid-template-columns: 1fr;
+  }
+  .cycle-nav {
+    gap: 0.5rem;
+  }
+  .cycle-nav button {
+    flex: 1 1 8rem;
+  }
+}
+.cycle-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: #0008;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.cycle-leave-dialog {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 1.5rem;
+  max-width: 32rem;
+}
+.cycle-technical {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cycle-execution-fields {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  padding: 1rem;
+}
+.cycle-panel code,
+.cycle-panel dd {
+  overflow-wrap: anywhere;
+}
+.cycle-panel select {
+  max-width: 100%;
+  min-width: 0;
+}
+.cycle-panel li {
+  margin-block: 0.5rem;
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Outlet, useLocation } from 'react-router'
+import { NavigationGuards } from '@/components/NavigationGuards'
 import { Dialog } from '@/components/Dialog'
 import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 
@@ -15,6 +16,10 @@ import './AppShell.css'
  * tokens and primitives come from the ported token sheet (src/theme).
  */
 export function AppShell() {
+  return <NavigationGuards><ShellContent /></NavigationGuards>
+}
+
+function ShellContent() {
   const compact = useCompactLayout()
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
@@ -38,8 +43,7 @@ export function AppShell() {
         </Dialog>
       )}
       <main id="main-content" ref={mainRef} tabIndex={-1} className="main-content">
-        {compact && <button type="button" className="btn btn-secondary navigation-trigger" aria-haspopup="dialog" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>Open navigation</button>}
-        <Topbar />
+        <Topbar navigation={compact ? <button type="button" className="btn btn-secondary navigation-trigger" aria-haspopup="dialog" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>Open navigation</button> : undefined} />
         <Outlet />
       </main>
       <ConsumerKeyLifecycle />

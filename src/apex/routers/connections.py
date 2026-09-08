@@ -635,6 +635,8 @@ _RUNTIME_IDENTITY_FIELDS = frozenset(
 
 
 def _validate_provider(kind: PortKind, provider: str) -> None:
+    if kind is PortKind.WORK_TRACKING and provider.casefold() == "ado":
+        raise HTTPException(422, "Azure DevOps has been retired; use Jira Align for user stories")
     registered = AdapterRegistry.providers_for(kind)
     if provider not in registered:
         raise HTTPException(

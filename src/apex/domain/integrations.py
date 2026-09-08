@@ -248,6 +248,7 @@ class DocScope(BaseModel):
 
 
 class DocRef(BaseModel):
+    revision: NoNulStr | None = Field(default=None, min_length=1, max_length=64)
     id: NoNulStr = Field(min_length=1, max_length=255)
     source: NoNulStr = Field(default="stub", min_length=1, max_length=64)
     uri: NoNulStr | None = Field(default=None, max_length=4_096)
@@ -261,6 +262,7 @@ class DocHit(BaseModel):
 
 
 class DocumentContent(BaseModel):
+    title: NoNulStr | None = Field(default=None, max_length=500)
     ref: DocRef
     media_type: NoNulStr = Field(default="text/markdown", min_length=1, max_length=255)
     text: NoNulStr = Field(max_length=2_000_000)
@@ -403,7 +405,7 @@ class TestResultSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     engine: NoNulStr = Field(min_length=1, max_length=64)
-    passed: bool
+    passed: bool | None = None
     kpis: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=64)
     sla_breaches: list[NoNulStr] = Field(default_factory=list, max_length=128)
     notes: NoNulStr | None = Field(default=None, max_length=20_000)

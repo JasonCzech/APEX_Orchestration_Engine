@@ -232,6 +232,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
         </nav>
       </header>
 
+      <p className="prompts-muted">This playground checks template rendering with a deterministic stub. It does not evaluate model behavior or execute tools. Pipeline templates support {'{title}'} and {'{request}'}; phase evidence is supplied separately at runtime.</p>
       <div className="prompt-playground-split">
         <div className="prompt-content-card glass-panel">
           <div className="prompt-source-toggle" role="group" aria-label="Prompt source">

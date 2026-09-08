@@ -150,33 +150,6 @@ const JIRA_ALIGN: ProviderSpec = {
   },
 }
 
-const ADO: ProviderSpec = {
-  id: 'ado',
-  label: 'Azure DevOps',
-  optionFields: [
-    {
-      key: 'base_url',
-      label: 'Organization URL',
-      required: true,
-      input: 'text',
-      placeholder: 'https://dev.azure.com/your-org',
-      mirrorsBaseUrl: true,
-    },
-    {
-      key: 'project',
-      label: 'Project',
-      required: false,
-      input: 'text',
-      placeholder: 'Phoenix',
-      help: 'Required on a project-scoped connection; scopes every query',
-    },
-  ],
-  secretRef: {
-    placeholder: 'env:APEX_INTEGRATION_ADO_PAT',
-    help: 'Personal access token with work-item read access',
-  },
-}
-
 const STUB: ProviderSpec = {
   id: 'stub',
   label: 'Built-in stub',
@@ -184,7 +157,7 @@ const STUB: ProviderSpec = {
 }
 
 export const PROVIDER_CATALOG: Partial<Record<PortKind, readonly ProviderSpec[]>> = {
-  work_tracking: [JIRA, JIRA_ALIGN, ADO, STUB],
+  work_tracking: [JIRA, JIRA_ALIGN, STUB],
 }
 
 export function providersForKind(kind: PortKind): readonly ProviderSpec[] {

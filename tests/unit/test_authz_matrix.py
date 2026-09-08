@@ -107,6 +107,7 @@ _LOOPBACK_MODULES = (pipelines_router, context_router, engines_router, prompts_r
 @pytest.fixture(autouse=True)
 def authz_world(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("APEX_AUTH__ENABLED", "true")
+    monkeypatch.setenv("APEX_CYCLES_ENABLED", "true")
     monkeypatch.setenv("APEX_AUTH__DEV_API_KEY", DEV_ADMIN_KEY)
     get_settings.cache_clear()
     monkeypatch.setattr(auth_service, "default_resolver", MatrixResolver())

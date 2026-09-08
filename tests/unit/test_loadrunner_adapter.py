@@ -1394,3 +1394,14 @@ async def test_transport_error_maps_to_runtime_error() -> None:
     respx.get(f"{PROJECT_BASE}/Runs/1042").mock(side_effect=httpx.ConnectError("boom"))
     with pytest.raises(RuntimeError, match="before a response arrived"):
         await make_adapter().get_status(started_handle())
+
+
+@pytest.mark.parametrize("sla", ["", "Unknown", "Not Completed"])
+@respx.mock
+async def test_completed_run_without_explicit_sla_outcome_is_unknown(sla: str) -> None:
+    mock_authenticate()
+    respx.get(f"{PROJECT_BASE}/Runs/1042").mock(
+        return_value=httpx.Response(200, json=run_json(state="Finished", sla=sla))
+    )
+    summary = await make_adapter().fetch_summary(started_handle())
+    assert summary.passed is None

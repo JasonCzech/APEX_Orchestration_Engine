@@ -31,7 +31,8 @@ from uuid import uuid4
 import structlog
 
 from apex.domain.diagnostics import contains_credential_material, safe_type_name
-from apex.domain.pipeline import PHASE_ORDER, Phase
+from apex.domain.pipeline import Phase
+from apex.domain.prompt_catalog import DEFAULT_PHASE_PROMPTS, DEFAULT_USER_TEMPLATE
 from apex.graphs.pipeline.configurable import PipelineConfigurable, PromptOverride
 from apex.persistence.db import dispose_engine_instance_definitively
 from apex.persistence.models import Prompt, PromptVersion
@@ -84,6 +85,10 @@ class PromptVersionMismatchError(PromptError):
 
 class PromptCredentialMaterialError(PromptError):
     """A catalog mutation would persist credential-shaped material."""
+
+
+class PromptTemplateError(PromptError, ValueError):
+    """A catalog template requires variables unavailable in this invocation."""
 
 
 # ── Store protocols ──────────────────────────────────────────────────────────
@@ -359,25 +364,7 @@ class PromptCatalogService:
 # ── Built-in phase prompt templates (moved out of phase_subgraph in M2) ─────
 
 
-def _default_system(phase: Phase) -> str:
-    label = phase.value.replace("_", " ")
-    return (
-        f"You are the APEX {label} agent. "
-        f"Produce the {phase.value} deliverable for this performance-testing run."
-    )
-
-
-DEFAULT_USER_TEMPLATE = "Title: {title}\nRequest: {request}"
-
-# Keyed exactly like the catalog: "<phase>/system" and "<phase>/user".
-DEFAULT_PHASE_PROMPTS: dict[str, str] = {
-    key: value
-    for phase in PHASE_ORDER
-    for key, value in (
-        (f"{phase.value}/system", _default_system(phase)),
-        (f"{phase.value}/user", DEFAULT_USER_TEMPLATE),
-    )
-}
+# Defaults are shared with the generated dashboard catalog.
 
 
 class _SafeVariables(dict[str, Any]):
@@ -476,6 +463,41 @@ class ResolvedPhasePrompt(TypedDict):
     source: dict[str, Any]  # ResolvedPromptSource-shaped: origin / ref / editor
 
 
+_CATALOG_VARIABLE = re.compile(r"(?<!\{)\{([A-Za-z_][A-Za-z_0-9]*)\}(?!\})")
+
+
+def render_catalog_template(template: str, variables: Mapping[str, Any]) -> str:
+    """Catalog variables are simple names; JSON examples need no brace escaping.
+
+    Rendering happens once at resolution. Reviewed run text is already rendered and
+    must not be interpolated again (including braces in a user's request).
+    """
+    # Do not run Python's formatter as a preflight: it applies its expansion
+    # heuristic to literal JSON and valid large inputs, and may return early on
+    # JSON before noticing an unsupported field later in the template.
+    fields = re.finditer(r"(?<!\{)\{[A-Za-z_][A-Za-z_0-9]*", template)
+    if any(template[match.end() : match.end() + 1] != "}" for match in fields):
+        raise PromptTemplateError("Catalog placeholders must use simple {name} syntax")
+    names = {match.group(1) for match in _CATALOG_VARIABLE.finditer(template)}
+    missing = names - variables.keys()
+    if missing:
+        raise PromptTemplateError(
+            "Unavailable prompt variables: "
+            + ", ".join(sorted(missing))
+            + ". Pipeline templates support {title} and {request}; evidence is appended at runtime."
+        )
+    # Bound each expansion and the aggregate before allocating the result.
+    limit = get_settings().runs.max_model_input_chars
+    values = {name: str(variables[name]) for name in names}
+    size = len(template) + sum(
+        len(values[match.group(1)]) - len(match.group(0))
+        for match in _CATALOG_VARIABLE.finditer(template)
+    )
+    if size > limit:
+        raise PromptTemplateError("Rendered catalog prompt exceeds the model input limit")
+    return _CATALOG_VARIABLE.sub(lambda match: values[match.group(1)], template)
+
+
 class PromptReviewDraft(TypedDict):
     system: str
     phase_prompt: str
@@ -537,11 +559,11 @@ def _compose_resolved(
     if cfg.app_id:
         app_override = _app_override(cfg)
         if app_override is not None and app_override.content is not None:
-            application = app_override.content
+            application = render_catalog_template(app_override.content, variables)
             refs.append(app_override.version_id or f"{APPLICATION_NAMESPACE}/{cfg.app_id}@override")
             origin = "run_override"
         elif application_v is not None:
-            application = render_template(application_v.content, variables)
+            application = render_catalog_template(application_v.content, variables)
             refs.append(f"{APPLICATION_NAMESPACE}/{cfg.app_id}@v{application_v.version}")
         else:
             # App selected, but no catalog row yet. Keep the prompt part
@@ -552,8 +574,8 @@ def _compose_resolved(
         refs.append(f"phase/{phase.value}@builtin")
 
     resolved = ResolvedPhasePrompt(
-        system=render_template(system, variables),
-        user=render_template(user, variables),
+        system=render_catalog_template(system, variables),
+        user=render_catalog_template(user, variables),
         application=application,
         source=_source(origin, refs),
     )
@@ -718,6 +740,8 @@ async def resolve_phase_prompts(
     try:
         async with asyncio.timeout(CATALOG_TIMEOUT_S):
             return await _resolve_phase_prompts_with_fresh_engine(phases, cfg, variables)
+    except (PromptTemplateError, PromptCredentialMaterialError):
+        raise
     except Exception as exc:
         error_type = safe_type_name(exc)
     if get_settings().is_locked_down:

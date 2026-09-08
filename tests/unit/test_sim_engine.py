@@ -86,7 +86,9 @@ async def test_full_lifecycle_runs_to_completed() -> None:
     assert running.phase is EngineRunPhase.RUNNING
     assert 0.0 <= running.progress_pct < 100.0
     assert running.live_stats is not None
+    assert running.live_stats.tps is not None
     assert running.live_stats.tps >= 0.0
+    assert running.live_stats.p95_ms is not None
     assert running.live_stats.p95_ms > 0.0
 
     await asyncio.sleep(FAST_DURATION_S * 2)

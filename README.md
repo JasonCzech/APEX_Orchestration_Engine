@@ -87,13 +87,14 @@ Setup details (seeded backend, API keys, runtime config, deploy contract):
 - `langgraph.json` — binds graphs + custom HTTP app + auth to the server
 - `src/apex/graphs/` — pipeline master graph (7 phase subgraphs, HITL gates)
 - `src/apex/app/`, `src/apex/routers/` — `/v1` domain API composition root + routers
-- `src/apex/ports|adapters|services/` — integration seams (stubs, Jira/Jira Align/ADO, ELK, k8s, engines)
+- `src/apex/ports|adapters|services/` — integration seams (stubs, Jira/Jira Align, ELK, k8s, engines)
 - `src/apex/persistence/` — SQLAlchemy models + Alembic migrations (`apex` schema)
 - `apps/dashboard/` — `@apex/dashboard` web client (React + Vite)
 - `packages/api-client/` — `@apex/api-client`, TS types generated from the committed `/v1` spec
 - `packages/pipeline-events/` — `@apex/pipeline-events`, zod contracts for SSE events + interrupts
 - `scripts/` — OpenAPI export, SDK generation, seeds, m1/m2 live smokes
 - `docs/adr/` — architecture decision records; `docs/api/` — committed OpenAPI spec
+- [Prompt catalog and customization](docs/prompt-catalog.md) — instruction levels, application templates, output contracts, and catalog upgrades
 
 The full rebuild plan (architecture, milestones M0–M6 + dashboard D0–D8) lives with
 the project owner; ADRs 0001–0006 capture the load-bearing decisions.
@@ -106,3 +107,5 @@ Standalone server image (`langgraph build`), Helm chart, and HA soak rig live in
 (`deployment.md`, `operations.md`, `incident.md`). Topology decision (one image,
 external Postgres/Redis/S3, N stateless replicas, license gate):
 `docs/adr/0005-deployment-topology.md`.
+
+Azure DevOps (ADO) is retired as a work-tracking provider. Configure `jira_align` for user-story import and evaluation; Jira Cloud remains available for defects. Existing ADO records are retained, but ADO connections cannot be created or used for new provider calls.

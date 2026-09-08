@@ -1360,12 +1360,19 @@ class LoadRunnerExecutionEngine:
                 "LRE reported run SLA status 'Failed' (per-SLA details require the "
                 "Analysis report, not parsed in v1)"
             )
-        passed = phase is EngineRunPhase.COMPLETED and not sla_breaches
+        passed: bool | None = None
+        if sla_status.lower() == "failed" or phase in {
+            EngineRunPhase.FAILED,
+            EngineRunPhase.ABORTED,
+        }:
+            passed = False
+        elif phase is EngineRunPhase.COMPLETED and sla_status.lower() == "passed":
+            passed = True
         notes = (
             f"LRE run {run_id} state {raw_state!r}. v1 limitation: KPI extraction "
             "(tps_avg, p95_ms, error_rate, vusers_peak) requires parsing the LRE "
-            "Analysis report — kpis are empty; passed derives from RunState plus "
-            "RunSLAStatus when LRE provides it."
+            "Analysis report — kpis are empty; a pass requires an explicit passed "
+            "RunSLAStatus on a completed run. Missing SLA outcomes remain unknown."
         )
         return TestResultSummary(
             engine=PROVIDER,

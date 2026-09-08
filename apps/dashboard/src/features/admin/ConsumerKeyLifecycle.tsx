@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { useBeforeUnload, useBlocker } from 'react-router'
+import { useBeforeUnload } from 'react-router'
+import { useNavigationBlocker } from '@/components/useNavigationBlocker'
 
 import {
   acknowledgeConsumerKeyHandoff,
@@ -105,7 +106,7 @@ export function ConsumerKeyLifecycle() {
     getConsumerKeyHandoffSnapshot,
   )
   const protectedState = snapshot.pending.length > 0 || snapshot.handoffs.length > 0
-  const blocker = useBlocker(protectedState)
+  const blocker = useNavigationBlocker(protectedState, 100)
   const handoff = snapshot.handoffs[0] ?? null
   const proceedRequestedRef = useRef(false)
 

@@ -506,6 +506,8 @@ class ApexSettings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
     allow_private_adapter_hosts: bool = False
     analytics_cost_visible: bool = False
+    cycles_enabled: bool = False
+    cycles_independent_review: bool = False
     # Serializes costly remote run creation across API/worker replicas through
     # PostgreSQL advisory locks. Local single-process development may leave it off.
     distributed_remote_creation_lock: bool = False

@@ -874,7 +874,7 @@ def _validated_engine_status(value: Any) -> EngineRunStatus:
             required=frozenset(),
             label="engine status",
         )
-        if any(not _provider_number(metric) for metric in stats.values()):
+        if any(metric is not None and not _provider_number(metric) for metric in stats.values()):
             raise ValueError("engine status is invalid") from None
         payload["live_stats"] = stats
     if contains_credential_material(payload, max_nodes=16, max_total_chars=8_192):
@@ -901,7 +901,7 @@ def _validated_engine_summary(
     )
     if (
         not _provider_text(payload.get("engine"), max_chars=64)
-        or type(payload.get("passed")) is not bool
+        or (payload.get("passed") is not None and type(payload.get("passed")) is not bool)
         or not _provider_text(payload.get("notes"), max_chars=20_000, optional=True)
     ):
         raise ValueError("engine summary is invalid") from None
@@ -1604,6 +1604,12 @@ def _build_spec(
         upstream = {}
     if type(upstream) is not dict:
         raise ValueError("checkpointed script-scenario phase is invalid")
+    if upstream.get("provenance") == "llm":
+        raise ValueError(
+            "Model-generated scripts are draft artifacts, not deployed workloads. "
+            "Import and validate the script through the approved provider/cycle handoff "
+            "before launching execution; the pipeline must not substitute a default workload."
+        )
     raw = upstream.get("load_test_spec")
     base: JsonDict
     if raw is not None and type(raw) is not dict:
@@ -2046,6 +2052,7 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
     update = _update(
         attempt,
         engine=handle.engine,
+        provenance="simulator" if handle.engine == "sim" else "live_provider",
         engine_connection_id=handle.connection_id,
         engine_handle=handle_json,
         engine_provision_required=False,
@@ -3175,7 +3182,13 @@ def engine_collection_index(state: PipelineState, config: RunnableConfig) -> Com
         f"{key}={value:g}" if type(value) in {int, float} else f"{key}={value}"
         for key, value in sorted(summary.kpis.items())
     )
-    verdict = "passed" if summary.passed else "failed"
+    verdict = (
+        "passed"
+        if summary.passed is True
+        else "failed"
+        if summary.passed is False
+        else "unknown (not a pass)"
+    )
     summary_text = (
         f"Engine run {handle.external_run_id} ({handle.engine}) {engine_phase.value}; "
         f"SLA {verdict}. KPIs: {kpi_text or 'none reported'}"
@@ -3207,7 +3220,7 @@ def engine_collection_index(state: PipelineState, config: RunnableConfig) -> Com
         final_status = PhaseStatus.ABORTED.value
         fields["errors"] = [f"engine run {handle.external_run_id} was aborted"]
         goto = "finalize"
-    elif engine_phase is EngineRunPhase.FAILED or not summary.passed:
+    elif engine_phase is EngineRunPhase.FAILED or summary.passed is False:
         final_status = PhaseStatus.FAILED.value
         phase_errors = list(summary.sla_breaches)
         if not phase_errors:

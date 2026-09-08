@@ -123,6 +123,18 @@ describe('RunDetailPage', () => {
     expect(within(row).getByText('Passed')).toBeInTheDocument()
   })
 
+  it('keeps unknown test outcomes distinct from pass and failure', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    const state = detail.values as { phase_results: { execution: { test_summary: { passed: boolean | null } } } }
+    state.phase_results.execution.test_summary.passed = null
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
+    const row = await screen.findByTestId('kpi-row')
+    expect(within(row).getByText('Not available')).toBeInTheDocument()
+    expect(within(row).queryByText('Passed')).not.toBeInTheDocument()
+    expect(within(row).queryByText('Failed')).not.toBeInTheDocument()
+  })
+
   it('shows the pending-gate slim banner with a live Review link from non-gate phases (D3)', async () => {
     server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])

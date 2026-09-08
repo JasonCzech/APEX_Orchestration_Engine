@@ -75,10 +75,10 @@ export type GateName = z.infer<typeof GateNameSchema>;
 /** apex.ports.execution_engine.LiveStats — always all four keys on the wire. */
 export const LiveStatsSchema = z
   .object({
-    vusers: z.number(),
-    tps: z.number(),
-    error_rate: z.number(),
-    p95_ms: z.number(),
+    vusers: z.number().nullable(),
+    tps: z.number().nullable(),
+    error_rate: z.number().nullable(),
+    p95_ms: z.number().nullable(),
   })
   .passthrough();
 export type LiveStats = z.infer<typeof LiveStatsSchema>;

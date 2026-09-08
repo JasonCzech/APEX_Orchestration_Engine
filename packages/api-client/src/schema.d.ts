@@ -755,6 +755,315 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cycles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Cycles */
+        get: operations["listCycles"];
+        put?: never;
+        /** Create Cycle */
+        post: operations["createCycle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Cycle */
+        get: operations["getCycle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Act */
+        post: operations["reviewCycleVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/executions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Executions */
+        get: operations["getCycleExecutions"];
+        put?: never;
+        /** Prepare Execution */
+        post: operations["prepareCycleExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/script-validations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Validation History */
+        get: operations["getCycleScriptValidations"];
+        put?: never;
+        /** Validate Script */
+        post: operations["validateCycleScript"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/followups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Write Action */
+        post: operations["writeCycleFollowup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/next-cycle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Next Cycle */
+        post: operations["startNextCycle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/provider-scripts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Browse */
+        get: operations["getCycleProviderScripts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/provider-scripts/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Script */
+        post: operations["importCycleProviderScript"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/reports/{version_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Freeze Evidence */
+        post: operations["freezeCycleReportEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Results */
+        get: operations["getCycleResults"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Link Run */
+        post: operations["linkCycleRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/scopes/{version_id}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Capture Source */
+        post: operations["captureCycleSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/scripts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Library */
+        get: operations["getCycleScripts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/scripts/{version_id}/artifact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Store Script */
+        post: operations["storeCycleScript"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/scripts/{version_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Script */
+        get: operations["downloadCycleScript"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Sources */
+        get: operations["getCycleSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Version */
+        post: operations["createCycleVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/documents": {
         parameters: {
             query?: never;
@@ -1653,6 +1962,39 @@ export interface components {
             /** Preserved Anchor Id */
             preserved_anchor_id?: string | null;
         };
+        /** CaptureSource */
+        CaptureSource: {
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Connection Version
+             * Format: date-time
+             */
+            connection_version: string;
+            /** Expected Checksum */
+            expected_checksum: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            ref: components["schemas"]["DocRef"];
+            /** Title */
+            title: string;
+        };
+        /** ConnectionChoice */
+        ConnectionChoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Provider */
+            provider: string;
+            /**
+             * Runtime Version
+             * Format: date-time
+             */
+            runtime_version: string;
+        };
         /** ConnectionCreate */
         ConnectionCreate: {
             /** Base Url */
@@ -1936,10 +2278,710 @@ export interface components {
             /** Workspace Id */
             workspace_id?: string | null;
         };
+        /** CycleAction */
+        CycleAction: {
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "submit" | "approve" | "request_revision" | "archive" | "restore";
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Version Id */
+            version_id: string;
+        };
+        /** CycleCreate */
+        CycleCreate: {
+            /** App Id */
+            app_id: string;
+            /** Environment Id */
+            environment_id: string;
+            /**
+             * Mode
+             * @default live
+             * @enum {string}
+             */
+            mode: "live" | "simulation";
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
+        };
+        /** CycleMetric */
+        CycleMetric: {
+            /** Baseline Value */
+            baseline_value?: number | null;
+            /** Difference */
+            difference?: number | null;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Percent Difference */
+            percent_difference?: number | null;
+            /**
+             * Preference
+             * @enum {string}
+             */
+            preference: "higher" | "lower" | "context";
+            /** Unit */
+            unit: string;
+            /** Value */
+            value: number | null;
+        };
+        /** CycleRead */
+        CycleRead: {
+            /** App Id */
+            app_id: string;
+            /** Blockers */
+            blockers: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Environment Id */
+            environment_id: string;
+            /**
+             * Fields
+             * @default {
+             *       "postmortem": [
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "findings",
+             *           "label": "Findings",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "factors",
+             *           "label": "Contributing factors",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "lessons",
+             *           "label": "Lessons learned",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "actions",
+             *           "label": "Follow-up actions, owners and status",
+             *           "options": [],
+             *           "required": true
+             *         }
+             *       ],
+             *       "readiness": [
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "expected",
+             *           "label": "Expected environment configuration",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "observed",
+             *           "label": "Observed inventory and telemetry",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "evidence",
+             *           "label": "Evidence references and observation times",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "select",
+             *           "help": "",
+             *           "key": "status",
+             *           "label": "Readiness assessment",
+             *           "options": [
+             *             "not_checked",
+             *             "blocked",
+             *             "warning",
+             *             "ready"
+             *           ],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "text",
+             *           "help": "",
+             *           "key": "inventory_snapshot_id",
+             *           "label": "Inventory snapshot ID",
+             *           "options": [],
+             *           "required": false
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "target_version",
+             *           "label": "Approved target version",
+             *           "maximum": 2147483647,
+             *           "minimum": 0,
+             *           "options": [],
+             *           "required": false
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "remediation",
+             *           "label": "Blockers, owners and remediation notes",
+             *           "options": [],
+             *           "required": false
+             *         }
+             *       ],
+             *       "report": [
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "executive_summary",
+             *           "label": "Executive summary",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "technical_analysis",
+             *           "label": "Technical analysis",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "Reference immutable measurements, engine and attempt. Do not replace raw measurements with interpretation.",
+             *           "key": "evidence",
+             *           "label": "Execution evidence and versions",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "findings",
+             *           "label": "Findings and baseline differences",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "exclusions",
+             *           "label": "Exclusions and limitations",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "accepted_risks",
+             *           "label": "Accepted risks",
+             *           "options": [],
+             *           "required": false
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "recommendation",
+             *           "label": "Recommendation",
+             *           "options": [],
+             *           "required": true
+             *         }
+             *       ],
+             *       "scope": [
+             *         {
+             *           "control": "multiline",
+             *           "help": "Include requirement keys, titles and performance risks.",
+             *           "key": "requirements",
+             *           "label": "Requirements and risks",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "Record each source title, provider, revision, retrieval time and readability. Retrieval connectors are not available in this editor yet.",
+             *           "key": "source_manifest",
+             *           "label": "Frozen source references",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "included",
+             *           "label": "Included journeys",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "excluded",
+             *           "label": "Excluded scope",
+             *           "options": [],
+             *           "required": false
+             *         }
+             *       ],
+             *       "script": [
+             *         {
+             *           "control": "select",
+             *           "help": "",
+             *           "key": "engine",
+             *           "label": "Execution platform",
+             *           "options": [
+             *             "apex-load",
+             *             "loadrunner"
+             *           ],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "select",
+             *           "help": "",
+             *           "key": "format",
+             *           "label": "Script format",
+             *           "options": [
+             *             "apex_native_json",
+             *             "web_http_html",
+             *             "other_import"
+             *           ],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "Paste native JSON or source text. For an external import, record an immutable artifact reference. This approval does not launch a test.",
+             *           "key": "source",
+             *           "label": "Script source or immutable import reference",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "parameters",
+             *           "label": "Parameter files and dependencies",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "coverage",
+             *           "label": "Requirement and journey coverage",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "Record validation results and tool/provider version. Provider preflight remains required before execution.",
+             *           "key": "validation",
+             *           "label": "Inspection and validation evidence",
+             *           "options": [],
+             *           "required": true
+             *         }
+             *       ],
+             *       "test_plan": [
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "objectives",
+             *           "label": "Objectives",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "journeys",
+             *           "label": "User journeys and requirement coverage",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "Record each journey and its share of traffic.",
+             *           "key": "workload_mix",
+             *           "label": "Workload mix",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "vusers",
+             *           "label": "Concurrent users",
+             *           "maximum": 1000000,
+             *           "minimum": 1,
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "arrival_rate",
+             *           "label": "Arrival rate (requests per second)",
+             *           "maximum": 1000000,
+             *           "minimum": 0,
+             *           "options": [],
+             *           "required": false
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "ramp_s",
+             *           "label": "Ramp (seconds)",
+             *           "maximum": 86400,
+             *           "minimum": 0,
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "duration_s",
+             *           "label": "Steady-state duration (seconds)",
+             *           "maximum": 86400,
+             *           "minimum": 1,
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "test_data",
+             *           "label": "Test data and parameterization",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "For each transaction, state latency percentile, error-rate limit and throughput target.",
+             *           "key": "thresholds",
+             *           "label": "Transaction thresholds",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "p95_ms_threshold",
+             *           "label": "Overall p95 latency limit (ms)",
+             *           "maximum": 1000000000000,
+             *           "minimum": 0,
+             *           "options": [],
+             *           "required": false
+             *         },
+             *         {
+             *           "control": "number",
+             *           "help": "",
+             *           "key": "error_rate_threshold",
+             *           "label": "Overall error-rate limit (fraction 0–1)",
+             *           "maximum": 1,
+             *           "minimum": 0,
+             *           "options": [],
+             *           "required": false
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "observability",
+             *           "label": "Observability and evidence collection",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "entry_criteria",
+             *           "label": "Entry criteria",
+             *           "options": [],
+             *           "required": true
+             *         },
+             *         {
+             *           "control": "multiline",
+             *           "help": "",
+             *           "key": "exit_criteria",
+             *           "label": "Exit criteria",
+             *           "options": [],
+             *           "required": true
+             *         }
+             *       ]
+             *     }
+             */
+            fields: {
+                [key: string]: components["schemas"]["DeliverableField"][];
+            };
+            /**
+             * Followups
+             * @default []
+             */
+            followups: {
+                [key: string]: unknown;
+            }[];
+            /** Id */
+            id: string;
+            /** Independent Review */
+            independent_review: boolean;
+            /** Mode */
+            mode: string;
+            /** Name */
+            name: string;
+            /** Origin Cycle Id */
+            origin_cycle_id?: string | null;
+            /** Owner */
+            owner: string;
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Versions */
+            versions: components["schemas"]["CycleVersionRead"][];
+        };
+        /** CycleResult */
+        CycleResult: {
+            /** Attempt */
+            attempt: number;
+            /**
+             * Bindings Verified
+             * @default false
+             * @constant
+             */
+            bindings_verified: false;
+            /**
+             * Comparison Available
+             * @default false
+             */
+            comparison_available: boolean;
+            /** Ended At */
+            ended_at: string | null;
+            /** Engine */
+            engine: string;
+            /**
+             * Evidence Checksum
+             * @default
+             */
+            evidence_checksum: string;
+            /**
+             * Evidence Status
+             * @enum {string}
+             */
+            evidence_status: "available" | "partial" | "unavailable";
+            /** Execution Status */
+            execution_status: string;
+            /** Id */
+            id: string;
+            /** Metrics */
+            metrics: components["schemas"]["CycleMetric"][];
+            /** Sla Breaches */
+            sla_breaches: string[];
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Test Outcome */
+            test_outcome?: ("passed" | "failed") | null;
+            /** Thread Id */
+            thread_id: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** CycleResultsRead */
+        CycleResultsRead: {
+            /** Baseline Id */
+            baseline_id: string | null;
+            /**
+             * Evidence Source
+             * @default engine_run_history
+             * @constant
+             */
+            evidence_source: "engine_run_history";
+            /**
+             * Read At
+             * Format: date-time
+             */
+            read_at: string;
+            /** Results */
+            results: components["schemas"]["CycleResult"][];
+            /** Revision */
+            revision: number;
+        };
+        /** CycleSummary */
+        CycleSummary: {
+            /** App Id */
+            app_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Environment Id */
+            environment_id: string;
+            /** Id */
+            id: string;
+            /** Independent Review */
+            independent_review: boolean;
+            /** Mode */
+            mode: string;
+            /** Name */
+            name: string;
+            /** Owner */
+            owner: string;
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** CycleVersionRead */
+        CycleVersionRead: {
+            /** Approval Current */
+            approval_current: boolean;
+            /** Archived */
+            archived: boolean;
+            /** Available Actions */
+            available_actions: string[];
+            /** Change Summary */
+            change_summary: string;
+            /** Checksum */
+            checksum: string;
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /** Created At */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Dependencies */
+            dependencies: string[];
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Origin */
+            origin?: {
+                [key: string]: string;
+            } | null;
+            /** Replaces */
+            replaces?: string | null;
+            /** Reviews */
+            reviews: {
+                [key: string]: string;
+            }[];
+            /** Status */
+            status: string;
+            /** Title */
+            title: string;
+            /** Validation Issues */
+            validation_issues: string[];
+        };
+        /** DeliverableField */
+        DeliverableField: {
+            /**
+             * Control
+             * @default multiline
+             * @enum {string}
+             */
+            control: "text" | "multiline" | "number" | "select";
+            /**
+             * Help
+             * @default
+             */
+            help: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /** Maximum */
+            maximum?: number | null;
+            /** Minimum */
+            minimum?: number | null;
+            /**
+             * Options
+             * @default []
+             */
+            options: string[];
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+        };
+        /** DocHit */
+        DocHit: {
+            ref: components["schemas"]["DocRef"];
+            /**
+             * Score
+             * @default 0
+             */
+            score: number;
+            /**
+             * Snippet
+             * @default
+             */
+            snippet: string;
+            /** Title */
+            title: string;
+        };
+        /** DocRef */
+        DocRef: {
+            /** Id */
+            id: string;
+            /** Revision */
+            revision?: string | null;
+            /**
+             * Source
+             * @default stub
+             */
+            source: string;
+            /** Uri */
+            uri?: string | null;
+        };
         /** DocumentArtifactAffinityUpdate */
         DocumentArtifactAffinityUpdate: {
             /** Connection Id */
             connection_id: string;
+        };
+        /** DocumentContent */
+        DocumentContent: {
+            /**
+             * Media Type
+             * @default text/markdown
+             */
+            media_type: string;
+            ref: components["schemas"]["DocRef"];
+            /** Text */
+            text: string;
+            /** Title */
+            title?: string | null;
         };
         /** DocumentListResponse */
         DocumentListResponse: {
@@ -2189,6 +3231,92 @@ export interface components {
             offset: number;
             query: components["schemas"]["ExecutableTranslatedQuery"];
         };
+        /** ExecutionMutationRead */
+        ExecutionMutationRead: {
+            /** Id */
+            id: string;
+            /** Revision */
+            revision: number;
+        };
+        /** ExecutionSnapshot */
+        ExecutionSnapshot: {
+            /** Connection Id */
+            connection_id: string | null;
+            /** Connection Version */
+            connection_version: string | null;
+            /**
+             * Engine
+             * @enum {string}
+             */
+            engine: "apex-load" | "loadrunner";
+            /** Environment Id */
+            environment_id: string;
+            /** Environment Version */
+            environment_version: number | null;
+            /**
+             * Execution Policy
+             * @default sequential
+             * @constant
+             */
+            execution_policy: "sequential";
+            /**
+             * Launch Authority
+             * @enum {string}
+             */
+            launch_authority: "pipeline" | "native_schedule";
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "live" | "simulation";
+            /** Plan Checksum */
+            plan_checksum: string;
+            /** Plan Title */
+            plan_title: string;
+            /** Plan Version Id */
+            plan_version_id: string;
+            /** Readiness Checksum */
+            readiness_checksum: string | null;
+            /** Readiness Version Id */
+            readiness_version_id: string | null;
+            /** Script Artifact Id */
+            script_artifact_id?: string | null;
+            /** Script Artifact Stored At */
+            script_artifact_stored_at?: string | null;
+            /** Script Checksum */
+            script_checksum: string;
+            /** Script Format */
+            script_format: string;
+            /** Script Source Checksum */
+            script_source_checksum: string;
+            /** Script Title */
+            script_title: string;
+            /** Script Version Id */
+            script_version_id: string;
+            /** Workload */
+            workload: {
+                [key: string]: unknown;
+            };
+        };
+        /** ExecutionWorkspaceRead */
+        ExecutionWorkspaceRead: {
+            /** Connections */
+            connections: components["schemas"]["ConnectionChoice"][];
+            /** Inventory Scanned At */
+            inventory_scanned_at: string | null;
+            /** Inventory Snapshot Id */
+            inventory_snapshot_id: string | null;
+            /** Linked Runs */
+            linked_runs: components["schemas"]["RunChoice"][];
+            /** Preparations */
+            preparations: components["schemas"]["PreparationRead"][];
+            /** Recent Runs */
+            recent_runs: components["schemas"]["RunChoice"][];
+            /** Revision */
+            revision: number;
+            /** Target Version */
+            target_version: number | null;
+        };
         /**
          * ExternalResults
          * @description Results produced outside APEX (e.g. by a standalone analysis dashboard).
@@ -2215,6 +3343,41 @@ export interface components {
             summary?: string | null;
             /** Uri */
             uri?: string | null;
+        };
+        /** FollowupWrite */
+        FollowupWrite: {
+            /** Action Id */
+            action_id?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Owner */
+            owner: string;
+            /**
+             * Status
+             * @default open
+             * @enum {string}
+             */
+            status: "open" | "in_progress" | "done" | "cancelled";
+            /** Title */
+            title: string;
+        };
+        /** FreezeReportEvidence */
+        FreezeReportEvidence: {
+            /** Expected Results */
+            expected_results: {
+                [key: string]: string;
+            };
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
         };
         /** GateInterrupt */
         GateInterrupt: {
@@ -2282,6 +3445,32 @@ export interface components {
             /** Role */
             role: string | null;
         };
+        /** ImportProviderScript */
+        ImportProviderScript: {
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Connection Version
+             * Format: date-time
+             */
+            connection_version: string;
+            /** Coverage */
+            coverage: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Expected Source Checksum */
+            expected_source_checksum: string;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Parameters */
+            parameters: string;
+            /** Plan Version Id */
+            plan_version_id: string;
+            /** Remote Script Id */
+            remote_script_id: string;
+            /** Title */
+            title: string;
+        };
         /** InventoryView */
         InventoryView: {
             /** Environment Id */
@@ -2289,6 +3478,13 @@ export interface components {
             snapshot?: components["schemas"]["SnapshotView"] | null;
         };
         JsonValue: unknown;
+        /** LinkCycleRun */
+        LinkCycleRun: {
+            /** Engine Run Id */
+            engine_run_id: string;
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** LogEntryOut */
         LogEntryOut: {
             /** At */
@@ -2486,6 +3682,22 @@ export interface components {
             /** Status */
             status?: string | null;
         };
+        /** NextCycleRequest */
+        NextCycleRequest: {
+            /**
+             * Carry Unresolved Actions
+             * @default true
+             */
+            carry_unresolved_actions: boolean;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Name */
+            name: string;
+            /** Version Ids */
+            version_ids?: string[];
+        };
         /** Page */
         Page: {
             /**
@@ -2637,6 +3849,67 @@ export interface components {
          * @enum {string}
          */
         PortKind: "work_tracking" | "log_search" | "observability" | "documents" | "cluster_inventory" | "source_control" | "execution_engine" | "artifact_store" | "secrets";
+        /** PreflightCheck */
+        PreflightCheck: {
+            /** Detail */
+            detail: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "blocked" | "not_checked";
+        };
+        /** PreparationRead */
+        PreparationRead: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at: string;
+            /** Checks */
+            checks: components["schemas"]["PreflightCheck"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Id */
+            id: string;
+            /**
+             * Launch Available
+             * @default false
+             * @constant
+             */
+            launch_available: false;
+            snapshot: components["schemas"]["ExecutionSnapshot"];
+        };
+        /** PrepareExecution */
+        PrepareExecution: {
+            /** Connection Id */
+            connection_id?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /**
+             * Launch Authority
+             * @default pipeline
+             * @enum {string}
+             */
+            launch_authority: "pipeline" | "native_schedule";
+            /** Plan Version Id */
+            plan_version_id: string;
+            /** Readiness Version Id */
+            readiness_version_id?: string | null;
+            /** Script Version Id */
+            script_version_id: string;
+        };
         /** ProbeResult */
         ProbeResult: {
             /** Detail */
@@ -2713,6 +3986,112 @@ export interface components {
             parent_version_id?: string | null;
             /** Version */
             version: number;
+        };
+        /** ProviderImportRead */
+        ProviderImportRead: {
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Connection Version
+             * Format: date-time
+             */
+            connection_version: string;
+            /**
+             * Content Scope
+             * @default provider_export
+             * @constant
+             */
+            content_scope: "provider_export";
+            /**
+             * Executable Content Verified
+             * @default false
+             * @constant
+             */
+            executable_content_verified: false;
+            /** Id */
+            id: string;
+            /**
+             * Imported At
+             * Format: date-time
+             */
+            imported_at: string;
+            /** Imported By */
+            imported_by: string;
+            /** Remote Name */
+            remote_name: string;
+            /** Remote Project Id */
+            remote_project_id: string;
+            /** Remote Script Id */
+            remote_script_id: string;
+            /** Remote Version */
+            remote_version: string;
+            /** Source Checksum */
+            source_checksum: string;
+            /** Version Id */
+            version_id: string;
+        };
+        /** ProviderScriptExport */
+        ProviderScriptExport: {
+            /**
+             * Content Scope
+             * @default provider_export
+             * @constant
+             */
+            content_scope: "provider_export";
+            /**
+             * Executable Content Verified
+             * @default false
+             * @constant
+             */
+            executable_content_verified: false;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
+            /** Protocol */
+            protocol: string;
+            /** Source */
+            source: string;
+            /** Source Checksum */
+            source_checksum: string;
+            /** Version */
+            version: string;
+        };
+        /** ProviderScriptSummary */
+        ProviderScriptSummary: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
+            /** Protocol */
+            protocol: string;
+            /** Version */
+            version: string;
+        };
+        /** ProviderScriptsRead */
+        ProviderScriptsRead: {
+            /** Blockers */
+            blockers: string[];
+            /** Connection Version */
+            connection_version?: string | null;
+            /** Connections */
+            connections: components["schemas"]["ConnectionChoice"][];
+            /** Imports */
+            imports: components["schemas"]["ProviderImportRead"][];
+            preview?: components["schemas"]["ProviderScriptExport"] | null;
+            /** Revision */
+            revision: number;
+            /** Scripts */
+            scripts: components["schemas"]["ProviderScriptSummary"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
         };
         /** RerunPipelineRequest */
         RerunPipelineRequest: {
@@ -2841,6 +4220,30 @@ export interface components {
              */
             grace_period_seconds: number;
         };
+        /** RunChoice */
+        RunChoice: {
+            /** Attempt */
+            attempt: number;
+            /**
+             * Bindings Verified
+             * @default false
+             * @constant
+             */
+            bindings_verified: false;
+            /** Engine */
+            engine: string;
+            /** Id */
+            id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
+            /** Thread Id */
+            thread_id: string;
+        };
         /** SaveVersionRequest */
         SaveVersionRequest: {
             /** Content */
@@ -2918,6 +4321,87 @@ export interface components {
             /** Project Id */
             project_id: string;
         };
+        /** ScriptArtifactRead */
+        ScriptArtifactRead: {
+            /** Connection Id */
+            connection_id: string;
+            /**
+             * Connection Version
+             * Format: date-time
+             */
+            connection_version: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Id */
+            id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Source Checksum */
+            source_checksum: string;
+            /** Stored At */
+            stored_at: string | null;
+            /** Version Checksum */
+            version_checksum: string;
+            /** Version Id */
+            version_id: string;
+        };
+        /** ScriptLibraryRead */
+        ScriptLibraryRead: {
+            /** Artifacts */
+            artifacts: components["schemas"]["ScriptArtifactRead"][];
+            /** Connections */
+            connections: components["schemas"]["ConnectionChoice"][];
+            /** Revision */
+            revision: number;
+        };
+        /** ScriptValidationRead */
+        ScriptValidationRead: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /**
+             * Current
+             * @default false
+             */
+            current: boolean;
+            /** Finished At */
+            finished_at: string | null;
+            /** Id */
+            id: string;
+            /** Issues */
+            issues: string[];
+            /** Preparation Id */
+            preparation_id: string;
+            /** Request Key */
+            request_key: string;
+            /** Status */
+            status: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** ScriptValidationWorkspace */
+        ScriptValidationWorkspace: {
+            /** Blockers */
+            blockers: string[];
+            /** Revision */
+            revision: number;
+            /**
+             * Validation Scope
+             * @default Native script source only; no workload, capacity or target certification
+             */
+            validation_scope: string;
+            /** Validations */
+            validations: components["schemas"]["ScriptValidationRead"][];
+        };
         /** ServiceInfo */
         ServiceInfo: {
             /**
@@ -2957,6 +4441,28 @@ export interface components {
             services: components["schemas"]["ServiceInfo"][];
             /** Stale */
             stale: boolean;
+        };
+        /** SourcePreview */
+        SourcePreview: {
+            /**
+             * Blockers
+             * @default []
+             */
+            blockers: string[];
+            /** Checksum */
+            checksum?: string | null;
+            /** Connection Version */
+            connection_version?: string | null;
+            /** Connections */
+            connections: components["schemas"]["ConnectionChoice"][];
+            document?: components["schemas"]["DocumentContent"] | null;
+            /**
+             * Hits
+             * @default []
+             */
+            hits: components["schemas"]["DocHit"][];
+            /** Revision */
+            revision: number;
         };
         /**
          * StartPipelineRequest
@@ -3018,6 +4524,13 @@ export interface components {
             stream_url: string;
             /** Thread Id */
             thread_id: string;
+        };
+        /** StoreCycleScript */
+        StoreCycleScript: {
+            /** Connection Id */
+            connection_id: string;
+            /** Expected Revision */
+            expected_revision: number;
         };
         /** SystemInfo */
         SystemInfo: {
@@ -3139,6 +4652,13 @@ export interface components {
              */
             to: string;
         };
+        /** ValidateCycleScript */
+        ValidateCycleScript: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -3151,6 +4671,28 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VersionCreate */
+        VersionCreate: {
+            /** Change Summary */
+            change_summary: string;
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /** Dependencies */
+            dependencies?: string[];
+            /** Expected Revision */
+            expected_revision: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "scope" | "test_plan" | "readiness" | "script" | "report" | "postmortem";
+            /** Replaces */
+            replaces?: string | null;
+            /** Title */
+            title: string;
         };
         /** WindowIn */
         WindowIn: {
@@ -5249,6 +6791,720 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ContextSummaryAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listCycles: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    createCycle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CycleCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reviewCycleVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CycleAction"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleExecutions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionWorkspaceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepareCycleExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PrepareExecution"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionMutationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleScriptValidations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScriptValidationWorkspace"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validateCycleScript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ValidateCycleScript"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScriptValidationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    writeCycleFollowup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FollowupWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    startNextCycle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NextCycleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleProviderScripts: {
+        parameters: {
+            query?: {
+                connection_id?: string | null;
+                remote_script_id?: string | null;
+                offset?: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderScriptsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    importCycleProviderScript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportProviderScript"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProviderImportRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    freezeCycleReportEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FreezeReportEvidence"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleResults: {
+        parameters: {
+            query?: {
+                baseline_id?: string | null;
+            };
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleResultsRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    linkCycleRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LinkCycleRun"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionMutationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    captureCycleSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureSource"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleScripts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScriptLibraryRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    storeCycleScript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StoreCycleScript"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScriptArtifactRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    downloadCycleScript: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleSources: {
+        parameters: {
+            query?: {
+                connection_id?: string | null;
+                title?: string;
+                page_id?: string | null;
+                revision?: string | null;
+            };
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourcePreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    createCycleVersion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleRead"];
                 };
             };
             /** @description Validation Error */

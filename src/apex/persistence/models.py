@@ -887,3 +887,125 @@ class Draft(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class TestCycle(Base):
+    """Additive cycle aggregate; existing pipeline checkpoints remain untouched."""
+
+    __tablename__ = "test_cycles"
+    __table_args__ = (UniqueConstraint("origin_cycle_id", "origin_request_key"),)
+    origin_cycle_id: Mapped[str | None] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT")
+    )
+    origin_request_key: Mapped[str | None] = mapped_column(String(32))
+    origin_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    followups: Mapped[list[dict[str, Any]]] = mapped_column(
+        JsonColumn, default=list, server_default=text("'[]'")
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    project_id: Mapped[str] = mapped_column(String(255), index=True)
+    app_id: Mapped[str] = mapped_column(String(255))
+    name: Mapped[str] = mapped_column(String(255))
+    environment_id: Mapped[str] = mapped_column(String(255))
+    mode: Mapped[str] = mapped_column(String(32))
+    owner: Mapped[str] = mapped_column(String(255))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    independent_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    versions: Mapped[list[dict[str, Any]]] = mapped_column(JsonColumn, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CycleExecutionPreparation(Base):
+    """Immutable approved-version bindings; never an engine launch receipt."""
+
+    __tablename__ = "cycle_execution_preparations"
+    __table_args__ = (UniqueConstraint("cycle_id", "idempotency_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT"), index=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(32))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn)
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CycleRunLink(Base):
+    """A scoped reference to an existing attempt, without rewriting its provenance."""
+
+    __tablename__ = "cycle_run_links"
+    __table_args__ = (UniqueConstraint("cycle_id", "engine_run_id"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT"), index=True
+    )
+    engine_run_id: Mapped[str] = mapped_column(ForeignKey("engine_runs.id", ondelete="RESTRICT"))
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CycleScriptArtifact(Base):
+    """One immutable source object per cycle script version, with durable affinity."""
+
+    __tablename__ = "cycle_script_artifacts"
+    __table_args__ = (UniqueConstraint("cycle_id", "version_id"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT"), index=True
+    )
+    version_id: Mapped[str] = mapped_column(String(32))
+    version_checksum: Mapped[str] = mapped_column(String(64))
+    source_checksum: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    artifact_key: Mapped[str] = mapped_column(String(255))
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"))
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    stored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CycleScriptValidation(Base):
+    __tablename__ = "cycle_script_validations"
+    __table_args__ = (UniqueConstraint("cycle_id", "request_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT"), index=True
+    )
+    preparation_id: Mapped[str] = mapped_column(
+        ForeignKey("cycle_execution_preparations.id", ondelete="RESTRICT")
+    )
+    request_key: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    issues: Mapped[list[str]] = mapped_column(JsonColumn, default=list)
+    warnings: Mapped[list[str]] = mapped_column(JsonColumn, default=list)
+    created_by: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CycleProviderScriptImport(Base):
+    __tablename__ = "cycle_provider_script_imports"
+    __table_args__ = (UniqueConstraint("cycle_id", "request_key"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT"), index=True
+    )
+    version_id: Mapped[str] = mapped_column(String(32))
+    request_key: Mapped[str] = mapped_column(String(32))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
+    connection_id: Mapped[str] = mapped_column(ForeignKey("connections.id", ondelete="RESTRICT"))
+    connection_version: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    remote_script_id: Mapped[str] = mapped_column(String(255))
+    remote_name: Mapped[str] = mapped_column(String(255))
+    remote_project_id: Mapped[str] = mapped_column(String(255))
+    remote_version: Mapped[str] = mapped_column(String(255))
+    source_checksum: Mapped[str] = mapped_column(String(64))
+    imported_by: Mapped[str] = mapped_column(String(255))
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

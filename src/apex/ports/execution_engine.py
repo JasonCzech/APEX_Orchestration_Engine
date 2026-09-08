@@ -43,14 +43,14 @@ class EngineProviderRunNotFoundError(KeyError):
 
 
 class LiveStats(BaseModel):
-    """Normalized live metrics; engines that lack a metric report it as 0/None upstream."""
+    """Normalized live metrics; unavailable is None, measured zero remains zero."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    vusers: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000)
-    tps: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000_000)
-    error_rate: FiniteFloat = Field(default=0.0, ge=0, le=1)
-    p95_ms: FiniteFloat = Field(default=0.0, ge=0, le=1_000_000_000_000)
+    vusers: FiniteFloat | None = Field(default=None, ge=0, le=1_000_000_000)
+    tps: FiniteFloat | None = Field(default=None, ge=0, le=1_000_000_000_000)
+    error_rate: FiniteFloat | None = Field(default=None, ge=0, le=1)
+    p95_ms: FiniteFloat | None = Field(default=None, ge=0, le=1_000_000_000_000)
 
 
 class EngineRunStatus(BaseModel):
@@ -98,4 +98,11 @@ class ExecutionEnginePort(Protocol):
 
     async def teardown(self, handle: EngineHandle) -> None:
         """Release provider-side resources idempotently; safe to repeat after a crash."""
+        ...
+
+
+@runtime_checkable
+class ScriptSourceValidationPort(Protocol):
+    async def validate_script_source(self, source: str) -> ValidationReport:
+        """Validate exact source without substituting defaults, creating scripts or launching."""
         ...

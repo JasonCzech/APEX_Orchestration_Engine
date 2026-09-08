@@ -162,7 +162,9 @@ def test_external_results_legacy_replay_rejects_credentials_without_reflection()
     assert secret not in str(raised.value)
 
 
-def test_anthropic_backend_without_key_degrades_to_stub(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_anthropic_backend_without_key_blocks_instead_of_using_stub(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         ps, "get_settings", lambda: SimpleNamespace(llm=SimpleNamespace(anthropic_api_key=None))
     )
@@ -174,8 +176,9 @@ def test_anthropic_backend_without_key_degrades_to_stub(monkeypatch: pytest.Monk
     }
     update = agent(state, config("t", agent_backend="anthropic"))
     entry = update["phase_results"]["reporting"]
-    assert "stub result" in entry["summary"]
-    assert any("no Anthropic API key" in warning for warning in entry["warnings"])
+    assert entry["status"] == "failed"
+    assert "stub result" not in entry["summary"]
+    assert entry["errors"] == ["agent_backend=anthropic requires an Anthropic API key"]
 
 
 def test_default_backend_uses_stub() -> None:
@@ -666,3 +669,51 @@ def test_accumulate_usage_saturates_repeated_tool_loop_totals() -> None:
     assert acc["output_tokens"] == MAX_TOKEN_COUNT
     assert acc["total_tokens"] == MAX_TOKEN_COUNT
     assert acc["output_token_details"]["reasoning"] == MAX_TOKEN_COUNT
+
+
+@pytest.mark.parametrize("outcome", [None, False, True])
+def test_imported_outcome_is_preserved_end_to_end(outcome: bool | None) -> None:
+    from apex.services.pipeline_read import map_thread_summary
+
+    external = {**EXTERNAL}
+    if outcome is None:
+        external.pop("passed")
+    else:
+        external["passed"] = outcome
+    result = compiled().invoke(
+        {"title": "Import", "external_results": external},
+        config("nullable-result", phases=["reporting"], gates={"reporting": dict(AUTO)}),
+    )
+    assert result["phase_results"]["execution"]["test_summary"]["passed"] is outcome
+    projection = map_thread_summary({"thread_id": "nullable-result", "values": result})
+    assert projection["execution_result"] == (
+        "passed" if outcome is True else "failed" if outcome is False else None
+    )
+    if outcome is None:
+        assert "unknown (not a pass)" in result["phase_results"]["reporting"]["summary"]
+
+
+def test_historical_import_is_qualified_without_mutating_evidence() -> None:
+    from copy import deepcopy
+
+    from apex.services.pipeline_public import public_pipeline_state
+
+    entry = {
+        "external": True,
+        "status": "succeeded",
+        "test_summary": {"engine": "import", "passed": True},
+    }
+    state = {"phase_results": {"execution": entry}}
+    original = deepcopy(state)
+    projected = public_pipeline_state(state)
+    assert projected["phase_results"]["execution"]["test_summary"]["passed"] is None
+    assert "unknown" in ps._reporting_kpi_suffix(cast(PipelineState, state))
+    assert state == original
+
+
+def test_stub_provenance_survives_public_projection() -> None:
+    from apex.services.pipeline_public import public_pipeline_state
+
+    update = ps._make_agent(Phase.STORY_ANALYSIS)({"title": "Demo"}, config("provenance"))
+    projected = public_pipeline_state(update)
+    assert projected["phase_results"]["story_analysis"]["provenance"] == "stub"

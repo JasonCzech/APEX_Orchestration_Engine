@@ -175,7 +175,7 @@ export type LoadTestSpec = z.infer<typeof LoadTestSpecSchema>;
 export const TestResultSummarySchema = z
   .object({
     engine: z.string().optional(),
-    passed: z.boolean(),
+    passed: z.boolean().nullish(),
     kpis: z.record(z.number()).optional(),
     sla_breaches: z.array(z.string()).optional(),
     notes: z.string().nullish(),
@@ -201,6 +201,7 @@ export type EnginePollSample = z.infer<typeof EnginePollSampleSchema>;
  */
 export const PhaseResultEntrySchema = z
   .object({
+    provenance: z.enum(["stub", "llm", "simulator", "live_provider", "imported"]).optional(),
     // PhaseResult model fields
     phase: PhaseNameSchema.optional(),
     status: PhaseStatusSchema.optional(),

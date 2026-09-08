@@ -92,6 +92,7 @@ from apex.domain.integrations import (
     ValidationReport,
 )
 from apex.domain.pipeline import MAX_CONTEXT_REF_CHARS, ArtifactRef, EngineHandle
+from apex.domain.provider_scripts import ProviderScriptExport, ProviderScriptSummary
 from apex.ports.apex_load_control import NativeRunSnapshot
 from apex.ports.artifact_store import ArtifactStorePort, engine_artifact_key
 from apex.ports.execution_engine import (
@@ -517,22 +518,18 @@ def _live_stats_from(test: dict[str, Any]) -> LiveStats | None:
         return None
     if not isinstance(metrics, dict):
         raise RuntimeError("apex load test field 'live_metrics' must be an object")
+
+    def metric(field: str, maximum: float = 1_000_000_000_000.0) -> float | None:
+        if metrics.get(field) is None:
+            return None
+        return _provider_number_field(metrics, field, "live_metrics", maximum=maximum)
+
+    error_pct = metric("error_pct", 100)
     return LiveStats(
-        vusers=_provider_number_field(
-            metrics,
-            "active_vusers",
-            "live_metrics",
-            maximum=1_000_000_000,
-        ),
-        tps=_provider_number_field(metrics, "tps", "live_metrics"),
-        error_rate=_provider_number_field(
-            metrics,
-            "error_pct",
-            "live_metrics",
-            maximum=100,
-        )
-        / 100.0,
-        p95_ms=_provider_number_field(metrics, "p95_ms", "live_metrics"),
+        vusers=metric("active_vusers", 1_000_000_000),
+        tps=metric("tps"),
+        error_rate=error_pct / 100.0 if error_pct is not None else None,
+        p95_ms=metric("p95_ms"),
     )
 
 
@@ -641,7 +638,7 @@ def _kpis_from_report(report: dict[str, Any]) -> dict[str, float]:
                 total_tx += tx
             if total_tx > 0:
                 p95_ms = weighted / total_tx
-    return {
+    result = {
         "tps_avg": round(tps_avg, 1),
         "p95_ms": round(p95_ms, 1),
         "error_rate": _provider_number_field(
@@ -658,6 +655,18 @@ def _kpis_from_report(report: dict[str, Any]) -> dict[str, float]:
             maximum=1_000_000_000,
         ),
     }
+    if not tps_points and "peak_tps" not in overview:
+        result.pop("tps_avg")
+    if not p95_points and not any(
+        isinstance(action, dict) and "p95_ms" in action and action.get("transactions", 0) > 0
+        for action in report.get("by_action", {}).values()
+    ):
+        result.pop("p95_ms")
+    if "error_pct" not in overview:
+        result.pop("error_rate")
+    if "peak_active_vusers" not in overview:
+        result.pop("vusers_peak")
+    return result
 
 
 def _kpis_from_live(test: dict[str, Any]) -> dict[str, float]:
@@ -678,7 +687,7 @@ def _kpis_from_live(test: dict[str, Any]) -> dict[str, float]:
         ),
         maximum=1_000_000_000,
     )
-    return {
+    result = {
         "tps_avg": _provider_number_field(metrics, "tps", "live_metrics"),
         "p95_ms": _provider_number_field(metrics, "p95_ms", "live_metrics"),
         "error_rate": _provider_number_field(
@@ -690,6 +699,12 @@ def _kpis_from_live(test: dict[str, Any]) -> dict[str, float]:
         / 100.0,
         "vusers_peak": vusers_peak,
     }
+    for source, output in (("tps", "tps_avg"), ("p95_ms", "p95_ms"), ("error_pct", "error_rate")):
+        if source not in metrics:
+            result.pop(output)
+    if "total_vusers" not in test and "active_vusers" not in metrics:
+        result.pop("vusers_peak")
+    return result
 
 
 def _error_text(response: httpx.Response) -> str:
@@ -1910,6 +1925,107 @@ class ApexLoadExecutionEngine:
 
     # ── port surface ──────────────────────────────────────────────────────────
 
+    def _export_summary(self, stored: dict[str, Any]) -> ProviderScriptSummary:
+        if not self._project_id or stored.get("project_id") != self._project_id:
+            raise RuntimeError("Script export is not in the configured provider project")
+        for field in ("name", "version", "protocol"):
+            if not isinstance(stored.get(field), str):
+                raise RuntimeError("Provider script summary fields must be strings")
+        return ProviderScriptSummary(
+            id=_provider_identifier(stored.get("id"), "script export identity"),
+            name=bounded_diagnostic(stored.get("name"), max_chars=255),
+            project_id=self._project_id,
+            version=bounded_diagnostic(stored.get("version", ""), max_chars=255),
+            protocol=bounded_diagnostic(stored.get("protocol", ""), max_chars=64),
+        )
+
+    async def list_script_exports(self) -> list[ProviderScriptSummary]:
+        if not self._project_id:
+            raise RuntimeError("Script browsing requires a configured provider project")
+        response = await self._request(
+            "GET", "/api/v1/scripts", params={"project_id": self._project_id}
+        )
+        data = _json_object(response, "script library")
+        rows = _provider_list_field(data, "scripts", "script library", max_items=5000)
+        total = _provider_total(data, len(rows), "script library")
+        if (total is not None and total != len(rows)) or any(
+            data.get(field, len(rows)) != len(rows) for field in ("count", "total")
+        ):
+            raise RuntimeError("Provider script library is incomplete")
+        result = []
+        seen = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("Provider script library contains invalid entries")
+            summary = self._export_summary(row)
+            if summary.id in seen:
+                raise RuntimeError("Provider script library contains duplicate identities")
+            seen.add(summary.id)
+            result.append(summary)
+        return result
+
+    async def read_script_export(self, script_id: str) -> ProviderScriptExport:
+        script_id = _provider_identifier(script_id, "requested script export identity")
+        if not self._project_id:
+            raise RuntimeError("Script browsing requires a configured provider project")
+        response = await self._request(
+            "GET", f"/api/v1/scripts/{script_id}", not_found="Provider script not found"
+        )
+        data = _json_object(response, "script export")
+        summary = self._export_summary(data)
+        source = data.get("script")
+        if summary.id != script_id or not isinstance(source, dict):
+            raise RuntimeError("Provider script export identity is invalid")
+        if source.get("id") != script_id or source.get("project_id") != self._project_id:
+            raise RuntimeError("Nested provider script identity is invalid")
+        if any(source.get(field) != data.get(field) for field in ("name", "version", "protocol")):
+            raise RuntimeError("Provider script export metadata conflicts with its source")
+        validate_json_object(
+            source, label="provider script export", max_bytes=150_000, max_nodes=4000
+        )
+        text = json.dumps(
+            source, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
+        if contains_credential_material(source) or "[REDACTED]" in text.upper():
+            raise RuntimeError(
+                "Provider export contains credentials or redacted source; "
+                "supply complete reviewed source"
+            )
+        if len(text.encode("utf-8")) > 150_000:
+            raise RuntimeError("Provider script export exceeds the source byte limit")
+        return ProviderScriptExport(
+            **summary.model_dump(),
+            source=text,
+            source_checksum=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
+
+    async def validate_script_source(self, source: str) -> ValidationReport:
+        """Validate the stored native DSL unchanged; do not create provider resources."""
+        if not isinstance(source, str) or not source or len(source.encode("utf-8")) > 150_000:
+            return ValidationReport(
+                ok=False, issues=["Native source must be 1–150,000 UTF-8 bytes"]
+            )
+        try:
+            script = parse_json_bytes(source, context="approved script source")
+            if not isinstance(script, dict) or not script:
+                raise ValueError("Native script must be an object")
+            validate_json_object(script, label="script", max_bytes=150_000, max_nodes=4000)
+        except (ValueError, RuntimeError):
+            return ValidationReport(
+                ok=False, issues=["Native source must be a bounded JSON object"]
+            )
+        payload: dict[str, Any] = {"script": script}
+        if self._project_id:
+            payload["project_id"] = self._project_id
+        response = await self._request("POST", "/api/v1/scripts/validate", json=payload)
+        data = _json_object(response, "script validation")
+        accepted = _provider_boolean(data, "valid", "script validation")
+        issues = _provider_messages(data, "issues", "script validation")
+        warnings = _provider_messages(data, "warnings", "script validation")
+        if not accepted and not issues:
+            issues = ["APEX Load rejected the script without diagnostic details"]
+        return ValidationReport(ok=accepted and not issues, issues=issues, warnings=warnings)
+
     async def validate(self, spec: LoadTestSpec) -> ValidationReport:
         """Local structural checks, then APEX Load's server-side script validation
         (POST /api/v1/scripts/validate for drafts; POST /scripts/{id}/validate
@@ -1979,7 +2095,8 @@ class ApexLoadExecutionEngine:
             if not _provider_boolean(data, "valid", "script validation"):
                 _extend_validation_issues(
                     issues,
-                    _provider_messages(data, "issues", "script validation"),
+                    _provider_messages(data, "issues", "script validation")
+                    or ["APEX Load rejected the script without diagnostic details"],
                 )
         for index, ref in named_refs:
             if not _is_safe_named_ref(ref):
@@ -1998,7 +2115,8 @@ class ApexLoadExecutionEngine:
             if not _provider_boolean(data, "valid", "script validation"):
                 _extend_validation_issues(
                     issues,
-                    _provider_messages(data, "issues", "script validation"),
+                    _provider_messages(data, "issues", "script validation")
+                    or ["APEX Load rejected the script without diagnostic details"],
                 )
         if not issues and self._native_control_enabled and named_refs and not inline_scripts:
             native_body = _test_request_body(

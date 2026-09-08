@@ -20,5 +20,5 @@ walking skeleton (M1) ship before any real integration exists.
 ## Consequences
 Graph nodes and routers resolve adapters through the same `ConnectionResolver`
 (project-scoped), so the API and the graph can never disagree about which external
-system a project talks to. Real adapters (Jira/ADO/ELK/k8s, LoadRunner/APEX Load)
+system a project talks to. Real adapters (Jira/Jira Align/ELK/k8s, LoadRunner/APEX Load)
 land incrementally behind unchanged interfaces.

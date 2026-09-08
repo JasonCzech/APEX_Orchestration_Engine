@@ -69,8 +69,8 @@ export function deriveTimeline(state: PipelineState): TimelineEvent[] {
     if (entry.test_summary && entry.ended_at) {
       push({
         at: entry.ended_at,
-        tone: entry.test_summary.passed ? 'success' : 'danger',
-        label: `Engine summary collected — ${entry.test_summary.passed ? 'passed' : 'failed'}`,
+        tone: entry.test_summary.passed === true ? 'success' : entry.test_summary.passed === false ? 'danger' : 'neutral',
+        label: `Engine summary collected — ${entry.test_summary.passed === true ? 'passed' : entry.test_summary.passed === false ? 'failed' : 'Not available'}`,
         detail: label,
       })
     }

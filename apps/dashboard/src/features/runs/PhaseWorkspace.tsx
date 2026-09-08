@@ -162,8 +162,8 @@ function KpiPills({ summary }: { summary: TestResultSummary }) {
           <span className="kpi-value">{pill.value}</span>
         </span>
       ))}
-      <span className={`status-badge ${summary.passed ? 'success' : 'danger'}`}>
-        {summary.passed ? 'Passed' : 'Failed'}
+      <span className={`status-badge ${summary.passed === true ? 'success' : summary.passed === false ? 'danger' : 'neutral'}`}>
+        {summary.passed === true ? 'Passed' : summary.passed === false ? 'Failed' : 'Not available'}
       </span>
     </div>
   )
@@ -275,6 +275,9 @@ function PhaseDetailsTab({
 
   return (
     <div role="tabpanel" aria-label="Phase details">
+      <p className="workspace-caption">
+        Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : 'Not recorded'}
+      </p>
       {entry.test_summary && <KpiPills summary={entry.test_summary} />}
       {paragraphs.length > 0 ? (
         <div className="workspace-summary">

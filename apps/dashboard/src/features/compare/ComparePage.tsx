@@ -350,8 +350,8 @@ export function ComparePage() {
                     return (
                       <td key={run.id} data-testid={`compare-passed-${run.id}`}>
                         {summary ? (
-                          <span className={`status-badge ${summary.passed ? 'success' : 'danger'}`}>
-                            {summary.passed ? 'passed' : 'failed'}
+                          <span className={`status-badge ${summary.passed === true ? 'success' : summary.passed === false ? 'danger' : 'neutral'}`}>
+                            {summary.passed === true ? 'passed' : summary.passed === false ? 'failed' : 'Not available'}
                           </span>
                         ) : (
                           <span className="compare-muted">{EM_DASH}</span>

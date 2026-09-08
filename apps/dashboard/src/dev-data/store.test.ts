@@ -496,3 +496,18 @@ describe('dev-data store', () => {
     expect(errorsOnly.totals.errors).toBe(errorsOnly.totals.events)
   })
 })
+
+
+it('rejects retired ADO imports in demo mode without redirecting them to Jira', async () => {
+  const store = createDevDataStore()
+  for (const body of [
+    {connection_id: 'conn-ado', query: {provider: 'ado', query: 'SELECT [System.Id] FROM WorkItems'}},
+    {query: {provider: 'ado', query: 'SELECT [System.Id] FROM WorkItems'}},
+  ]) {
+    const response = await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', {
+      method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body),
+    }))
+    expect(response?.status).toBe(422)
+    expect(await response?.text()).toContain('Jira Align')
+  }
+})

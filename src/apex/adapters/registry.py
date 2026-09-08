@@ -57,11 +57,19 @@ class AdapterRegistry:
 
     @classmethod
     def providers_for(cls, kind: PortKind) -> list[str]:
-        return sorted(provider for k, provider in cls._factories if k == kind)
+        return sorted(
+            provider
+            for k, provider in cls._factories
+            if k == kind and not (kind is PortKind.WORK_TRACKING and provider == "ado")
+        )
 
     @classmethod
     async def build(cls, conn: ConnectionConfig, secrets: SecretsPort | None = None) -> Any:
         """Resolve conn.secret_ref (if any) through `secrets`, then build the adapter."""
+        if conn.kind is PortKind.WORK_TRACKING and conn.provider.casefold() == "ado":
+            raise ValueError(
+                "Azure DevOps work tracking has been retired; configure Jira Align for user stories"
+            )
         factory = cls._factories.get((conn.kind, conn.provider))
         if factory is None:
             registered = cls.providers_for(conn.kind)

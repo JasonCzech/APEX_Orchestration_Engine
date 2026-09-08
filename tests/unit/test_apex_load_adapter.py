@@ -2545,3 +2545,142 @@ def test_registered_with_adapter_registry() -> None:
     from apex.adapters.registry import AdapterRegistry
 
     assert "apex_load" in AdapterRegistry.providers_for(PortKind.EXECUTION_ENGINE)
+
+
+def test_absent_metrics_are_not_projected_as_measured_zero() -> None:
+    from apex.adapters.apex_load.engine import _kpis_from_live, _kpis_from_report, _live_stats_from
+
+    assert _kpis_from_report({}) == {}
+    assert _kpis_from_live({"live_metrics": {}}) == {}
+    assert _kpis_from_live({"live_metrics": {"tps": 0}}) == {"tps_avg": 0}
+    stats = _live_stats_from({"live_metrics": {"tps": 0}})
+    assert stats is not None and stats.tps == 0 and stats.p95_ms is None
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize("ref", ['{"name":"approved"}', "existing-script"])
+async def test_rejected_script_with_no_issues_never_validates_successfully(ref):
+    adapter = make_adapter()
+    path = (
+        "/api/v1/scripts/validate"
+        if ref.startswith("{")
+        else "/api/v1/scripts/existing-script/validate"
+    )
+    respx.post(BASE + path).respond(200, json={"valid": False, "issues": []})
+    try:
+        result = await adapter.validate(LoadTestSpec(title="Review", script_refs=[ref]))
+        assert result.ok is False
+        assert result.issues == ["APEX Load rejected the script without diagnostic details"]
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_exact_source_validation_never_substitutes_defaults_or_creates_resources():
+    adapter = make_adapter()
+    source = {
+        "name": "approved-script",
+        "description": "x" * 3000,
+        "steps": [{"type": "http", "url": "https://target.example"}],
+    }
+    route = respx.post(BASE + "/api/v1/scripts/validate").respond(
+        200, json={"valid": True, "issues": []}
+    )
+    try:
+        result = await adapter.validate_script_source(json.dumps(source))
+        assert result.ok is True
+        assert json.loads(route.calls.last.request.content) == {
+            "script": source,
+            "project_id": "proj-123",
+        }
+        assert len(respx.calls) == 1
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize("response", [{}, {"valid": "true"}, {"valid": None}])
+async def test_source_validation_requires_explicit_provider_boolean(response):
+    adapter = make_adapter()
+    respx.post(BASE + "/api/v1/scripts/validate").respond(200, json=response)
+    try:
+        with pytest.raises(RuntimeError):
+            await adapter.validate_script_source('{"name":"approved"}')
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_provider_export_captures_source_without_mutating_remote_resources():
+    adapter = make_adapter()
+    script = {
+        "id": "source-id",
+        "name": "Checkout",
+        "project_id": "proj-123",
+        "protocol": "http",
+        "version": "1",
+        "actions": [{"type": "http", "method": "GET", "target": "/"}],
+    }
+    route = respx.get(BASE + "/api/v1/scripts/source-id").respond(
+        200, json={**script, "script": script}
+    )
+    try:
+        result = await adapter.read_script_export("source-id")
+        assert json.loads(result.source) == script
+        assert result.executable_content_verified is False
+        assert result.content_scope == "provider_export"
+        assert len(respx.calls) == 1 and route.called
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+@pytest.mark.parametrize("mismatch", ["outer_id", "nested_id", "project", "redacted"])
+async def test_provider_export_rejects_mismatched_or_redacted_sources(mismatch):
+    adapter = make_adapter()
+    script = {
+        "id": "source-id",
+        "name": "Checkout",
+        "project_id": "proj-123",
+        "protocol": "http",
+        "version": "1",
+    }
+    wrapper = {**script, "script": dict(script)}
+    if mismatch == "outer_id":
+        wrapper["id"] = "other-id"
+    if mismatch == "nested_id":
+        wrapper["script"]["id"] = "other-id"
+    if mismatch == "project":
+        wrapper["project_id"] = "other-project"
+    if mismatch == "redacted":
+        wrapper["script"]["description"] = "[REDACTED]"
+    respx.get(BASE + "/api/v1/scripts/source-id").respond(200, json=wrapper)
+    try:
+        with pytest.raises(RuntimeError):
+            await adapter.read_script_export("source-id")
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_provider_library_rejects_duplicate_identities():
+    adapter = make_adapter()
+    script = {
+        "id": "source-id",
+        "name": "Checkout",
+        "project_id": "proj-123",
+        "protocol": "http",
+        "version": "1",
+    }
+    respx.get(BASE + "/api/v1/scripts").respond(200, json={"scripts": [script, script], "count": 2})
+    try:
+        with pytest.raises(RuntimeError, match="duplicate"):
+            await adapter.list_script_exports()
+    finally:
+        await adapter.aclose()

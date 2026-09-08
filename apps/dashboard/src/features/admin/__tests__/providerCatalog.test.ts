@@ -24,11 +24,11 @@ describe('providerCatalog', () => {
     expect(providersForKind('work_tracking').map((spec) => spec.id)).toEqual([
       'jira',
       'jira_align',
-      'ado',
       'stub',
     ])
     expect(providersForKind('cluster_inventory')).toEqual([])
     expect(providerSpec('work_tracking', 'rally')).toBeNull()
+    expect(providerSpec('work_tracking', 'ado')).toBeNull()
     expect(providerSpec('work_tracking', 'JIRA')?.id).toBe('jira')
   })
 

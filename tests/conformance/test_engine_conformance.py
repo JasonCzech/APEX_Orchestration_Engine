@@ -249,14 +249,14 @@ async def test_req3_status_progresses_to_a_terminal_phase(harness: EngineHarness
         stats = status.live_stats
         if stats is None:
             continue  # the port allows phase-only status (e.g. loadrunner v1)
-        assert 0.0 <= stats.error_rate <= 1.0, req(
+        assert stats.error_rate is None or 0.0 <= stats.error_rate <= 1.0, req(
             3,
             f"{harness.provider}: live_stats.error_rate must be a 0..1 fraction, "
             f"got {stats.error_rate}",
         )
-        assert stats.vusers >= 0.0 and stats.tps >= 0.0 and stats.p95_ms >= 0.0, req(
-            3, f"{harness.provider}: live_stats carries negative metrics: {stats!r}"
-        )
+        assert all(
+            value is None or value >= 0 for value in (stats.vusers, stats.tps, stats.p95_ms)
+        ), req(3, f"{harness.provider}: live_stats carries negative metrics: {stats!r}")
 
 
 # ── requirement 4: abort idempotent, teardown never raises ───────────────────

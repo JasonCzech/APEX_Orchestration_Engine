@@ -302,7 +302,7 @@ def public_test_result_summary(value: Any) -> dict[str, Any] | None:
     if (
         type(engine) is not str
         or not 1 <= len(engine) <= 64
-        or type(passed) is not bool
+        or (passed is not None and type(passed) is not bool)
         or type(raw_kpis) is not dict
         or len(raw_kpis) > 64
         or type(raw_breaches) is not list

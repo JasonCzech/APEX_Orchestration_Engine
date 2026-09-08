@@ -666,3 +666,13 @@ describe("thread-state mirror schemas", () => {
     ).toBe(false);
   });
 });
+
+it("preserves unavailable outcomes and live metrics without inventing zeros", async () => {
+  const { LiveStatsSchema } = await import("../src/events");
+  const { TestResultSummarySchema } = await import("../src/state");
+  expect(TestResultSummarySchema.parse({ engine: "import", passed: null }).passed).toBeNull();
+  expect(TestResultSummarySchema.parse({ engine: "import" }).passed).toBeUndefined();
+  const stats = LiveStatsSchema.parse({ vusers: null, tps: 0, error_rate: null, p95_ms: null });
+  expect(stats.tps).toBe(0);
+  expect(stats.p95_ms).toBeNull();
+});

@@ -1,0 +1,258 @@
+"""Opt-in cycle/version API. No implicit execution or external publication."""
+
+import json
+from datetime import datetime
+from typing import Annotated, Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import and_, false, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
+from apex.auth.identity import ConsumerIdentity, Role
+from apex.domain.cycles import (
+    CycleAction,
+    CycleCreate,
+    VersionCreate,
+    add_version,
+    approval_current,
+    content_integrity,
+    cycle_blockers,
+    transition,
+)
+from apex.domain.deliverables import DELIVERABLE_FIELDS, DeliverableField, content_issues
+from apex.domain.input_limits import RecordId
+from apex.persistence.db import get_session
+from apex.persistence.models import Application, Environment, TestCycle
+from apex.settings import get_settings
+
+
+def enabled(identity: CurrentIdentity) -> None:
+    if not get_settings().cycles_enabled:
+        raise HTTPException(404, "Cycle workspace is not enabled")
+
+
+router = APIRouter(prefix="/cycles", tags=["cycles"], dependencies=[Depends(enabled)])
+Session = Annotated[AsyncSession, Depends(get_session)]
+Operator = Annotated[ConsumerIdentity, Depends(require_role(Role.OPERATOR))]
+
+
+class CycleSummary(BaseModel):
+    id: str
+    name: str
+    project_id: str
+    app_id: str
+    environment_id: str
+    mode: str
+    owner: str
+    revision: int
+    independent_review: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CycleVersionRead(BaseModel):
+    origin: dict[str, str] | None = None
+    id: str
+    kind: str
+    title: str
+    content: dict[str, Any]
+    checksum: str
+    dependencies: list[str]
+    replaces: str | None = None
+    change_summary: str
+    status: str
+    created_by: str
+    created_at: str
+    archived: bool
+    reviews: list[dict[str, str]]
+    approval_current: bool
+    validation_issues: list[str]
+    available_actions: list[str]
+
+
+class CycleRead(CycleSummary):
+    followups: list[dict[str, Any]] = []
+    origin_cycle_id: str | None = None
+    versions: list[CycleVersionRead]
+    fields: dict[str, list[DeliverableField]] = DELIVERABLE_FIELDS
+    blockers: list[str]
+
+
+def visibility(identity: ConsumerIdentity):
+    if identity.is_unscoped:
+        return TestCycle.id.is_not(None)
+    return or_(
+        false(),
+        *[
+            and_(TestCycle.project_id == scope.project_id, TestCycle.app_id == scope.app_id)
+            if scope.app_id
+            else TestCycle.project_id == scope.project_id
+            for scope in identity.scopes
+        ],
+    )
+
+
+def version_view(
+    row: TestCycle, version: dict[str, Any], actor: ConsumerIdentity | None
+) -> CycleVersionRead:
+    issues = content_issues(version["kind"], version["content"])
+    if not content_integrity(version):
+        issues.append("Version content does not match its recorded checksum")
+    actions: list[str] = []
+    active = not any(v.get("replaces") == version["id"] for v in row.versions)
+    if actor is not None and actor.role.at_least(Role.OPERATOR):
+        actions.append("restore" if version["archived"] else "archive")
+        if active and not version["archived"]:
+            if version["status"] == "draft" and not issues:
+                actions.append("submit")
+            if version["status"] == "in_review":
+                actions.append("request_revision")
+                if (
+                    not issues
+                    and (not row.independent_review or actor.consumer_id != version["created_by"])
+                    and all(approval_current(row.versions, dep) for dep in version["dependencies"])
+                ):
+                    actions.append("approve")
+    return CycleVersionRead(
+        **version,
+        approval_current=approval_current(row.versions, version["id"]),
+        validation_issues=issues,
+        available_actions=actions,
+    )
+
+
+def view(row: TestCycle, actor: ConsumerIdentity | None = None) -> CycleRead:
+    return CycleRead(
+        **{
+            name: getattr(row, name)
+            for name in CycleRead.model_fields
+            if name not in {"blockers", "versions", "fields", "followups", "origin_cycle_id"}
+        },
+        followups=getattr(row, "followups", None) or [],
+        origin_cycle_id=getattr(row, "origin_cycle_id", None),
+        versions=[version_view(row, v, actor) for v in row.versions],
+        blockers=cycle_blockers(row.versions),
+    )
+
+
+async def find(session: AsyncSession, identity: ConsumerIdentity, cycle_id: str) -> TestCycle:
+    row = await session.scalar(
+        select(TestCycle).where(TestCycle.id == cycle_id, visibility(identity))
+    )
+    if row is None:
+        raise HTTPException(404, "Cycle not found")
+    return row
+
+
+@router.get("", response_model=list[CycleSummary], operation_id="listCycles")
+async def list_cycles(
+    session: Session,
+    identity: CurrentIdentity,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0, le=10000),
+):
+    rows = await session.execute(
+        select(*(getattr(TestCycle, name) for name in CycleSummary.model_fields))
+        .where(visibility(identity))
+        .order_by(TestCycle.created_at.desc(), TestCycle.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    return [CycleSummary.model_validate(row) for row in rows.mappings()]
+
+
+@router.post("", response_model=CycleRead, status_code=201, operation_id="createCycle")
+async def create_cycle(body: CycleCreate, session: Session, identity: Operator):
+    ensure_scope(identity, project_id=body.project_id, app_id=body.app_id)
+    target = await session.scalar(
+        select(Environment.id)
+        .join(Application, Environment.application_id == Application.id)
+        .where(
+            Environment.id == body.environment_id,
+            Application.id == body.app_id,
+            Application.project_id == body.project_id,
+            Application.archived_at.is_(None),
+        )
+    )
+    if target is None:
+        raise HTTPException(422, "Select an active application and its environment in this project")
+    row = TestCycle(
+        **body.model_dump(),
+        owner=identity.consumer_id,
+        revision=1,
+        independent_review=get_settings().cycles_independent_review,
+        versions=[],
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return view(row, identity)
+
+
+@router.get("/{cycle_id}", response_model=CycleRead, operation_id="getCycle")
+async def read_cycle(cycle_id: RecordId, session: Session, identity: CurrentIdentity):
+    return view(await find(session, identity, cycle_id), identity)
+
+
+async def save_versions(
+    session: AsyncSession,
+    row: TestCycle,
+    revision: int,
+    versions: list[dict[str, Any]],
+    actor: ConsumerIdentity | None = None,
+) -> CycleRead:
+    # SQL CAS covers edits and approvals across workers, not just an in-process lock.
+    if len(json.dumps(versions).encode()) > 2_000_000:
+        raise HTTPException(413, "Cycle content limit reached; store large evidence as artifacts")
+    result = await session.execute(
+        update(TestCycle)
+        .where(TestCycle.id == row.id, TestCycle.revision == revision)
+        .values(versions=versions, revision=revision + 1)
+        .returning(TestCycle.id)
+        .execution_options(synchronize_session=False)
+    )
+    if result.scalar_one_or_none() is None:
+        await session.rollback()
+        raise HTTPException(409, "Cycle changed; refresh and review the latest version")
+    await session.commit()
+    await session.refresh(row)
+    return view(row, actor)
+
+
+@router.post(
+    "/{cycle_id}/versions",
+    response_model=CycleRead,
+    status_code=201,
+    operation_id="createCycleVersion",
+)
+async def create_version(
+    cycle_id: RecordId, body: VersionCreate, session: Session, identity: Operator
+):
+    row = await find(session, identity, cycle_id)
+    if row.revision != body.expected_revision:
+        raise HTTPException(409, "Cycle changed; refresh before editing")
+    if len(row.versions) >= 200:
+        raise HTTPException(409, "Cycle version limit reached; create the next cycle")
+    try:
+        version = add_version(row.versions, body, identity.consumer_id)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    return await save_versions(
+        session, row, body.expected_revision, [*row.versions, version], identity
+    )
+
+
+@router.post("/{cycle_id}/actions", response_model=CycleRead, operation_id="reviewCycleVersion")
+async def act(cycle_id: RecordId, body: CycleAction, session: Session, identity: Operator):
+    row = await find(session, identity, cycle_id)
+    if row.revision != body.expected_revision:
+        raise HTTPException(409, "Cycle changed; refresh before reviewing")
+    try:
+        versions = transition(
+            row.versions, body, identity.consumer_id, independent_review=row.independent_review
+        )
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from None
+    return await save_versions(session, row, body.expected_revision, versions, identity)

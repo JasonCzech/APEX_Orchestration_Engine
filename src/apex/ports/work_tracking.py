@@ -1,4 +1,4 @@
-"""Work-tracking port (Jira / Jira Align / Azure DevOps / stub). Provider
+"""Work-tracking port (Jira / Jira Align / stub). Provider
 differences — JQL vs OData $filter vs WIQL, field naming — live entirely
 inside adapters."""
 

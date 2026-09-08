@@ -13,8 +13,8 @@ def register_builtin_adapters() -> None:
     global _registered
     if _registered:
         return
-    import apex.adapters.ado  # noqa: F401  (registers the "ado" work-tracking provider)
     import apex.adapters.apex_load  # noqa: F401  (registers the "apex_load" execution-engine provider)
+    import apex.adapters.confluence  # noqa: F401
     import apex.adapters.elk  # noqa: F401  (registers the "elasticsearch" log-search provider)
     import apex.adapters.jira  # noqa: F401  (registers the "jira" work-tracking provider)
     import apex.adapters.jira_align  # noqa: F401  (registers the "jira_align" work-tracking provider)

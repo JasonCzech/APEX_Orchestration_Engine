@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import CodeMirror from '@uiw/react-codemirror'
+import { PLATFORM_SYSTEM_POLICY } from '../prompts/platformPolicy'
 
 import './prompt-tabs-editor.css'
 
@@ -55,6 +56,11 @@ export function PromptTabsEditor({
 
   return (
     <div className="prompt-tabs-editor">
+      <details>
+        <summary>Shared platform instructions (read-only)</summary>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{PLATFORM_SYSTEM_POLICY}</pre>
+        <p>The runtime also applies the phase output schema. Edits below cannot override these rules.</p>
+      </details>
       <div className="prompt-review-tabs" role="tablist" aria-label="Prompt Review tabs">
         {TABS.map((tab) => {
           const disabled = tab.field === 'application' && !appAvailable
@@ -84,6 +90,7 @@ export function PromptTabsEditor({
           {active === 'application' && (
             <p className="prompt-review-tab-note" data-testid="prompt-tab-note-application">
               Application-wide — saved edits apply to every phase in this run.
+              {' '}Use UNKNOWN for missing requirements; include units, evidence sources and observation windows for thresholds.
             </p>
           )}
           <div

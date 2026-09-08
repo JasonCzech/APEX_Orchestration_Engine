@@ -5203,3 +5203,17 @@ def test_reserve_falls_back_to_default_spec_without_upstream_spec() -> None:
     assert spec["vusers"] == 10
     assert spec["duration_s"] == 0.1
     assert spec["title"] == "Solo load test"
+
+
+def test_absent_live_metrics_are_not_emitted_as_measured_zero():
+    from apex.graphs.pipeline.execution_phase import _poll_event
+    from apex.ports.execution_engine import LiveStats
+
+    handle = EngineHandle(engine="sim", external_run_id="unknown-metrics", idempotency_key="test")
+    event = _poll_event(handle, EngineRunStatus(phase=EngineRunPhase.RUNNING), 1)
+    assert event["live_stats"] == dict.fromkeys(("vusers", "tps", "error_rate", "p95_ms"))
+    zero = _poll_event(
+        handle, EngineRunStatus(phase=EngineRunPhase.RUNNING, live_stats=LiveStats(tps=0)), 1
+    )
+    assert zero["live_stats"]["tps"] == 0
+    assert zero["live_stats"]["p95_ms"] is None

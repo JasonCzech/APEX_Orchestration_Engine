@@ -91,3 +91,21 @@ def test_port_kind_covers_all_nine_kinds() -> None:
         "artifact_store",
         "secrets",
     }
+
+
+@pytest.mark.parametrize("provider", ["ado", "ADO"])
+async def test_retired_ado_cannot_be_built_even_if_legacy_module_is_imported(provider):
+    from unittest.mock import AsyncMock
+
+    import apex.adapters.ado  # noqa: F401 — legacy imports must not re-enable it
+    from apex.adapters import register_builtin_adapters
+
+    register_builtin_adapters()
+    assert "ado" not in AdapterRegistry.providers_for(PortKind.WORK_TRACKING)
+    assert "jira_align" in AdapterRegistry.providers_for(PortKind.WORK_TRACKING)
+    secrets = AsyncMock()
+    with pytest.raises(ValueError, match="Jira Align"):
+        await AdapterRegistry.build(
+            _conn(PortKind.WORK_TRACKING, provider, "env:OLD_TOKEN"), secrets
+        )
+    secrets.resolve.assert_not_awaited()

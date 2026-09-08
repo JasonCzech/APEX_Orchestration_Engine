@@ -15,7 +15,7 @@ export const TELECOM_DATASET_REQUIREMENTS = {
   jiraAlignItems: 12,
   initialJiraCloudItems: 8,
   savedQueries: 4,
-  prompts: 20,
+  prompts: 18,
   seededRuns: 8,
   logs: 40,
   phaseMetricEvents: 56,

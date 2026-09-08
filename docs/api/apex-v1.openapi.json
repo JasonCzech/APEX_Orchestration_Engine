@@ -744,6 +744,89 @@
         "title": "AuditRetentionOut",
         "type": "object"
       },
+      "CaptureSource": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_version": {
+            "format": "date-time",
+            "title": "Connection Version",
+            "type": "string"
+          },
+          "expected_checksum": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Checksum",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/DocRef"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key",
+          "connection_id",
+          "connection_version",
+          "ref",
+          "expected_checksum",
+          "title"
+        ],
+        "title": "CaptureSource",
+        "type": "object"
+      },
+      "ConnectionChoice": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "runtime_version": {
+            "format": "date-time",
+            "title": "Runtime Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "provider",
+          "runtime_version"
+        ],
+        "title": "ConnectionChoice",
+        "type": "object"
+      },
       "ConnectionCreate": {
         "additionalProperties": false,
         "properties": {
@@ -1747,6 +1830,1168 @@
         "title": "CurrentPrincipalResponse",
         "type": "object"
       },
+      "CycleAction": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "submit",
+              "approve",
+              "request_revision",
+              "archive",
+              "restore"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Note",
+            "type": "string"
+          },
+          "version_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "action",
+          "version_id"
+        ],
+        "title": "CycleAction",
+        "type": "object"
+      },
+      "CycleCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "app_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "App Id",
+            "type": "string"
+          },
+          "environment_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "mode": {
+            "default": "live",
+            "enum": [
+              "live",
+              "simulation"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "project_id",
+          "app_id",
+          "environment_id"
+        ],
+        "title": "CycleCreate",
+        "type": "object"
+      },
+      "CycleMetric": {
+        "properties": {
+          "baseline_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Value"
+          },
+          "difference": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Difference"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "percent_difference": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent Difference"
+          },
+          "preference": {
+            "enum": [
+              "higher",
+              "lower",
+              "context"
+            ],
+            "title": "Preference",
+            "type": "string"
+          },
+          "unit": {
+            "title": "Unit",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "unit",
+          "value",
+          "preference"
+        ],
+        "title": "CycleMetric",
+        "type": "object"
+      },
+      "CycleRead": {
+        "properties": {
+          "app_id": {
+            "title": "App Id",
+            "type": "string"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "environment_id": {
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "fields": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/DeliverableField"
+              },
+              "type": "array"
+            },
+            "default": {
+              "postmortem": [
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "findings",
+                  "label": "Findings",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "factors",
+                  "label": "Contributing factors",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "lessons",
+                  "label": "Lessons learned",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "actions",
+                  "label": "Follow-up actions, owners and status",
+                  "options": [],
+                  "required": true
+                }
+              ],
+              "readiness": [
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "expected",
+                  "label": "Expected environment configuration",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "observed",
+                  "label": "Observed inventory and telemetry",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "evidence",
+                  "label": "Evidence references and observation times",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "select",
+                  "help": "",
+                  "key": "status",
+                  "label": "Readiness assessment",
+                  "options": [
+                    "not_checked",
+                    "blocked",
+                    "warning",
+                    "ready"
+                  ],
+                  "required": true
+                },
+                {
+                  "control": "text",
+                  "help": "",
+                  "key": "inventory_snapshot_id",
+                  "label": "Inventory snapshot ID",
+                  "options": [],
+                  "required": false
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "target_version",
+                  "label": "Approved target version",
+                  "maximum": 2147483647.0,
+                  "minimum": 0.0,
+                  "options": [],
+                  "required": false
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "remediation",
+                  "label": "Blockers, owners and remediation notes",
+                  "options": [],
+                  "required": false
+                }
+              ],
+              "report": [
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "executive_summary",
+                  "label": "Executive summary",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "technical_analysis",
+                  "label": "Technical analysis",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "Reference immutable measurements, engine and attempt. Do not replace raw measurements with interpretation.",
+                  "key": "evidence",
+                  "label": "Execution evidence and versions",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "findings",
+                  "label": "Findings and baseline differences",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "exclusions",
+                  "label": "Exclusions and limitations",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "accepted_risks",
+                  "label": "Accepted risks",
+                  "options": [],
+                  "required": false
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "recommendation",
+                  "label": "Recommendation",
+                  "options": [],
+                  "required": true
+                }
+              ],
+              "scope": [
+                {
+                  "control": "multiline",
+                  "help": "Include requirement keys, titles and performance risks.",
+                  "key": "requirements",
+                  "label": "Requirements and risks",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "Record each source title, provider, revision, retrieval time and readability. Retrieval connectors are not available in this editor yet.",
+                  "key": "source_manifest",
+                  "label": "Frozen source references",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "included",
+                  "label": "Included journeys",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "excluded",
+                  "label": "Excluded scope",
+                  "options": [],
+                  "required": false
+                }
+              ],
+              "script": [
+                {
+                  "control": "select",
+                  "help": "",
+                  "key": "engine",
+                  "label": "Execution platform",
+                  "options": [
+                    "apex-load",
+                    "loadrunner"
+                  ],
+                  "required": true
+                },
+                {
+                  "control": "select",
+                  "help": "",
+                  "key": "format",
+                  "label": "Script format",
+                  "options": [
+                    "apex_native_json",
+                    "web_http_html",
+                    "other_import"
+                  ],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "Paste native JSON or source text. For an external import, record an immutable artifact reference. This approval does not launch a test.",
+                  "key": "source",
+                  "label": "Script source or immutable import reference",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "parameters",
+                  "label": "Parameter files and dependencies",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "coverage",
+                  "label": "Requirement and journey coverage",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "Record validation results and tool/provider version. Provider preflight remains required before execution.",
+                  "key": "validation",
+                  "label": "Inspection and validation evidence",
+                  "options": [],
+                  "required": true
+                }
+              ],
+              "test_plan": [
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "objectives",
+                  "label": "Objectives",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "journeys",
+                  "label": "User journeys and requirement coverage",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "Record each journey and its share of traffic.",
+                  "key": "workload_mix",
+                  "label": "Workload mix",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "vusers",
+                  "label": "Concurrent users",
+                  "maximum": 1000000.0,
+                  "minimum": 1.0,
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "arrival_rate",
+                  "label": "Arrival rate (requests per second)",
+                  "maximum": 1000000.0,
+                  "minimum": 0.0,
+                  "options": [],
+                  "required": false
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "ramp_s",
+                  "label": "Ramp (seconds)",
+                  "maximum": 86400.0,
+                  "minimum": 0.0,
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "duration_s",
+                  "label": "Steady-state duration (seconds)",
+                  "maximum": 86400.0,
+                  "minimum": 1.0,
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "test_data",
+                  "label": "Test data and parameterization",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "For each transaction, state latency percentile, error-rate limit and throughput target.",
+                  "key": "thresholds",
+                  "label": "Transaction thresholds",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "p95_ms_threshold",
+                  "label": "Overall p95 latency limit (ms)",
+                  "maximum": 1000000000000.0,
+                  "minimum": 0.0,
+                  "options": [],
+                  "required": false
+                },
+                {
+                  "control": "number",
+                  "help": "",
+                  "key": "error_rate_threshold",
+                  "label": "Overall error-rate limit (fraction 0\u20131)",
+                  "maximum": 1.0,
+                  "minimum": 0.0,
+                  "options": [],
+                  "required": false
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "observability",
+                  "label": "Observability and evidence collection",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "entry_criteria",
+                  "label": "Entry criteria",
+                  "options": [],
+                  "required": true
+                },
+                {
+                  "control": "multiline",
+                  "help": "",
+                  "key": "exit_criteria",
+                  "label": "Exit criteria",
+                  "options": [],
+                  "required": true
+                }
+              ]
+            },
+            "title": "Fields",
+            "type": "object"
+          },
+          "followups": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Followups",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "independent_review": {
+            "title": "Independent Review",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "origin_cycle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Cycle Id"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/CycleVersionRead"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "project_id",
+          "app_id",
+          "environment_id",
+          "mode",
+          "owner",
+          "revision",
+          "independent_review",
+          "created_at",
+          "updated_at",
+          "versions",
+          "blockers"
+        ],
+        "title": "CycleRead",
+        "type": "object"
+      },
+      "CycleResult": {
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "bindings_verified": {
+            "const": false,
+            "default": false,
+            "title": "Bindings Verified",
+            "type": "boolean"
+          },
+          "comparison_available": {
+            "default": false,
+            "title": "Comparison Available",
+            "type": "boolean"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "evidence_checksum": {
+            "default": "",
+            "title": "Evidence Checksum",
+            "type": "string"
+          },
+          "evidence_status": {
+            "enum": [
+              "available",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Evidence Status",
+            "type": "string"
+          },
+          "execution_status": {
+            "title": "Execution Status",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/CycleMetric"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "sla_breaches": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sla Breaches",
+            "type": "array"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "test_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "passed",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Test Outcome"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "thread_id",
+          "engine",
+          "attempt",
+          "execution_status",
+          "started_at",
+          "ended_at",
+          "evidence_status",
+          "metrics",
+          "sla_breaches",
+          "warnings"
+        ],
+        "title": "CycleResult",
+        "type": "object"
+      },
+      "CycleResultsRead": {
+        "properties": {
+          "baseline_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Baseline Id"
+          },
+          "evidence_source": {
+            "const": "engine_run_history",
+            "default": "engine_run_history",
+            "title": "Evidence Source",
+            "type": "string"
+          },
+          "read_at": {
+            "format": "date-time",
+            "title": "Read At",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/CycleResult"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "read_at",
+          "baseline_id",
+          "results"
+        ],
+        "title": "CycleResultsRead",
+        "type": "object"
+      },
+      "CycleSummary": {
+        "properties": {
+          "app_id": {
+            "title": "App Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "environment_id": {
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "independent_review": {
+            "title": "Independent Review",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "project_id",
+          "app_id",
+          "environment_id",
+          "mode",
+          "owner",
+          "revision",
+          "independent_review",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "CycleSummary",
+        "type": "object"
+      },
+      "CycleVersionRead": {
+        "properties": {
+          "approval_current": {
+            "title": "Approval Current",
+            "type": "boolean"
+          },
+          "archived": {
+            "title": "Archived",
+            "type": "boolean"
+          },
+          "available_actions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Available Actions",
+            "type": "array"
+          },
+          "change_summary": {
+            "title": "Change Summary",
+            "type": "string"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dependencies",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "replaces": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaces"
+          },
+          "reviews": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Reviews",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "validation_issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Validation Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "content",
+          "checksum",
+          "dependencies",
+          "change_summary",
+          "status",
+          "created_by",
+          "created_at",
+          "archived",
+          "reviews",
+          "approval_current",
+          "validation_issues",
+          "available_actions"
+        ],
+        "title": "CycleVersionRead",
+        "type": "object"
+      },
+      "DeliverableField": {
+        "additionalProperties": false,
+        "properties": {
+          "control": {
+            "default": "multiline",
+            "enum": [
+              "text",
+              "multiline",
+              "number",
+              "select"
+            ],
+            "title": "Control",
+            "type": "string"
+          },
+          "help": {
+            "default": "",
+            "title": "Help",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "maximum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maximum"
+          },
+          "minimum": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum"
+          },
+          "options": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "label"
+        ],
+        "title": "DeliverableField",
+        "type": "object"
+      },
+      "DocHit": {
+        "properties": {
+          "ref": {
+            "$ref": "#/components/schemas/DocRef"
+          },
+          "score": {
+            "default": 0.0,
+            "maximum": 1000000000000.0,
+            "minimum": -1000000000000.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "snippet": {
+            "default": "",
+            "maxLength": 20000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Snippet",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "pattern": "^[^\\x00]*$",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "title"
+        ],
+        "title": "DocHit",
+        "type": "object"
+      },
+      "DocRef": {
+        "properties": {
+          "id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "source": {
+            "default": "stub",
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Source",
+            "type": "string"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "maxLength": 4096,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "DocRef",
+        "type": "object"
+      },
       "DocumentArtifactAffinityUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -1762,6 +3007,46 @@
           "connection_id"
         ],
         "title": "DocumentArtifactAffinityUpdate",
+        "type": "object"
+      },
+      "DocumentContent": {
+        "properties": {
+          "media_type": {
+            "default": "text/markdown",
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/DocRef"
+          },
+          "text": {
+            "maxLength": 2000000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Text",
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "required": [
+          "ref",
+          "text"
+        ],
+        "title": "DocumentContent",
         "type": "object"
       },
       "DocumentListResponse": {
@@ -2622,6 +3907,281 @@
         "title": "ExecuteQueryRequest",
         "type": "object"
       },
+      "ExecutionMutationRead": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "revision"
+        ],
+        "title": "ExecutionMutationRead",
+        "type": "object"
+      },
+      "ExecutionSnapshot": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "connection_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Version"
+          },
+          "engine": {
+            "enum": [
+              "apex-load",
+              "loadrunner"
+            ],
+            "title": "Engine",
+            "type": "string"
+          },
+          "environment_id": {
+            "title": "Environment Id",
+            "type": "string"
+          },
+          "environment_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment Version"
+          },
+          "execution_policy": {
+            "const": "sequential",
+            "default": "sequential",
+            "title": "Execution Policy",
+            "type": "string"
+          },
+          "launch_authority": {
+            "enum": [
+              "pipeline",
+              "native_schedule"
+            ],
+            "title": "Launch Authority",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "live",
+              "simulation"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "plan_checksum": {
+            "title": "Plan Checksum",
+            "type": "string"
+          },
+          "plan_title": {
+            "title": "Plan Title",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "readiness_checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readiness Checksum"
+          },
+          "readiness_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readiness Version Id"
+          },
+          "script_artifact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Script Artifact Id"
+          },
+          "script_artifact_stored_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Script Artifact Stored At"
+          },
+          "script_checksum": {
+            "title": "Script Checksum",
+            "type": "string"
+          },
+          "script_format": {
+            "title": "Script Format",
+            "type": "string"
+          },
+          "script_source_checksum": {
+            "title": "Script Source Checksum",
+            "type": "string"
+          },
+          "script_title": {
+            "title": "Script Title",
+            "type": "string"
+          },
+          "script_version_id": {
+            "title": "Script Version Id",
+            "type": "string"
+          },
+          "workload": {
+            "additionalProperties": true,
+            "title": "Workload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "plan_version_id",
+          "plan_title",
+          "plan_checksum",
+          "script_version_id",
+          "script_title",
+          "script_checksum",
+          "script_source_checksum",
+          "script_format",
+          "readiness_version_id",
+          "readiness_checksum",
+          "engine",
+          "mode",
+          "environment_id",
+          "environment_version",
+          "connection_id",
+          "connection_version",
+          "launch_authority",
+          "workload"
+        ],
+        "title": "ExecutionSnapshot",
+        "type": "object"
+      },
+      "ExecutionWorkspaceRead": {
+        "properties": {
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionChoice"
+            },
+            "title": "Connections",
+            "type": "array"
+          },
+          "inventory_scanned_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Scanned At"
+          },
+          "inventory_snapshot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inventory Snapshot Id"
+          },
+          "linked_runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunChoice"
+            },
+            "title": "Linked Runs",
+            "type": "array"
+          },
+          "preparations": {
+            "items": {
+              "$ref": "#/components/schemas/PreparationRead"
+            },
+            "title": "Preparations",
+            "type": "array"
+          },
+          "recent_runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunChoice"
+            },
+            "title": "Recent Runs",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "target_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Version"
+          }
+        },
+        "required": [
+          "revision",
+          "preparations",
+          "connections",
+          "linked_runs",
+          "recent_runs",
+          "inventory_snapshot_id",
+          "inventory_scanned_at",
+          "target_version"
+        ],
+        "title": "ExecutionWorkspaceRead",
+        "type": "object"
+      },
       "ExternalResults": {
         "additionalProperties": false,
         "description": "Results produced outside APEX (e.g. by a standalone analysis dashboard).\n\nSupplied as run input so an analysis-only run (reporting/postmortem) can report\non them honestly \u2014 plan_resolver seeds a succeeded execution result from this\ninstead of the caller forging internal phase state. Maps onto TestResultSummary\nso the reporting phase reads it the same way it reads a real engine run.",
@@ -2709,6 +4269,117 @@
           "source"
         ],
         "title": "ExternalResults",
+        "type": "object"
+      },
+      "FollowupWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action Id"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 2000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Note",
+            "type": "string"
+          },
+          "owner": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Owner",
+            "type": "string"
+          },
+          "status": {
+            "default": "open",
+            "enum": [
+              "open",
+              "in_progress",
+              "done",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key",
+          "title",
+          "owner"
+        ],
+        "title": "FollowupWrite",
+        "type": "object"
+      },
+      "FreezeReportEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_results": {
+            "maxProperties": 20,
+            "minProperties": 1,
+            "patternProperties": {
+              "^[^\\x00]*$": {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "maxLength": 32,
+              "minLength": 1
+            },
+            "title": "Expected Results",
+            "type": "object"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key",
+          "expected_results"
+        ],
+        "title": "FreezeReportEvidence",
         "type": "object"
       },
       "GateInterrupt": {
@@ -2932,6 +4603,89 @@
         "title": "HostOut",
         "type": "object"
       },
+      "ImportProviderScript": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_version": {
+            "format": "date-time",
+            "title": "Connection Version",
+            "type": "string"
+          },
+          "coverage": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Coverage",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_source_checksum": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Source Checksum",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "parameters": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Parameters",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "remote_script_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Remote Script Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key",
+          "connection_id",
+          "connection_version",
+          "remote_script_id",
+          "expected_source_checksum",
+          "plan_version_id",
+          "title",
+          "parameters",
+          "coverage"
+        ],
+        "title": "ImportProviderScript",
+        "type": "object"
+      },
       "InventoryView": {
         "properties": {
           "environment_id": {
@@ -2956,6 +4710,29 @@
         "type": "object"
       },
       "JsonValue": {},
+      "LinkCycleRun": {
+        "additionalProperties": false,
+        "properties": {
+          "engine_run_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Engine Run Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "engine_run_id"
+        ],
+        "title": "LinkCycleRun",
+        "type": "object"
+      },
       "LogEntryOut": {
         "properties": {
           "at": {
@@ -3504,6 +5281,53 @@
         "title": "NativeResourceProjection",
         "type": "object"
       },
+      "NextCycleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "carry_unresolved_actions": {
+            "default": true,
+            "title": "Carry Unresolved Actions",
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "version_ids": {
+            "items": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Version Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key",
+          "name"
+        ],
+        "title": "NextCycleRequest",
+        "type": "object"
+      },
       "Page": {
         "properties": {
           "limit": {
@@ -4047,6 +5871,163 @@
         "title": "PortKind",
         "type": "string"
       },
+      "PreflightCheck": {
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "blocked",
+              "not_checked"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "status",
+          "detail"
+        ],
+        "title": "PreflightCheck",
+        "type": "object"
+      },
+      "PreparationRead": {
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "launch_available": {
+            "const": false,
+            "default": false,
+            "title": "Launch Available",
+            "type": "boolean"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/ExecutionSnapshot"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "created_by",
+          "snapshot",
+          "checks",
+          "checked_at"
+        ],
+        "title": "PreparationRead",
+        "type": "object"
+      },
+      "PrepareExecution": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "launch_authority": {
+            "default": "pipeline",
+            "enum": [
+              "pipeline",
+              "native_schedule"
+            ],
+            "title": "Launch Authority",
+            "type": "string"
+          },
+          "plan_version_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Plan Version Id",
+            "type": "string"
+          },
+          "readiness_version_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readiness Version Id"
+          },
+          "script_version_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Script Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key",
+          "plan_version_id",
+          "script_version_id"
+        ],
+        "title": "PrepareExecution",
+        "type": "object"
+      },
       "ProbeResult": {
         "properties": {
           "detail": {
@@ -4372,6 +6353,275 @@
           "version"
         ],
         "title": "PromptVersionInfo",
+        "type": "object"
+      },
+      "ProviderImportRead": {
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_version": {
+            "format": "date-time",
+            "title": "Connection Version",
+            "type": "string"
+          },
+          "content_scope": {
+            "const": "provider_export",
+            "default": "provider_export",
+            "title": "Content Scope",
+            "type": "string"
+          },
+          "executable_content_verified": {
+            "const": false,
+            "default": false,
+            "title": "Executable Content Verified",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "imported_at": {
+            "format": "date-time",
+            "title": "Imported At",
+            "type": "string"
+          },
+          "imported_by": {
+            "title": "Imported By",
+            "type": "string"
+          },
+          "remote_name": {
+            "title": "Remote Name",
+            "type": "string"
+          },
+          "remote_project_id": {
+            "title": "Remote Project Id",
+            "type": "string"
+          },
+          "remote_script_id": {
+            "title": "Remote Script Id",
+            "type": "string"
+          },
+          "remote_version": {
+            "title": "Remote Version",
+            "type": "string"
+          },
+          "source_checksum": {
+            "title": "Source Checksum",
+            "type": "string"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version_id",
+          "connection_id",
+          "connection_version",
+          "remote_script_id",
+          "remote_name",
+          "remote_project_id",
+          "remote_version",
+          "source_checksum",
+          "imported_by",
+          "imported_at"
+        ],
+        "title": "ProviderImportRead",
+        "type": "object"
+      },
+      "ProviderScriptExport": {
+        "additionalProperties": false,
+        "properties": {
+          "content_scope": {
+            "const": "provider_export",
+            "default": "provider_export",
+            "title": "Content Scope",
+            "type": "string"
+          },
+          "executable_content_verified": {
+            "const": false,
+            "default": false,
+            "title": "Executable Content Verified",
+            "type": "boolean"
+          },
+          "id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "protocol": {
+            "maxLength": 64,
+            "pattern": "^[^\\x00]*$",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 50000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Source",
+            "type": "string"
+          },
+          "source_checksum": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Source Checksum",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "project_id",
+          "version",
+          "protocol",
+          "source",
+          "source_checksum"
+        ],
+        "title": "ProviderScriptExport",
+        "type": "object"
+      },
+      "ProviderScriptSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "protocol": {
+            "maxLength": 64,
+            "pattern": "^[^\\x00]*$",
+            "title": "Protocol",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "project_id",
+          "version",
+          "protocol"
+        ],
+        "title": "ProviderScriptSummary",
+        "type": "object"
+      },
+      "ProviderScriptsRead": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "connection_version": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Version"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionChoice"
+            },
+            "title": "Connections",
+            "type": "array"
+          },
+          "imports": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderImportRead"
+            },
+            "title": "Imports",
+            "type": "array"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderScriptExport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "scripts": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderScriptSummary"
+            },
+            "title": "Scripts",
+            "type": "array"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "connections",
+          "scripts",
+          "imports",
+          "blockers"
+        ],
+        "title": "ProviderScriptsRead",
         "type": "object"
       },
       "RerunPipelineRequest": {
@@ -4798,6 +7048,51 @@
         "title": "RotateConsumerKeyRequest",
         "type": "object"
       },
+      "RunChoice": {
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "bindings_verified": {
+            "const": false,
+            "default": false,
+            "title": "Bindings Verified",
+            "type": "boolean"
+          },
+          "engine": {
+            "title": "Engine",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "thread_id",
+          "engine",
+          "attempt",
+          "status",
+          "started_at"
+        ],
+        "title": "RunChoice",
+        "type": "object"
+      },
       "SaveVersionRequest": {
         "additionalProperties": false,
         "properties": {
@@ -5132,6 +7427,210 @@
         "title": "ScopeRef",
         "type": "object"
       },
+      "ScriptArtifactRead": {
+        "properties": {
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_version": {
+            "format": "date-time",
+            "title": "Connection Version",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "source_checksum": {
+            "title": "Source Checksum",
+            "type": "string"
+          },
+          "stored_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored At"
+          },
+          "version_checksum": {
+            "title": "Version Checksum",
+            "type": "string"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version_id",
+          "version_checksum",
+          "source_checksum",
+          "size_bytes",
+          "connection_id",
+          "connection_version",
+          "stored_at",
+          "created_at",
+          "created_by"
+        ],
+        "title": "ScriptArtifactRead",
+        "type": "object"
+      },
+      "ScriptLibraryRead": {
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ScriptArtifactRead"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionChoice"
+            },
+            "title": "Connections",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifacts",
+          "connections",
+          "revision"
+        ],
+        "title": "ScriptLibraryRead",
+        "type": "object"
+      },
+      "ScriptValidationRead": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "current": {
+            "default": false,
+            "title": "Current",
+            "type": "boolean"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "preparation_id": {
+            "title": "Preparation Id",
+            "type": "string"
+          },
+          "request_key": {
+            "title": "Request Key",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "preparation_id",
+          "request_key",
+          "status",
+          "issues",
+          "warnings",
+          "created_by",
+          "created_at",
+          "finished_at"
+        ],
+        "title": "ScriptValidationRead",
+        "type": "object"
+      },
+      "ScriptValidationWorkspace": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "validation_scope": {
+            "default": "Native script source only; no workload, capacity or target certification",
+            "title": "Validation Scope",
+            "type": "string"
+          },
+          "validations": {
+            "items": {
+              "$ref": "#/components/schemas/ScriptValidationRead"
+            },
+            "title": "Validations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "revision",
+          "blockers",
+          "validations"
+        ],
+        "title": "ScriptValidationWorkspace",
+        "type": "object"
+      },
       "ServiceInfo": {
         "additionalProperties": false,
         "properties": {
@@ -5208,6 +7707,76 @@
           "stale"
         ],
         "title": "SnapshotView",
+        "type": "object"
+      },
+      "SourcePreview": {
+        "properties": {
+          "blockers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "checksum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checksum"
+          },
+          "connection_version": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Version"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionChoice"
+            },
+            "title": "Connections",
+            "type": "array"
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DocumentContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hits": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DocHit"
+            },
+            "title": "Hits",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "connections"
+        ],
+        "title": "SourcePreview",
         "type": "object"
       },
       "StartPipelineRequest": {
@@ -5433,6 +8002,29 @@
           "stream_url"
         ],
         "title": "StartPipelineResponse",
+        "type": "object"
+      },
+      "StoreCycleScript": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "connection_id"
+        ],
+        "title": "StoreCycleScript",
         "type": "object"
       },
       "SystemInfo": {
@@ -5770,6 +8362,29 @@
         "title": "UsageWindow",
         "type": "object"
       },
+      "ValidateCycleScript": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "ValidateCycleScript",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -5808,6 +8423,78 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VersionCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "change_summary": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Change Summary",
+            "type": "string"
+          },
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "dependencies": {
+            "items": {
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Dependencies",
+            "type": "array"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "scope",
+              "test_plan",
+              "readiness",
+              "script",
+              "report",
+              "postmortem"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "replaces": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replaces"
+          },
+          "title": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "kind",
+          "title",
+          "content",
+          "change_summary"
+        ],
+        "title": "VersionCreate",
         "type": "object"
       },
       "WindowIn": {
@@ -9698,6 +12385,1282 @@
         "summary": "Create Context Summary",
         "tags": [
           "context"
+        ]
+      }
+    },
+    "/v1/cycles": {
+      "get": {
+        "operationId": "listCycles",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CycleSummary"
+                  },
+                  "title": "Response Listcycles",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Cycles",
+        "tags": [
+          "cycles"
+        ]
+      },
+      "post": {
+        "operationId": "createCycle",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CycleCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Cycle",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}": {
+      "get": {
+        "operationId": "getCycle",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Cycle",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/actions": {
+      "post": {
+        "operationId": "reviewCycleVersion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CycleAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Act",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/executions": {
+      "get": {
+        "operationId": "getCycleExecutions",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionWorkspaceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Executions",
+        "tags": [
+          "cycles"
+        ]
+      },
+      "post": {
+        "operationId": "prepareCycleExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrepareExecution"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionMutationRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Execution",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/script-validations": {
+      "get": {
+        "operationId": "getCycleScriptValidations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptValidationWorkspace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validation History",
+        "tags": [
+          "cycles"
+        ]
+      },
+      "post": {
+        "operationId": "validateCycleScript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateCycleScript"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptValidationRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Script",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/followups": {
+      "post": {
+        "operationId": "writeCycleFollowup",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FollowupWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Write Action",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/next-cycle": {
+      "post": {
+        "operationId": "startNextCycle",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NextCycleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Next Cycle",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/provider-scripts": {
+      "get": {
+        "operationId": "getCycleProviderScripts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connection Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "remote_script_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Remote Script Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 5000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderScriptsRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Browse",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/provider-scripts/import": {
+      "post": {
+        "operationId": "importCycleProviderScript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportProviderScript"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderImportRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Script",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/reports/{version_id}/evidence": {
+      "post": {
+        "operationId": "freezeCycleReportEvidence",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FreezeReportEvidence"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Freeze Evidence",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/results": {
+      "get": {
+        "operationId": "getCycleResults",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "baseline_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Baseline Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleResultsRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Results",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/runs": {
+      "post": {
+        "operationId": "linkCycleRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkCycleRun"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionMutationRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Link Run",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/scopes/{version_id}/sources": {
+      "post": {
+        "operationId": "captureCycleSource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CaptureSource"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Capture Source",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/scripts": {
+      "get": {
+        "operationId": "getCycleScripts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptLibraryRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Library",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/scripts/{version_id}/artifact": {
+      "post": {
+        "operationId": "storeCycleScript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoreCycleScript"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScriptArtifactRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Store Script",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/scripts/{version_id}/content": {
+      "get": {
+        "operationId": "downloadCycleScript",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Script",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/sources": {
+      "get": {
+        "operationId": "getCycleSources",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "connection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 32,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Connection Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 500,
+              "pattern": "^[^\\x00]*$",
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 20,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 20,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourcePreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Sources",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/versions": {
+      "post": {
+        "operationId": "createCycleVersion",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VersionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Version",
+        "tags": [
+          "cycles"
         ]
       }
     },

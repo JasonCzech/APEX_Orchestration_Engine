@@ -63,6 +63,8 @@ export const appRoutes: RouteObject[] = [
             handle: handle('Approval'),
             lazy: lazyPage(approvals, 'ApprovalDetailPage'),
           },
+          { path: 'cycles', handle: handle('Test Cycles'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclesPage') },
+          { path: 'cycles/:cycleId', handle: handle('Cycle Workspace'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclePage') },
           { path: 'runs', handle: handle('Test History'), lazy: lazyPage(runs, 'RunsListPage') },
           {
             path: 'runs/new',

@@ -8,6 +8,7 @@ fakes; the assertions are on the durable state emitted by the runtime boundary.
 from __future__ import annotations
 
 import gc
+import json
 import weakref
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from apex.domain.diagnostics import (
     is_credential_field,
 )
 from apex.domain.pipeline import EngineHandle, Phase
+from apex.domain.prompt_catalog import PHASE_SECTIONS, PLATFORM_POLICY
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.graphs.pipeline.state import PipelineState
 from apex.ports.artifact_store import StoredArtifact, engine_artifact_namespace
@@ -70,6 +72,34 @@ def _prompt_review() -> dict[str, Any]:
         "source": {"origin": "catalog", "ref": "phase/story_analysis@v1"},
         "updated_at": "2026-01-01T00:00:00+00:00",
         "updated_by": "system",
+    }
+
+
+def _deliverable(summary: str) -> str:
+    return json.dumps(
+        {
+            "schema_version": 1,
+            "phase": "story_analysis",
+            "disposition": "complete",
+            "summary": summary,
+            "sections": {
+                key: "Supplied evidence reviewed." for key in PHASE_SECTIONS[Phase.STORY_ANALYSIS]
+            },
+            "evidence": [],
+            "assumptions": [],
+            "gaps": [],
+            "blockers": [],
+            "workload": [],
+        }
+    )
+
+
+async def _fake_deliverable_artifact(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return {
+        "id": "deliverable-1",
+        "kind": "deliverable",
+        "name": "Deliverable",
+        "uri": "stub://artifact",
     }
 
 
@@ -120,7 +150,7 @@ def test_llm_agent_tool_loop_is_bounded_and_emits_durable_output(
     final = SimpleNamespace(
         content=[
             {"type": "thinking", "thinking": "private reasoning"},
-            {"type": "text", "text": "The run is healthy."},
+            {"type": "text", "text": _deliverable("The run is healthy.")},
         ],
         tool_calls=[],
         usage_metadata={"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
@@ -144,6 +174,7 @@ def test_llm_agent_tool_loop_is_bounded_and_emits_durable_output(
             return self.responses.pop(0)
 
     monkeypatch.setattr("langchain_anthropic.ChatAnthropic", FakeChatAnthropic)
+    monkeypatch.setattr(phase_subgraph, "_persist_agent_deliverable", _fake_deliverable_artifact)
 
     story_entry: dict[str, Any] = {"attempt": 1}
     state = cast(
@@ -214,7 +245,7 @@ def test_llm_tool_loop_rejects_raw_response_amplification_before_followup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _runtime_settings(tool_rounds=1)
-    settings.runs.max_model_input_chars = 2_000
+    settings.runs.max_model_input_chars = 12_000
     monkeypatch.setattr(phase_subgraph, "get_settings", lambda: settings)
 
     approved_url = "https://results.example.com/run/42"
@@ -238,7 +269,7 @@ def test_llm_tool_loop_rejects_raw_response_amplification_before_followup(
     raw_response_ref = weakref.ref(raw_response)
     responses: list[Any] = [
         raw_response,
-        SimpleNamespace(content="done", tool_calls=[], usage_metadata={}),
+        SimpleNamespace(content=_deliverable("done"), tool_calls=[], usage_metadata={}),
     ]
     del raw_response
 
@@ -259,6 +290,7 @@ def test_llm_tool_loop_rejects_raw_response_amplification_before_followup(
             return responses.pop(0)
 
     monkeypatch.setattr("langchain_anthropic.ChatAnthropic", FakeChatAnthropic)
+    monkeypatch.setattr(phase_subgraph, "_persist_agent_deliverable", _fake_deliverable_artifact)
     monkeypatch.setattr(
         "apex.services.results_fetch.fetch_results_text",
         lambda *_args, **_kwargs: "ok",
@@ -298,7 +330,7 @@ def test_llm_tool_loop_rejects_raw_response_amplification_before_followup(
     assert len(FakeChatAnthropic.invocations) == 2
     followup = FakeChatAnthropic.invocations[1]
     assert raw_response_ref() is None
-    assert sum(len(str(message.content)) for message in followup) <= 2_000
+    assert sum(len(str(message.content)) for message in followup) <= 12_000
 
 
 def test_fetch_tool_contract_rejects_unsupplied_url_and_redacts_fetch_error(
@@ -665,8 +697,9 @@ def test_agent_prompt_composition_and_fetch_authority_edges(
     settings = _runtime_settings()
     monkeypatch.setattr(phase_subgraph, "get_settings", lambda: settings)
 
-    assert phase_subgraph._compose_system({}) == "You are an APEX analysis agent."
-    assert phase_subgraph._compose_system({"application": "app only"}) == "app only"
+    assert phase_subgraph._compose_system({}).startswith(PLATFORM_POLICY)
+    assert phase_subgraph._compose_system({}).endswith("You are an APEX analysis agent.")
+    assert phase_subgraph._compose_system({"application": "app only"}).endswith("app only")
     for invalid in ([], {"system": 7}, {"application": 7}):
         with pytest.raises(ValueError, match="resolved prompt"):
             phase_subgraph._compose_system(invalid)  # type: ignore[arg-type]

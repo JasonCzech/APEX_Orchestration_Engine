@@ -320,7 +320,7 @@ async def test_run_override_rejects_format_width_amplification() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="format width/precision"):
+    with pytest.raises(ValueError, match="simple"):
         await resolve_phase_prompt(
             Phase.REPORTING,
             configurable,
@@ -336,5 +336,5 @@ async def test_catalog_prompt_rejects_format_width_amplification() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="format width/precision"):
+    with pytest.raises(ValueError, match="simple"):
         await resolve_phase_prompt(Phase.REPORTING, cfg(), variables=VARS, store=store)

@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.input_limits import validate_json_object
+from apex.domain.outcomes import qualified_execution_summary
 from apex.domain.pipeline import PHASE_ORDER, PhaseStatus
 from apex.graphs.pipeline.configurable import PipelineConfigurable
 from apex.services.public_projection import (
@@ -227,6 +228,15 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     if type(phase) is not str or phase not in _PHASES or type(value) is not dict:
         return None
     result: JsonDict = {"phase": phase}
+    provenance = value.get("provenance")
+    if type(provenance) is str and provenance in {
+        "stub",
+        "llm",
+        "simulator",
+        "live_provider",
+        "imported",
+    }:
+        result["provenance"] = provenance
     status = value.get("status")
     if type(status) is str and status in _PHASE_STATUSES:
         result["status"] = status
@@ -284,7 +294,7 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     prompt = _public_prompt(value.get("resolved_prompt"))
     if prompt is not None:
         result["resolved_prompt"] = prompt
-    test_summary = public_test_result_summary(value.get("test_summary"))
+    test_summary = public_test_result_summary(qualified_execution_summary(value))
     if test_summary is not None:
         result["test_summary"] = test_summary
     engine = _text(value.get("engine"), 64, allow_empty=False)

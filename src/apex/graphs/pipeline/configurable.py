@@ -107,7 +107,7 @@ class PipelineConfigurable(BaseModel):
     load_test: dict[str, Any] = Field(default_factory=dict, max_length=16)
     # Agent backend selector (mirrors the engine selector). "stub" is the
     # deterministic, offline default; "anthropic" wires a real LLM but only takes
-    # effect when an Anthropic key is configured (else it degrades to the stub).
+    # effect when an Anthropic key is configured; otherwise the phase fails.
     agent_backend: str = Field(default="stub", max_length=32)
     limits: Limits = Field(default_factory=Limits)
 

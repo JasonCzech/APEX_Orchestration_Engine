@@ -27,6 +27,14 @@ from apex.routers.compliance import router as compliance_router
 from apex.routers.connections import router as connections_router
 from apex.routers.consumers import router as consumers_router
 from apex.routers.context import router as context_router
+from apex.routers.cycle_executions import router as cycle_executions_router
+from apex.routers.cycle_handoff import router as cycle_handoff_router
+from apex.routers.cycle_provider_scripts import router as cycle_provider_scripts_router
+from apex.routers.cycle_report_evidence import router as cycle_report_evidence_router
+from apex.routers.cycle_script_validation import router as cycle_script_validation_router
+from apex.routers.cycle_scripts import router as cycle_scripts_router
+from apex.routers.cycle_sources import router as cycle_sources_router
+from apex.routers.cycles import router as cycles_router
 from apex.routers.documents import router as documents_router
 from apex.routers.drafts import router as drafts_router
 from apex.routers.engines import router as engines_router
@@ -137,3 +145,12 @@ app.include_router(compliance_router, prefix="/v1")
 app.include_router(analytics_router, prefix="/v1")
 app.include_router(apex_load_index_router, prefix="/v1")
 app.include_router(apex_load_router, prefix="/v1")
+
+app.include_router(cycles_router, prefix="/v1")
+app.include_router(cycle_provider_scripts_router, prefix="/v1")
+app.include_router(cycle_script_validation_router, prefix="/v1")
+app.include_router(cycle_scripts_router, prefix="/v1")
+app.include_router(cycle_executions_router, prefix="/v1")
+app.include_router(cycle_handoff_router, prefix="/v1")
+app.include_router(cycle_sources_router, prefix="/v1")
+app.include_router(cycle_report_evidence_router, prefix="/v1")

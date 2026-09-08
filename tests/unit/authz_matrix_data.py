@@ -13,6 +13,27 @@ Deliberate exceptions to the conventions are commented inline.
 from typing import Any
 
 MIN_ROLE: dict[str, str] = {
+    "getCycleExecutions": "viewer",
+    "getCycleResults": "viewer",
+    "getCycleSources": "viewer",
+    "captureCycleSource": "operator",
+    "writeCycleFollowup": "operator",
+    "startNextCycle": "operator",
+    "freezeCycleReportEvidence": "operator",
+    "prepareCycleExecution": "operator",
+    "linkCycleRun": "operator",
+    "getCycleScripts": "viewer",
+    "storeCycleScript": "operator",
+    "downloadCycleScript": "viewer",
+    "getCycleScriptValidations": "viewer",
+    "validateCycleScript": "operator",
+    "getCycleProviderScripts": "viewer",
+    "importCycleProviderScript": "operator",
+    "listCycles": "viewer",
+    "getCycle": "viewer",
+    "createCycle": "operator",
+    "createCycleVersion": "operator",
+    "reviewCycleVersion": "operator",
     # ── system ──────────────────────────────────────────────────────────────
     "getSystemInfo": "viewer",
     # ── auth / principal introspection ──────────────────────────────────────
@@ -147,6 +168,27 @@ MIN_ROLE: dict[str, str] = {
 }
 
 SCOPE: dict[str, str] = {
+    "getCycleExecutions": "project_app",
+    "getCycleResults": "project_app",
+    "getCycleSources": "project_app",
+    "captureCycleSource": "project_app",
+    "writeCycleFollowup": "project_app",
+    "startNextCycle": "project_app",
+    "freezeCycleReportEvidence": "project_app",
+    "prepareCycleExecution": "project_app",
+    "linkCycleRun": "project_app",
+    "getCycleScripts": "project_app",
+    "storeCycleScript": "project_app",
+    "downloadCycleScript": "project_app",
+    "getCycleScriptValidations": "project_app",
+    "validateCycleScript": "project_app",
+    "getCycleProviderScripts": "project_app",
+    "importCycleProviderScript": "project_app",
+    "listCycles": "project_app",
+    "getCycle": "project_app",
+    "createCycle": "project_app",
+    "createCycleVersion": "project_app",
+    "reviewCycleVersion": "project_app",
     # ── system ──────────────────────────────────────────────────────────────
     "getSystemInfo": "none",
     # ── auth / principal introspection ──────────────────────────────────────

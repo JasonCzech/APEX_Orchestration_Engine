@@ -186,7 +186,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
   const [collapsed, setCollapsed] = useState(readStoredCollapsed)
   const location = useLocation()
   const consumer = useConsumer()
-  const { signOut } = useAuth()
+  const { signOut, state: authState } = useAuth()
   const { status } = useConnectivity()
   const { theme, themes, setTheme } = useTheme()
   const advancedPaths = [...ADVANCED_NAV_ITEMS, ...ADMIN_NAV_SECTION.items].map((item) => item.to)
@@ -230,7 +230,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
 
       <nav className="sidebar-nav" aria-label="Primary" onClick={(event) => { if ((event.target as HTMLElement).closest('a')) onNavigate?.() }}>
         <div className="nav-section nav-section--flat">
-          {PRIMARY_NAV_ITEMS.map((item) => (
+          {[...PRIMARY_NAV_ITEMS, ...(authState.status === 'authenticated' && authState.systemInfo.features.cycles ? [{ to: '/cycles', label: 'Test Cycles', end: false, icon: <Icon d="M4 4h16v16H4zM4 10h16M10 10v10" /> }] : [])].map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

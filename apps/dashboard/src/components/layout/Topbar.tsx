@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { useMatches } from 'react-router'
 
 import { isRouteHandle } from '@/routes/handle'
@@ -9,7 +10,7 @@ import { useTopbarContributionSlot } from './TopbarContributionProvider'
  * Sticky topbar: page title from the deepest route handle plus the
  * topbar-contribution slot for screen-published controls.
  */
-export function Topbar() {
+export function Topbar({ navigation }: { navigation?: ReactNode } = {}) {
   const matches = useMatches()
   const title =
     [...matches].reverse().map((match) => match.handle).find(isRouteHandle)?.title ??
@@ -18,6 +19,7 @@ export function Topbar() {
 
   return (
     <header className="main-topbar">
+      {navigation}
       <div className="main-topbar-page">
         <h1 className="topbar-page-title">{title}</h1>
         {isDemoDataMode() && <span className="topbar-meta-chip warning">DEMO · OFFLINE</span>}

@@ -17,6 +17,7 @@
     "lint:backend": "uv run python scripts/dev.py lint",
     "typecheck:backend": "uv run python scripts/dev.py typecheck",
     "check:backend": "uv run python scripts/dev.py check",
+    "check:prompts": "uv run python scripts/export_prompt_catalog.py --check",
     "dev:dashboard": "npm run -w @apex/dashboard dev",
     "build:dashboard": "npm run -w @apex/dashboard build",
     "test:dashboard": "npm run -w @apex/dashboard test",
@@ -24,7 +25,7 @@
     "typecheck:dashboard": "npm run -w @apex/dashboard typecheck",
     "check:contracts": "npm run -w @apex/api-client typecheck && npm run -w @apex/pipeline-events typecheck && npm run -w @apex/pipeline-events lint && npm run -w @apex/pipeline-events test",
     "build": "npm run build:dashboard",
-    "check": "npm run check:backend && npm run check:contracts && npm run typecheck:dashboard && npm run lint:dashboard && npm run test:dashboard && npm run build:dashboard"
+    "check": "npm run check:prompts && npm run check:backend && npm run check:contracts && npm run typecheck:dashboard && npm run lint:dashboard && npm run test:dashboard && npm run build:dashboard"
   },
   "workspaces": [
     "packages/*",

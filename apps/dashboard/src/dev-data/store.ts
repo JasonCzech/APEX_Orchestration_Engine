@@ -3,7 +3,7 @@ import type { Assistant, Run, Thread } from '@langchain/langgraph-sdk'
 
 import { PHASE_NAMES, type PhaseName, type PipelineState } from '@apex/pipeline-events'
 
-import { SCRIPT_VARIANT_PROMPTS, TELECOM_PHASE_PROMPTS } from './telecomPrompts'
+import { APPLICATION_PROMPT_TEMPLATE, SCRIPT_VARIANT_PROMPTS, TELECOM_PHASE_PROMPTS } from './telecomPrompts'
 import {
   deterministicAgentReply,
   FLAGSHIP_ALIGN_QUERY,
@@ -140,7 +140,7 @@ interface DemoBaseline {
   documents: DocumentOut[]
   drafts: DraftRead[]
   workItems: WorkItem[]
-  workItemProviders: Map<string, 'jira' | 'jira_align' | 'ado'>
+  workItemProviders: Map<string, 'jira' | 'jira_align'>
   savedQueries: SavedQuery[]
   prompts: PromptRecord[]
   pipelineDetails: Map<string, PipelineDetail>
@@ -552,7 +552,7 @@ export class DevDataStore {
   private drafts: DraftRead[]
   private evidence: EvidencePacket[]
   private workItems: WorkItem[]
-  private workItemProviders = new Map<string, 'jira' | 'jira_align' | 'ado'>()
+  private workItemProviders = new Map<string, 'jira' | 'jira_align'>()
   private savedQueries: SavedQuery[]
   private prompts: PromptRecord[]
   private logs: LogEntry[]
@@ -1586,6 +1586,10 @@ export class DevDataStore {
   }
 
   private async handleWorkTracking(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> {
+    const input = method === 'GET' ? null : await request.clone().json().catch(() => null)
+    if (params.get('connection_id') === 'conn-ado' || params.get('provider')?.toLowerCase() === 'ado' || input?.connection_id === 'conn-ado' || input?.provider?.toLowerCase() === 'ado' || input?.query?.provider?.toLowerCase() === 'ado') {
+      return problemResponse(422, 'retired_provider', 'Azure DevOps has been retired. Use Jira Align for user stories.')
+    }
     if (method === 'GET' && path === '/v1/work-tracking/binding') {
       return jsonResponse(this.workTrackingBinding(params.get('connection_id')))
     }
@@ -1593,13 +1597,12 @@ export class DevDataStore {
       const body = (await request.json()) as { text?: string; connection_id?: string }
       const text = body.text ?? 'open load test bugs'
       const lowered = text.toLowerCase()
-      const provider = lowered.includes('azure') ? 'ado' : lowered.includes('align') ? 'jira_align' : body.connection_id ? undefined : 'jira'
+      const provider = lowered.includes('align') ? 'jira_align' : body.connection_id ? undefined : 'jira'
       const binding = provider ? this.workTrackingBinding(undefined, provider) : this.workTrackingBinding(body.connection_id)
       const jiraQuery = `project = PERF AND text ~ "${text}"`
       const isEsimScope = /esim|device upgrade|flagship|release scope/.test(lowered)
       const queryByProvider: Record<string, string> = {
         jira: jiraQuery,
-        ado: `SELECT [System.Id] FROM WorkItems WHERE [System.Title] CONTAINS '${text}'`,
         jira_align: isEsimScope
           ? FLAGSHIP_ALIGN_QUERY
           : `programId eq 42 and contains(title,'${text}')`,
@@ -2124,9 +2127,9 @@ export class DevDataStore {
     )
     return [
       ...phase,
-      this.prompt('prompt-app-device', 'application', 'app-digital-device', 'Digital device-upgrade requirements', 'Preserve order idempotency, exercise CSR and digital channels, monitor OMS p95, IBM MQ depth, APIM rate limits, and AKS scaling.', created, updated, false, 'telecom demo application context'),
-      this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', 'Validate Amdocs OMS submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
-      this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', 'Validate Cassandra eligibility reads plus Amdocs BSSe and TLG latency without using production account data.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-device', 'application', 'app-digital-device', 'Digital device-upgrade requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Preserve order idempotency, exercise CSR and digital channels, monitor OMS p95, IBM MQ depth, APIM rate limits, and AKS scaling.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate Amdocs OMS submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate Cassandra eligibility reads plus Amdocs BSSe and TLG latency without using production account data.', created, updated, false, 'telecom demo application context'),
       this.prompt('prompt-old', 'experimental', 'legacy/release-report', 'Archived pre-telecom prompt', 'Legacy release report instructions retained only to demonstrate prompt archival.', created, updated, true, 'archived demo history'),
     ]
   }
@@ -2758,7 +2761,6 @@ export class DevDataStore {
     providerHint?: string,
   ): WorkTrackingBinding {
     const byConnection: Record<string, string> = {
-      'conn-ado': 'ado',
       'conn-align': 'jira_align',
       'conn-jira': 'jira',
     }
@@ -2875,7 +2877,7 @@ export class DevDataStore {
       this.documents = applyArrayDelta(this.baseline.documents, readArray<DocumentOut>('documents', (item) => item.id), (item) => item.id)
       this.drafts = applyArrayDelta(this.baseline.drafts, readArray<DraftRead>('drafts', (item) => item.id), (item) => item.id)
       this.workItems = applyArrayDelta(this.baseline.workItems, readArray<WorkItem>('workItems', (item) => item.key), (item) => item.key)
-      this.workItemProviders = applyMapDelta(this.baseline.workItemProviders, readMap<'jira' | 'jira_align' | 'ado'>('workItemProviders'))
+      this.workItemProviders = applyMapDelta(this.baseline.workItemProviders, readMap<'jira' | 'jira_align'>('workItemProviders'))
       this.savedQueries = applyArrayDelta(this.baseline.savedQueries, readArray<SavedQuery>('savedQueries', (item) => item.id), (item) => item.id)
       this.prompts = applyArrayDelta(this.baseline.prompts, readArray<PromptRecord>('prompts', (item) => item.id), (item) => item.id)
       this.pipelineDetails = applyMapDelta(this.baseline.pipelineDetails, readMap<PipelineDetail>('pipelineDetails'))
