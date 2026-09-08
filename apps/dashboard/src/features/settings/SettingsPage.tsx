@@ -110,7 +110,7 @@ function ApiKeySection() {
       <section className="glass-panel settings-section" aria-label="Demo session">
         <h3 className="settings-section-title">Offline demo session</h3>
         <p className="settings-hint">
-          Telecom demo dataset v1.0 is running entirely in this browser. No API key, backend,
+          ACC add-a-line demo dataset v2.0 (PERFHYPER2) is running entirely in this browser. No API key, backend,
           integration, execution engine, or LLM is contacted.
         </p>
         <div className="settings-signout-row">

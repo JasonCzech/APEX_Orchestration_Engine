@@ -43,16 +43,16 @@ describe('dev-data route smoke', () => {
   })
 
   it.each([
-    ['/', 'eSIM upgrade active ramp'],
-    ['/runs', 'eSIM upgrade active ramp'],
-    ['/runs/run-active', 'eSIM upgrade active ramp'],
+    ['/', 'ACC add-a-line active ramp'],
+    ['/runs', 'ACC add-a-line active ramp'],
+    ['/runs/run-active', 'ACC add-a-line active ramp'],
     ['/runs/run-active/artifacts/exec-report', /"tps_avg": 84\.7/],
     ['/approvals', 'PI 26.3 workload prompt review'],
-    ['/environments', 'PERF-DR'],
-    ['/work-items/saved', 'eSIM release scope'],
-    ['/context?tab=documents', 'eSIM-upgrade-architecture.pdf'],
+    ['/environments', 'PERFHYPER2-DR'],
+    ['/work-items/saved', 'ACC add-a-line release scope'],
+    ['/context?tab=documents', 'acc-add-line-architecture.pdf'],
     ['/prompts', 'story_analysis/system'],
-    ['/golden-configs', 'eSIM Release Certification'],
+    ['/golden-configs', 'ACC add-a-line Release Certification'],
     ['/analytics', 'Agents / runs'],
     ['/apex-load', 'IBM MQ backlog recovery'],
     ['/admin/connections', 'Jira Align Portfolio'],

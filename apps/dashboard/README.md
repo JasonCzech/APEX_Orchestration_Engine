@@ -251,3 +251,30 @@ caddy/nginx container) with:
    (`proxy_buffering off; proxy_read_timeout 24h;`).
 4. Optional `config.json` beside `index.html` when the APIs live on another
    origin (see Runtime configuration).
+
+### ACC add-a-line demo (v2.0)
+
+The offline demo uses ACC, the employee web application for mobile phone, cellular
+plan, and internet sales. Its flagship draft, **ACC Add-a-Line Peak Certification**,
+adds a line to an existing customer's cellular plan in **PERFHYPER2**, through
+**Mulesoft TEST** and **BSSe TEST**. Open `/runs/new?draft=draft-esim` to start;
+the legacy internal draft ID is retained for existing links.
+
+The context, work items, prompts, test plan, synthetic account CSV, review gates,
+and reports cover account lookup, eligibility and line limits, phone/BYOD and SIM
+selection, quote review, submission, activation confirmation, duplicate prevention,
+dependency failures, and cleanup. Existing lines and charges must be preserved.
+Internet sales and device replacements are outside this scenario.
+
+All endpoints (`example.test`), infrastructure details, prices, load targets,
+thresholds, and measured results are illustrative. The demo makes no integration
+calls. The 85 TPS target describes aggregate API traffic at 300 employee sessions,
+not completed line additions per second. Timestamps are relative to activation.
+The simulated release result retains a BSSe latency breach to demonstrate review,
+remediation, and Jira defect creation.
+
+Dataset v2.0 invalidates the previous version's browser mutation journal on load;
+**Reset demo** restores the canonical ACC data. The connected development catalog
+seed (`scripts/seed_catalog.py` at the repository root) also creates ACC and
+PERFHYPER2 with placeholder dependency hosts. Existing catalog rows are preserved;
+the script is not a migration of previously seeded Checkout records.

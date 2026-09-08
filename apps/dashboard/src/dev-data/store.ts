@@ -1,3 +1,4 @@
+import { ACC_DEMO_CONTEXT, ACC_DEMO_DEPENDENCIES, ACC_DEMO_TEST_PLAN, ACC_DEMO_TEST_DATA } from './telecomFixtures'
 import type { components } from '@apex/api-client'
 import type { Assistant, Run, Thread } from '@langchain/langgraph-sdk'
 
@@ -155,7 +156,7 @@ interface DemoBaseline {
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 export const DEMO_STATE_STORAGE_KEY = 'apex.demo.state.v1'
-const DEMO_STATE_VERSION = 2
+const DEMO_STATE_VERSION = 3
 const EXECUTION_SAMPLE_DELAY_MS = import.meta.env.MODE === 'test' ? 5 : 3_000
 const AGENT_GROUP_BYS: AgentGroupBy[] = ['model', 'stage', 'agent', 'date', 'test']
 const AGENT_SORTS: AgentSort[] = [
@@ -396,8 +397,8 @@ function makePipelineState(
       {
         system: `You are the ${phase.replaceAll('_', ' ')} phase operator.`,
         phase_prompt: `Prepare the ${phase.replaceAll('_', ' ')} deliverable for: ${title}.`,
-        application: 'eSIM upgrade requirements: preserve order idempotency, monitor OMS p95, MQ depth, APIM limits, and AKS scaling.',
-        additional_context: '',
+        application: 'ACC add-a-line requirements: preserve order idempotency, monitor BSSe p95, MQ depth, APIM limits, and AKS scaling.',
+        additional_context: ACC_DEMO_CONTEXT,
         source: { origin: 'catalog', ref: `phase/${phase}@dev` },
         updated_at: isoMinutesAgo(140, anchor),
         updated_by: 'system',
@@ -406,7 +407,7 @@ function makePipelineState(
   ) as PipelineState['prompt_reviews']
   return {
     title,
-    request: 'Certify the eSIM device-upgrade journey at peak load before the PI 26.3 release.',
+    request: ACC_DEMO_CONTEXT,
     current_phase: currentPhase,
     phases_plan: [...PHASE_NAMES],
     prompt_reviews: promptReviews,
@@ -418,7 +419,7 @@ function makePipelineState(
         started_at: isoMinutesAgo(140, anchor),
         ended_at: isoMinutesAgo(138, anchor),
         duration_s: 105,
-        summary: 'Resolved the Jira Align feature hierarchy and scoped CSR, retry/idempotency, MQ fulfillment, and Cassandra eligibility scenarios.',
+        summary: ACC_DEMO_CONTEXT,
         reasoning_digest: 'Prioritized cross-system paths with asynchronous back-pressure and duplicate-order risk.',
         resolved_prompt: {
           system: 'You are the story analysis phase operator.',
@@ -434,7 +435,7 @@ function makePipelineState(
         ended_at: isoMinutesAgo(128, anchor),
         duration_s: 220,
         summary: 'Planned load, stress, and endurance coverage with a stepped ramp to 300 users and 85 TPS.',
-        warnings: ['OMS create-order is within 20% of its configured p95 budget.'],
+        warnings: ['BSSe create-order is within 20% of its configured p95 budget.'],
       },
       env_triage: {
         phase: 'env_triage',
@@ -443,8 +444,8 @@ function makePipelineState(
         started_at: isoMinutesAgo(125, anchor),
         ended_at: isoMinutesAgo(123, anchor),
         duration_s: 94,
-        summary: 'PERF is reachable; order-mgmt-svc points at qc3-oms-oracle-scan and MQ has two consumers instead of four.',
-        warnings: ['QC Oracle endpoint would invalidate results until corrected.', 'MQ consumer capacity is below the approved reference.'],
+        summary: 'PERFHYPER2 is reachable; mulesoft-add-line-api points at bsse-other-test and MQ has two consumers instead of four.',
+        warnings: ['non-PERFHYPER2 BSSe test endpoint would invalidate results until corrected.', 'MQ consumer capacity is below the approved reference.'],
       },
       script_scenario: {
         phase: 'script_scenario',
@@ -453,7 +454,7 @@ function makePipelineState(
         started_at: isoMinutesAgo(118, anchor),
         ended_at: isoMinutesAgo(112, anchor),
         duration_s: 360,
-        summary: 'Generated correlated JMeter and VuGen scripts with synthetic eSIM data and explicit SLA assertions.',
+        summary: 'Generated correlated JMeter and VuGen scripts with synthetic ACC add-a-line data and explicit SLA assertions.',
         load_test_spec: {
           title,
           target_environment: 'env-perf',
@@ -461,7 +462,7 @@ function makePipelineState(
           ramp_s: 300,
           duration_s: 1500,
           slas: { p95_ms: 3000, error_rate: 0.02 },
-          script_refs: ['memory://scripts/esim-upgrade.jmx', 'memory://scripts/esim_upgrade.c'],
+          script_refs: ['memory://scripts/acc-add-line.jmx', 'memory://scripts/acc_add_line.c'],
         },
       },
       execution: {
@@ -474,8 +475,8 @@ function makePipelineState(
         summary:
           status === 'error'
             ? 'Execution orchestration failed while collecting the simulated engine result.'
-            : 'Execution reached 300 users; OMS p95 breached 3,000ms while MQ backlog recovered after a ramp hold.',
-        warnings: status === 'error' ? ['Result collection requires an operator retry.'] : ['OMS create-order p95 exceeded SLA and warrants a Jira Cloud defect.'],
+            : 'Execution reached 300 users; BSSe p95 breached 3,000ms while MQ backlog recovered after a ramp hold.',
+        warnings: status === 'error' ? ['Result collection requires an operator retry.'] : ['BSSe create-order p95 exceeded SLA and warrants a Jira Cloud defect.'],
         artifact_ids: [report.id, archive.id, transcript.id],
         engine: 'apexload',
         engine_started_at: isoMinutesAgo(89, anchor),
@@ -485,7 +486,7 @@ function makePipelineState(
           passed: false,
           kpis: { tps_avg: 82.7, p95_ms: status === 'error' ? 0 : 3650, error_rate: status === 'error' ? 0 : 0.028, vusers_peak: 300 },
           sla_breaches: status === 'error' ? [] : ['oms_create_order_p95_ms', 'error_rate'],
-          notes: status === 'error' ? 'Collection did not complete.' : 'Orchestration succeeded; the tested release is a conditional fail pending OMS/MQ remediation.',
+          notes: status === 'error' ? 'Collection did not complete.' : 'Orchestration succeeded; the tested release is a conditional fail pending BSSe/MQ remediation.',
         },
         transcript_ref: transcript,
       },
@@ -532,7 +533,7 @@ function makePipelineState(
         id: 'ctx-1',
         source: 'jira_align',
         title: 'story:9012 acceptance criteria',
-        summary: 'eSIM upgrades must remain idempotent while fulfillment traverses IBM MQ.',
+        summary: 'ACC add-a-lines must remain idempotent while fulfillment traverses IBM MQ.',
         ref: 'story:9012',
       },
     ],
@@ -570,12 +571,12 @@ export class DevDataStore {
   private baseline!: DemoBaseline
   private activationTime = nowIso()
   private apexScenarios: Array<Record<string, unknown>> = [
-    { id: 'scenario-esim-peak', name: 'eSIM peak certification', status: 'ready', protocol: 'mixed-jmeter-vugen' },
+    { id: 'scenario-esim-peak', name: 'ACC add-a-line peak certification', status: 'ready', protocol: 'mixed-jmeter-vugen' },
     { id: 'scenario-mq-recovery', name: 'IBM MQ backlog recovery', status: 'ready', protocol: 'jmeter' },
   ]
   private apexSchedules: Array<Record<string, unknown>> = [
     { id: 'schedule-release', scenario_id: 'scenario-esim-peak', name: 'Release candidate certification', status: 'enabled', approval_id: 'approval-release' },
-    { id: 'schedule-nightly', scenario_id: 'scenario-esim-peak', name: 'Nightly eSIM baseline', status: 'enabled', approval_id: 'approval-nightly' },
+    { id: 'schedule-nightly', scenario_id: 'scenario-esim-peak', name: 'Nightly ACC add-a-line baseline', status: 'enabled', approval_id: 'approval-nightly' },
   ]
   private apexOccurrences: Array<Record<string, unknown>> = [
     { id: 'occurrence-1', schedule_id: 'schedule-release', status: 'approved', scheduled_offset_minutes: -240, approval_id: 'approval-release' },
@@ -687,22 +688,22 @@ export class DevDataStore {
   private seedTelecomCatalog(created: string, updated: string): void {
     const project = TELECOM_PROJECT_ID
     this.applications = [
-      { id: 'app-digital-device', name: 'Digital Device Upgrade', project_id: project, description: 'Salesforce and digital eSIM upgrade journey', archived_at: null, created_at: created, updated_at: updated },
-      { id: 'app-order-fulfillment', name: 'Order Fulfillment', project_id: project, description: 'Amdocs OMS and IBM MQ fulfillment services', archived_at: null, created_at: created, updated_at: updated },
-      { id: 'app-usage-billing', name: 'Usage & Billing', project_id: project, description: 'Amdocs BSSe/TLG and Cassandra usage services', archived_at: null, created_at: created, updated_at: updated },
+      { id: 'app-digital-device', name: 'ACC', project_id: project, description: 'ACC is the employee-facing web application for selling mobile phones, cellular plans, and internet service. Demo scope: add a line to an existing customer cellular plan.', archived_at: null, created_at: created, updated_at: updated },
+      { id: 'app-order-fulfillment', name: 'Mulesoft', project_id: project, description: 'Test integration dependency connecting ACC in PERFHYPER2 to BSSe; infrastructure and telemetry are synthetic demo assumptions.', archived_at: null, created_at: created, updated_at: updated },
+      { id: 'app-usage-billing', name: 'BSSe', project_id: project, description: 'Test billing dependency for existing accounts, plan eligibility, line orders, and resulting charges.', archived_at: null, created_at: created, updated_at: updated },
     ]
     this.environments = [
-      this.environment('env-perf', 'app-digital-device', 'PERF', 'k8s', 'https://perf.device-upgrade.example.test', false),
-      this.environment('env-perf-dr', 'app-digital-device', 'PERF-DR', 'k8s', 'https://perf-dr.device-upgrade.example.test', true),
-      this.environment('env-qc-reference', 'app-order-fulfillment', 'QC-reference', 'vm', 'https://qc-reference.example.test', false),
-      this.environment('env-production', 'app-usage-billing', 'production-readonly', 'k8s', null, true),
+      this.environment('env-perf', 'app-digital-device', 'PERFHYPER2', 'k8s', 'https://acc.perfhyper2.example.test', false),
+      this.environment('env-perf-dr', 'app-digital-device', 'PERFHYPER2-DR', 'k8s', 'https://acc.perfhyper2-dr.example.test', true),
+      this.environment('env-qc-reference', 'app-usage-billing', 'BSSe TEST', 'vm', 'https://bsse.perfhyper2.example.test', false),
+      this.environment('env-production', 'app-order-fulfillment', 'Mulesoft TEST', 'k8s', 'https://mulesoft.perfhyper2.example.test', true),
     ]
     this.inventories.clear()
     const inventoryServices = [
-      { name: 'device-upgrade-api', image: 'registry.example.test/device-upgrade:4.8.2', replicas: 4 },
-      { name: 'order-mgmt-svc', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
+      { name: 'acc-web', image: 'registry.example.test/acc-web:4.8.2', replicas: 4 },
+      { name: 'mulesoft-add-line-api', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
       { name: 'mq-fulfillment-consumer', image: 'registry.example.test/mq-consumer:3.6.0', replicas: 2 },
-      { name: 'usage-profile-api', image: 'registry.example.test/usage-profile:2.9.4', replicas: 3 },
+      { name: 'bsse-account-api', image: 'registry.example.test/usage-profile:2.9.4', replicas: 3 },
     ]
     for (const env of this.environments) {
       this.inventories.set(env.id, { environment_id: env.id, snapshot: { scanned_at: updated, stale: env.id !== 'env-perf', services: inventoryServices.map((service) => ({ ...service, replicas: env.id === 'env-perf' ? service.replicas : Math.max(1, service.replicas - 1) })) } })
@@ -710,11 +711,11 @@ export class DevDataStore {
     this.connections = [
       this.connection('conn-align', 'work_tracking', 'jira_align', 'Jira Align Portfolio', project, 'https://align.example.test', true, { base_url: 'https://align.example.test', program_id: '42' }, null),
       this.connection('conn-jira', 'work_tracking', 'jira', 'Jira Cloud Performance Defects', project, 'https://jira.example.test', true, { base_url: 'https://jira.example.test', user_email: 'demo-presenter@example.test', project_key: 'PERF' }, null),
-      this.connection('conn-apex-load', 'execution_engine', 'apex_load', 'APEX Load PERF Pool', project, null, true, { pool: 'perf-demo' }, null),
+      this.connection('conn-apex-load', 'execution_engine', 'apex_load', 'APEX Load PERFHYPER2 Pool', project, null, true, { pool: 'perf-demo' }, null),
       this.connection('conn-observe', 'observability', 'stub', 'Dynatrace + Prometheus', project, null, true, {}, null),
       this.connection('conn-logs', 'log_search', 'elasticsearch', 'Telecom ELK', project, 'https://elk.example.test', true, {}, null),
       this.connection('conn-docs', 'documents', 'stub', 'Performance Knowledge Base', project, null, true, {}, null),
-      this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'AKS PERF Cluster', project, null, true, { kube_context: 'aks-perf-demo' }, null),
+      this.connection('conn-inventory', 'cluster_inventory', 'k8s', 'AKS PERFHYPER2 Cluster', project, null, true, { kube_context: 'aks-perf-demo' }, null),
       this.connection('conn-source', 'source_control', 'stub', 'Script Repository', project, null, true, {}, null),
       this.connection('conn-artifacts', 'artifact_store', 'stub', 'Demo Artifact Store', project, null, true, {}, null),
     ]
@@ -727,18 +728,18 @@ export class DevDataStore {
       this.consumer('cons-ci', 'Nightly Certification', 'operator', 'headless', true, 'd3m00004'),
     ]
     this.documents = [
-      this.document('doc-architecture', 'eSIM-upgrade-architecture.pdf', 'application/pdf', 1_420_000, 'Salesforce, Mulesoft, AKS, OMS, MQ, and billing architecture.'),
-      this.document('doc-sla', 'digital-channel-sla.md', 'text/markdown', 18_420, 'Production SLAs and release thresholds.'),
-      this.document('doc-traffic', 'peak-hour-traffic-profile.csv', 'text/csv', 9_810, 'Anonymized peak-hour transaction volumes.'),
+      this.document('doc-architecture', 'acc-add-line-architecture.pdf', 'application/pdf', 1_420_000, ACC_DEMO_CONTEXT),
+      this.document('doc-sla', 'acc-add-line-demo-sla.md', 'text/markdown', 18_420, 'Synthetic demo SLAs and release thresholds; confirm before a real test.'),
+      this.document('doc-traffic', 'peak-hour-traffic-profile.csv', 'text/csv', 9_810, 'Synthetic employee-session volumes and API transaction targets.'),
       this.document('doc-runbook', 'mq-backlog-response-runbook.md', 'text/markdown', 21_200, 'Ramp-hold and queue recovery procedure.'),
       this.document('doc-baselines', 'historical-baselines.json', 'application/json', 14_660, 'Five synthetic baseline runs.'),
-      this.document('doc-data', 'synthetic-test-data-contract.md', 'text/markdown', 8_140, 'Non-PII account, device, and plan data contract.'),
+      this.document('doc-data', 'synthetic-test-data-contract.md', 'text/markdown', 8_140, 'Synthetic existing accounts with active plans, current line counts, line limits, compatible devices, SIMs, expected charges, and rejection cases. Exclusive account allocation and cleanup after each run.'),
     ]
     this.drafts = [
-      this.draft('draft-esim', 'eSIM Device Upgrade Peak Certification', project, {
+      this.draft('draft-esim', 'ACC Add-a-Line Peak Certification', project, {
         launch_idempotency_key: 'demo-esim-launch',
-        title: 'eSIM Device Upgrade Peak Certification',
-        request: 'Certify the eSIM device-upgrade journey at peak load, including retry idempotency, IBM MQ fulfillment backlog, Cassandra lookups, and AKS scaling.',
+        title: 'ACC Add-a-Line Peak Certification',
+        request: ACC_DEMO_CONTEXT,
         scope: { project_id: project, app_id: 'app-digital-device', environment_id: 'env-perf' },
         work_items: [
           { key: 'feature:583', connection_id: 'conn-align', provider: 'jira_align' },
@@ -753,41 +754,41 @@ export class DevDataStore {
     this.evidence = Array.from({ length: 12 }, (_, index) => ({
       id: `evidence-${index + 1}`,
       source: index < 4 ? 'jira_align' : index < 8 ? 'observability' : 'documents',
-      title: ['eSIM acceptance criteria', 'OMS fulfillment path', 'Retry idempotency', 'Peak traffic objective', 'OMS latency baseline', 'MQ depth baseline', 'AKS HPA history', 'Cassandra read baseline', 'Architecture packet', 'SLA standard', 'Backlog runbook', 'Synthetic data contract'][index]!,
-      summary: ['CSR and digital upgrades must complete without duplicate orders.', 'Orders traverse Mulesoft, APIM, AKS, OMS, and MQ.', 'Every retry carries the same idempotency key.', 'Target is 85 TPS at 300 concurrent users.', 'Historical OMS p95 is 2.4 seconds.', 'Normal fulfillment depth is below 2,000.', 'HPA reaches six pods within two minutes.', 'Usage profile p95 is 180ms.', 'Approved architecture reference.', 'OMS create-order p95 must remain below 3,000ms.', 'Hold the ramp while backlog stabilizes.', 'All accounts and devices are synthetic.'][index]!,
+      title: ['ACC add-a-line acceptance criteria', 'BSSe fulfillment path', 'Retry idempotency', 'Peak traffic objective', 'BSSe latency baseline', 'MQ depth baseline', 'AKS HPA history', 'BSSe read baseline', 'Architecture packet', 'SLA standard', 'Backlog runbook', 'Synthetic data contract'][index]!,
+      summary: ['ACC must add exactly one line and one set of charges to the existing cellular plan, preserving all existing lines.', 'ACC in PERFHYPER2 submits through Mulesoft TEST to BSSe TEST. APIM, AKS, and MQ telemetry is illustrative.', 'Every retry carries the same idempotency key.', 'Illustrative target: 85 aggregate API TPS at 300 employee sessions; measure completed add-line journeys separately.', 'Historical BSSe p95 is 2.4 seconds.', 'Normal fulfillment depth is below 2,000.', 'HPA reaches six pods within two minutes.', 'Usage profile p95 is 180ms.', 'ACC PERFHYPER2 connects to Mulesoft TEST and BSSe TEST; infrastructure details are illustrative.', 'BSSe create-order p95 must remain below 3,000ms.', 'Hold the ramp while backlog stabilizes.', 'All accounts and devices are synthetic.'][index]!,
       ref: index < 4 ? ['feature:583', 'story:9012', 'story:9013', 'objective:77'][index]! : `demo:evidence:${index + 1}`,
       thread_id: index % 3 === 0 ? 'run-conditional' : null,
     }))
     const align: WorkItem[] = [
-      { key: 'epic:310', title: 'Digital channel modernization', kind: 'epic', status: 'In Progress', description: 'Modernize sales and service journeys.', url: 'https://align.example.test/epics/310' },
-      { key: 'capability:420', title: 'Frictionless device lifecycle', kind: 'capability', status: 'In Progress', description: 'Upgrade and activate devices across channels.', url: 'https://align.example.test/capabilities/420', parent_key: 'epic:310' },
-      { key: 'feature:583', title: 'eSIM device upgrade orchestration', kind: 'feature', status: 'Ready for Test', description: 'Orchestrate CSR and digital eSIM upgrades through OMS with retry-safe submission and asynchronous fulfillment.', url: 'https://align.example.test/features/583', parent_key: 'capability:420', priority: 'Critical', sprint: 'PI 26.3' },
-      { key: 'story:9012', title: 'CSR completes eSIM upgrade with resilient order fulfillment', kind: 'story', status: 'In Progress', description: 'A CSR submits an eSIM upgrade from Salesforce. Mulesoft and APIM route it to AKS and Amdocs OMS; fulfillment events traverse IBM MQ. Duplicate retries must not create duplicate orders.', url: 'https://align.example.test/stories/9012', parent_key: 'feature:583', assignee: 'Morgan Lee', sprint: 'PI 26.3 / I2' },
-      { key: 'story:9013', title: 'Idempotent retry for upgrade submission', kind: 'story', status: 'Ready for Test', description: 'Reuse the original idempotency key on network retry.', url: 'https://align.example.test/stories/9013', parent_key: 'feature:583' },
-      { key: 'story:9014', title: 'Usage profile eligibility lookup', kind: 'story', status: 'Accepted', description: 'Read eligibility state from Cassandra before upgrade.', url: 'https://align.example.test/stories/9014', parent_key: 'feature:583' },
-      { key: 'bug:9441', title: 'Fulfillment events queue during peak upgrades', kind: 'bug', status: 'Open', description: 'IBM MQ depth rises when OMS consumers lag.', url: 'https://align.example.test/bugs/9441', parent_key: 'story:9012', severity: 'High' },
-      { key: 'objective:77', title: 'Peak-hour digital reliability', kind: 'objective', status: 'In Progress', description: 'Meet peak release certification targets.', url: 'https://align.example.test/objectives/77' },
-      { key: 'feature:590', title: 'Digital activation status', kind: 'feature', status: 'Pending Approval', description: 'Expose asynchronous activation status.', url: 'https://align.example.test/features/590', parent_key: 'capability:420' },
-      { key: 'story:9050', title: 'Customer activation polling', kind: 'story', status: 'Open', description: 'Poll status with bounded backoff.', url: 'https://align.example.test/stories/9050', parent_key: 'feature:590' },
+      { key: 'epic:310', title: 'Employee sales modernization', kind: 'epic', status: 'In Progress', description: 'Modernize sales and service journeys.', url: 'https://align.example.test/epics/310' },
+      { key: 'capability:420', title: 'Existing customer plan management', kind: 'capability', status: 'In Progress', description: 'Add and activate a line on an existing cellular plan through ACC.', url: 'https://align.example.test/capabilities/420', parent_key: 'epic:310' },
+      { key: 'feature:583', title: 'ACC add-a-line orchestration', kind: 'feature', status: 'Ready for Test', description: 'Add one line to an existing cellular plan in ACC on PERFHYPER2 through Mulesoft and BSSe TEST, preserving existing lines and preventing duplicate charges.', url: 'https://align.example.test/features/583', parent_key: 'capability:420', priority: 'Critical', sprint: 'PI 26.3' },
+      { key: 'story:9012', title: 'Employee completes ACC add-a-line with resilient order fulfillment', kind: 'story', status: 'In Progress', description: ACC_DEMO_CONTEXT, url: 'https://align.example.test/stories/9012', parent_key: 'feature:583', assignee: 'Morgan Lee', sprint: 'PI 26.3 / I2' },
+      { key: 'story:9013', title: 'ACC add-a-line idempotent submission retry', kind: 'story', status: 'Ready for Test', description: 'Reuse the original idempotency key on network retry.', url: 'https://align.example.test/stories/9013', parent_key: 'feature:583' },
+      { key: 'story:9014', title: 'Existing account and plan eligibility lookup', kind: 'story', status: 'Accepted', description: 'Read eligibility state from BSSe before adding a line.', url: 'https://align.example.test/stories/9014', parent_key: 'feature:583' },
+      { key: 'bug:9441', title: 'Fulfillment events queue during peak line additions', kind: 'bug', status: 'Open', description: 'IBM MQ depth rises when BSSe consumers lag.', url: 'https://align.example.test/bugs/9441', parent_key: 'story:9012', severity: 'High' },
+      { key: 'objective:77', title: 'Peak-hour ACC reliability', kind: 'objective', status: 'In Progress', description: 'Meet peak release certification targets.', url: 'https://align.example.test/objectives/77' },
+      { key: 'feature:590', title: 'ACC line activation status', kind: 'feature', status: 'Pending Approval', description: 'Expose asynchronous activation status.', url: 'https://align.example.test/features/590', parent_key: 'capability:420' },
+      { key: 'story:9050', title: 'Employee views line activation status', kind: 'story', status: 'Open', description: 'Poll status with bounded backoff.', url: 'https://align.example.test/stories/9050', parent_key: 'feature:590' },
       { key: 'bug:9460', title: 'Activation polling ignores Retry-After', kind: 'bug', status: 'Open', description: 'Polling can overload APIM during delays.', url: 'https://align.example.test/bugs/9460', parent_key: 'story:9050' },
-      { key: 'story:9061', title: 'Bulk dealer eSIM upgrades', kind: 'story', status: 'Funnel', description: 'Bulk channel submits upgrade batches.', url: 'https://align.example.test/stories/9061', parent_key: 'feature:583' },
+      { key: 'story:9061', title: 'ACC add-a-line line-limit rejection', kind: 'story', status: 'Funnel', description: 'Reject accounts at the line limit without creating an order or charge.', url: 'https://align.example.test/stories/9061', parent_key: 'feature:583' },
     ]
     const jira: WorkItem[] = [
-      { key: 'PERF-240', title: '[Perf] OMS create-order baseline drift', kind: 'bug', status: 'Done', description: 'Resolved baseline regression from the prior PI.', url: 'https://jira.example.test/browse/PERF-240', priority: 'Medium', labels: ['perf-test'] },
+      { key: 'PERF-240', title: '[Perf] BSSe create-order baseline drift', kind: 'bug', status: 'Done', description: 'Resolved baseline regression from the prior PI.', url: 'https://jira.example.test/browse/PERF-240', priority: 'Medium', labels: ['perf-test'] },
       { key: 'PERF-241', title: '[Perf] MQ consumer scaling validation', kind: 'task', status: 'In Progress', description: 'Validate consumer scaling from two to four replicas.', url: 'https://jira.example.test/browse/PERF-241', priority: 'High', labels: ['perf-test', 'mq'], linked_keys: ['feature:583'] },
-      { key: 'PERF-242', title: '[Perf] APIM rate-limit headroom', kind: 'task', status: 'Open', description: 'Confirm peak headroom for upgrade APIs.', url: 'https://jira.example.test/browse/PERF-242', priority: 'Medium', labels: ['perf-test', 'apim'] },
-      { key: 'PERF-243', title: '[Perf] Cassandra eligibility read p95', kind: 'bug', status: 'Done', description: 'Track eligibility lookup latency.', url: 'https://jira.example.test/browse/PERF-243', priority: 'Low', labels: ['perf-test', 'cassandra'] },
+      { key: 'PERF-242', title: '[Perf] APIM rate-limit headroom', kind: 'task', status: 'Open', description: 'Confirm peak headroom for add-a-line APIs.', url: 'https://jira.example.test/browse/PERF-242', priority: 'Medium', labels: ['perf-test', 'apim'] },
+      { key: 'PERF-243', title: '[Perf] BSSe eligibility read p95', kind: 'bug', status: 'Done', description: 'Track eligibility lookup latency.', url: 'https://jira.example.test/browse/PERF-243', priority: 'Low', labels: ['perf-test', 'bsse'] },
       { key: 'PERF-244', title: '[Perf] HPA stabilization window', kind: 'task', status: 'Open', description: 'Tune HPA stabilization for ramp tests.', url: 'https://jira.example.test/browse/PERF-244', priority: 'Medium', labels: ['perf-test', 'aks'] },
-      { key: 'PERF-245', title: '[Perf] Synthetic device pool refresh', kind: 'task', status: 'In Progress', description: 'Refresh synthetic eSIM inventory.', url: 'https://jira.example.test/browse/PERF-245', priority: 'Medium', labels: ['perf-test', 'test-data'] },
+      { key: 'PERF-245', title: '[Perf] Synthetic device pool refresh', kind: 'task', status: 'In Progress', description: 'Refresh synthetic ACC add-a-line inventory.', url: 'https://jira.example.test/browse/PERF-245', priority: 'Medium', labels: ['perf-test', 'test-data'] },
       { key: 'PERF-246', title: '[Perf] Mulesoft connection pool telemetry', kind: 'task', status: 'Open', description: 'Add pool saturation telemetry.', url: 'https://jira.example.test/browse/PERF-246', priority: 'Low', labels: ['perf-test', 'mulesoft'] },
-      { key: 'PERF-247', title: '[Perf] Nightly eSIM certification', kind: 'task', status: 'Open', description: 'Schedule the release-candidate certification.', url: 'https://jira.example.test/browse/PERF-247', priority: 'High', labels: ['perf-test', 'release'] },
+      { key: 'PERF-247', title: '[Perf] Nightly ACC add-a-line certification', kind: 'task', status: 'Open', description: 'Schedule the release-candidate certification.', url: 'https://jira.example.test/browse/PERF-247', priority: 'High', labels: ['perf-test', 'release'] },
     ]
     this.workItems = [...align, ...jira]
     this.workItemProviders.clear()
     for (const item of align) this.workItemProviders.set(item.key, 'jira_align')
     for (const item of jira) this.workItemProviders.set(item.key, 'jira')
     this.savedQueries = [
-      { id: 'sq-align-esim', name: 'eSIM release scope', provider: 'jira_align', query: FLAGSHIP_ALIGN_QUERY, description: 'Flagship release scope', project_id: project, connection_id: 'conn-align', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
+      { id: 'sq-align-esim', name: 'ACC add-a-line release scope', provider: 'jira_align', query: FLAGSHIP_ALIGN_QUERY, description: 'Flagship release scope', project_id: project, connection_id: 'conn-align', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
       { id: 'sq-align-risk', name: 'Open Align delivery risks', provider: 'jira_align', query: "programId eq 42 and itemtype in ('bug') and state eq 'Open'", description: 'Portfolio risks', project_id: project, connection_id: 'conn-align', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
       { id: 'sq-jira-open', name: 'Open performance defects', provider: 'jira', query: 'project = PERF AND status in (Open, "In Progress") AND labels = perf-test', description: 'Active engineering actions', project_id: project, connection_id: 'conn-jira', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
       { id: 'sq-jira-release', name: 'Release blockers', provider: 'jira', query: 'project = PERF AND priority in (Highest, High) AND status != Done', description: 'Release review queue', project_id: project, connection_id: 'conn-jira', created_by: 'Demo Presenter', created_at: created, updated_at: updated },
@@ -1112,8 +1113,8 @@ export class DevDataStore {
         'awaiting_output_review',
         stage === 'env_revised' ? 2 : 1,
         stage === 'env_revised'
-          ? 'PERF rescan is green after correcting the OMS endpoint and MQ consumer count.'
-          : 'QC Oracle target and insufficient MQ consumers require operator review.',
+          ? 'PERFHYPER2 rescan is green after correcting the BSSe endpoint and MQ consumer count.'
+          : 'non-PERFHYPER2 BSSe test target and insufficient MQ consumers require operator review.',
       )
       detail.current_phase = 'env_triage'
       detail.thread_status = 'interrupted'
@@ -1121,7 +1122,7 @@ export class DevDataStore {
       const event = emit('env-gate', { type: 'gate_opened', gate: 'phase_review', phase: 'env_triage', attempt: stage === 'env_triage' ? 1 : 2 })
       if (event) yield event
     } else if (stage === 'execution') {
-      this.setPhaseState(detail, 'env_triage', 'succeeded', 2, 'PERF configuration correction and rescan passed.')
+      this.setPhaseState(detail, 'env_triage', 'succeeded', 2, 'PERFHYPER2 configuration correction and rescan passed.')
       for await (const event of phase('script_scenario')) yield event
       this.setPhaseState(detail, 'script_scenario', 'succeeded', 1, 'Validated JMeter and VuGen scenarios are ready.')
       this.setPhaseState(detail, 'execution', 'running')
@@ -1141,7 +1142,7 @@ export class DevDataStore {
       }
       const done = emit('execution-done', { type: 'phase_status', phase: 'execution', status: 'succeeded', attempt: 1 })
       if (done) yield done
-      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 1, 'OMS p95 exceeded SLA while orchestration completed successfully.')
+      this.setPhaseState(detail, 'execution', 'awaiting_output_review', 1, 'BSSe p95 exceeded SLA while orchestration completed successfully.')
       const execution = (detail.values as PipelineState).phase_results?.execution
       if (execution) {
         execution.test_summary = {
@@ -1189,12 +1190,12 @@ export class DevDataStore {
       if (jira) yield jira
       this.setPhaseState(detail, 'reporting', 'succeeded', 1)
       for await (const event of phase('postmortem')) yield event
-      this.setPhaseState(detail, 'postmortem', 'succeeded', 1, 'MQ consumer, HPA, and OMS remediation actions were recorded.')
+      this.setPhaseState(detail, 'postmortem', 'succeeded', 1, 'MQ consumer, HPA, and BSSe remediation actions were recorded.')
       detail.current_phase = 'postmortem'
       detail.thread_status = 'idle'
       detail.pending_gate = null
       detail.interrupts = []
-      detail.values = { ...(detail.values ?? {}), generated_ticket: ticket, postmortem_actions: ['Scale IBM MQ fulfillment consumers from two to four.', 'Tune the AKS HPA stabilization window.', 'Optimize the OMS create-order dependency path.'] }
+      detail.values = { ...(detail.values ?? {}), generated_ticket: ticket, postmortem_actions: ['Scale IBM MQ fulfillment consumers from two to four.', 'Tune the AKS HPA stabilization window.', 'Optimize the BSSe create-order dependency path.'] }
     } else if (stage === 'prompt_playground') {
       const promptPhase = PHASE_NAMES.includes(detail.current_phase as PhaseName)
         ? (detail.current_phase as PhaseName)
@@ -1336,7 +1337,7 @@ export class DevDataStore {
         system: entry?.resolved_prompt?.system ?? `You are the ${phase.replaceAll('_', ' ')} phase operator.`,
         phase_prompt: entry?.resolved_prompt?.user ?? `Prepare the ${phase.replaceAll('_', ' ')} deliverable.`,
         application: detail.app_id ? `Application requirements for ${detail.app_id}.` : null,
-        additional_context: '',
+        additional_context: ACC_DEMO_CONTEXT,
         source: entry?.resolved_prompt_source ?? { origin: 'catalog', ref: `phase/${phase}@dev` },
         updated_at: detail.updated_at ?? nowIso(),
         updated_by: 'system',
@@ -1573,8 +1574,8 @@ export class DevDataStore {
           scanned_at: nowIso(),
           stale: false,
           services: [
-            { name: 'device-upgrade-api', image: 'registry.example.test/device-upgrade:4.8.2', replicas: 4 },
-            { name: 'order-mgmt-svc', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
+            { name: 'acc-web', image: 'registry.example.test/acc-web:4.8.2', replicas: 4 },
+            { name: 'mulesoft-add-line-api', image: 'registry.example.test/order-mgmt:7.14.1', replicas: 3 },
             { name: 'mq-fulfillment-consumer', image: 'registry.example.test/mq-consumer:3.6.0', replicas: 4 },
           ],
         },
@@ -1600,10 +1601,10 @@ export class DevDataStore {
       const provider = lowered.includes('align') ? 'jira_align' : body.connection_id ? undefined : 'jira'
       const binding = provider ? this.workTrackingBinding(undefined, provider) : this.workTrackingBinding(body.connection_id)
       const jiraQuery = `project = PERF AND text ~ "${text}"`
-      const isEsimScope = /esim|device upgrade|flagship|release scope/.test(lowered)
+      const isAccScope = /acc|add[ -]a[ -]line|flagship|release scope/.test(lowered)
       const queryByProvider: Record<string, string> = {
         jira: jiraQuery,
-        jira_align: isEsimScope
+        jira_align: isAccScope
           ? FLAGSHIP_ALIGN_QUERY
           : `programId eq 42 and contains(title,'${text}')`,
       }
@@ -1626,9 +1627,8 @@ export class DevDataStore {
       let rows = this.workItems.filter((item) => this.workItemProviders.get(item.key) === binding.provider)
       const queryText = body.query?.query?.toLowerCase() ?? ''
       if (binding.provider === 'jira_align') {
-        if (queryText.includes('esim')) {
-          rows = rows.filter((item) => ['feature:583', 'story:9012', 'story:9013', 'story:9014', 'story:9061'].includes(item.key))
-        }
+        const titleContains = /contains\(\s*title\s*,\s*['"]([^'"]+)['"]\s*\)/i.exec(queryText)?.[1]
+        if (titleContains) rows = rows.filter((item) => item.title.toLowerCase().includes(titleContains))
         const itemTypes = /itemtype\s+in\s*\(([^)]+)\)/i.exec(queryText)?.[1]
           ?.split(',')
           .map((value) => value.replaceAll(/["']/g, '').trim().toLowerCase())
@@ -1734,12 +1734,12 @@ export class DevDataStore {
       if (idempotencyKey) this.apexIdempotency.set(idempotencyKey, { status, body: clone(body) })
       return jsonResponse(body, status)
     }
-    const connection = { id: 'conn-apex-load', name: 'APEX Load PERF Pool', project_id: 'telecom-modernization' }
+    const connection = { id: 'conn-apex-load', name: 'APEX Load PERFHYPER2 Pool', project_id: 'telecom-modernization' }
     if (method === 'GET' && path === '/v1/apex-load/connections') return jsonResponse({ items: [connection], truncated: false })
     if (method === 'GET' && path.endsWith('/capabilities')) {
       return jsonResponse({
         templates: [
-          { id: 'esim-journey', name: 'eSIM device upgrade journey' },
+          { id: 'esim-journey', name: 'ACC add-a-line journey' },
           { id: 'mq-recovery', name: 'IBM MQ recovery verification' },
         ],
         protocols: ['jmeter', 'vugen'],
@@ -1751,9 +1751,9 @@ export class DevDataStore {
     if (method === 'GET' && path.endsWith('/runs')) {
       return jsonResponse({
         items: [
-          { id: 'native-run-2603', name: 'eSIM certification 26.3', status: 'COMPLETED', console_url: 'https://apex-load.example.test/#/test/native-run-2603' },
-          { id: 'native-run-active', name: 'eSIM active ramp', status: 'RUNNING', console_url: 'https://apex-load.example.test/#/test/native-run-active' },
-          { id: 'native-run-baseline', name: 'eSIM baseline 26.2.2', status: 'COMPLETED', console_url: 'https://apex-load.example.test/#/test/native-run-baseline' },
+          { id: 'native-run-2603', name: 'ACC add-a-line certification 26.3', status: 'COMPLETED', console_url: 'https://apex-load.example.test/#/test/native-run-2603' },
+          { id: 'native-run-active', name: 'ACC add-a-line active ramp', status: 'RUNNING', console_url: 'https://apex-load.example.test/#/test/native-run-active' },
+          { id: 'native-run-baseline', name: 'ACC add-a-line baseline 26.2.2', status: 'COMPLETED', console_url: 'https://apex-load.example.test/#/test/native-run-baseline' },
           { id: 'native-run-recovery', name: 'MQ recovery rehearsal', status: 'FAILED', console_url: 'https://apex-load.example.test/#/test/native-run-recovery' },
         ],
         truncated: false,
@@ -1763,7 +1763,7 @@ export class DevDataStore {
       return jsonResponse({ items: ['run-active', 'run-baseline-a', 'run-baseline-b', 'run-engine-recovery'].map((thread_id, index) => ({ thread_id, native_run_id: ['native-run-active', 'native-run-2603', 'native-run-baseline', 'native-run-recovery'][index], status: index === 3 ? 'failed' : 'synchronized' })), limit: 25, offset: 0 })
     }
     if (method === 'GET' && path.endsWith('/schedule-health')) return jsonResponse({ details: { status: 'healthy', scheduler_lag_seconds: 0, next_occurrence_at: isoMinutesAgo(-240, this.activationTime) } })
-    if (method === 'GET' && path.endsWith('/calendar')) return jsonResponse({ details: { windows: [{ id: 'window-1', name: 'PERF reserved window', starts_at: isoMinutesAgo(-240, this.activationTime), ends_at: isoMinutesAgo(-330, this.activationTime) }] } })
+    if (method === 'GET' && path.endsWith('/calendar')) return jsonResponse({ details: { windows: [{ id: 'window-1', name: 'PERFHYPER2 reserved window', starts_at: isoMinutesAgo(-240, this.activationTime), ends_at: isoMinutesAgo(-330, this.activationTime) }] } })
     if (method === 'GET' && path.endsWith('/occurrences')) return jsonResponse({ items: this.apexOccurrences.map((item) => ({ ...item, scheduled_for: isoMinutesAgo(Number(item['scheduled_offset_minutes'] ?? 0), this.activationTime) })), truncated: false })
     if (method === 'GET' && /\/scenarios\/[^/]+\/schedules$/.test(path)) {
       const scenarioId = decodePart(path.split('/').at(-2) ?? '')
@@ -1820,9 +1820,9 @@ export class DevDataStore {
       const focus = lowered.includes('mq') || lowered.includes('queue')
         ? 'IBM MQ backlog risk is driven by two active consumers rather than the approved four; use a bounded ramp hold during recovery.'
         : lowered.includes('sla') || lowered.includes('release')
-          ? 'Release certification is conditional because OMS create-order p95 reached 3,650ms against the 3,000ms SLA.'
-          : 'Peak risks are OMS p95 latency, IBM MQ consumer backlog, retry idempotency, Cassandra eligibility reads, and AKS HPA response.'
-      const summary = `${subject}: Jira Align feature:583 and story:9012 define the eSIM certification scope. ${focus} This summary was generated by the bundled deterministic offline agent.`
+          ? 'Release certification is conditional because BSSe create-order p95 reached 3,650ms against the 3,000ms SLA.'
+          : 'Peak risks are BSSe p95 latency, IBM MQ consumer backlog, retry idempotency, BSSe eligibility reads, and AKS HPA response.'
+      const summary = `${subject}: Jira Align feature:583 and story:9012 define the ACC add-a-line certification scope. ${focus} This summary was generated by the bundled deterministic offline agent.`
       this.contextSummaryJobs.set(runId, { runId, threadId, subject, summary })
       return jsonResponse({ run_id: runId, stream_url: `/threads/${threadId}/runs/${runId}/stream`, subject }, 202)
     }
@@ -2094,7 +2094,7 @@ export class DevDataStore {
         { id: `${id}-host-1`, hostname: `${name}-node-1`, role: 'worker' },
         { id: `${id}-host-2`, hostname: `${name}-node-2`, role: name === 'production' ? 'api' : null },
       ],
-      options: { namespace: `${applicationId}-${name}` },
+      options: { namespace: `${applicationId}-${name}`, demo_assumptions: true, ...(id === 'env-perf' ? { dependencies: ACC_DEMO_DEPENDENCIES } : {}) },
       created_at: isoMinutesAgo(12_000, this.activationTime),
       updated_at: isoMinutesAgo(30, this.activationTime),
       last_snapshot: { scanned_at: isoMinutesAgo(stale ? 2_400 : 15, this.activationTime), service_count: stale ? 2 : 4 },
@@ -2127,9 +2127,9 @@ export class DevDataStore {
     )
     return [
       ...phase,
-      this.prompt('prompt-app-device', 'application', 'app-digital-device', 'Digital device-upgrade requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Preserve order idempotency, exercise CSR and digital channels, monitor OMS p95, IBM MQ depth, APIM rate limits, and AKS scaling.', created, updated, false, 'telecom demo application context'),
-      this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate Amdocs OMS submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
-      this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate Cassandra eligibility reads plus Amdocs BSSe and TLG latency without using production account data.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-device', 'application', 'app-digital-device', 'ACC add-a-line requirements', APPLICATION_PROMPT_TEMPLATE + '\n' + ACC_DEMO_CONTEXT, created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-order', 'application', 'app-order-fulfillment', 'Order fulfillment requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate BSSe submission, four MQ consumers, bounded backlog recovery, and duplicate-event handling.', created, updated, false, 'telecom demo application context'),
+      this.prompt('prompt-app-usage', 'application', 'app-usage-billing', 'Usage and billing requirements', APPLICATION_PROMPT_TEMPLATE + '\nDemo application scope (confirm against supplied evidence): Validate existing account eligibility, line limits, resulting line counts, and charges in BSSe TEST without production account data.', created, updated, false, 'telecom demo application context'),
       this.prompt('prompt-old', 'experimental', 'legacy/release-report', 'Archived pre-telecom prompt', 'Legacy release report instructions retained only to demonstrate prompt archival.', created, updated, true, 'archived demo history'),
     ]
   }
@@ -2151,7 +2151,7 @@ export class DevDataStore {
   }
 
   private makeLogs(): LogEntry[] {
-    const services = ['device-upgrade-api', 'order-mgmt-svc', 'mq-fulfillment-consumer', 'mulesoft-esb', 'apim-gateway', 'usage-profile-api', 'apex-worker']
+    const services = ['acc-web', 'mulesoft-add-line-api', 'mq-fulfillment-consumer', 'mulesoft-esb', 'apim-gateway', 'bsse-account-api', 'apex-worker']
     return Array.from({ length: 40 }, (_, index) => {
       const mqIncident = index >= 4 && index <= 9
       const omsIncident = index >= 10 && index <= 15
@@ -2162,7 +2162,7 @@ export class DevDataStore {
         message: mqIncident
           ? `IBM MQ fulfillment depth ${4_200 + index * 920}; ramp hold checkpoint`
           : omsIncident
-            ? `OMS create-order p95 ${3_100 + index * 55}ms exceeded 3000ms SLA`
+            ? `BSSe create-order p95 ${3_100 + index * 55}ms exceeded 3000ms SLA`
             : `telecom demo checkpoint ${index + 1} correlated successfully`,
         fields: { thread_id: index < 20 ? 'run-conditional' : 'run-active', checkpoint: index + 1 },
       }
@@ -2172,7 +2172,7 @@ export class DevDataStore {
   private makeAssistants(created: string, updated: string): Assistant[] {
     return [
       this.assistant('pipeline', 'pipeline', 'Telecom system default', 'All seven phases with deterministic offline agents.', { project_id: 'telecom-modernization' }, { created_by: 'Demo Curator' }, 1, created, updated),
-      this.assistant('asst-release', 'pipeline', 'eSIM Release Certification', 'Full gated release-candidate certification profile.', { project_id: 'telecom-modernization', app_id: 'app-digital-device', environment_id: 'env-perf', engine: 'apexload', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
+      this.assistant('asst-release', 'pipeline', 'ACC add-a-line Release Certification', 'Full gated release-candidate certification profile.', { project_id: 'telecom-modernization', app_id: 'app-digital-device', environment_id: 'env-perf', engine: 'apexload', limits: { poll_interval_s: 1 } }, { created_by: 'Demo Curator' }, 4, created, updated),
       this.assistant('asst-fast', 'pipeline', 'Telecom Fast Smoke', 'Short story, execution, and reporting path.', { project_id: 'telecom-modernization', phases: ['story_analysis', 'execution', 'reporting'] }, { created_by: 'Demo Curator' }, 2, created, updated),
     ]
   }
@@ -2183,12 +2183,12 @@ export class DevDataStore {
 
   private seedPipelines(): void {
     const rows: Array<[string, string, string, 'busy' | 'interrupted' | 'idle' | 'error', PhaseName, 'prompt' | 'phase' | null]> = [
-      ['run-active', 'eSIM upgrade active ramp', 'telecom-modernization', 'busy', 'execution', null],
+      ['run-active', 'ACC add-a-line active ramp', 'telecom-modernization', 'busy', 'execution', null],
       ['run-prompt-review', 'PI 26.3 workload prompt review', 'telecom-modernization', 'interrupted', 'test_planning', 'prompt'],
-      ['run-report-review', 'Device upgrade release approval', 'telecom-modernization', 'interrupted', 'reporting', 'phase'],
-      ['run-baseline-a', 'eSIM baseline 26.2.1', 'telecom-modernization', 'idle', 'postmortem', null],
-      ['run-baseline-b', 'eSIM baseline 26.2.2', 'telecom-modernization', 'idle', 'postmortem', null],
-      ['run-conditional', 'OMS and MQ release rehearsal', 'telecom-modernization', 'idle', 'postmortem', null],
+      ['run-report-review', 'ACC add-a-line release approval', 'telecom-modernization', 'interrupted', 'reporting', 'phase'],
+      ['run-baseline-a', 'ACC add-a-line baseline 26.2.1', 'telecom-modernization', 'idle', 'postmortem', null],
+      ['run-baseline-b', 'ACC add-a-line baseline 26.2.2', 'telecom-modernization', 'idle', 'postmortem', null],
+      ['run-conditional', 'BSSe and MQ release rehearsal', 'telecom-modernization', 'idle', 'postmortem', null],
       ['run-aborted', 'Shared environment contention rehearsal', 'telecom-modernization', 'error', 'env_triage', null],
       ['run-engine-recovery', 'APEX Load provisioning recovery', 'telecom-modernization', 'interrupted', 'execution', null],
     ]
@@ -2201,7 +2201,7 @@ export class DevDataStore {
           result.test_summary.passed = true
           result.test_summary.kpis = { tps_avg: id === 'run-baseline-a' ? 81.2 : 82.4, p95_ms: id === 'run-baseline-a' ? 2410 : 2520, error_rate: id === 'run-baseline-a' ? 0.006 : 0.007, vusers_peak: 300 }
           result.test_summary.sla_breaches = []
-          result.test_summary.notes = 'Comparable eSIM baseline passed all release thresholds.'
+          result.test_summary.notes = 'Comparable ACC add-a-line baseline passed all release thresholds.'
         }
       }
       if (status === 'idle' && state.phase_results) state.phase_results.postmortem = { status: 'succeeded', attempt: 1, summary: 'Test review completed. See execution results and reports for release risks.' }
@@ -2317,11 +2317,11 @@ export class DevDataStore {
           prompt: {
             system: 'You are the test planning phase operator.',
             user: revised
-              ? 'Plan concurrent CSR and digital eSIM upgrades with explicit bulk/dealer and asynchronous fulfillment coverage, retry idempotency, IBM MQ backlog recovery, and Cassandra lookup checks.'
-              : 'Plan concurrent CSR eSIM upgrades with retry idempotency, IBM MQ backlog, Cassandra lookup, and peak release thresholds.',
+              ? ACC_DEMO_TEST_PLAN + '\nReview emphasis: eligibility rejection and delayed activation.'
+              : ACC_DEMO_TEST_PLAN,
             source: { origin: revised ? 'run_override' : 'catalog', ref: 'phase/test_planning/system@v2' },
           },
-          context_packets: [{ id: 'ctx-1', source: 'jira_align', title: 'story:9012 acceptance criteria', summary: 'CSR upgrade, resilient OMS fulfillment, and retry behavior under load.' }],
+          context_packets: [{ id: 'ctx-1', source: 'jira_align', title: 'story:9012 acceptance criteria', summary: 'employee add-a-line, resilient BSSe fulfillment, and retry behavior under load.' }],
           tools: ['jira_align.query', 'documents.search'],
           editable: true,
           actions: ['approve', 'modify', 'skip_phase', 'abort'],
@@ -2333,9 +2333,9 @@ export class DevDataStore {
   private addPhaseGate(detail: PipelineDetail, phase: PhaseName = 'reporting', revised = false): void {
     const interruptId = this.id(`int-${phase}`)
     const envSummary = revised
-      ? 'PERF rescan is green: order-mgmt-svc now targets the PERF service endpoint and four IBM MQ consumers are available.'
-      : 'Environment triage found order-mgmt-svc targeting a QC Oracle endpoint and only two IBM MQ consumers instead of four.'
-    const executionSummary = 'Execution completed successfully. OMS create-order p95 was 3,650ms against a 3,000ms SLA; IBM MQ depth peaked at 18,420 while AKS HPA scaled from four to eight pods.'
+      ? 'PERFHYPER2 rescan is green: mulesoft-add-line-api now targets the PERFHYPER2 service endpoint and four IBM MQ consumers are available.'
+      : 'Environment triage found mulesoft-add-line-api targeting a non-PERFHYPER2 BSSe test endpoint and only two IBM MQ consumers instead of four.'
+    const executionSummary = 'Execution completed successfully. BSSe create-order p95 was 3,650ms against a 3,000ms SLA; IBM MQ depth peaked at 18,420 while AKS HPA scaled from four to eight pods.'
     const reportSummary = 'Executive and technical reports are ready. Release certification is conditional, and Jira Cloud defect PERF-248 will be created on approval.'
     const genericSummary = `The offline ${phase.replaceAll('_', ' ')} rerun completed and is ready for operator review.`
     const summary = phase === 'env_triage'
@@ -2356,14 +2356,14 @@ export class DevDataStore {
           kind: 'phase_review',
           phase,
           summary,
-          result_preview: { summary, reasoning_digest: phase === 'env_triage' ? (revised ? 'Configuration correction and rescan passed.' : 'Oracle target and MQ consumer count require correction.') : 'Orchestration succeeded; the OMS SLA is the release risk.' },
-          artifacts: [{ id: phase === 'reporting' ? 'executive-report' : 'exec-report', kind: 'report', name: phase === 'reporting' ? 'eSIM-executive-report.md' : `${phase}-result.json` }],
+          result_preview: { summary, reasoning_digest: phase === 'env_triage' ? (revised ? 'Configuration correction and rescan passed.' : 'BSSe target and MQ consumer count require correction.') : 'Orchestration succeeded; the BSSe SLA is the release risk.' },
+          artifacts: [{ id: phase === 'reporting' ? 'executive-report' : 'exec-report', kind: 'report', name: phase === 'reporting' ? 'ACC add-a-line-executive-report.md' : `${phase}-result.json` }],
           warnings: revised
             ? []
             : phase === 'env_triage'
-              ? ['QC Oracle target detected.', 'Only two of four MQ consumers are active.']
+              ? ['non-PERFHYPER2 BSSe test target detected.', 'Only two of four MQ consumers are active.']
               : phase === 'execution' || phase === 'reporting'
-                ? ['OMS p95 exceeds the 3,000ms release SLA.']
+                ? ['BSSe p95 exceeds the 3,000ms release SLA.']
                 : [],
           dialogue_tail: (detail.values?.['dialogue'] as unknown[]) ?? [],
           actions: ['approve', 'revise', 'discuss', 'abort'],
@@ -2384,7 +2384,7 @@ export class DevDataStore {
     const mapped = mappedKey ? this.workItems.find((item) => item.key === mappedKey) : null
     if (mapped) return mapped
     const detail = this.pipelineDetails.get(threadId)
-    const isFlagship = detail?.title === 'eSIM Device Upgrade Peak Certification'
+    const isFlagship = detail?.title === 'ACC Add-a-Line Peak Certification'
     const jiraNumbers = this.workItems.flatMap((item) => /^PERF-(\d+)$/.exec(item.key)?.[1] ? [Number(/^PERF-(\d+)$/.exec(item.key)![1])] : [])
     const ticketKey = isFlagship ? 'PERF-248' : `PERF-${Math.max(248, ...jiraNumbers) + 1}`
     const existing = this.workItems.find((item) => item.key === ticketKey)
@@ -2394,14 +2394,14 @@ export class DevDataStore {
     }
     const ticket: WorkItem = {
       key: ticketKey,
-      title: '[Perf] OMS p95 exceeds SLA during eSIM peak certification',
+      title: '[Perf] BSSe p95 exceeds SLA during ACC add-a-line peak certification',
       kind: 'bug',
       status: 'Open',
-      description: 'OMS create-order p95 reached 3,650ms against the 3,000ms SLA. IBM MQ fulfillment depth peaked at 18,420 while AKS HPA scaled from four to eight pods. Orchestration completed successfully.',
+      description: 'BSSe create-order p95 reached 3,650ms against the 3,000ms SLA. IBM MQ fulfillment depth peaked at 18,420 while AKS HPA scaled from four to eight pods. Orchestration completed successfully.',
       url: 'https://jira.example.test/browse/PERF-248',
       priority: 'Highest',
       severity: 'High',
-      labels: ['perf-test', 'esim', 'oms', 'release-blocker'],
+      labels: ['perf-test', 'acc', 'add-line', 'bsse', 'release-blocker'],
       linked_keys: ['feature:583', 'story:9012'],
     }
     this.workItems.unshift(ticket)
@@ -2447,33 +2447,33 @@ export class DevDataStore {
   private seedArtifacts(): void {
     const rows: Array<[string, string, string, string]> = [
       ['exec-report', 'load-report.json', 'application/json', JSON.stringify({ engine: 'apexload', orchestration_status: 'succeeded', release_result: 'conditional_fail', kpis: { tps_avg: 84.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300, mq_depth_peak: 18420 } }, null, 2)],
-      ['execution-transcript', 'execution-transcript.txt', 'text/plain', 'APEX Load provisioned\nStepped ramp started\nRamp held for MQ backlog\nAKS HPA scaled 4 -> 8\nOMS SLA finding recorded\n'],
+      ['execution-transcript', 'execution-transcript.txt', 'text/plain', 'APEX Load provisioned\nStepped ramp started\nRamp held for MQ backlog\nAKS HPA scaled 4 -> 8\nBSSe SLA finding recorded\n'],
       ['story-hierarchy', 'jira-align-hierarchy.json', 'application/json', JSON.stringify({ epic: 'epic:310', capability: 'capability:420', feature: 'feature:583', story: 'story:9012' }, null, 2)],
-      ['scope-analysis', 'story-analysis.md', 'text/markdown', '# eSIM scope\n\nConcurrent CSR, retry/idempotency, IBM MQ backlog, and Cassandra eligibility scenarios.'],
-      ['test-plan', 'test-plan.md', 'text/markdown', '# Peak certification plan\n\n300 concurrent users; stepped ramp to 85 TPS; bulk and async fulfillment coverage.'],
+      ['scope-analysis', 'story-analysis.md', 'text/markdown', ACC_DEMO_CONTEXT],
+      ['test-plan', 'test-plan.md', 'text/markdown', ACC_DEMO_TEST_PLAN],
       ['traffic-profile', 'traffic-profile.csv', 'text/csv', 'minute,vusers,target_tps\n0,0,0\n5,100,30\n10,200,60\n15,300,85\n'],
-      ['env-scan-before', 'environment-before.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'qc3-oms-oracle-scan.example.test', mq_consumers: 2, status: 'warning' }, null, 2)],
-      ['env-scan-after', 'environment-after.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'perf-oms-scan.example.test', mq_consumers: 4, status: 'green' }, null, 2)],
-      ['config-diff', 'perf-configuration.diff', 'text/plain', '- OMS_DB=qc3-oms-oracle-scan\n+ OMS_DB=perf-oms-scan\n- MQ_CONSUMERS=2\n+ MQ_CONSUMERS=4\n'],
-      ['jmeter-script', 'esim-device-upgrade.jmx', 'application/xml', '<jmeterTestPlan version="1.2"><hashTree><TestPlan testname="eSIM Upgrade"/><HeaderManager testname="Correlation and idempotency"/></hashTree></jmeterTestPlan>'],
-      ['vugen-script', 'esim_device_upgrade.c', 'text/x-c', 'Action(){ web_reg_save_param_json("ParamName=orderId", "QueryString=$.orderId", LAST); web_custom_request("upgrade", "URL=https://perf.device-upgrade.example.test/upgrade", LAST); return 0; }'],
+      ['env-scan-before', 'environment-before.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'bsse-other-test.example.test', mq_consumers: 2, status: 'warning' }, null, 2)],
+      ['env-scan-after', 'environment-after.json', 'application/json', JSON.stringify({ order_mgmt_endpoint: 'bsse.perfhyper2.example.test', mq_consumers: 4, status: 'green' }, null, 2)],
+      ['config-diff', 'perf-configuration.diff', 'text/plain', '- BSSE_BASE_URL=https://bsse-other-test.example.test\n+ BSSE_BASE_URL=https://bsse.perfhyper2.example.test\n- MQ_CONSUMERS=2\n+ MQ_CONSUMERS=4\n'],
+      ['jmeter-script', 'acc-add-line.jmx', 'application/xml', '<jmeterTestPlan version="1.2"><hashTree><TestPlan testname="ACC Add-a-Line"/><HeaderManager testname="Correlation and idempotency"/></hashTree></jmeterTestPlan>'],
+      ['vugen-script', 'acc_add_line.c', 'text/x-c', 'Action(){ web_reg_save_param_json("ParamName=orderId", "QueryString=$.orderId", LAST); web_custom_request("add-line", "URL=https://acc.perfhyper2.example.test/add-line", LAST); return 0; }'],
       ['jmeter-validation', 'jmeter-validation.json', 'application/json', JSON.stringify({ valid: true, checks: ['correlation', 'synthetic-data', 'stepped-ramp', 'sla-assertions'] }, null, 2)],
       ['vugen-validation', 'vugen-validation.json', 'application/json', JSON.stringify({ valid: true, correlations: ['orderId', 'activationId'], transactions: 6 }, null, 2)],
-      ['synthetic-data', 'synthetic-esim-data.csv', 'text/csv', 'account_id,device_id,iccid\nSYN-1001,DEV-2001,8900000000000000001\nSYN-1002,DEV-2002,8900000000000000002\n'],
+      ['synthetic-data', 'synthetic-acc-add-line-data.csv', 'text/csv', ACC_DEMO_TEST_DATA],
       ['provision-request', 'apex-load-provision.json', 'application/json', JSON.stringify({ scenario: 'scenario-esim-peak', generators: 3, idempotency_key: 'demo-esim-2603' }, null, 2)],
       ['ramp-timeline', 'ramp-timeline.csv', 'text/csv', 'elapsed_s,event,mq_depth,hpa_pods\n0,provisioned,900,4\n420,ramp_hold,12100,6\n600,resume,8400,8\n1500,complete,2100,8\n'],
       ['mq-monitoring', 'mq-monitoring.md', 'text/markdown', '# IBM MQ timeline\n\nDepth peaked at 18,420. The bounded ramp hold allowed consumers to recover without aborting orchestration.'],
       ['hpa-monitoring', 'aks-hpa-timeline.json', 'application/json', JSON.stringify({ replicas: [{ at_s: 0, value: 4 }, { at_s: 390, value: 6 }, { at_s: 560, value: 8 }] }, null, 2)],
       ['oms-kpis', 'oms-kpis.csv', 'text/csv', 'metric,value,sla,result\ncreate_order_p95_ms,3650,3000,fail\nerror_rate,0.028,0.02,fail\ntps_avg,84.7,80,pass\n'],
-      ['technical-report', 'eSIM-technical-report.md', 'text/markdown', '# Technical report\n\nOrchestration succeeded. OMS latency and MQ backlog require remediation before production promotion.'],
-      ['executive-report', 'eSIM-executive-report.md', 'text/markdown', '# Executive result\n\nConditional certification: target throughput achieved; OMS p95 exceeded the release SLA.'],
+      ['technical-report', 'ACC add-a-line-technical-report.md', 'text/markdown', '# Technical report\n\nOrchestration succeeded. BSSe latency and MQ backlog require remediation before production promotion.'],
+      ['executive-report', 'ACC add-a-line-executive-report.md', 'text/markdown', '# Executive result\n\nConditional certification: target throughput achieved; BSSe p95 exceeded the release SLA.'],
       ['trend-comparison', 'baseline-comparison.csv', 'text/csv', 'run,p95_ms,error_rate,tps\n26.2.1,2410,0.006,81.2\n26.2.2,2520,0.007,82.4\n26.3,3650,0.028,84.7\n'],
-      ['jira-draft', 'PERF-248-draft.json', 'application/json', JSON.stringify({ project: 'PERF', type: 'Bug', links: ['feature:583', 'story:9012'], finding: 'OMS p95 SLA breach' }, null, 2)],
+      ['jira-draft', 'PERF-248-draft.json', 'application/json', JSON.stringify({ project: 'PERF', type: 'Bug', links: ['feature:583', 'story:9012'], finding: 'BSSe p95 SLA breach' }, null, 2)],
       ['evidence-manifest', 'evidence-manifest.json', 'application/json', JSON.stringify({ packets: 12, signed: true, source_types: ['jira_align', 'observability', 'documents'] }, null, 2)],
-      ['postmortem', 'postmortem.md', 'text/markdown', '# Postmortem\n\nScale MQ consumers, tune AKS HPA stabilization, and optimize the OMS create-order dependency path.'],
-      ['remediation-plan', 'remediation-plan.csv', 'text/csv', 'owner,action,due\nOMS team,Optimize create-order path,PI 26.3 I3\nPlatform,Scale MQ consumers to four,Before retest\nSRE,Tune HPA stabilization,Before retest\n'],
+      ['postmortem', 'postmortem.md', 'text/markdown', '# Postmortem\n\nScale MQ consumers, tune AKS HPA stabilization, and optimize the BSSe create-order dependency path.'],
+      ['remediation-plan', 'remediation-plan.csv', 'text/csv', 'owner,action,due\nBSSe team,Optimize create-order path,PI 26.3 I3\nPlatform,Scale MQ consumers to four,Before retest\nSRE,Tune HPA stabilization,Before retest\n'],
       ['agent-dialogue', 'agent-dialogue.txt', 'text/plain', 'Operator: Why did the queue grow?\nAgent: Only two fulfillment consumers were active; use four and a bounded ramp hold.\n'],
-      ['prompt-history', 'prompt-edit-history.json', 'application/json', JSON.stringify({ versions: 2, edit: 'Added bulk/dealer and asynchronous fulfillment coverage.' }, null, 2)],
+      ['prompt-history', 'prompt-edit-history.json', 'application/json', JSON.stringify({ versions: 2, edit: 'Added line-limit and ineligible-account and asynchronous fulfillment coverage.' }, null, 2)],
       ['tool-calls', 'tool-calls.json', 'application/json', JSON.stringify({ calls: ['jira_align.query', 'inventory.scan', 'apex_load.start', 'jira.create'] }, null, 2)],
       ['error-recovery', 'engine-recovery.md', 'text/markdown', '# Engine recovery\n\nThe native reservation was accepted; checkpoint reconciliation reused the idempotency key and avoided duplicate execution.'],
       ['release-decision', 'release-decision.json', 'application/json', JSON.stringify({ decision: 'conditional', blockers: ['PERF-248'], approvals: ['performance-lead'] }, null, 2)],

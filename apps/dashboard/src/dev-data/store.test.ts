@@ -105,8 +105,16 @@ describe('dev-data store', () => {
   it('seeds the complete provider-bound telecom catalog', async () => {
     const store = createDevDataStore()
     expect(store.getFixtureStats()).toMatchObject(TELECOM_DATASET_REQUIREMENTS)
+    const environment = await jsonOf<{ name: string; options: { dependencies: Array<{ application: string; environment: string }> } }>(
+      await store.handleApexRequest(new Request('http://localhost/v1/catalog/environments/env-perf')),
+    )
+    expect(environment.name).toBe('PERFHYPER2')
+    expect(environment.options.dependencies).toEqual(expect.arrayContaining([
+      expect.objectContaining({ application: 'Mulesoft', environment: 'TEST' }),
+      expect.objectContaining({ application: 'BSSe', environment: 'TEST' }),
+    ]))
     const align = await jsonOf<{ items: Array<{ key: string }>; provider: string }>(
-      await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ connection_id: 'conn-align', query: { provider: 'jira_align', query: "programId eq 42 and contains(title,'eSIM upgrade')" } }) })),
+      await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ connection_id: 'conn-align', query: { provider: 'jira_align', query: "programId eq 42 and contains(title,'ACC add-a-line')" } }) })),
     )
     const jira = await jsonOf<{ items: Array<{ key: string }>; provider: string }>(
       await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ connection_id: 'conn-jira', query: { provider: 'jira', query: 'project = PERF' } }) })),
@@ -128,7 +136,7 @@ describe('dev-data store', () => {
       await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/translate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ text: 'Find Jira Align eSIM upgrade release scope', connection_id: 'conn-jira' }),
+        body: JSON.stringify({ text: 'Find Jira Align ACC add-a-line release scope', connection_id: 'conn-jira' }),
       })),
     )
     expect(translated).toMatchObject({ provider: 'jira_align', connection_id: 'conn-align', query: FLAGSHIP_ALIGN_QUERY })
@@ -147,7 +155,7 @@ describe('dev-data store', () => {
   it('uses phase-safe deterministic response branches without invoking an LLM', () => {
     expect(deterministicAgentReply('env_triage', 'Why is the MQ queue growing?')).toContain('four consumers')
     expect(deterministicAgentReply('reporting', 'What is the SLA release risk?')).toContain('conditional certification')
-    expect(deterministicAgentReply('env_triage', 'Is the Oracle configuration correct?')).toContain('QC Oracle endpoint')
+    expect(deterministicAgentReply('env_triage', 'Is the Oracle configuration correct?')).toContain('non-PERFHYPER2 BSSe test endpoint')
   })
 
   it('reserves PERF-248 for the scripted finding and sequences manual Jira Cloud tickets from PERF-249', async () => {
@@ -163,7 +171,7 @@ describe('dev-data store', () => {
     const request = () => new Request('http://localhost/v1/pipelines', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ idempotency_key: 'wizard-flagship', title: 'eSIM Device Upgrade Peak Certification', request: 'Certify the flagship.', project_id: 'telecom-modernization', app_id: 'app-digital-device' }),
+      body: JSON.stringify({ idempotency_key: 'wizard-flagship', title: 'ACC Add-a-Line Peak Certification', request: 'Certify the flagship.', project_id: 'telecom-modernization', app_id: 'app-digital-device' }),
     })
     const launched = await jsonOf<{ thread_id: string; run_id: string }>(await store.handleApexRequest(request()))
     const replay = await jsonOf<{ thread_id: string; run_id: string }>(await store.handleApexRequest(request()))
@@ -189,7 +197,7 @@ describe('dev-data store', () => {
     expect(canonical.items).toHaveLength(4)
 
     localStorage.setItem(DEMO_STATE_STORAGE_KEY, JSON.stringify({
-      version: 2,
+      version: 3,
       activationTime: new Date().toISOString(),
       nextId: 101,
       mutations: { workItemProviders: { upsert: 'not-an-array', removed: [] } },
@@ -414,14 +422,14 @@ describe('dev-data store', () => {
       }
       return events
     }
-    let run = store.createRun(thread.thread_id, 'pipeline', { input: { title: 'eSIM Device Upgrade Peak Certification' } })
+    let run = store.createRun(thread.thread_id, 'pipeline', { input: { title: 'ACC Add-a-Line Peak Certification' } })
     await consume(run.run_id)
     let detail = await jsonOf<{ execution_result?: string | null; pending_gate: { interrupt_id: string; phase: string } }>(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.phase).toBe('test_planning')
     expect(parseGateInterrupt((detail as unknown as { interrupts: Array<{ payload: unknown }> }).interrupts[0]?.payload)).not.toBeNull()
 
     const resume = async (interruptId: string, body: Record<string, unknown>) => jsonOf<{ run_id: string }>(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}/gates/${interruptId}/resume`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })))
-    run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'modify', prompt: { user: 'Add bulk and async coverage.' } })) }
+    run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'modify', prompt: { user: 'Add eligibility rejection and async coverage.' } })) }
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.interrupt_id).not.toBe('int-prompt')
@@ -435,11 +443,11 @@ describe('dev-data store', () => {
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(parseGateInterrupt((detail as unknown as { interrupts: Array<{ payload: unknown }> }).interrupts[0]?.payload)).not.toBeNull()
     expect(JSON.stringify(detail)).toContain('only two consumers are active')
-    expect(JSON.stringify(detail)).toContain('QC Oracle endpoint')
+    expect(JSON.stringify(detail)).toContain('non-PERFHYPER2 BSSe test endpoint')
     run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'revise', message: 'Correct the Oracle configuration and rescan.' })) }
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
-    expect(JSON.stringify(detail)).toContain('PERF rescan is green')
+    expect(JSON.stringify(detail)).toContain('PERFHYPER2 rescan is green')
     run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'approve' })) }
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))

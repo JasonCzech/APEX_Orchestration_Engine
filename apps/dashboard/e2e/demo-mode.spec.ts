@@ -18,14 +18,14 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await page.getByRole('button', { name: 'Reset demo' }).click()
 
   await page.goto('/runs/new?draft=draft-esim')
-  await expect(page.getByLabel('Title')).toHaveValue('eSIM Device Upgrade Peak Certification')
+  await expect(page.getByLabel('Title')).toHaveValue('ACC Add-a-Line Peak Certification')
   await expect(page.getByLabel('Environment')).toHaveValue('env-perf')
   await page.getByRole('tab', { name: 'Work Items' }).click()
-  await page.getByLabel('Find by description').fill('Find Jira Align eSIM upgrade release scope')
+  await page.getByLabel('Find by description').fill('Find Jira Align ACC add-a-line release scope')
   await page.getByRole('button', { name: 'Translate' }).click()
   await expect(page.getByText('jira_align', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Provider query')).toHaveValue(
-    "programId eq 42 and itemtype in ('feature','story') and state ne 'Accepted' and contains(title,'eSIM upgrade')",
+    "programId eq 42 and itemtype in ('feature','story') and state ne 'Accepted' and contains(title,'ACC add-a-line')",
   )
   await page.getByRole('button', { name: 'Run query' }).click()
   await expect(page.getByRole('checkbox', { name: 'Select feature:583' })).toBeChecked()
@@ -41,10 +41,10 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   let gate = page.getByRole('region', { name: 'Review prompts gate' })
   await gate.getByRole('tab', { name: 'Phase Prompt' }).click()
   await gate.getByRole('textbox').fill(
-    'Plan bulk dealer and asynchronous eSIM fulfillment coverage with retry idempotency and IBM MQ recovery.',
+    'Plan eligibility rejection and asynchronous ACC add-a-line fulfillment coverage with retry idempotency and IBM MQ recovery.',
   )
   await gate.getByRole('button', { name: /Save Edit & Re-review/i }).click()
-  await expect(gate.getByText(/int-prompt-revision-/)).toBeVisible()
+  await expect(gate.getByText(/^int-prompt-revision-\d+$/)).toBeVisible()
   await gate.getByRole('button', { name: /Execute Phase/i }).click()
 
   await page.getByRole('link', { name: 'Review' }).click()
@@ -59,12 +59,12 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await expect(page.getByText('schema drift')).toHaveCount(0)
 
   await gate.getByRole('button', { name: /Modify & Re-run/i }).click()
-  await gate.getByLabel('Revision instructions').fill('Correct the Oracle configuration and restore four MQ consumers, then rescan.')
+  await gate.getByLabel('Revision instructions').fill('Correct the BSSe test endpoint configuration and restore four MQ consumers, then rescan.')
   await gate.getByRole('button', { name: /Re-run with Changes/i }).click()
-  await expect(gate.getByTestId('gate-summary')).toContainText(/PERF rescan is green/i)
+  await expect(gate.getByTestId('gate-summary')).toContainText(/PERFHYPER2 rescan is green/i)
   await page.reload()
   gate = page.getByRole('region', { name: 'Review phase results gate' })
-  await expect(gate.getByTestId('gate-summary')).toContainText(/PERF rescan is green/i)
+  await expect(gate.getByTestId('gate-summary')).toContainText(/PERFHYPER2 rescan is green/i)
   await gate.getByRole('button', { name: /Approve & Continue/i }).click()
   await expect(page.getByRole('button', { name: /execution — running/i })).toBeVisible({ timeout: 10_000 })
 
@@ -72,13 +72,13 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await expect(page.getByRole('region', { name: 'Live engine stats' })).toContainText(/running/i, { timeout: 10_000 })
   await page.waitForTimeout(4_000)
   await page.reload()
-  await expect(page.getByRole('heading', { name: 'eSIM Device Upgrade Peak Certification' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'ACC Add-a-Line Peak Certification' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Live engine stats' })).toBeVisible({ timeout: 10_000 })
   await expect(page.getByRole('region', { name: 'Review phase results gate' })).toBeVisible({ timeout: 25_000 })
 
   await page.reload()
   gate = page.getByRole('region', { name: 'Review phase results gate' })
-  await expect(gate.getByTestId('gate-summary')).toContainText(/OMS create-order p95 was 3,650ms/i)
+  await expect(gate.getByTestId('gate-summary')).toContainText(/BSSe create-order p95 was 3,650ms/i)
   await gate.getByRole('button', { name: /Approve & Continue/i }).click()
   await page.getByRole('link', { name: 'Review' }).click()
   await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/phases/reporting`))
@@ -110,7 +110,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
 test('APEX Load mutations persist across refresh and reset to canonical fixtures', async ({ page }) => {
   await page.goto('/apex-load')
   await page.getByRole('button', { name: 'Reset demo' }).click()
-  await expect(page.getByText('eSIM peak certification')).toBeVisible()
+  await expect(page.getByText('ACC add-a-line peak certification')).toBeVisible()
   await expect(page.getByText('IBM MQ backlog recovery')).toBeVisible()
   await page.getByRole('button', { name: 'Create scenario' }).click()
   await expect(page.getByRole('button', { name: 'New scenario' })).toBeVisible()

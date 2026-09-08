@@ -1,8 +1,8 @@
 """Seed the demo catalog + one stub connection per port kind (idempotent by name).
 
 Creates:
-- application "Checkout" in project "demo"
-- environment "staging-2" under it with 2 hosts (hosts only on first create)
+- application "ACC" in project "demo"
+- environment "PERFHYPER2" under it with 3 hosts (hosts only on first create)
 - one global connection per port kind: "stub-<kind>" using the same provider as
   DEV_CONNECTIONS (stub everywhere, "env" for secrets), plus "sim-engine" for
   the execution engine (provider "sim")
@@ -26,11 +26,12 @@ from apex.persistence.models import Application, Connection, Environment, Enviro
 from apex.services.connections import DEV_CONNECTIONS
 
 DEMO_PROJECT = "demo"
-DEMO_APP_NAME = "Checkout"
-DEMO_ENV_NAME = "staging-2"
+DEMO_APP_NAME = "ACC"
+DEMO_ENV_NAME = "PERFHYPER2"
 DEMO_HOSTS: tuple[tuple[str, str], ...] = (
-    ("checkout-app-01.staging2.local", "app"),
-    ("checkout-db-01.staging2.local", "db"),
+    ("acc.perfhyper2.example.test", "app"),
+    ("mulesoft.perfhyper2.example.test", "integration"),
+    ("bsse.perfhyper2.example.test", "billing"),
 )
 
 # Dev MinIO from docker-compose.dev.yaml (root user "apex" / "apex-minio").
@@ -75,7 +76,10 @@ async def _seed_application(session: AsyncSession) -> Application:
     app = Application(
         project_id=DEMO_PROJECT,
         name=DEMO_APP_NAME,
-        description="Demo checkout service (seeded)",
+        description=(
+            "Employee web sales application for mobile phones/plans and internet service. "
+            "Demo: add a line to an existing cellular plan via Mulesoft and BSSe test environments."
+        ),
     )
     session.add(app)
     await session.flush()
@@ -96,8 +100,22 @@ async def _seed_environment(session: AsyncSession, app: Application) -> None:
         application_id=app.id,
         name=DEMO_ENV_NAME,
         kind="vm",
-        base_url="https://checkout.staging2.local",
-        options={},
+        base_url="https://acc.perfhyper2.example.test",
+        options={
+            "demo_assumptions": True,
+            "dependencies": [
+                {
+                    "application": "Mulesoft",
+                    "environment": "TEST",
+                    "base_url": "https://mulesoft.perfhyper2.example.test",
+                },
+                {
+                    "application": "BSSe",
+                    "environment": "TEST",
+                    "base_url": "https://bsse.perfhyper2.example.test",
+                },
+            ],
+        },
     )
     env.hosts = [EnvironmentHost(hostname=hostname, role=role) for hostname, role in DEMO_HOSTS]
     session.add(env)
