@@ -794,7 +794,12 @@ def sla_status_json(
     status: str = "COMPLETE", breached: bool = False, details: list[str] | None = None
 ) -> dict[str, Any]:
     """SLABreachReport (pkg/api/handlers.go handleGetTestSLAStatus)."""
-    body: dict[str, Any] = {"test_id": TEST_ID, "status": status, "sla_breached": breached}
+    body: dict[str, Any] = {
+        "test_id": TEST_ID,
+        "status": status,
+        "sla_breached": breached,
+        "sla_evaluated": True,
+    }
     if details:
         body["details"] = details
     return body
@@ -2684,3 +2689,152 @@ async def test_provider_library_rejects_duplicate_identities():
             await adapter.list_script_exports()
     finally:
         await adapter.aclose()
+
+
+@pytest.mark.parametrize("evaluated", [False, None])
+@respx.mock
+async def test_completed_without_threshold_assessment_is_unknown(evaluated: bool | None) -> None:
+    payload = sla_status_json()
+    if evaluated is None:
+        payload.pop("sla_evaluated")
+    else:
+        payload["sla_evaluated"] = evaluated
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=archive_report_json())
+    )
+    summary = await make_adapter().fetch_summary(make_handle())
+    assert summary.passed is None
+    assert "threshold assessment not available" in (summary.notes or "")
+
+
+@respx.mock
+async def test_native_summary_accepts_legacy_archive_for_project_owned_native_test() -> None:
+    report = archive_report_json()
+    del report["manifest"]
+    identity = respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(
+        return_value=httpx.Response(200, json=managed_test_json(name="Manual checkout baseline"))
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/sla-status").mock(
+        return_value=httpx.Response(200, json=sla_status_json())
+    )
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}/archive/report").mock(
+        return_value=httpx.Response(200, json=report)
+    )
+    summary = await make_adapter(native_control_enabled=True).native_run_summary(TEST_ID)
+    assert summary.passed is True
+    assert summary.kpis["tps_avg"] == 98.0
+    assert identity.call_count == 1
+
+
+@respx.mock
+async def test_native_summary_rejects_cross_project_test_before_reading_evidence() -> None:
+    test = managed_test_json()
+    test["project_id"] = "other-project"
+    respx.get(f"{BASE}/api/v1/tests/{TEST_ID}").mock(return_value=httpx.Response(200, json=test))
+    with pytest.raises(RuntimeError, match="project"):
+        await make_adapter(native_control_enabled=True).native_run_summary(TEST_ID)
+
+
+@pytest.mark.asyncio
+async def test_release_mapping_rejects_changed_revision_before_remote_calls():
+    adapter = make_adapter(release_mapping={"application_id": "app-1", "revision": "v2"})
+    with pytest.raises(ValueError, match="mapping changed"):
+        await adapter.provision(make_spec(release_id="release-1", mapping_revision="v1"))
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_release_mapping_rejects_cross_application_release_before_upload():
+    adapter = make_adapter(release_mapping={"application_id": "app-1", "revision": "v1"})
+    respx.get(f"{BASE}/api/v1/applications/app-1").respond(
+        200, json={"id": "app-1", "project_id": "proj-123"}
+    )
+    respx.get(f"{BASE}/api/v1/releases/release-1").respond(
+        200, json={"id": "release-1", "project_id": "proj-123", "application_id": "other"}
+    )
+    with pytest.raises(ValueError, match="Repair"):
+        await adapter._create_test(
+            TEST_NAME, make_spec(release_id="release-1", mapping_revision="v1")
+        )
+    assert len(respx.calls) == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_release_mapping_accepts_exact_active_identity():
+    adapter = make_adapter(release_mapping={"application_id": "app-1", "revision": "v1"})
+    respx.get(f"{BASE}/api/v1/applications/app-1").respond(
+        200, json={"id": "app-1", "project_id": "proj-123"}
+    )
+    respx.get(f"{BASE}/api/v1/releases/release-1").respond(
+        200, json={"id": "release-1", "project_id": "proj-123", "application_id": "app-1"}
+    )
+    await adapter._validate_release("release-1")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_release_mapping_is_persisted_on_reused_execution_without_catalog_remapping():
+    existing = {
+        **managed_test_json(status="RUNNING"),
+        "application_id": "app-1",
+        "release_id": "release-1",
+    }
+    respx.get(f"{BASE}/api/v1/tests").respond(200, json={"tests": [existing], "count": 1})
+    adapter = make_adapter(release_mapping={"application_id": "app-1", "revision": "v1"})
+    handle = await adapter.provision(make_spec(release_id="release-1", mapping_revision="v1"))
+    assert handle.extras["application_id"] == "app-1"
+    assert handle.extras["release_id"] == "release-1"
+    assert handle.extras["mapping_revision"] == "v1"
+    assert len(respx.calls) == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_native_capabilities_offer_only_active_releases_in_the_mapping():
+    adapter = make_adapter(
+        native_control_enabled=True, release_mapping={"application_id": "app-1", "revision": "v1"}
+    )
+    respx.get(f"{BASE}/api/v1/scenarios/load-models/support-matrix").respond(200, json={})
+    respx.get(f"{BASE}/api/v1/scenarios/load-models/templates").respond(200, json={})
+    respx.get(f"{BASE}/api/v1/applications/app-1").respond(
+        200, json={"id": "app-1", "project_id": "proj-123"}
+    )
+    active = {
+        "id": "rel-1",
+        "name": "September",
+        "application_id": "app-1",
+        "project_id": "proj-123",
+    }
+    respx.get(f"{BASE}/api/v1/applications/app-1/releases").respond(
+        200,
+        json={
+            "releases": [active, {**active, "id": "old", "archived_at": "2026-01-01T00:00:00Z"}],
+            "count": 2,
+        },
+    )
+    capabilities = await adapter.native_capabilities()
+    assert capabilities["release_mapping"]["releases"] == [{"id": "rel-1", "name": "September"}]
+    assert capabilities["release_mapping"]["revision"] == "v1"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_removed_mapping_rejects_checkpoint_revision_before_remote_calls():
+    adapter = make_adapter()
+    with pytest.raises(ValueError, match="mapping removed"):
+        await adapter.provision(make_spec(mapping_revision="v1"))
+    assert len(respx.calls) == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_unmapped_retry_cannot_adopt_previously_release_scoped_execution():
+    existing = {**managed_test_json(), "application_id": "app-1", "release_id": "release-1"}
+    respx.get(f"{BASE}/api/v1/tests").respond(200, json={"tests": [existing], "count": 1})
+    with pytest.raises(ValueError, match="Existing execution has a release mapping"):
+        await make_adapter().provision(make_spec())
+    assert len(respx.calls) == 1

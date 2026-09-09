@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 
@@ -100,6 +100,16 @@ function renderRunsPage(initialEntry = '/runs') {
 }
 
 describe('RunsListPage', () => {
+  it('distinguishes Inspect actions when run titles are duplicated', async () => {
+    const duplicate = { ...RUN_BUSY, thread_id: 'duplicate-run-id' }
+    server.use(pipelinesHandler([RUN_BUSY, duplicate]).handler)
+    renderRunsPage()
+    expect(await screen.findByRole('button', { name: `Inspect ${RUN_BUSY.title} (${RUN_BUSY.thread_id})` })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Inspect ${RUN_BUSY.title} (${duplicate.thread_id})` })).toBeInTheDocument()
+    expect(screen.getByText(duplicate.thread_id)).toBeVisible()
+  })
+
+  beforeEach(() => localStorage.setItem('apex.preferences.v1', JSON.stringify({ rows: 25 })))
   it('renders runs with title, id, project, application, phase count, verdict, and status', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
@@ -167,7 +177,7 @@ describe('RunsListPage', () => {
     renderRunsPage()
 
     const busyRow = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    await user.click(busyRow.getByRole('button', { name: 'Inspect' }))
+    await user.click(busyRow.getByRole('button', { name: `Inspect Checkout latency regression (${RUN_BUSY.thread_id})` }))
 
     expect(await screen.findByRole('heading', { name: 'Checkout latency regression' })).toBeInTheDocument()
     const inspector = screen.getByRole('region', { name: 'Run inspector' })
@@ -261,10 +271,10 @@ describe('RunsListPage', () => {
     expect(prev).toBeEnabled()
 
     await user.click(next)
-    await waitFor(() => expect(router.state.location.search).toBe('?offset=50'))
+    await waitFor(() => expect(router.state.location.search).toContain('offset=50'))
 
     await user.click(screen.getByRole('button', { name: 'Previous' }))
-    await waitFor(() => expect(router.state.location.search).toBe('?offset=25'))
+    await waitFor(() => expect(router.state.location.search).toContain('offset=25'))
   })
 
   it('keeps Previous available when a speculative next page is empty', async () => {
@@ -291,7 +301,7 @@ describe('RunsListPage', () => {
     expect(previous).toBeEnabled()
 
     await user.click(previous)
-    await waitFor(() => expect(router.state.location.search).toBe(''))
+    await waitFor(() => expect(router.state.location.search).toBe('?limit=25'))
     expect(await screen.findByText('1–25')).toBeInTheDocument()
   })
 
@@ -313,7 +323,7 @@ describe('RunsListPage', () => {
     await screen.findByText('Checkout latency regression')
     await user.type(screen.getByRole('searchbox', { name: 'Search runs' }), 'soak')
 
-    await waitFor(() => expect(router.state.location.search).toBe('?q=soak'), { timeout: 2000 })
+    await waitFor(() => expect(router.state.location.search).toContain('q=soak'), { timeout: 2000 })
     await waitFor(() => expect(captured.last()?.get('q')).toBe('soak'))
     expect(captured.last()?.get('offset')).toBeNull()
   })
@@ -330,7 +340,7 @@ describe('RunsListPage', () => {
       'interrupted',
     )
 
-    await waitFor(() => expect(router.state.location.search).toBe('?status=interrupted'))
+    await waitFor(() => expect(router.state.location.search).toContain('status=interrupted'))
     await waitFor(() => expect(captured.last()?.get('status')).toBe('interrupted'))
   })
 

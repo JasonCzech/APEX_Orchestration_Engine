@@ -42,14 +42,62 @@ vi.mock('@/streaming/usePipelineStream', () => ({
 }))
 
 describe('RunDetailPage', () => {
-  it('redirects /runs/:threadId to the current phase', async () => {
+  it('opens the outcome overview without redirecting', async () => {
     server.use(pipelineDetailHandler())
     const { router } = renderRunRoutes([`/runs/${THREAD_ID}`])
 
-    await screen.findByRole('tablist', { name: 'Phase workspace tabs' })
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}/phases/reporting`),
-    )
+    await screen.findByRole('region', { name: 'Run overview' })
+    expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`)
+    expect(screen.getByRole('link', { name: 'Open Reporting' })).toHaveAttribute('href', `/runs/${THREAD_ID}/phases/reporting`)
+  })
+
+  it.each([true, false])('explains a recorded acceptance verdict without notes (%s)', async passed => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    const state = detail.values as { phase_results: { execution: { test_summary: { passed: boolean; notes?: string | null } } } }
+    state.phase_results.execution.test_summary.passed = passed
+    delete state.phase_results.execution.test_summary.notes
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(passed ? 'Passed' : 'Failed')).toBeInTheDocument()
+    expect(within(overview).queryByText(/Acceptance has not been assessed/)).not.toBeInTheDocument()
+    expect(within(overview).getByText(passed
+      ? 'Recorded execution evidence meets the configured acceptance criteria.'
+      : 'Recorded execution evidence does not meet the configured acceptance criteria.')).toBeInTheDocument()
+  })
+
+  it('keeps an unassessed execution distinct from a stale summary verdict', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    detail.execution_result = 'passed'
+    const state = detail.values as { phase_results: { execution: { test_summary: { passed: boolean | null; notes?: string | null } } } }
+    state.phase_results.execution.test_summary.passed = null
+    delete state.phase_results.execution.test_summary.notes
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText('Not available')).toBeInTheDocument()
+    expect(within(overview).queryByText('Passed')).not.toBeInTheDocument()
+  })
+
+  it('uses recorded phase coverage when state fields have schema drift', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), values: { phase_results: 'unreadable' } }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(/5 of 6 selected phases finished/)).toBeInTheDocument()
+  })
+
+  it('preserves legacy activity deep links to the pipeline log', async () => {
+    server.use(pipelineDetailHandler())
+    const { router } = renderRunRoutes([`/runs/${THREAD_ID}?tab=activity`])
+    expect(await screen.findByRole('tab', { name: 'Pipeline Log' })).toHaveAttribute('aria-selected', 'true')
+    expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}/phases/reporting`)
+  })
+
+  it('offers a working recovery link for an unknown phase', async () => {
+    server.use(pipelineDetailHandler())
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/invalid`])
+    expect(await screen.findByRole('link', { name: 'Open run overview' })).toHaveAttribute('href', `/runs/${THREAD_ID}`)
   })
 
   it('renders phase progress without the duplicate pipeline context sidebar', async () => {

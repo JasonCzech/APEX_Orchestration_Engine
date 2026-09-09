@@ -1,3 +1,6 @@
+import { GateDecisionContext } from '@/hitl/GateDecisionContext'
+import { formatTimestamp } from './runDisplay'
+import { ScopeContext } from '@/components/ux/ScopeContext'
 import { useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
@@ -14,11 +17,12 @@ import { GateModuleView, GateSlimBanner } from '@/hitl/GateModule'
 import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
 
+import { RunOverview } from './RunOverview'
 import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
-import { isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
+import { PHASE_LABELS, isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -37,8 +41,7 @@ function RunDetailSkeleton() {
  * Flagship run-detail read path (D1 snapshot portions).
  *
  * Mounted on BOTH routes:
- * - /runs/:threadId            -> redirects to /phases/:phase (current phase,
- *   else first phase with a result)
+ * - /runs/:threadId -> outcome overview; legacy tab links open the current phase
  * - /runs/:threadId/phases/:phase?tab= -> shared phase flow + phase workspace
  */
 export function RunDetailPage() {
@@ -85,30 +88,20 @@ function RunDetailContent({ threadId }: { threadId: string }) {
 
   const { detail, state, stateParseFailed } = query.data
   const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed)
+  if (hitl.gate) {
+    const current = phaseStrip.find(entry => entry.phase === hitl.gate?.phase)
+    if (current) current.status = hitl.gate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
+  }
   const progress = phaseProgress(phaseStrip)
 
-  if (!phaseParam) {
-    // Preserve ?tab= etc. so launch deep links (/runs/:id?tab=activity) survive.
-    return (
-      <Navigate
-        to={{ pathname: `/runs/${threadId}/phases/${targetPhaseFor(detail, state)}`, search }}
-        replace
-      />
-    )
-  }
-
-  if (!isPhaseName(phaseParam)) {
-    return (
-      <div className="dash-empty">
-        <h2>Unknown phase</h2>
-        <p>
-          “{phaseParam}” is not a pipeline phase. Pick a phase from the flow on a valid run page.
-        </p>
-        <Link className="btn btn-secondary btn-sm" to={`/runs/${threadId}`}>
-          Back to run
-        </Link>
-      </div>
-    )
+  const overview = !phaseParam
+  const selectedPhase = phaseParam ?? targetPhaseFor(detail, state)
+  if (!isPhaseName(selectedPhase)) return <>
+    <ProblemCard title="Unknown phase" message="Open the run overview to choose a valid phase." />
+    <Link to={`/runs/${threadId}`}>Open run overview</Link>
+  </>
+  if (overview && new URLSearchParams(search).has('tab')) {
+    return <Navigate to={`/runs/${threadId}/phases/${selectedPhase}${search}`} replace />
   }
 
   const threadTone = statusVisual(
@@ -119,7 +112,9 @@ function RunDetailContent({ threadId }: { threadId: string }) {
   // gate's phase is the selected phase, else a slim banner linking there.
   const gateSlot =
     hitl.gate &&
-    (hitl.gate.phase === phaseParam ? (
+    (hitl.gate.phase === selectedPhase ? (
+      <>
+      <GateDecisionContext state={state} phase={hitl.gate.phase} kind={hitl.gate.kind} updatedAt={detail.updated_at} />
       <GateModuleView
         threadId={threadId}
         gate={hitl.gate}
@@ -128,6 +123,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         onSubmit={hitl.submit}
         onViewCurrent={hitl.viewCurrent}
       />
+      </>
     ) : (
       <GateSlimBanner threadId={threadId} gate={hitl.gate} />
     ))
@@ -140,7 +136,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
       <header className="run-detail-header">
         <h2 className="run-detail-title">{detail.title ?? detail.thread_id}</h2>
         <span role="status" aria-live="polite" className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
-          {orchestrationStatusLabel(detail.thread_status)}
+          {orchestrationStatusLabel(detail.thread_status, phaseStrip)}
         </span>
         {stateParseFailed && (
           <span
@@ -152,15 +148,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         )}
         <span className="spacer" />
         <RequireRole role="operator">
-          {(hitl.state.tag === 'open' || hitl.state.tag === 'failed') &&
-          hitl.gate?.payload?.actions.some((action) => action === 'abort') ? (
-            // Header abort drives the SAME machine as the gate action bar
-            // (same type-to-confirm arm step, action 'abort').
-            <AbortConfirm
-              key={JSON.stringify([threadId, hitl.gate?.interrupt_id ?? 'gate'])}
-              onConfirm={() => hitl.submit('abort')}
-            />
-          ) : detail.thread_status === 'busy' ? (
+          {!hitl.gate && detail.thread_status === 'busy' ? (
             // No gate to resume through — cancel the active run(s) server-side.
             <AbortConfirm
               key={JSON.stringify([threadId, live.runId ?? 'busy'])}
@@ -217,17 +205,21 @@ function RunDetailContent({ threadId }: { threadId: string }) {
           }}
         />
       )}
+      <ScopeContext project={detail.project_id} application={detail.app_id} />
+      <nav className="ux-actions run-sections" aria-label="Run sections"><Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link><Link className="btn btn-secondary" aria-current={!overview ? 'page' : undefined} to={`/runs/${threadId}/phases/${selectedPhase}`}>Phases</Link><Link className="btn btn-ghost" to={`/runs/${threadId}/timeline`}>Activity</Link></nav>
+      {overview ? <RunOverview detail={detail} state={state} progress={progress} /> : <>
       <section className="run-pipeline-hero glass-panel" aria-label="Pipeline progress">
         <div className="run-pipeline-hero-head">
           <div>
             <div className="run-pipeline-hero-kicker">Pipeline Progress</div>
-            <h3 className="run-pipeline-hero-title">7-Phase Orchestration Flow</h3>
+            <h3 className="run-pipeline-hero-title">Selected phases</h3>
           </div>
           <div className="run-pipeline-counter-group">
             <span className={`run-pipeline-counter${detail.thread_status === 'busy' ? ' live' : ''}`}>
               {progress.completed}/{progress.total}
             </span>
             <LiveStatusChip status={live.stream.status} />
+            <span className="ux-context">Run updated {formatTimestamp(detail.updated_at)}</span>
           </div>
         </div>
         <details key={compact ? 'compact' : 'wide'} className="run-phase-navigation" open={!compact}>
@@ -235,17 +227,19 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         <PhaseStrip
           strip={phaseStrip}
           size="lg"
-          currentPhase={phaseParam}
+          currentPhase={selectedPhase}
+          selectedOnly
           onSelect={(phase) => {
             void navigate({ pathname: `/runs/${threadId}/phases/${phase}`, search })
           }}
         />
         </details>
+        {phaseStrip.some(entry => entry.status === 'none') && <details className="ux-context"><summary>Phases outside this run</summary><p>{phaseStrip.filter(entry => entry.status === 'none').map(entry => PHASE_LABELS[entry.phase]).join(' · ')}</p></details>}
       </section>
       <div className="run-detail-grid">
         <PhaseWorkspace
           threadId={threadId}
-          phase={phaseParam}
+          phase={selectedPhase}
           state={state}
           stream={live.stream}
           runId={live.runId}
@@ -256,6 +250,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
           gateState={hitl.state}
         />
       </div>
+      </>}
     </>
   )
 }
@@ -267,7 +262,7 @@ function threadStatusBadge(status: string | null | undefined, fallback: string):
     case 'interrupted':
       return 'warning'
     case 'idle':
-      return 'success'
+      return 'neutral'
     case 'error':
       return 'danger'
     default:

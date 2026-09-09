@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "Assessment": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "inconclusive",
+            "not_assessed",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "reason_code": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00]*$",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "explanation": {
+          "maxLength": 20000,
+          "pattern": "^[^\\x00]*$",
+          "title": "Explanation",
+          "type": "string"
+        },
+        "criteria_revision": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Criteria Revision"
+        }
+      },
+      "required": [
+        "status",
+        "reason_code",
+        "explanation"
+      ],
+      "title": "Assessment",
+      "type": "object"
+    },
+    "EvidenceOutcome": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "coverage_percent": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coverage Percent"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "EvidenceOutcome",
+      "type": "object"
+    },
+    "ExecutionOutcome": {
+      "additionalProperties": false,
+      "properties": {
+        "termination_reason": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[^\\x00]*$",
+          "title": "Termination Reason",
+          "type": "string"
+        },
+        "planned_duration_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Planned Duration Seconds"
+        },
+        "observed_duration_seconds": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Duration Seconds"
+        }
+      },
+      "required": [
+        "termination_reason"
+      ],
+      "title": "ExecutionOutcome",
+      "type": "object"
+    },
+    "ExecutionScope": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Project Id"
+        },
+        "application_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Application Id"
+        },
+        "release_id": {
+          "anyOf": [
+            {
+              "maxLength": 255,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Release Id"
+        }
+      },
+      "title": "ExecutionScope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExecutionScope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "execution_id": {
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[^\\x00]*$",
+      "title": "Execution Id",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "assessment": {
+      "$ref": "#/$defs/Assessment"
+    },
+    "execution": {
+      "$ref": "#/$defs/ExecutionOutcome"
+    },
+    "evidence": {
+      "$ref": "#/$defs/EvidenceOutcome"
+    }
+  },
+  "required": [
+    "schema_version",
+    "execution_id",
+    "observed_at",
+    "assessment",
+    "execution",
+    "evidence"
+  ],
+  "title": "IntegrationOutcome",
+  "type": "object"
+}

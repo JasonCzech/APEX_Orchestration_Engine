@@ -123,7 +123,20 @@ class NativeDetailsResponse(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class NativeReleaseChoice(BaseModel):
+    id: NoNulStr = Field(min_length=1, max_length=255)
+    name: NoNulStr = Field(max_length=255)
+
+
+class NativeReleaseMapping(BaseModel):
+    project_id: NoNulStr
+    application_id: NoNulStr
+    revision: NoNulStr
+    releases: list[NativeReleaseChoice] = Field(max_length=MAX_NATIVE_LIST_ITEMS)
+
+
 class NativeCapabilitiesResponse(BaseModel):
+    release_mapping: NativeReleaseMapping | None = None
     load_models: dict[str, Any] = Field(default_factory=dict)
     templates: dict[str, Any] = Field(default_factory=dict)
     console_url: str
@@ -375,6 +388,7 @@ async def get_capabilities(control: ControlDep) -> NativeCapabilitiesResponse:
     if type(load_models) is not dict or type(templates) is not dict or type(console_url) is not str:
         raise HTTPException(status_code=502, detail="APEX Load capabilities response is invalid")
     return NativeCapabilitiesResponse(
+        release_mapping=safe.get("release_mapping"),
         load_models=load_models,
         templates=templates,
         console_url=console_url,

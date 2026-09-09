@@ -20,6 +20,7 @@ from apex.domain.diagnostics import (
     is_credential_field,
 )
 from apex.domain.input_limits import NoNulStr, validate_json_object
+from apex.domain.integration_outcome import IntegrationOutcome
 
 MAX_CONTEXT_ID_CHARS = 128
 MAX_CONTEXT_SOURCE_CHARS = 128
@@ -194,6 +195,7 @@ class ExternalResults(BaseModel):
     uri: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_REF_CHARS)
     engine: NoNulStr | None = Field(default=None, max_length=128)
     passed: bool | None = None
+    outcome: IntegrationOutcome | None = None
     kpis: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=32)
     summary: NoNulStr | None = Field(default=None, max_length=MAX_CONTEXT_SUMMARY_CHARS)
     notes: NoNulStr | None = Field(default=None, max_length=MAX_GATE_TEXT_CHARS)

@@ -22,7 +22,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await expect(page.getByLabel('Environment')).toHaveValue('env-perf')
   await page.getByRole('tab', { name: 'Work Items' }).click()
   await page.getByLabel('Find by description').fill('Find Jira Align ACC add-a-line release scope')
-  await page.getByRole('button', { name: 'Translate' }).click()
+  await page.getByRole('button', { name: 'Preview work item query' }).click()
   await expect(page.getByText('jira_align', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Provider query')).toHaveValue(
     "programId eq 42 and itemtype in ('feature','story') and state ne 'Accepted' and contains(title,'ACC add-a-line')",
@@ -30,7 +30,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await page.getByRole('button', { name: 'Run query' }).click()
   await expect(page.getByRole('checkbox', { name: 'Select feature:583' })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'Select story:9012' })).toBeChecked()
-  await page.getByRole('button', { name: 'Review Test' }).click()
+  await page.getByRole('tab', { name: 'Review', exact: true }).click()
   await page.getByRole('button', { name: 'Launch Test' }).click()
 
   await expect(page).toHaveURL(/\/runs\/([^/]+)\/phases\/test_planning/)
@@ -44,7 +44,8 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
     'Plan eligibility rejection and asynchronous ACC add-a-line fulfillment coverage with retry idempotency and IBM MQ recovery.',
   )
   await gate.getByRole('button', { name: /Save Edit & Re-review/i }).click()
-  await expect(gate.getByText(/^int-prompt-revision-\d+$/)).toBeVisible()
+  await gate.getByText('Technical details', { exact: true }).click()
+  await expect(gate.getByText(/int-prompt-revision-\d+/)).toBeVisible()
   await gate.getByRole('button', { name: /Execute Phase/i }).click()
 
   await page.getByRole('link', { name: 'Review' }).click()
@@ -103,7 +104,7 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await page.getByRole('button', { name: 'Execute' }).click()
   await expect(page.getByRole('link', { name: 'PERF-248', exact: true })).toHaveCount(0)
   await page.goto('/')
-  await expect(page.getByText('Runs Loaded').locator('..').getByText('8', { exact: true })).toBeVisible()
+  await expect(page.getByText('Recent runs', { exact: true }).locator('..').getByText('8', { exact: true })).toBeVisible()
   expect(applicationDataRequests).toEqual([])
 })
 
@@ -119,4 +120,19 @@ test('APEX Load mutations persist across refresh and reset to canonical fixtures
   await page.getByRole('button', { name: 'Reset demo' }).click()
   await page.reload()
   await expect(page.getByRole('button', { name: 'New scenario' })).toHaveCount(0)
+})
+
+test('engine selection supports one keyboard tab stop and wrapping arrows', async ({ page }) => {
+  await page.goto('/runs/new')
+  await page.getByRole('tab', { name: 'Config', exact: true }).click()
+  const radios = page.getByRole('radiogroup', { name: 'Execution engine' }).getByRole('radio')
+  await radios.first().focus()
+  await radios.first().press('ArrowRight')
+  await expect(radios.nth(1)).toBeFocused()
+  await expect(radios.nth(1)).toHaveAttribute('aria-checked', 'true')
+  await expect(radios.first()).toHaveAttribute('tabindex', '-1')
+  await radios.nth(1).press('Home')
+  await radios.first().press('ArrowLeft')
+  await expect(radios.last()).toBeFocused()
+  await expect(radios.last()).toHaveAttribute('aria-checked', 'true')
 })

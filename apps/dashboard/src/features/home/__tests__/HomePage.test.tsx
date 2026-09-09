@@ -76,22 +76,17 @@ describe('HomePage', () => {
     expect(
       screen.queryByRole('heading', { level: 2, name: /Pipeline Operations? Dashboard/ }),
     ).not.toBeInTheDocument()
-    const totalCard = (await screen.findByText('Runs Loaded')).closest('article')
+    const totalCard = (await screen.findByText('Recent runs')).closest('article')
     expect(totalCard).not.toBeNull()
     expect(within(totalCard as HTMLElement).getByText('5')).toBeInTheDocument()
-    expect(within(totalCard as HTMLElement).getByText('loaded fleet snapshot')).toBeInTheDocument()
+    expect(within(totalCard as HTMLElement).getByText('recent accessible runs')).toBeInTheDocument()
     const activeCard = screen.getByText('Active').closest('article')
     expect(activeCard).not.toBeNull()
     expect(within(activeCard as HTMLElement).getByText('3')).toBeInTheDocument()
     const failureCard = screen.getByText('Failures').closest('article')
     expect(failureCard).not.toBeNull()
     expect(within(failureCard as HTMLElement).getByText('1')).toBeInTheDocument()
-    const goCard = screen.getByText('Tests Passed').closest('article')
-    expect(goCard).not.toBeNull()
-    expect(within(goCard as HTMLElement).getByText('0')).toBeInTheDocument()
-    expect(
-      within(goCard as HTMLElement).getByText('recorded test results'),
-    ).toBeInTheDocument()
+    expect(screen.queryByText('Tests Passed')).not.toBeInTheDocument()
 
     const release = screen.getByRole('heading', { name: 'Test Results' }).closest('article')
     expect(release).not.toBeNull()
@@ -114,7 +109,7 @@ describe('HomePage', () => {
     const oldGate = links[0] as HTMLElement
     expect(within(oldGate).getByText('Review prompts')).toHaveClass('topbar-meta-chip', 'warning')
     expect(within(oldGate).getByText('Oldest gated run')).toBeInTheDocument()
-    expect(within(oldGate).getByText('test_planning')).toBeInTheDocument()
+    expect(within(oldGate).getByText('Test Planning')).toBeInTheDocument()
 
     const newGate = links[1] as HTMLElement
     expect(within(newGate).getByText('Review phase results')).toHaveClass('topbar-meta-chip', 'warning')
@@ -131,20 +126,15 @@ describe('HomePage', () => {
     const user = userEvent.setup()
     renderHome()
 
-    const panel = await screen.findByRole('region', { name: 'Awaiting HITL Approval' })
+    const panel = await screen.findByRole('region', { name: 'Needs your attention' })
     const alert = within(panel).getByRole('alert')
     expect(alert).toHaveTextContent('Approvals unavailable')
     expect(within(panel).queryByText('No pending approvals right now.')).not.toBeInTheDocument()
-
-    const approvalsBlock = screen.getByText('Pending approvals').closest('div')
-    expect(approvalsBlock).not.toBeNull()
-    expect(within(approvalsBlock as HTMLElement).getByText('—')).toBeInTheDocument()
 
     approvalsFail = false
     await user.click(within(alert).getByRole('button', { name: 'Retry' }))
 
     expect(await within(panel).findByTestId('home-approvals-list')).toBeInTheDocument()
-    expect(within(approvalsBlock as HTMLElement).getByText('2')).toBeInTheDocument()
   })
 
   it('renders recent runs and navigates to the run detail from the run link', async () => {
@@ -163,7 +153,7 @@ describe('HomePage', () => {
 
     const row = await screen.findByTestId('home-recent-run-idle')
     expect(within(row).getByText('Completed smoke run')).toBeInTheDocument()
-    expect(within(row).getByText('Execution stopped')).toHaveClass('status-badge', 'success')
+    expect(within(row).getByText('Orchestration stopped')).toHaveClass('status-badge', 'neutral')
 
     await user.click(within(row).getByRole('link', { name: 'Completed smoke run' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-idle'))
@@ -223,7 +213,7 @@ describe('HomePage', () => {
     useHomeHandlers()
     const { queryClient } = renderHome()
 
-    const approvalPanel = await screen.findByRole('region', { name: 'Awaiting HITL Approval' })
+    const approvalPanel = await screen.findByRole('region', { name: 'Needs your attention' })
     const drafts = await screen.findByTestId('home-drafts')
     expect(within(approvalPanel).getByText('Oldest gated run')).toBeInTheDocument()
     expect(within(drafts).getByText('Black Friday load test')).toBeInTheDocument()
@@ -292,14 +282,6 @@ describe('HomePage', () => {
     const panel = await screen.findByRole('heading', { name: 'Execution Health' })
     const card = panel.closest('article')
     expect(card).not.toBeNull()
-    const activeBlock = within(card as HTMLElement)
-      .getByText('Active pipelines loaded')
-      .closest('div')
-    expect(activeBlock).not.toBeNull()
-    expect(within(activeBlock as HTMLElement).getByText('3')).toBeInTheDocument()
-    const approvalsBlock = within(card as HTMLElement).getByText('Pending approvals').closest('div')
-    expect(approvalsBlock).not.toBeNull()
-    expect(within(approvalsBlock as HTMLElement).getByText('2')).toBeInTheDocument()
     const successBlock = within(card as HTMLElement).getByText('Phases succeeded').closest('div')
     expect(successBlock).not.toBeNull()
     expect(within(successBlock as HTMLElement).getByText('42')).toBeInTheDocument()

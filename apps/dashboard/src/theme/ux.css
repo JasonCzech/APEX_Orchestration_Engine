@@ -1,0 +1,278 @@
+/* APEX interaction contract v1: shared rhythm, controls, and accessible states. */
+:root {
+  --apex-ux-version: 1;
+  --radius-lg: var(--radius);
+  --radius-md: 8px;
+}
+.glass-panel {
+  border-radius: var(--radius-lg);
+}
+.btn {
+  min-height: 36px;
+  text-decoration: none;
+}
+.btn-sm {
+  min-height: 32px;
+}
+.btn:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.workspace-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.workspace-tab {
+  min-height: 36px;
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+}
+.workspace-tab[aria-selected='true'] {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.main-topbar {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.topbar-contribution-controls {
+  margin-left: auto;
+}
+.dash-nav-item {
+  min-height: 40px;
+}
+.gate-module .phase-review-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.phase-review-sidebar {
+  width: 100%;
+}
+.gate-module .gate-module-header {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+.gate-module .gate-module-title {
+  font-size: 18px;
+  flex: 1;
+}
+.gate-module-header details {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.gate-module-header code {
+  overflow-wrap: anywhere;
+}
+.gate-summary {
+  max-width: 90ch;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.gate-next-action {
+  color: var(--text-secondary);
+  margin: 12px 0;
+}
+.gate-info-card summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+.ux-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 16px;
+}
+.ux-card {
+  padding: 20px;
+  min-width: 0;
+}
+.ux-card h3 {
+  margin: 0 0 12px;
+}
+.ux-card p {
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.ux-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.ux-fields {
+  display: grid;
+  gap: 18px;
+}
+.ux-field {
+  display: grid;
+  gap: 7px;
+}
+.ux-field small {
+  color: var(--text-secondary);
+}
+.ux-field input,
+.ux-field select {
+  width: 100%;
+}
+.ux-context {
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.ux-filters {
+  padding: 12px 0;
+}
+.ux-filters summary {
+  cursor: pointer;
+  margin-bottom: 12px;
+}
+.ux-filters[open] > div {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+#main-content .settings-page {
+  display: block;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.settings-section {
+  margin-top: 20px;
+  padding: 24px;
+}
+.settings-section-title {
+  font-size: 18px;
+}
+.settings-page > .workspace-tabs {
+  margin-bottom: 20px;
+}
+.phase-strip--lg {
+  flex-wrap: wrap;
+}
+.phase-step-wrap {
+  min-width: 160px;
+}
+.run-overview {
+  display: grid;
+  gap: 20px;
+}
+.run-overview dl {
+  display: grid;
+  gap: 10px;
+}
+.run-overview dt {
+  color: var(--text-secondary);
+}
+.run-overview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.code-viewer .cm-editor {
+  font-size: 13px;
+}
+.code-viewer .cm-content span {
+  color: var(--code-text);
+}
+:root[data-reduce-motion='true'] *,
+:root[data-reduce-motion='true'] *::before,
+:root[data-reduce-motion='true'] *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+@media (max-width: 900px) {
+  .run-detail-header {
+    flex-wrap: wrap;
+  }
+  .wizard-footer {
+    position: static;
+  }
+  .gate-module .phase-review-layout {
+    display: flex;
+  }
+  .settings-section {
+    padding: 18px;
+  }
+}
+
+.workspace-tabs .workspace-tab {
+  appearance: none;
+  background: var(--control-bg);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font: 600 13px var(--font-sans);
+  box-shadow: none;
+}
+.workspace-tabs .workspace-tab[aria-selected='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+#main-content .settings-page {
+  padding-top: 24px;
+}
+.settings-page .settings-section {
+  padding: 24px;
+}
+.settings-page .settings-section-title {
+  font-size: 18px;
+}
+.settings-page .settings-section p {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.phase-strip.phase-strip--lg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+.phase-strip--lg .phase-step-wrap {
+  flex: 1 0 150px;
+  max-width: 230px;
+}
+.gate-module .gate-module-title {
+  white-space: normal;
+}
+
+nav[aria-label='Run sections'] { margin:12px 0 18px; }
+
+/* Round 2: stable context, explicit current navigation, readable decision identity. */
+.scope-context { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; padding:12px 16px; border:1px solid var(--border); border-radius:10px; margin:12px 0; background:var(--bg-secondary); }
+.scope-context span { overflow-wrap:anywhere; }
+.scope-context strong { color:var(--text-muted); font-size:.85em; margin-right:6px; }
+.scope-context a { margin-left:auto; }
+.run-sections .btn:not([aria-current]) { background:transparent; }
+.run-sections [aria-current="page"] { background:var(--accent); color:var(--bg-primary); border-color:var(--accent); font-weight:700; }
+.approval-identity { font-size:.8rem; color:var(--text-secondary); overflow-wrap:anywhere; margin:6px 0; }
+.approvals-row { min-width:0; }
+.approvals-page .topbar-meta-chip { max-width:none; white-space:normal; overflow:visible; text-overflow:clip; }
+.sidebar .nav-label { white-space:normal; overflow:visible; }
+.run-overview .ux-grid { align-items:start; grid-template-columns:1.4fr 1fr 1fr; }
+.wizard-review-grid { grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; }
+.wizard-review-card:has([aria-label="Edit Scope"]), .wizard-review-card:has([aria-label="Edit Config"]) { grid-column:1 / -1; }
+@media(max-width:900px) { .run-overview .ux-grid,.wizard-review-grid { grid-template-columns:1fr; } .scope-context a { margin-left:0; } }
+
+.radio-choices { border:0; padding:0; display:flex; flex-wrap:wrap; gap:8px; }
+.radio-choices legend { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+.radio-choices label { padding:8px 12px; border:1px solid var(--border); border-radius:8px; cursor:pointer; }
+.radio-choices label.selected { border-color:var(--accent); background:var(--accent-soft); }
+.radio-choices input { margin-right:8px; accent-color:var(--accent); }
+.settings-theme-card:focus-within { outline:2px solid var(--accent); outline-offset:3px; }
+.settings-theme-card input { accent-color:var(--accent); }
+.scope-context a, .wizard-caption a { color:var(--accent); text-underline-offset:3px; }
+.gate-decision-context { color:var(--text-secondary); font-size:.875rem; line-height:1.55; }
+.gate-decision-context p { margin:6px 0; }
+.runs-run-identity { display:block; font-size:.75rem; color:var(--text-muted); overflow-wrap:anywhere; white-space:normal; }

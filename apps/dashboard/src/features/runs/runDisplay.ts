@@ -125,13 +125,36 @@ export function isPipelinePhaseComplete(status: string | null | undefined): bool
   return ['succeeded', 'failed', 'aborted', 'skipped'].includes(status ?? '')
 }
 
-/** Execution success must never be inferred from orchestration completion. */
-export function executionResultLabel(run: { execution_result?: string | null }): string {
-  return run.execution_result === 'passed' ? 'Passed' : run.execution_result === 'failed' ? 'Failed' : 'Not available'
+/** Only a full snapshot can prove that execution was omitted without imported evidence. */
+export function executionWasOmitted(state?: PipelineState): boolean {
+  return Boolean(state?.phases_plan?.length && !state.phases_plan.includes('execution') &&
+    !state.phase_results?.execution && !state.external_results && !state.engine_handle)
 }
 
-export function orchestrationStatusLabel(status: string | null | undefined): string {
-  return ({ busy: 'Running', interrupted: 'Awaiting approval', idle: 'Execution stopped', error: 'Orchestration failed' } as Record<string, string>)[status ?? ''] ?? 'Unknown'
+/** A phase strip alone cannot distinguish omission from missing or imported evidence. */
+export function executionResultLabel(run: { execution_result?: string | null; phase_strip?: PipelineSummary['phase_strip'] }, state?: PipelineState): string {
+  if (run.execution_result === 'inconclusive') return 'Inconclusive'
+  if (run.execution_result === 'not_assessed') return 'Not assessed'
+  if (run.execution_result === 'passed') return 'Passed'
+  if (run.execution_result === 'failed') return 'Failed'
+  return executionWasOmitted(state) ? 'Not applicable' : 'Not available'
+}
+
+export function orchestrationStatusLabel(status: string | null | undefined, strip?: PipelineSummary['phase_strip']): string {
+  if (status === 'idle' && strip) {
+    const selected = strip.filter(entry => entry.status !== 'none')
+    if (selected.some(entry => entry.status === 'aborted')) return 'Stopped by operator'
+    if (selected.some(entry => entry.status === 'failed')) return 'Orchestration failed'
+    if (selected.length && selected.every(entry => ['succeeded', 'skipped'].includes(entry.status))) return 'Orchestration complete'
+    return 'Orchestration stopped'
+  }
+  return ({ busy: 'Running', interrupted: 'Awaiting approval', idle: 'Not running', error: 'Orchestration failed' } as Record<string, string>)[status ?? ''] ?? 'Unknown'
+}
+
+export function orchestrationTone(status: string | null | undefined, strip?: PipelineSummary['phase_strip']): string {
+  const label = orchestrationStatusLabel(status, strip)
+  return label === 'Orchestration complete' ? 'success' : label === 'Orchestration failed' ? 'danger'
+    : status === 'busy' ? 'accent' : status === 'interrupted' ? 'warning' : 'neutral'
 }
 
 export function gateLabel(kind: string | null | undefined): string {

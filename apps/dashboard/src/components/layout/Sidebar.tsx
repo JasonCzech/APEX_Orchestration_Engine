@@ -91,6 +91,8 @@ const PRIMARY_NAV_ITEMS: NavItem[] = [
     icon: <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />,
   },
   { to: '/approvals', label: 'Approvals', icon: <Icon d="M3 13h4l2 3h6l2-3h4M5 5h14l2 8v6H3v-6z" /> },
+  { to: '/apex-load', label: 'Load integration', icon: <Icon d="M4 18V6m5 12V3m5 15V9m5 9V5" /> },
+  { to: '/settings', label: 'Settings', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> },
 ]
 
 const ADVANCED_NAV_ITEMS: NavItem[] = [
@@ -107,8 +109,6 @@ const ADVANCED_NAV_ITEMS: NavItem[] = [
   { to: '/context', label: 'Context', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
   { to: '/analytics', label: 'Analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
   { to: '/logs', label: 'Logs', icon: <Icon d="M7 3h12v18H7zM3 7h4M3 12h4M3 17h4M11 8h4M11 12h4" /> },
-  { to: '/apex-load', label: 'APEX Load', icon: <Icon d="M4 18V6m5 12V3m5 15V9m5 9V5" /> },
-  { to: '/settings', label: 'Settings', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> },
 ]
 
 const ADMIN_NAV_SECTION: NavSection = {
@@ -188,7 +188,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
   const consumer = useConsumer()
   const { signOut, state: authState } = useAuth()
   const { status } = useConnectivity()
-  const { theme, themes, setTheme } = useTheme()
+  const { preference, themes, setTheme } = useTheme()
   const advancedPaths = [...ADVANCED_NAV_ITEMS, ...ADMIN_NAV_SECTION.items].map((item) => item.to)
   const [advancedOpen, setAdvancedOpen] = useState(() =>
     advancedPaths.some((path) => location.pathname.startsWith(path)),
@@ -324,12 +324,13 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
             <select
               className="theme-select"
               aria-label="Theme"
-              value={theme}
+              value={preference}
               onChange={(event) => {
                 const next = event.target.value
-                if (isThemeName(next)) setTheme(next)
+                if (next === 'system' || isThemeName(next)) setTheme(next)
               }}
             >
+              <option value="system">System (Auto)</option>
               {themes.map((name) => (
                 <option key={name} value={name}>
                   {THEME_LABELS[name]}

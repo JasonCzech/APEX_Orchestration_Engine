@@ -895,7 +895,7 @@ def _validated_engine_summary(
     payload = _exact_provider_payload(
         value,
         model_type=TestResultSummary,
-        allowed=frozenset({"engine", "passed", "kpis", "sla_breaches", "notes"}),
+        allowed=frozenset({"engine", "passed", "kpis", "sla_breaches", "notes", "outcome"}),
         required=frozenset({"engine", "passed"}),
         label="engine summary",
     )
@@ -922,6 +922,12 @@ def _validated_engine_summary(
         raise ValueError("engine summary is invalid") from None
     payload["kpis"] = kpis
     payload["sla_breaches"] = list(breaches)
+    if payload.get("outcome") is not None:
+        from apex.domain.integration_outcome import IntegrationOutcome
+
+        payload["outcome"] = IntegrationOutcome.model_validate(payload["outcome"]).model_dump(
+            mode="json"
+        )
     if contains_credential_material(payload, max_nodes=256, max_total_chars=300_000):
         raise ValueError("engine summary must not contain credential material") from None
     summary: TestResultSummary | None = None
@@ -1512,6 +1518,8 @@ def _validated_checkpoint_spec(value: Any) -> LoadTestSpec:
         "duration_s",
         "slas",
         "target_environment",
+        "release_id",
+        "mapping_revision",
     }
     if (
         type(value) is not dict

@@ -1,0 +1,138 @@
+- generic [ref=e3]:
+  - link "Skip to content" [ref=e4] [cursor=pointer]:
+    - /url: "#main-content"
+  - complementary [ref=e5]:
+    - generic [ref=e6]: APEX Orchestration
+    - navigation "Primary" [ref=e11]:
+      - generic [ref=e12]:
+        - link "Home" [ref=e13] [cursor=pointer]:
+          - /url: /
+        - link "New Test" [ref=e18] [cursor=pointer]:
+          - /url: /runs/new
+        - link "Environment Configurations" [ref=e23] [cursor=pointer]:
+          - /url: /environments
+        - link "Test History" [ref=e28] [cursor=pointer]:
+          - /url: /runs
+        - link "Tickets/Defects" [ref=e33] [cursor=pointer]:
+          - /url: /work-items
+        - link "Approvals 3 pending approvals" [ref=e38] [cursor=pointer]:
+          - /url: /approvals
+          - generic [ref=e42]: Approvals
+          - generic "3 pending approvals" [ref=e43]: "3"
+        - link "Load integration" [ref=e44] [cursor=pointer]:
+          - /url: /apex-load
+        - link "Settings" [ref=e49] [cursor=pointer]:
+          - /url: /settings
+      - button "Advanced" [ref=e55] [cursor=pointer]
+    - generic [ref=e61]:
+      - generic [ref=e62]:
+        - generic [aria-hidden] [ref=e63]: DP
+        - generic [ref=e64]:
+          - generic [ref=e65]: Demo Presenter
+          - generic [ref=e66]: admin
+          - button "Reset demo" [ref=e67] [cursor=pointer]
+          - button "Sign out" [ref=e69] [cursor=pointer]
+      - generic [ref=e70]:
+        - generic "Connected" [ref=e71]: Offline simulation
+        - combobox "Theme" [ref=e74] [cursor=pointer]:
+          - option "System (Auto)"
+          - option "Light (CTx)" [selected]
+          - option "Dark"
+          - option "Light"
+          - option "Solarized Dark"
+          - option "Solarized Light"
+          - option "Monokai Dimmed"
+        - button "Collapse sidebar" [ref=e75] [cursor=pointer]
+  - main [ref=e78]:
+    - generic [ref=e80]:
+      - heading "New Test" [level=1] [ref=e81]
+      - generic [ref=e82]: DEMO · OFFLINE
+    - generic [ref=e83]:
+      - navigation "Current run scope" [ref=e84]:
+        - generic [ref=e85]:
+          - strong [ref=e86]: Project
+          - text: telecom-modernization
+        - generic "app-digital-device" [ref=e87]:
+          - strong [ref=e88]: Application
+          - text: ACC
+        - generic "env-perf" [ref=e89]:
+          - strong [ref=e90]: Environment
+          - text: PERFHYPER2
+        - link "Load integration for this project" [ref=e91] [cursor=pointer]:
+          - /url: /apex-load?project=telecom-modernization
+      - status [ref=e93]: Draft saved
+      - group [ref=e94]:
+        - generic [ref=e95]:
+          - tablist "New test groups" [ref=e97]:
+            - tab "Scope" [ref=e98] [cursor=pointer]: 1. Scope
+            - tab "Work Items" [ref=e99] [cursor=pointer]: 2. Work Items
+            - tab "Context" [ref=e100] [cursor=pointer]: 3. Context
+            - tab "Config" [active] [selected] [ref=e101] [cursor=pointer]: 4. Config
+            - tab "Prompts" [ref=e102] [cursor=pointer]: 5. Prompts
+            - tab "Review" [ref=e103] [cursor=pointer]: 6. Review
+          - tabpanel "Config" [ref=e183]:
+            - generic [ref=e184]:
+              - generic [ref=e185]:
+                - generic [ref=e186]: Config
+                - heading "Execution Configuration" [level=3] [ref=e187]
+              - paragraph [ref=e188]: Choose the engine, phase coverage, and review policy. Enable full manual step-through by keeping every phase gated.
+            - region "Config" [ref=e189]:
+              - generic [ref=e190]:
+                - generic [ref=e191]: Engine
+                - radiogroup "Execution engine" [ref=e192]:
+                  - radio "Simulated Built-in simulator — no external system, instant feedback. Default." [checked] [ref=e193] [cursor=pointer]:
+                    - generic [ref=e194]: Simulated
+                    - generic [ref=e195]: Built-in simulator — no external system, instant feedback. Default.
+                  - radio "APEX Load Distributed load generation via the APEX Load engine." [ref=e196] [cursor=pointer]:
+                    - generic [ref=e197]: APEX Load
+                    - generic [ref=e198]: Distributed load generation via the APEX Load engine.
+                  - radio "LoadRunner OpenText LoadRunner enterprise suite integration." [ref=e199] [cursor=pointer]:
+                    - generic [ref=e200]: LoadRunner
+                    - generic [ref=e201]: OpenText LoadRunner enterprise suite integration.
+              - generic [ref=e202]:
+                - generic [ref=e203]: Golden config
+                - generic [ref=e204]:
+                  - generic [ref=e205]: config inherited
+                  - button "Clear" [ref=e206] [cursor=pointer]
+                - generic [ref=e207]:
+                  - button "Telecom system default All seven phases with deterministic offline agents." [ref=e208] [cursor=pointer]:
+                    - generic [ref=e209]: Telecom system default
+                    - generic [ref=e210]: All seven phases with deterministic offline agents.
+                  - button "ACC add-a-line Release Certification Full gated release-candidate certification profile." [pressed] [ref=e211] [cursor=pointer]:
+                    - generic [ref=e212]: ACC add-a-line Release Certification
+                    - generic [ref=e213]: Full gated release-candidate certification profile.
+                  - button "Telecom Fast Smoke Short story, execution, and reporting path." [ref=e214] [cursor=pointer]:
+                    - generic [ref=e215]: Telecom Fast Smoke
+                    - generic [ref=e216]: Short story, execution, and reporting path.
+              - generic [ref=e217]:
+                - generic [ref=e218]: Phases
+                - group "Phase subset" [ref=e219]:
+                  - button "Story Analysis" [pressed] [ref=e220] [cursor=pointer]
+                  - button "Test Planning" [pressed] [ref=e221] [cursor=pointer]
+                  - button "Env Triage" [pressed] [ref=e222] [cursor=pointer]
+                  - button "Script & Scenario" [pressed] [ref=e223] [cursor=pointer]
+                  - button "Execution" [pressed] [ref=e224] [cursor=pointer]
+                  - button "Reporting" [pressed] [ref=e225] [cursor=pointer]
+                  - button "Postmortem" [pressed] [ref=e226] [cursor=pointer]
+              - generic [ref=e227]:
+                - generic [ref=e228]: Review policy
+                - group "Review policy" [ref=e229]:
+                  - generic [ref=e231] [cursor=pointer]:
+                    - radio "Review every phase" [checked] [ref=e232]
+                    - text: Review every phase
+                  - generic [ref=e233] [cursor=pointer]:
+                    - radio "Run automatically" [ref=e234]
+                    - text: Run automatically
+                  - generic [ref=e235] [cursor=pointer]:
+                    - radio "Custom" [ref=e236]
+                    - text: Custom
+                - paragraph [ref=e237]: "14 planned review pauses: 7 prompt and 7 output reviews. Revisions may require additional reviews."
+      - generic [ref=e131]:
+        - generic [ref=e132]:
+          - strong [ref=e133]: Step 4 of 6 · Config
+          - generic [ref=e134]: All required sections look ready.
+        - generic [ref=e135]:
+          - button "Save Draft" [ref=e136] [cursor=pointer]
+          - generic [ref=e137]: Saving does not launch a test.
+          - button "Back" [ref=e182] [cursor=pointer]
+          - button "Next" [ref=e138] [cursor=pointer]

@@ -38,7 +38,9 @@ _ENGINE_RETRY_KINDS = frozenset(
         "engine_collection_settle_retry",
     }
 )
-_PUBLIC_LOAD_TEST_FIELDS = frozenset({"title", "vusers", "ramp_s", "duration_s", "slas"})
+_PUBLIC_LOAD_TEST_FIELDS = frozenset(
+    {"title", "vusers", "ramp_s", "duration_s", "slas", "release_id", "mapping_revision"}
+)
 MAX_PUBLIC_PIPELINE_STATE_BYTES = 512_000
 MAX_PUBLIC_PIPELINE_STATE_NODES = 10_000
 MAX_PUBLIC_GATE_BYTES = 256_000
@@ -294,6 +296,11 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     prompt = _public_prompt(value.get("resolved_prompt"))
     if prompt is not None:
         result["resolved_prompt"] = prompt
+    source_link = public_engine_handle_summary(
+        {"engine": "apex_load", "extras": {"console_url": value.get("source_uri")}}
+    )
+    if source_link and source_link.get("console_url"):
+        result["source_uri"] = source_link["console_url"]
     test_summary = public_test_result_summary(qualified_execution_summary(value))
     if test_summary is not None:
         result["test_summary"] = test_summary
@@ -457,8 +464,8 @@ def _public_run_config(value: Any) -> JsonDict | None:
     load_test: JsonDict = {}
     for field in _PUBLIC_LOAD_TEST_FIELDS - {"slas"}:
         item = config.load_test.get(field)
-        if field == "title":
-            projected = _text(item, 1_000, allow_empty=False)
+        if field in {"title", "release_id", "mapping_revision"}:
+            projected = _text(item, 1_000 if field == "title" else 255, allow_empty=False)
             if projected is not None:
                 load_test[field] = projected
         elif _finite_number(item, minimum=0, maximum=1_000_000_000_000) is not None:

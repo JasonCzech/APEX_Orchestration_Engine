@@ -98,7 +98,7 @@ describe('ApprovalsInboxPage', () => {
 
     const oldRow = within(rows[0] as HTMLElement)
     expect(oldRow.getByText('Review prompts')).toHaveClass('topbar-meta-chip', 'accent')
-    expect(oldRow.getByText('test_planning')).toBeInTheDocument()
+    expect(oldRow.getByText('Test Planning')).toBeInTheDocument()
     expect(oldRow.getByText('proj-alpha')).toBeInTheDocument()
     // > 15m old -> amber pulsing age
     expect(oldRow.getByText(/ago$/)).toHaveClass('approvals-age', 'stale')

@@ -9,6 +9,7 @@ and require this protocol explicitly.
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from apex.domain.integrations import TestResultSummary
 from apex.ports.artifact_store import ArtifactStorePort
 
 
@@ -91,6 +92,8 @@ class ApexLoadControlPlanePort(Protocol):
     ) -> NativeRunSnapshot: ...
 
     async def get_native_run(self, run_id: str) -> dict[str, Any]: ...
+
+    async def native_run_summary(self, run_id: str) -> TestResultSummary: ...
 
     async def native_run_metrics(self, run_id: str) -> dict[str, Any]: ...
 

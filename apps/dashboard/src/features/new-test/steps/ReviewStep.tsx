@@ -1,3 +1,4 @@
+import { reviewPolicySummary } from '../reviewPolicySummary'
 /**
  * Step 6 — Review: summary cards with edit-links back to each step,
  * outstanding validation issues, and the collapsible launch plan. Work-item
@@ -85,11 +86,12 @@ export function ReviewStep({
   onEditStep,
   maxContextPackets,
 }: Pick<StepProps, 'draft' | 'maxContextPackets'> & {
-  onEditStep: (step: WizardStepId) => void
+  onEditStep: (step: WizardStepId, field?: string) => void
 }) {
   const applications = useApplications(draft.scope.project_id || undefined)
   const environments = useEnvironments(draft.scope.app_id)
   const configurations = useAssistants()
+  const releaseConfig = draft.config.golden_configurable?.load_test as { release_id?: string; mapping_revision?: string } | undefined
   const issues = allIssues(draft, maxContextPackets)
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
@@ -116,7 +118,7 @@ export function ReviewStep({
                 <button
                   type="button"
                   className="wizard-issue-link"
-                  onClick={() => onEditStep(issue.step)}
+                  onClick={() => onEditStep(issue.step, issue.message === 'Title is required' ? 'wizard-title' : issue.message === 'Request is required' ? 'wizard-request' : undefined)}
                 >
                   {STEP_LABELS[issue.step]}: {issue.message}
                 </button>
@@ -177,13 +179,16 @@ export function ReviewStep({
         <ReviewCard title="Config" step="config" onEdit={onEditStep}>
           <dl className="wizard-review-dl">
             <dt>Engine</dt>
-            <dd>{draft.config.engine}</dd>
+            <dd>{{sim:'Simulated',apex_load:'APEX Load',loadrunner:'LoadRunner'}[draft.config.engine]}</dd>
+            {draft.config.engine === 'apex_load' && releaseConfig?.release_id && <>
+              <dt>Load release</dt><dd>{releaseConfig.release_id} · mapping {releaseConfig.mapping_revision ?? 'Not recorded'}</dd>
+            </>}
             <dt>Phases</dt>
             <dd>
               {phases.map((phase) => PHASE_LABELS[phase]).join(' → ') || 'None'}
             </dd>
-            <dt>Gates</dt>
-            <dd>{draft.config.gates_mode.replaceAll('_', ' ')}</dd>
+            <dt>Review policy</dt>
+            <dd>{reviewPolicySummary(draft.config)}</dd>
             <dt>Golden config</dt>
             <dd><ReferenceName id={draft.config.golden_config_id} name={configurations.data?.find((item) => item.assistantId === draft.config.golden_config_id)?.name} /></dd>
           </dl>

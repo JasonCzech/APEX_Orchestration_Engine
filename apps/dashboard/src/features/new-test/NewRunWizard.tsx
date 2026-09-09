@@ -1,3 +1,4 @@
+import { ScopeContext } from '@/components/ux/ScopeContext'
 import {
   useCallback,
   useEffect,
@@ -148,7 +149,7 @@ function WizardStepContent({
   disabled,
 }: StepProps & {
   step: WizardStepId
-  onEditStep: (step: WizardStepId) => void
+  onEditStep: (step: WizardStepId, field?: string) => void
   onStepPendingStart: (
     step: PendingWizardStep,
     draftGeneration: number,
@@ -214,6 +215,14 @@ function NewRunWizardContent({
   const navigate = useNavigate()
   const rawStep = searchParams.get('step')
   const activeStep: WizardStepId = isWizardStep(rawStep) ? rawStep : 'scope'
+  const pendingFocusRef = useRef<{ step: WizardStepId; id: string } | null>(null)
+  useEffect(() => {
+    const target = pendingFocusRef.current
+    if (target?.step !== activeStep) return
+    pendingFocusRef.current = null
+    document.getElementById(target.id)?.focus()
+    document.getElementById(target.id)?.scrollIntoView?.({ block: 'nearest' })
+  }, [activeStep])
   const pendingOperationsRef = useRef(new Map<number, PendingWizardOperation>())
   const nextPendingOperationIdRef = useRef(0)
   const [pendingStepCount, setPendingStepCount] = useState(0)
@@ -428,15 +437,11 @@ function NewRunWizardContent({
     )
   }
 
-  function jumpToTab(step: WizardStepId) {
+  function jumpToTab(step: WizardStepId, field?: string) {
+    const id = field ?? `wizard-tab-${step}`
+    if (step === activeStep) document.getElementById(id)?.focus()
+    else pendingFocusRef.current = { step, id }
     selectStep(step)
-    afterNextPaint(() => {
-      document.getElementById(`wizard-tab-${step}`)?.focus()
-      document.getElementById('wizard-tabs')?.scrollIntoView?.({
-        behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-        block: 'start',
-      })
-    })
   }
 
   function moveTab(event: KeyboardEvent<HTMLButtonElement>, step: WizardStepId) {
@@ -501,6 +506,7 @@ function NewRunWizardContent({
               id={`wizard-tab-${step}`}
               type="button"
               role="tab"
+              aria-label={STEP_LABELS[step]}
               className="wizard-tab"
               aria-selected={activeStep === step}
               aria-controls={`wizard-panel-${step}`}
@@ -508,7 +514,7 @@ function NewRunWizardContent({
               onClick={() => selectStep(step)}
               onKeyDown={(event) => moveTab(event, step)}
             >
-              {STEP_LABELS[step]}
+              {WIZARD_STEPS.indexOf(step) + 1}. {STEP_LABELS[step]}
             </button>
           ))}
         </div>
@@ -518,6 +524,8 @@ function NewRunWizardContent({
 
   return (
     <div className="wizard-page animate-enter">
+      <ScopeContext project={draft.scope.project_id} application={draft.scope.app_id} environment={draft.scope.environment_id} />
+
       {SAVE_LABELS[saveState] && (
         <div className="wizard-status-row">
           <span
@@ -568,7 +576,7 @@ function NewRunWizardContent({
                 <option value="">Start fresh or pick a saved draft…</option>
                 {(draftsList.data ?? []).map((entry) => (
                   <option key={entry.id} value={entry.id}>
-                    {entry.title}
+                    {entry.title || 'Untitled draft'} · {entry.project_id || 'No project'} · {entry.updated_at ? new Date(entry.updated_at).toLocaleString() : entry.id.slice(0, 8)}
                   </option>
                 ))}
               </select>
@@ -594,9 +602,10 @@ function NewRunWizardContent({
         </fieldset>
       )}
 
+      {launch.isError && <p role="alert">Launch failed: {launch.error.message}</p>}
       <footer className="glass-panel wizard-footer">
         <div className="wizard-footer-copy">
-          <strong>{activeStep === 'review' ? 'Launch Test' : 'Review Test'}</strong>
+          <strong>{activeStep === 'review' ? 'Review before launch' : `Step ${WIZARD_STEPS.indexOf(activeStep) + 1} of ${WIZARD_STEPS.length} · ${STEP_LABELS[activeStep]}`}</strong>
           <span className="wizard-caption">
             {issues.length === 0
               ? pendingStepCount > 0
@@ -605,25 +614,7 @@ function NewRunWizardContent({
               : `${issues.length} item${issues.length === 1 ? '' : 's'} still need attention.`}
           </span>
         </div>
-        {issues.length > 0 && (
-          <div className="wizard-inline-issues" role="alert">
-            {issues.slice(0, 3).map((issue) => (
-              <button
-                key={`${issue.step}:${issue.message}`}
-                type="button"
-                className="wizard-issue-link"
-                onClick={() => jumpToTab(issue.step)}
-              >
-                {STEP_LABELS[issue.step]}: {issue.message}
-              </button>
-            ))}
-          </div>
-        )}
-        {launch.isError && (
-          <span className="wizard-caption wizard-caption--danger" role="alert">
-            Launch failed: {launch.error.message}
-          </span>
-        )}
+
         <div className="wizard-footer-actions">
           <RequireRole role="operator">
             {!canSaveDraft && (
@@ -639,6 +630,8 @@ function NewRunWizardContent({
             >
               Save Draft
             </button>
+            <span className="wizard-caption">Saving does not launch a test.</span>
+            {WIZARD_STEPS.indexOf(activeStep) > 0 && <button type="button" className="btn btn-secondary" disabled={loading || finalizing || pendingStepCount > 0} onClick={() => jumpToTab(WIZARD_STEPS[WIZARD_STEPS.indexOf(activeStep) - 1]!)}>Back</button>}
             <button
               type="button"
               className="btn btn-primary"
@@ -649,13 +642,13 @@ function NewRunWizardContent({
                 loading ||
                 finalizing
               }
-              onClick={() => activeStep === 'review' ? void handleLaunch() : jumpToTab('review')}
+              onClick={() => activeStep === 'review' ? void handleLaunch() : jumpToTab(WIZARD_STEPS[WIZARD_STEPS.indexOf(activeStep) + 1]!)}
             >
               {launch.isPending || finalizing
                 ? 'Launching…'
                 : pendingStepCount > 0
                   ? 'Finishing context…'
-                  : activeStep === 'review' ? 'Launch Test' : 'Review Test'}
+                  : activeStep === 'review' ? 'Launch Test' : activeStep === 'prompts' ? 'Review Test' : 'Next'}
             </button>
           </RequireRole>
         </div>

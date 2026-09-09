@@ -518,6 +518,17 @@ def execution_result_from_values(values: JsonDict) -> str | None:
     results = values.get("phase_results")
     execution = results.get("execution") if isinstance(results, dict) else None
     summary = execution.get("test_summary") if isinstance(execution, dict) else None
+    outcome = summary.get("outcome") if isinstance(summary, dict) else None
+    assessment = outcome.get("assessment") if isinstance(outcome, dict) else None
+    status = assessment.get("status") if isinstance(assessment, dict) else None
+    if type(status) is str and status in {
+        "passed",
+        "failed",
+        "inconclusive",
+        "not_assessed",
+        "unavailable",
+    }:
+        return status
     passed = summary.get("passed") if isinstance(summary, dict) else None
     return "passed" if passed is True else "failed" if passed is False else None
 

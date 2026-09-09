@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
+import { TabList } from '@/components/ux/TabList'
 
 import { useSearchParams } from 'react-router'
 
@@ -33,6 +34,7 @@ const TAB_LABELS: Record<WorkspaceTab, string> = {
 }
 
 function activeTab(value: string | null, fallback: WorkspaceTab): WorkspaceTab {
+  if (value === 'activity') return 'log'
   return (TABS as readonly string[]).includes(value ?? '') ? (value as WorkspaceTab) : fallback
 }
 
@@ -66,6 +68,7 @@ export function PhaseWorkspace({
   gate?: GateInstance | null
   gateState?: GateMachineState
 }) {
+  const tabsId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = activeTab(searchParams.get('tab'), threadBusy ? 'log' : 'details')
   const entry = state.phase_results?.[phase]
@@ -93,26 +96,15 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
-      <div className="workspace-tabs" role="tablist" aria-label="Phase workspace tabs">
-        {TABS.map((candidate) => (
-          <button
-            key={candidate}
-            type="button"
-            role="tab"
-            className="workspace-tab"
-            aria-selected={tab === candidate}
-            onClick={() => selectTab(candidate)}
-          >
-            {TAB_LABELS[candidate]}
-          </button>
-        ))}
-      </div>
+      <TabList id={tabsId} label="Phase workspace tabs" items={TABS.map(id => ({id, label: TAB_LABELS[id]}))} value={tab} onChange={selectTab} />
+      <div id={`${tabsId}-panel-${tab}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${tab}`} tabIndex={0}>
+      {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Accepted phase evidence appears below after approval.</p>}
       {showEngineStrip && (
         <EngineStrip samples={engineSamples} latest={stream?.engineStats?.latest ?? null} />
       )}
       {tab === 'details' && <PhaseDetailsTab threadId={threadId} entry={entry} state={state} />}
       {tab === 'log' && (
-        <div className="pipeline-log-panel" role="tabpanel" aria-label="Pipeline log">
+        <div className="pipeline-log-panel" aria-label="Pipeline log">
           <ActivityFeed
             key={JSON.stringify([threadId, phase, runId ?? 'snapshot'])}
             phase={phase}
@@ -126,6 +118,7 @@ export function PhaseWorkspace({
         </div>
       )}
       {tab === 'reasoning' && <ReasoningTab phase={phase} entry={entry} state={state} />}
+      </div>
       {!promptGateEditorActive && (
         <details className="prompt-configuration">
           <summary>Prompt configuration</summary>
@@ -264,7 +257,7 @@ function PhaseDetailsTab({
 }) {
   if (!entry) {
     return (
-      <div className="dash-empty small" role="tabpanel">
+      <div className="dash-empty small">
         No result for this phase yet.
         <span className="dash-empty-hint">It has not run on this thread.</span>
       </div>
@@ -274,7 +267,7 @@ function PhaseDetailsTab({
   const paragraphs = entry.summary?.split(/\n{2,}/).filter((p) => p.trim().length > 0) ?? []
 
   return (
-    <div role="tabpanel" aria-label="Phase details">
+    <div aria-label="Phase details">
       <p className="workspace-caption">
         Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : 'Not recorded'}
       </p>
@@ -342,14 +335,14 @@ function ReasoningTab({
 
   if (!hasReasoning) {
     return (
-      <div className="dash-empty small" role="tabpanel">
+      <div className="dash-empty small">
         No reasoning details recorded for this phase yet.
       </div>
     )
   }
 
   return (
-    <div role="tabpanel" aria-label="Agent reasoning">
+    <div aria-label="Agent reasoning">
       {entry?.reasoning_digest ? (
         <>
           <h3 className="workspace-section-title">Reasoning Digest</h3>

@@ -142,7 +142,7 @@ describe('PromptsStep', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Config' }))
     const strip = await screen.findByRole('group', { name: 'Phase subset' })
-    await user.click(within(strip).getByRole('button', { name: 'execution' }))
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
 
     await user.click(screen.getByRole('tab', { name: 'Prompts' }))
     const focusedSection = screen.getByRole('tabpanel', { name: 'Prompts' })

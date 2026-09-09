@@ -79,7 +79,10 @@ def _external_seed(external: JsonDict, *, attempt: int) -> tuple[JsonDict, JsonD
     results = ExternalResults.model_validate(external)
     test_summary = {
         "engine": results.engine or results.source,
-        "passed": results.passed,
+        "passed": {"passed": True, "failed": False}.get(results.outcome.assessment.status)
+        if results.outcome
+        else results.passed,
+        "outcome": results.outcome.model_dump(mode="json") if results.outcome else None,
         "kpis": dict(results.kpis),
         "sla_breaches": [],
         "notes": results.notes,
@@ -95,7 +98,7 @@ def _external_seed(external: JsonDict, *, attempt: int) -> tuple[JsonDict, JsonD
         "test_summary": test_summary,
         "external": True,
         "provenance": "imported",
-        "source_outcome_explicit": results.passed is not None,
+        "source_outcome_explicit": results.passed is not None or results.outcome is not None,
         "source_uri": results.uri,
     }
     packet = ContextPacket(

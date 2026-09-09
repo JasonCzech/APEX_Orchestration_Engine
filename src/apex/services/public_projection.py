@@ -13,6 +13,7 @@ from apex.domain.input_limits import (
     MAX_RESOURCE_ID_CHARS,
     validate_json_object,
 )
+from apex.domain.integration_outcome import IntegrationOutcome
 
 MAX_PUBLIC_SLA_BREACHES = 16
 MAX_PUBLIC_SLA_BREACH_CHARS = 512
@@ -245,6 +246,16 @@ def public_engine_handle_summary(value: Any) -> dict[str, str | None] | None:
         "external_run_id": external_run_id if type(external_run_id) is str else None,
     }
     extras = value.get("extras")
+    if type(extras) is dict:
+        for field in ("project_id", "application_id", "release_id", "mapping_revision"):
+            candidate = extras.get(field)
+            if (
+                type(candidate) is str
+                and 0 < len(candidate) <= 255
+                and not contains_credential_material(candidate)
+                and bounded_diagnostic(candidate, max_chars=255) == candidate
+            ):
+                result[field] = candidate
     console_url = extras.get("console_url") if type(extras) is dict else None
     if (
         type(console_url) is str
@@ -344,4 +355,14 @@ def public_test_result_summary(value: Any) -> dict[str, Any] | None:
             notes,
             max_chars=min(max(1, len(notes)), MAX_PUBLIC_RESULT_NOTES_CHARS),
         )
+    raw_outcome = value.get("outcome")
+    if raw_outcome is not None:
+        payload["passed"] = None
+    if raw_outcome is not None and not contains_credential_material(raw_outcome):
+        try:
+            outcome = IntegrationOutcome.model_validate(raw_outcome)
+            payload["outcome"] = outcome.model_dump(mode="json")
+            payload["passed"] = {"passed": True, "failed": False}.get(outcome.assessment.status)
+        except ValueError:
+            pass
     return payload

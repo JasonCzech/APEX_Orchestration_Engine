@@ -1760,7 +1760,7 @@ export class DevDataStore {
       })
     }
     if (method === 'GET' && path.endsWith('/mirrored-runs')) {
-      return jsonResponse({ items: ['run-active', 'run-baseline-a', 'run-baseline-b', 'run-engine-recovery'].map((thread_id, index) => ({ thread_id, native_run_id: ['native-run-active', 'native-run-2603', 'native-run-baseline', 'native-run-recovery'][index], status: index === 3 ? 'failed' : 'synchronized' })), limit: 25, offset: 0 })
+      return jsonResponse({ items: ['run-active', 'run-baseline-a', 'run-baseline-b', 'run-engine-recovery'].map((thread_id, index) => ({ id: ['native-run-active', 'native-run-2603', 'native-run-baseline', 'native-run-recovery'][index], pipeline_thread_id: thread_id, pipeline_status: 'launched', status: index === 0 ? 'RUNNING' : index === 3 ? 'FAILED' : 'COMPLETE', terminal: index !== 0, connection_version: 'demo-v1', last_seen_at: isoMinutesAgo(0, this.activationTime) })), limit: 25, offset: 0 })
     }
     if (method === 'GET' && path.endsWith('/schedule-health')) return jsonResponse({ details: { status: 'healthy', scheduler_lag_seconds: 0, next_occurrence_at: isoMinutesAgo(-240, this.activationTime) } })
     if (method === 'GET' && path.endsWith('/calendar')) return jsonResponse({ details: { windows: [{ id: 'window-1', name: 'PERFHYPER2 reserved window', starts_at: isoMinutesAgo(-240, this.activationTime), ends_at: isoMinutesAgo(-330, this.activationTime) }] } })

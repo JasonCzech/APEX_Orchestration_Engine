@@ -96,7 +96,7 @@ describe('wizard draft resume', () => {
     await user.click(within(alert).getByRole('button', { name: 'Retry' }))
 
     const select = await screen.findByLabelText('Resume draft')
-    expect(within(select).getByRole('option', { name: 'Retryable draft' })).toBeInTheDocument()
+    expect(within(select).getByRole('option', { name: /Retryable draft/ })).toBeInTheDocument()
     await flushAndUnmountWizard(rendered)
   })
 
@@ -120,7 +120,7 @@ describe('wizard draft resume', () => {
     const { queryClient } = rendered
 
     const select = await screen.findByLabelText('Resume draft')
-    expect(within(select).getByRole('option', { name: 'Cached draft' })).toBeInTheDocument()
+    expect(within(select).getByRole('option', { name: /Cached draft/ })).toBeInTheDocument()
 
     draftsFail = true
     await act(async () => {
@@ -133,7 +133,7 @@ describe('wizard draft resume', () => {
     const alert = await screen.findByText(/Showing cached data/)
     expect(alert).toHaveTextContent('draft refresh failed')
     expect(screen.getByLabelText('Resume draft')).toBe(select)
-    expect(within(select).getByRole('option', { name: 'Cached draft' })).toBeInTheDocument()
+    expect(within(select).getByRole('option', { name: /Cached draft/ })).toBeInTheDocument()
 
     draftsFail = false
     await user.click(within(alert).getByRole('button', { name: 'Retry' }))

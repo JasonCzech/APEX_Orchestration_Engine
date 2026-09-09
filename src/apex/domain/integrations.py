@@ -24,6 +24,7 @@ from apex.domain.input_limits import (
     ScopeId,
     validate_json_object,
 )
+from apex.domain.integration_outcome import IntegrationOutcome
 from apex.domain.pipeline import new_id, utcnow_iso
 
 # --- shared paging / time -------------------------------------------------
@@ -350,6 +351,8 @@ class LoadTestSpec(BaseModel):
     duration_s: FiniteFloat = Field(default=2, gt=0, le=86_400)
     slas: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=32)
     target_environment: NoNulStr | None = Field(default=None, max_length=2_048)
+    release_id: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
+    mapping_revision: NoNulStr | None = Field(default=None, min_length=1, max_length=255)
 
     @field_validator("script_refs")
     @classmethod
@@ -406,9 +409,16 @@ class TestResultSummary(BaseModel):
 
     engine: NoNulStr = Field(min_length=1, max_length=64)
     passed: bool | None = None
+    outcome: IntegrationOutcome | None = None
     kpis: dict[str, FiniteFloat] = Field(default_factory=dict, max_length=64)
     sla_breaches: list[NoNulStr] = Field(default_factory=list, max_length=128)
     notes: NoNulStr | None = Field(default=None, max_length=20_000)
+
+    @model_validator(mode="after")
+    def apply_structured_assessment(self) -> "TestResultSummary":
+        if self.outcome is not None:
+            self.passed = {"passed": True, "failed": False}.get(self.outcome.assessment.status)
+        return self
 
     @field_validator("kpis")
     @classmethod

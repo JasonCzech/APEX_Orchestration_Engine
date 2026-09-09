@@ -1,3 +1,4 @@
+import { orchestrationTone, formatTimestamp } from '@/features/runs/runDisplay'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
@@ -12,7 +13,6 @@ import { isApiError } from '@/api/errors'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
-import { formatRelative } from '@/utils/time'
 
 import { CompareSelectBar } from '../compare/CompareSelectBar'
 import { MAX_COMPARE_RUNS } from '../compare/compareModel'
@@ -37,6 +37,8 @@ import {
   normalizedPhases,
   targetPhaseFor,
 } from './runDisplay'
+import { usePreferences } from '@/theme/preferences'
+import { formatDuration, PHASE_LABELS, isPhaseName } from './runDisplay'
 import './RunsListPage.css'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -44,20 +46,6 @@ const SKELETON_ROWS = 6
 const EM_DASH = '—'
 
 /** status-badge tone per LangGraph thread_status. */
-function statusTone(status: string | null | undefined): string {
-  switch (status) {
-    case 'busy':
-      return 'accent'
-    case 'interrupted':
-      return 'warning'
-    case 'error':
-      return 'danger'
-    case 'idle':
-      return 'success'
-    default:
-      return 'neutral'
-  }
-}
 
 function errorMessage(error: unknown): string {
   if (isApiError(error)) return error.message
@@ -85,11 +73,7 @@ function durationLabel(run: PipelineSummary): string {
   const created = Date.parse(run.created_at)
   const updated = Date.parse(run.updated_at)
   if (Number.isNaN(created) || Number.isNaN(updated) || updated < created) return EM_DASH
-  const totalMinutes = Math.round((updated - created) / 60_000)
-  if (totalMinutes < 60) return `${totalMinutes}m`
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+  return formatDuration((updated - created) / 1000)
 }
 
 /** D8 compare affordance: checkbox column state for one row (undefined = off). */
@@ -116,17 +100,19 @@ function RunRow({
 }) {
   const navigate = useNavigate()
   const runPath = `/runs/${run.thread_id}`
+  const displayPhase = run.pending_gate?.phase ?? run.current_phase
   const compact = useCompactLayout()
   if (compact) return (
     <article className="glass-panel run-card" data-testid={`runs-row-${run.thread_id}`}>
       <Link to={runPath} className="runs-run-title">{run.title || 'Untitled run'}</Link>
-      <p><strong>{orchestrationStatusLabel(run.thread_status)}</strong></p>
+      <code className="runs-run-identity">{run.thread_id}</code>
+      <p><strong>{orchestrationStatusLabel(run.thread_status, run.phase_strip)}</strong></p>
       <p>Test result: <strong>{executionResultLabel(run)}</strong></p>
       <p>Progress: {completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases finished</p>
       {run.pending_gate && <Link to={runPath}>{gateLabel(run.pending_gate.kind)}</Link>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
-      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatRelative(run.created_at)}</dd><dt>Duration</dt><dd>{durationLabel(run)}</dd></dl></details>
-      <div className="runs-actions-stack"><button className="btn btn-secondary" onClick={() => onInspect(run.thread_id)}>Inspect</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
+      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Duration</dt><dd>{durationLabel(run)}</dd></dl></details>
+      <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Inspect ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onInspect(run.thread_id)}>Inspect</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
     </article>
   )
 
@@ -149,7 +135,8 @@ function RunRow({
       <td>
         <Link to={runPath} className="runs-run-link">
           <span className="runs-run-title strong">{run.title || 'Untitled run'}</span>
-          <span className="runs-run-id">{run.thread_id}</span>
+          <code className="runs-run-identity">{run.thread_id}</code>
+          <span className="runs-run-id">{isPhaseName(displayPhase) ? PHASE_LABELS[displayPhase] : 'Phase not recorded'}</span>
         </Link>
       </td>
       <td>
@@ -164,7 +151,7 @@ function RunRow({
         </span>
       </td>
       <td className="runs-time" title={run.created_at ?? undefined}>
-        {formatRelative(run.created_at)}
+        {formatTimestamp(run.created_at)}
       </td>
       <td className="runs-time">{durationLabel(run)}</td>
       <td>
@@ -172,8 +159,8 @@ function RunRow({
       </td>
       <td>
         <div className="runs-status-cell">
-          <span className={`status-badge ${statusTone(run.thread_status)}`}>
-            {orchestrationStatusLabel(run.thread_status)}
+          <span className={`status-badge ${orchestrationTone(run.thread_status, run.phase_strip)}`}>
+            {orchestrationStatusLabel(run.thread_status, run.phase_strip)}
           </span>
           {run.pending_gate && (
             <Link
@@ -193,7 +180,7 @@ function RunRow({
           <button
             type="button"
             className={`btn btn-sm ${inspected ? 'btn-secondary' : 'btn-ghost'}`}
-            onClick={() => onInspect(run.thread_id)}
+            aria-label={`Inspect ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onInspect(run.thread_id)}
           >
             Inspect
           </button>
@@ -201,7 +188,8 @@ function RunRow({
             label={`Run actions: ${run.title || run.thread_id}`}
             items={[
               ...(canRerun ? [{ label: 'Re-run…', onSelect: () => onRerun(run.thread_id) }] : []),
-              { label: 'Open', onSelect: () => void navigate(runPath) },
+              { label: 'Open overview', onSelect: () => void navigate(runPath) },
+              { label: 'Copy run ID', onSelect: () => { void navigator.clipboard?.writeText(run.thread_id) } },
             ]}
           />
         </div>
@@ -226,11 +214,12 @@ function RunsSkeleton() {
  * keeps the previous page rendered during transitions.
  */
 export function RunsListPage() {
+  const { preferences } = usePreferences()
   const compact = useCompactLayout()
   const consumer = useOptionalConsumer()
   const canRerun = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const [searchParams, setSearchParams] = useSearchParams()
-  const filters = useMemo(() => parseRunsFilters(searchParams), [searchParams])
+  const filters = useMemo(() => ({...parseRunsFilters(searchParams), ...(!searchParams.has('limit') ? {limit:preferences.rows} : {})}), [searchParams, preferences.rows])
   // D4: row overflow "Re-run…" opens the pre-flight modal for that thread
   // (the modal fetches thread state itself; preselection = last plan).
   const [rerunThreadId, setRerunThreadId] = useState<string | null>(null)
@@ -254,9 +243,14 @@ export function RunsListPage() {
 
   const applyFilters = useCallback(
     (patch: Partial<RunsFilters>) => {
-      setSearchParams((prev) => serializeRunsFilters({ ...parseRunsFilters(prev), ...patch }))
+      setSearchParams((prev) => {
+        const next = { ...parseRunsFilters(prev), limit: prev.has('limit') ? parseRunsFilters(prev).limit : preferences.rows, ...patch }
+        const params = serializeRunsFilters(next)
+        params.set('limit', String(next.limit))
+        return params
+      })
     },
-    [setSearchParams],
+    [setSearchParams, preferences.rows],
   )
 
   // Search box: local echo state, committed to the URL after a 300ms debounce.
@@ -326,6 +320,7 @@ export function RunsListPage() {
       <footer className="runs-pagination">
         <span className="runs-pagination-caption">{rangeCaption}</span>
         <div className="runs-pagination-buttons">
+          <label>Rows <select className="field-select" aria-label="Rows per table" value={filters.limit} onChange={event => applyFilters({limit:Number(event.target.value),offset:0})}>{Array.from(new Set([10,25,50,100,filters.limit])).sort((a,b)=>a-b).map(size => <option key={size} value={size}>{size}</option>)}</select></label>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
@@ -394,6 +389,11 @@ export function RunsListPage() {
         {/* D2 minimal launch (live-UI agent); full wizard lands on /runs/new in D4. */}
         <Link to="/runs/new" className="btn btn-primary">New Test</Link>
       </header>
+      <details className="ux-filters"><summary>Filters{hasActiveFilters(filters) ? ' · Active' : ''}</summary><div>
+        <label className="ux-field">Project<input className="field-input" aria-label="Filter by project" value={filters.project ?? ''} onChange={event => applyFilters({project:event.target.value || undefined,offset:0})} /></label>
+        <p className="ux-context">Filters apply to the accessible run history. Use search to narrow run titles.</p>
+      </div></details>
+      {compareMode && <p role="status" className="ux-context">Select 2–{MAX_COMPARE_RUNS} runs to compare their results and evidence.</p>}
 
       {isError && (!data || isPlaceholderData) ? (
         <ProblemCard title="Runs unavailable" message={errorMessage(error)} onRetry={() => refetch()} />
@@ -469,7 +469,7 @@ export function RunsListPage() {
                   <th>Run</th>
                   <th>Project</th>
                   <th>Applications</th>
-                  <th>Phase</th>
+                  <th>Progress</th>
                   <th>Created</th>
                   <th>Duration</th>
                   <th>Test result</th>

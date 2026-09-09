@@ -12,6 +12,7 @@ import structlog
 
 from apex.adapters.registry import PortKind
 from apex.domain.diagnostics import safe_type_name
+from apex.domain.integrations import TestResultSummary
 from apex.domain.pipeline import ArtifactRef
 from apex.persistence.db import get_sessionmaker
 from apex.persistence.repositories.apex_load_native import (
@@ -89,15 +90,35 @@ def _external_results(
     *,
     console_url: str,
     metrics: Any,
+    assessment: TestResultSummary | None = None,
 ) -> dict[str, Any]:
     return {
         "source": "APEX Load native control plane",
         "uri": console_url,
         "engine": "apex_load",
-        "passed": claim.status == "COMPLETE",
-        "kpis": _metrics_kpis(metrics),
+        "outcome": assessment.outcome.model_dump(mode="json")
+        if assessment and assessment.outcome
+        else None,
+        "passed": False
+        if claim.status != "COMPLETE"
+        else assessment.passed
+        if assessment
+        else None,
+        "kpis": assessment.kpis if assessment and assessment.kpis else _metrics_kpis(metrics),
         "summary": f"APEX Load native test {claim.remote_id} completed with status {claim.status}",
-        "notes": "Reporting and postmortem were started from the mirrored native run.",
+        "notes": (
+            "Reporting and postmortem were started from the mirrored native run. "
+            + (
+                assessment.notes or ""
+                if assessment
+                else "Threshold assessment is unavailable; do not infer a pass."
+            )
+            + (
+                " Breaches: " + "; ".join(assessment.sla_breaches)
+                if assessment and assessment.sla_breaches
+                else ""
+            )
+        )[:20000],
     }
 
 
@@ -236,6 +257,16 @@ async def _launch_reporting_pipeline(
                 error_type=safe_type_name(exc),
             )
 
+        assessment = None
+        try:
+            assessment = await adapter.native_run_summary(claim.remote_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "apex_load_native.assessment_unavailable", error_type=safe_type_name(exc)
+            )
+
         async def collect_and_index_artifacts(thread_id: str) -> list[dict[str, Any]]:
             artifact_resolution = await resolver.resolve_with_metadata(
                 PortKind.ARTIFACT_STORE,
@@ -273,6 +304,7 @@ async def _launch_reporting_pipeline(
                 claim,
                 console_url=adapter.native_console_url(claim.remote_id),
                 metrics=metrics,
+                assessment=assessment,
             ),
             principal_id="apex-load-reconciler",
             before_run_start=collect_and_index_artifacts,

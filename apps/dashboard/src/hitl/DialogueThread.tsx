@@ -44,7 +44,7 @@ export function DialogueThread({
           <span className="gate-field-label">Discuss with the agent</span>
           <textarea
             className="field-input gate-composer-input"
-            placeholder="Ask a question or give feedback — the gate reopens with the agent's reply"
+            placeholder="Ask a question or give feedback — the review reopens with the agent's reply"
             value={message}
             disabled={disabled}
             onChange={(event) => onMessageChange(event.target.value)}

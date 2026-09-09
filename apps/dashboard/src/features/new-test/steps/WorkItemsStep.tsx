@@ -1,3 +1,4 @@
+import { Link } from 'react-router'
 /**
  * Step 2 — Work items (all optional): NL -> translate -> editable provider
  * query (+ confidence chip) -> execute -> selectable results; direct key add
@@ -376,7 +377,7 @@ export function WorkItemsStep({
             disabled={text.trim().length === 0 || anyOperationPending}
             onClick={() => void translateNow()}
           >
-            {translate.isPending ? 'Translating…' : 'Translate'}
+            {translate.isPending ? 'Preparing query…' : 'Preview work item query'}
           </button>
         </div>
         {translateError && (
@@ -402,7 +403,7 @@ export function WorkItemsStep({
               if (saved.project_id && !saved.connection_id) {
                 setAddState({
                   busy: false,
-                  error: 'This legacy project query must be rebound before it can run.',
+                  error: 'Update this saved query’s connection before running it.',
                 })
                 return
               }
@@ -438,12 +439,14 @@ export function WorkItemsStep({
                   disabled={Boolean(saved.project_id) && !saved.connection_id}
                 >
                   {saved.name}
-                  {saved.project_id && !saved.connection_id ? ' (rebind required)' : ''}
+                  {saved.project_id && !saved.connection_id ? ' (connection needs updating)' : ''}
                 </option>
               ))}
           </select>
         </div>
       )}
+
+      <p className="wizard-caption">Saved query needs a connection update? <Link to="/work-items/saved">Open saved queries</Link>. You can also add a work item directly or continue without work items.</p>
 
       {translated && (
         <div className="wizard-field" data-testid="translated-query">

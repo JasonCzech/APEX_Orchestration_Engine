@@ -20,6 +20,7 @@ export interface PhaseStripProps {
   /** When present, segments become focusable buttons. */
   onSelect?: (phase: PhaseName) => void
   size?: 'sm' | 'md' | 'lg'
+  selectedOnly?: boolean
   currentPhase?: PhaseName | null
 }
 
@@ -58,13 +59,16 @@ export function PhaseStrip({
   onSelect,
   size = 'md',
   currentPhase = null,
+  selectedOnly = false,
 }: PhaseStripProps) {
   const byPhase = new Map(strip.map((entry) => [entry.phase, entry]))
+
+  const visiblePhases = selectedOnly ? PHASE_NAMES.filter(phase => byPhase.get(phase)?.status && byPhase.get(phase)?.status !== NONE) : PHASE_NAMES
 
   if (size === 'lg') {
     return (
       <div className="phase-strip phase-strip--lg" role="group" aria-label="Phase progress">
-        {PHASE_NAMES.map((phase, index) => {
+        {visiblePhases.map((phase, index) => {
           const entry = byPhase.get(phase)
           const status = entry?.status ?? NONE
           const label = segmentLabel(phase, status, entry?.attempt)
@@ -107,7 +111,7 @@ export function PhaseStrip({
                   {content}
                 </span>
               )}
-              {index < PHASE_NAMES.length - 1 && <span className={`phase-step-connector phase-step-connector--${visual}`} />}
+              {index < visiblePhases.length - 1 && <span className={`phase-step-connector phase-step-connector--${visual}`} />}
             </div>
           )
         })}

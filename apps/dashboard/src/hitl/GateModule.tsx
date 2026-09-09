@@ -98,13 +98,8 @@ export function GateModuleView({
   const kindLabel = gateKindLabel(gate.kind)
   const header = (
     <header className="gate-module-header">
+      <h3 className="gate-module-title">{kindLabel} — {phaseLabel(gate.phase)}</h3>
       <details><summary>Technical details</summary><code>{gate.kind} · {gate.interrupt_id}</code></details>
-      <h3 className="gate-module-title">
-        {kindLabel} — {phaseLabel(gate.phase)}
-      </h3>
-      <span className="gate-module-id mono" title={`interrupt ${gate.interrupt_id}`}>
-        {gate.interrupt_id}
-      </span>
     </header>
   )
 

@@ -1,0 +1,19 @@
+[      25ms] [WARNING] Error with Feature-Policy header: Some features are specified in both Feature-Policy and Permissions-Policy header: clipboard-write. Values defined in Permissions-Policy header will be used. @ :0
+[  138009ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:18081/api/v1/ws?project_id=unassigned' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/assets/index-bh3FgWZ5.js:1
+[  140350ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&project_id=unassigned&summary=true&active_only=true&limit=100:0
+[  140375ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&release_id=legacy-imported&project_id=unassigned&summary=true&limit=1000&offset=0:0
+[  144554ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:18081/api/v1/ws?project_id=unassigned' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/assets/index-bh3FgWZ5.js:1
+[  150221ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/desktop/status:0
+[  150349ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&project_id=unassigned&summary=true&active_only=true&limit=100:0
+[  150375ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&release_id=legacy-imported&project_id=unassigned&summary=true&limit=1000&offset=0:0
+[  157266ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:18081/api/v1/ws?project_id=unassigned' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/assets/index-bh3FgWZ5.js:1
+[  160351ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&project_id=unassigned&summary=true&active_only=true&limit=100:0
+[  160376ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&release_id=legacy-imported&project_id=unassigned&summary=true&limit=1000&offset=0:0
+[  170350ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&project_id=unassigned&summary=true&active_only=true&limit=100:0
+[  170376ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&release_id=legacy-imported&project_id=unassigned&summary=true&limit=1000&offset=0:0
+[  180221ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/desktop/status:0
+[  180350ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&project_id=unassigned&summary=true&active_only=true&limit=100:0
+[  180376ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&release_id=legacy-imported&project_id=unassigned&summary=true&limit=1000&offset=0:0
+[  181407ms] [ERROR] WebSocket connection to 'ws://127.0.0.1:18081/api/v1/ws?project_id=unassigned' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/assets/index-bh3FgWZ5.js:1
+[  190350ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&project_id=unassigned&summary=true&active_only=true&limit=100:0
+[  190376ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:18081/api/v1/tests?application_id=legacy&release_id=legacy-imported&project_id=unassigned&summary=true&limit=1000&offset=0:0

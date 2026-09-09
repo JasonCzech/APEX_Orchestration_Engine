@@ -1,3 +1,4 @@
+import { formatDuration } from '@/features/runs/runDisplay'
 /**
  * Home dashboard derivations (plan UX 1.5 — attention-first overview).
  *
@@ -115,9 +116,5 @@ export function avgDurationLabel(items: PipelineSummary[]): string {
   const durations = items.map(durationMs).filter((value): value is number => value !== null)
   if (durations.length === 0) return EM_DASH
   const average = durations.reduce((sum, value) => sum + value, 0) / durations.length
-  const totalMinutes = Math.round(average / 60_000)
-  if (totalMinutes < 60) return `${totalMinutes}m`
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+  return formatDuration(average / 1000)
 }

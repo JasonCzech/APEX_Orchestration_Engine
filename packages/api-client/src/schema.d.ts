@@ -1932,6 +1932,20 @@ export interface components {
             /** Name */
             name?: string | null;
         };
+        /** Assessment */
+        Assessment: {
+            /** Criteria Revision */
+            criteria_revision?: string | null;
+            /** Explanation */
+            explanation: string;
+            /** Reason Code */
+            reason_code: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "passed" | "failed" | "inconclusive" | "not_assessed" | "unavailable";
+        };
         /** AuditChainVerificationOut */
         AuditChainVerificationOut: {
             /** Checked */
@@ -3183,6 +3197,16 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
+        /** EvidenceOutcome */
+        EvidenceOutcome: {
+            /** Coverage Percent */
+            coverage_percent?: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "complete" | "partial" | "unavailable";
+        };
         /** EvidencePacket */
         EvidencePacket: {
             /** Id */
@@ -3237,6 +3261,24 @@ export interface components {
             id: string;
             /** Revision */
             revision: number;
+        };
+        /** ExecutionOutcome */
+        ExecutionOutcome: {
+            /** Observed Duration Seconds */
+            observed_duration_seconds?: number | null;
+            /** Planned Duration Seconds */
+            planned_duration_seconds?: number | null;
+            /** Termination Reason */
+            termination_reason: string;
+        };
+        /** ExecutionScope */
+        ExecutionScope: {
+            /** Application Id */
+            application_id?: string | null;
+            /** Project Id */
+            project_id?: string | null;
+            /** Release Id */
+            release_id?: string | null;
         };
         /** ExecutionSnapshot */
         ExecutionSnapshot: {
@@ -3335,6 +3377,7 @@ export interface components {
             };
             /** Notes */
             notes?: string | null;
+            outcome?: components["schemas"]["IntegrationOutcome"] | null;
             /** Passed */
             passed?: boolean | null;
             /** Source */
@@ -3471,6 +3514,25 @@ export interface components {
             /** Title */
             title: string;
         };
+        /** IntegrationOutcome */
+        IntegrationOutcome: {
+            assessment: components["schemas"]["Assessment"];
+            evidence: components["schemas"]["EvidenceOutcome"];
+            execution: components["schemas"]["ExecutionOutcome"];
+            /** Execution Id */
+            execution_id: string;
+            /**
+             * Observed At
+             * Format: date-time
+             */
+            observed_at: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: 1;
+            scope?: components["schemas"]["ExecutionScope"] | null;
+        };
         /** InventoryView */
         InventoryView: {
             /** Environment Id */
@@ -3561,6 +3623,7 @@ export interface components {
             load_models?: {
                 [key: string]: unknown;
             };
+            release_mapping?: components["schemas"]["NativeReleaseMapping"] | null;
             /** Templates */
             templates?: {
                 [key: string]: unknown;
@@ -3648,6 +3711,24 @@ export interface components {
             payload: {
                 [key: string]: unknown;
             };
+        };
+        /** NativeReleaseChoice */
+        NativeReleaseChoice: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
+        /** NativeReleaseMapping */
+        NativeReleaseMapping: {
+            /** Application Id */
+            application_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Releases */
+            releases: components["schemas"]["NativeReleaseChoice"][];
+            /** Revision */
+            revision: string;
         };
         /** NativeResourceListResponse */
         NativeResourceListResponse: {
@@ -3775,7 +3856,7 @@ export interface components {
             current_phase?: string | null;
             engine?: components["schemas"]["PipelineEngineInfo"] | null;
             /** Execution Result */
-            execution_result?: ("passed" | "failed") | null;
+            execution_result?: ("passed" | "failed" | "inconclusive" | "not_assessed" | "unavailable") | null;
             /** Interrupts */
             interrupts?: components["schemas"]["GateInterrupt"][];
             pending_gate?: components["schemas"]["PendingGate"] | null;
@@ -3829,7 +3910,7 @@ export interface components {
             current_phase?: string | null;
             engine?: components["schemas"]["PipelineEngineInfo"] | null;
             /** Execution Result */
-            execution_result?: ("passed" | "failed") | null;
+            execution_result?: ("passed" | "failed" | "inconclusive" | "not_assessed" | "unavailable") | null;
             pending_gate?: components["schemas"]["PendingGate"] | null;
             /** Phase Strip */
             phase_strip: components["schemas"]["PhaseStripEntry"][];

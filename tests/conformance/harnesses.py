@@ -291,6 +291,7 @@ class ApexLoadServer:
             "test_id": test_id,
             "status": test["status"],
             "sla_breached": self.sla_breach,
+            "sla_evaluated": True,
         }
         if self.sla_breach:
             body["details"] = ["P95 latency breached threshold (p95_ms > 500)"]

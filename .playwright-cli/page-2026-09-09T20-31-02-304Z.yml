@@ -1,0 +1,89 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - button "APEX Load dashboard" [ref=e5] [cursor=pointer]:
+      - img "APEX Load" [ref=e6]
+      - generic [ref=e11]: APEX Load
+    - 'button "Select domain. Current domain: Default Domain" [ref=e13] [cursor=pointer]':
+      - generic [ref=e14]: ◇
+      - generic [ref=e15]: Default Domain
+      - generic [ref=e16]: ⌄
+    - generic [ref=e17]:
+      - 'button "Select project. Current project: Unassigned" [expanded] [active] [ref=e18] [cursor=pointer]':
+        - generic [ref=e19]: ◫
+        - generic [ref=e20]: Unassigned
+        - generic [ref=e21]: ⌄
+      - generic "Project options" [ref=e154]:
+        - button "Unassigned" [ref=e156] [cursor=pointer]
+        - button "New Project" [ref=e157] [cursor=pointer]
+        - button "Open Repository" [ref=e158] [cursor=pointer]
+    - 'button "Select application. Current application: Legacy" [ref=e23] [cursor=pointer]':
+      - generic [ref=e24]: ▣
+      - generic [ref=e25]: Legacy
+      - generic [ref=e26]: ⌄
+    - 'button "Select release. Current release: Imported Legacy" [ref=e28] [cursor=pointer]':
+      - generic [ref=e29]: ◆
+      - generic [ref=e30]: Imported Legacy
+      - generic [ref=e31]: ⌄
+    - navigation [ref=e32]:
+      - button "Dashboard" [ref=e33] [cursor=pointer]
+      - button "New Test" [ref=e41] [cursor=pointer]
+      - button "Command Center" [ref=e47] [cursor=pointer]
+      - button "Results" [ref=e54] [cursor=pointer]
+      - button "Scripts" [ref=e58] [cursor=pointer]
+      - button "Scenarios" [ref=e64] [cursor=pointer]
+      - button "Repository" [ref=e69] [cursor=pointer]
+      - button "Monitoring" [ref=e75] [cursor=pointer]
+      - button "Help & documentation" [ref=e80] [cursor=pointer]
+      - button "Access" [ref=e86] [cursor=pointer]
+      - button "Settings" [ref=e93] [cursor=pointer]
+    - generic [ref=e99]:
+      - generic [ref=e100]:
+        - generic "Development preview mode" [ref=e101]:
+          - generic [ref=e102]: Dev View
+          - group "Development dashboard view" [ref=e104]:
+            - button "Admin" [pressed] [ref=e105] [cursor=pointer]
+            - button "User" [ref=e106] [cursor=pointer]
+          - button "Sign out" [ref=e107] [cursor=pointer]
+        - generic [ref=e108]:
+          - generic "Live" [ref=e153]
+          - 'button "Build info: local · v0.0.0-20260909151704-10ee05ad18d7+dirty" [ref=e113] [cursor=pointer]':
+            - generic [ref=e115]: local
+            - generic [ref=e116]: v0.0.0-20260909151704-10ee05ad18d7+dirty
+      - button "Collapse sidebar" [expanded] [ref=e117] [cursor=pointer]
+  - main [ref=e120]:
+    - status [ref=e121]: Results Library
+    - generic "Dashboard controls" [ref=e122]:
+      - heading "Results Library" [level=1] [ref=e124]
+      - generic "Deployment identity" [ref=e126]: Browser · Server
+    - generic [ref=e131]:
+      - generic [ref=e132]:
+        - generic [ref=e134]:
+          - heading "Library Sources" [level=3] [ref=e135]
+          - paragraph [ref=e136]: 0 result sources for Imported Legacy.
+        - region "Library controls" [ref=e137]:
+          - generic [ref=e138]:
+            - generic [ref=e139]:
+              - generic [ref=e140]: Search results
+              - searchbox "Search results" [ref=e141]
+            - generic [ref=e142]:
+              - generic [ref=e143]: Source
+              - combobox "Source" [ref=e144] [cursor=pointer]:
+                - option "All" [selected]
+                - option "Local"
+                - option "Remote Workspace"
+            - button "Refresh" [ref=e146] [cursor=pointer]
+          - group [ref=e147]:
+            - generic "Filters · Active" [ref=e148] [cursor=pointer]
+            - option "All releases"
+            - option "Imported Legacy" [selected]
+            - option "All statuses" [selected]
+            - option "Complete"
+            - option "Failed"
+            - option "Aborted"
+            - option "All archive states" [selected]
+            - option "Archive ready"
+            - option "Archive unavailable"
+      - paragraph [ref=e149]: Select 2-10 archived local results to compare.
+      - generic [ref=e150]:
+        - paragraph [ref=e151]: No result sources yet.
+        - paragraph [ref=e152]: Run a scenario or pull a remote result for this release to populate the library.

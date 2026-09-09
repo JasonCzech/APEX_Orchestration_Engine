@@ -944,6 +944,8 @@ def _script_scenario_load_test_spec(
         # No fake remote id: APEX Load generates its default inline workload,
         # while LoadRunner uses the selected connection's configured test_id.
         script_refs=[],
+        release_id=overrides.get("release_id"),
+        mapping_revision=overrides.get("mapping_revision"),
         vusers=overrides.get("vusers", 10),
         ramp_s=overrides.get("ramp_s", 1.0),
         duration_s=overrides.get("duration_s", 2.0),
@@ -983,9 +985,9 @@ def _reporting_kpi_suffix(state: PipelineState) -> str:
 def _validated_checkpoint_summary(value: Any) -> TestResultSummary | None:
     """Fail closed on malformed/legacy provider summaries used in model output."""
 
-    if type(value) is not dict or len(value) > 5:
+    if type(value) is not dict or len(value) > 6:
         return None
-    allowed = {"engine", "passed", "kpis", "sla_breaches", "notes"}
+    allowed = {"engine", "passed", "kpis", "sla_breaches", "notes", "outcome"}
     if any(type(key) is not str or key not in allowed for key in value):
         return None
     engine = value.get("engine")

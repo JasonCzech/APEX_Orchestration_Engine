@@ -1,3 +1,5 @@
+import { GateDecisionContext } from '@/hitl/GateDecisionContext'
+import { ScopeContext } from '@/components/ux/ScopeContext'
 /**
  * /approvals — keyboard-first cross-run gate queue (plan UX 2.b).
  * Also mounted on /approvals/:threadId/:interruptId (deep link pre-selects).
@@ -439,6 +441,8 @@ function GatePreview({
           Open run
         </Link>
       </header>
+      <ScopeContext project={detail.project_id} application={detail.app_id} />
+      {interrupt && <GateDecisionContext state={query.data.state} phase={interrupt.phase} kind={interrupt.kind} updatedAt={detail.updated_at} />}
       {interrupt ? (
         <GateModule
           key={interrupt.interrupt_id ?? 'gate'}

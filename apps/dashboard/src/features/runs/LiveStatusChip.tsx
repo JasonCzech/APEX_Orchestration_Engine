@@ -2,7 +2,7 @@ import type { LiveStreamStatus } from './liveTypes'
 
 const KNOWN: Record<LiveStreamStatus, { label: string; title: string }> = {
   idle: {
-    label: 'Live updates paused',
+    label: 'Snapshot refresh active',
     title: 'No live stream — this run is not currently streaming. The snapshot poll keeps the page current.',
   },
   connecting: {
@@ -18,7 +18,7 @@ const KNOWN: Record<LiveStreamStatus, { label: string; title: string }> = {
     title: 'Stream dropped — reconnecting with backoff. The snapshot poll heals any missed events.',
   },
   ended: {
-    label: 'Live updates ended',
+    label: 'Recorded snapshot',
     title: 'The run finished streaming. The snapshot below is the durable record.',
   },
   error: {

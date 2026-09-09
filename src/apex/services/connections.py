@@ -1063,7 +1063,8 @@ class ConnectionResolver:
                 or conn.kind is PortKind.WORK_TRACKING
                 or (
                     apex_load_native
-                    and key in {"project_id", "native_control_enabled", "console_url"}
+                    and key
+                    in {"project_id", "native_control_enabled", "console_url", "release_mapping"}
                 )
                 for key in options_overlay
             )

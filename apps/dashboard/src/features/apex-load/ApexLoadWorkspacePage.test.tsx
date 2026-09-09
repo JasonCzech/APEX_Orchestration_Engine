@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import { createMemoryRouter, RouterProvider } from 'react-router'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -10,15 +11,70 @@ import { server } from '@/test/server'
 
 import { ApexLoadWorkspacePage } from './ApexLoadWorkspacePage'
 
-function renderWorkspace() {
-  return render(
+function renderWorkspace(entry = '/apex-load') {
+  const router = createMemoryRouter([{ path: '/apex-load', element: <ApexLoadWorkspacePage /> }], { initialEntries: [entry] })
+  const view = render(
     <QueryClientProvider client={createTestQueryClient()}>
-      <ApexLoadWorkspacePage />
+      <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return { ...view, router }
 }
 
 describe('ApexLoadWorkspacePage', () => {
+  it('clears scenario context atomically when navigating to another connection', async () => {
+    const scheduleReads: string[] = []
+    server.use(
+      http.get('*/v1/apex-load/connections', () => HttpResponse.json({ items: [
+        { id: 'a', name: 'A', project_id: 'a' }, { id: 'b', name: 'B', project_id: 'b' },
+      ] })),
+      http.get('*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules', ({ params }) => {
+        scheduleReads.push(`${params.connectionId}/${params.scenarioId}`)
+        return HttpResponse.json({ items: [{ id: `schedule-${params.connectionId}`, name: `Schedule ${params.connectionId}` }] })
+      }),
+      http.get('*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules/:scheduleId/occurrences', () => HttpResponse.json({ items: [] })),
+      http.get('*/v1/apex-load/connections/:connectionId/:resource', ({ params }) => HttpResponse.json({
+        items: params.resource === 'scenarios' ? [{ id: `scenario-${params.connectionId}`, name: `Scenario ${params.connectionId}` }] : [],
+        details: {},
+      })),
+    )
+    const { router } = renderWorkspace('/apex-load?connection=a')
+    await screen.findByText('Schedule a')
+    await act(() => router.navigate('/apex-load?connection=b'))
+    await screen.findByText('Schedule b')
+    expect(scheduleReads).toEqual(['a/scenario-a', 'b/scenario-b'])
+  })
+
+  it('does not silently switch to another connection when the requested context is unavailable', async () => {
+    server.use(
+      http.get('*/v1/apex-load/connections', () =>
+        HttpResponse.json({
+          items: [{ id: 'other', name: 'Other project', project_id: 'other' }],
+          truncated: false,
+        }),
+      ),
+    )
+    renderWorkspace('/apex-load?connection=missing&project=original&run=run-1')
+    expect(await screen.findByRole('combobox', { name: 'Connection' })).toHaveValue('')
+    expect(screen.getByText(/requested context is unavailable or ambiguous/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create scenario' })).not.toBeInTheDocument()
+  })
+
+  it('provides recovery when there is no enabled project connection', async () => {
+    server.use(
+      http.get('*/v1/apex-load/connections', () =>
+        HttpResponse.json({ items: [], truncated: false }),
+      ),
+    )
+    renderWorkspace()
+    expect(await screen.findByRole('heading', { name: 'Connect APEX Load' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Refresh connections' })).toBeEnabled()
+    expect(screen.getByRole('link', { name: 'Manage connections' })).toHaveAttribute(
+      'href',
+      '/admin/connections',
+    )
+  })
+
   it('shows project-bound native controls, metrics, schedules, and a safe console link', async () => {
     const consoleUrl = 'https://apex-load.example/#/test/native-run-1'
     let scenarioIdempotencyKey: string | null = null
@@ -29,7 +85,9 @@ describe('ApexLoadWorkspacePage', () => {
         }),
       ),
       http.get('*/v1/apex-load/connections/:connectionId/capabilities', () =>
-        HttpResponse.json({ templates: [{ id: 'checkout-template', name: 'Checkout load model' }] }),
+        HttpResponse.json({
+          templates: [{ id: 'checkout-template', name: 'Checkout load model' }],
+        }),
       ),
       http.get('*/v1/apex-load/connections/:connectionId/scenarios', () =>
         HttpResponse.json({ items: [{ id: 'scenario-1', name: 'Checkout', status: 'ready' }] }),
@@ -55,9 +113,8 @@ describe('ApexLoadWorkspacePage', () => {
       http.get('*/v1/apex-load/connections/:connectionId/calendar', () =>
         HttpResponse.json({ details: { windows: [] } }),
       ),
-      http.get(
-        '*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules',
-        () => HttpResponse.json({ items: [{ id: 'schedule-1', name: 'Nightly', status: 'enabled' }] }),
+      http.get('*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules', () =>
+        HttpResponse.json({ items: [{ id: 'schedule-1', name: 'Nightly', status: 'enabled' }] }),
       ),
       http.get(
         '*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules/:scheduleId/occurrences',
@@ -86,19 +143,21 @@ describe('ApexLoadWorkspacePage', () => {
 
     expect(
       await screen.findByText(
-        (_, element) => element?.tagName === 'PRE' && element.textContent?.includes('Checkout load model'),
+        (_, element) =>
+          element?.tagName === 'PRE' && element.textContent?.includes('Checkout load model'),
       ),
     ).toBeInTheDocument()
     expect(await screen.findByText('Nightly')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open in APEX Load' })).toHaveAttribute(
       'href',
-      consoleUrl,
+      expect.stringContaining('orchestrationReturn='),
     )
 
     await user.click(screen.getByRole('button', { name: 'Live metrics' }))
     expect(
       await screen.findByText(
-        (_, element) => element?.tagName === 'PRE' && element.textContent?.includes('"tps_avg": 42.5'),
+        (_, element) =>
+          element?.tagName === 'PRE' && element.textContent?.includes('"tps_avg": 42.5'),
       ),
     ).toBeInTheDocument()
 
@@ -156,24 +215,22 @@ describe('ApexLoadWorkspacePage', () => {
       http.get('*/v1/apex-load/connections/:connectionId/calendar', () =>
         HttpResponse.json({ details: {} }),
       ),
-      http.post(
-        '*/v1/apex-load/connections/:connectionId/scenarios',
-        async ({ params }) => {
-          requestedConnection = String(params['connectionId'])
-          await requestGate
-          requestCompleted = true
-          return HttpResponse.json({
-            id: 'stale-created-scenario',
-            details: { id: 'stale-created-scenario' },
-          })
-        },
-      ),
+      http.post('*/v1/apex-load/connections/:connectionId/scenarios', async ({ params }) => {
+        requestedConnection = String(params['connectionId'])
+        await requestGate
+        requestCompleted = true
+        return HttpResponse.json({
+          id: 'stale-created-scenario',
+          details: { id: 'stale-created-scenario' },
+        })
+      }),
     )
     const user = userEvent.setup()
     renderWorkspace()
 
     const connectionSelect = await screen.findByRole('combobox', { name: 'Connection' })
-    await waitFor(() => expect(connectionSelect).toHaveValue('connection-1'))
+    expect(connectionSelect).toHaveValue('')
+    await user.selectOptions(connectionSelect, 'connection-1')
     await user.click(screen.getByRole('button', { name: 'Create scenario' }))
     await waitFor(() => expect(requestedConnection).toBe('connection-1'))
 

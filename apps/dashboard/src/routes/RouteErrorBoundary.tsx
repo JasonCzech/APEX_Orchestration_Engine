@@ -12,6 +12,9 @@ function describe(error: unknown): { title: string; message: string } {
           : error.statusText || 'The route could not be loaded.',
     }
   }
+  if (error instanceof Error && /dynamically imported module|Loading chunk|Importing a module script/i.test(error.message)) {
+    return { title: 'A dashboard update is available', message: 'Reload this page to get the latest version. Saved drafts will remain available.' }
+  }
   if (error instanceof Error) {
     return { title: 'Something went wrong', message: error.message }
   }
@@ -30,6 +33,7 @@ export function RouteErrorBoundary() {
   return (
     <ProblemCard
       title={title}
+      retryLabel={title === 'A dashboard update is available' ? 'Reload dashboard' : 'Retry'}
       message={message}
       onRetry={() => {
         void navigate(0)

@@ -1,6 +1,6 @@
 import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react'
 
-import { cleanup, screen } from '@testing-library/react'
+import { cleanup, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DEV_DATA_STORAGE_KEY, setDevDataEnabled } from '@/dev-data'
@@ -40,6 +40,14 @@ describe('dev-data route smoke', () => {
     setDevDataEnabled(false)
     window.localStorage.removeItem(DEV_DATA_STORAGE_KEY)
     vi.unstubAllEnvs()
+  })
+
+  it('renders the mirrored Load ledger with execution identities and analysis links', async () => {
+    renderApp({ initialEntries: ['/apex-load'], authState: authenticatedState() })
+    const ledger = await screen.findByRole('table')
+    expect(await within(ledger).findByText('native-run-2603')).toBeInTheDocument()
+    expect(within(ledger).getAllByRole('link', { name: 'Open analysis' })).toHaveLength(4)
+    expect(within(ledger).getAllByRole('link', { name: 'Open analysis' })[1]).toHaveAttribute('href', '/runs/run-baseline-a')
   })
 
   it.each([

@@ -53,27 +53,6 @@ export function PhaseReviewPanel({
           </div>
         ))}
 
-        <DialogueThread
-          entries={payload.dialogue_tail}
-          message={draft.message ?? ''}
-          composerEnabled={payload.actions.includes('discuss')}
-          disabled={disabled}
-          onMessageChange={(message) => onEdit({ message })}
-        />
-      </div>
-
-      <div className="phase-review-sidebar">
-        {previewEntries.length > 0 && !compact && (
-          <div className="gate-info-card" data-testid="gate-result-preview">
-            <h4 className="gate-field-label">Phase Output</h4>
-            <CodeViewer
-              value={JSON.stringify(preview, null, 2)}
-              language="json"
-              ariaLabel="Result preview"
-            />
-          </div>
-        )}
-
         {payload.artifacts.length > 0 && (
           <div className="gate-info-card gate-artifacts" data-testid="gate-artifacts">
             <h4 className="gate-field-label">Artifacts</h4>
@@ -99,6 +78,30 @@ export function PhaseReviewPanel({
             </div>
           </div>
         )}
+
+        <p className="gate-next-action">Approve accepts this phase’s output and continues the selected plan. Modify & Re-run revises this phase before it can be accepted; later phases wait for that decision. Approval does not certify test acceptance or a release.</p>
+        <DialogueThread
+          entries={payload.dialogue_tail}
+          message={draft.message ?? ''}
+          composerEnabled={payload.actions.includes('discuss')}
+          disabled={disabled}
+          onMessageChange={(message) => onEdit({ message })}
+        />
+      </div>
+
+      <div className="phase-review-sidebar">
+        {previewEntries.length > 0 && !compact && (
+          <details className="gate-info-card" data-testid="gate-result-preview">
+            <summary>Technical output</summary>
+            <CodeViewer
+              value={JSON.stringify(preview, null, 2)}
+              language="json"
+              ariaLabel="Result preview"
+            />
+          </details>
+        )}
+
+
       </div>
     </div>
   )

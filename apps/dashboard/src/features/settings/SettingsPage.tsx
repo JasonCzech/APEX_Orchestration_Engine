@@ -1,3 +1,4 @@
+import { Link } from 'react-router'
 /**
  * /settings — local workstation preferences + session controls (plan Part 2
  * route table). Four sections:
@@ -24,6 +25,8 @@ import { useDevDataMode } from '@/dev-data'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { THEME_LABELS, useTheme, type ThemeName } from '@/theme/useTheme'
 
+import { TabList } from '@/components/ux/TabList'
+import { usePreferences } from '@/theme/preferences'
 import './settings.css'
 
 /**
@@ -42,22 +45,21 @@ const THEME_PREVIEWS: Record<ThemeName, { bg: string; surface: string; accent: s
 }
 
 function ThemeSection() {
-  const { theme, themes, setTheme } = useTheme()
+  const { theme, preference, themes, setTheme } = useTheme()
   return (
     <section className="glass-panel settings-section" aria-label="Theme">
-      <h3 className="settings-section-title">Theme</h3>
-      <div className="settings-theme-grid" role="group" aria-label="Theme picker">
-        {themes.map((name) => {
-          const preview = THEME_PREVIEWS[name]
-          const selected = theme === name
+      <h3 className="settings-section-title">Appearance</h3>
+      <p className="settings-hint">Preferences apply immediately in this browser.</p>
+      <div className="settings-theme-grid" role="radiogroup" aria-label="Theme picker">
+        {(['system', ...themes] as const).map((name) => {
+          const preview = THEME_PREVIEWS[name === 'system' ? theme : name]
+          const selected = preference === name
           return (
-            <button
+            <label
               key={name}
-              type="button"
               className={`settings-theme-card${selected ? ' settings-theme-card--selected' : ''}`}
-              aria-pressed={selected}
-              onClick={() => setTheme(name)}
             >
+              <input type="radio" name="dashboard-theme" aria-label={name === 'system' ? 'System (Auto)' : THEME_LABELS[name]} checked={selected} onChange={() => setTheme(name)} />
               <span
                 className="settings-theme-swatch"
                 style={{ background: preview.bg }}
@@ -67,9 +69,9 @@ function ThemeSection() {
                 <span className="settings-swatch-dot" style={{ background: preview.accent }} />
                 <span className="settings-swatch-line" style={{ background: preview.text }} />
               </span>
-              <span className="settings-theme-name">{THEME_LABELS[name]}</span>
+              <span className="settings-theme-name">{name === 'system' ? 'System (Auto)' : THEME_LABELS[name]}</span>
               {selected && <span className="topbar-meta-chip accent">active</span>}
-            </button>
+            </label>
           )
         })}
       </div>
@@ -313,13 +315,28 @@ function AboutSection() {
   )
 }
 
+function PersonalPreferences() {
+  const { preferences, setPreferences } = usePreferences()
+  return <>
+    <ThemeSection />
+    <section className="glass-panel settings-section" aria-label="Tables and editor preferences">
+      <h3 className="settings-section-title">Tables & editor</h3><div className="ux-fields">
+        <label className="ux-field">Motion<select className="field-select" value={String(preferences.reduceMotion)} onChange={event => setPreferences({reduceMotion: event.target.value === 'true'})}><option value="false">Follow device preference</option><option value="true">Reduce motion</option></select><small>Reduce interface animations and smooth scrolling.</small></label>
+        <label className="ux-field">Default rows in Test History<select className="field-select" value={preferences.rows} onChange={event => setPreferences({rows: Number(event.target.value) as 10 | 25 | 50 | 100})}><option value="10">10 rows</option><option value="25">25 rows</option><option value="50">50 rows</option><option value="100">100 rows</option></select><small>Applies to Test History unless its Rows control overrides this value. Specialized tables retain their own limits.</small></label>
+        <label className="ux-field">Editor word wrap<select className="field-select" value={String(preferences.wordWrap)} onChange={event => setPreferences({wordWrap:event.target.value === 'true'})}><option value="true">Wrap long lines</option><option value="false">Scroll horizontally</option></select><small>Applies to read-only code and evidence previews; does not modify saved content.</small></label>
+      </div>
+    </section>
+    <section className="glass-panel settings-section"><h3 className="settings-section-title">Notifications</h3><p className="settings-hint">Follow pending decisions in <Link to="/approvals">Approvals</Link> and run progress in <Link to="/runs">Test History</Link>. Browser notifications are not enabled for Orchestration; team alert routes are managed by your administrator.</p></section>
+    <AboutSection />
+  </>
+}
+
 export function SettingsPage() {
-  return (
-    <div className="settings-page animate-enter">
-      <ThemeSection />
-      <ApiKeySection />
-      <ConnectionSection />
-      <AboutSection />
+  const [section, setSection] = useState('personal')
+  return <div className="settings-page animate-enter">
+    <TabList id="settings" label="Settings sections" items={[{id:'personal',label:'Personal preferences'},{id:'connection',label:'Connection & session'}]} value={section} onChange={setSection} />
+    <div role="tabpanel" id={`settings-panel-${section}`} aria-labelledby={`settings-tab-${section}`} tabIndex={0}>
+      {section === 'personal' ? <PersonalPreferences /> : <><ApiKeySection /><ConnectionSection /></>}
     </div>
-  )
+  </div>
 }

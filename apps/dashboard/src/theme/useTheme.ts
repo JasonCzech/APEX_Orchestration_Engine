@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { usePreferences } from './preferences'
 
 /**
  * Theme names mirror the data-theme values defined by the APEX Load token
@@ -25,6 +26,7 @@ export const THEMES = [
 ] as const
 
 export type ThemeName = (typeof THEMES)[number]
+export type ThemePreference = ThemeName | 'system'
 
 export const DEFAULT_THEME: ThemeName = 'apex-light'
 export const THEME_STORAGE_KEY = 'apex.theme'
@@ -42,10 +44,10 @@ export function isThemeName(value: unknown): value is ThemeName {
   return typeof value === 'string' && (THEMES as readonly string[]).includes(value)
 }
 
-export function getStoredTheme(): ThemeName {
+export function getStoredTheme(): ThemePreference {
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
-    return isThemeName(stored) ? stored : DEFAULT_THEME
+    return stored === 'system' || isThemeName(stored) ? stored : DEFAULT_THEME
   } catch {
     return DEFAULT_THEME
   }
@@ -58,20 +60,33 @@ export function applyTheme(theme: ThemeName): void {
 
 interface ThemeContextValue {
   theme: ThemeName
+  preference: ThemePreference
   themes: readonly ThemeName[]
-  setTheme: (theme: ThemeName) => void
+  setTheme: (theme: ThemePreference) => void
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<ThemeName>(getStoredTheme)
+  const [preference, setThemeState] = useState<ThemePreference>(getStoredTheme)
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
+  const { preferences } = usePreferences()
+  useEffect(() => {
+    document.documentElement.dataset.reduceMotion = String(preferences.reduceMotion)
+  }, [preferences.reduceMotion])
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-color-scheme: dark)')
+    const update = () => setSystemDark(query?.matches ?? false)
+    query?.addEventListener?.('change', update)
+    return () => query?.removeEventListener?.('change', update)
+  }, [])
+  const theme: ThemeName = preference === 'system' ? (systemDark ? 'dark' : 'light') : preference
 
   useEffect(() => {
     applyTheme(theme)
   }, [theme])
 
-  const setTheme = useCallback((next: ThemeName) => {
+  const setTheme = useCallback((next: ThemePreference) => {
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, next)
     } catch {
@@ -81,8 +96,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme, themes: THEMES, setTheme }),
-    [theme, setTheme],
+    () => ({ theme, preference, themes: THEMES, setTheme }),
+    [theme, preference, setTheme],
   )
 
   return createElement(ThemeContext.Provider, { value }, children)

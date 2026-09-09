@@ -300,3 +300,30 @@ async def test_connection_version_drift_stales_claim_without_starting_pipeline(
         claim=claim,
     )
     assert repository.stale == [(claim, "connection_version_drift")]
+
+
+def test_native_completion_does_not_imply_threshold_acceptance() -> None:
+    from apex.domain.integrations import TestResultSummary
+
+    claim = NativeRunLaunchClaim(
+        id="mirror",
+        connection_id="connection",
+        connection_version=datetime(2026, 8, 7, tzinfo=UTC),
+        project_id="project",
+        remote_project_id="remote",
+        remote_id="test",
+        status="COMPLETE",
+        summary={},
+        idempotency_key="native:test",
+        claim_token="claim",
+    )
+    unknown = apex_load_native._external_results(claim, console_url="", metrics={})
+    assert unknown["passed"] is None
+    for verdict in (True, False, None):
+        result = apex_load_native._external_results(
+            claim,
+            console_url="",
+            metrics={},
+            assessment=TestResultSummary(engine="apex_load", passed=verdict),
+        )
+        assert result["passed"] is verdict

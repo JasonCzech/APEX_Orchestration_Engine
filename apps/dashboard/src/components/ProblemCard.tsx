@@ -4,10 +4,12 @@ export function ProblemCard({
   title,
   message,
   onRetry,
+  retryLabel = 'Retry',
 }: {
   title: string
   message: string
   onRetry?: () => void
+  retryLabel?: string
 }) {
   return (
     <section className="problem-card glass-panel" role="alert">
@@ -15,7 +17,7 @@ export function ProblemCard({
       <p>{message}</p>
       {onRetry && (
         <button type="button" className="btn btn-secondary" onClick={onRetry}>
-          Retry
+          {retryLabel}
         </button>
       )}
     </section>

@@ -1,3 +1,7 @@
+import { ReleaseMappingPicker } from '../ReleaseMappingPicker'
+import { RadioChoices } from '@/components/ux/RadioChoices'
+import { PHASE_LABELS } from '@/features/runs/runDisplay'
+import { reviewPolicySummary } from '../reviewPolicySummary'
 /**
  * Step 4 — Config: engine radio cards, golden-config picker (assistants),
  * phase-subset toggle strip with blocking dependency errors (mirrors
@@ -43,13 +47,13 @@ const ENGINE_CAPTIONS: Record<EngineId, { label: string; caption: string }> = {
 }
 
 const GATES_MODES: { id: GatesMode; label: string; caption: string }[] = [
-  { id: 'all_gated', label: 'All gated', caption: 'Every phase pauses for both reviews' },
-  { id: 'all_auto', label: 'All auto', caption: 'No pauses — phases run straight through' },
+  { id: 'all_gated', label: 'Review every phase', caption: 'Every phase pauses for both reviews' },
+  { id: 'all_auto', label: 'Run automatically', caption: 'No pauses — phases run straight through' },
   { id: 'custom', label: 'Custom', caption: 'Pick per phase and per gate' },
 ]
 
 function phaseLabel(phase: PhaseName): string {
-  return phase.replaceAll('_', ' ')
+  return PHASE_LABELS[phase]
 }
 
 export function ConfigStep({ draft, onChange }: StepProps) {
@@ -232,6 +236,17 @@ export function ConfigStep({ draft, onChange }: StepProps) {
               type="button"
               role="radio"
               aria-checked={config.engine === engine}
+              tabIndex={config.engine === engine ? 0 : -1}
+              onKeyDown={(event) => {
+                const index = ENGINES.indexOf(engine)
+                const next = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? (index + 1) % ENGINES.length
+                  : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? (index - 1 + ENGINES.length) % ENGINES.length
+                    : event.key === 'Home' ? 0 : event.key === 'End' ? ENGINES.length - 1 : -1
+                if (next < 0) return
+                event.preventDefault()
+                patchConfig({ engine: ENGINES[next]! })
+                event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus()
+              }}
               className={`glass-panel wizard-engine-card${
                 config.engine === engine ? ' wizard-engine-card--selected' : ''
               }`}
@@ -244,6 +259,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         </div>
       </div>
 
+      {config.engine === 'apex_load' && <ReleaseMappingPicker draft={draft} onChange={onChange} />}
       <div className="wizard-field">
         <span className="wizard-label">Golden config</span>
         {config.golden_config_id && (
@@ -264,7 +280,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
           <CachedDataWarning error={assistants.error} onRetry={() => void assistants.refetch()} />
         )}
         {assistants.isError && !assistants.data ? (
-          <p className="wizard-caption wizard-caption--danger">Golden configs failed to load</p>
+          <p className="wizard-caption wizard-caption--danger">Golden configs failed to load. You can continue with the engine and review policy below; no new preset will be applied. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void assistants.refetch()}>Retry configurations</button></p>
         ) : goldenConfigs.length === 0 ? (
           <p className="wizard-caption">
             {assistants.isLoading ? 'Loading…' : 'No golden configs published yet.'}
@@ -324,37 +340,9 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       </div>
 
       <div className="wizard-field">
-        <label className="wizard-toggle-row">
-          <span>
-            <span className="wizard-label">Manual step-through</span>
-            <span className="wizard-caption">
-              Pause on every phase for prompt review and result approval.
-            </span>
-          </span>
-          <input
-            type="checkbox"
-            checked={config.gates_mode === 'all_gated'}
-            onChange={(event) => setGatesMode(event.target.checked ? 'all_gated' : 'all_auto')}
-          />
-        </label>
-      </div>
-
-      <div className="wizard-field">
-        <span className="wizard-label">Gates</span>
-        <div className="wizard-segmented" role="group" aria-label="Gates mode">
-          {GATES_MODES.map((mode) => (
-            <button
-              key={mode.id}
-              type="button"
-              className={`wizard-segment${config.gates_mode === mode.id ? ' wizard-segment--on' : ''}`}
-              aria-pressed={config.gates_mode === mode.id}
-              title={mode.caption}
-              onClick={() => setGatesMode(mode.id)}
-            >
-              {mode.label}
-            </button>
-          ))}
-        </div>
+        <span className="wizard-label">Review policy</span>
+        <RadioChoices label="Review policy" value={config.gates_mode} options={GATES_MODES} onChange={setGatesMode} />
+        <p className="wizard-caption">{reviewPolicySummary(config)}</p>
         {config.gates_mode === 'custom' && (
           <div className="data-table-wrap">
             <table className="data-table" data-testid="gates-matrix">

@@ -656,6 +656,55 @@
         "title": "ApplicationUpdate",
         "type": "object"
       },
+      "Assessment": {
+        "additionalProperties": false,
+        "properties": {
+          "criteria_revision": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criteria Revision"
+          },
+          "explanation": {
+            "maxLength": 20000,
+            "pattern": "^[^\\x00]*$",
+            "title": "Explanation",
+            "type": "string"
+          },
+          "reason_code": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Reason Code",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "inconclusive",
+              "not_assessed",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "reason_code",
+          "explanation"
+        ],
+        "title": "Assessment",
+        "type": "object"
+      },
       "AuditChainVerificationOut": {
         "properties": {
           "checked": {
@@ -3753,6 +3802,38 @@
         "title": "EnvironmentUpdate",
         "type": "object"
       },
+      "EvidenceOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "coverage_percent": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coverage Percent"
+          },
+          "status": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "EvidenceOutcome",
+        "type": "object"
+      },
       "EvidencePacket": {
         "properties": {
           "id": {
@@ -3923,6 +4004,93 @@
           "revision"
         ],
         "title": "ExecutionMutationRead",
+        "type": "object"
+      },
+      "ExecutionOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "observed_duration_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed Duration Seconds"
+          },
+          "planned_duration_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Duration Seconds"
+          },
+          "termination_reason": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Termination Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "termination_reason"
+        ],
+        "title": "ExecutionOutcome",
+        "type": "object"
+      },
+      "ExecutionScope": {
+        "additionalProperties": false,
+        "properties": {
+          "application_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Application Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "release_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Id"
+          }
+        },
+        "title": "ExecutionScope",
         "type": "object"
       },
       "ExecutionSnapshot": {
@@ -4219,6 +4387,16 @@
               }
             ],
             "title": "Notes"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IntegrationOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "passed": {
             "anyOf": [
@@ -4686,6 +4864,57 @@
         "title": "ImportProviderScript",
         "type": "object"
       },
+      "IntegrationOutcome": {
+        "additionalProperties": false,
+        "properties": {
+          "assessment": {
+            "$ref": "#/components/schemas/Assessment"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/EvidenceOutcome"
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionOutcome"
+          },
+          "execution_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Execution Id",
+            "type": "string"
+          },
+          "observed_at": {
+            "format": "date-time",
+            "title": "Observed At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionScope"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "execution_id",
+          "observed_at",
+          "assessment",
+          "execution",
+          "evidence"
+        ],
+        "title": "IntegrationOutcome",
+        "type": "object"
+      },
       "InventoryView": {
         "properties": {
           "environment_id": {
@@ -4904,6 +5133,16 @@
             "additionalProperties": true,
             "title": "Load Models",
             "type": "object"
+          },
+          "release_mapping": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeReleaseMapping"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "templates": {
             "additionalProperties": true,
@@ -5164,6 +5403,64 @@
           "payload"
         ],
         "title": "NativeObjectRequest",
+        "type": "object"
+      },
+      "NativeReleaseChoice": {
+        "properties": {
+          "id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 255,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "NativeReleaseChoice",
+        "type": "object"
+      },
+      "NativeReleaseMapping": {
+        "properties": {
+          "application_id": {
+            "pattern": "^[^\\x00]*$",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "releases": {
+            "items": {
+              "$ref": "#/components/schemas/NativeReleaseChoice"
+            },
+            "maxItems": 5000,
+            "title": "Releases",
+            "type": "array"
+          },
+          "revision": {
+            "pattern": "^[^\\x00]*$",
+            "title": "Revision",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "application_id",
+          "revision",
+          "releases"
+        ],
+        "title": "NativeReleaseMapping",
         "type": "object"
       },
       "NativeResourceListResponse": {
@@ -5558,7 +5855,10 @@
               {
                 "enum": [
                   "passed",
-                  "failed"
+                  "failed",
+                  "inconclusive",
+                  "not_assessed",
+                  "unavailable"
                 ],
                 "type": "string"
               },
@@ -5773,7 +6073,10 @@
               {
                 "enum": [
                   "passed",
-                  "failed"
+                  "failed",
+                  "inconclusive",
+                  "not_assessed",
+                  "unavailable"
                 ],
                 "type": "string"
               },

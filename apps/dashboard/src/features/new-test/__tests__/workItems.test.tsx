@@ -55,7 +55,7 @@ describe('WorkItemsStep', () => {
       await screen.findByLabelText('Find by description'),
       'open phoenix stories',
     )
-    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
 
     // Provider + confidence chips and the editable provider query.
     const translated = await screen.findByTestId('translated-query')
@@ -103,7 +103,7 @@ describe('WorkItemsStep', () => {
     const rendered = renderWizard('/runs/new?step=work-items')
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
-    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
     await user.click(await screen.findByRole('button', { name: 'Run query' }))
     expect(await screen.findByText('Slow checkout')).toBeInTheDocument()
 
@@ -140,7 +140,7 @@ describe('WorkItemsStep', () => {
     const rendered = renderWizard('/runs/new?step=work-items')
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
-    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
     await user.click(await screen.findByRole('button', { name: 'Run query' }))
     await executeStarted
 
@@ -188,11 +188,11 @@ describe('WorkItemsStep', () => {
     const rendered = renderWizard('/runs/new?step=work-items')
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
-    await user.click(screen.getByRole('button', { name: 'Translate' }))
+    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
     await user.click(await screen.findByRole('button', { name: 'Run query' }))
     await executeStarted
 
-    const translateButton = screen.getByRole('button', { name: 'Translate' })
+    const translateButton = screen.getByRole('button', { name: 'Preview work item query' })
     expect(translateButton).toBeDisabled()
     expect(screen.getByLabelText('Find by description')).toBeDisabled()
     await user.click(translateButton)
@@ -278,7 +278,7 @@ describe('WorkItemsStep', () => {
     await act(async () => releaseLookup())
     const selectedWorkItems = await screen.findByTestId('selected-work-items')
     expect(within(selectedWorkItems).getByText('PHX-241')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Review Test' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
     await flushAndUnmountWizard(rendered)
   })
 })

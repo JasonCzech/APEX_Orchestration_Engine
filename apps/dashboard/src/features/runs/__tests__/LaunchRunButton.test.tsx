@@ -77,7 +77,7 @@ describe('LaunchRunButton', () => {
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/thread-new'))
     expect(router.state.location.search).toBe('?tab=log')
-    expect(screen.getByTestId('run-page')).toBeInTheDocument()
+    expect(await screen.findByTestId('run-page')).toBeInTheDocument()
   })
 
   it('keeps the modal open with an inline error when the launch fails', async () => {

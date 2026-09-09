@@ -1,3 +1,4 @@
+import { orchestrationTone, formatTimestamp } from '@/features/runs/runDisplay'
 import { useMemo } from 'react'
 import { Link } from 'react-router'
 
@@ -9,7 +10,7 @@ import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { useTopbarContribution } from '@/components/layout/TopbarContributionProvider'
 import { ProblemCard } from '@/components/ProblemCard'
 import { useApprovalsInbox, type ApprovalItem } from '@/features/approvals/useApprovalsInbox'
-import { gateLabel, orchestrationStatusLabel } from '@/features/runs/runDisplay'
+import { gateLabel, orchestrationStatusLabel, isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
 import { formatRelative } from '@/utils/time'
 
 import {
@@ -22,7 +23,6 @@ import {
   gateHref,
   passedTests,
   recentRuns,
-  statusTone,
   totalRuns,
 } from './homeLogic'
 import './home.css'
@@ -88,7 +88,7 @@ function ApprovalQueue({ gates }: { gates: ApprovalItem[] }) {
           <Link to={gateHref(gate.thread_id, gate.pending_gate.interrupt_id)} className="home-approval-row">
             <span className="topbar-meta-chip warning">{gateLabel(gate.pending_gate.kind)}</span>
             <span className="home-approval-title">{gate.title}</span>
-            <span className="home-approval-phase">{gate.pending_gate.phase ?? 'phase'}</span>
+            <span className="home-approval-phase">{isPhaseName(gate.pending_gate.phase) ? PHASE_LABELS[gate.pending_gate.phase] : 'Phase not recorded'}</span>
             <span className="home-approval-age">{gate.age}</span>
           </Link>
         </li>
@@ -108,14 +108,14 @@ function RecentRunRow({ run }: { run: PipelineSummary }) {
         </Link>
       </td>
       <td>{run.app_id ?? '—'}</td>
-      <td>{run.current_phase ?? '—'}</td>
+      <td>{isPhaseName(run.current_phase) ? PHASE_LABELS[run.current_phase] : '—'}</td>
       <td>
-        <span className={`status-badge ${statusTone(run.thread_status)}`}>
-          {orchestrationStatusLabel(run.thread_status)}
+        <span className={`status-badge ${orchestrationTone(run.thread_status, run.phase_strip)}`}>
+          {orchestrationStatusLabel(run.thread_status, run.phase_strip)}
         </span>
       </td>
       <td className="home-recent-time" title={run.updated_at ?? undefined}>
-        {formatRelative(run.updated_at)}
+        {formatTimestamp(run.updated_at)}
       </td>
     </tr>
   )
@@ -153,7 +153,6 @@ export function HomePage() {
   const active = activeRuns(items)
   const recent = recentRuns(items)
   const draftItems = drafts.data ?? []
-  const pendingApprovalsValue = inbox.isLoading || inbox.error ? '—' : inbox.count
 
   if (fleet.isPending) {
     return (
@@ -204,13 +203,13 @@ export function HomePage() {
   const fleetScopeHint =
     loaded >= HOME_FLEET_LIMIT
       ? `latest ${HOME_FLEET_LIMIT}; fleet total unavailable`
-      : 'loaded fleet snapshot'
+      : 'recent accessible runs'
 
   return (
     <section className="home-page animate-enter">
-      <section className="glass-panel home-approval-panel" aria-label="Awaiting HITL Approval">
+      <section className="glass-panel home-approval-panel" aria-label="Needs your attention">
         <div className="home-section-head">
-          <h3 className="home-section-title">Awaiting HITL Approval</h3>
+          <h3 className="home-section-title">Needs your attention</h3>
           <Link to="/approvals" className="home-view-all">
             Open queue
           </Link>
@@ -237,20 +236,14 @@ export function HomePage() {
 
 
       <section className="home-metrics" aria-label="Key metrics">
-        <MetricCard label="Runs Loaded" value={loaded} hint={fleetScopeHint} />
-        <MetricCard label="Active" value={active.length} tone="warning" hint="in loaded runs" />
-        <MetricCard label="Failures" value={failures.length} tone="danger" hint="in loaded runs" />
-        <MetricCard
-          label="Tests Passed"
-          value={passedCount}
-          tone="success"
-          hint="recorded test results"
-        />
+        <MetricCard label="Recent runs" value={loaded} hint={fleetScopeHint} />
+        <MetricCard label="Active" value={active.length} tone="warning" hint="running or awaiting review, in loaded runs" />
+        <MetricCard label="Failures" value={failures.length} tone="danger" hint="in the loaded recent runs" />
         <MetricCard
           label="Avg Duration"
           value={avgDurationLabel(items)}
           tone="results"
-          hint="loaded runs"
+          hint="loaded runs: creation to last update, not execution duration"
         />
       </section>
 
@@ -262,15 +255,8 @@ export function HomePage() {
               Test History
             </Link>
           </div>
+          <p className="wizard-caption">Last 7 days, across accessible projects. Refreshed {usage.dataUpdatedAt ? formatTimestamp(new Date(usage.dataUpdatedAt).toISOString()) : 'not yet'}. A dash means no summary is available.</p>
           <div className="home-health-grid">
-            <div>
-              <span className="home-health-stat-label">Active pipelines loaded</span>
-              <strong className="home-health-stat-value">{active.length}</strong>
-            </div>
-            <div>
-              <span className="home-health-stat-label">Pending approvals</span>
-              <strong className="home-health-stat-value">{pendingApprovalsValue}</strong>
-            </div>
             <div>
               <span className="home-health-stat-label">Phases succeeded</span>
               <strong className="home-health-stat-value">{usageRuns?.phases_succeeded ?? '—'}</strong>
@@ -353,7 +339,7 @@ export function HomePage() {
               <div className="home-draft-row-list">
                 {draftItems.slice(0, 3).map((draft) => (
                   <Link key={draft.id} to={`/runs/new?draft=${draft.id}`} className="home-draft-row">
-                    <span className="home-draft-title">{draft.title || 'Untitled draft'}</span>
+                    <span className="home-draft-title"><span>{draft.title || 'Untitled draft'}</span>{draft.project_id ? ` · ${draft.project_id}` : ''}</span>
                     <span className="home-draft-updated">{formatRelative(draft.updated_at)}</span>
                   </Link>
                 ))}

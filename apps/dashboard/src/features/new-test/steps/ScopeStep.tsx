@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
 /**
  * Step 1 — Scope: run intent (title + request) and the catalog scope chain
  * project -> application -> environment. Changing a parent resets children.
@@ -8,6 +10,8 @@ import { useOptionalConsumer } from '@/auth/AuthProvider'
 import type { StepProps } from '../NewRunWizard'
 
 export function ScopeStep({ draft, onChange }: StepProps) {
+  const [touched, setTouched] = useState({title:false, request:false})
+  const catalog = useApplicationsIndex()
   const consumer = useOptionalConsumer()
   const scoped = consumer !== null && consumer !== undefined && consumer.scopes.length > 0
   const scopedProjects = Array.from(
@@ -88,8 +92,14 @@ export function ScopeStep({ draft, onChange }: StepProps) {
         <label className="wizard-label" htmlFor="wizard-title">
           Title
         </label>
+        <small id="title-required" className="wizard-caption">{touched.title && !draft.title.trim() ? 'Title is required' : 'Required'}</small>
         <input
           id="wizard-title"
+          required
+          aria-required="true"
+          aria-invalid={touched.title && !draft.title.trim()}
+          aria-describedby="title-required"
+          onBlur={() => setTouched(previous => ({...previous, title:true}))}
           className="field-input"
           value={draft.title}
           placeholder="Checkout latency soak"
@@ -103,8 +113,14 @@ export function ScopeStep({ draft, onChange }: StepProps) {
         <label className="wizard-label" htmlFor="wizard-request">
           Request
         </label>
+        <small id="request-required" className="wizard-caption">{touched.request && !draft.request.trim() ? 'Request is required' : 'Required'}</small>
         <textarea
           id="wizard-request"
+          required
+          aria-required="true"
+          aria-invalid={touched.request && !draft.request.trim()}
+          aria-describedby="request-required"
+          onBlur={() => setTouched(previous => ({...previous, request:true}))}
           className="field-input wizard-textarea"
           rows={4}
           value={draft.request}
@@ -138,11 +154,14 @@ export function ScopeStep({ draft, onChange }: StepProps) {
         ) : (
           <input
             id="wizard-project"
+            list="known-projects"
             className="field-input"
             value={draft.scope.project_id}
             onChange={(event) => changeProject(event.target.value)}
           />
         )}
+        <datalist id="known-projects">{Array.from(new Set((catalog.data ?? []).map(app => app.project_id))).sort().map(id => <option key={id} value={id} />)}</datalist>
+        {!scoped && <p className="wizard-caption">Choose a known project ID from suggestions, or enter its exact ID. Project names are not matched across applications.</p>}
         {scoped && scopedProjects.length === 0 && (
           <p className="wizard-caption wizard-caption--danger">
             No valid project scopes are assigned to this consumer.
@@ -192,7 +211,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
           <p className="wizard-caption">An application is required by your assigned scope.</p>
         )}
         {applications.isError && (
-          <p className="wizard-caption wizard-caption--danger">Applications failed to load</p>
+          <p className="wizard-caption wizard-caption--danger">Applications failed to load. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void applications.refetch()}>Retry applications</button></p>
         )}
         {selectedApp?.description && <p className="wizard-caption">{selectedApp.description}</p>}
       </div>
@@ -206,6 +225,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
           className="field-select"
           value={draft.scope.environment_id ?? ''}
           disabled={!draft.scope.app_id}
+          aria-describedby="environment-hint"
           onChange={(event) =>
             onChange((prev) => ({
               ...prev,
@@ -220,8 +240,9 @@ export function ScopeStep({ draft, onChange }: StepProps) {
             </option>
           ))}
         </select>
+        <p id="environment-hint" className="wizard-caption">{!draft.scope.app_id ? 'Choose an application to see its environments.' : 'Select the target environment for this application.'}</p>
         {environments.isError && (
-          <p className="wizard-caption wizard-caption--danger">Environments failed to load</p>
+          <p className="wizard-caption wizard-caption--danger">Environments failed to load. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void environments.refetch()}>Retry environments</button></p>
         )}
         {selectedEnv && (
           <p className="wizard-caption">

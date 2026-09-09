@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "execution_id": "run-1",
+  "observed_at": "2026-09-09T12:00:00Z",
+  "assessment": {
+    "status": "not_assessed",
+    "reason_code": "no_criteria",
+    "explanation": "No criteria configured",
+    "criteria_revision": null
+  },
+  "execution": {
+    "termination_reason": "completed",
+    "planned_duration_seconds": 300,
+    "observed_duration_seconds": 290
+  },
+  "evidence": {
+    "status": "partial",
+    "coverage_percent": 80
+  }
+}

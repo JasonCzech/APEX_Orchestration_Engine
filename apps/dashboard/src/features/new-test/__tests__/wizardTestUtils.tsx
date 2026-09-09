@@ -128,6 +128,7 @@ export function draftHandlers(existing: DraftRead[] = []) {
 /** Every wizard-touched read surface, quiet by default. */
 export function defaultWizardHandlers() {
   return [
+    http.get('*/v1/apex-load/connections', () => HttpResponse.json({ items: [], truncated: false })),
     http.post('*/assistants/search', () => HttpResponse.json([])),
     http.get('*/v1/catalog/applications', () => HttpResponse.json(APPLICATIONS)),
     http.get('*/v1/catalog/environments', () => HttpResponse.json(ENVIRONMENTS)),

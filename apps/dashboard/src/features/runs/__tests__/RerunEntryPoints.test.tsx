@@ -103,7 +103,7 @@ describe('RunsListPage row overflow menu (entry point 1)', () => {
     await user.click(
       within(row).getByRole('button', { name: 'Run actions: Checkout latency regression' }),
     )
-    await user.click(screen.getByRole('menuitem', { name: 'Open' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Open overview' }))
     await waitFor(() =>
       expect(router.state.location.pathname).toBe(`/runs/${RUN_BUSY.thread_id}`),
     )

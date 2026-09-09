@@ -71,15 +71,14 @@ describe('RunDetailPage gate mounting (D3)', () => {
     expect(screen.queryByTestId('gate-module')).not.toBeInTheDocument()
   })
 
-  it('header abort uses the same machine: type-to-confirm then CAS resume', async () => {
+  it('the gate decision offers one abort action with typed confirmation', async () => {
     server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
     const resume = resumeHandler(202)
     server.use(resume.handler)
     const user = userEvent.setup()
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=output`])
 
-    // Header abort renders while the gate machine is open (banner route has
-    // exactly this one Abort button — the full module lives on /reporting).
+    await user.click(await screen.findByRole('link', { name: 'Review' }))
     const abort = await screen.findByRole('button', { name: 'Abort' })
     await user.click(abort)
     const confirm = screen.getByRole('button', { name: 'Confirm abort' })

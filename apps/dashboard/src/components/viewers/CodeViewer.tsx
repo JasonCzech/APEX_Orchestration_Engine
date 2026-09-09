@@ -1,6 +1,8 @@
 import CodeMirror from '@uiw/react-codemirror'
 
 import { json } from '@codemirror/lang-json'
+import { EditorView } from '@codemirror/view'
+import { usePreferences } from '@/theme/preferences'
 
 import './viewers.css'
 
@@ -9,7 +11,7 @@ const JSON_EXTENSIONS = [json()]
 /**
  * Read-only CodeMirror surface (mirrors APEX Load's CodeMirror choice).
  * Theming is pure CSS (viewers.css restyles .cm-editor with the token sheet)
- * so the component stays dependency-light — no @codemirror/view import.
+ * Editor extensions apply accessible naming and the browser word-wrap preference.
  */
 export function CodeViewer({
   value,
@@ -21,6 +23,7 @@ export function CodeViewer({
   language?: 'json' | 'text'
   ariaLabel?: string
 }) {
+  const { preferences } = usePreferences()
   return (
     <div className="code-viewer" role="figure" aria-label={ariaLabel}>
       <CodeMirror
@@ -33,7 +36,7 @@ export function CodeViewer({
           highlightActiveLine: false,
           highlightActiveLineGutter: false,
         }}
-        extensions={language === 'json' ? JSON_EXTENSIONS : []}
+        extensions={[...(language === 'json' ? JSON_EXTENSIONS : []), EditorView.contentAttributes.of({ 'aria-label': ariaLabel ?? 'Code preview' }), ...(preferences.wordWrap ? [EditorView.lineWrapping] : [])]}
       />
     </div>
   )

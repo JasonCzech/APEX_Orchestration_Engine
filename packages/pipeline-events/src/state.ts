@@ -103,6 +103,9 @@ export const EngineHandleSchema = z
     connection_id: z.string().nullish(),
     external_run_id: z.string().nullish(),
     console_url: z.string().optional(),
+    application_id: z.string().optional(),
+    release_id: z.string().optional(),
+    mapping_revision: z.string().optional(),
     idempotency_key: z.string().optional(),
     extras: z.record(z.string()).optional(),
   })
@@ -167,15 +170,45 @@ export const LoadTestSpecSchema = z
     duration_s: z.number().optional(),
     slas: z.record(z.number()).optional(),
     target_environment: z.string().nullish(),
+    release_id: z.string().nullish(),
+    mapping_revision: z.string().nullish(),
   })
   .passthrough();
 export type LoadTestSpec = z.infer<typeof LoadTestSpecSchema>;
 
 /** apex.domain.integrations.TestResultSummary (extra entry key "test_summary"). */
+export const IntegrationOutcomeSchema = z.object({
+  scope: z.object({
+    project_id: z.string().max(255).nullish(),
+    application_id: z.string().max(255).nullish(),
+    release_id: z.string().max(255).nullish(),
+  }).strict().nullish(),
+  schema_version: z.literal(1),
+  execution_id: z.string().min(1).max(255),
+  observed_at: z.string().datetime({ offset: true }),
+  assessment: z.object({
+    status: z.enum(['passed', 'failed', 'inconclusive', 'not_assessed', 'unavailable']),
+    reason_code: z.string().min(1).max(128),
+    explanation: z.string().max(20_000),
+    criteria_revision: z.string().max(255).nullable().optional(),
+  }).strict(),
+  execution: z.object({
+    termination_reason: z.string().min(1).max(128),
+    planned_duration_seconds: z.number().finite().nonnegative().nullable().optional(),
+    observed_duration_seconds: z.number().finite().nonnegative().nullable().optional(),
+  }).strict(),
+  evidence: z.object({
+    status: z.enum(['complete', 'partial', 'unavailable']),
+    coverage_percent: z.number().min(0).max(100).nullable().optional(),
+  }).strict(),
+}).strict();
+export type IntegrationOutcome = z.infer<typeof IntegrationOutcomeSchema>;
+
 export const TestResultSummarySchema = z
   .object({
     engine: z.string().optional(),
     passed: z.boolean().nullish(),
+    outcome: IntegrationOutcomeSchema.nullish(),
     kpis: z.record(z.number()).optional(),
     sla_breaches: z.array(z.string()).optional(),
     notes: z.string().nullish(),

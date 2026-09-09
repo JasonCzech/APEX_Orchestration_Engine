@@ -49,6 +49,26 @@ const DEFAULTED = {
 }
 
 describe('ConfigStep', () => {
+  it('uses a single tab stop and moves engine selection with the arrow keys', async () => {
+    assistantsSearch.mockResolvedValue([])
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    const group = screen.getByRole('radiogroup', { name: 'Execution engine' })
+    const radios = within(group).getAllByRole('radio')
+    expect(radios.filter(radio => radio.tabIndex === 0)).toHaveLength(1)
+    radios[0]!.focus()
+    await user.keyboard('{ArrowRight}')
+    expect(radios[1]).toHaveFocus()
+    expect(radios[1]).toHaveAttribute('aria-checked', 'true')
+    expect(radios[0]).toHaveAttribute('tabindex', '-1')
+    await user.keyboard('{Home}{ArrowLeft}')
+    expect(radios.at(-1)).toHaveFocus()
+    expect(radios.at(-1)).toHaveAttribute('aria-checked', 'true')
+    rendered.unmount()
+  })
+
   it('blocks launch when the new-thread phase plan omits a hard prerequisite', async () => {
     assistantsSearch.mockResolvedValue([])
     installWizardHandlers()
@@ -64,27 +84,27 @@ describe('ConfigStep', () => {
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
 
     // First click focuses execution for the Prompts tab; second click drops it.
-    await user.click(within(strip).getByRole('button', { name: 'execution' }))
-    expect(within(strip).getByRole('button', { name: 'execution' })).toHaveAttribute(
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
+    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute(
       'aria-current',
       'step',
     )
     // Drop execution: reporting's prereq is no longer earlier in the plan.
-    await user.click(within(strip).getByRole('button', { name: 'execution' }))
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
     const hints = await screen.findByTestId('phase-dependency-hints')
     expect(hints).toHaveTextContent(
       'reporting requires execution earlier in this new run',
     )
-    await user.click(screen.getByRole('button', { name: 'Review Test' }))
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
     expect(screen.getByRole('button', { name: 'Launch Test' })).toBeDisabled()
     await user.click(screen.getByRole('tab', { name: 'Config' }))
 
     // Toggling execution back on clears the hint (all-7 = null subset again).
-    await user.click(within(strip).getByRole('button', { name: 'execution' }))
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
     await waitFor(() =>
       expect(screen.queryByTestId('phase-dependency-hints')).not.toBeInTheDocument(),
     )
-    expect(screen.getByRole('button', { name: 'Review Test' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
     rendered.unmount()
@@ -97,16 +117,16 @@ describe('ConfigStep', () => {
     const rendered = renderWizard('/runs/new?step=config')
 
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
-    await user.click(await screen.findByRole('button', { name: 'Custom' }))
+    await user.click(await screen.findByRole('radio', { name: 'Custom' }))
 
     const matrix = screen.getByTestId('gates-matrix')
     const checkboxes = within(matrix).getAllByRole('checkbox')
     expect(checkboxes).toHaveLength(14)
     for (const box of checkboxes) expect(box).toBeChecked() // seeded all-gated
 
-    await user.click(within(matrix).getByLabelText('execution prompt review gated'))
-    expect(within(matrix).getByLabelText('execution prompt review gated')).not.toBeChecked()
-    expect(within(matrix).getByLabelText('execution output review gated')).toBeChecked()
+    await user.click(within(matrix).getByLabelText('Execution prompt review gated'))
+    expect(within(matrix).getByLabelText('Execution prompt review gated')).not.toBeChecked()
+    expect(within(matrix).getByLabelText('Execution output review gated')).toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
     rendered.unmount()
@@ -138,8 +158,8 @@ describe('ConfigStep', () => {
     )
     // …and gates landed as a custom matrix honoring the pinned auto pair.
     const matrix = screen.getByTestId('gates-matrix')
-    expect(within(matrix).getByLabelText('execution prompt review gated')).not.toBeChecked()
-    expect(within(matrix).getByLabelText('story analysis prompt review gated')).toBeChecked()
+    expect(within(matrix).getByLabelText('Execution prompt review gated')).not.toBeChecked()
+    expect(within(matrix).getByLabelText('Story Analysis prompt review gated')).toBeChecked()
 
     // Switching to an assistant that omits engine/gates must restore backend
     // defaults instead of leaking the previous assistant's pinned values.
@@ -148,10 +168,7 @@ describe('ConfigStep', () => {
       'aria-checked',
       'true',
     )
-    expect(screen.getByRole('button', { name: 'All gated' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
+    expect(screen.getByRole('radio', { name: 'Review every phase' })).toBeChecked()
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
@@ -187,10 +204,7 @@ describe('ConfigStep', () => {
         'true',
       ),
     )
-    expect(screen.getByRole('button', { name: 'All gated' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
+    expect(screen.getByRole('radio', { name: 'Review every phase' })).toBeChecked()
     await waitFor(() =>
       expect(rendered.router.state.location.search).not.toContain('golden='),
     )

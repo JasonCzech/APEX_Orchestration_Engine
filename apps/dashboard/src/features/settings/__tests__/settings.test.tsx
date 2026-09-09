@@ -22,20 +22,14 @@ describe('SettingsPage', () => {
     const user = userEvent.setup()
     renderSettings()
 
-    const picker = await screen.findByRole('group', { name: 'Theme picker' })
-    expect(within(picker).getByRole('button', { name: /Light \(CTx\)/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
+    const picker = await screen.findByRole('radiogroup', { name: 'Theme picker' })
+    expect(within(picker).getByRole('radio', { name: /Light \(CTx\)/ })).toBeChecked()
 
-    await user.click(within(picker).getByRole('button', { name: 'Solarized Light' }))
+    await user.click(within(picker).getByRole('radio', { name: 'Solarized Light' }))
 
     expect(document.documentElement.getAttribute('data-theme')).toBe('solarized-light')
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('solarized-light')
-    expect(within(picker).getByRole('button', { name: /Solarized Light/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    )
+    expect(within(picker).getByRole('radio', { name: /Solarized Light/ })).toBeChecked()
   })
 
   it('replace key validates against system/info, then saves and updates the mask', async () => {
@@ -50,6 +44,7 @@ describe('SettingsPage', () => {
     )
     const user = userEvent.setup()
     renderSettings()
+    await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
 
     expect(await screen.findByTestId('settings-key-mask')).toHaveTextContent('not stored')
     await user.type(screen.getByLabelText('Replace key'), 'apex_new_key_1234')
@@ -70,6 +65,7 @@ describe('SettingsPage', () => {
     )
     const user = userEvent.setup()
     renderSettings()
+    await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
 
     await user.type(await screen.findByLabelText('Replace key'), 'apex_bad_key')
     await user.click(screen.getByRole('button', { name: 'Validate & save' }))
@@ -87,6 +83,7 @@ describe('SettingsPage', () => {
     // Real AuthProvider flow (no staticState): the stored key validates
     // against the global system/info handler before the shell renders.
     const { queryClient } = renderApp({ initialEntries: ['/settings'] })
+    await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
 
     expect(await screen.findByTestId('settings-key-mask')).toHaveTextContent('••••••••9999')
     queryClient.setQueryData(['private-artifact'], new Blob(['consumer secret']))
@@ -122,6 +119,7 @@ describe('SettingsPage', () => {
     )
     const user = userEvent.setup()
     renderApp({ initialEntries: ['/settings'] })
+    await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
 
     await user.type(await screen.findByLabelText('Replace key'), 'apex_candidate_key')
     await user.click(screen.getByRole('button', { name: 'Validate & save' }))
@@ -164,6 +162,7 @@ describe('SettingsPage', () => {
 
     try {
       renderSettings()
+    await user.click(await screen.findByRole('tab', { name: 'Connection & session' }))
       await user.type(await screen.findByLabelText('Replace key'), 'apex_stale_candidate')
       await user.click(screen.getByRole('button', { name: 'Validate & save' }))
       await started

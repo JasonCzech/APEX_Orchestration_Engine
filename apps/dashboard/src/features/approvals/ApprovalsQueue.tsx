@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { gateLabel } from '@/features/runs/runDisplay'
+import { gateLabel, PHASE_LABELS, isPhaseName, formatTimestamp } from '@/features/runs/runDisplay'
 /**
  * Approvals queue pane (left, 360px): one row per pending gate, oldest first.
  * Pure presentation — selection/keyboard state lives in ApprovalsInboxPage.
@@ -33,7 +33,9 @@ export function ApprovalsQueue({
   onSelect: (row: QueueRow) => void
 }) {
   useEffect(() => {
-    if (selectedThreadId) document.getElementById(rowDomId(selectedThreadId))?.scrollIntoView?.({ block: 'nearest' })
+    const selected = selectedThreadId ? document.getElementById(rowDomId(selectedThreadId)) : null
+    if (document.activeElement?.closest('.approvals-queue')) selected?.focus()
+    selected?.scrollIntoView?.({ block: 'nearest' })
   }, [selectedThreadId])
   return (
     <ul
@@ -77,6 +79,7 @@ export function ApprovalsQueue({
                 {row.age}
               </span>
             </div>
+            <p className="approval-identity"><code>{row.thread_id}</code><br />Updated {formatTimestamp(row.updated_at)}</p>
             <div className="approvals-row-meta">
               {row.removed ? (
                 <span className="topbar-meta-chip approvals-removed-chip">
@@ -87,7 +90,7 @@ export function ApprovalsQueue({
                   {gateLabel(row.pending_gate.kind)}
                 </span>
               )}
-              <span className="approvals-row-phase">{row.pending_gate.phase ?? '—'}</span>
+              <span className="approvals-row-phase">{isPhaseName(row.pending_gate.phase) ? PHASE_LABELS[row.pending_gate.phase] : 'Phase not recorded'}</span>
               {row.project_id && <span className="approvals-row-project">{row.project_id}</span>}
             </div>
           </li>

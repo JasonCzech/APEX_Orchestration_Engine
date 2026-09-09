@@ -85,6 +85,7 @@ from apex.adapters.registry import AdapterRegistry, ConnectionConfig, PortKind
 from apex.adapters.remote_idempotency import remote_create_guard
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.input_limits import validate_json_object
+from apex.domain.integration_outcome import IntegrationOutcome
 from apex.domain.integrations import (
     LoadTestSpec,
     SecretValue,
@@ -844,6 +845,22 @@ class ApexLoadExecutionEngine:
             raise ValueError("apex_load project_id must be a safe string of at most 255 characters")
         if self._native_control_enabled and self._project_id is None:
             raise ValueError("apex_load native control requires options['project_id']")
+        self._release_mapping = options.get("release_mapping")
+        if self._release_mapping is not None:
+            mapping = self._release_mapping
+            if (
+                not isinstance(mapping, dict)
+                or set(mapping) != {"application_id", "revision"}
+                or not self._project_id
+                or any(
+                    not isinstance(value, str) or not _is_safe_named_ref(value)
+                    for value in mapping.values()
+                )
+            ):
+                raise ValueError(
+                    "apex_load release_mapping requires project_id and safe application_id/revision"
+                )
+            self._release_mapping = dict(mapping)
         raw_max_report_bytes = options.get("max_report_bytes", _DEFAULT_MAX_REPORT_BYTES)
         if isinstance(raw_max_report_bytes, bool) or not isinstance(raw_max_report_bytes, int):
             raise ValueError("apex_load max_report_bytes must be an integer")
@@ -1289,7 +1306,59 @@ class ApexLoadExecutionEngine:
                 "GET", "/api/v1/scenarios/load-models/templates", params=self._native_params()
             ),
         )
+        release_mapping = None
+        if self._release_mapping:
+            mapping = self._release_mapping
+            application = _json_object(
+                await self._request(
+                    "GET",
+                    f"/api/v1/applications/{mapping['application_id']}",
+                    params=self._native_params(),
+                ),
+                "mapped application",
+            )
+            if (
+                application.get("id") != mapping["application_id"]
+                or application.get("project_id") != self._project_id
+            ):
+                raise ValueError("Repair the APEX Load application mapping")
+            data = _json_object(
+                await self._request(
+                    "GET",
+                    f"/api/v1/applications/{mapping['application_id']}/releases",
+                    params=self._native_params(),
+                ),
+                "mapped releases",
+            )
+            releases = _provider_list_field(
+                data, "releases", "mapped releases", max_items=_MAX_NATIVE_CONTROL_ROWS
+            )
+            choices = []
+            seen_release_ids: set[str] = set()
+            for release in releases:
+                if (
+                    release.get("application_id") != mapping["application_id"]
+                    or release.get("project_id") != self._project_id
+                ):
+                    raise ValueError(
+                        "APEX Load release catalog crossed its application/project boundary"
+                    )
+                release_id = _provider_identifier(release.get("id"), "release id")
+                if release_id in seen_release_ids:
+                    raise ValueError(
+                        "APEX Load release catalog contains ambiguous duplicate identities"
+                    )
+                seen_release_ids.add(release_id)
+                if not release.get("archived_at"):
+                    choices.append(
+                        {
+                            "id": _provider_identifier(release.get("id"), "release id"),
+                            "name": bounded_diagnostic(release.get("name"), max_chars=255),
+                        }
+                    )
+            release_mapping = {**mapping, "project_id": self._project_id, "releases": choices}
         return {
+            "release_mapping": release_mapping,
             "load_models": _json_object(matrix_response, "APEX Load load-model support matrix"),
             "templates": _json_object(template_response, "APEX Load load-model templates"),
             "console_url": self._console_url,
@@ -2151,6 +2220,18 @@ class ApexLoadExecutionEngine:
         the test record does.
         """
         spec = _revalidate_spec(spec)
+        if spec.release_id is not None and (
+            not self._release_mapping or not _is_safe_named_ref(spec.release_id)
+        ):
+            raise ValueError(
+                "Select a valid release and configure the APEX Load application mapping"
+            )
+        if self._release_mapping and not spec.release_id:
+            raise ValueError("Select a release for the mapped APEX Load application")
+        if self._release_mapping and spec.mapping_revision != self._release_mapping["revision"]:
+            raise ValueError("Release mapping changed; review the mapping and start a new run")
+        if spec.mapping_revision is not None and not self._release_mapping:
+            raise ValueError("Release mapping removed; review the mapping and start a new run")
         name = test_name_for(spec.idempotency_key)
         guard_key = ":".join(
             (PROVIDER, self._base_url, self._project_id or "", spec.idempotency_key)
@@ -2192,6 +2273,21 @@ class ApexLoadExecutionEngine:
                 logger.info("apex_load.test_reused", test_id=external_run_id, test_name=name)
         self._require_test_identity(test, name=name, context="provisioning")
         extras = {"test_name": name}
+        if not self._release_mapping and (test.get("application_id") or test.get("release_id")):
+            raise ValueError("Existing execution has a release mapping; use a new run identity")
+        if self._release_mapping:
+            if (
+                test.get("application_id") != self._release_mapping["application_id"]
+                or test.get("release_id") != spec.release_id
+            ):
+                raise ValueError(
+                    "Existing execution has a different release; use a new run identity"
+                )
+            extras.update(
+                application_id=test["application_id"],
+                release_id=test["release_id"],
+                mapping_revision=self._release_mapping["revision"],
+            )
         if self._project_id:
             extras["project_id"] = self._project_id
         external_run_id = _provider_identifier(test.get("id"), "test response field 'id'")
@@ -2459,9 +2555,21 @@ class ApexLoadExecutionEngine:
             artifacts.append(ref.model_dump(mode="json"))
         return artifacts
 
+    async def native_run_summary(self, run_id: str) -> TestResultSummary:
+        """Use the same scoped assessment contract for native and managed runs."""
+        await self._get_native_test(run_id, context="native summary test response")
+        return await self._fetch_summary(
+            EngineHandle(engine=PROVIDER, external_run_id=run_id), native_identity_verified=True
+        )
+
     async def fetch_summary(self, handle: EngineHandle) -> TestResultSummary:
         """passed/breaches from GET /tests/{id}/sla-status; KPIs from the archive
         report, with a live-metrics fallback when the archive is missing."""
+        return await self._fetch_summary(handle)
+
+    async def _fetch_summary(
+        self, handle: EngineHandle, *, native_identity_verified: bool = False
+    ) -> TestResultSummary:
         run_id = self._run_id(handle)
         sla_response = await self._request(
             "GET",
@@ -2480,6 +2588,7 @@ class ApexLoadExecutionEngine:
         breached = _provider_boolean(sla, "sla_breached", "SLA status response")
         breaches = _provider_messages(sla, "details", "SLA status")
 
+        outcome = None
         kpis: dict[str, float] = {}
         notes = f"APEX Load test {run_id} status {status or 'UNKNOWN'}"
         try:
@@ -2512,11 +2621,12 @@ class ApexLoadExecutionEngine:
                     # archive endpoint is still test-scoped, but prove that the
                     # requested resource is this handle's content-bound test
                     # before trusting KPI data that cannot identify itself.
-                    await self._require_owned_test(
-                        handle,
-                        run_id=run_id,
-                        context="legacy archive identity response",
-                    )
+                    if not native_identity_verified:
+                        await self._require_owned_test(
+                            handle,
+                            run_id=run_id,
+                            context="legacy archive identity response",
+                        )
                     notes += "; legacy archive identity verified from test resource"
                 else:
                     manifest = report.get("manifest")
@@ -2530,13 +2640,45 @@ class ApexLoadExecutionEngine:
                         raise RuntimeError(
                             "apex load archive report returned an unexpected test id"
                         )
+                raw_outcome = report.get("outcome")
+                if raw_outcome is not None:
+                    outcome = IntegrationOutcome.model_validate(raw_outcome)
+                    if outcome.execution_id != run_id:
+                        raise RuntimeError("apex load outcome returned an unexpected test id")
+                    if outcome.scope is not None:
+                        expected_scope = {
+                            "project_id": self._project_id,
+                            **{
+                                key: value
+                                for key, value in handle.extras.items()
+                                if key in {"application_id", "release_id"}
+                            },
+                        }
+                        for field, expected in expected_scope.items():
+                            actual = getattr(outcome.scope, field)
+                            if expected is not None and actual is not None and actual != expected:
+                                raise RuntimeError(
+                                    "apex load outcome scope differs from the recorded execution"
+                                )
                 kpis = _kpis_from_report(report)
                 notes += "; KPIs from archive report"
 
-        passed = status == "COMPLETE" and not breached
+        evaluated = sla.get("sla_evaluated")
+        # Older providers omit assessment readiness. Never infer acceptance
+        # from the absence of a breach or from successful execution alone.
+        if evaluated is not None and type(evaluated) is not bool:
+            raise RuntimeError("apex load SLA evaluation readiness must be boolean")
+        passed = (
+            False if status != "COMPLETE" or breached else (True if evaluated is True else None)
+        )
+        if outcome is not None:
+            passed = {"passed": True, "failed": False}.get(outcome.assessment.status)
+        if passed is None:
+            notes += "; threshold assessment not available"
         return TestResultSummary(
             engine=PROVIDER,
             passed=passed,
+            outcome=outcome,
             kpis=kpis,
             sla_breaches=breaches,
             notes=notes,
@@ -2742,7 +2884,42 @@ class ApexLoadExecutionEngine:
             raise RuntimeError("apex load script response returned no script id")
         return script_id
 
+    async def _validate_release(self, release_id: str) -> None:
+        mapping = self._release_mapping
+        if not mapping:
+            raise ValueError(
+                "Configure an APEX Load application mapping before selecting a release"
+            )
+        application = _json_object(
+            await self._request(
+                "GET",
+                f"/api/v1/applications/{mapping['application_id']}",
+                params=self._native_params(),
+            ),
+            "mapped application",
+        )
+        release = _json_object(
+            await self._request(
+                "GET", f"/api/v1/releases/{release_id}", params=self._native_params()
+            ),
+            "mapped release",
+        )
+        if (
+            application.get("id") != mapping["application_id"]
+            or application.get("project_id") != self._project_id
+            or release.get("id") != release_id
+            or release.get("application_id") != mapping["application_id"]
+            or release.get("project_id") != self._project_id
+            or release.get("archived_at")
+        ):
+            raise ValueError(
+                "Repair the APEX Load release mapping: release must be active "
+                "and belong to the mapped application/project"
+            )
+
     async def _create_test(self, name: str, spec: LoadTestSpec) -> dict[str, Any]:
+        if spec.release_id:
+            await self._validate_release(spec.release_id)
         script_ids: list[str] = []
         for index, ref in enumerate(spec.script_refs):
             if _is_inline_ref(ref):
@@ -2787,6 +2964,10 @@ class ApexLoadExecutionEngine:
             )
 
         body = _test_request_body(name, spec, script_ids)
+        if self._release_mapping and spec.release_id:
+            body.update(
+                application_id=self._release_mapping["application_id"], release_id=spec.release_id
+            )
         if self._project_id:
             body["project_id"] = self._project_id
         if self._native_control_enabled:

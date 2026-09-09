@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router'
+import { RequireGlobalAdmin } from '@/auth/RequireRole'
+import { executionLink } from './executionLink'
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
@@ -7,10 +10,7 @@ import type { components } from '@apex/api-client'
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
 import { ProblemCard } from '@/components/ProblemCard'
-import {
-  getDurableIdempotencyKey,
-  retireDurableIdempotencyKey,
-} from '@/utils/durableIdempotency'
+import { getDurableIdempotencyKey, retireDurableIdempotencyKey } from '@/utils/durableIdempotency'
 
 import '../admin/admin.css'
 
@@ -50,7 +50,11 @@ function createIdempotencyKey(): string {
 }
 
 function nativeError(response: Response, error: unknown, label: string): ApiError {
-  return new ApiError(response.status, errorMessageOf(error, `${label} failed (${response.status})`), error)
+  return new ApiError(
+    response.status,
+    errorMessageOf(error, `${label} failed (${response.status})`),
+    error,
+  )
 }
 
 async function fetchConnections(): Promise<NativeCollection<NativeConnection>> {
@@ -102,8 +106,8 @@ async function fetchNativeResources(
           params: { path: { connection_id: connectionId } },
         })
       : await client.GET('/v1/apex-load/connections/{connection_id}/scenarios', {
-            params: { path: { connection_id: connectionId } },
-          })
+          params: { path: { connection_id: connectionId } },
+        })
   if (!result.response.ok || !result.data) {
     throw nativeError(result.response, result.error, `APEX Load ${resource}`)
   }
@@ -156,20 +160,27 @@ function JsonPanel({
     return <ProblemCard title={`${title} unavailable`} message={error.message} onRetry={onRetry} />
   }
   return (
-    <section className="adm-panel glass-panel">
-      <h3 className="adm-panel-title">{title}</h3>
+    <details className="adm-panel glass-panel">
+      <summary className="adm-panel-title">{title}</summary>
       <pre className="adm-json-input">{pending ? 'Loading…' : JSON.stringify(value, null, 2)}</pre>
-    </section>
+    </details>
   )
 }
 
 export function ApexLoadWorkspacePage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedConnection = searchParams.get('connection')
+  const requestedProject = searchParams.get('project')
+  const requestedRun = searchParams.get('run')
   const queryClient = useQueryClient()
-  const connections = useQuery({ queryKey: ['apex-load', 'connections'], queryFn: fetchConnections })
+  const connections = useQuery({
+    queryKey: ['apex-load', 'connections'],
+    queryFn: fetchConnections,
+  })
   const [connectionId, setConnectionId] = useState('')
   const [scenarioId, setScenarioId] = useState('')
   const [scheduleId, setScheduleId] = useState('')
-  const [selectedRun, setSelectedRun] = useState('')
+  const [selectedRun, setSelectedRun] = useState(searchParams.get('run') ?? '')
   const [approvalId, setApprovalId] = useState('')
   const [evidenceSignature, setEvidenceSignature] = useState('')
   const [scenarioDraft, setScenarioDraft] = useState('{\n  "name": "New scenario"\n}')
@@ -177,15 +188,26 @@ export function ApexLoadWorkspacePage() {
 
   useEffect(() => {
     const availableConnections = connections.data?.items
-    const firstConnection = availableConnections?.[0]
-    if (!firstConnection) return
-    if (!availableConnections.some((connection) => connection.id === connectionId)) {
-      setConnectionId(firstConnection.id)
+    if (!availableConnections) return
+    const candidates = availableConnections.filter(
+      (connection) =>
+        (!requestedConnection || connection.id === requestedConnection) &&
+        (!requestedProject || connection.project_id === requestedProject),
+    )
+    const nextConnectionId = candidates.length === 1
+      ? candidates[0]!.id
+      : !requestedConnection && !requestedProject && candidates.some(item => item.id === connectionId)
+        ? connectionId
+        : ''
+    if (nextConnectionId !== connectionId) {
+      setConnectionId(nextConnectionId)
       setScenarioId('')
       setScheduleId('')
-      setSelectedRun('')
+      setApprovalId('')
+      setEvidenceSignature('')
     }
-  }, [connectionId, connections.data])
+    setSelectedRun(requestedRun ?? '')
+  }, [connections.data, connectionId, requestedConnection, requestedProject, requestedRun])
 
   const capabilities = useQuery({
     queryKey: ['apex-load', connectionId, 'capabilities'],
@@ -229,9 +251,14 @@ export function ApexLoadWorkspacePage() {
     queryFn: async () => {
       const { data, error, response } = await getApexClient().GET(
         '/v1/apex-load/connections/{connection_id}/scenarios/{scenario_id}/schedules/{schedule_id}/occurrences',
-        { params: { path: { connection_id: connectionId, scenario_id: scenarioId, schedule_id: scheduleId } } },
+        {
+          params: {
+            path: { connection_id: connectionId, scenario_id: scenarioId, schedule_id: scheduleId },
+          },
+        },
       )
-      if (!response.ok || !data) throw nativeError(response, error, 'APEX Load schedule occurrences')
+      if (!response.ok || !data)
+        throw nativeError(response, error, 'APEX Load schedule occurrences')
       return data.items
     },
     enabled: Boolean(connectionId && scenarioId && scheduleId),
@@ -269,7 +296,9 @@ export function ApexLoadWorkspacePage() {
 
   useEffect(() => {
     if (!scenarios.data) return
-    const ids = scenarios.data.items.map((scenario) => text(scenario.id)).filter((id): id is string => Boolean(id))
+    const ids = scenarios.data.items
+      .map((scenario) => text(scenario.id))
+      .filter((id): id is string => Boolean(id))
     if (!ids.includes(scenarioId)) {
       setScenarioId(ids[0] ?? '')
       setScheduleId('')
@@ -279,7 +308,9 @@ export function ApexLoadWorkspacePage() {
 
   useEffect(() => {
     if (!schedules.data) return
-    const ids = schedules.data.items.map((schedule) => text(schedule.id)).filter((id): id is string => Boolean(id))
+    const ids = schedules.data.items
+      .map((schedule) => text(schedule.id))
+      .filter((id): id is string => Boolean(id))
     if (!ids.includes(scheduleId)) {
       setScheduleId(ids[0] ?? '')
       setApprovalId('')
@@ -298,7 +329,10 @@ export function ApexLoadWorkspacePage() {
     mutationFn: async () => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/apex-load/connections/{connection_id}/scenarios/validation',
-        { params: { path: { connection_id: connectionId } }, body: { payload: parseDraft(scenarioDraft) } },
+        {
+          params: { path: { connection_id: connectionId } },
+          body: { payload: parseDraft(scenarioDraft) },
+        },
       )
       if (!response.ok || !data) throw nativeError(response, error, 'APEX Load scenario validation')
       return object(data.details)
@@ -308,7 +342,10 @@ export function ApexLoadWorkspacePage() {
     mutationFn: async () => {
       const { data, error, response } = await getApexClient().POST(
         '/v1/apex-load/connections/{connection_id}/scenarios/sizing',
-        { params: { path: { connection_id: connectionId } }, body: { payload: parseDraft(scenarioDraft) } },
+        {
+          params: { path: { connection_id: connectionId } },
+          body: { payload: parseDraft(scenarioDraft) },
+        },
       )
       if (!response.ok || !data) throw nativeError(response, error, 'APEX Load scenario sizing')
       return object(data.details)
@@ -335,11 +372,7 @@ export function ApexLoadWorkspacePage() {
         },
       )
       if (!response.ok || !data) throw nativeError(response, error, 'APEX Load scenario create')
-      await retireDurableIdempotencyKey(
-        SCENARIO_IDEMPOTENCY_STORAGE_KEY,
-        intent,
-        idempotencyKey,
-      )
+      await retireDurableIdempotencyKey(SCENARIO_IDEMPOTENCY_STORAGE_KEY, intent, idempotencyKey)
       return { connectionId: requestConnectionId, data }
     },
     onSuccess: ({ connectionId: completedConnectionId }) => {
@@ -377,11 +410,7 @@ export function ApexLoadWorkspacePage() {
         },
       )
       if (!response.ok || !data) throw nativeError(response, error, 'APEX Load schedule create')
-      await retireDurableIdempotencyKey(
-        SCHEDULE_IDEMPOTENCY_STORAGE_KEY,
-        intent,
-        idempotencyKey,
-      )
+      await retireDurableIdempotencyKey(SCHEDULE_IDEMPOTENCY_STORAGE_KEY, intent, idempotencyKey)
       return { connectionId: requestConnectionId, data }
     },
     onSuccess: ({ connectionId: completedConnectionId }) => {
@@ -447,18 +476,44 @@ export function ApexLoadWorkspacePage() {
 
   if (connections.isPending) return <div className="dash-empty">Loading APEX Load connections…</div>
   if (connections.isError) {
-    return <ProblemCard title="APEX Load unavailable" message={connections.error.message} onRetry={() => void connections.refetch()} />
+    return (
+      <ProblemCard
+        title="APEX Load unavailable"
+        message={connections.error.message}
+        onRetry={() => void connections.refetch()}
+      />
+    )
   }
   if (!connections.data?.items.length) {
-    return <div className="dash-empty">No enabled, project-scoped APEX Load native-control connection is available.</div>
+    return (
+      <section className="glass-panel ux-card">
+        <h2>Connect APEX Load</h2>
+        <p>No enabled, project-scoped APEX Load connection is available to your account.</p>
+        <p>
+          An administrator can enable a connection and map your project and application to APEX Load. Use Manage connections if it is available below; otherwise ask your administrator.
+        </p>
+        <div className="ux-actions">
+          <RequireGlobalAdmin>
+            <Link className="btn btn-primary" to="/admin/connections">
+              Manage connections
+            </Link>
+          </RequireGlobalAdmin>
+          <button className="btn btn-secondary" onClick={() => void connections.refetch()}>
+            Refresh connections
+          </button>
+        </div>
+      </section>
+    )
   }
 
   return (
     <div className="adm-page" data-testid="apex-load-workspace">
       <header className="adm-toolbar glass-panel">
         <div>
-          <h2 className="adm-page-title">APEX Load Control Plane</h2>
-          <span className="adm-card-time">Native schedules remain the workload-launch authority.</span>
+          <h2 className="adm-page-title">Load integration</h2>
+          <span className="adm-card-time">
+            Connect Orchestration analysis to APEX Load execution. Open an execution in Load to inspect its workload and evidence.
+          </span>
         </div>
         <label className="adm-field">
           <span className="adm-field-label">Connection</span>
@@ -466,6 +521,7 @@ export function ApexLoadWorkspacePage() {
             value={connectionId}
             onChange={(event) => {
               setConnectionId(event.target.value)
+              setSearchParams(event.target.value ? { connection: event.target.value } : {})
               setScenarioId('')
               setScheduleId('')
               setSelectedRun('')
@@ -473,6 +529,7 @@ export function ApexLoadWorkspacePage() {
               setEvidenceSignature('')
             }}
           >
+            <option value="">Choose a connection</option>
             {connections.data.items.map((connection) => (
               <option key={connection.id} value={connection.id}>
                 {connection.name} · {connection.project_id}
@@ -481,298 +538,393 @@ export function ApexLoadWorkspacePage() {
           </select>
         </label>
       </header>
+      <section className="glass-panel ux-card" aria-label="Connection readiness">
+        <h3>{activeConnection ? 'Project connection selected' : 'Choose a project connection'}</h3>
+        <p>
+          {activeConnection
+            ? `${activeConnection.name} · Project ${activeConnection.project_id}`
+            : 'Select the connection mapped to your project. No connection is selected automatically when the requested context is unavailable or ambiguous.'}
+        </p>
+        <p>
+          APEX Load executes workloads and owns schedules. Orchestration collects evidence and runs
+          analysis.
+        </p>
+        <RequireGlobalAdmin>
+          <Link to="/admin/connections">Manage connections and mappings</Link>
+        </RequireGlobalAdmin>
+      </section>
       {connections.data.truncated && (
         <p className="adm-field-help" role="status">
-          The connection list reached its display limit; narrow the operator scope to see omitted connections.
+          The connection list reached its display limit; narrow the operator scope to see omitted
+          connections.
         </p>
       )}
 
       {activeConnection && (
-        <JsonPanel
-          title="Load-model templates and capabilities"
-          value={capabilities.data ?? {}}
-          error={capabilities.error}
-          pending={capabilities.isPending}
-          onRetry={() => void capabilities.refetch()}
-        />
-      )}
-      <JsonPanel
-        title="Schedule health"
-        value={scheduleHealth.data ?? {}}
-        error={scheduleHealth.error}
-        pending={scheduleHealth.isPending}
-        onRetry={() => void scheduleHealth.refetch()}
-      />
-      <JsonPanel
-        title="Native schedule calendar"
-        value={calendar.data ?? {}}
-        error={calendar.error}
-        pending={calendar.isPending}
-        onRetry={() => void calendar.refetch()}
-      />
-
-      <section className="adm-panel glass-panel">
-        <h3 className="adm-panel-title">Scenarios and load-model validation</h3>
-        <textarea
-          className="adm-json-input"
-          aria-label="Scenario JSON"
-          rows={8}
-          value={scenarioDraft}
-          onChange={(event) => setScenarioDraft(event.target.value)}
-        />
-        <div className="adm-panel-actions">
-          <button
-            className="btn btn-secondary btn-sm"
-            type="button"
-            disabled={!connectionId || validateScenario.isPending}
-            onClick={() => validateScenario.mutate()}
-          >
-            Validate scenario
-          </button>
-          <button
-            className="btn btn-secondary btn-sm"
-            type="button"
-            disabled={!connectionId || sizeScenario.isPending}
-            onClick={() => sizeScenario.mutate()}
-          >
-            Estimate capacity
-          </button>
-          <button
-            className="btn btn-primary btn-sm"
-            type="button"
-            disabled={!connectionId || createScenario.isPending}
-            onClick={() => createScenario.mutate()}
-          >
-            Create scenario
-          </button>
-        </div>
-        {(validateScenario.data || validateScenario.error) && (
-          <pre className="adm-json-input">
-            {validateScenario.error instanceof Error
-              ? validateScenario.error.message
-              : JSON.stringify(validateScenario.data, null, 2)}
-          </pre>
-        )}
-        {(sizeScenario.data || sizeScenario.error) && (
-          <pre className="adm-json-input">
-            {sizeScenario.error instanceof Error
-              ? sizeScenario.error.message
-              : JSON.stringify(sizeScenario.data, null, 2)}
-          </pre>
-        )}
-        {(createScenario.data || createScenario.error) && (
-          <pre className="adm-json-input">
-            {createScenario.error instanceof Error
-              ? createScenario.error.message
-              : JSON.stringify(createScenario.data?.data, null, 2)}
-          </pre>
-        )}
-        {scenarios.isError && (
-          <ProblemCard
-            title="Scenarios unavailable"
-            message={scenarios.error.message}
-            onRetry={() => void scenarios.refetch()}
-          />
-        )}
-        <ul className="data-table">
-          {scenarios.data?.items.map((scenario) => {
-            const id = text(scenario.id) ?? 'unknown'
-            return (
-              <li key={id}>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  type="button"
-                  onClick={() => {
-                    setScenarioId(id)
-                    setScheduleId('')
-                    setApprovalId('')
-                  }}
-                >
-                  {text(scenario.name) ?? id}
-                </button>
-                <span className="adm-chip-muted">{text(scenario.status) ?? 'draft'}</span>
-              </li>
-            )
-          })}
-        </ul>
-        {scenarios.data?.truncated && (
-          <p className="adm-field-help" role="status">The scenario list is truncated.</p>
-        )}
-      </section>
-
-      <section className="adm-panel glass-panel">
-        <h3 className="adm-panel-title">Schedules, occurrences, and approvals</h3>
-        <p className="adm-field-help">Selected scenario: {scenarioId || 'Choose a scenario above'}</p>
-        <textarea
-          className="adm-json-input"
-          aria-label="Schedule JSON"
-          rows={6}
-          value={scheduleDraft}
-          onChange={(event) => setScheduleDraft(event.target.value)}
-        />
-        <div className="adm-panel-actions">
-          <button
-            className="btn btn-primary btn-sm"
-            type="button"
-            disabled={!scenarioId || createSchedule.isPending}
-            onClick={() => createSchedule.mutate()}
-          >
-            Create native schedule
-          </button>
-        </div>
-        {(createSchedule.data || createSchedule.error) && (
-          <pre className="adm-json-input">
-            {createSchedule.error instanceof Error
-              ? createSchedule.error.message
-              : JSON.stringify(createSchedule.data?.data, null, 2)}
-          </pre>
-        )}
-        {schedules.isError && (
-          <ProblemCard
-            title="Schedules unavailable"
-            message={schedules.error.message}
-            onRetry={() => void schedules.refetch()}
-          />
-        )}
-        <ul className="data-table">
-          {schedules.data?.items.map((schedule) => {
-            const id = text(schedule.id) ?? 'unknown'
-            return (
-              <li key={id}>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  type="button"
-                  onClick={() => {
-                    setScheduleId(id)
-                    setApprovalId('')
-                  }}
-                >
-                  {text(schedule.name) ?? id}
-                </button>
-                <span className="adm-chip-muted">{text(schedule.status) ?? 'unknown'}</span>
-              </li>
-            )
-          })}
-        </ul>
-        {schedules.data?.truncated && (
-          <p className="adm-field-help" role="status">The schedule list is truncated.</p>
-        )}
-        <p className="adm-field-help">Selected schedule: {scheduleId || 'Choose a schedule above'}</p>
-        {scheduleId && (
-          <JsonPanel
-            title="Upcoming schedule occurrences"
-            value={occurrences.data ?? []}
-            error={occurrences.error}
-            pending={occurrences.isPending}
-            onRetry={() => void occurrences.refetch()}
-          />
-        )}
-        <div className="adm-panel-actions">
-          <input
-            aria-label="Schedule approval id"
-            placeholder="Schedule approval id"
-            value={approvalId}
-            onChange={(event) => setApprovalId(event.target.value)}
-          />
-          <button
-            className="btn btn-secondary btn-sm"
-            type="button"
-            disabled={!scenarioId || !scheduleId || !approvalId || decideScheduleApproval.isPending}
-            onClick={() => decideScheduleApproval.mutate(true)}
-          >
-            Approve
-          </button>
-          <button
-            className="btn btn-danger btn-sm"
-            type="button"
-            disabled={!scenarioId || !scheduleId || !approvalId || decideScheduleApproval.isPending}
-            onClick={() => decideScheduleApproval.mutate(false)}
-          >
-            Reject
-          </button>
-        </div>
-        {(decideScheduleApproval.data || decideScheduleApproval.error) && (
-          <pre className="adm-json-input">
-            {decideScheduleApproval.error instanceof Error
-              ? decideScheduleApproval.error.message
-              : JSON.stringify(decideScheduleApproval.data?.data, null, 2)}
-          </pre>
-        )}
-      </section>
-
-      <section className="adm-panel glass-panel">
-        <h3 className="adm-panel-title">Native runs and reporting pipelines</h3>
-        {nativeRuns.isError && (
-          <ProblemCard
-            title="Native runs unavailable"
-            message={nativeRuns.error.message}
-            onRetry={() => void nativeRuns.refetch()}
-          />
-        )}
-        <div className="adm-card-grid">
-          {(nativeRuns.data?.items ?? []).map((run) => {
-            const id = text(run.id) ?? 'unknown'
-            const consoleUrl = text(run.console_url)
-            return (
-              <article className="adm-card glass-panel" key={id}>
-                <strong>{text(run.name) ?? id}</strong>
-                <span>{text(run.status) ?? 'unknown'}</span>
-                <button
-                  className="btn btn-secondary btn-sm"
-                  type="button"
-                  onClick={() => {
-                    setSelectedRun(id)
-                    setEvidenceSignature('')
-                  }}
-                >
-                  Live metrics
-                </button>
-                {consoleUrl && <a href={consoleUrl} target="_blank" rel="noreferrer">Open in APEX Load</a>}
-              </article>
-            )
-          })}
-        </div>
-        {nativeRuns.data?.truncated && (
-          <p className="adm-field-help" role="status">
-            Native run history is truncated; use mirrored history or refine the provider view.
-          </p>
-        )}
-        <JsonPanel
-          title="Mirrored runs and exactly-once launch state"
-          value={mirroredRuns.data ?? []}
-          error={mirroredRuns.error}
-          pending={mirroredRuns.isPending}
-          onRetry={() => void mirroredRuns.refetch()}
-        />
-        {selectedRun && (
-          <JsonPanel
-            title={`Live metrics: ${selectedRun}`}
-            value={runMetrics.data ?? {}}
-            error={runMetrics.error}
-            pending={runMetrics.isPending}
-            onRetry={() => void runMetrics.refetch()}
-          />
-        )}
-        {selectedRun && (
-          <div className="adm-panel-actions">
-            <input
-              aria-label="Error evidence signature"
-              placeholder="Error signature for root-cause evidence"
-              value={evidenceSignature}
-              onChange={(event) => setEvidenceSignature(event.target.value)}
+        <>
+          {activeConnection && (
+            <JsonPanel
+              title="Load-model templates and capabilities"
+              value={capabilities.data ?? {}}
+              error={capabilities.error}
+              pending={capabilities.isPending}
+              onRetry={() => void capabilities.refetch()}
             />
-          </div>
-        )}
-        {selectedRun && evidenceSignature && (
+          )}
           <JsonPanel
-            title={`Collected error evidence: ${selectedRun}`}
-            value={runEvidence.data ?? {}}
-            error={runEvidence.error}
-            pending={runEvidence.isPending}
-            onRetry={() => void runEvidence.refetch()}
+            title="Schedule health"
+            value={scheduleHealth.data ?? {}}
+            error={scheduleHealth.error}
+            pending={scheduleHealth.isPending}
+            onRetry={() => void scheduleHealth.refetch()}
           />
-        )}
-      </section>
+          <JsonPanel
+            title="Native schedule calendar"
+            value={calendar.data ?? {}}
+            error={calendar.error}
+            pending={calendar.isPending}
+            onRetry={() => void calendar.refetch()}
+          />
+
+          <section className="adm-panel glass-panel">
+            <h3 className="adm-panel-title">Scenarios and load-model validation</h3>
+            <textarea
+              className="adm-json-input"
+              aria-label="Scenario JSON"
+              rows={8}
+              value={scenarioDraft}
+              onChange={(event) => setScenarioDraft(event.target.value)}
+            />
+            <div className="adm-panel-actions">
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                disabled={!connectionId || validateScenario.isPending}
+                onClick={() => validateScenario.mutate()}
+              >
+                Validate scenario
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                disabled={!connectionId || sizeScenario.isPending}
+                onClick={() => sizeScenario.mutate()}
+              >
+                Estimate capacity
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                disabled={!connectionId || createScenario.isPending}
+                onClick={() => createScenario.mutate()}
+              >
+                Create scenario
+              </button>
+            </div>
+            {(validateScenario.data || validateScenario.error) && (
+              <pre className="adm-json-input">
+                {validateScenario.error instanceof Error
+                  ? validateScenario.error.message
+                  : JSON.stringify(validateScenario.data, null, 2)}
+              </pre>
+            )}
+            {(sizeScenario.data || sizeScenario.error) && (
+              <pre className="adm-json-input">
+                {sizeScenario.error instanceof Error
+                  ? sizeScenario.error.message
+                  : JSON.stringify(sizeScenario.data, null, 2)}
+              </pre>
+            )}
+            {(createScenario.data || createScenario.error) && (
+              <pre className="adm-json-input">
+                {createScenario.error instanceof Error
+                  ? createScenario.error.message
+                  : JSON.stringify(createScenario.data?.data, null, 2)}
+              </pre>
+            )}
+            {scenarios.isError && (
+              <ProblemCard
+                title="Scenarios unavailable"
+                message={scenarios.error.message}
+                onRetry={() => void scenarios.refetch()}
+              />
+            )}
+            <ul className="data-table">
+              {scenarios.data?.items.map((scenario) => {
+                const id = text(scenario.id) ?? 'unknown'
+                return (
+                  <li key={id}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      type="button"
+                      onClick={() => {
+                        setScenarioId(id)
+                        setScheduleId('')
+                        setApprovalId('')
+                      }}
+                    >
+                      {text(scenario.name) ?? id}
+                    </button>
+                    <span className="adm-chip-muted">{text(scenario.status) ?? 'draft'}</span>
+                  </li>
+                )
+              })}
+            </ul>
+            {scenarios.data?.truncated && (
+              <p className="adm-field-help" role="status">
+                The scenario list is truncated.
+              </p>
+            )}
+          </section>
+
+          <section className="adm-panel glass-panel">
+            <h3 className="adm-panel-title">Schedules, occurrences, and approvals</h3>
+            <p className="adm-field-help">
+              Selected scenario: {scenarioId || 'Choose a scenario above'}
+            </p>
+            <textarea
+              className="adm-json-input"
+              aria-label="Schedule JSON"
+              rows={6}
+              value={scheduleDraft}
+              onChange={(event) => setScheduleDraft(event.target.value)}
+            />
+            <div className="adm-panel-actions">
+              <button
+                className="btn btn-primary btn-sm"
+                type="button"
+                disabled={!scenarioId || createSchedule.isPending}
+                onClick={() => createSchedule.mutate()}
+              >
+                Create native schedule
+              </button>
+            </div>
+            {(createSchedule.data || createSchedule.error) && (
+              <pre className="adm-json-input">
+                {createSchedule.error instanceof Error
+                  ? createSchedule.error.message
+                  : JSON.stringify(createSchedule.data?.data, null, 2)}
+              </pre>
+            )}
+            {schedules.isError && (
+              <ProblemCard
+                title="Schedules unavailable"
+                message={schedules.error.message}
+                onRetry={() => void schedules.refetch()}
+              />
+            )}
+            <ul className="data-table">
+              {schedules.data?.items.map((schedule) => {
+                const id = text(schedule.id) ?? 'unknown'
+                return (
+                  <li key={id}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      type="button"
+                      onClick={() => {
+                        setScheduleId(id)
+                        setApprovalId('')
+                      }}
+                    >
+                      {text(schedule.name) ?? id}
+                    </button>
+                    <span className="adm-chip-muted">{text(schedule.status) ?? 'unknown'}</span>
+                  </li>
+                )
+              })}
+            </ul>
+            {schedules.data?.truncated && (
+              <p className="adm-field-help" role="status">
+                The schedule list is truncated.
+              </p>
+            )}
+            <p className="adm-field-help">
+              Selected schedule: {scheduleId || 'Choose a schedule above'}
+            </p>
+            {scheduleId && (
+              <JsonPanel
+                title="Upcoming schedule occurrences"
+                value={occurrences.data ?? []}
+                error={occurrences.error}
+                pending={occurrences.isPending}
+                onRetry={() => void occurrences.refetch()}
+              />
+            )}
+            <div className="adm-panel-actions">
+              <input
+                aria-label="Schedule approval id"
+                placeholder="Schedule approval id"
+                value={approvalId}
+                onChange={(event) => setApprovalId(event.target.value)}
+              />
+              <button
+                className="btn btn-secondary btn-sm"
+                type="button"
+                disabled={
+                  !scenarioId || !scheduleId || !approvalId || decideScheduleApproval.isPending
+                }
+                onClick={() => decideScheduleApproval.mutate(true)}
+              >
+                Approve
+              </button>
+              <button
+                className="btn btn-danger btn-sm"
+                type="button"
+                disabled={
+                  !scenarioId || !scheduleId || !approvalId || decideScheduleApproval.isPending
+                }
+                onClick={() => decideScheduleApproval.mutate(false)}
+              >
+                Reject
+              </button>
+            </div>
+            {(decideScheduleApproval.data || decideScheduleApproval.error) && (
+              <pre className="adm-json-input">
+                {decideScheduleApproval.error instanceof Error
+                  ? decideScheduleApproval.error.message
+                  : JSON.stringify(decideScheduleApproval.data?.data, null, 2)}
+              </pre>
+            )}
+          </section>
+
+          <section className="adm-panel glass-panel">
+            <h3 className="adm-panel-title">Native runs and reporting pipelines</h3>
+            {nativeRuns.isError && (
+              <ProblemCard
+                title="Native runs unavailable"
+                message={nativeRuns.error.message}
+                onRetry={() => void nativeRuns.refetch()}
+              />
+            )}
+            <div className="adm-card-grid">
+              {(nativeRuns.data?.items ?? []).map((run) => {
+                const id = text(run.id) ?? 'unknown'
+                const consoleUrl = executionLink(
+                  run.console_url,
+                  `/apex-load?connection=${encodeURIComponent(connectionId)}&run=${encodeURIComponent(id)}`,
+                )
+                return (
+                  <article className="adm-card glass-panel" key={id}>
+                    <strong>{text(run.name) ?? id}</strong>
+                    <span>{text(run.status) ?? 'unknown'}</span>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      type="button"
+                      onClick={() => {
+                        setSelectedRun(id)
+                        setSearchParams({ connection: connectionId, run: id })
+                        setEvidenceSignature('')
+                      }}
+                    >
+                      Live metrics
+                    </button>
+                    {consoleUrl && (
+                      <a href={consoleUrl} target="_blank" rel="noreferrer">
+                        Open in APEX Load
+                      </a>
+                    )}
+                  </article>
+                )
+              })}
+            </div>
+            {nativeRuns.data?.truncated && (
+              <p className="adm-field-help" role="status">
+                Native run history is truncated; use mirrored history or refine the provider view.
+              </p>
+            )}
+            <section aria-label="Analysis handoff">
+              <h3>Analysis handoff</h3>
+              <p>
+                Completed Load runs are collected automatically. Refresh checks the existing handoff
+                without launching another workload.
+              </p>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => void mirroredRuns.refetch()}
+              >
+                Refresh analysis status
+              </button>
+              {mirroredRuns.isError && (
+                <ProblemCard
+                  title="Analysis status unavailable"
+                  message={mirroredRuns.error.message}
+                  onRetry={() => void mirroredRuns.refetch()}
+                />
+              )}
+              {mirroredRuns.isPending ? (
+                <p>Loading analysis status…</p>
+              ) : !mirroredRuns.data?.length ? (
+                <p>No mirrored runs recorded for this connection yet.</p>
+              ) : (
+                <table className="adm-table">
+                  <thead>
+                    <tr>
+                      <th>Load run</th>
+                      <th>Execution</th>
+                      <th>Analysis handoff</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {mirroredRuns.data.map((run) => (
+                      <tr key={run.id}>
+                        <td>{run.id}</td>
+                        <td>{run.status}</td>
+                        <td>
+                          {{
+                            pending: 'Waiting for collection',
+                            launching: 'Starting analysis',
+                            launched: 'Analysis created',
+                            retry: 'Retry scheduled',
+                            stale: 'Connection changed',
+                          }[run.pipeline_status] ?? run.pipeline_status}
+                        </td>
+                        <td>
+                          {run.pipeline_thread_id ? (
+                            <Link to={`/runs/${encodeURIComponent(run.pipeline_thread_id)}`}>
+                              Open analysis
+                            </Link>
+                          ) : (
+                            'Analysis link not available yet'
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </section>
+            {selectedRun && (
+              <JsonPanel
+                title={`Live metrics: ${selectedRun}`}
+                value={runMetrics.data ?? {}}
+                error={runMetrics.error}
+                pending={runMetrics.isPending}
+                onRetry={() => void runMetrics.refetch()}
+              />
+            )}
+            {selectedRun && (
+              <div className="adm-panel-actions">
+                <input
+                  aria-label="Error evidence signature"
+                  placeholder="Error signature for root-cause evidence"
+                  value={evidenceSignature}
+                  onChange={(event) => setEvidenceSignature(event.target.value)}
+                />
+              </div>
+            )}
+            {selectedRun && evidenceSignature && (
+              <JsonPanel
+                title={`Collected error evidence: ${selectedRun}`}
+                value={runEvidence.data ?? {}}
+                error={runEvidence.error}
+                pending={runEvidence.isPending}
+                onRetry={() => void runEvidence.refetch()}
+              />
+            )}
+          </section>
+        </>
+      )}
     </div>
   )
 }
