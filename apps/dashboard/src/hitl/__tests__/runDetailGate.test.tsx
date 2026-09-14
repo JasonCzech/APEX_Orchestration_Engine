@@ -66,7 +66,7 @@ describe('RunDetailPage gate mounting (D3)', () => {
     expect(banner).toHaveTextContent('Review phase results gate open on Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      `/runs/${THREAD_ID}/phases/reporting`,
+      `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
     )
     expect(screen.queryByTestId('gate-module')).not.toBeInTheDocument()
   })
@@ -76,9 +76,8 @@ describe('RunDetailPage gate mounting (D3)', () => {
     const resume = resumeHandler(202)
     server.use(resume.handler)
     const user = userEvent.setup()
-    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=output`])
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting`])
 
-    await user.click(await screen.findByRole('link', { name: 'Review' }))
     const abort = await screen.findByRole('button', { name: 'Abort' })
     await user.click(abort)
     const confirm = screen.getByRole('button', { name: 'Confirm abort' })

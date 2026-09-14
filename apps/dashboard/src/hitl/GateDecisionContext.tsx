@@ -12,9 +12,9 @@ export function GateDecisionContext({ state, phase, kind, updatedAt }: {
   return <aside className="gate-decision-context">
     <p>Run snapshot updated {formatTimestamp(updatedAt)}. Review the pending output below before deciding.</p>
     {kind === 'phase_review' && <p>{index < 0
-      ? 'Approve accepts this phase; the next phase is not available in this snapshot.'
-      : nextLabel ? `Approve accepts this phase and continues to ${nextLabel}, subject to its configured reviews.`
-        : 'Approve accepts the final selected phase and completes the selected plan.'} Modify &amp; Re-run revises this phase; later phases wait for its review.</p>}
-    {kind === 'prompt_review' && <p>Approve uses these prompts to run {isPhaseName(phase) ? PHASE_LABELS[phase] : 'this phase'}. Revisions apply to this phase before execution continues.</p>}
+      ? 'Accepting uses this phase output; the next phase is not available in this snapshot.'
+      : nextLabel ? `Accepting uses this phase output and continues to ${nextLabel}, subject to its configured reviews.`
+        : 'Accepting uses the final selected phase output and completes the selected plan.'} Request changes re-runs this phase; later phases wait for its review.</p>}
+    {kind === 'prompt_review' && <p>Execute Phase uses these prompts to run {isPhaseName(phase) ? PHASE_LABELS[phase] : 'this phase'}. Revisions apply to this phase before execution continues.</p>}
   </aside>
 }

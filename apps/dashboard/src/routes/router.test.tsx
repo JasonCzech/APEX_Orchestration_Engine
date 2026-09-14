@@ -7,7 +7,7 @@ import { server } from '@/test/server'
 
 describe('router', () => {
   it.each([
-    ['/approvals', 'Approvals'],
+    ['/approvals', 'Tests', 'Needs review'],
     // /prompts became a real screen in D5; / became the real Home dashboard in
     // D7 (covered in features/home tests — its headings are content-driven);
     // /golden-configs became real in D7 too — /runs/compare is the last

@@ -79,7 +79,13 @@ export function ArtifactViewerPage() {
   const { threadId = '', name = '' } = useParams()
   const location = useLocation()
   const returnPath = artifactReturnPath(location.state?.artifactReturnTo, threadId)
-  const returnLabel = returnPath.startsWith('/approvals') ? 'Back to approval' : returnPath.includes('/phases/') ? 'Back to phase' : 'Back to run'
+  const returnLabel = returnPath.includes('/reviews/')
+    ? 'Back to review'
+    : returnPath.startsWith('/approvals')
+      ? 'Back to review'
+      : returnPath.includes('/phases/')
+        ? 'Back to phase'
+        : 'Back to run'
   const [sourceFor, setSourceFor] = useState<string | null>(null)
   const showingSource = sourceFor === name
   const threadQuery = useThreadState(threadId)

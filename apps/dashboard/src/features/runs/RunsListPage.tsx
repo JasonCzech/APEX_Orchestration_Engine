@@ -35,6 +35,7 @@ import {
   formatTimestamp,
 } from './runDisplay'
 import { RunWorkspace, type RunWorkspaceSection } from './RunDetailPage'
+import { runReviewPath } from './reviewPath'
 import './RunsListPage.css'
 
 const SEARCH_DEBOUNCE_MS = 300
@@ -98,6 +99,7 @@ function RunRow({
   run,
   onRerun,
   onOpen,
+  onReview,
   selected,
   selection,
   canRerun,
@@ -105,6 +107,7 @@ function RunRow({
   run: PipelineSummary
   onRerun: (threadId: string) => void
   onOpen: (threadId: string, phase?: PhaseName) => void
+  onReview: (run: PipelineSummary) => void
   selected: boolean
   selection?: RowSelection
   canRerun: boolean
@@ -113,14 +116,14 @@ function RunRow({
   const compact = useCompactLayout()
   if (compact) return (
     <article className={`glass-panel run-card${selected ? ' is-selected' : ''}`} data-testid={`runs-row-${run.thread_id}`}>
-      <button type="button" className="runs-run-title runs-run-button" onClick={() => onOpen(run.thread_id)}>
+      <button type="button" className="runs-run-title runs-run-button" aria-label={`Open ${run.title || 'Untitled run'} details`} onClick={() => onOpen(run.thread_id)}>
         {run.title || 'Untitled run'}
       </button>
       <code className="runs-run-identity">{run.thread_id}</code>
       <p><strong>{orchestrationStatusLabel(run.thread_status, run.phase_strip)}</strong></p>
       <p>Test result: <strong>{executionResultLabel(run)}</strong></p>
       <p>Progress: {completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases finished</p>
-      {run.pending_gate && <button type="button" className="runs-gate-action" onClick={() => onOpen(run.thread_id, isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined)}>{gateLabel(run.pending_gate.kind)}</button>}
+      {run.pending_gate && <button type="button" className="runs-gate-action" aria-label={`${gateLabel(run.pending_gate.kind)} for ${run.title || run.thread_id}${isPhaseName(run.pending_gate.phase) ? `, ${PHASE_LABELS[run.pending_gate.phase]}` : ''}`} onClick={() => onReview(run)}>{gateLabel(run.pending_gate.kind)}</button>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
       <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Duration</dt><dd>{durationLabel(run)}</dd></dl></details>
       <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
@@ -144,7 +147,7 @@ function RunRow({
         </td>
       )}
       <td>
-        <button type="button" className="runs-run-link runs-run-button" onClick={() => onOpen(run.thread_id)}>
+        <button type="button" className="runs-run-link runs-run-button" aria-label={`Open ${run.title || 'Untitled run'} details`} onClick={() => onOpen(run.thread_id)}>
           <span className="runs-run-title strong">{run.title || 'Untitled run'}</span>
           <code className="runs-run-identity">{run.thread_id}</code>
           <span className="runs-run-id">{isPhaseName(displayPhase) ? PHASE_LABELS[displayPhase] : 'Phase not recorded'}</span>
@@ -180,7 +183,8 @@ function RunRow({
               title={
                 run.pending_gate.phase ? `Pending gate on ${run.pending_gate.phase}` : undefined
               }
-              onClick={() => onOpen(run.thread_id, isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined)}
+              aria-label={`${gateLabel(run.pending_gate.kind)} for ${run.title || run.thread_id}${isPhaseName(run.pending_gate.phase) ? `, ${PHASE_LABELS[run.pending_gate.phase]}` : ''}`}
+              onClick={() => onReview(run)}
             >
               {gateLabel(run.pending_gate.kind)}
             </button>
@@ -215,10 +219,12 @@ function RunMasterListItem({
   run,
   selected,
   onOpen,
+  onReview,
 }: {
   run: PipelineSummary
   selected: boolean
   onOpen: (threadId: string, phase?: PhaseName) => void
+  onReview: (run: PipelineSummary) => void
 }) {
   const phase = isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined
   return (
@@ -226,7 +232,7 @@ function RunMasterListItem({
       type="button"
       className={`runs-master-item${selected ? ' is-selected' : ''}`}
       aria-pressed={selected}
-      onClick={() => onOpen(run.thread_id, phase)}
+      onClick={() => run.pending_gate ? onReview(run) : onOpen(run.thread_id, phase)}
     >
       <span className="runs-master-item-head">
         <strong>{run.title || 'Untitled run'}</strong>
@@ -281,7 +287,7 @@ export function RunsListPage() {
   const selectedRunId = searchParams.get('selected')
   const requestedRunSection = searchParams.get('runSection')
   const selectedRunSection: RunWorkspaceSection =
-    requestedRunSection === 'overview' || requestedRunSection === 'timeline'
+    requestedRunSection === 'decision' || requestedRunSection === 'overview' || requestedRunSection === 'timeline'
       ? requestedRunSection
       : 'workspace'
   const selectedRunPhase = isPhaseName(searchParams.get('phase')) ? searchParams.get('phase') as PhaseName : null
@@ -312,6 +318,16 @@ export function RunsListPage() {
       return next
     })
   }, [masterDetail, navigate, setSearchParams])
+
+  const openReview = useCallback((run: PipelineSummary) => {
+    if (!run.pending_gate) return
+    void navigate(
+      runReviewPath(run.thread_id, run.pending_gate.interrupt_id, {
+        source: 'history',
+        phase: isPhaseName(run.pending_gate.phase) ? run.pending_gate.phase : null,
+      }),
+    )
+  }, [navigate])
 
   const setRunWorkspaceSection = useCallback((section: RunWorkspaceSection, phase?: PhaseName) => {
     setSearchParams((prev) => {
@@ -479,6 +495,10 @@ export function RunsListPage() {
   return (
     <section className="runs-page animate-enter">
       <header className="runs-toolbar glass-panel">
+        <nav className="ux-actions runs-view-switch" aria-label="Test operations views">
+          <Link className="btn btn-secondary" aria-current="page" to="/runs">All runs</Link>
+          <Link className="btn btn-secondary" to="/approvals">Needs review</Link>
+        </nav>
         <input
           type="search"
           className="field-input runs-search"
@@ -573,6 +593,7 @@ export function RunsListPage() {
                     onRerun={setRerunThreadId}
                     canRerun={canRerun}
                     onOpen={openRun}
+                    onReview={openReview}
                     selected={false}
                     selection={
                       compareMode
@@ -609,6 +630,7 @@ export function RunsListPage() {
                       run={run}
                       selected={selectedRunId === run.thread_id}
                       onOpen={openRun}
+                      onReview={openReview}
                     />
                   ))}
                 </div>
@@ -657,6 +679,7 @@ export function RunsListPage() {
                         onRerun={setRerunThreadId}
                         canRerun={canRerun}
                         onOpen={openRun}
+                        onReview={openReview}
                         selected={false}
                         selection={
                           compareMode

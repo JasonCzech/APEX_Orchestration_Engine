@@ -28,19 +28,19 @@ interface NavSection {
 }
 
 /**
- * Live pending-gate count on the Approvals nav item (D3). Shares the inbox's
+ * Live pending-gate count on the unified Tests nav item. Shares the inbox's
  * react-query cache entry (same hook, same key), so this adds no extra
  * polling; pulses when any gate has been waiting > 15m. Hidden while loading,
  * on error, or at zero.
  */
-function ApprovalsBadge() {
+function PendingReviewBadge() {
   const { count, hasStale } = useApprovalsInbox()
   if (count === 0) return null
   return (
     <span
       className={hasStale ? 'dash-badge nav-badge pulse' : 'dash-badge nav-badge'}
-      data-testid="approvals-nav-badge"
-      aria-label={`${count} pending approval${count === 1 ? '' : 's'}`}
+      data-testid="tests-review-nav-badge"
+      aria-label={`${count} test${count === 1 ? '' : 's'} need review`}
     >
       {count}
     </span>
@@ -76,7 +76,6 @@ const TESTING_NAV_ITEMS: NavItem[] = [
     label: 'Tests',
     icon: <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />,
   },
-  { to: '/approvals', label: 'Approvals', icon: <Icon d="M3 13h4l2 3h6l2-3h4M5 5h14l2 8v6H3v-6z" /> },
   { to: '/work-items', label: 'Tickets', icon: <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /> },
 ]
 
@@ -178,7 +177,10 @@ function readStoredCollapsed(): boolean {
 
 function isNavItemActive(item: NavItem, pathname: string): boolean {
   if (item.to === '/') return pathname === '/'
-  if (item.to === '/runs') return pathname === '/runs' || (pathname.startsWith('/runs/') && !pathname.startsWith('/runs/new'))
+  if (item.to === '/runs') {
+    return pathname === '/approvals' || pathname.startsWith('/approvals/') ||
+      pathname === '/runs' || (pathname.startsWith('/runs/') && !pathname.startsWith('/runs/new'))
+  }
   return pathname === item.to || pathname.startsWith(`${item.to}/`)
 }
 
@@ -194,7 +196,7 @@ function SidebarLink({ item, pathname, onNavigate }: { item: NavItem; pathname: 
     >
       <span className="nav-icon">{item.icon}</span>
       <span className="nav-label">{item.label}</span>
-      {item.to === '/approvals' && <ApprovalsBadge />}
+      {item.to === '/runs' && <PendingReviewBadge />}
     </Link>
   )
 }

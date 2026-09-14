@@ -102,8 +102,8 @@ describe('HomePage', () => {
     const approvals = await screen.findByTestId('home-approvals-list')
     const links = within(approvals).getAllByRole('link')
     expect(links.map((link) => link.getAttribute('href'))).toEqual([
-      '/approvals/run-gated-old/int-old',
-      '/approvals/run-gated-new/int-new',
+      '/runs/run-gated-old/reviews/int-old?source=home',
+      '/runs/run-gated-new/reviews/int-new?source=home',
     ])
 
     const oldGate = links[0] as HTMLElement

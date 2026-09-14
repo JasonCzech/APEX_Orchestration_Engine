@@ -1,6 +1,6 @@
 /**
  * phase_review flow through the real machine: summary/warnings/artifacts/
- * dialogue render; Message Agent sends {action:'discuss', message}; Modify &
+ * dialogue render; Ask agent sends {action:'discuss', message}; Request
  * Re-run reveals the inline instructions textarea and sends
  * {action:'revise', instructions}; an accepted discuss parks the module in the
  * awaiting-agent banner.
@@ -73,8 +73,8 @@ describe('GateModule phase_review', () => {
     expect(screen.getByTestId('gate-dialogue')).toHaveTextContent('Tighten the ramp.')
     expect(screen.getByTestId('gate-dialogue')).toHaveTextContent('Ramp tightened to 5m.')
 
-    // Message Agent is disabled until the composer carries a message.
-    const discuss = screen.getByRole('button', { name: 'Message Agent' })
+    // Ask agent is disabled until the composer carries a message.
+    const discuss = screen.getByRole('button', { name: 'Ask agent' })
     expect(discuss).toBeDisabled()
     fireEvent.change(screen.getByPlaceholderText(/Ask a question or give feedback/), {
       target: { value: 'Why no auth flows in the plan?' },
@@ -103,7 +103,7 @@ describe('GateModule phase_review', () => {
     const user = userEvent.setup()
     renderHarness(threadId)
 
-    await user.click(await screen.findByRole('button', { name: /Modify & Re-run/i }))
+    await user.click(await screen.findByRole('button', { name: /Request changes/i }))
     const send = screen.getByRole('button', { name: /Re-run with Changes/i })
     expect(send).toBeDisabled()
     fireEvent.change(screen.getByPlaceholderText(/What should the agent change/), {

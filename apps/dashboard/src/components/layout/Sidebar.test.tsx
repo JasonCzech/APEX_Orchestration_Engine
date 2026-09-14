@@ -71,18 +71,25 @@ describe('Sidebar', () => {
       authState: authenticatedState('operator'),
     })
 
-    expect(await screen.findByRole('link', { name: 'Tests' })).toHaveAttribute('aria-current', 'page')
+    expect(await screen.findByRole('link', { name: /^Tests/ })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('link', { name: 'New Test' })).not.toHaveAttribute('aria-current')
   })
 
-  it('keeps the pending approval count visible in the collapsed rail', async () => {
+  it('uses Tests as the single sidebar destination for the review queue', async () => {
+    renderApp({ initialEntries: ['/approvals'], authState: authenticatedState('operator') })
+
+    expect(await screen.findByRole('link', { name: /^Tests/ })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('link', { name: /^Approvals/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps the pending-review count visible in the collapsed rail', async () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState('operator') })
 
     const sidebar = await screen.findByTestId('sidebar')
     await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
-    const approvals = within(sidebar).getByRole('link', { name: /Approvals/ })
-    expect(within(approvals).getByTestId('approvals-nav-badge')).toBeInTheDocument()
+    const tests = within(sidebar).getByRole('link', { name: /^Tests/ })
+    expect(within(tests).getByTestId('tests-review-nav-badge')).toBeInTheDocument()
   })
 
   it('opens account options from the identity control', async () => {

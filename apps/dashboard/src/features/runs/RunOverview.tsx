@@ -14,12 +14,15 @@ import {
   targetPhaseFor,
   phaseProgress,
 } from './runDisplay'
+import { runReviewPath } from './reviewPath'
 
-export function RunOverview({ detail, state, progress, onOpenPhase }: {
+export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate, returnTo }: {
   detail: PipelineDetail
   state: PipelineState
   progress: ReturnType<typeof phaseProgress>
   onOpenPhase?: (phase: PhaseName) => void
+  onReviewGate?: () => void
+  returnTo?: string
 }) {
   const execution = state.phase_results?.execution
   const summary = execution?.test_summary
@@ -38,7 +41,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase }: {
       : {}
   const loadUrl = executionLink(
     handle?.console_url ?? handle?.extras?.console_url ?? execution?.source_uri ?? external.uri,
-    `/runs/${detail.thread_id}`,
+    returnTo ?? `/runs/${detail.thread_id}`,
   )
   const phase = targetPhaseFor(detail, state)
   const outcome = state.run_aborted ? 'Stopped by operator'
@@ -63,12 +66,23 @@ export function RunOverview({ detail, state, progress, onOpenPhase }: {
             !state.run_aborted &&
             detail.thread_status === 'idle' &&
             progress.completed !== progress.total && <p>No stop reason was recorded.</p>}
-          {onOpenPhase ? (
+          {detail.pending_gate && onReviewGate ? (
+            <button type="button" className="btn btn-primary" onClick={onReviewGate}>
+              Review pending decision
+            </button>
+          ) : onOpenPhase ? (
             <button type="button" className="btn btn-primary" onClick={() => onOpenPhase(phase)}>
               {detail.pending_gate ? 'Review pending decision' : `Open ${PHASE_LABELS[phase]}`}
             </button>
           ) : (
-            <Link className="btn btn-primary" to={`/runs/${detail.thread_id}/phases/${phase}`}>
+            <Link
+              className="btn btn-primary"
+              to={
+                detail.pending_gate
+                  ? runReviewPath(detail.thread_id, detail.pending_gate.interrupt_id, { source: 'overview' })
+                  : `/runs/${detail.thread_id}/phases/${phase}`
+              }
+            >
               {detail.pending_gate ? 'Review pending decision' : `Open ${PHASE_LABELS[phase]}`}
             </Link>
           )}
@@ -139,7 +153,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase }: {
               key={artifact.id}
               className="run-evidence-artifact-link"
               to={artifactViewerPath(detail.thread_id, artifact.id)}
-              returnTo={`/runs/${detail.thread_id}`}
+              returnTo={returnTo ?? `/runs/${detail.thread_id}`}
             >
               {artifact.name ?? artifact.kind ?? artifact.id}
             </ArtifactLink>

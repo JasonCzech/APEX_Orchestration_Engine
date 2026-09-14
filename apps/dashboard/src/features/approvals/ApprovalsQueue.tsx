@@ -1,9 +1,11 @@
-import { useEffect } from 'react'
-import { gateLabel, PHASE_LABELS, isPhaseName, formatTimestamp } from '@/features/runs/runDisplay'
 /**
- * Approvals queue pane (left, 360px): one row per pending gate, oldest first.
+ * Needs review queue pane (left, 360px): one row per pending gate, oldest first.
  * Pure presentation — selection/keyboard state lives in ApprovalsInboxPage.
  */
+import { useEffect } from 'react'
+
+import { formatTimestamp, gateLabel, isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
+
 import type { ApprovalItem } from './useApprovalsInbox'
 
 /** Why a row is grayed out: resumed in this pane vs cleared by another actor. */
@@ -41,7 +43,7 @@ export function ApprovalsQueue({
     <ul
       className="approvals-queue"
       role="listbox"
-      aria-label="Approvals queue"
+      aria-label="Needs review queue"
       aria-activedescendant={selectedThreadId ? rowDomId(selectedThreadId) : undefined}
     >
       {rows.map((row) => {
@@ -60,6 +62,7 @@ export function ApprovalsQueue({
             data-testid={rowDomId(row.thread_id)}
             className={classes}
             role="option"
+            aria-label={`${row.title}. ${gateLabel(row.pending_gate.kind)}. ${isPhaseName(row.pending_gate.phase) ? PHASE_LABELS[row.pending_gate.phase] : 'Phase not recorded'}.`}
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!row.removed) onSelect(row) } }}

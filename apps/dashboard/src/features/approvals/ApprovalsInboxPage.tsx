@@ -1,18 +1,17 @@
-import { GateDecisionContext } from '@/hitl/GateDecisionContext'
-import { ScopeContext } from '@/components/ux/ScopeContext'
 /**
- * /approvals — keyboard-first cross-run gate queue (plan UX 2.b).
- * Also mounted on /approvals/:threadId/:interruptId (deep link pre-selects).
+ * Keyboard-first cross-run gate queue and full Review Workspace. /approvals
+ * selects the oldest gate; /runs/:threadId/reviews/:interruptId is canonical.
+ * Legacy /approvals/:threadId/:interruptId bookmarks redirect there.
  *
- * Two panes: queue (360px) | gate preview (flex), stacking under 1320px.
- * The preview renders the SHARED self-contained GateModule (src/hitl, plan
+ * Two panes: queue (360px) | review workspace (flex), stacking under 1320px.
+ * The workspace renders the SHARED self-contained GateModule (src/hitl, plan
  * 2.a) per the contract in ./gateModuleContract.ts — this page never touches
  * the resume endpoint itself (pessimistic semantics, invalidations and CAS
  * handling live in the gate machine).
  *
  * Keyboard map (disabled while typing in inputs/textareas/CodeMirror):
- *   j/k or ↓/↑  navigate queue        Enter  focus preview
- *   o           open run              ?      shortcuts overlay
+ *   j/k or ↓/↑  navigate queue        Enter  focus workspace
+ *   o           open overview          ?      shortcuts overlay
  *   m           modify-focus: the handle moves focus into the prompt editor
  *   x           arm the module's typed abort confirmation
  * Approval and skip decisions remain on the explicit gate controls; ordinary
@@ -24,16 +23,18 @@ import { ScopeContext } from '@/components/ux/ScopeContext'
  * surface) stay grayed for one poll cycle via useApprovalsInbox.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 
 import { useThreadState, type GateInterrupt } from '@/api/hooks/useThreadState'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
-import { gateLabel, isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
+import { RunWorkspace, type RunWorkspaceSection } from '@/features/runs/RunDetailPage'
+import { runReviewPath, reviewInterruptId } from '@/features/runs/reviewPath'
+import { isPhaseName } from '@/features/runs/runDisplay'
 import { GateModule } from '@/hitl/GateModule'
 
-import { ApprovalsQueue, gateKindTone, type QueueRow, type RowRemovalReason } from './ApprovalsQueue'
+import { ApprovalsQueue, type QueueRow, type RowRemovalReason } from './ApprovalsQueue'
 import type { GateAction, GateModuleHandle, GateOutcome } from './gateModuleContract'
 import { useApprovalsInbox, type ApprovalItem } from './useApprovalsInbox'
 import './approvals.css'
@@ -43,16 +44,29 @@ interface Selection {
   interruptId: string | null
 }
 
-interface RouteOwnedSelection {
-  routeIdentity: string
-  value: Selection | null
-}
-
 /** A row actioned while on screen: grayed while the list still echoes these gate ids. */
 interface ActionedEntry {
   reason: RowRemovalReason
   /** Gate instance ids consumed by the action — a NEW id on the row revives it. */
   interruptIds: ReadonlySet<string | null>
+}
+
+interface DecisionReceipt {
+  title: string
+  action: string
+  at: Date
+}
+
+function outcomeLabel(action: GateAction | 'superseded', kind?: GateInterrupt['kind']): string {
+  switch (action) {
+    case 'approve': return kind === 'prompt_review'
+      ? 'Approved prompts and started the phase'
+      : 'Accepted phase output and continued the run'
+    case 'skip_phase': return 'Skipped the phase and continued the run'
+    case 'abort': return 'Aborted the run'
+    case 'superseded': return 'Decision was completed elsewhere'
+    default: return 'Decision recorded'
+  }
 }
 
 function toSelection(item: ApprovalItem): Selection {
@@ -72,8 +86,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
 const SHORTCUTS: Array<[string, string]> = [
   ['j / ↓', 'Next gate'],
   ['k / ↑', 'Previous gate'],
-  ['Enter', 'Focus the gate preview'],
-  ['o', 'Open the run'],
+  ['Enter', 'Focus the review workspace'],
+  ['o', 'Open the run overview'],
   ['m', 'Modify — focus the prompt editor'],
   ['x', 'Arm abort confirmation'],
   ['?', 'Toggle this overlay'],
@@ -82,27 +96,28 @@ const SHORTCUTS: Array<[string, string]> = [
 export function ApprovalsInboxPage() {
   const params = useParams<{ threadId?: string; interruptId?: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const inbox = useApprovalsInbox()
 
-  const routeIdentity = JSON.stringify([params.threadId ?? null, params.interruptId ?? null])
-  const routeSelection = useMemo<Selection | null>(
-    () =>
-      params.threadId
-        ? { threadId: params.threadId, interruptId: params.interruptId ?? null }
-        : null,
-    [params.threadId, params.interruptId],
+  const selection = useMemo<Selection | null>(
+    () => params.threadId
+      ? { threadId: params.threadId, interruptId: reviewInterruptId(params.interruptId) }
+      : null,
+    [params.interruptId, params.threadId],
   )
-  const [ownedSelection, setOwnedSelection] = useState<RouteOwnedSelection>(() => ({
-    routeIdentity,
-    value: routeSelection,
-  }))
-  const selection =
-    ownedSelection.routeIdentity === routeIdentity ? ownedSelection.value : routeSelection
   const setSelection = useCallback(
-    (value: Selection | null) => setOwnedSelection({ routeIdentity, value }),
-    [routeIdentity],
+    (value: Selection | null, replace = false) => {
+      void navigate(
+        value
+          ? runReviewPath(value.threadId, value.interruptId, { source: 'queue' })
+          : '/approvals',
+        { replace },
+      )
+    },
+    [navigate],
   )
   const [actioned, setActioned] = useState<ReadonlyMap<string, ActionedEntry>>(new Map())
+  const [decisionReceipt, setDecisionReceipt] = useState<DecisionReceipt | null>(null)
   const [overlayOpen, setOverlayOpen] = useState(false)
 
   const gateHandleRef = useRef<GateModuleHandle | null>(null)
@@ -142,9 +157,15 @@ export function ApprovalsInboxPage() {
   // First load (or queue refill after empty): select the oldest open gate.
   useEffect(() => {
     if (selection === null && actionable.length > 0) {
-      setSelection(toSelection(actionable[0] as ApprovalItem))
+      setSelection(toSelection(actionable[0] as ApprovalItem), true)
     }
   }, [selection, actionable, setSelection])
+
+  // Preserve old bookmarks while making the gate-specific review URL canonical.
+  useEffect(() => {
+    if (!selection || !location.pathname.startsWith('/approvals/')) return
+    setSelection(selection, true)
+  }, [location.pathname, selection, setSelection])
 
   // A gate can disappear between polls without GateModule getting a terminal
   // callback. Advance the parent selection as soon as the selected instance is
@@ -160,15 +181,23 @@ export function ApprovalsInboxPage() {
     if (selectedStillOpen) return
     const sameThread = actionable.find((row) => row.thread_id === selection.threadId)
     const next = sameThread ?? actionable[0]
-    setSelection(next ? toSelection(next as ApprovalItem) : null)
+    setSelection(next ? toSelection(next as ApprovalItem) : null, true)
   }, [actionable, inbox.isLoading, selection, setSelection])
 
   // ── Terminal gate outcome (preview's onOutcome): gray the row, advance to
   // the next open gate.
-  const handleResolved = useCallback((reason: RowRemovalReason, gateId: string | null) => {
+  const handleResolved = useCallback((reason: RowRemovalReason, gateId: string | null, action?: GateAction) => {
     const { selection: current, actionable: list, items } = stateRef.current
     if (!current) return
     const listRow = items.find((item) => item.thread_id === current.threadId)
+    setDecisionReceipt({
+      title: listRow?.title ?? current.threadId,
+      action: outcomeLabel(
+        reason === 'elsewhere' ? 'superseded' : action ?? 'approve',
+        listRow?.pending_gate.kind,
+      ),
+      at: new Date(),
+    })
     setActioned((prev) => {
       const next = new Map(prev)
       next.set(current.threadId, {
@@ -183,14 +212,14 @@ export function ApprovalsInboxPage() {
     })
     const remaining = list.filter((row) => row.thread_id !== current.threadId)
     if (remaining.length === 0) {
-      setSelection(null)
+      setSelection(null, true)
       return
     }
     const index = list.findIndex((row) => row.thread_id === current.threadId)
     const next =
       list.slice(index + 1).find((row) => row.thread_id !== current.threadId) ??
       remaining[remaining.length - 1]
-    setSelection(next ? toSelection(next) : null)
+    setSelection(next ? toSelection(next) : null, true)
   }, [setSelection])
 
   // ── Keyboard layer (one document listener; latest state via stateRef).
@@ -240,7 +269,14 @@ export function ApprovalsInboxPage() {
           break
         case 'o': {
           const { selection: current } = stateRef.current
-          if (current) void navigate(`/runs/${current.threadId}`)
+          if (current) {
+            void navigate(
+              runReviewPath(current.threadId, current.interruptId, {
+                source: 'queue',
+                section: 'overview',
+              }),
+            )
+          }
           break
         }
         case 'm':
@@ -256,16 +292,36 @@ export function ApprovalsInboxPage() {
   }, [navigate, setSelection])
 
   const allClear = !inbox.isLoading && !inbox.error && rows.length === 0
+  const reviewSearch = new URLSearchParams(location.search)
+  const requestedSource = reviewSearch.get('source')
+  const reviewSource = requestedSource === 'history' || requestedSource === 'home' || requestedSource === 'overview'
+    ? requestedSource
+    : 'queue'
+  const requestedSection = reviewSearch.get('section')
+  const reviewSection: RunWorkspaceSection =
+    requestedSection === 'overview' || requestedSection === 'workspace' || requestedSection === 'timeline'
+      ? requestedSection
+      : 'decision'
+  const reviewPhase = isPhaseName(reviewSearch.get('phase')) ? reviewSearch.get('phase') : null
+  const setReviewSection = (section: RunWorkspaceSection, phase?: string) => {
+    if (!selection) return
+    void navigate(
+      runReviewPath(selection.threadId, selection.interruptId, {
+        source: reviewSource,
+        section,
+        phase: phase ?? reviewPhase,
+      }),
+      { replace: true },
+    )
+  }
 
   return (
     <div className="approvals-page animate-enter">
-      <header className="approvals-header">
-        <h2 className="approvals-title">Approvals</h2>
-        {inbox.count > 0 && (
-          <span className="topbar-meta-chip accent" data-testid="approvals-count-chip">
-            {inbox.count} pending
-          </span>
-        )}
+      <header className="approvals-toolbar glass-panel">
+        <nav className="ux-actions approvals-view-switch" aria-label="Test operations views">
+          <Link className="btn btn-secondary" to="/runs">All runs</Link>
+          <Link className="btn btn-secondary" aria-current="page" to="/approvals">Needs review</Link>
+        </nav>
         <span className="spacer" />
         <button
           type="button"
@@ -278,13 +334,23 @@ export function ApprovalsInboxPage() {
         </button>
       </header>
 
+      {decisionReceipt && (
+        <div className="approvals-decision-receipt tonal-card success" role="status">
+          <div>
+            <strong>Decision receipt</strong>
+            <span>{decisionReceipt.action} for {decisionReceipt.title} · {decisionReceipt.at.toLocaleTimeString()}</span>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDecisionReceipt(null)}>Dismiss</button>
+        </div>
+      )}
+
       {inbox.refreshError && (
         <CachedDataWarning error={inbox.refreshError} onRetry={inbox.refetch} />
       )}
 
       {inbox.error ? (
         <ProblemCard
-          title="Approvals failed to load"
+          title="Reviews failed to load"
           message={inbox.error.message}
           onRetry={inbox.refetch}
         />
@@ -301,7 +367,7 @@ export function ApprovalsInboxPage() {
           className="approvals-skeleton"
           role="status"
           aria-busy="true"
-          aria-label="Loading approvals"
+          aria-label="Loading reviews"
         >
           <div className="glass-panel approvals-skeleton-block" />
           <div className="glass-panel approvals-skeleton-block" />
@@ -317,7 +383,7 @@ export function ApprovalsInboxPage() {
           </section>
           <section
             className="approvals-preview-pane"
-            aria-label="Gate preview"
+            aria-label="Review workspace"
             ref={previewRef}
             tabIndex={-1}
           >
@@ -327,6 +393,10 @@ export function ApprovalsInboxPage() {
                 selection={selection}
                 handleRef={gateHandleRef}
                 onResolved={handleResolved}
+                waitAge={rows.find((row) => row.thread_id === selection.threadId)?.age}
+                section={reviewSection}
+                phase={reviewPhase}
+                onSectionChange={setReviewSection}
               />
             ) : (
               <div className="dash-empty small">Select a gate from the queue (j / k).</div>
@@ -360,8 +430,8 @@ export function ApprovalsInboxPage() {
 }
 
 /**
- * Right pane: snapshot the selected thread and mount the shared GateModule on
- * its pending interrupt. Keyed by threadId from the parent so nothing leaks
+ * Right pane: mount the shared RunWorkspace and GateModule for the selected
+ * pending interrupt. Keyed by threadId from the parent so nothing leaks
  * across runs; changed interrupt ids remount, while refreshed same-id
  * re-reviews reopen inside the shared machine.
  *
@@ -374,10 +444,18 @@ function GatePreview({
   selection,
   handleRef,
   onResolved,
+  section,
+  phase,
+  onSectionChange,
+  waitAge,
 }: {
   selection: Selection
   handleRef: React.MutableRefObject<GateModuleHandle | null>
-  onResolved: (reason: RowRemovalReason, gateId: string | null) => void
+  onResolved: (reason: RowRemovalReason, gateId: string | null, action?: GateAction) => void
+  section: RunWorkspaceSection
+  phase: string | null
+  onSectionChange: (section: RunWorkspaceSection, phase?: string) => void
+  waitAge?: string
 }) {
   const query = useThreadState(selection.threadId)
 
@@ -417,7 +495,7 @@ function GatePreview({
       outcome.action !== 'discuss' &&
       outcome.action !== 'revise'
     ) {
-      onResolved('local', gateId)
+      onResolved('local', gateId, outcome.action)
     }
     // modify/discuss/revise: the gate reopens — keep the selection.
   }
@@ -427,30 +505,27 @@ function GatePreview({
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
-      <header className="approvals-preview-header">
-        <Link to={`/runs/${detail.thread_id}`} className="approvals-preview-title">
-          {detail.title ?? detail.thread_id}
-        </Link>
-        {interrupt && (
-          <span className={`topbar-meta-chip ${gateKindTone(interrupt.kind)}`}>
-            {gateLabel(interrupt.kind)} · {isPhaseName(interrupt.phase) ? PHASE_LABELS[interrupt.phase] : 'Unknown phase'}
-          </span>
-        )}
-        <span className="spacer" />
-        <Link className="btn btn-ghost btn-sm" to={`/runs/${detail.thread_id}`}>
-          Open run
-        </Link>
-      </header>
-      <ScopeContext project={detail.project_id} application={detail.app_id} />
-      {interrupt && <GateDecisionContext state={query.data.state} phase={interrupt.phase} kind={interrupt.kind} updatedAt={detail.updated_at} />}
       {interrupt ? (
-        <GateModule
-          key={interrupt.interrupt_id ?? 'gate'}
+        <RunWorkspace
+          key={`${detail.thread_id}:${interrupt.interrupt_id ?? 'gate'}`}
           threadId={detail.thread_id}
-          interrupt={interrupt}
-          compact
-          onOutcome={handleOutcome}
-          handleRef={handleRef}
+          embedded
+          showEmbeddedControls={false}
+          waitAge={waitAge}
+          section={section}
+          phase={phase ?? (isPhaseName(interrupt.phase) ? interrupt.phase : null)}
+          onSectionChange={(nextSection, nextPhase) => onSectionChange(nextSection, nextPhase)}
+          onPhaseChange={(nextPhase) => onSectionChange('workspace', nextPhase)}
+          renderGate={(workspaceInterrupt, returnTo) => (
+            <GateModule
+              key={workspaceInterrupt.interrupt_id ?? 'gate'}
+              threadId={detail.thread_id}
+              interrupt={workspaceInterrupt}
+              returnTo={returnTo}
+              onOutcome={handleOutcome}
+              handleRef={handleRef}
+            />
+          )}
         />
       ) : (
         <div className="dash-empty small" data-testid="approvals-gate-gone">

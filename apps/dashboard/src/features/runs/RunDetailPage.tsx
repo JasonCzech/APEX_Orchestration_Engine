@@ -1,18 +1,17 @@
-import { GateDecisionContext } from '@/hitl/GateDecisionContext'
-import { formatTimestamp } from './runDisplay'
-import { ScopeContext } from '@/components/ux/ScopeContext'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { useCompactLayout } from '@/components/hooks/useCompactLayout'
-import { useThreadState } from '@/api/hooks/useThreadState'
+import { useThreadState, type GateInterrupt } from '@/api/hooks/useThreadState'
 import { RequireRole } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { PhaseStrip } from '@/components/runs/PhaseStrip'
+import { ScopeContext } from '@/components/ux/ScopeContext'
 import { AbortConfirm } from '@/hitl/GateActionBar'
+import { GateDecisionContext } from '@/hitl/GateDecisionContext'
 import { GateModuleView, GateSlimBanner } from '@/hitl/GateModule'
 import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
@@ -23,7 +22,8 @@ import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
-import { PHASE_LABELS, executionResultLabel, isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
+import { runReviewPath } from './reviewPath'
+import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -57,7 +57,7 @@ export function RunDetailPage() {
   )
 }
 
-export type RunWorkspaceSection = 'overview' | 'workspace' | 'timeline'
+export type RunWorkspaceSection = 'decision' | 'overview' | 'workspace' | 'timeline'
 
 export function RunWorkspace({
   threadId,
@@ -67,6 +67,9 @@ export function RunWorkspace({
   onSectionChange,
   onPhaseChange,
   onClose,
+  renderGate,
+  showEmbeddedControls = true,
+  waitAge,
 }: {
   threadId: string
   section?: RunWorkspaceSection
@@ -75,9 +78,12 @@ export function RunWorkspace({
   onSectionChange?: (section: RunWorkspaceSection, phase?: PhaseName) => void
   onPhaseChange?: (phase: PhaseName) => void
   onClose?: () => void
+  renderGate?: (interrupt: GateInterrupt, returnTo: string) => ReactNode
+  showEmbeddedControls?: boolean
+  waitAge?: string
 }) {
   const compact = useCompactLayout()
-  const { search } = useLocation()
+  const { pathname, search } = useLocation()
   const navigate = useNavigate()
   const query = useThreadState(threadId)
   const headingRef = useRef<HTMLHeadingElement>(null)
@@ -126,6 +132,7 @@ export function RunWorkspace({
 
   const overview = section === 'overview'
   const timeline = section === 'timeline'
+  const decision = section === 'decision'
   const selectedPhase = requestedPhase ?? targetPhaseFor(detail, state)
   if (!isPhaseName(selectedPhase)) return <>
     <ProblemCard title="Unknown phase" message="Open the run overview to choose a valid phase." />
@@ -147,29 +154,39 @@ export function RunWorkspace({
   const logsSearchParams = new URLSearchParams({
     thread: threadId,
     run: detail.title ?? threadId,
-    returnTo: embedded ? `/runs${search}` : `/runs/${threadId}`,
+    returnTo: embedded ? `${pathname}${search}` : `/runs/${threadId}`,
   })
   if (detail.created_at) logsSearchParams.set('from', detail.created_at)
   if (detail.updated_at) logsSearchParams.set('to', detail.updated_at)
 
   // Gate placement (plan 2.a): full module above the workspace tabs when the
   // gate's phase is the selected phase, else a slim banner linking there.
+  const gateInterrupt = hitl.gate
+    ? query.data.interrupts.find((interrupt) => interrupt.interrupt_id === hitl.gate?.interrupt_id)
+    : undefined
   const gateSlot =
     hitl.gate &&
     (hitl.gate.phase === selectedPhase ? (
       <>
       <GateDecisionContext state={state} phase={hitl.gate.phase} kind={hitl.gate.kind} updatedAt={detail.updated_at} />
-      <GateModuleView
-        threadId={threadId}
-        gate={hitl.gate}
-        machineState={hitl.state}
-        onEdit={hitl.edit}
-        onSubmit={hitl.submit}
-        onViewCurrent={hitl.viewCurrent}
-      />
+      {renderGate && gateInterrupt ? renderGate(gateInterrupt, `${pathname}${search}`) : (
+        <GateModuleView
+          threadId={threadId}
+          gate={hitl.gate}
+          machineState={hitl.state}
+          onEdit={hitl.edit}
+          onSubmit={hitl.submit}
+          onViewCurrent={hitl.viewCurrent}
+          returnTo={embedded ? `${pathname}${search}` : undefined}
+        />
+      )}
       </>
     ) : (
-      <GateSlimBanner threadId={threadId} gate={hitl.gate} />
+      <GateSlimBanner
+        threadId={threadId}
+        gate={hitl.gate}
+        onReview={embedded ? () => onSectionChange?.('decision', hitl.gate && isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase) : undefined}
+      />
     ))
 
   const currentSearchParams = new URLSearchParams(search)
@@ -201,6 +218,7 @@ export function RunWorkspace({
         </span>
         <span className="run-workspace-meta">Test result: <strong>{executionResultLabel(detail, state)}</strong></span>
         <span className="run-workspace-meta"><strong>{progress.completed}/{progress.total}</strong> phases finished</span>
+        {waitAge && <span className="run-workspace-meta">Waiting <strong>{waitAge}</strong></span>}
         {stateParseFailed && (
           <span
             className="topbar-meta-chip warning"
@@ -210,7 +228,7 @@ export function RunWorkspace({
           </span>
         )}
         <span className="spacer" />
-        <RequireRole role="operator">
+        {(!embedded || showEmbeddedControls) && <RequireRole role="operator">
           {!hitl.gate && detail.thread_status === 'busy' ? (
             // No gate to resume through — cancel the active run(s) server-side.
             <AbortConfirm
@@ -243,14 +261,14 @@ export function RunWorkspace({
               ]}
             />
           </span>
-        </RequireRole>
+        </RequireRole>}
         <Link
           className="btn btn-ghost btn-sm"
           to={`/logs?${logsSearchParams.toString()}`}
         >
           Logs
         </Link>
-        {embedded && (
+        {embedded && showEmbeddedControls && (
           <>
             <Link className="btn btn-ghost btn-sm" to={expandedPath}>
               Expand
@@ -281,12 +299,14 @@ export function RunWorkspace({
       <nav className="ux-actions run-sections" aria-label="Run sections">
         {embedded ? (
           <>
+            {hitl.gate && <button type="button" className="btn btn-secondary" aria-current={decision ? 'page' : undefined} onClick={() => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase)}>Decision</button>}
             <button type="button" className="btn btn-secondary" aria-current={overview ? 'page' : undefined} onClick={() => onSectionChange?.('overview')}>Overview</button>
             <button type="button" className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>
             <button type="button" className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} onClick={() => onSectionChange?.('timeline')}>Timeline</button>
           </>
         ) : (
           <>
+            {hitl.gate && <Link className="btn btn-secondary" aria-current={decision ? 'page' : undefined} to={runReviewPath(threadId, hitl.gate.interrupt_id, { source: 'overview', phase: isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase })}>Decision</Link>}
             <Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link>
             <Link className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} to={workspacePath}>Workspace</Link>
             <Link className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
@@ -294,7 +314,14 @@ export function RunWorkspace({
         )}
       </nav>
       {overview ? (
-        <RunOverview detail={detail} state={state} progress={progress} onOpenPhase={embedded ? (phase) => onSectionChange?.('workspace', phase) : undefined} />
+        <RunOverview
+          detail={detail}
+          state={state}
+          progress={progress}
+          returnTo={embedded ? `${pathname}${search}` : undefined}
+          onOpenPhase={embedded ? (phase) => onSectionChange?.('workspace', phase) : undefined}
+          onReviewGate={embedded && hitl.gate ? () => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase) : undefined}
+        />
       ) : timeline ? (
         <RunTimeline state={state} />
       ) : <>

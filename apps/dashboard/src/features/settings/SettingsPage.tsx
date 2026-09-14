@@ -326,7 +326,7 @@ function PersonalPreferences() {
         <label className="ux-field">Editor word wrap<select className="field-select" value={String(preferences.wordWrap)} onChange={event => setPreferences({wordWrap:event.target.value === 'true'})}><option value="true">Wrap long lines</option><option value="false">Scroll horizontally</option></select><small>Applies to read-only code and evidence previews; does not modify saved content.</small></label>
       </div>
     </section>
-    <section className="glass-panel settings-section"><h3 className="settings-section-title">Notifications</h3><p className="settings-hint">Follow pending decisions in <Link to="/approvals">Approvals</Link> and run progress in <Link to="/runs">Test History</Link>. Browser notifications are not enabled for Orchestration; team alert routes are managed by your administrator.</p></section>
+    <section className="glass-panel settings-section"><h3 className="settings-section-title">Notifications</h3><p className="settings-hint">Follow pending decisions in <Link to="/approvals">Tests · Needs review</Link> and run progress in <Link to="/runs">Tests · All runs</Link>. Browser notifications are not enabled for Orchestration; team alert routes are managed by your administrator.</p></section>
     <AboutSection />
   </>
 }

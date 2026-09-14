@@ -31,7 +31,7 @@ lands), so wiring is just the one re-export above.
 
 ## URL contract for `/runs` (deep links)
 
-`?status=idle|busy|interrupted|error & q=<text> & project=<id> & limit=<1..100> & offset=<n> & selected=<threadId> & runSection=overview|workspace|timeline & phase=<phase> & tab=<workspace-tab>`
+`?status=idle|busy|interrupted|error & q=<text> & project=<id> & limit=<1..100> & offset=<n> & selected=<threadId> & runSection=decision|overview|workspace|timeline & phase=<phase> & tab=<workspace-tab>`
 — parsed/serialized by `src/features/runs/runsFilters.ts`; defaults
 (`limit=25`, `offset=0`) are omitted from the URL. Unknown statuses and
 malformed numbers are dropped/clamped on parse, so stale links never break the
@@ -83,6 +83,9 @@ The existing route table already lazy-loads those four export names from
 - `RunDetailPage` renders the run overview at `/runs/:threadId` and the selected
   phase workspace at `/runs/:threadId/phases/<phase>`. Keep both paths on the
   same component so the embedded and full-page views share behavior.
+- Pending decisions link to the canonical gate-specific route
+  `/runs/:threadId/reviews/:interruptId`. This route embeds the same
+  `RunWorkspace` with Decision, Overview, Workspace, and Timeline sections.
 - `TimelinePage` renders the same Run Workspace shell with `section="timeline"`.
   Timeline navigation carries `phase` and `tab` so returning to Workspace
   restores the operator's prior phase context. The history master-detail view
@@ -184,7 +187,7 @@ wired pages (`RunDetailPage`) or the approvals inbox (its own agent's wiring).
 | `useGate(threadId, {gateHint?})` | `src/hitl/useGate.ts` | binds machine to `useThreadState` interrupts + stream hint accelerator; returns `{state, gate, lastAccepted, edit, submit, reset, viewCurrent}` |
 | `useResumeGate` | `src/hitl/useResumeGate.ts` | CAS POST `/v1/pipelines/{thread_id}/gates/{interrupt_id}/resume`; 202 invalidates `threads.state(threadId)` + `pipelines.lists()`; 409 problem `gate_superseded` -> conflict |
 | `GateModuleView` (controlled) | `src/hitl/GateModule.tsx` | RunDetailPage pins it ABOVE the PhaseWorkspace tabs (via the new `gateSlot` prop) when the gate's phase == selected phase |
-| `GateModule` (self-contained, inbox contract `{threadId, interrupt, compact, onOutcome, handleRef}`) | `src/hitl/GateModule.tsx` | ApprovalsInboxPage preview (`features/approvals/gateModuleContract.ts` re-exports the types) |
+| `GateModule` (self-contained, inbox contract `{threadId, interrupt, onOutcome, handleRef, returnTo}`) | `src/hitl/GateModule.tsx` | ApprovalsInboxPage Review Workspace (`features/approvals/gateModuleContract.ts` re-exports the types) |
 | `GateSlimBanner` | `src/hitl/GateModule.tsx` | RunDetailPage on phases that are NOT the gate's phase (links to it) |
 | `AbortConfirm` (type-to-confirm 'ABORT') | `src/hitl/GateActionBar.tsx` | gate action bar + RunDetailPage header (same machine, action `abort`) |
 | panels (`PromptReviewPanel`, `PhaseReviewPanel`, `DialogueThread`, `SupersededBanner`) | `src/hitl/*.tsx` | inside GateModuleView |
@@ -196,7 +199,7 @@ wired pages (`RunDetailPage`) or the approvals inbox (its own agent's wiring).
 - `RunDetailPage.tsx`: one page-level `useGate(threadId, { gateHint:
   live.stream.pendingGateHint })`; workspace gate slot + header abort share it.
 - `RunRail.tsx`: the D2 disabled "Review gate" placeholder is now a real link
-  to `/runs/:threadId/phases/<gatePhase>`; the stream-hint chip copy changed
+  to the gate-specific Review Workspace; the stream-hint chip copy changed
   from "review arrives in D3" to "loading gate…" (tests updated accordingly).
 
 ## Semantics (plan "HITL gate machine")

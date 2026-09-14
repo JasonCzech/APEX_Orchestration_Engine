@@ -202,7 +202,7 @@ describe('RunDetailPage', () => {
     expect(banner).toHaveTextContent('Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      `/runs/${THREAD_ID}/phases/reporting`,
+      `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
     )
   })
 

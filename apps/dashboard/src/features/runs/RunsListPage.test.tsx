@@ -119,6 +119,7 @@ function renderRunsPage(initialEntry = '/runs') {
       { path: '/runs', element: <RunsListPage /> },
       { path: '/runs/new', element: <LocationProbe label="new-run" /> },
       { path: '/runs/:threadId', element: <LocationProbe label="run-detail" /> },
+      { path: '/runs/:threadId/reviews/:interruptId', element: <LocationProbe label="run-review" /> },
       { path: '/runs/:threadId/phases/:phase', element: <LocationProbe label="phase-detail" /> },
     ],
     { initialEntries: [initialEntry] },
@@ -196,13 +197,17 @@ describe('RunsListPage', () => {
 
   it('renders a warning gate action that opens the consolidated workspace', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
-    renderRunsPage()
+    const user = userEvent.setup()
+    const router = renderRunsPage()
 
-    const chip = await screen.findByRole('button', { name: 'Review prompts' })
+    const chip = await screen.findByRole('button', { name: 'Review prompts for Nightly soak, Test Planning' })
     expect(chip).toHaveClass('topbar-meta-chip', 'warning')
-
     const busyRow = within(screen.getByTestId(`runs-row-${RUN_BUSY.thread_id}`))
     expect(busyRow.queryByRole('button', { name: /review prompts/i })).not.toBeInTheDocument()
+
+    await user.click(chip)
+    expect(router.state.location.pathname).toBe('/runs/run-gated-2/reviews/int-7')
+    expect(router.state.location.search).toContain('source=history')
   })
 
   it('opens the shared Run Workspace with an operator summary and technical JSON', async () => {
@@ -413,7 +418,7 @@ describe('RunsListPage', () => {
     const router = renderRunsPage()
 
     const row = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    await user.click(row.getByRole('button', { name: /Checkout latency regressionrun-busy-1Execution/ }))
+    await user.click(row.getByRole('button', { name: 'Open Checkout latency regression details' }))
     expect(await screen.findByRole('region', { name: 'Run workspace' })).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs')
     expect(router.state.location.search).toContain(`selected=${RUN_BUSY.thread_id}`)

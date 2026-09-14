@@ -255,7 +255,7 @@ nav[aria-label='Run sections'] { margin:12px 0 18px; }
 .scope-context strong { color:var(--text-muted); font-size:.85em; margin-right:6px; }
 .scope-context a { margin-left:auto; }
 .run-sections .btn:not([aria-current]) { background:transparent; }
-.run-sections [aria-current="page"] { background:var(--accent); color:var(--bg-primary); border-color:var(--accent); font-weight:700; }
+.run-sections [aria-current="page"] { background:var(--accent); color:var(--accent-contrast); border-color:var(--accent); font-weight:700; }
 .approval-identity { font-size:.8rem; color:var(--text-secondary); overflow-wrap:anywhere; margin:6px 0; }
 .approvals-row { min-width:0; }
 .approvals-page .topbar-meta-chip { max-width:none; white-space:normal; overflow:visible; text-overflow:clip; }

@@ -8,9 +8,9 @@
  *
  * 2. GateModule — the self-contained module honoring the approvals-inbox
  *    integration contract (features/approvals/gateModuleContract.ts):
- *    <GateModule threadId interrupt compact onOutcome handleRef />. It mounts
+ *    <GateModule threadId interrupt compact onOutcome handleRef returnTo />. It mounts
  *    its OWN useGate over the same thread-state cache entry, notifies terminal
- *    terminal outcomes exactly once per gate instance ('resumed' for terminal
+ *    outcomes exactly once per gate instance ('resumed' for terminal
  *    202 decisions, 'superseded' on 409-conflict/actioned-elsewhere), and exposes the imperative handle
  *    for the inbox's safe focus/arming shortcuts (m/x + Enter). Approval and
  *    skip submissions remain on the module's explicit controls.
@@ -32,6 +32,7 @@ import type { GateInterrupt } from '@/api/hooks/useThreadState'
 import { roleAtLeast, RequireRole } from '@/auth/RequireRole'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
+import { runReviewPath } from '@/features/runs/reviewPath'
 
 import { GateActionBar } from './GateActionBar'
 import {
@@ -80,6 +81,8 @@ export interface GateModuleViewProps {
   onSubmit: (action: GateAction) => void
   /** SupersededBanner's [View current state] (refetch + RESET). */
   onViewCurrent?: (() => void) | undefined
+  /** Route restored after inspecting a review artifact. */
+  returnTo?: string
   /** Inbox preview density: tighter spacing, collapsed secondary sections. */
   compact?: boolean
 }
@@ -91,6 +94,7 @@ export function GateModuleView({
   onEdit,
   onSubmit,
   onViewCurrent,
+  returnTo,
   compact = false,
 }: GateModuleViewProps) {
   if (machineState.tag === 'no_gate') return null
@@ -202,7 +206,7 @@ export function GateModuleView({
       {payload?.kind === 'phase_review' && (
         <PhaseReviewPanel
           threadId={threadId}
-          returnTo={compact ? `/approvals/${encodeURIComponent(threadId)}/${encodeURIComponent(gate.interrupt_id)}` : undefined}
+          returnTo={returnTo ?? (compact ? runReviewPath(threadId, gate.interrupt_id, { source: 'queue', phase: gate.phase }) : undefined)}
           payload={payload}
           draft={draft}
           disabled={disabled}
@@ -248,6 +252,8 @@ export interface GateModuleProps {
   /** The pending interrupt from useThreadState — one GateModule per gate instance. */
   interrupt: GateInterrupt
   compact?: boolean
+  /** Route restored after inspecting a review artifact. */
+  returnTo?: string
   /** Fires exactly once per gate instance on a terminal state. */
   onOutcome?: (outcome: GateOutcome) => void
   handleRef?: Ref<GateModuleHandle | null>
@@ -257,6 +263,7 @@ export function GateModule({
   threadId,
   interrupt,
   compact = false,
+  returnTo,
   onOutcome,
   handleRef,
 }: GateModuleProps) {
@@ -371,6 +378,7 @@ export function GateModule({
         onSubmit={hitl.submit}
         onViewCurrent={hitl.viewCurrent}
         compact={compact}
+        returnTo={returnTo}
       />
     </div>
   )
@@ -382,21 +390,26 @@ export function GateModule({
  * For run-detail routes whose selected phase is NOT the gate's phase: one
  * line + a link to the phase where the full GateModuleView is pinned.
  */
-export function GateSlimBanner({ threadId, gate }: { threadId: string; gate: GateInstance }) {
+export function GateSlimBanner({ threadId, gate, onReview }: { threadId: string; gate: GateInstance; onReview?: () => void }) {
   return (
     <div className="gate-slim-banner" data-testid="gate-slim-banner">
       <span>
         {gateKindLabel(gate.kind)} gate open on{' '}
         <strong>{phaseLabel(gate.phase)}</strong>
       </span>
-      <Link
-        className="btn btn-secondary btn-sm"
-        to={
-          isPhaseName(gate.phase) ? `/runs/${threadId}/phases/${gate.phase}` : `/runs/${threadId}`
-        }
-      >
-        Review
-      </Link>
+      {onReview ? (
+        <button type="button" className="btn btn-secondary btn-sm" onClick={onReview}>Review</button>
+      ) : (
+        <Link
+          className="btn btn-secondary btn-sm"
+          to={runReviewPath(threadId, gate.interrupt_id, {
+            source: 'overview',
+            phase: isPhaseName(gate.phase) ? gate.phase : null,
+          })}
+        >
+          Review
+        </Link>
+      )}
     </div>
   )
 }

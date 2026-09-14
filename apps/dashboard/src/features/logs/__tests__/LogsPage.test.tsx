@@ -168,6 +168,17 @@ describe('LogsPage', () => {
     )
   })
 
+  it('labels the return path as a review when logs open from the Review Workspace', async () => {
+    server.use(logsHandler().handler)
+    const reviewPath = '/runs/run-123/reviews/int-1?source=queue&section=overview'
+    renderLogs(`?thread=run-123&returnTo=${encodeURIComponent(reviewPath)}`)
+
+    expect(await screen.findByRole('link', { name: 'Return to review' })).toHaveAttribute(
+      'href',
+      reviewPath,
+    )
+  })
+
   it('paginates the submitted search with offset and a total caption', async () => {
     const logs = logsHandler(makeEntries(120))
     server.use(logs.handler)

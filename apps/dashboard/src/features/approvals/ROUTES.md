@@ -1,94 +1,58 @@
-# Approvals inbox — route wiring (D3, inbox agent)
+# Review workspace route contract
 
-This feature does NOT touch `src/routes/router.tsx`. Both approvals routes in
-the D0 route table already lazy-load from `@/features/approvals/pages`, and
-`pages.tsx` in this folder now re-exports the real screen (same minimal-diff
-pattern the runs grid documented in D1) — **wiring is already done**:
+Approvals and Test History share one gate-specific Review Workspace. The
+screen keeps the review queue, run context, phase output, artifacts, dialogue,
+timeline, and decision controls together.
+
+The primary sidebar exposes one `Tests` destination with a pending-review
+badge. It opens `All runs` by default; operators switch to `Needs review`
+inside the Tests view.
 
 | Export | Route | Behavior |
 |---|---|---|
-| `ApprovalsInboxPage` | `/approvals` | keyboard-first gate queue + preview |
-| `ApprovalDetailPage` (alias of `ApprovalsInboxPage`) | `/approvals/:threadId/:interruptId` | same screen with that gate pre-selected |
+| `ApprovalsInboxPage` | `/approvals` | Selects the oldest open gate and replaces the URL with its canonical review URL |
+| `ApprovalDetailPage` | `/runs/:threadId/reviews/:interruptId` | Opens the selected gate in the full Review Workspace |
+| `ApprovalDetailPage` | `/approvals/:threadId/:interruptId` | Legacy bookmark; redirects to the canonical review URL |
 
 ## URL contract
 
-- `/approvals` — no params; the oldest open gate auto-selects.
-- `/approvals/:threadId/:interruptId` — deep link that pre-selects the queue
-  item. `:interruptId` picks the matching interrupt on the thread when it is
-  still pending; after a modify/discuss/revise loop the thread's CURRENT
-  pending interrupt renders, including when LangGraph reuses the id. Selection
-  changes from clicks/keys are LOCAL state only — they do not rewrite the URL
-  (the two routes mount different route objects, so navigating per keystroke
-  would remount the page and drop focus).
+`runReviewPath()` in `features/runs/reviewPath.ts` is the shared URL builder:
 
-## Routes this screen links to
+`/runs/:threadId/reviews/:interruptId?source=queue|history|home|overview&section=decision|overview|workspace|timeline&phase=<phase>`
 
-- `/runs` (empty-state ghost button) and `/runs/:threadId` (preview title,
-  "Open run", the `o` shortcut) — both real since D1.
+- `interruptId` identifies the exact decision. `pending` is the fallback for
+  legacy gates without an id.
+- `section` defaults to `decision` and changes without leaving the queue or
+  Review Workspace.
+- `phase` preserves phase context across Decision, Workspace, Timeline,
+  artifacts, and execution logs.
+- Queue clicks and keyboard navigation update the URL, so the selected review
+  is refreshable and shareable.
+
+## Shared workspace and gate contract
+
+`ApprovalsInboxPage` embeds `RunWorkspace` and passes the self-contained
+`GateModule` through `renderGate`. The gate module owns resume I/O, CAS
+handling, invalidations, and pessimistic action state. The inbox owns queue
+selection, terminal outcome receipts, gray resolved rows, and auto-advance.
+
+Decision actions use gate-specific language. Accepting phase output explicitly
+states that it does not approve the overall test result or a release. Terminal
+actions leave a decision receipt before the queue advances.
+
+## Keyboard map
+
+`j/k` or `↓/↑` navigate the queue; `Enter` focuses the workspace; `o` opens
+Overview in the same workspace; `m` focuses prompt changes; `x` arms typed
+abort confirmation; `?` toggles shortcut help. Approval and skip decisions
+remain explicit buttons. Shortcuts yield while the operator is typing.
 
 ## Data
 
-`useApprovalsInbox()` reuses `usePipelines({status:'interrupted', limit:100})`
-— the same `queryKeys.pipelines.list` cache family and 15s visibility-aware
-poll as the runs grid; rows are filtered client-side on `pending_gate != null`
-and sorted oldest-`updated_at` first. The Sidebar badge calls the same hook,
-so the badge and the inbox share ONE cache entry / ONE poll (no new query
-keys were needed — `queryKeys.approvals.*` remains reserved). The hook also
-diffs consecutive polls and exposes `removedItems` (gates resumed elsewhere)
-for one cycle so the page can gray rows inline instead of yanking them.
+`useApprovalsInbox()` reuses `usePipelines({status:'interrupted', limit:100})`,
+with a 15-second visibility-aware poll. The Sidebar badge consumes the same
+cache entry. `RunWorkspace` and `GateModule` share the selected thread-state
+cache entry for full run and gate detail.
 
-The preview pane reads `useThreadState(threadId)` (the same facade snapshot
-the run-detail page uses) and mounts the shared gate module on the pending
-interrupt.
-
-## GateModule integration contract (consumed from src/hitl — gate agent)
-
-Import path: `import { GateModule } from '@/hitl/GateModule'` — the
-SELF-CONTAINED module (mounts its own `useGate` machine over the shared
-thread-state cache entry). Types are canonical in `src/hitl/GateModule.tsx`;
-`./gateModuleContract.ts` re-exports them and documents the consumer-side
-semantics:
-
-- `<GateModule threadId interrupt compact onOutcome handleRef />`, keyed by
-  `interrupt.interrupt_id` when it changes; refreshed same-id re-reviews reopen
-  inside `useGate`.
-- `onOutcome` (once per gate instance):
-  `{type:'resumed', action}` for approve/skip_phase/abort → row grays
-  as **actioned**, selection auto-advances; modify/discuss/revise → NOT terminal
-  (gate reopens in place); `{type:'superseded'}` → row grays as **actioned
-  elsewhere**, selection auto-advances.
-- `handleRef: Ref<GateModuleHandle>` → `isActionable()` / `invoke(action)` /
-  `focus()` for the keyboard layer. All resume I/O (pessimistic 202/409 CAS
-  handling + invalidations) stays inside the machine; this page never calls
-  the resume endpoint.
-
-## Keyboard map (document-level listener, mounted with the page)
-
-`j/k` or `↓/↑` navigate · `Enter` focus preview · `o` open run ·
-`a/m/s/x` → `invoke('approve'|'modify'|'skip_phase'|'abort')` gated on
-`isActionable()` (`m` moves focus into the prompt editor without submitting;
-`x` arms and focuses typed abort confirmation) · `?` shortcuts overlay ·
-`Escape` closes it.
-Shortcuts yield while typing (input/textarea/select/contenteditable/
-`.cm-editor`).
-
-## Shell changes (surgical)
-
-- `src/components/layout/Sidebar.tsx`: local `ApprovalsBadge` component
-  (consumes `useApprovalsInbox`) rendered inside the Approvals NavLink —
-  `dash-badge` count when > 0, `pulse` class when any gate has waited > 15m
-  (`STALE_GATE_MS`).
-- `src/components/layout/Sidebar.css`: `.nav-badge` layout glue (hidden when
-  the sidebar is collapsed / on narrow viewports).
-- `src/test/server.ts`: default `GET */v1/pipelines` → empty list, because the
-  badge polls on every authenticated shell mount; per-test `server.use(...)`
-  overrides still win.
-
-## Tests
-
-`__tests__/ApprovalsInboxPage.test.tsx` (13) with fixtures/handlers in
-`__tests__/approvalsTestHandlers.ts` and a typed module mock in
-`__tests__/gateModuleMock.tsx`. The mock is PARTIAL — only the self-contained
-`GateModule` export is replaced (typed against the real `GateModuleProps`, so
-contract drift fails compile); `GateModuleView` and friends stay real for the
-run-detail page mounted by the `o`-shortcut test.
+Tests live in `__tests__/ApprovalsInboxPage.test.tsx`, with fixtures and MSW
+handlers in the same directory.

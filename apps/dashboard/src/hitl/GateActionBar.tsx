@@ -149,14 +149,19 @@ export function GateActionBar({
           </button>
         )}
         {kind === 'phase_review' && has('approve') && (
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            disabled={disabled}
-            onClick={() => onSubmit('approve')}
-          >
-            ✓ Approve &amp; Continue
-          </button>
+          <span className="gate-primary-decision">
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              disabled={disabled}
+              onClick={() => onSubmit('approve')}
+            >
+              Accept phase output &amp; continue
+            </button>
+            <span className="gate-decision-scope">
+              Accepts this phase output; it does not approve the test result or a release.
+            </span>
+          </span>
         )}
         {kind === 'prompt_review' && has('skip_phase') && (
           <button
@@ -187,7 +192,7 @@ export function GateActionBar({
               disabled={disabled}
               onClick={() => setRevising(true)}
             >
-              ↻ Modify &amp; Re-run
+              Request changes
             </button>
           ))}
         {kind === 'phase_review' && has('discuss') && (
@@ -202,7 +207,7 @@ export function GateActionBar({
             }
             onClick={() => onSubmit('discuss')}
           >
-            Message Agent
+            Ask agent
           </button>
         )}
         <span className="gate-actions-spacer" />

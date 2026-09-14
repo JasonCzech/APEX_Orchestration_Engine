@@ -20,6 +20,27 @@
   border-radius: var(--radius);
 }
 
+.runs-view-switch {
+  flex: 0 0 auto;
+}
+
+.runs-view-switch [aria-current='page'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 700;
+}
+
+@media (max-width: 980px) {
+  .runs-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .runs-view-switch {
+    flex-basis: 100%;
+  }
+}
+
 .runs-search {
   flex: 1;
   max-width: 320px;

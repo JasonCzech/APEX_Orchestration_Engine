@@ -278,7 +278,11 @@ export function LogsPage() {
             <strong>{form.run ?? form.thread}</strong>
             {form.run && <code>{form.thread}</code>}
           </div>
-          {form.returnTo && <Link className="btn btn-ghost btn-sm" to={form.returnTo}>Return to run</Link>}
+          {form.returnTo && (
+            <Link className="btn btn-ghost btn-sm" to={form.returnTo}>
+              {form.returnTo.includes('/reviews/') ? 'Return to review' : 'Return to run'}
+            </Link>
+          )}
         </aside>
       )}
 

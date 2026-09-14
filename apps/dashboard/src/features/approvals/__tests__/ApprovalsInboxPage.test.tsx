@@ -81,6 +81,15 @@ async function findRow(threadId: string) {
   return await screen.findByTestId(`approvals-row-${threadId}`)
 }
 
+async function waitForSelected(threadId: string) {
+  await waitFor(() =>
+    expect(screen.getByTestId(`approvals-row-${threadId}`)).toHaveAttribute(
+      'aria-selected',
+      'true',
+    ),
+  )
+}
+
 beforeEach(() => {
   resetGateModuleMock()
 })
@@ -90,7 +99,7 @@ describe('ApprovalsInboxPage', () => {
     useInboxHandlers()
     renderInbox()
 
-    const queue = await screen.findByRole('listbox', { name: 'Approvals queue' })
+    const queue = await screen.findByRole('listbox', { name: 'Needs review queue' })
     const rows = within(queue).getAllByRole('option')
     expect(rows).toHaveLength(2) // RUN_BUSY (no pending gate) filtered out
     expect(rows[0]).toHaveAttribute('id', 'approvals-row-run-old-1')
@@ -106,7 +115,8 @@ describe('ApprovalsInboxPage', () => {
       'topbar-meta-chip',
       'info',
     )
-    expect(screen.getByTestId('approvals-count-chip')).toHaveTextContent('2 pending')
+    expect(screen.queryByText('Test operations')).not.toBeInTheDocument()
+    expect(screen.queryByText('2 pending')).not.toBeInTheDocument()
   })
 
   it('walks every backend page so queues larger than 100 stay complete', async () => {
@@ -136,25 +146,38 @@ describe('ApprovalsInboxPage', () => {
     )
     renderInbox()
 
-    expect(await screen.findByTestId('approvals-count-chip')).toHaveTextContent('101 pending')
     expect(await findRow('run-page-100')).toBeInTheDocument()
     expect(offsets).toEqual([0, 100])
   })
 
   it('auto-selects the oldest gate and previews it through the shared GateModule', async () => {
     useInboxHandlers()
-    renderInbox()
+    const { router } = renderInbox()
 
-    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() => expect(screen.getByTestId('approvals-row-run-old-1')).toHaveAttribute('aria-selected', 'true'))
     const gate = await screen.findByTestId('gate-module-mock')
     expect(gate).toHaveAttribute('data-thread', 'run-old-1')
     expect(gate).toHaveAttribute('data-interrupt', 'int-old')
-    expect(gate).toHaveAttribute('data-compact', 'true')
+    expect(gate).toHaveAttribute('data-compact', 'false')
+    expect(router.state.location.pathname).toBe('/runs/run-old-1/reviews/int-old')
+    expect(router.state.location.search).toBe('?source=queue')
+    expect(screen.getByRole('region', { name: 'Run workspace' })).toHaveTextContent('Test result:')
+    expect(screen.queryByRole('button', { name: 'Re-run selected plan' })).not.toBeInTheDocument()
+  })
+
+  it('preserves entry provenance while moving through Review Workspace sections', async () => {
+    useInboxHandlers()
+    const user = userEvent.setup()
+    const { router } = renderInbox('/runs/run-old-1/reviews/int-old?source=history')
+
+    await user.click(await screen.findByRole('button', { name: 'Overview' }))
+    expect(router.state.location.pathname).toBe('/runs/run-old-1/reviews/int-old')
+    expect(router.state.location.search).toBe('?source=history&section=overview')
   })
 
   it('deep link /approvals/:threadId/:interruptId selects that queue item', async () => {
     useInboxHandlers()
-    renderInbox('/approvals/run-new-2/int-new')
+    const { router } = renderInbox('/approvals/run-new-2/int-new')
 
     expect(await findRow('run-new-2')).toHaveAttribute('aria-selected', 'true')
     expect(await screen.findByTestId('gate-module-mock')).toHaveAttribute(
@@ -165,6 +188,7 @@ describe('ApprovalsInboxPage', () => {
       'aria-selected',
       'false',
     )
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new'))
   })
 
   it('routes a same-turn safe focus shortcut only to the new deep-linked gate', async () => {
@@ -209,7 +233,12 @@ describe('ApprovalsInboxPage', () => {
     useInboxHandlers()
     const user = userEvent.setup()
     renderInbox()
-    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() =>
+      expect(screen.getByTestId('approvals-row-run-old-1')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    )
 
     await user.keyboard('j')
     expect(await findRow('run-new-2')).toHaveAttribute('aria-selected', 'true')
@@ -245,7 +274,7 @@ describe('ApprovalsInboxPage', () => {
     useInboxHandlers()
     const user = userEvent.setup()
     renderInbox()
-    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    await waitForSelected('run-old-1')
     await screen.findByTestId('gate-module-mock')
 
     await user.click(screen.getByLabelText('mock-note'))
@@ -262,7 +291,7 @@ describe('ApprovalsInboxPage', () => {
     useInboxHandlers()
     const user = userEvent.setup()
     renderInbox()
-    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    await waitForSelected('run-old-1')
     await screen.findByTestId('gate-module-mock')
 
     await user.keyboard('as')
@@ -276,13 +305,15 @@ describe('ApprovalsInboxPage', () => {
     useInboxHandlers()
     const user = userEvent.setup()
     renderInbox()
-    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    await waitForSelected('run-old-1')
 
     await user.click(await screen.findByRole('button', { name: 'mock-approve' }))
     // Row grayed inline ('actioned', not removed) + selection advanced.
     const oldRow = await findRow('run-old-1')
     expect(oldRow).toHaveClass('removed')
     expect(within(oldRow).getByText('actioned')).toBeInTheDocument()
+    expect(screen.getByText('Decision receipt')).toBeInTheDocument()
+    expect(screen.getByText(/Approved prompts and started the phase/)).toBeInTheDocument()
     expect(await findRow('run-new-2')).toHaveAttribute('aria-selected', 'true')
     await waitFor(() =>
       expect(screen.getByTestId('gate-module-mock')).toHaveAttribute(
@@ -296,7 +327,12 @@ describe('ApprovalsInboxPage', () => {
     useInboxHandlers()
     const user = userEvent.setup()
     renderInbox()
-    expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
+    await waitFor(() =>
+      expect(screen.getByTestId('approvals-row-run-old-1')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      ),
+    )
 
     await user.click(await screen.findByRole('button', { name: 'mock-supersede' }))
 
@@ -375,15 +411,15 @@ describe('ApprovalsInboxPage', () => {
   })
 })
 
-describe('Sidebar approvals badge', () => {
-  it('shows the pending-gate count next to Approvals and pulses when a gate is stale', async () => {
+describe('Sidebar review badge', () => {
+  it('shows the pending-review count next to Tests and pulses when a gate is stale', async () => {
     useInboxHandlers()
     renderApp({ initialEntries: ['/'], authState: authenticatedState() })
 
-    const badge = await screen.findByTestId('approvals-nav-badge')
+    const badge = await screen.findByTestId('tests-review-nav-badge')
     expect(badge).toHaveTextContent('2')
     expect(badge).toHaveClass('dash-badge', 'pulse') // OLD waited > 15m
-    expect(screen.getByRole('link', { name: /Approvals/ })).toContainElement(badge)
+    expect(screen.getByRole('link', { name: /^Tests/ })).toContainElement(badge)
   })
 
   it('renders no badge when nothing is pending (and no pulse when gates are fresh)', async () => {
@@ -391,7 +427,7 @@ describe('Sidebar approvals badge', () => {
     renderApp({ initialEntries: ['/'], authState: authenticatedState() })
     await screen.findByTestId('sidebar')
     await waitFor(() =>
-      expect(screen.queryByTestId('approvals-nav-badge')).not.toBeInTheDocument(),
+      expect(screen.queryByTestId('tests-review-nav-badge')).not.toBeInTheDocument(),
     )
   })
 })

@@ -10,6 +10,7 @@ describe('artifact return context', () => {
   it('permits approval and phase deep links', () => {
     expect(artifactReturnPath('/approvals/run-a/int-a', 'run-a')).toBe('/approvals/run-a/int-a')
     expect(artifactReturnPath('/runs/run-a/phases/reporting?tab=details', 'run-a')).toBe('/runs/run-a/phases/reporting?tab=details')
+    expect(artifactReturnPath('/runs/run-a/reviews/int-a?source=queue', 'run-a')).toBe('/runs/run-a/reviews/int-a?source=queue')
   })
   it('keeps artifact URLs directly usable', () => {
     render(<MemoryRouter initialEntries={['/runs/a/phases/reporting']}><ArtifactLink to="/runs/a/artifacts/report">Read report</ArtifactLink></MemoryRouter>)

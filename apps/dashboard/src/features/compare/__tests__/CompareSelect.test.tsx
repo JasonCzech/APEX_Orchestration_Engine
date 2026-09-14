@@ -81,7 +81,7 @@ describe('RunsListPage compare selection', () => {
   it('keeps row navigation intact while selecting, and clears selection on toggle-off', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     const user = userEvent.setup()
-    renderRunsPage()
+    const router = renderRunsPage()
 
     await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`)
     await user.click(screen.getByRole('button', { name: 'Compare' }))
@@ -96,11 +96,13 @@ describe('RunsListPage compare selection', () => {
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('region', { name: 'Compare selection' })).not.toBeInTheDocument()
 
-    // The run link still navigates while checkbox clicks only toggle compare selection.
+    // The run row still navigates while checkbox clicks only toggle compare selection.
     const busyRow = within(screen.getByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    await user.click(busyRow.getByRole('link', { name: /Checkout latency regression/ }))
-    expect(await screen.findByTestId('run-detail')).toHaveTextContent(
-      `/runs/${RUN_BUSY.thread_id}`,
+    await user.click(busyRow.getByRole('button', { name: 'Open Checkout latency regression details' }))
+    expect(router.state.location.pathname).toBe('/runs')
+    expect(new URLSearchParams(router.state.location.search).get('selected')).toBe(
+      RUN_BUSY.thread_id,
     )
+    expect(new URLSearchParams(router.state.location.search).get('runSection')).toBe('workspace')
   })
 })

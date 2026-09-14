@@ -1,4 +1,3 @@
-import { formatDuration } from '@/features/runs/runDisplay'
 /**
  * Home dashboard derivations (plan UX 1.5 — attention-first overview).
  *
@@ -9,6 +8,8 @@ import { formatDuration } from '@/features/runs/runDisplay'
  * exactly one pipelines request beyond what the shell already polls.
  */
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
+import { formatDuration } from '@/features/runs/runDisplay'
+import { runReviewPath } from '@/features/runs/reviewPath'
 
 /** One-page fleet scan — enough headroom for the grid/table/failure slices. */
 export const HOME_FLEET_LIMIT = 50
@@ -87,9 +88,9 @@ export function errorRateOf(
   return `${((totals.errors / totals.events) * 100).toFixed(1)}%`
 }
 
-/** Deep link into the approvals inbox; falls back to the queue without an id. */
+/** Deep link into the canonical Review Workspace; falls back to Needs review without an id. */
 export function gateHref(threadId: string, interruptId: string | null | undefined): string {
-  return interruptId ? `/approvals/${threadId}/${interruptId}` : '/approvals'
+  return interruptId ? runReviewPath(threadId, interruptId, { source: 'home' }) : '/approvals'
 }
 
 export function totalRuns(items: PipelineSummary[]): number {

@@ -77,7 +77,14 @@
   --focus-ring: #00769d;
 }
 
-.btn-primary { color: var(--accent-contrast); }
+.btn-primary,
+a.btn-primary,
+a.btn-primary:visited,
+a.btn-primary:hover,
+a.btn-primary:focus-visible,
+a.btn-primary:active {
+  color: var(--accent-contrast);
+}
 .btn-danger { color: var(--danger-contrast); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

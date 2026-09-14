@@ -89,9 +89,9 @@ describe('dev-data route smoke', () => {
   })
 
   it.each([
-    ['/approvals', 'Approvals'],
+    ['/approvals', 'Tests'],
     ['/approvals/run-prompt-review/int-prompt', 'Approval'],
-    ['/runs', 'Test History'],
+    ['/runs', 'Tests'],
     ['/runs/new?draft=draft-esim', 'New Test'],
     ['/runs/compare?ids=run-baseline-a,run-baseline-b', 'Compare Runs'],
     ['/runs/run-active', 'Run Detail'],

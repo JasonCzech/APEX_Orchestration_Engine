@@ -35,9 +35,11 @@ describe('compact operator navigation', () => {
     const user = userEvent.setup()
     const { router } = renderApp({ initialEntries: ['/approvals'], authState: authenticatedState('operator') })
     await screen.findByRole('option', { name: /Drawer review/ })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/drawer-review/reviews/drawer-gate'))
+    const reviewPath = router.state.location.pathname
     await user.click(screen.getByRole('button', { name: 'Open navigation' }))
     await user.keyboard('o')
-    expect(router.state.location.pathname).toBe('/approvals')
+    expect(router.state.location.pathname).toBe(reviewPath)
     expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
     await user.keyboard('{Enter}')
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()

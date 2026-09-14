@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { act, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -121,6 +121,25 @@ describe('ArtifactViewerPage', () => {
     expect(screen.getByRole('link', { name: 'Back to run' })).toHaveAttribute(
       'href',
       `/runs/${THREAD_ID}`,
+    )
+  })
+
+  it('returns artifacts to the exact Review Workspace context', async () => {
+    server.use(pipelineDetailHandler())
+    const artifactPath = `/runs/${THREAD_ID}/artifacts/no-such-artifact`
+    const reviewPath = `/runs/${THREAD_ID}/reviews/int-1?source=queue&section=overview`
+    const { router } = renderRunRoutes([artifactPath])
+
+    await act(async () => {
+      await router.navigate(artifactPath, {
+        replace: true,
+        state: { artifactReturnTo: reviewPath },
+      })
+    })
+
+    expect(await screen.findByRole('link', { name: 'Back to review' })).toHaveAttribute(
+      'href',
+      reviewPath,
     )
   })
 })

@@ -55,7 +55,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'approvals',
-            handle: handle('Approvals'),
+            handle: handle('Tests'),
             lazy: lazyPage(approvals, 'ApprovalsInboxPage'),
           },
           {
@@ -65,7 +65,7 @@ export const appRoutes: RouteObject[] = [
           },
           { path: 'cycles', handle: handle('Test Cycles'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclesPage') },
           { path: 'cycles/:cycleId', handle: handle('Cycle Workspace'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclePage') },
-          { path: 'runs', handle: handle('Test History'), lazy: lazyPage(runs, 'RunsListPage') },
+          { path: 'runs', handle: handle('Tests'), lazy: lazyPage(runs, 'RunsListPage') },
           {
             path: 'runs/new',
             handle: handle('New Test'),
@@ -80,6 +80,11 @@ export const appRoutes: RouteObject[] = [
             path: 'runs/:threadId',
             handle: handle('Run Detail'),
             lazy: lazyPage(runs, 'RunDetailPage'),
+          },
+          {
+            path: 'runs/:threadId/reviews/:interruptId',
+            handle: handle('Review Run'),
+            lazy: lazyPage(approvals, 'ApprovalDetailPage'),
           },
           {
             path: 'runs/:threadId/phases/:phase',
