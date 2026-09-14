@@ -18,6 +18,7 @@ import {
   DOC_SPEC,
   deleteDocumentHandler,
   documentsListHandler,
+  evidenceAssociationHandlers,
   evidenceHandler,
   summaryAcceptedHandler,
   uploadDocumentHandler,
@@ -695,35 +696,73 @@ describe('ContextPage', () => {
     expect(screen.getByTestId(`doc-row-${DOC_SPEC.id}`)).toBeInTheDocument()
   })
 
-  it('evidence: groups packets by source with run links and filter params', async () => {
+  it('evidence: exposes project, application and test provenance with persistent filters', async () => {
     const evidence = evidenceHandler()
-    server.use(evidence.handler)
+    server.use(evidence.handler, ...evidenceAssociationHandlers())
     const user = userEvent.setup()
     renderContext('/evidence')
 
-    // Alphabetical source groups: elk before jira; jira gathers both packets.
-    const elk = await screen.findByRole('region', { name: 'Source elk' })
-    expect(within(elk).getByText('502 spike during ramp')).toBeInTheDocument()
-    const jira = screen.getByRole('region', { name: 'Source jira' })
-    expect(within(jira).getByText('2 packets')).toBeInTheDocument()
-    expect(within(jira).getByText('PHX-101 acceptance criteria')).toBeInTheDocument()
-    expect(within(jira).getByText('jira:PHX-101')).toHaveClass('ctx-packet-ref')
+    expect(await screen.findByRole('region', { name: 'Evidence investigation workspace' })).toBeInTheDocument()
+    expect(screen.getByRole('navigation', { name: 'Project and test scope' })).toHaveTextContent('Proj Alpha')
+    expect(screen.getAllByText('Checkout').length).toBeGreaterThan(0)
+    expect(screen.getByTestId('evidence-ev-jira-1')).toHaveTextContent('Checkout release test')
+    expect(screen.getByRole('complementary', { name: 'Artifact details' })).toHaveTextContent('Checkout release test')
+    expect(screen.getByRole('link', { name: 'Open Checkout release test' })).toHaveAttribute('href', '/runs/thread-7')
 
-    // Thread deep link only where the packet carries a thread_id.
-    const packet = within(jira).getByTestId('evidence-ev-jira-1')
-    expect(within(packet).getByRole('link', { name: 'Open run' })).toHaveAttribute(
-      'href',
-      '/runs/thread-7',
-    )
-    expect(
-      within(jira).getByTestId('evidence-ev-jira-2').querySelector('a'),
-    ).toBeNull()
+    const search = screen.getByLabelText('Search evidence')
+    await user.type(search, 'unapplied draft')
+    await user.click(screen.getByTestId('evidence-ev-jira-2'))
+    expect(search).toHaveValue('unapplied draft')
+    expect(screen.getByTestId('evidence-ev-jira-2')).toHaveAttribute('aria-selected', 'true')
 
-    await user.type(screen.getByLabelText('Filter by thread'), 'thread-7')
-    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    await user.clear(search)
+    await user.selectOptions(screen.getByLabelText('Filter by project'), 'proj-alpha')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
     await waitFor(() =>
-      expect(evidence.captured.at(-1)).toEqual({ project: null, threadId: 'thread-7' }),
+      expect(evidence.captured.at(-1)).toEqual({ project: 'proj-alpha', threadId: null }),
     )
+    expect(screen.getByRole('option', { name: 'Proj Beta' })).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('Filter by test'), 'thread-7')
+    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await waitFor(() =>
+      expect(evidence.captured.at(-1)).toEqual({ project: 'proj-alpha', threadId: 'thread-7' }),
+    )
+    expect(screen.getByLabelText('Filter by test')).toHaveValue('thread-7')
+
+    await user.click(screen.getByRole('tab', { name: 'Content' }))
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('Evidence ID')
+  })
+
+  it('evidence: retains unknown deep-linked filter values', async () => {
+    const evidence = evidenceHandler()
+    server.use(evidence.handler, ...evidenceAssociationHandlers())
+    renderContext('/evidence?project=unknown-project&source=custom-source')
+
+    expect(await screen.findByRole('heading', { name: 'No evidence matches these filters' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Filter by project')).toHaveValue('unknown-project')
+    expect(screen.getByLabelText('Filter by source')).toHaveValue('custom-source')
+    expect(evidence.captured.at(-1)).toEqual({ project: 'unknown-project', threadId: null })
+  })
+
+  it('evidence: remains usable when association catalogs are unavailable', async () => {
+    const evidence = evidenceHandler()
+    server.use(
+      evidence.handler,
+      http.get('*/v1/pipelines', () =>
+        HttpResponse.json({ detail: 'pipeline index unavailable' }, { status: 503 }),
+      ),
+      http.get('*/v1/catalog/applications', () =>
+        HttpResponse.json({ detail: 'application index unavailable' }, { status: 503 }),
+      ),
+    )
+    renderContext('/evidence')
+
+    expect(await screen.findByTestId('evidence-ev-jira-1')).toHaveTextContent('thread-7')
+    expect(screen.getByRole('status')).toHaveTextContent('association names are unavailable')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
   })
 
   it('hides mutations from viewers in the knowledge library', async () => {

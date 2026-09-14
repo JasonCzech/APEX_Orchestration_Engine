@@ -9,7 +9,7 @@ export function EvidencePage() {
         <div className="ctx-heading">
           <h2 className="ctx-page-title">Evidence</h2>
           <p className="ctx-toolbar-caption">
-            Review findings produced by test runs. Open a run for its complete phase history.
+            Investigate findings from test runs, organized by project, application, and test.
           </p>
         </div>
       </header>

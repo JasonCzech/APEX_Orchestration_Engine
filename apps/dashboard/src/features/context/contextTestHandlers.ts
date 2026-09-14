@@ -7,6 +7,7 @@ import { http, HttpResponse } from 'msw'
 
 import type { ContextSummaryRequest, EvidencePacket } from '@/api/hooks/useContextApi'
 import type { DocumentOut } from '@/api/hooks/useDocuments'
+import type { PipelineSummary } from '@/api/hooks/usePipelines'
 
 const NOW = '2026-06-12T12:00:00Z'
 
@@ -61,6 +62,61 @@ export const EV_ELK_SPIKE: EvidencePacket = {
   summary: 'Error rate crossed 2% at 400 vusers.',
   ref: null,
   thread_id: 'thread-8',
+}
+
+export const EVIDENCE_RUNS: PipelineSummary[] = [
+  {
+    thread_id: 'thread-7',
+    title: 'Checkout release test',
+    project_id: 'proj-alpha',
+    app_id: 'app-checkout',
+    thread_status: 'idle',
+    execution_result: 'passed',
+    phase_strip: [],
+    created_at: '2026-06-12T11:00:00Z',
+    updated_at: NOW,
+  },
+  {
+    thread_id: 'thread-8',
+    title: 'Ramp resilience test',
+    project_id: 'proj-alpha',
+    app_id: 'app-checkout',
+    thread_status: 'idle',
+    execution_result: 'failed',
+    phase_strip: [],
+    created_at: '2026-06-12T10:00:00Z',
+    updated_at: '2026-06-12T11:45:00Z',
+  },
+  {
+    thread_id: 'thread-9',
+    title: 'Payments release test',
+    project_id: 'proj-beta',
+    app_id: 'app-payments',
+    thread_status: 'idle',
+    execution_result: 'inconclusive',
+    phase_strip: [],
+    created_at: '2026-06-11T10:00:00Z',
+    updated_at: '2026-06-11T11:45:00Z',
+  },
+]
+
+/** Supporting provenance used by the redesigned Evidence workspace. */
+export function evidenceAssociationHandlers() {
+  return [
+    http.get('*/v1/pipelines', () =>
+      HttpResponse.json({ items: EVIDENCE_RUNS, limit: 100, offset: 0, partial: false }),
+    ),
+    http.get('*/v1/catalog/applications', () =>
+      HttpResponse.json({
+        items: [
+          { id: 'app-checkout', name: 'Checkout', project_id: 'proj-alpha', description: null, archived_at: null, created_at: NOW, updated_at: NOW },
+          { id: 'app-payments', name: 'Payments', project_id: 'proj-beta', description: null, archived_at: null, created_at: NOW, updated_at: NOW },
+        ],
+        limit: 200,
+        offset: 0,
+      }),
+    ),
+  ]
 }
 
 /**
