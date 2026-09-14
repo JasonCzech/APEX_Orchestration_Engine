@@ -14,6 +14,7 @@ import type {
 } from '@apex/pipeline-events'
 
 import { CodeViewer } from '@/components/viewers/CodeViewer'
+import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 import type { GateInstance, GateMachineState } from '@/hitl/gateMachine'
@@ -22,7 +23,7 @@ import { ActivityFeed } from './ActivityFeed'
 import { EngineStrip } from './EngineStrip'
 import type { LiveStreamViewLike } from './liveTypes'
 import { PromptReviewSection } from './PromptReviewSection'
-import { formatTimestamp, PHASE_LABELS } from './runDisplay'
+import { formatDuration, formatTimestamp, PHASE_LABELS, pipelineStatusLabel } from './runDisplay'
 
 const TABS = ['details', 'log', 'reasoning'] as const
 type WorkspaceTab = (typeof TABS)[number]
@@ -96,6 +97,7 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
+      <PhaseOperatorSummary entry={entry} />
       <TabList id={tabsId} label="Phase workspace tabs" items={TABS.map(id => ({id, label: TAB_LABELS[id]}))} value={tab} onChange={selectTab} />
       <div id={`${tabsId}-panel-${tab}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${tab}`} tabIndex={0}>
       {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Accepted phase evidence appears below after approval.</p>}
@@ -264,44 +266,13 @@ function PhaseDetailsTab({
     )
   }
 
-  const paragraphs = entry.summary?.split(/\n{2,}/).filter((p) => p.trim().length > 0) ?? []
-
   return (
     <div aria-label="Phase details">
       <p className="workspace-caption">
         Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : 'Not recorded'}
       </p>
       {entry.test_summary && <KpiPills summary={entry.test_summary} />}
-      {paragraphs.length > 0 ? (
-        <div className="workspace-summary">
-          {paragraphs.map((paragraph, index) => (
-            <p key={index}>{paragraph}</p>
-          ))}
-        </div>
-      ) : (
-        <div className="dash-empty small">No summary recorded.</div>
-      )}
       {entry.reasoning_digest && <p className="workspace-caption">{entry.reasoning_digest}</p>}
-      {(entry.warnings?.length ?? 0) > 0 && (
-        <>
-          <h3 className="workspace-section-title">Warnings</h3>
-          {entry.warnings?.map((warning, index) => (
-            <div key={index} className="tonal-card warning">
-              {warning}
-            </div>
-          ))}
-        </>
-      )}
-      {(entry.errors?.length ?? 0) > 0 && (
-        <>
-          <h3 className="workspace-section-title">Errors</h3>
-          {entry.errors?.map((error, index) => (
-            <div key={index} className="tonal-card danger">
-              {error}
-            </div>
-          ))}
-        </>
-      )}
       {(entry.approvals?.length ?? 0) > 0 && (
         <>
           <h3 className="workspace-section-title">Approvals</h3>
@@ -309,7 +280,50 @@ function PhaseDetailsTab({
         </>
       )}
       <ArtifactCards threadId={threadId} entry={entry} state={state} />
+      <details className="phase-technical-output">
+        <summary>Technical phase output</summary>
+        <JsonViewer value={entry} ariaLabel="Phase output JSON" />
+      </details>
     </div>
+  )
+}
+
+function PhaseOperatorSummary({ entry }: { entry: PhaseResultEntry | undefined }) {
+  if (!entry) {
+    return (
+      <section className="phase-operator-summary" aria-label="Phase snapshot">
+        <h3>What happened</h3>
+        <p>No result for this phase yet.</p>
+      </section>
+    )
+  }
+
+  const paragraphs = entry.summary?.split(/\n{2,}/).filter((p) => p.trim().length > 0) ?? []
+  const artifactCount = entry.artifact_ids?.length ?? 0
+  return (
+    <section className="phase-operator-summary" aria-label="Phase snapshot">
+      <dl className="phase-operator-metrics">
+        <div><dt>Status</dt><dd>{pipelineStatusLabel(entry.status)}</dd></div>
+        <div><dt>Attempt</dt><dd>{entry.attempt ?? 'Not started'}</dd></div>
+        <div><dt>Duration</dt><dd>{formatDuration(entry.duration_s)}</dd></div>
+        <div><dt>Started</dt><dd>{formatTimestamp(entry.started_at)}</dd></div>
+        <div><dt>Evidence</dt><dd>{artifactCount === 0 ? 'No phase artifacts' : `${artifactCount} phase artifact${artifactCount === 1 ? '' : 's'}`}</dd></div>
+      </dl>
+      {(entry.warnings?.length ?? 0) > 0 && (
+        <div className="phase-operator-attention">
+          <h3 className="workspace-section-title">Needs attention</h3>
+          {entry.warnings?.map((warning, index) => <div key={index} className="tonal-card warning">{warning}</div>)}
+        </div>
+      )}
+      {(entry.errors?.length ?? 0) > 0 && (
+        <div className="phase-operator-attention">
+          <h3 className="workspace-section-title">Errors</h3>
+          {entry.errors?.map((error, index) => <div key={index} className="tonal-card danger">{error}</div>)}
+        </div>
+      )}
+      <h3>What happened</h3>
+      {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>No operator-readable summary has been recorded for this phase yet.</p>}
+    </section>
   )
 }
 

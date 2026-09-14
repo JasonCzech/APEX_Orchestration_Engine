@@ -3,7 +3,7 @@
  * overflow menu and run-detail header split button. Both funnel into
  * PreflightModal with the documented preselection.
  */
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { createMemoryRouter, RouterProvider } from 'react-router'
@@ -94,19 +94,20 @@ describe('RunsListPage row overflow menu (entry point 1)', () => {
     expect((await pressedPhases()).length).toBeGreaterThan(0)
   })
 
-  it('row menu [Open] navigates to the run', async () => {
+  it('keeps the row menu focused on secondary actions', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     const user = userEvent.setup()
-    const router = renderRunsPage()
+    renderRunsPage()
 
     const row = await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`)
     await user.click(
       within(row).getByRole('button', { name: 'Run actions: Checkout latency regression' }),
     )
-    await user.click(screen.getByRole('menuitem', { name: 'Open overview' }))
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe(`/runs/${RUN_BUSY.thread_id}`),
-    )
+    const menu = screen.getByRole('menu')
+
+    expect(within(menu).queryByRole('menuitem', { name: 'Open overview' })).not.toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: 'Re-run…' })).toBeInTheDocument()
+    expect(within(menu).getByRole('menuitem', { name: 'Copy run ID' })).toBeInTheDocument()
   })
 })
 

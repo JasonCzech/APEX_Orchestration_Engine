@@ -1,18 +1,14 @@
-import { orchestrationTone, formatTimestamp } from '@/features/runs/runDisplay'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
-
 import { usePipelines, type PipelineSummary } from '@/api/hooks/usePipelines'
-import { PHASE_NAMES } from '@apex/pipeline-events'
-import { useCompactLayout } from '@/components/hooks/useCompactLayout'
-import { useThreadState } from '@/api/hooks/useThreadState'
-import { useOptionalConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
 import { isApiError } from '@/api/errors'
-import { CachedDataWarning } from '@/components/CachedDataWarning'
+import { roleAtLeast } from '@/auth/RequireRole'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 import { ProblemCard } from '@/components/ProblemCard'
-import { JsonViewer } from '@/components/viewers/JsonViewer'
+import { usePreferences } from '@/theme/preferences'
+import type { PhaseName } from '@apex/pipeline-events'
 
 import { CompareSelectBar } from '../compare/CompareSelectBar'
 import { MAX_COMPARE_RUNS } from '../compare/compareModel'
@@ -27,23 +23,38 @@ import {
   type RunsFilters,
 } from './runsFilters'
 import {
-  isPipelinePhaseComplete,
-  pipelineStatusLabel,
-  pipelinePhaseVisual,
   executionResultLabel,
-  orchestrationStatusLabel,
   gateLabel,
+  isPhaseName,
+  isPipelinePhaseComplete,
+  orchestrationStatusLabel,
+  orchestrationTone,
   phaseProgress,
-  normalizedPhases,
-  targetPhaseFor,
+  PHASE_LABELS,
+  formatDuration,
+  formatTimestamp,
 } from './runDisplay'
-import { usePreferences } from '@/theme/preferences'
-import { formatDuration, PHASE_LABELS, isPhaseName } from './runDisplay'
+import { RunWorkspace, type RunWorkspaceSection } from './RunDetailPage'
 import './RunsListPage.css'
 
 const SEARCH_DEBOUNCE_MS = 300
 const SKELETON_ROWS = 6
 const EM_DASH = '—'
+
+function useMasterDetailLayout() {
+  const [enabled, setEnabled] = useState(
+    () => window.matchMedia?.('(min-width: 1180px)').matches ?? true,
+  )
+  useEffect(() => {
+    const query = window.matchMedia?.('(min-width: 1180px)')
+    if (!query) return
+    const update = () => setEnabled(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return enabled
+}
 
 /** status-badge tone per LangGraph thread_status. */
 
@@ -86,38 +97,38 @@ interface RowSelection {
 function RunRow({
   run,
   onRerun,
-  onInspect,
-  inspected,
+  onOpen,
+  selected,
   selection,
   canRerun,
 }: {
   run: PipelineSummary
   onRerun: (threadId: string) => void
-  onInspect: (threadId: string) => void
-  inspected: boolean
+  onOpen: (threadId: string, phase?: PhaseName) => void
+  selected: boolean
   selection?: RowSelection
   canRerun: boolean
 }) {
-  const navigate = useNavigate()
-  const runPath = `/runs/${run.thread_id}`
   const displayPhase = run.pending_gate?.phase ?? run.current_phase
   const compact = useCompactLayout()
   if (compact) return (
-    <article className="glass-panel run-card" data-testid={`runs-row-${run.thread_id}`}>
-      <Link to={runPath} className="runs-run-title">{run.title || 'Untitled run'}</Link>
+    <article className={`glass-panel run-card${selected ? ' is-selected' : ''}`} data-testid={`runs-row-${run.thread_id}`}>
+      <button type="button" className="runs-run-title runs-run-button" onClick={() => onOpen(run.thread_id)}>
+        {run.title || 'Untitled run'}
+      </button>
       <code className="runs-run-identity">{run.thread_id}</code>
       <p><strong>{orchestrationStatusLabel(run.thread_status, run.phase_strip)}</strong></p>
       <p>Test result: <strong>{executionResultLabel(run)}</strong></p>
       <p>Progress: {completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases finished</p>
-      {run.pending_gate && <Link to={runPath}>{gateLabel(run.pending_gate.kind)}</Link>}
+      {run.pending_gate && <button type="button" className="runs-gate-action" onClick={() => onOpen(run.thread_id, isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined)}>{gateLabel(run.pending_gate.kind)}</button>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
       <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Duration</dt><dd>{durationLabel(run)}</dd></dl></details>
-      <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Inspect ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onInspect(run.thread_id)}>Inspect</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
+      <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
     </article>
   )
 
   return (
-    <tr className="runs-row" data-testid={`runs-row-${run.thread_id}`}>
+    <tr className={`runs-row${selected ? ' is-selected' : ''}`} data-testid={`runs-row-${run.thread_id}`} aria-selected={selected}>
       {selection && (
         <td className="runs-select-cell">
           <input
@@ -133,11 +144,11 @@ function RunRow({
         </td>
       )}
       <td>
-        <Link to={runPath} className="runs-run-link">
+        <button type="button" className="runs-run-link runs-run-button" onClick={() => onOpen(run.thread_id)}>
           <span className="runs-run-title strong">{run.title || 'Untitled run'}</span>
           <code className="runs-run-identity">{run.thread_id}</code>
           <span className="runs-run-id">{isPhaseName(displayPhase) ? PHASE_LABELS[displayPhase] : 'Phase not recorded'}</span>
-        </Link>
+        </button>
       </td>
       <td>
         <span className="runs-story-cell">{run.project_id ?? EM_DASH}</span>
@@ -163,15 +174,16 @@ function RunRow({
             {orchestrationStatusLabel(run.thread_status, run.phase_strip)}
           </span>
           {run.pending_gate && (
-            <Link
-              to={runPath}
+            <button
+              type="button"
               className="topbar-meta-chip warning runs-gate-chip"
               title={
                 run.pending_gate.phase ? `Pending gate on ${run.pending_gate.phase}` : undefined
               }
+              onClick={() => onOpen(run.thread_id, isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined)}
             >
               {gateLabel(run.pending_gate.kind)}
-            </Link>
+            </button>
           )}
         </div>
       </td>
@@ -179,22 +191,58 @@ function RunRow({
         <div className="runs-actions-stack">
           <button
             type="button"
-            className={`btn btn-sm ${inspected ? 'btn-secondary' : 'btn-ghost'}`}
-            aria-label={`Inspect ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onInspect(run.thread_id)}
+            className={`btn btn-sm ${selected ? 'btn-secondary' : 'btn-ghost'}`}
+            aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`}
+            aria-pressed={selected}
+            onClick={() => onOpen(run.thread_id)}
           >
-            Inspect
+            Open run
           </button>
           <OverflowMenu
             label={`Run actions: ${run.title || run.thread_id}`}
             items={[
               ...(canRerun ? [{ label: 'Re-run…', onSelect: () => onRerun(run.thread_id) }] : []),
-              { label: 'Open overview', onSelect: () => void navigate(runPath) },
               { label: 'Copy run ID', onSelect: () => { void navigator.clipboard?.writeText(run.thread_id) } },
             ]}
           />
         </div>
       </td>
     </tr>
+  )
+}
+
+function RunMasterListItem({
+  run,
+  selected,
+  onOpen,
+}: {
+  run: PipelineSummary
+  selected: boolean
+  onOpen: (threadId: string, phase?: PhaseName) => void
+}) {
+  const phase = isPhaseName(run.pending_gate?.phase) ? run.pending_gate.phase : undefined
+  return (
+    <button
+      type="button"
+      className={`runs-master-item${selected ? ' is-selected' : ''}`}
+      aria-pressed={selected}
+      onClick={() => onOpen(run.thread_id, phase)}
+    >
+      <span className="runs-master-item-head">
+        <strong>{run.title || 'Untitled run'}</strong>
+        <span className={`status-badge ${orchestrationTone(run.thread_status, run.phase_strip)}`}>
+          {orchestrationStatusLabel(run.thread_status, run.phase_strip)}
+        </span>
+      </span>
+      <span className="runs-master-item-meta">
+        <span>{run.project_id ?? EM_DASH}</span>
+        <span>{completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases</span>
+        <span>{formatTimestamp(run.updated_at)}</span>
+      </span>
+      <span className={`runs-master-result ${verdictTone(run)}`}>
+        Test result: {executionResultLabel(run)}
+      </span>
+    </button>
   )
 }
 
@@ -216,6 +264,8 @@ function RunsSkeleton() {
 export function RunsListPage() {
   const { preferences } = usePreferences()
   const compact = useCompactLayout()
+  const masterDetail = useMasterDetailLayout()
+  const navigate = useNavigate()
   const consumer = useOptionalConsumer()
   const canRerun = consumer === undefined || (consumer !== null && roleAtLeast(consumer.role, 'operator'))
   const [searchParams, setSearchParams] = useSearchParams()
@@ -228,12 +278,89 @@ export function RunsListPage() {
   // page-local view state, deliberately not in the URL).
   const [compareMode, setCompareMode] = useState(false)
   const [compareSelection, setCompareSelection] = useState<string[]>([])
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-  const inspector = useThreadState(selectedRunId ?? undefined)
-  const [selectedInspectorPhase, setSelectedInspectorPhase] = useState<string | null>(null)
+  const selectedRunId = searchParams.get('selected')
+  const requestedRunSection = searchParams.get('runSection')
+  const selectedRunSection: RunWorkspaceSection =
+    requestedRunSection === 'overview' || requestedRunSection === 'timeline'
+      ? requestedRunSection
+      : 'workspace'
+  const selectedRunPhase = isPhaseName(searchParams.get('phase')) ? searchParams.get('phase') as PhaseName : null
+  const workspaceOpenerRef = useRef<HTMLElement | null>(null)
+
+  const closeRunWorkspace = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      for (const key of ['selected', 'runSection', 'phase', 'tab']) next.delete(key)
+      return next
+    })
+    window.requestAnimationFrame(() => workspaceOpenerRef.current?.focus())
+  }, [setSearchParams])
+
+  const openRun = useCallback((threadId: string, phase?: PhaseName) => {
+    if (!masterDetail) {
+      void navigate(phase ? `/runs/${threadId}/phases/${phase}` : `/runs/${threadId}`)
+      return
+    }
+    workspaceOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('selected', threadId)
+      next.set('runSection', 'workspace')
+      if (phase) next.set('phase', phase)
+      else next.delete('phase')
+      next.delete('tab')
+      return next
+    })
+  }, [masterDetail, navigate, setSearchParams])
+
+  const setRunWorkspaceSection = useCallback((section: RunWorkspaceSection, phase?: PhaseName) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('runSection', section)
+      if (section === 'workspace' && phase) next.set('phase', phase)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  const setRunWorkspacePhase = useCallback((phase: PhaseName) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('runSection', 'workspace')
+      next.set('phase', phase)
+      return next
+    }, { replace: true })
+  }, [setSearchParams])
+
+  useEffect(() => {
+    if (masterDetail || !selectedRunId) return
+    if (selectedRunSection === 'overview') {
+      void navigate(`/runs/${selectedRunId}`, { replace: true })
+      return
+    }
+    if (selectedRunSection === 'timeline') {
+      const next = new URLSearchParams()
+      if (selectedRunPhase) next.set('phase', selectedRunPhase)
+      const workspaceTab = searchParams.get('tab')
+      if (workspaceTab) next.set('tab', workspaceTab)
+      void navigate(
+        `/runs/${selectedRunId}/timeline${next.size > 0 ? `?${next}` : ''}`,
+        { replace: true },
+      )
+      return
+    }
+    void navigate(
+      selectedRunPhase
+        ? `/runs/${selectedRunId}/phases/${selectedRunPhase}`
+        : `/runs/${selectedRunId}?tab=details`,
+      { replace: true },
+    )
+  }, [masterDetail, navigate, searchParams, selectedRunId, selectedRunPhase, selectedRunSection])
+
   const toggleCompareMode = () => {
     setCompareSelection([])
-    setCompareMode(!compareMode)
+    const next = !compareMode
+    setCompareMode(next)
+    if (next && selectedRunId) closeRunWorkspace()
   }
   const toggleCompareSelection = (threadId: string) => {
     setCompareSelection((prev) =>
@@ -247,6 +374,10 @@ export function RunsListPage() {
         const next = { ...parseRunsFilters(prev), limit: prev.has('limit') ? parseRunsFilters(prev).limit : preferences.rows, ...patch }
         const params = serializeRunsFilters(next)
         params.set('limit', String(next.limit))
+        for (const key of ['selected', 'runSection', 'phase', 'tab']) {
+          const value = prev.get(key)
+          if (value) params.set(key, value)
+        }
         return params
       })
     },
@@ -294,16 +425,15 @@ export function RunsListPage() {
 
   const clearFilters = () => {
     setSearch('')
-    setSearchParams(new URLSearchParams())
+    setSearchParams((prev) => {
+      const next = new URLSearchParams()
+      for (const key of ['selected', 'runSection', 'phase', 'tab']) {
+        const value = prev.get(key)
+        if (value) next.set(key, value)
+      }
+      return next
+    })
   }
-
-  useEffect(() => {
-    if (!inspector.data) return
-    const phase = targetPhaseFor(inspector.data.detail, inspector.data.state)
-    setSelectedInspectorPhase((current) =>
-      current && PHASE_NAMES.includes(current as (typeof PHASE_NAMES)[number]) ? current : phase,
-    )
-  }, [inspector.data])
 
   const paginationFooter = (
     <>
@@ -433,64 +563,17 @@ export function RunsListPage() {
               </button>
             </div>
           )}
-          {compact ? <div className="run-cards">                {items.map((run) => (
-                  <RunRow
-                    key={run.thread_id}
-                    run={run}
-                    onRerun={setRerunThreadId}
-                    canRerun={canRerun}
-                    onInspect={(threadId) => {
-                      setSelectedRunId(threadId)
-                      setSelectedInspectorPhase(null)
-                    }}
-                    inspected={selectedRunId === run.thread_id}
-                    selection={
-                      compareMode
-                        ? {
-                            selected: compareSelection.includes(run.thread_id),
-                            disabled:
-                              !compareSelection.includes(run.thread_id) &&
-                              compareSelection.length >= MAX_COMPARE_RUNS,
-                            onToggle: toggleCompareSelection,
-                          }
-                        : undefined
-                    }
-                  />
-                ))}</div> : (
-          <div className="data-table-wrap">
-            <table className="data-table striped runs-table">
-              <thead>
-                <tr>
-                  {compareMode && (
-                    <th className="runs-select-col">
-                      <span className="sr-only">Select for compare</span>
-                    </th>
-                  )}
-                  <th>Run</th>
-                  <th>Project</th>
-                  <th>Applications</th>
-                  <th>Progress</th>
-                  <th>Created</th>
-                  <th>Duration</th>
-                  <th>Test result</th>
-                  <th>Status</th>
-                  <th className="runs-actions-cell">
-                    Inspect
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
+          {compact ? (
+            <>
+              <div className="run-cards">
                 {items.map((run) => (
                   <RunRow
                     key={run.thread_id}
                     run={run}
                     onRerun={setRerunThreadId}
                     canRerun={canRerun}
-                    onInspect={(threadId) => {
-                      setSelectedRunId(threadId)
-                      setSelectedInspectorPhase(null)
-                    }}
-                    inspected={selectedRunId === run.thread_id}
+                    onOpen={openRun}
+                    selected={false}
                     selection={
                       compareMode
                         ? {
@@ -504,71 +587,96 @@ export function RunsListPage() {
                     }
                   />
                 ))}
-              </tbody>
-            </table>
-          </div>
-          )}
-          {selectedRunId && (
-            <section className="glass-panel runs-inspector" aria-label="Run inspector">
-              <div className="runs-inspector-head">
-                <div>
-                  <span className="home-section-title">Inline Inspector</span>
-                  <h3 className="runs-inspector-title">
-                    {inspector.data?.detail.title ?? selectedRunId}
-                  </h3>
-                </div>
-                <Link className="btn btn-secondary btn-sm" to={`/runs/${selectedRunId}`}>
-                  Open
-                </Link>
               </div>
-              {inspector.isPending ? (
-                <p className="runs-muted">Loading run details…</p>
-              ) : inspector.isError && !inspector.data ? (
-                <p className="runs-refresh-error" role="alert">
-                  Inspect failed: {errorMessage(inspector.error)}
-                </p>
-              ) : inspector.data ? (
-                <>
-                  {inspector.isError && (
-                    <CachedDataWarning
-                      error={inspector.error}
-                      onRetry={() => void inspector.refetch()}
-                    />
-                  )}
-                  {inspector.data.stateParseFailed && (
-                    <p role="status">Run state could not be read. Unavailable phase statuses use summary data.</p>
-                  )}
-                  <div className="runs-inspector-phases">
-                    {normalizedPhases(inspector.data.state, inspector.data.detail.phase_strip, inspector.data.stateParseFailed).map(({ phase, status }) => {
-                      const visual = pipelinePhaseVisual(status)
-                      return (
-                        <button
-                          key={phase}
-                          type="button"
-                          className={`runs-phase-button${selectedInspectorPhase === phase ? ' active' : ''}`}
-                          onClick={() => setSelectedInspectorPhase(phase)}
-                        >
-                          <span>{phase.replaceAll('_', ' ')}</span>
-                          <span className={`pipeline-status-pill pipeline-status-pill--${visual}`}>
-                            {pipelineStatusLabel(status)}
-                          </span>
-                        </button>
-                      )
-                    })}
+              {paginationFooter}
+            </>
+          ) : selectedRunId && masterDetail ? (
+            <div className="runs-master-detail">
+              <aside className="runs-master-list glass-panel" aria-label="Run history">
+                <div className="runs-master-list-head">
+                  <div>
+                    <span className="home-section-title">Test History</span>
+                    <strong>{rangeCaption}</strong>
                   </div>
-                  {selectedInspectorPhase ? (
-                    <div className="runs-inspector-json">
-                      <JsonViewer
-                        value={inspector.data.state.phase_results?.[selectedInspectorPhase] ?? {}}
-                        ariaLabel="Phase output JSON"
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={closeRunWorkspace}>
+                    Full table
+                  </button>
+                </div>
+                <div className="runs-master-items">
+                  {items.map((run) => (
+                    <RunMasterListItem
+                      key={run.thread_id}
+                      run={run}
+                      selected={selectedRunId === run.thread_id}
+                      onOpen={openRun}
+                    />
+                  ))}
+                </div>
+                {paginationFooter}
+              </aside>
+              <section className="runs-workspace-pane" aria-label="Selected run">
+                <RunWorkspace
+                  key={selectedRunId}
+                  threadId={selectedRunId}
+                  embedded
+                  section={selectedRunSection}
+                  phase={selectedRunPhase}
+                  onSectionChange={setRunWorkspaceSection}
+                  onPhaseChange={setRunWorkspacePhase}
+                  onClose={closeRunWorkspace}
+                />
+              </section>
+            </div>
+          ) : (
+            <>
+              <div className="data-table-wrap">
+                <table className="data-table striped runs-table">
+                  <thead>
+                    <tr>
+                      {compareMode && (
+                        <th className="runs-select-col">
+                          <span className="sr-only">Select for compare</span>
+                        </th>
+                      )}
+                      <th>Run</th>
+                      <th>Project</th>
+                      <th>Applications</th>
+                      <th>Progress</th>
+                      <th>Created</th>
+                      <th>Duration</th>
+                      <th>Test result</th>
+                      <th>Status</th>
+                      <th className="runs-actions-cell">Run</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((run) => (
+                      <RunRow
+                        key={run.thread_id}
+                        run={run}
+                        onRerun={setRerunThreadId}
+                        canRerun={canRerun}
+                        onOpen={openRun}
+                        selected={false}
+                        selection={
+                          compareMode
+                            ? {
+                                selected: compareSelection.includes(run.thread_id),
+                                disabled:
+                                  !compareSelection.includes(run.thread_id) &&
+                                  compareSelection.length >= MAX_COMPARE_RUNS,
+                                onToggle: toggleCompareSelection,
+                              }
+                            : undefined
+                        }
                       />
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-            </section>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {paginationFooter}
+            </>
           )}
-          {paginationFooter}
         </>
       )}
       {rerunThreadId && (

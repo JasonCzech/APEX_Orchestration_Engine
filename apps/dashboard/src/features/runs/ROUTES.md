@@ -5,6 +5,7 @@
 | Export | File | Route |
 |---|---|---|
 | `RunsListPage` | `src/features/runs/RunsListPage.tsx` | `/runs` |
+| `RunWorkspace` | `src/features/runs/RunDetailPage.tsx` | Embedded by `RunsListPage`; also powers run-detail routes |
 
 `src/routes/router.tsx` currently lazy-loads `RunsListPage` from
 `@/features/runs/pages` (the D0 placeholder module). To wire the real screen,
@@ -22,7 +23,7 @@ re-export is the minimal-diff option and keeps one lazy chunk per feature.)
 ## Routes this screen links to (must exist or remain placeholders)
 
 - `/runs/new` — empty-state CTA
-- `/runs/:threadId` — row click, run-title link, pending-gate chip
+- `/runs/:threadId` — compact-layout run overview and expanded workspace
 - `/runs/:threadId/phases/:phase` — phase-strip segment click
 
 All three already exist in `router.tsx` (placeholders until the detail agent
@@ -30,11 +31,13 @@ lands), so wiring is just the one re-export above.
 
 ## URL contract for `/runs` (deep links)
 
-`?status=idle|busy|interrupted|error & q=<text> & project=<id> & limit=<1..100> & offset=<n>`
+`?status=idle|busy|interrupted|error & q=<text> & project=<id> & limit=<1..100> & offset=<n> & selected=<threadId> & runSection=overview|workspace|timeline & phase=<phase> & tab=<workspace-tab>`
 — parsed/serialized by `src/features/runs/runsFilters.ts`; defaults
 (`limit=25`, `offset=0`) are omitted from the URL. Unknown statuses and
 malformed numbers are dropped/clamped on parse, so stale links never break the
-screen.
+screen. On viewports at least 1180px wide, `selected` opens the shared Run
+Workspace beside a compact history list. Narrower layouts navigate to the
+equivalent full-page route.
 
 ## Shared pieces other screens may reuse
 
@@ -54,8 +57,10 @@ routes below; until then the D0 placeholders render.
 
 | Component | Module | Route |
 |---|---|---|
-| `RunDetailPage` | `@/features/runs/RunDetailPage` | BOTH `/runs/:threadId` (redirects to the current phase) AND `/runs/:threadId/phases/:phase?tab=` (reads the optional `:phase` param) |
-| `TimelinePage` | `@/features/runs/TimelinePage` | `/runs/:threadId/timeline` |
+| `RunDetailPage` | `@/features/runs/RunDetailPage` | BOTH `/runs/:threadId` (overview) AND `/runs/:threadId/phases/:phase?tab=` (phase workspace) |
+| `RunWorkspace` | `@/features/runs/RunDetailPage` | Shared overview/workspace implementation for full-page and embedded history use |
+| `TimelinePage` | `@/features/runs/TimelinePage` | `/runs/:threadId/timeline?phase=&tab=` — shared Run Workspace shell with phase context preserved |
+| `RunTimeline` | `@/features/runs/RunTimeline` | Timeline section embedded in `RunWorkspace` |
 | `ArtifactViewerPage` | `@/features/artifacts/ArtifactViewerPage` | `/runs/:threadId/artifacts/:name` — `:name` is the **artifact id** |
 
 ## Exact wiring (Option A — preferred, no router.tsx change)
@@ -75,9 +80,13 @@ The existing route table already lazy-loads those four export names from
 
 ## Notes for the integrator (detail agent)
 
-- `RunDetailPage` issues a client redirect from `/runs/:threadId` to
-  `/runs/:threadId/phases/<current_phase>` (falls back to the first phase with
-  a result, then the plan head). Keep both paths on the same component.
+- `RunDetailPage` renders the run overview at `/runs/:threadId` and the selected
+  phase workspace at `/runs/:threadId/phases/<phase>`. Keep both paths on the
+  same component so the embedded and full-page views share behavior.
+- `TimelinePage` renders the same Run Workspace shell with `section="timeline"`.
+  Timeline navigation carries `phase` and `tab` so returning to Workspace
+  restores the operator's prior phase context. The history master-detail view
+  uses `runSection=timeline` and does not leave `/runs`.
 - Workspace tab state lives in `?tab=output|artifacts|prompt|dialogue`
   (default `output`); the phase-strip buttons preserve the current search
   string, so phase deep links (`/runs/:threadId/phases/:phase`) compose with
@@ -219,11 +228,11 @@ pages (`RunDetailPage`, `RunsListPage`).
 
 ## Entry points (surgical edits)
 
-1. `RunsListPage.tsx` — new trailing actions column (`⋯`): [Re-run…] opens the
-   modal for that thread WITHOUT initialSelection (the modal hydrates the
-   default from the fetched plan; loading state lives inside the modal) |
-   [Open] navigates. Row-click navigation untouched (the menu stops
-   propagation internally).
+1. `RunsListPage.tsx` — [Open run], the run title, and a pending-review chip all
+   open the shared Run Workspace. Wide layouts keep a compact history list
+   beside the workspace; compact layouts use the full-page detail route. The
+   trailing menu contains only secondary actions: [Re-run…] opens the modal
+   without `initialSelection`, and [Copy run ID] copies the stable identity.
 2. `RunDetailPage.tsx` — header split button: [Re-run] (all phases) +
    [▾] → [All phases] / [Run phases…].
 

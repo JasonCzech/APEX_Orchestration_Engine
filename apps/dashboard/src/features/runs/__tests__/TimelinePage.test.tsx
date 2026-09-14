@@ -1,12 +1,25 @@
-import { screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { screen, within } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 
 import { PipelineStateSchema } from '@apex/pipeline-events'
 
-import { deriveTimeline } from '@/features/runs/TimelinePage'
+import { deriveTimeline } from '@/features/runs/timelineModel'
 import { server } from '@/test/server'
 
 import { PIPELINE_DETAIL, pipelineDetailHandler, renderRunRoutes, THREAD_ID } from './testUtils'
+
+vi.mock('@/streaming/usePipelineStream', () => ({
+  useRunLiveness: () => ({
+    runId: null,
+    stream: {
+      status: 'idle',
+      phaseProgress: {},
+      toolCalls: [],
+      engineStats: { samples: [], latest: null },
+      pendingGateHint: null,
+    },
+  }),
+}))
 
 describe('TimelinePage', () => {
   it('derives a chronologically ascending ledger from the snapshot', () => {
@@ -32,15 +45,27 @@ describe('TimelinePage', () => {
     )
   })
 
-  it('renders the ledger rows with the honest-granularity caption', async () => {
+  it('renders inside the shared workspace and preserves phase context', async () => {
     server.use(pipelineDetailHandler())
-    renderRunRoutes([`/runs/${THREAD_ID}/timeline`])
+    renderRunRoutes([`/runs/${THREAD_ID}/timeline?phase=execution&tab=reasoning`])
 
-    const list = await screen.findByRole('list')
+    const workspace = await screen.findByRole('region', { name: 'Run workspace' })
+    expect(within(workspace).getByRole('heading', { name: 'Checkout latency regression' })).toBeInTheDocument()
+    expect(within(workspace).getByRole('link', { name: 'Timeline' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+    expect(within(workspace).getByRole('link', { name: 'Workspace' })).toHaveAttribute(
+      'href',
+      `/runs/${THREAD_ID}/phases/execution?tab=reasoning`,
+    )
+    expect(within(workspace).queryByRole('link', { name: 'Back to run' })).not.toBeInTheDocument()
+
+    const list = within(workspace).getByRole('list')
     expect(list).toHaveTextContent('Story Analysis started')
     expect(list).toHaveTextContent('Engine summary collected — passed')
     expect(
-      screen.getByText(/Derived from the latest state snapshot/),
+      within(workspace).getByText(/Derived from the latest durable run snapshot/),
     ).toBeInTheDocument()
   })
 })

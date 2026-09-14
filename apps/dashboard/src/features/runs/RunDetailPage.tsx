@@ -1,7 +1,7 @@
 import { GateDecisionContext } from '@/hitl/GateDecisionContext'
 import { formatTimestamp } from './runDisplay'
 import { ScopeContext } from '@/components/ux/ScopeContext'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -18,11 +18,12 @@ import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
 
 import { RunOverview } from './RunOverview'
+import { RunTimeline } from './RunTimeline'
 import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
-import { PHASE_LABELS, isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
+import { PHASE_LABELS, executionResultLabel, isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -45,16 +46,41 @@ function RunDetailSkeleton() {
  * - /runs/:threadId/phases/:phase?tab= -> shared phase flow + phase workspace
  */
 export function RunDetailPage() {
-  const { threadId = '' } = useParams()
-  return <RunDetailContent key={threadId} threadId={threadId} />
+  const { threadId = '', phase = null } = useParams()
+  return (
+    <RunWorkspace
+      key={threadId}
+      threadId={threadId}
+      section={phase ? 'workspace' : 'overview'}
+      phase={phase}
+    />
+  )
 }
 
-function RunDetailContent({ threadId }: { threadId: string }) {
+export type RunWorkspaceSection = 'overview' | 'workspace' | 'timeline'
+
+export function RunWorkspace({
+  threadId,
+  section = 'overview',
+  phase: requestedPhase = null,
+  embedded = false,
+  onSectionChange,
+  onPhaseChange,
+  onClose,
+}: {
+  threadId: string
+  section?: RunWorkspaceSection
+  phase?: string | null
+  embedded?: boolean
+  onSectionChange?: (section: RunWorkspaceSection, phase?: PhaseName) => void
+  onPhaseChange?: (phase: PhaseName) => void
+  onClose?: () => void
+}) {
   const compact = useCompactLayout()
-  const { phase: phaseParam } = useParams()
   const { search } = useLocation()
   const navigate = useNavigate()
   const query = useThreadState(threadId)
+  const headingRef = useRef<HTMLHeadingElement>(null)
   // D2 liveness: SSE deltas render on top of the snapshot. The useThreadState
   // poll deliberately stays on while streaming — snapshot is truth, the stream
   // adds liveness (plan: snapshot + tail reconciliation).
@@ -75,6 +101,10 @@ function RunDetailContent({ threadId }: { threadId: string }) {
   // recover handles that are absent from the compact pipeline summary.
   const abortRun = useAbortRun(threadId)
 
+  useEffect(() => {
+    if (embedded) headingRef.current?.focus()
+  }, [embedded, threadId, query.isPending])
+
   if (query.isPending) return <RunDetailSkeleton />
   if (query.isError && !query.data) {
     return (
@@ -94,13 +124,20 @@ function RunDetailContent({ threadId }: { threadId: string }) {
   }
   const progress = phaseProgress(phaseStrip)
 
-  const overview = !phaseParam
-  const selectedPhase = phaseParam ?? targetPhaseFor(detail, state)
+  const overview = section === 'overview'
+  const timeline = section === 'timeline'
+  const selectedPhase = requestedPhase ?? targetPhaseFor(detail, state)
   if (!isPhaseName(selectedPhase)) return <>
     <ProblemCard title="Unknown phase" message="Open the run overview to choose a valid phase." />
-    <Link to={`/runs/${threadId}`}>Open run overview</Link>
+    {embedded ? (
+      <button type="button" className="btn btn-secondary" onClick={() => onSectionChange?.('overview')}>
+        Open run overview
+      </button>
+    ) : (
+      <Link to={`/runs/${threadId}`}>Open run overview</Link>
+    )}
   </>
-  if (overview && new URLSearchParams(search).has('tab')) {
+  if (!embedded && overview && new URLSearchParams(search).has('tab')) {
     return <Navigate to={`/runs/${threadId}/phases/${selectedPhase}${search}`} replace />
   }
 
@@ -110,7 +147,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
   const logsSearchParams = new URLSearchParams({
     thread: threadId,
     run: detail.title ?? threadId,
-    returnTo: `/runs/${threadId}`,
+    returnTo: embedded ? `/runs${search}` : `/runs/${threadId}`,
   })
   if (detail.created_at) logsSearchParams.set('from', detail.created_at)
   if (detail.updated_at) logsSearchParams.set('to', detail.updated_at)
@@ -135,16 +172,35 @@ function RunDetailContent({ threadId }: { threadId: string }) {
       <GateSlimBanner threadId={threadId} gate={hitl.gate} />
     ))
 
+  const currentSearchParams = new URLSearchParams(search)
+  const workspaceTab = currentSearchParams.get('tab')
+  const workspacePath = `/runs/${threadId}/phases/${selectedPhase}${workspaceTab ? `?tab=${encodeURIComponent(workspaceTab)}` : ''}`
+  const timelineSearchParams = new URLSearchParams({ phase: selectedPhase })
+  if (workspaceTab) timelineSearchParams.set('tab', workspaceTab)
+  const timelinePath = `/runs/${threadId}/timeline?${timelineSearchParams}`
+  const expandedPath = overview
+    ? `/runs/${threadId}`
+    : timeline
+      ? timelinePath
+      : workspacePath
+
   return (
-    <>
+    <section className={`run-workspace${embedded ? ' run-workspace--embedded' : ''}`} aria-label="Run workspace">
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
       <header className="run-detail-header">
-        <h2 className="run-detail-title">{detail.title ?? detail.thread_id}</h2>
+        <div className="run-detail-heading">
+          {embedded && <span className="run-workspace-kicker">Run workspace</span>}
+          <h2 ref={headingRef} tabIndex={embedded ? -1 : undefined} className="run-detail-title">
+            {detail.title ?? detail.thread_id}
+          </h2>
+        </div>
         <span role="status" aria-live="polite" className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
           {orchestrationStatusLabel(detail.thread_status, phaseStrip)}
         </span>
+        <span className="run-workspace-meta">Test result: <strong>{executionResultLabel(detail, state)}</strong></span>
+        <span className="run-workspace-meta"><strong>{progress.completed}/{progress.total}</strong> phases finished</span>
         {stateParseFailed && (
           <span
             className="topbar-meta-chip warning"
@@ -194,6 +250,16 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         >
           Logs
         </Link>
+        {embedded && (
+          <>
+            <Link className="btn btn-ghost btn-sm" to={expandedPath}>
+              Expand
+            </Link>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} aria-label="Close run workspace">
+              Close
+            </button>
+          </>
+        )}
       </header>
       {abortRun.isError && (
         <div className="tonal-card danger" role="alert">
@@ -212,8 +278,26 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         />
       )}
       <ScopeContext project={detail.project_id} application={detail.app_id} />
-      <nav className="ux-actions run-sections" aria-label="Run sections"><Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link><Link className="btn btn-secondary" aria-current={!overview ? 'page' : undefined} to={`/runs/${threadId}/phases/${selectedPhase}`}>Phases</Link><Link className="btn btn-ghost" to={`/runs/${threadId}/timeline`}>Timeline</Link></nav>
-      {overview ? <RunOverview detail={detail} state={state} progress={progress} /> : <>
+      <nav className="ux-actions run-sections" aria-label="Run sections">
+        {embedded ? (
+          <>
+            <button type="button" className="btn btn-secondary" aria-current={overview ? 'page' : undefined} onClick={() => onSectionChange?.('overview')}>Overview</button>
+            <button type="button" className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>
+            <button type="button" className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} onClick={() => onSectionChange?.('timeline')}>Timeline</button>
+          </>
+        ) : (
+          <>
+            <Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link>
+            <Link className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} to={workspacePath}>Workspace</Link>
+            <Link className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
+          </>
+        )}
+      </nav>
+      {overview ? (
+        <RunOverview detail={detail} state={state} progress={progress} onOpenPhase={embedded ? (phase) => onSectionChange?.('workspace', phase) : undefined} />
+      ) : timeline ? (
+        <RunTimeline state={state} />
+      ) : <>
       <section className="run-pipeline-hero glass-panel" aria-label="Pipeline progress">
         <div className="run-pipeline-hero-head">
           <div>
@@ -236,7 +320,8 @@ function RunDetailContent({ threadId }: { threadId: string }) {
           currentPhase={selectedPhase}
           selectedOnly
           onSelect={(phase) => {
-            void navigate({ pathname: `/runs/${threadId}/phases/${phase}`, search })
+            if (embedded) onPhaseChange?.(phase)
+            else void navigate({ pathname: `/runs/${threadId}/phases/${phase}`, search })
           }}
         />
         </details>
@@ -257,7 +342,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         />
       </div>
       </>}
-    </>
+    </section>
   )
 }
 

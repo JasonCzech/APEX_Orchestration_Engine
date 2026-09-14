@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
+import { cloneElement, isValidElement, type ReactNode } from 'react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -40,6 +41,33 @@ vi.mock('@uiw/react-codemirror', async () => {
   }
 })
 
+vi.mock('@/streaming/usePipelineStream', () => ({
+  useRunLiveness: () => ({
+    runId: null,
+    stream: {
+      status: 'idle',
+      phaseProgress: {},
+      toolCalls: [],
+      engineStats: { samples: [], latest: null },
+      pendingGateHint: null,
+    },
+  }),
+}))
+
+vi.mock('recharts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('recharts')>()
+  return {
+    ...actual,
+    ResponsiveContainer: ({ children }: { children: ReactNode }) =>
+      isValidElement(children)
+        ? cloneElement(children as React.ReactElement<{ width?: number; height?: number }>, {
+            width: 600,
+            height: 180,
+          })
+        : children,
+  }
+})
+
 function LocationProbe({ label }: { label: string }) {
   const location = useLocation()
   return <div data-testid={label}>{location.pathname + location.search}</div>
@@ -72,6 +100,10 @@ const RUN_BUSY_DETAIL: PipelineDetail = {
         phase: 'execution',
         status: 'running',
         attempt: 1,
+        started_at: '2026-06-11T10:05:00Z',
+        duration_s: 75,
+        artifact_ids: ['exec-metrics'],
+        warnings: ['Generator pool is approaching capacity.'],
         summary: 'Execution is still streaming results.',
       },
     },
@@ -100,16 +132,19 @@ function renderRunsPage(initialEntry = '/runs') {
 }
 
 describe('RunsListPage', () => {
-  it('distinguishes Inspect actions when run titles are duplicated', async () => {
+  it('distinguishes Open run actions when run titles are duplicated', async () => {
     const duplicate = { ...RUN_BUSY, thread_id: 'duplicate-run-id' }
     server.use(pipelinesHandler([RUN_BUSY, duplicate]).handler)
     renderRunsPage()
-    expect(await screen.findByRole('button', { name: `Inspect ${RUN_BUSY.title} (${RUN_BUSY.thread_id})` })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: `Inspect ${RUN_BUSY.title} (${duplicate.thread_id})` })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: `Open run ${RUN_BUSY.title} (${RUN_BUSY.thread_id})` })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: `Open run ${RUN_BUSY.title} (${duplicate.thread_id})` })).toBeInTheDocument()
     expect(screen.getByText(duplicate.thread_id)).toBeVisible()
   })
 
-  beforeEach(() => localStorage.setItem('apex.preferences.v1', JSON.stringify({ rows: 25 })))
+  beforeEach(() => {
+    localStorage.setItem('apex.preferences.v1', JSON.stringify({ rows: 25 }))
+    server.use(http.get('*/v1/catalog/applications', () => HttpResponse.json([])))
+  })
   it('renders runs with title, id, project, application, phase count, verdict, and status', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
@@ -159,37 +194,65 @@ describe('RunsListPage', () => {
     }
   })
 
-  it('renders a warning gate chip linking to the run for pending gates', async () => {
+  it('renders a warning gate action that opens the consolidated workspace', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
     renderRunsPage()
 
-    const chip = await screen.findByRole('link', { name: 'Review prompts' })
+    const chip = await screen.findByRole('button', { name: 'Review prompts' })
     expect(chip).toHaveClass('topbar-meta-chip', 'warning')
-    expect(chip).toHaveAttribute('href', `/runs/${RUN_GATED.thread_id}`)
 
     const busyRow = within(screen.getByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    expect(busyRow.queryByRole('link', { name: /gate:/ })).not.toBeInTheDocument()
+    expect(busyRow.queryByRole('button', { name: /review prompts/i })).not.toBeInTheDocument()
   })
 
-  it('opens the inline inspector with seven phase buttons and phase output JSON', async () => {
+  it('opens the shared Run Workspace with an operator summary and technical JSON', async () => {
     server.use(pipelinesHandler(PIPELINES_FIXTURE).handler, detailHandler(RUN_BUSY_DETAIL))
     const user = userEvent.setup()
     renderRunsPage()
 
     const busyRow = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    await user.click(busyRow.getByRole('button', { name: `Inspect Checkout latency regression (${RUN_BUSY.thread_id})` }))
+    await user.click(busyRow.getByRole('button', { name: `Open run Checkout latency regression (${RUN_BUSY.thread_id})` }))
 
-    expect(await screen.findByRole('heading', { name: 'Checkout latency regression' })).toBeInTheDocument()
-    const inspector = screen.getByRole('region', { name: 'Run inspector' })
-    const phaseButtons = within(inspector).getAllByRole('button')
-    expect(phaseButtons).toHaveLength(7)
-    expect(within(inspector).getByRole('button', { name: /execution/i })).toHaveClass(
-      'runs-phase-button',
-      'active',
+    const workspace = await screen.findByRole('region', { name: 'Run workspace' })
+    expect(within(workspace).getByRole('heading', { name: 'Checkout latency regression' })).toHaveFocus()
+    expect(within(workspace).getByText('Test result:')).toBeInTheDocument()
+    expect(within(workspace).getByLabelText('Phase snapshot')).toHaveTextContent('1 phase artifact')
+    expect(within(workspace).getByText('Execution is still streaming results.')).toBeInTheDocument()
+    expect(within(workspace).getByText('Generator pool is approaching capacity.')).toBeInTheDocument()
+    expect(within(workspace).getByRole('button', { name: /execution — running/i })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(within(workspace).getByRole('tab', { name: 'Phase Details' }))
+    await user.click(within(workspace).getByText('Technical phase output'))
+    expect(within(workspace).getByLabelText('Phase output JSON')).toHaveTextContent(
+      '"status": "running"',
     )
-    expect(
-      (within(inspector).getByTestId('codemirror') as HTMLTextAreaElement).value,
-    ).toContain('"status": "running"')
+  })
+
+  it('keeps Timeline inside the selected history workspace and restores phase context', async () => {
+    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler, detailHandler(RUN_BUSY_DETAIL))
+    const user = userEvent.setup()
+    const router = renderRunsPage()
+
+    const busyRow = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
+    await user.click(
+      busyRow.getByRole('button', {
+        name: `Open run Checkout latency regression (${RUN_BUSY.thread_id})`,
+      }),
+    )
+
+    const workspace = await screen.findByRole('region', { name: 'Run workspace' })
+    await user.click(within(workspace).getByRole('button', { name: 'Timeline' }))
+
+    expect(within(workspace).getByRole('region', { name: 'Run timeline' })).toHaveTextContent(
+      'Execution started',
+    )
+    expect(router.state.location.pathname).toBe('/runs')
+    expect(router.state.location.search).toContain('runSection=timeline')
+    expect(screen.getByRole('complementary', { name: 'Run history' })).toBeInTheDocument()
+
+    await user.click(within(workspace).getByRole('button', { name: 'Workspace' }))
+    expect(router.state.location.search).toContain('runSection=workspace')
+    expect(router.state.location.search).toContain('phase=execution')
+    expect(within(workspace).getByLabelText('Phase snapshot')).toBeInTheDocument()
   })
 
   it('shows the empty state with a new-run CTA when there are no runs and no filters', async () => {
@@ -344,13 +407,15 @@ describe('RunsListPage', () => {
     await waitFor(() => expect(captured.last()?.get('status')).toBe('interrupted'))
   })
 
-  it('navigates to the run detail from the run link', async () => {
-    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
+  it('opens the same Run Workspace from the run title', async () => {
+    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler, detailHandler(RUN_BUSY_DETAIL))
     const user = userEvent.setup()
-    renderRunsPage()
+    const router = renderRunsPage()
 
     const row = within(await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`))
-    await user.click(row.getByRole('link', { name: /Checkout latency regression/ }))
-    expect(await screen.findByTestId('run-detail')).toHaveTextContent(`/runs/${RUN_BUSY.thread_id}`)
+    await user.click(row.getByRole('button', { name: /Checkout latency regressionrun-busy-1Execution/ }))
+    expect(await screen.findByRole('region', { name: 'Run workspace' })).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/runs')
+    expect(router.state.location.search).toContain(`selected=${RUN_BUSY.thread_id}`)
   })
 })

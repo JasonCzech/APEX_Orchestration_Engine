@@ -11,6 +11,20 @@
   margin-bottom: 18px;
 }
 
+.run-detail-heading {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.run-workspace-kicker {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .run-detail-title {
   font-size: 22px;
   font-weight: 800;
@@ -23,6 +37,49 @@
 
 .run-detail-header .spacer {
   flex: 1;
+}
+
+.run-workspace-meta {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.run-workspace-meta strong {
+  color: var(--text-primary);
+}
+
+.run-workspace--embedded {
+  min-width: 0;
+}
+
+.run-workspace--embedded .run-detail-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(14px);
+}
+
+.run-workspace--embedded .run-detail-title {
+  font-size: 19px;
+}
+
+.run-workspace--embedded .run-overview .ux-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.run-workspace--embedded .run-pipeline-hero {
+  padding: 16px;
+}
+
+.run-workspace--embedded .phase-workspace {
+  padding-inline: 16px;
 }
 
 .run-detail-grid {
@@ -229,6 +286,75 @@
   border-left: 2px solid var(--accent-border);
   padding-left: 10px;
   margin: 8px 0;
+}
+
+.phase-operator-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: 14px 0;
+}
+
+.phase-operator-summary {
+  margin: 16px 0 6px;
+  padding: 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--bg-card));
+}
+
+.phase-operator-summary > h3 {
+  margin: 8px 0 6px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.phase-operator-summary > p {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.phase-operator-attention {
+  margin-bottom: 10px;
+}
+
+.phase-operator-metrics > div {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-secondary);
+}
+
+.phase-operator-metrics dt {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.phase-operator-metrics dd {
+  margin: 4px 0 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.phase-technical-output {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.phase-technical-output > summary {
+  padding: 8px 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .reasoning-digest {
@@ -671,6 +797,27 @@
   padding: 16px 18px;
 }
 
+.timeline-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-panel-head h3 {
+  margin: 4px 0;
+  color: var(--text-primary);
+  font-size: 18px;
+}
+
+.timeline-panel-head p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .timeline-list {
   list-style: none;
   margin: 0;
@@ -725,8 +872,42 @@
   font-style: italic;
 }
 
+@media (max-width: 760px) {
+  .timeline-panel-head,
+  .timeline-event {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .timeline-event {
+    gap: 4px;
+    padding-block: 10px;
+  }
+
+  .timeline-event .status-dot {
+    display: none;
+  }
+
+  .timeline-at {
+    flex-basis: auto;
+  }
+}
+
 .run-phase-navigation { width: 100%; }
 .run-phase-navigation > summary { cursor: pointer; padding: 12px; color: var(--text-primary); }
 @media (min-width: 769px) { .run-phase-navigation > summary { display: none; } }
 .prompt-configuration { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
 .prompt-configuration > summary { cursor: pointer; padding: 12px; font-weight: 600; }
+
+@media (max-width: 1100px) {
+  .phase-operator-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .run-workspace--embedded .run-overview .ux-grid,
+  .phase-operator-metrics {
+    grid-template-columns: 1fr;
+  }
+}

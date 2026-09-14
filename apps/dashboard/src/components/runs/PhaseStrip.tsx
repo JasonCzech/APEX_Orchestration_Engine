@@ -102,6 +102,7 @@ export function PhaseStrip({
                   className={className}
                   title={label}
                   aria-label={label}
+                  aria-pressed={currentPhase === phase}
                   onClick={() => onSelect(phase)}
                 >
                   {content}
@@ -135,6 +136,7 @@ export function PhaseStrip({
               className={className}
               title={label}
               aria-label={label}
+              aria-pressed={currentPhase === phase}
               onClick={(event) => {
                 // Rows in the grid navigate on click; a segment click wins.
                 event.stopPropagation()

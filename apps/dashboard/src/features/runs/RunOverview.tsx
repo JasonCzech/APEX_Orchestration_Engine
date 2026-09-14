@@ -1,6 +1,6 @@
 import { executionLink } from '@/features/apex-load/executionLink'
 import { Link } from 'react-router'
-import type { PipelineState } from '@apex/pipeline-events'
+import type { PhaseName, PipelineState } from '@apex/pipeline-events'
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
@@ -15,10 +15,11 @@ import {
   phaseProgress,
 } from './runDisplay'
 
-export function RunOverview({ detail, state, progress }: {
+export function RunOverview({ detail, state, progress, onOpenPhase }: {
   detail: PipelineDetail
   state: PipelineState
   progress: ReturnType<typeof phaseProgress>
+  onOpenPhase?: (phase: PhaseName) => void
 }) {
   const execution = state.phase_results?.execution
   const summary = execution?.test_summary
@@ -62,9 +63,15 @@ export function RunOverview({ detail, state, progress }: {
             !state.run_aborted &&
             detail.thread_status === 'idle' &&
             progress.completed !== progress.total && <p>No stop reason was recorded.</p>}
-          <Link className="btn btn-primary" to={`/runs/${detail.thread_id}/phases/${phase}`}>
-            {detail.pending_gate ? 'Review pending decision' : `Open ${PHASE_LABELS[phase]}`}
-          </Link>
+          {onOpenPhase ? (
+            <button type="button" className="btn btn-primary" onClick={() => onOpenPhase(phase)}>
+              {detail.pending_gate ? 'Review pending decision' : `Open ${PHASE_LABELS[phase]}`}
+            </button>
+          ) : (
+            <Link className="btn btn-primary" to={`/runs/${detail.thread_id}/phases/${phase}`}>
+              {detail.pending_gate ? 'Review pending decision' : `Open ${PHASE_LABELS[phase]}`}
+            </Link>
+          )}
         </article>
         <article className="glass-panel ux-card">
           <h3>Test acceptance</h3>
