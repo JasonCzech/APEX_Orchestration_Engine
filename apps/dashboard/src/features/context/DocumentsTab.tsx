@@ -216,51 +216,63 @@ export function DocumentsTab() {
   return (
     <>
       <form className="ctx-toolbar glass-panel" aria-label="Document filters" onSubmit={applyFilters}>
-        <input
-          type="text"
-          className="field-input"
-          aria-label="Filter by project"
-          placeholder="Project (proj-alpha)"
-          value={projectDraft}
-          disabled={uploadingBatch}
-          onChange={(event) => changeProject(event.target.value)}
-        />
-        {requiresApplication ? (
-          <select
-            className="field-select"
-            aria-label="Filter by application"
-            value={scopedAppIds.includes(appDraft) ? appDraft : ''}
-            disabled={uploadingBatch}
-            onChange={(event) => setAppDraft(event.target.value)}
-          >
-            <option value="" disabled>
-              Select an authorized application…
-            </option>
-            {scopedAppIds.map((appId) => (
-              <option key={appId} value={appId}>
-                {appId}
-              </option>
-            ))}
-          </select>
-        ) : (
+        <label className="ctx-filter-field">
+          <span className="ctx-field-label">Project</span>
           <input
             type="text"
             className="field-input"
-            aria-label="Filter by application"
-            placeholder="Application (optional)"
-            value={appDraft}
+            aria-label="Filter by project"
+            placeholder="proj-alpha"
+            value={projectDraft}
             disabled={uploadingBatch}
-            onChange={(event) => setAppDraft(event.target.value)}
+            onChange={(event) => changeProject(event.target.value)}
           />
+        </label>
+        {requiresApplication ? (
+          <label className="ctx-filter-field">
+            <span className="ctx-field-label">Application</span>
+            <select
+              className="field-select"
+              aria-label="Filter by application"
+              value={scopedAppIds.includes(appDraft) ? appDraft : ''}
+              disabled={uploadingBatch}
+              onChange={(event) => setAppDraft(event.target.value)}
+            >
+              <option value="" disabled>
+                Select an authorized application…
+              </option>
+              {scopedAppIds.map((appId) => (
+                <option key={appId} value={appId}>
+                  {appId}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label className="ctx-filter-field">
+            <span className="ctx-field-label">Application</span>
+            <input
+              type="text"
+              className="field-input"
+              aria-label="Filter by application"
+              placeholder="Optional"
+              value={appDraft}
+              disabled={uploadingBatch}
+              onChange={(event) => setAppDraft(event.target.value)}
+            />
+          </label>
         )}
-        <input
-          type="search"
-          className="field-input ctx-grow"
-          aria-label="Search documents"
-          placeholder="Search by name…"
-          value={qDraft}
-          onChange={(event) => setQDraft(event.target.value)}
-        />
+        <label className="ctx-filter-field ctx-grow">
+          <span className="ctx-field-label">Search documents</span>
+          <input
+            type="search"
+            className="field-input"
+            aria-label="Search documents"
+            placeholder="Search by name…"
+            value={qDraft}
+            onChange={(event) => setQDraft(event.target.value)}
+          />
+        </label>
         <button type="submit" className="btn btn-secondary btn-sm">
           Apply
         </button>

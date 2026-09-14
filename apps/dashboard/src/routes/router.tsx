@@ -109,22 +109,22 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'prompts/:ns/:name/playground',
-            handle: handle('Prompt Playground'),
+            handle: handle('Template Preview'),
             lazy: lazyPage(prompts, 'PromptPlaygroundPage'),
           },
           {
             path: 'golden-configs',
-            handle: handle('Golden Configs'),
+            handle: handle('Test Presets'),
             lazy: lazyPage(goldenConfigs, 'GoldenConfigsPage'),
           },
           {
             path: 'golden-configs/:assistantId',
-            handle: handle('Golden Config'),
+            handle: handle('Test Preset'),
             lazy: lazyPage(goldenConfigs, 'GoldenConfigDetailPage'),
           },
           {
             path: 'work-items',
-            handle: handle('Tickets/Defects'),
+            handle: handle('Tickets'),
             lazy: lazyPage(workItems, 'WorkItemsPage'),
           },
           {
@@ -139,7 +139,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'environments',
-            handle: handle('Applications & Environments'),
+            handle: handle('Applications'),
             lazy: lazyPage(environments, 'EnvironmentsPage'),
           },
           {
@@ -149,8 +149,13 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'context',
-            handle: handle('Context'),
+            handle: handle('Knowledge & Documents'),
             lazy: lazyPage(() => import('@/features/context/pages'), 'ContextPage'),
+          },
+          {
+            path: 'evidence',
+            handle: handle('Evidence'),
+            lazy: lazyPage(() => import('@/features/context/pages'), 'EvidencePage'),
           },
           {
             path: 'analytics',

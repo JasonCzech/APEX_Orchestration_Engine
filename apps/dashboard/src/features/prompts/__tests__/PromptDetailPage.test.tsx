@@ -216,7 +216,7 @@ describe('PromptDetailPage', () => {
     expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Set active' })).not.toBeInTheDocument()
     // read affordances stay
-    expect(screen.getByRole('link', { name: 'Test in playground' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Preview template' })).toBeInTheDocument()
     expect(screen.getAllByRole('link', { name: 'View' }).length).toBeGreaterThan(0)
   })
 

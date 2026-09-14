@@ -50,8 +50,8 @@ describe('PromptsPage', () => {
     const items = within(tree).getAllByRole('button')
     expect(items.map((item) => item.textContent)).toEqual([
       'All namespaces4',
-      'phase2',
-      'application1',
+      'Pipeline prompts2',
+      'Application requirements1',
       'ops1',
     ])
 
@@ -70,12 +70,12 @@ describe('PromptsPage', () => {
     })
 
     await screen.findByTestId('prompt-row-p-story')
-    expect(screen.getByRole('rowheader', { name: 'Phase: Story analysis, 1 prompt' })).toBeInTheDocument()
-    expect(screen.getByRole('rowheader', { name: 'Phase: Execution, 1 prompt' })).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'Pipeline prompt: Story analysis, 1 prompt' })).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'Pipeline prompt: Execution, 1 prompt' })).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: /^application/ }))
+    await userEvent.click(screen.getByRole('button', { name: /^Application requirements/ }))
     expect(router.state.location.search).toContain('ns=application')
-    expect(await screen.findByRole('rowheader', { name: 'Application: Checkout service requirements, 1 prompt' })).toBeInTheDocument()
+    expect(await screen.findByRole('rowheader', { name: 'Application requirements: Checkout service requirements, 1 prompt' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'checkout-service' })).toBeInTheDocument()
   })
 

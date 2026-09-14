@@ -18,10 +18,34 @@
   border-radius: var(--radius);
 }
 
+.ctx-heading {
+  min-width: 0;
+  margin-right: auto;
+}
+
+.ctx-page-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ctx-toolbar-caption {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .ctx-tabs {
   display: flex;
   gap: 4px;
-  margin-right: auto;
+}
+
+.ctx-filter-field {
+  display: flex;
+  flex: 1 1 180px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .ctx-tab {

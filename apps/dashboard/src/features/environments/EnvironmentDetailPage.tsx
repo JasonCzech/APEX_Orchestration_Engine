@@ -48,7 +48,7 @@ const EM_DASH = '—'
 function ReferenceCard({ environment }: { environment: Environment }) {
   return (
     <div className="env-card glass-panel">
-      <h2 className="env-card-title">Reference</h2>
+      <h2 className="env-card-title">Configuration</h2>
       <dl className="env-ref-grid">
         <dt>Base URL</dt>
         <dd>
@@ -84,8 +84,10 @@ function ReferenceCard({ environment }: { environment: Environment }) {
           </table>
         </div>
       )}
-      <h3 className="env-card-subtitle">Options</h3>
-      <JsonViewer value={environment.options} ariaLabel="Environment options" />
+      <details className="env-advanced-options">
+        <summary>Advanced options</summary>
+        <JsonViewer value={environment.options} ariaLabel="Environment options" />
+      </details>
     </div>
   )
 }
@@ -397,7 +399,7 @@ export function EnvironmentDetailPage() {
       <header className="env-detail-header glass-panel">
         <div className="env-detail-heading">
           <nav className="env-breadcrumb" aria-label="Breadcrumb">
-            <Link to="/environments">Environment Configurations</Link>
+            <Link to="/environments">Applications</Link>
             {app && (
               <>
                 <span className="env-breadcrumb-sep">/</span>

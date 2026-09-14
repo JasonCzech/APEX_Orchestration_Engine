@@ -1,6 +1,6 @@
 /**
  * /prompts/:ns/:name (?tab=content|versions) — prompt detail (plan UX 2.e).
- * Header: namespace/key breadcrumb, active vN chip, [Test in playground],
+ * Header: namespace/key breadcrumb, active vN chip, [Preview template],
  * [Archive|Unarchive] (operator+, optimistic with revert-on-error),
  * [New version] (operator+). Content tab: read-only active content + note +
  * description; new-version mode swaps in an editable editor pre-filled with
@@ -320,7 +320,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
         </div>
         <div className="prompt-detail-actions">
           <Link className="btn btn-secondary" to={promptPlaygroundPath(ns, name)}>
-            Test in playground
+            Preview template
           </Link>
           <RequireGlobalAdmin>
             <button

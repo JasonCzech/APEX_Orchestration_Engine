@@ -170,6 +170,17 @@
   margin: 0;
 }
 
+.prompts-preview h2,
+.prompts-key,
+.prompts-key-meta {
+  overflow-wrap: anywhere;
+}
+
+.prompts-key-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .prompts-preview-header,
 .prompts-preview-footer {
   display: flex;

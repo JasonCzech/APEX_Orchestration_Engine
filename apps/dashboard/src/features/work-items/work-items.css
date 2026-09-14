@@ -91,6 +91,16 @@
   color: var(--text-muted);
 }
 
+.wi-local-tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 7px;
+}
+
+.wi-local-tabs .wi-tab {
+  text-decoration: none;
+}
+
 .wi-caption {
   margin: 0;
   font-size: 11px;

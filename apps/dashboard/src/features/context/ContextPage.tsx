@@ -1,28 +1,29 @@
 /**
- * /context?tab=summaries|documents|evidence (plan Part 2 route table) — the
- * context library. Tab selection lives in the search params so deep links and
- * refreshes keep their place; invalid/missing values fall back to summaries.
+ * /context?tab=documents|summaries — the reusable knowledge library. Tab
+ * selection lives in the search params so deep links and refreshes keep their
+ * place; invalid/missing values fall back to documents. Evidence now has its
+ * own investigation route.
  */
-import { useSearchParams } from 'react-router'
+import { Navigate, useSearchParams } from 'react-router'
 
 import { CONTEXT_TABS, isContextTab, type ContextTab } from './contextLogic'
 import { DocumentsTab } from './DocumentsTab'
-import { EvidenceTab } from './EvidenceTab'
 import { SummariesTab } from './SummariesTab'
 import { useSummaryLifecycle } from './useSummaryLifecycle'
 import './context.css'
 
 const TAB_LABELS: Record<ContextTab, string> = {
-  summaries: 'Summaries',
   documents: 'Documents',
-  evidence: 'Evidence',
+  summaries: 'Summaries',
 }
 
 export function ContextPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const summaries = useSummaryLifecycle()
   const rawTab = searchParams.get('tab')
-  const tab: ContextTab = isContextTab(rawTab) ? rawTab : 'summaries'
+  const tab: ContextTab = isContextTab(rawTab) ? rawTab : 'documents'
+
+  if (rawTab === 'evidence') return <Navigate to="/evidence" replace />
 
   function selectTab(next: ContextTab) {
     const params = new URLSearchParams(searchParams)
@@ -33,7 +34,11 @@ export function ContextPage() {
   return (
     <section className="ctx-page animate-enter">
       <header className="ctx-toolbar glass-panel">
-        <div className="ctx-tabs" role="tablist" aria-label="Context sections">
+        <div className="ctx-heading">
+          <h2 className="ctx-page-title">Knowledge &amp; Documents</h2>
+          <p className="ctx-toolbar-caption">Reusable source material for planning and running tests.</p>
+        </div>
+        <div className="ctx-tabs" role="tablist" aria-label="Knowledge sections">
           {CONTEXT_TABS.map((entry) => (
             <button
               key={entry}
@@ -49,13 +54,7 @@ export function ContextPage() {
         </div>
       </header>
 
-      {tab === 'summaries' ? (
-        <SummariesTab lifecycle={summaries} />
-      ) : tab === 'documents' ? (
-        <DocumentsTab />
-      ) : (
-        <EvidenceTab />
-      )}
+      {tab === 'documents' ? <DocumentsTab /> : <SummariesTab lifecycle={summaries} />}
     </section>
   )
 }

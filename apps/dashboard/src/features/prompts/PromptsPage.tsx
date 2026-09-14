@@ -50,7 +50,7 @@ function namespaceIndex(rows: PromptSummary[]): Array<{ ns: string; count: numbe
 
 interface PromptGroup {
   id: string
-  label: 'Phase' | 'Application'
+  label: 'Pipeline prompt' | 'Application requirements'
   title: string
   rows: PromptSummary[]
 }
@@ -58,6 +58,12 @@ interface PromptGroup {
 function readableName(value: string): string {
   const words = value.replaceAll(/[_-]+/g, ' ').trim()
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : value
+}
+
+function namespaceLabel(namespace: string): string {
+  if (namespace === 'phase') return 'Pipeline prompts'
+  if (namespace === 'application') return 'Application requirements'
+  return namespace
 }
 
 function promptGroups(rows: PromptSummary[], namespace: string): PromptGroup[] | null {
@@ -69,7 +75,7 @@ function promptGroups(rows: PromptSummary[], namespace: string): PromptGroup[] |
   }
   return [...grouped.entries()].map(([id, groupRows]) => ({
     id,
-    label: namespace === 'phase' ? 'Phase' : 'Application',
+    label: namespace === 'phase' ? 'Pipeline prompt' : 'Application requirements',
     title:
       namespace === 'application'
         ? groupRows[0]?.description || readableName(id)
@@ -156,8 +162,11 @@ function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
     <aside className="prompts-preview glass-panel" aria-label="Prompt preview">
       <div className="prompts-preview-header">
         <div>
-          <p className="prompts-preview-kicker">{detail.namespace}</p>
-          <h2>{detail.key}</h2>
+          <p className="prompts-preview-kicker">
+            {detail.namespace === 'application' ? 'Application requirements' : 'Pipeline prompt'}
+          </p>
+          <h2>{detail.description || readableName(detail.key)}</h2>
+          <code className="prompts-key-meta">{detail.key}</code>
         </div>
         <div className="prompts-preview-meta">
           {detail.active_version && <span className="dash-context-chip prompts-version-chip">Active v{detail.active_version.version}</span>}
@@ -438,7 +447,7 @@ export function PromptsPage() {
               aria-current={selectedNs === ns ? 'true' : undefined}
               onClick={() => selectNamespace(ns)}
             >
-              <span>{ns}</span>
+              <span>{namespaceLabel(ns)}</span>
               <span className="prompts-tree-count">{count}</span>
             </button>
           ))}

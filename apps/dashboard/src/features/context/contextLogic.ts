@@ -2,7 +2,7 @@
 
 import type { EvidencePacket } from '@/api/hooks/useContextApi'
 
-export const CONTEXT_TABS = ['summaries', 'documents', 'evidence'] as const
+export const CONTEXT_TABS = ['documents', 'summaries'] as const
 export type ContextTab = (typeof CONTEXT_TABS)[number]
 
 export function isContextTab(value: string | null): value is ContextTab {

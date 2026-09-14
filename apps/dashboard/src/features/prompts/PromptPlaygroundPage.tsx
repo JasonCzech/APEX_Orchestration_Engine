@@ -1,7 +1,7 @@
 /**
  * /prompts/:ns/:name/playground (plan UX 2.e) — stateless prompt test runs.
  * Left: catalog-version selector (default active) OR ad-hoc content editor
- * toggle, plus a validated sample_input JSON editor ({} default). [Run test]
+ * toggle, plus a validated sample_input JSON editor ({} default). [Check template]
  * POSTs /v1/prompts/{id}/test; the 202 {run_id, thread_id?} renders as an
  * accepted card with a /runs/{thread_id} link plus a session-local history of
  * prior runs. Live playground streaming is a noted follow-up — no polling.
@@ -259,7 +259,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
               <span className="prompt-field-label">Version</span>
               <select
                 className="field-select"
-                aria-label="Version to test"
+                aria-label="Version to preview"
                 value={versionId}
                 onChange={(event) => setVersionId(event.target.value)}
               >
@@ -338,7 +338,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
           )}
           {test.isError && (
             <div className="tonal-card danger" role="alert">
-              {errorMessage(test.error, 'Test run failed.')}
+              {errorMessage(test.error, 'Template check failed.')}
             </div>
           )}
           <RequireRole
@@ -354,7 +354,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
                 onClick={run}
                 disabled={testPending || !scopeReady}
               >
-                {testPending ? 'Submitting…' : 'Run test'}
+                {testPending ? 'Checking…' : 'Check template'}
               </button>
             </div>
           </RequireRole>
@@ -363,7 +363,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
         <div className="prompt-content-card glass-panel">
           {latest ? (
             <div className="tonal-card success prompt-run-card" data-testid="playground-accepted">
-              <span className="strong">Run accepted</span>
+              <span className="strong">Template check accepted</span>
               <span className="prompt-run-id">{latest.runId}</span>
               {latest.threadId ? (
                 <Link className="btn btn-secondary btn-sm" to={`/runs/${latest.threadId}`}>
@@ -375,10 +375,10 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
             </div>
           ) : (
             <div className="dash-empty compact">
-              <h2>No runs yet</h2>
+              <h2>No checks yet</h2>
               <p className="dash-empty-hint">
-                Submit a test run to see it accepted here. Live playground output is a noted
-                follow-up.
+                Check a catalog version or draft to verify that its template can be accepted. This
+                does not evaluate model behavior or execute tools.
               </p>
             </div>
           )}

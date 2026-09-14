@@ -354,10 +354,13 @@ export function SavedQueriesPage() {
   return (
     <section className="wi-page animate-enter">
       <header className="wi-toolbar glass-panel">
-        <h2 className="wi-page-title">Saved queries</h2>
-        <Link className="btn btn-ghost btn-sm" to="/work-items">
-          Query console
-        </Link>
+        <div>
+          <h2 className="wi-page-title">Tickets</h2>
+          <nav className="wi-local-tabs" aria-label="Ticket sections">
+            <Link className="wi-tab" to="/work-items">Search</Link>
+            <Link className="wi-tab active" to="/work-items/saved">Saved queries</Link>
+          </nav>
+        </div>
       </header>
 
       {savedQueries.isError && savedQueries.data && (

@@ -148,6 +148,20 @@
   border-radius: var(--radius);
 }
 
+.env-advanced-options {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.env-advanced-options summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.env-advanced-options .json-viewer {
+  margin-top: 8px;
+}
+
 .env-panel-title {
   margin: 0;
   font-size: 13px;

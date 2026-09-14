@@ -48,7 +48,7 @@ afterAll(() => {
 })
 
 function renderContext(
-  path = '/context',
+  path = '/context?tab=summaries',
   role: 'operator' | 'viewer' = 'operator',
   scopes?: { project_id: string; app_id: string | null }[],
 ) {
@@ -199,7 +199,7 @@ describe('ContextPage', () => {
 
     await act(async () => router.navigate('/settings'))
     await screen.findByRole('heading', { name: 'Settings' })
-    await act(async () => router.navigate('/context'))
+    await act(async () => router.navigate('/context?tab=summaries'))
 
     await user.type(
       await screen.findByRole('textbox', { name: 'Summary subject' }),
@@ -211,7 +211,7 @@ describe('ContextPage', () => {
     await act(async () => router.navigate('/settings'))
     release()
     await waitFor(() => expect(captured).toHaveLength(1))
-    await act(async () => router.navigate('/context'))
+    await act(async () => router.navigate('/context?tab=summaries'))
 
     const accepted = await screen.findByTestId('summary-accepted')
     expect(within(accepted).getByText('run-route-deferred')).toBeInTheDocument()
@@ -699,7 +699,7 @@ describe('ContextPage', () => {
     const evidence = evidenceHandler()
     server.use(evidence.handler)
     const user = userEvent.setup()
-    renderContext('/context?tab=evidence')
+    renderContext('/evidence')
 
     // Alphabetical source groups: elk before jira; jira gathers both packets.
     const elk = await screen.findByRole('region', { name: 'Source elk' })
@@ -726,12 +726,12 @@ describe('ContextPage', () => {
     )
   })
 
-  it('hides mutations from viewers and explains the empty evidence state', async () => {
+  it('hides mutations from viewers in the knowledge library', async () => {
     const documents = documentsListHandler([DOC_SPEC])
     const evidence = evidenceHandler([])
     server.use(documents.handler, evidence.handler)
     const user = userEvent.setup()
-    renderContext('/context', 'viewer')
+    renderContext('/context?tab=summaries', 'viewer')
 
     // Summaries: form renders but generation is disabled for viewers.
     expect(
@@ -746,8 +746,5 @@ describe('ContextPage', () => {
       screen.queryByRole('button', { name: 'Delete checkout-spec.pdf' }),
     ).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: 'Evidence' }))
-    expect(await screen.findByRole('heading', { name: 'No evidence yet' })).toBeInTheDocument()
-    expect(screen.getByText(/accrue automatically as pipeline runs execute/)).toBeInTheDocument()
   })
 })

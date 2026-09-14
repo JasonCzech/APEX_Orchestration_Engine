@@ -246,7 +246,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
 
   if (query.isPending) {
     return (
-      <div className="gc-skeleton" role="status" aria-busy="true" aria-label="Loading golden config">
+      <div className="gc-skeleton" role="status" aria-busy="true" aria-label="Loading test preset">
         <div className="glass-panel gc-skeleton-card" />
         <div className="glass-panel gc-skeleton-card" />
       </div>
@@ -256,8 +256,8 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
   if (!query.data) {
     return (
       <ProblemCard
-        title="Golden config unavailable"
-        message={query.error?.message ?? 'The golden config could not be loaded.'}
+        title="Test preset unavailable"
+        message="This test preset could not be loaded. Try again, or check the system status if the problem continues."
         onRetry={() => void query.refetch()}
       />
     )

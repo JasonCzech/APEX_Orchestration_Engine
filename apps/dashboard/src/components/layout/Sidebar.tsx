@@ -77,20 +77,16 @@ const TESTING_NAV_ITEMS: NavItem[] = [
     icon: <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />,
   },
   { to: '/approvals', label: 'Approvals', icon: <Icon d="M3 13h4l2 3h6l2-3h4M5 5h14l2 8v6H3v-6z" /> },
+  { to: '/work-items', label: 'Tickets', icon: <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /> },
 ]
 
 const RESOURCE_NAV_ITEMS: NavItem[] = [
   {
     to: '/environments',
-    label: 'Applications & Environments',
+    label: 'Applications',
     icon: <Icon d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01" />,
   },
-  {
-    to: '/work-items',
-    label: 'Tickets/Defects',
-    icon: <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />,
-  },
-  { to: '/context', label: 'Context', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
+  { to: '/context', label: 'Knowledge & Documents', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
   {
     to: '/golden-configs',
     label: 'Test Presets',
@@ -104,6 +100,7 @@ const RESOURCE_NAV_ITEMS: NavItem[] = [
 ]
 
 const INVESTIGATION_NAV_ITEMS: NavItem[] = [
+  { to: '/evidence', label: 'Evidence', icon: <Icon d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" /> },
   { to: '/analytics', label: 'Agent Analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
   { to: '/logs', label: 'Logs', icon: <Icon d="M7 3h12v18H7zM3 7h4M3 12h4M3 17h4M11 8h4M11 12h4" /> },
   { to: '/apex-load', label: 'APEX Load', icon: <Icon d="M4 18V6m5 12V3m5 15V9m5 9V5" /> },

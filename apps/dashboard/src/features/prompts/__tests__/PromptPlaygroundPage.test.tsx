@@ -44,11 +44,11 @@ describe('PromptPlaygroundPage', () => {
     renderApp({ initialEntries: [PLAYGROUND_URL], authState: authenticatedState('operator') })
 
     // version selector defaults to the active version
-    const picker = await screen.findByRole('combobox', { name: 'Version to test' })
+    const picker = await screen.findByRole('combobox', { name: 'Version to preview' })
     await waitFor(() => expect(picker).toHaveValue('v-2'))
     expect(within(picker).getByText('v2 (active)')).toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Run test' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Check template' }))
 
     await waitFor(() =>
       expect(catalog.calls.test).toEqual([
@@ -74,7 +74,7 @@ describe('PromptPlaygroundPage', () => {
     const input = await screen.findByRole('textbox', { name: 'Sample input JSON' })
     await userEvent.clear(input)
     await userEvent.type(input, 'not json')
-    await userEvent.click(screen.getByRole('button', { name: 'Run test' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Check template' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('not valid JSON')
     expect(catalog.calls.test).toHaveLength(0)
@@ -97,8 +97,8 @@ describe('PromptPlaygroundPage', () => {
       authState: { ...base, consumer, systemInfo: { ...base.systemInfo, consumer } },
     })
 
-    await screen.findByRole('combobox', { name: 'Version to test' })
-    const run = screen.getByRole('button', { name: 'Run test' })
+    await screen.findByRole('combobox', { name: 'Version to preview' })
+    const run = screen.getByRole('button', { name: 'Check template' })
     expect(run).toBeDisabled()
     await userEvent.selectOptions(
       screen.getByRole('combobox', { name: 'Playground application' }),
@@ -141,11 +141,11 @@ describe('PromptPlaygroundPage', () => {
     })
 
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Version to test' })).toHaveValue('v-exec-1'),
+      expect(screen.getByRole('combobox', { name: 'Version to preview' })).toHaveValue('v-exec-1'),
     )
     await act(async () => router.navigate(PLAYGROUND_URL))
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Version to test' })).toHaveValue('v-2'),
+      expect(screen.getByRole('combobox', { name: 'Version to preview' })).toHaveValue('v-2'),
     )
     await user.click(screen.getByRole('button', { name: 'Ad-hoc content' }))
     const editor = screen.getByRole('textbox', { name: 'Ad-hoc prompt content' })
@@ -157,7 +157,7 @@ describe('PromptPlaygroundPage', () => {
     // route-local state.
     act(() => {
       void router.navigate(EXEC_PLAYGROUND_URL, { flushSync: true })
-      fireEvent.click(screen.getByRole('button', { name: 'Run test' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Check template' }))
     })
 
     await waitFor(() => expect(submissions).toHaveLength(1))
@@ -204,22 +204,22 @@ describe('PromptPlaygroundPage', () => {
       authState: { ...base, consumer, systemInfo: { ...base.systemInfo, consumer } },
     })
 
-    await screen.findByRole('combobox', { name: 'Version to test' })
+    await screen.findByRole('combobox', { name: 'Version to preview' })
     await user.selectOptions(
       screen.getByRole('combobox', { name: 'Playground application' }),
       'app-two',
     )
-    await user.click(screen.getByRole('button', { name: 'Run test' }))
+    await user.click(screen.getByRole('button', { name: 'Check template' }))
     await waitFor(() => expect(submissions).toHaveLength(1))
 
     await act(async () => router.navigate('/settings'))
     await act(async () => router.navigate(PLAYGROUND_URL))
-    await screen.findByRole('combobox', { name: 'Version to test' })
+    await screen.findByRole('combobox', { name: 'Version to preview' })
     expect(screen.getByRole('combobox', { name: 'Playground application' })).toHaveValue(
       'app-two',
     )
 
-    const pendingRun = screen.getByRole('button', { name: 'Submitting…' })
+    const pendingRun = screen.getByRole('button', { name: 'Checking…' })
     expect(pendingRun).toBeDisabled()
     await user.click(pendingRun)
     expect(submissions).toHaveLength(1)
@@ -266,13 +266,13 @@ describe('PromptPlaygroundPage', () => {
       authState: authenticatedState('operator'),
     })
 
-    await screen.findByRole('combobox', { name: 'Version to test' })
-    await userEvent.click(screen.getByRole('button', { name: 'Run test' }))
+    await screen.findByRole('combobox', { name: 'Version to preview' })
+    await userEvent.click(screen.getByRole('button', { name: 'Check template' }))
     await waitFor(() => expect(started).toContain('p-story'))
 
     await act(async () => router.navigate(EXEC_PLAYGROUND_URL))
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Version to test' })).toHaveValue('v-exec-1'),
+      expect(screen.getByRole('combobox', { name: 'Version to preview' })).toHaveValue('v-exec-1'),
     )
     await waitFor(() => expect(completed).toContain('p-story'))
     expect(screen.queryByTestId('playground-accepted')).not.toBeInTheDocument()

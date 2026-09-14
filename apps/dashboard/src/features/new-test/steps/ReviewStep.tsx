@@ -208,7 +208,7 @@ export function ReviewStep({
             </dd>
             <dt>Review policy</dt>
             <dd>{reviewPolicySummary(draft.config)}</dd>
-            <dt>Golden config</dt>
+            <dt>Test preset</dt>
             <dd><ReferenceName id={draft.config.golden_config_id} name={configurations.data?.find((item) => item.assistantId === draft.config.golden_config_id)?.name} /></dd>
           </dl>
         </ReviewCard>

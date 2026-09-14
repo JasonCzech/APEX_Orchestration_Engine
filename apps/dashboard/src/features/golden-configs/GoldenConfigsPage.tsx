@@ -59,10 +59,10 @@ export function GoldenConfigsPage() {
     <section className="gc-page animate-enter">
       <header className="gc-toolbar glass-panel">
         {/* The topbar renders the route-handle h1; this is a section label. */}
-        <h2 className="gc-page-title">Golden configurations</h2>
+        <h2 className="gc-page-title">Test presets</h2>
         <p className="gc-page-hint">
-          Published assistants pinning engine, gates, phases and prompt versions. Pick one in the
-          run wizard to inherit its bundle.
+          Reusable test settings that pin an engine, approvals, phases and prompt versions. Choose
+          one in the run wizard to inherit its bundle.
         </p>
       </header>
 
@@ -75,7 +75,7 @@ export function GoldenConfigsPage() {
           className="gc-skeleton"
           role="status"
           aria-busy="true"
-          aria-label="Loading golden configs"
+          aria-label="Loading test presets"
         >
           {Array.from({ length: SKELETON_CARDS }, (_, i) => (
             <div key={i} className="glass-panel gc-skeleton-card" />
@@ -83,16 +83,15 @@ export function GoldenConfigsPage() {
         </div>
       ) : configs.isError && !configs.data ? (
         <ProblemCard
-          title="Golden configs unavailable"
-          message={configs.error.message}
+          title="Test presets unavailable"
+          message="Test presets could not be loaded. Try again, or check the system status if the problem continues."
           onRetry={() => void configs.refetch()}
         />
       ) : (configs.data ?? []).length === 0 ? (
         <div className="dash-empty">
-          <h2>No golden configs yet</h2>
+          <h2>No test presets yet</h2>
           <p className="dash-empty-hint">
-            Golden configurations are LangGraph assistants on the pipeline graph — publish one to
-            pin a reusable run bundle.
+            Create a test preset to reuse an approved test bundle across runs.
           </p>
         </div>
       ) : (

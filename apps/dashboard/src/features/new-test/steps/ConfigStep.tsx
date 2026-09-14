@@ -257,7 +257,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
 
       {config.engine === 'apex_load' && <ReleaseMappingPicker draft={draft} onChange={onChange} />}
       <div className="wizard-field">
-        <span className="wizard-label">Golden config</span>
+        <span className="wizard-label">Test preset</span>
         {config.golden_config_id && (
           <div className="wizard-row">
             <span className="topbar-meta-chip accent" data-testid="config-inherited-chip">
@@ -276,10 +276,10 @@ export function ConfigStep({ draft, onChange }: StepProps) {
           <CachedDataWarning error={assistants.error} onRetry={() => void assistants.refetch()} />
         )}
         {assistants.isError && !assistants.data ? (
-          <p className="wizard-caption wizard-caption--danger">Golden configs failed to load. You can continue with the engine and review policy below; no new preset will be applied. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void assistants.refetch()}>Retry configurations</button></p>
+          <p className="wizard-caption wizard-caption--danger">Test presets failed to load. You can continue with the engine and review policy below; no new preset will be applied. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void assistants.refetch()}>Retry test presets</button></p>
         ) : goldenConfigs.length === 0 ? (
           <p className="wizard-caption">
-            {assistants.isLoading ? 'Loading…' : 'No golden configs published yet.'}
+            {assistants.isLoading ? 'Loading…' : 'No test presets published yet.'}
           </p>
         ) : (
           <div className="wizard-golden-cards">

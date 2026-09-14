@@ -54,7 +54,7 @@ describe('EnvironmentDetailPage', () => {
       base_url: 'https://staging2.checkout.example.com',
     })
     // Save closes the editor back to the read-mode reference card.
-    expect(await screen.findByRole('heading', { name: 'Reference' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Configuration' })).toBeInTheDocument()
   })
 
   it('keeps list edit/delete actions disabled while a detail save survives navigation', async () => {
@@ -224,7 +224,7 @@ describe('EnvironmentDetailPage', () => {
     expect(screen.queryByRole('button', { name: 'Rescan' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
     // The read-only reference card still renders fully.
-    expect(screen.getByRole('heading', { name: 'Reference' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Configuration' })).toBeInTheDocument()
     expect(screen.getByRole('table', { name: 'Hosts' })).toBeInTheDocument()
   })
 
@@ -235,7 +235,7 @@ describe('EnvironmentDetailPage', () => {
     )
     renderDetail('viewer', `/environments/${ENV_STAGING.id}?edit=1`)
 
-    expect(await screen.findByRole('heading', { name: 'Reference' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Configuration' })).toBeInTheDocument()
     expect(screen.queryByRole('form', { name: 'Edit environment' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument()
   })

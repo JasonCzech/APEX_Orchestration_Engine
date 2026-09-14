@@ -43,7 +43,7 @@ export function goldenConfigWriteMutationScopeId(assistantId: string): string {
 
 async function fetchPipelineAssistants(signal?: AbortSignal): Promise<Assistant[]> {
   return fetchAllOffsetPages({
-    label: 'Golden configurations',
+    label: 'Test presets',
     pageSize: ASSISTANT_PAGE_SIZE,
     fetchPage: async (limit, offset) => {
       const client = await getLangGraphClient()

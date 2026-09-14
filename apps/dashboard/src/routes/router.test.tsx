@@ -49,7 +49,7 @@ describe('router', () => {
     })
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: 'Golden Config' }),
+      await screen.findByRole('heading', { level: 1, name: 'Test Preset' }),
     ).toBeInTheDocument()
     expect(
       await screen.findByRole('heading', { level: 2, name: 'Deep-linked config' }),
