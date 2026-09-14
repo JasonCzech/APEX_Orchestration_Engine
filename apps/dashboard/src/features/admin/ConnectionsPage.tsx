@@ -7,7 +7,7 @@
  * panel surfaces that message verbatim as an inline error, never a toast.
  */
 import { useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import {
   PORT_KINDS,
@@ -41,6 +41,17 @@ import {
 import './admin.css'
 
 const SKELETON_ROWS = 4
+const APEX_LOAD_PROVIDER = 'apex_load'
+
+type RegistryView = 'connections' | 'apex-load'
+
+function isRegistryView(value: string | null): value is RegistryView {
+  return value === 'connections' || value === 'apex-load'
+}
+
+function isApexLoadConnection(connection: Connection): boolean {
+  return connection.kind === 'execution_engine' && connection.provider === APEX_LOAD_PROVIDER
+}
 
 function ConnectionRow({ connection }: { connection: Connection }) {
   const setEnabled = useSetConnectionEnabled(connection.id)
@@ -283,11 +294,22 @@ function ConnectionsContent() {
   const connections = useConnectionsIndex()
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState('')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawView = searchParams.get('view')
+  const view: RegistryView = isRegistryView(rawView) ? rawView : 'connections'
   const normalizedQuery = query.trim().toLowerCase()
   const filteredConnections = (connections.data ?? []).filter((connection) =>
     [connection.name, connection.kind, connection.provider, connection.project_id ?? 'global']
       .some((value) => value.toLowerCase().includes(normalizedQuery)),
   )
+  const apexLoadConnections = (connections.data ?? []).filter(isApexLoadConnection)
+
+  function selectView(next: RegistryView) {
+    const params = new URLSearchParams(searchParams)
+    if (next === 'connections') params.delete('view')
+    else params.set('view', next)
+    setSearchParams(params)
+  }
 
   return (
     <section className="adm-page animate-enter">
@@ -308,9 +330,30 @@ function ConnectionsContent() {
         )}
       </header>
 
+      <div className="adm-tabs" role="tablist" aria-label="Connection views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'connections'}
+          className={`adm-tab${view === 'connections' ? ' active' : ''}`}
+          onClick={() => selectView('connections')}
+        >
+          All connections
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'apex-load'}
+          className={`adm-tab${view === 'apex-load' ? ' active' : ''}`}
+          onClick={() => selectView('apex-load')}
+        >
+          APEX Load
+        </button>
+      </div>
+
       {creating && <CreateConnectionPanel onClose={() => setCreating(false)} />}
 
-      {!connections.isPending && !!connections.data?.length && (
+      {view === 'connections' && !connections.isPending && !!connections.data?.length && (
         <label className="adm-registry-search">
           <span className="sr-only">Filter connections</span>
           <input
@@ -351,11 +394,60 @@ function ConnectionsContent() {
             Connections bind port kinds (work tracking, logs, engines…) to provider adapters.
           </p>
         </div>
-      ) : filteredConnections.length === 0 ? (
+      ) : view === 'apex-load' && apexLoadConnections.length === 0 ? (
+        <div className="dash-empty">
+          <h2>No APEX Load connections yet</h2>
+          <p className="dash-empty-hint">
+            Create an enabled APEX Load execution-engine connection to configure a project workspace.
+          </p>
+        </div>
+      ) : view === 'connections' && filteredConnections.length === 0 ? (
         <div className="dash-empty">
           <h2>No matching connections</h2>
           <p className="dash-empty-hint">Try a different name, provider, kind, or project.</p>
         </div>
+      ) : view === 'apex-load' ? (
+        <section className="glass-panel adm-card-panel" aria-label="APEX Load workspaces">
+          <h2 className="adm-panel-title">APEX Load workspaces</h2>
+          <p className="adm-field-help">
+            Configure credentials and scope on the connection. Open a workspace to manage scenarios,
+            schedules, executions, and evidence for that connection.
+          </p>
+          <div className="data-table-wrap">
+            <table className="data-table striped adm-connections-table" aria-label="APEX Load connections">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Scope</th>
+                  <th>Enabled</th>
+                  <th><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {apexLoadConnections.map((connection) => (
+                  <tr key={connection.id} data-testid={`apex-load-connection-${connection.id}`}>
+                    <td><Link className="adm-card-link strong" to={`/admin/connections/${connection.id}`}>{connection.name}</Link></td>
+                    <td><span className="dash-context-chip adm-chip-muted">{connection.project_id ?? 'global'}</span></td>
+                    <td>
+                      <span className={connection.enabled ? 'status-badge success' : 'status-badge danger'}>
+                        {connection.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </td>
+                    <td>
+                      {connection.enabled ? (
+                        <Link className="btn btn-secondary btn-sm" to={`/apex-load?connection=${encodeURIComponent(connection.id)}`}>
+                          Open workspace
+                        </Link>
+                      ) : (
+                        <span className="adm-muted">Enable this connection to open its workspace.</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       ) : (
         <div className="data-table-wrap">
           <table className="data-table striped adm-connections-table" aria-label="Connections">

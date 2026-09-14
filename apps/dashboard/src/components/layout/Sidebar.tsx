@@ -103,7 +103,6 @@ const INVESTIGATION_NAV_ITEMS: NavItem[] = [
   { to: '/evidence', label: 'Evidence', icon: <Icon d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" /> },
   { to: '/analytics', label: 'Agent Analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
   { to: '/logs', label: 'Logs', icon: <Icon d="M7 3h12v18H7zM3 7h4M3 12h4M3 17h4M11 8h4M11 12h4" /> },
-  { to: '/apex-load', label: 'APEX Load', icon: <Icon d="M4 18V6m5 12V3m5 15V9m5 9V5" /> },
 ]
 
 const ADMIN_NAV_SECTION: NavSection = {

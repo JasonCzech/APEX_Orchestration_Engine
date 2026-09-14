@@ -130,6 +130,7 @@ export function RunOverview({ detail, state, progress }: {
           {artifacts.map((artifact) => (
             <ArtifactLink
               key={artifact.id}
+              className="run-evidence-artifact-link"
               to={artifactViewerPath(detail.thread_id, artifact.id)}
               returnTo={`/runs/${detail.thread_id}`}
             >

@@ -87,6 +87,16 @@ describe('RunDetailPage', () => {
     expect(within(overview).getByText(/5 of 6 selected phases finished/)).toBeInTheDocument()
   })
 
+  it('uses the themed link style for Evidence Coverage artifacts', async () => {
+    server.use(pipelineDetailHandler())
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByRole('link', { name: 'load-report.json' })).toHaveClass(
+      'run-evidence-artifact-link',
+    )
+  })
+
   it('preserves legacy activity deep links to the pipeline log', async () => {
     server.use(pipelineDetailHandler())
     const { router } = renderRunRoutes([`/runs/${THREAD_ID}?tab=activity`])

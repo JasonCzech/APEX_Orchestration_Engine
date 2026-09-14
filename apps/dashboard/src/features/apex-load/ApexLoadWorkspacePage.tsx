@@ -511,9 +511,9 @@ export function ApexLoadWorkspacePage() {
     <div className="adm-page" data-testid="apex-load-workspace">
       <header className="adm-toolbar glass-panel">
         <div>
-          <h2 className="adm-page-title">Load integration</h2>
+          <h2 className="adm-page-title">APEX Load workspace</h2>
           <span className="adm-card-time">
-            Connect Orchestration analysis to APEX Load execution. Open an execution in Load to inspect its workload and evidence.
+            A connection workspace for scenarios, schedules, executions, and evidence. Connection setup remains in Connections.
           </span>
         </div>
         <label className="adm-field">

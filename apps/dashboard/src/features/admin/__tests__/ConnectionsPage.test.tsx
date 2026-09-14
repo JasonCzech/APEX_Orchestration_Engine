@@ -6,6 +6,7 @@ import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 import {
+  CONN_ENGINE,
   CONN_ELK,
   CONN_JIRA,
   connectionsReadHandlers,
@@ -56,6 +57,22 @@ describe('ConnectionsPage', () => {
     await user.type(screen.getByRole('searchbox', { name: 'Filter connections' }), 'elk')
     expect(screen.getByTestId('conn-row-conn-elk')).toBeInTheDocument()
     expect(screen.queryByTestId('conn-row-conn-jira')).not.toBeInTheDocument()
+  })
+
+  it('opens an enabled APEX Load connection from the Connections workspace view', async () => {
+    server.use(...connectionsReadHandlers())
+    const user = userEvent.setup()
+    const { router } = renderList()
+
+    await user.click(await screen.findByRole('tab', { name: 'APEX Load' }))
+    expect(router.state.location.search).toBe('?view=apex-load')
+
+    const table = await screen.findByRole('table', { name: 'APEX Load connections' })
+    const row = within(table).getByTestId(`apex-load-connection-${CONN_ENGINE.id}`)
+    expect(within(row).getByRole('link', { name: 'Open workspace' })).toHaveAttribute(
+      'href',
+      `/apex-load?connection=${CONN_ENGINE.id}`,
+    )
   })
 
   it('exposes connection details through a keyboard-focusable link', async () => {

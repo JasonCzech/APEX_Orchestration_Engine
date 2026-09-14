@@ -354,6 +354,19 @@
   text-decoration: underline;
 }
 
+/* Evidence Coverage artifacts must not fall back to the browser's default
+   blue link color; Solarized Dark supplies a contrast-checked accent token. */
+.run-evidence-artifact-link {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.run-evidence-artifact-link:hover {
+  color: var(--accent-hover);
+}
+
 .artifact-card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));

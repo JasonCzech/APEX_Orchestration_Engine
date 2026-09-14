@@ -671,6 +671,14 @@ function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
           </div>
         </div>
         <div className="adm-detail-actions">
+          {conn.kind === 'execution_engine' && conn.provider === 'apex_load' && conn.enabled && (
+            <Link
+              className="btn btn-secondary btn-sm"
+              to={`/apex-load?connection=${encodeURIComponent(conn.id)}`}
+            >
+              Open APEX Load workspace
+            </Link>
+          )}
           <button
             type="button"
             className="btn btn-secondary btn-sm"

@@ -129,6 +129,19 @@ h1, h2, h3, h4 {
   letter-spacing: -0.03em;
 }
 
+/* Plain anchors appear throughout contextual copy, tables, and artifact
+   listings. Set their color explicitly so every theme overrides the browser's
+   default blue/purple link colors. Component classes such as .btn and
+   .nav-item supply more specific colors where appropriate. */
+a,
+a:visited {
+  color: var(--accent);
+}
+
+a:hover {
+  color: var(--accent-hover);
+}
+
 button {
   cursor: pointer;
   font-family: inherit;
