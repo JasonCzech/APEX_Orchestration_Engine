@@ -1,6 +1,6 @@
 /**
- * /admin/connections — the adapter connection registry as a card grid grouped
- * by port kind (plan Part 2 route table + UX 2.f, D7). Admin-gated.
+ * /admin/connections — the adapter connection registry, searchable by its
+ * operational identity and scope. Admin-gated.
  *
  * Create-time 422s carry the registered-provider list in the problem detail
  * ("unknown provider 'x' for kind 'y'; registered providers: a, b") — the
@@ -25,7 +25,7 @@ import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
 
-import { groupConnectionsByKind, kindLabel, parseJsonObject } from './adminLogic'
+import { parseJsonObject } from './adminLogic'
 import { AdminGate, TogglePill } from './adminShared'
 import { scopedConnectionPolicyIssue } from './connectionPolicy'
 import { ProviderConnectionFields } from './ProviderConnectionFields'
@@ -40,21 +40,32 @@ import {
 } from './providerCatalog'
 import './admin.css'
 
-const SKELETON_CARDS = 4
+const SKELETON_ROWS = 4
 
-function ConnectionCard({ connection }: { connection: Connection }) {
+function ConnectionRow({ connection }: { connection: Connection }) {
   const setEnabled = useSetConnectionEnabled(connection.id)
   const writeCount = usePendingMutationCount(connectionWriteMutationKey(connection.id))
 
   return (
-    <div className="adm-card glass-panel" data-testid={`conn-card-${connection.id}`}>
-      <div className="adm-card-top">
+    <tr data-testid={`conn-row-${connection.id}`}>
+      <td>
         <Link
-          className="adm-card-name adm-card-link"
+          className="adm-card-link strong"
           to={`/admin/connections/${connection.id}`}
         >
           {connection.name}
         </Link>
+      </td>
+      <td>{connection.kind.replaceAll('_', ' ')}</td>
+      <td>
+        <span className="dash-context-chip">{connection.provider}</span>
+      </td>
+      <td>
+        <span className="dash-context-chip adm-chip-muted">
+          {connection.project_id ?? 'global'}
+        </span>
+      </td>
+      <td>
         <TogglePill
           enabled={connection.enabled}
           label={`Toggle ${connection.name}`}
@@ -63,17 +74,11 @@ function ConnectionCard({ connection }: { connection: Connection }) {
             setEnabled.mutate({ connectionId: connection.id, enabled: !connection.enabled })
           }
         />
-      </div>
-      <div className="adm-card-chips">
-        <span className="dash-context-chip">{connection.provider}</span>
-        <span className="dash-context-chip adm-chip-muted">
-          {connection.project_id ?? 'global'}
-        </span>
-      </div>
-      <span className="adm-card-time" title={connection.updated_at}>
-        updated {formatRelative(connection.updated_at)}
-      </span>
-    </div>
+      </td>
+      <td className="adm-time" title={connection.updated_at}>
+        {formatRelative(connection.updated_at)}
+      </td>
+    </tr>
   )
 }
 
@@ -277,13 +282,21 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
 function ConnectionsContent() {
   const connections = useConnectionsIndex()
   const [creating, setCreating] = useState(false)
-  const groups = groupConnectionsByKind(connections.data ?? [])
+  const [query, setQuery] = useState('')
+  const normalizedQuery = query.trim().toLowerCase()
+  const filteredConnections = (connections.data ?? []).filter((connection) =>
+    [connection.name, connection.kind, connection.provider, connection.project_id ?? 'global']
+      .some((value) => value.toLowerCase().includes(normalizedQuery)),
+  )
 
   return (
     <section className="adm-page animate-enter">
       <header className="adm-toolbar glass-panel">
         {/* The topbar already renders the route-handle h1; this is a section label. */}
-        <h2 className="adm-page-title">Connection registry</h2>
+        <div>
+          <h2 className="adm-page-title">Connection registry</h2>
+          <p className="adm-field-help">Enabled controls whether Orchestration may use a connection; it is not a health check.</p>
+        </div>
         {!creating && (
           <button
             type="button"
@@ -297,6 +310,19 @@ function ConnectionsContent() {
 
       {creating && <CreateConnectionPanel onClose={() => setCreating(false)} />}
 
+      {!connections.isPending && !!connections.data?.length && (
+        <label className="adm-registry-search">
+          <span className="sr-only">Filter connections</span>
+          <input
+            type="search"
+            className="field-input"
+            placeholder="Filter by name, kind, provider, or project"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+      )}
+
       {connections.isError && connections.data && (
         <CachedDataWarning error={connections.error} onRetry={() => void connections.refetch()} />
       )}
@@ -308,8 +334,8 @@ function ConnectionsContent() {
           aria-busy="true"
           aria-label="Loading connections"
         >
-          {Array.from({ length: SKELETON_CARDS }, (_, i) => (
-            <div key={i} className="glass-panel adm-skeleton-card" />
+          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
+            <div key={i} className="glass-panel adm-skeleton-row" />
           ))}
         </div>
       ) : connections.isError && !connections.data ? (
@@ -318,31 +344,38 @@ function ConnectionsContent() {
           message={connections.error.message}
           onRetry={() => void connections.refetch()}
         />
-      ) : groups.length === 0 ? (
+      ) : connections.data.length === 0 ? (
         <div className="dash-empty">
           <h2>No connections yet</h2>
           <p className="dash-empty-hint">
             Connections bind port kinds (work tracking, logs, engines…) to provider adapters.
           </p>
         </div>
+      ) : filteredConnections.length === 0 ? (
+        <div className="dash-empty">
+          <h2>No matching connections</h2>
+          <p className="dash-empty-hint">Try a different name, provider, kind, or project.</p>
+        </div>
       ) : (
-        groups.map((group) => (
-          <section
-            key={group.kind}
-            className="adm-group"
-            aria-label={`Kind ${kindLabel(group.kind)}`}
-          >
-            <header className="adm-group-header">
-              <h2 className="adm-group-title">{kindLabel(group.kind)}</h2>
-              <span className="adm-group-count">{group.connections.length}</span>
-            </header>
-            <div className="adm-card-grid">
-              {group.connections.map((connection) => (
-                <ConnectionCard key={connection.id} connection={connection} />
+        <div className="data-table-wrap">
+          <table className="data-table striped adm-connections-table" aria-label="Connections">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Kind</th>
+                <th>Provider</th>
+                <th>Scope</th>
+                <th>Enabled</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredConnections.map((connection) => (
+                <ConnectionRow key={connection.id} connection={connection} />
               ))}
-            </div>
-          </section>
-        ))
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   )

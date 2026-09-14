@@ -1,6 +1,7 @@
 import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react'
 
 import { cleanup, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DEV_DATA_STORAGE_KEY, setDevDataEnabled } from '@/dev-data'
@@ -44,10 +45,14 @@ describe('dev-data route smoke', () => {
 
   it('renders the mirrored Load ledger with execution identities and analysis links', async () => {
     renderApp({ initialEntries: ['/apex-load'], authState: authenticatedState() })
-    const ledger = await screen.findByRole('table')
-    expect(await within(ledger).findByText('native-run-2603')).toBeInTheDocument()
-    expect(within(ledger).getAllByRole('link', { name: 'Open analysis' })).toHaveLength(4)
-    expect(within(ledger).getAllByRole('link', { name: 'Open analysis' })[1]).toHaveAttribute('href', '/runs/run-baseline-a')
+    const executions = await screen.findByRole('region', { name: 'Load executions' })
+    expect(await within(executions).findByText('ACC add-a-line certification 26.3')).toBeInTheDocument()
+    expect(within(executions).getAllByRole('link', { name: 'Open in APEX Load' })[0]).toHaveAttribute(
+      'href',
+      expect.stringContaining('native-run-2603'),
+    )
+    expect(within(executions).getAllByRole('link', { name: 'Open analysis' })).toHaveLength(4)
+    expect(within(executions).getAllByRole('link', { name: 'Open analysis' })[0]).toHaveAttribute('href', '/runs/run-baseline-a')
   })
 
   it.each([
@@ -67,6 +72,7 @@ describe('dev-data route smoke', () => {
     ['/admin/consumers', 'Nightly Certification'],
     ['/admin/system', 'offline-demo'],
   ])('renders %s from dummy data', async (path, expectedText) => {
+    const user = userEvent.setup()
     renderApp({
       initialEntries: [path],
       authState: authenticatedState(),
@@ -74,6 +80,10 @@ describe('dev-data route smoke', () => {
       // smoke routes retain the static session seed and avoid unrelated IO.
       seedSystemInfo: path !== '/admin/system',
     })
+
+    if (path === '/apex-load') {
+      await user.click(await screen.findByRole('tab', { name: 'Scenarios & schedules' }))
+    }
 
     expect(await screen.findByText(expectedText, {}, { timeout: 4_000 })).toBeInTheDocument()
   })
@@ -100,14 +110,14 @@ describe('dev-data route smoke', () => {
     ['/environments', 'Applications & Environments'],
     ['/environments/env-perf', 'Environment'],
     ['/context', 'Context'],
-    ['/analytics', 'Analytics'],
+    ['/analytics', 'Agent Analytics'],
     ['/logs', 'Logs'],
     ['/apex-load', 'APEX Load'],
     ['/admin/connections', 'Connections'],
     ['/admin/connections/conn-align', 'Connection'],
     ['/admin/consumers', 'Consumers'],
     ['/admin/consumers/cons-ci', 'Consumer'],
-    ['/admin/system', 'System'],
+    ['/admin/system', 'System status'],
     ['/settings', 'Settings'],
   ])('mounts every production dashboard route %s', async (path, heading) => {
     renderApp({

@@ -66,6 +66,11 @@ function ConsumerDetailContent() {
             )}
           </div>
         </div>
+        <div className="adm-detail-actions">
+          <Link className="btn btn-secondary btn-sm" to={`/admin/consumers?edit=${encodeURIComponent(data.id)}`}>
+            Edit access
+          </Link>
+        </div>
       </header>
 
       <div className="adm-card-panel glass-panel">
@@ -97,9 +102,7 @@ function ConsumerDetailContent() {
             )}
           </dd>
         </dl>
-        <p className="adm-muted">
-          Edit, key rotation and delete live on the consumers list&rsquo;s row actions.
-        </p>
+        <p className="adm-muted">Use Edit access to update role, scopes, and enabled state. Key rotation and deletion remain guarded list actions.</p>
       </div>
     </section>
   )

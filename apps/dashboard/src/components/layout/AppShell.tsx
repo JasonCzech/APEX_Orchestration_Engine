@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Outlet, useLocation } from 'react-router'
+import { Outlet, useLocation, useNavigationType } from 'react-router'
 import { NavigationGuards } from '@/components/NavigationGuards'
 import { Dialog } from '@/components/Dialog'
 import { useCompactLayout } from '@/components/hooks/useCompactLayout'
@@ -23,15 +23,31 @@ function ShellContent() {
   const compact = useCompactLayout()
   const [menuOpen, setMenuOpen] = useState(false)
   const location = useLocation()
+  const navigationType = useNavigationType()
   const mainRef = useRef<HTMLElement>(null)
-  const previousPath = useRef(location.pathname)
+  const previousLocation = useRef({ key: location.key, pathname: location.pathname })
+  const scrollPositions = useRef(new Map<string, number>())
   useEffect(() => {
-    if (previousPath.current === location.pathname) return
-    previousPath.current = location.pathname
+    const previous = previousLocation.current
+    const main = mainRef.current
+    if (previous.key !== location.key && main) {
+      scrollPositions.current.set(previous.key, main.scrollTop)
+    }
+    previousLocation.current = { key: location.key, pathname: location.pathname }
+    if (previous.pathname === location.pathname) return
     setMenuOpen(false)
-    const frame = requestAnimationFrame(() => mainRef.current?.focus())
+    const frame = requestAnimationFrame(() => {
+      const nextMain = mainRef.current
+      if (!nextMain) return
+      // Each destination starts at its own top. Browser Back/Forward restores
+      // the position we recorded for that history entry instead of inheriting
+      // the scroll offset from the page just left.
+      nextMain.scrollTop =
+        navigationType === 'POP' ? (scrollPositions.current.get(location.key) ?? 0) : 0
+      nextMain.focus()
+    })
     return () => cancelAnimationFrame(frame)
-  }, [location.pathname])
+  }, [location.key, location.pathname, navigationType])
   return (
     <div className="app-layout">
       <a className="skip-link" href="#main-content">Skip to content</a>

@@ -24,6 +24,10 @@ export interface LogsFilters {
   thread?: string
   service?: string
   level?: string
+  /** Friendly run title for a deep-linked investigation. Never sent to the provider. */
+  run?: string
+  /** Local return path for a run-originated investigation. Never sent to the provider. */
+  returnTo?: string
 }
 
 function parseIso(raw: string | null): string | undefined {
@@ -37,6 +41,9 @@ export function parseLogsFilters(params: URLSearchParams): LogsFilters {
   const thread = params.get('thread')?.trim()
   const service = params.get('service')?.trim()
   const level = params.get('level')?.trim()
+  const run = params.get('run')?.trim()
+  const rawReturnTo = params.get('returnTo')
+  const returnTo = rawReturnTo?.startsWith('/runs/') ? rawReturnTo : undefined
   return {
     ...(q ? { q } : {}),
     ...(parseIso(params.get('from')) ? { from: parseIso(params.get('from')) } : {}),
@@ -44,6 +51,8 @@ export function parseLogsFilters(params: URLSearchParams): LogsFilters {
     ...(thread ? { thread } : {}),
     ...(service ? { service } : {}),
     ...(level ? { level } : {}),
+    ...(run ? { run } : {}),
+    ...(returnTo ? { returnTo } : {}),
   }
 }
 
@@ -56,6 +65,8 @@ export function serializeLogsFilters(filters: LogsFilters): URLSearchParams {
   if (filters.thread) params.set('thread', filters.thread)
   if (filters.service) params.set('service', filters.service)
   if (filters.level) params.set('level', filters.level)
+  if (filters.run) params.set('run', filters.run)
+  if (filters.returnTo) params.set('returnTo', filters.returnTo)
   return params
 }
 

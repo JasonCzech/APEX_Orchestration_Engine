@@ -113,6 +113,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+.adm-registry-search {
+  display: block;
+  max-width: 32rem;
+}
+
+.adm-registry-search .field-input {
+  width: 100%;
+}
+
 .adm-kind-chip {
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -238,6 +247,17 @@
   font-size: 12px;
 }
 
+.adm-inline-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
 .adm-inline-error {
   border: 1px solid var(--danger-border);
   background: var(--danger-bg);
@@ -357,6 +377,17 @@
   white-space: nowrap;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+.adm-connections-table .adm-time {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.adm-connections-table td:nth-child(2) {
+  color: var(--text-secondary);
+  text-transform: capitalize;
 }
 
 .adm-fingerprint {

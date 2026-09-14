@@ -20,9 +20,27 @@
   flex-wrap: wrap;
 }
 
-.logs-query {
+.logs-query-field,
+.logs-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.logs-query-field {
   flex: 1;
   min-width: 240px;
+}
+
+.logs-filter-field .window-presets {
+  min-height: 32px;
+}
+
+.logs-query {
+  width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
 }
@@ -35,6 +53,33 @@
   width: 200px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+}
+
+.logs-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+}
+
+.logs-context > div {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.logs-context-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.logs-context code {
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 /* ── Level filter chips ─────────────────────────────────────────────────── */

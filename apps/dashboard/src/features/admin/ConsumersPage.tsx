@@ -7,8 +7,8 @@
  * the admin confirms the key is stored. Self-delete 409s render inline as
  * "You cannot delete your own consumer" (never a toast).
  */
-import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { useEffect, useState, type FormEvent } from 'react'
+import { Link, useSearchParams } from 'react-router'
 
 import {
   CONSUMER_TYPES,
@@ -482,12 +482,15 @@ function ConsumerRow({
   onDelete: (consumer: Consumer) => void
   identityReady: boolean
 }) {
-  const navigate = useNavigate()
   const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
   const writePending = writeCount > 0
   return (
     <tr data-testid={`consumer-row-${consumer.id}`}>
-      <td className="strong">{consumer.name}</td>
+      <td>
+        <Link className="adm-card-link strong" to={`/admin/consumers/${consumer.id}`}>
+          {consumer.name}
+        </Link>
+      </td>
       <td>
         <span className="dash-context-chip">{consumer.consumer_type}</span>
       </td>
@@ -512,7 +515,6 @@ function ConsumerRow({
         <OverflowMenu
           label={`Consumer actions: ${consumer.name}`}
           items={[
-            { label: 'Open', onSelect: () => void navigate(`/admin/consumers/${consumer.id}`) },
             ...(identityReady ? [
               { label: 'Edit', onSelect: () => onEdit(consumer), disabled: writePending },
               {
@@ -532,10 +534,26 @@ function ConsumerRow({
 function ConsumersContent() {
   const consumers = useConsumersIndex()
   const principal = useCurrentPrincipal()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<Consumer | null>(null)
   const [rotating, setRotating] = useState<Consumer | null>(null)
   const [deleting, setDeleting] = useState<Consumer | null>(null)
+  const requestedEditId = searchParams.get('edit')
+
+  useEffect(() => {
+    if (!requestedEditId || !consumers.data) return
+    const consumer = consumers.data.find((candidate) => candidate.id === requestedEditId)
+    if (consumer) setEditing(consumer)
+  }, [consumers.data, requestedEditId])
+
+  const closeEditing = () => {
+    setEditing(null)
+    if (!requestedEditId) return
+    const next = new URLSearchParams(searchParams)
+    next.delete('edit')
+    setSearchParams(next, { replace: true })
+  }
 
   return (
     <section className="adm-page animate-enter">
@@ -615,7 +633,7 @@ function ConsumersContent() {
         <EditConsumerModal
           consumer={editing}
           isCurrentConsumer={principal.data?.principal_id === editing.id}
-          onClose={() => setEditing(null)}
+          onClose={closeEditing}
         />
       )}
       {rotating && (

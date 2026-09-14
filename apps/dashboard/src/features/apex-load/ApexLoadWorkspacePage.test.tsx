@@ -39,6 +39,7 @@ describe('ApexLoadWorkspacePage', () => {
       })),
     )
     const { router } = renderWorkspace('/apex-load?connection=a')
+    await userEvent.setup().click(await screen.findByRole('tab', { name: 'Scenarios & schedules' }))
     await screen.findByText('Schedule a')
     await act(() => router.navigate('/apex-load?connection=b'))
     await screen.findByText('Schedule b')
@@ -105,7 +106,11 @@ describe('ApexLoadWorkspacePage', () => {
         }),
       ),
       http.get('*/v1/apex-load/connections/:connectionId/mirrored-runs', () =>
-        HttpResponse.json({ items: [] }),
+        HttpResponse.json({ items: [{
+          id: 'native-run-1',
+          pipeline_status: 'completed',
+          pipeline_thread_id: 'analysis-run-1',
+        }] }),
       ),
       http.get('*/v1/apex-load/connections/:connectionId/schedule-health', () =>
         HttpResponse.json({ details: { status: 'healthy' } }),
@@ -141,6 +146,7 @@ describe('ApexLoadWorkspacePage', () => {
     const user = userEvent.setup()
     renderWorkspace()
 
+    await user.click(await screen.findByRole('tab', { name: 'Scenarios & schedules' }))
     expect(
       await screen.findByText(
         (_, element) =>
@@ -148,9 +154,15 @@ describe('ApexLoadWorkspacePage', () => {
       ),
     ).toBeInTheDocument()
     expect(await screen.findByText('Nightly')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Executions & analysis' }))
     expect(screen.getByRole('link', { name: 'Open in APEX Load' })).toHaveAttribute(
       'href',
       expect.stringContaining('orchestrationReturn='),
+    )
+    expect(await screen.findByRole('link', { name: 'Open analysis' })).toHaveAttribute(
+      'href',
+      '/runs/analysis-run-1',
     )
 
     await user.click(screen.getByRole('button', { name: 'Live metrics' }))
@@ -161,6 +173,7 @@ describe('ApexLoadWorkspacePage', () => {
       ),
     ).toBeInTheDocument()
 
+    await user.click(screen.getByRole('tab', { name: 'Scenarios & schedules' }))
     await user.click(screen.getByRole('button', { name: 'Validate scenario' }))
     expect(
       await screen.findByText(
@@ -231,6 +244,7 @@ describe('ApexLoadWorkspacePage', () => {
     const connectionSelect = await screen.findByRole('combobox', { name: 'Connection' })
     expect(connectionSelect).toHaveValue('')
     await user.selectOptions(connectionSelect, 'connection-1')
+    await user.click(await screen.findByRole('tab', { name: 'Scenarios & schedules' }))
     await user.click(screen.getByRole('button', { name: 'Create scenario' }))
     await waitFor(() => expect(requestedConnection).toBe('connection-1'))
 

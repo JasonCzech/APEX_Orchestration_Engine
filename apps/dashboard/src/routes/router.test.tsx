@@ -13,12 +13,12 @@ describe('router', () => {
     // /golden-configs became real in D7 too — /runs/compare is the last
     // placeholder-backed route.
     ['/runs/compare', 'Compare Runs'],
-    ['/admin/system', 'System'],
-  ])('renders the %s placeholder inside the shell', async (path, title) => {
+    ['/admin/system', 'System status', 'System'],
+  ])('renders the %s page inside the shell', async (path, title, bodyTitle = title) => {
     renderApp({ initialEntries: [path], authState: authenticatedState() })
 
     // Placeholder body (h2) + topbar title from the route handle (h1).
-    expect(await screen.findByRole('heading', { level: 2, name: title })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 2, name: bodyTitle })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 1, name: title })).toBeInTheDocument()
     expect(screen.getByTestId('sidebar')).toBeInTheDocument()
   })

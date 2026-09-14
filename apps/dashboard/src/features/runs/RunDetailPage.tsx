@@ -107,6 +107,13 @@ function RunDetailContent({ threadId }: { threadId: string }) {
   const threadTone = statusVisual(
     detail.thread_status === 'interrupted' ? 'awaiting_output_review' : detail.thread_status,
   )
+  const logsSearchParams = new URLSearchParams({
+    thread: threadId,
+    run: detail.title ?? threadId,
+    returnTo: `/runs/${threadId}`,
+  })
+  if (detail.created_at) logsSearchParams.set('from', detail.created_at)
+  if (detail.updated_at) logsSearchParams.set('to', detail.updated_at)
 
   // Gate placement (plan 2.a): full module above the workspace tabs when the
   // gate's phase is the selected phase, else a slim banner linking there.
@@ -181,11 +188,10 @@ function RunDetailContent({ threadId }: { threadId: string }) {
             />
           </span>
         </RequireRole>
-        <Link className="btn btn-ghost btn-sm" to={`/runs/${threadId}/timeline`}>
-          Timeline
-        </Link>
-        {/* D8 parity: LogsPage's documented ?thread= deep link (logsFilters.ts). */}
-        <Link className="btn btn-ghost btn-sm" to={`/logs?thread=${encodeURIComponent(threadId)}`}>
+        <Link
+          className="btn btn-ghost btn-sm"
+          to={`/logs?${logsSearchParams.toString()}`}
+        >
           Logs
         </Link>
       </header>
@@ -206,7 +212,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
         />
       )}
       <ScopeContext project={detail.project_id} application={detail.app_id} />
-      <nav className="ux-actions run-sections" aria-label="Run sections"><Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link><Link className="btn btn-secondary" aria-current={!overview ? 'page' : undefined} to={`/runs/${threadId}/phases/${selectedPhase}`}>Phases</Link><Link className="btn btn-ghost" to={`/runs/${threadId}/timeline`}>Activity</Link></nav>
+      <nav className="ux-actions run-sections" aria-label="Run sections"><Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link><Link className="btn btn-secondary" aria-current={!overview ? 'page' : undefined} to={`/runs/${threadId}/phases/${selectedPhase}`}>Phases</Link><Link className="btn btn-ghost" to={`/runs/${threadId}/timeline`}>Timeline</Link></nav>
       {overview ? <RunOverview detail={detail} state={state} progress={progress} /> : <>
       <section className="run-pipeline-hero glass-panel" aria-label="Pipeline progress">
         <div className="run-pipeline-hero-head">

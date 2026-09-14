@@ -154,7 +154,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'analytics',
-            handle: handle('Analytics'),
+            handle: handle('Agent Analytics'),
             lazy: lazyPage(() => import('@/features/analytics/pages'), 'AnalyticsPage'),
           },
           {
@@ -189,7 +189,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'admin/system',
-            handle: handle('System'),
+            handle: handle('System status'),
             lazy: lazyPage(admin, 'AdminSystemPage'),
           },
           {

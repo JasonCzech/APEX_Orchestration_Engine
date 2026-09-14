@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 
 import { useLogSearch, type LogEntry } from '@/api/hooks/useLogs'
 import { isApiError } from '@/api/errors'
@@ -145,6 +145,8 @@ export function LogsPage() {
       ...(form.thread?.trim() ? { thread: form.thread.trim() } : {}),
       ...(form.service?.trim() ? { service: form.service.trim() } : {}),
       ...(form.level ? { level: form.level } : {}),
+      ...(form.run ? { run: form.run } : {}),
+      ...(form.returnTo ? { returnTo: form.returnTo } : {}),
     }
     setSearchParams(serializeLogsFilters(next))
     setOffset(0)
@@ -207,24 +209,30 @@ export function LogsPage() {
     <section className="logs-page animate-enter">
       <form className="logs-toolbar glass-panel" role="search" aria-label="Log search" onSubmit={onSubmit}>
         <div className="logs-toolbar-row">
-          <input
-            type="search"
-            className="field-input logs-query"
-            placeholder="Search logs (Lucene query_string syntax)…"
-            aria-label="Log query"
-            value={form.q ?? ''}
-            onChange={(event) => patchForm({ q: event.target.value })}
-          />
+          <label className="logs-query-field">
+            <span>Search query</span>
+            <input
+              type="search"
+              className="field-input logs-query"
+              placeholder="Lucene query_string syntax"
+              aria-label="Log query"
+              value={form.q ?? ''}
+              onChange={(event) => patchForm({ q: event.target.value })}
+            />
+          </label>
           <button type="submit" className="btn btn-primary">
             Search
           </button>
         </div>
         <div className="logs-toolbar-row">
-          <WindowPresets
-            value={{ ...(form.from ? { from: form.from } : {}), ...(form.to ? { to: form.to } : {}) }}
-            onChange={(window) => patchForm({ from: window.from, to: window.to })}
-            presets={LOG_WINDOW_PRESETS}
-          />
+          <label className="logs-filter-field">
+            <span>Time window</span>
+            <WindowPresets
+              value={{ ...(form.from ? { from: form.from } : {}), ...(form.to ? { to: form.to } : {}) }}
+              onChange={(window) => patchForm({ from: window.from, to: window.to })}
+              presets={LOG_WINDOW_PRESETS}
+            />
+          </label>
           <div className="level-chips" role="group" aria-label="Level filter">
             {LOG_LEVELS.map((level) => (
               <button
@@ -238,24 +246,41 @@ export function LogsPage() {
               </button>
             ))}
           </div>
-          <input
-            type="text"
-            className="field-input logs-service"
-            placeholder="service…"
-            aria-label="Service filter"
-            value={form.service ?? ''}
-            onChange={(event) => patchForm({ service: event.target.value })}
-          />
-          <input
-            type="text"
-            className="field-input logs-thread"
-            placeholder="thread id…"
-            aria-label="Thread id filter"
-            value={form.thread ?? ''}
-            onChange={(event) => patchForm({ thread: event.target.value })}
-          />
+          <label className="logs-filter-field">
+            <span>Service</span>
+            <input
+              type="text"
+              className="field-input logs-service"
+              placeholder="Any service"
+              aria-label="Service filter"
+              value={form.service ?? ''}
+              onChange={(event) => patchForm({ service: event.target.value })}
+            />
+          </label>
+          <label className="logs-filter-field">
+            <span>Run ID</span>
+            <input
+              type="text"
+              className="field-input logs-thread"
+              placeholder="Any run"
+              aria-label="Thread id filter"
+              value={form.thread ?? ''}
+              onChange={(event) => patchForm({ thread: event.target.value })}
+            />
+          </label>
         </div>
       </form>
+
+      {form.thread && (
+        <aside className="logs-context glass-panel" aria-label="Selected run context">
+          <div>
+            <span className="logs-context-label">Investigating run</span>
+            <strong>{form.run ?? form.thread}</strong>
+            {form.run && <code>{form.thread}</code>}
+          </div>
+          {form.returnTo && <Link className="btn btn-ghost btn-sm" to={form.returnTo}>Return to run</Link>}
+        </aside>
+      )}
 
       {!submitted ? (
         <div className="dash-empty">

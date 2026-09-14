@@ -21,32 +21,41 @@ function renderList(role: 'admin' | 'operator' = 'admin') {
 }
 
 describe('ConnectionsPage', () => {
-  it('groups connection cards by kind with provider/project chips and timestamps', async () => {
+  it('renders a compact connection registry with scope, status, and timestamps', async () => {
     server.use(...connectionsReadHandlers())
     renderList()
 
-    const workTracking = await screen.findByRole('region', { name: 'Kind Work tracking' })
-    const jiraCard = within(workTracking).getByTestId('conn-card-conn-jira')
-    expect(within(jiraCard).getByText('jira-prod')).toBeInTheDocument()
-    expect(within(jiraCard).getByText('jira')).toHaveClass('dash-context-chip')
-    expect(within(jiraCard).getByText('proj-alpha')).toBeInTheDocument()
-    expect(within(jiraCard).getByRole('button', { name: 'Toggle jira-prod' })).toHaveAttribute(
+    const table = await screen.findByRole('table', { name: 'Connections' })
+    const jiraRow = within(table).getByTestId('conn-row-conn-jira')
+    expect(within(jiraRow).getByText('jira-prod')).toBeInTheDocument()
+    expect(within(jiraRow).getByText('work tracking')).toBeInTheDocument()
+    expect(within(jiraRow).getByText('jira')).toHaveClass('dash-context-chip')
+    expect(within(jiraRow).getByText('proj-alpha')).toBeInTheDocument()
+    expect(within(jiraRow).getByRole('button', { name: 'Toggle jira-prod' })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
 
     // Global (no project) connection renders the 'global' chip; disabled pill is off.
-    const logSearch = screen.getByRole('region', { name: 'Kind Log search' })
-    const elkCard = within(logSearch).getByTestId('conn-card-conn-elk')
-    expect(within(elkCard).getByText('global')).toBeInTheDocument()
-    expect(within(elkCard).getByRole('button', { name: 'Toggle elk-global' })).toHaveAttribute(
+    const elkRow = within(table).getByTestId('conn-row-conn-elk')
+    expect(within(elkRow).getByText('global')).toBeInTheDocument()
+    expect(within(elkRow).getByRole('button', { name: 'Toggle elk-global' })).toHaveAttribute(
       'aria-pressed',
       'false',
     )
 
-    expect(screen.getByRole('region', { name: 'Kind Execution engine' })).toBeInTheDocument()
-    // Empty kinds drop out entirely.
-    expect(screen.queryByRole('region', { name: 'Kind Secrets' })).not.toBeInTheDocument()
+    expect(screen.getByRole('searchbox', { name: 'Filter connections' })).toBeInTheDocument()
+  })
+
+  it('filters the registry by name, kind, provider, or project', async () => {
+    server.use(...connectionsReadHandlers())
+    const user = userEvent.setup()
+    renderList()
+
+    await screen.findByRole('table', { name: 'Connections' })
+    await user.type(screen.getByRole('searchbox', { name: 'Filter connections' }), 'elk')
+    expect(screen.getByTestId('conn-row-conn-elk')).toBeInTheDocument()
+    expect(screen.queryByTestId('conn-row-conn-jira')).not.toBeInTheDocument()
   })
 
   it('exposes connection details through a keyboard-focusable link', async () => {

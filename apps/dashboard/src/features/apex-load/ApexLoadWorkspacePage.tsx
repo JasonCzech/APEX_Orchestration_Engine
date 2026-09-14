@@ -181,6 +181,7 @@ export function ApexLoadWorkspacePage() {
   const [scenarioId, setScenarioId] = useState('')
   const [scheduleId, setScheduleId] = useState('')
   const [selectedRun, setSelectedRun] = useState(searchParams.get('run') ?? '')
+  const [workspaceView, setWorkspaceView] = useState<'executions' | 'authoring'>('executions')
   const [approvalId, setApprovalId] = useState('')
   const [evidenceSignature, setEvidenceSignature] = useState('')
   const [scenarioDraft, setScenarioDraft] = useState('{\n  "name": "New scenario"\n}')
@@ -562,6 +563,28 @@ export function ApexLoadWorkspacePage() {
 
       {activeConnection && (
         <>
+          <div className="adm-tabs" role="tablist" aria-label="Load integration sections">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === 'executions'}
+              className={workspaceView === 'executions' ? 'adm-tab active' : 'adm-tab'}
+              onClick={() => setWorkspaceView('executions')}
+            >
+              Executions & analysis
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === 'authoring'}
+              className={workspaceView === 'authoring' ? 'adm-tab active' : 'adm-tab'}
+              onClick={() => setWorkspaceView('authoring')}
+            >
+              Scenarios & schedules
+            </button>
+          </div>
+
+          {workspaceView === 'authoring' && <>
           {activeConnection && (
             <JsonPanel
               title="Load-model templates and capabilities"
@@ -752,8 +775,8 @@ export function ApexLoadWorkspacePage() {
             )}
             <div className="adm-panel-actions">
               <input
-                aria-label="Schedule approval id"
-                placeholder="Schedule approval id"
+                aria-label="Provider schedule approval ID"
+                placeholder="Provider schedule approval ID"
                 value={approvalId}
                 onChange={(event) => setApprovalId(event.target.value)}
               />
@@ -786,9 +809,11 @@ export function ApexLoadWorkspacePage() {
               </pre>
             )}
           </section>
+          </>}
 
-          <section className="adm-panel glass-panel">
-            <h3 className="adm-panel-title">Native runs and reporting pipelines</h3>
+          {workspaceView === 'executions' && <section className="adm-panel glass-panel" aria-label="Load executions">
+            <h3 className="adm-panel-title">Load executions and analysis</h3>
+            <p className="adm-field-help">Each execution keeps its provider status and Orchestration analysis together.</p>
             {nativeRuns.isError && (
               <ProblemCard
                 title="Native runs unavailable"
@@ -799,6 +824,7 @@ export function ApexLoadWorkspacePage() {
             <div className="adm-card-grid">
               {(nativeRuns.data?.items ?? []).map((run) => {
                 const id = text(run.id) ?? 'unknown'
+                const mirrored = mirroredRuns.data?.find((candidate) => candidate.id === id)
                 const consoleUrl = executionLink(
                   run.console_url,
                   `/apex-load?connection=${encodeURIComponent(connectionId)}&run=${encodeURIComponent(id)}`,
@@ -807,6 +833,17 @@ export function ApexLoadWorkspacePage() {
                   <article className="adm-card glass-panel" key={id}>
                     <strong>{text(run.name) ?? id}</strong>
                     <span>{text(run.status) ?? 'unknown'}</span>
+                    <span className="adm-field-help">
+                      {mirrored
+                        ? ({
+                            pending: 'Waiting for analysis',
+                            launching: 'Starting analysis',
+                            launched: 'Analysis created',
+                            retry: 'Retry scheduled',
+                            stale: 'Connection changed',
+                          }[mirrored.pipeline_status] ?? mirrored.pipeline_status)
+                        : 'Waiting for analysis'}
+                    </span>
                     <button
                       className="btn btn-secondary btn-sm"
                       type="button"
@@ -823,6 +860,11 @@ export function ApexLoadWorkspacePage() {
                         Open in APEX Load
                       </a>
                     )}
+                    {mirrored?.pipeline_thread_id ? (
+                      <Link to={`/runs/${encodeURIComponent(mirrored.pipeline_thread_id)}`}>
+                        Open analysis
+                      </Link>
+                    ) : null}
                   </article>
                 )
               })}
@@ -832,68 +874,22 @@ export function ApexLoadWorkspacePage() {
                 Native run history is truncated; use mirrored history or refine the provider view.
               </p>
             )}
-            <section aria-label="Analysis handoff">
-              <h3>Analysis handoff</h3>
-              <p>
-                Completed Load runs are collected automatically. Refresh checks the existing handoff
-                without launching another workload.
-              </p>
+            <div className="adm-inline-status" aria-live="polite">
+              <span>Completed Load runs are collected automatically.</span>
               <button
                 className="btn btn-secondary btn-sm"
                 onClick={() => void mirroredRuns.refetch()}
               >
                 Refresh analysis status
               </button>
-              {mirroredRuns.isError && (
-                <ProblemCard
-                  title="Analysis status unavailable"
-                  message={mirroredRuns.error.message}
-                  onRetry={() => void mirroredRuns.refetch()}
-                />
-              )}
-              {mirroredRuns.isPending ? (
-                <p>Loading analysis status…</p>
-              ) : !mirroredRuns.data?.length ? (
-                <p>No mirrored runs recorded for this connection yet.</p>
-              ) : (
-                <table className="adm-table">
-                  <thead>
-                    <tr>
-                      <th>Load run</th>
-                      <th>Execution</th>
-                      <th>Analysis handoff</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {mirroredRuns.data.map((run) => (
-                      <tr key={run.id}>
-                        <td>{run.id}</td>
-                        <td>{run.status}</td>
-                        <td>
-                          {{
-                            pending: 'Waiting for collection',
-                            launching: 'Starting analysis',
-                            launched: 'Analysis created',
-                            retry: 'Retry scheduled',
-                            stale: 'Connection changed',
-                          }[run.pipeline_status] ?? run.pipeline_status}
-                        </td>
-                        <td>
-                          {run.pipeline_thread_id ? (
-                            <Link to={`/runs/${encodeURIComponent(run.pipeline_thread_id)}`}>
-                              Open analysis
-                            </Link>
-                          ) : (
-                            'Analysis link not available yet'
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </section>
+            </div>
+            {mirroredRuns.isError && (
+              <ProblemCard
+                title="Analysis status unavailable"
+                message={mirroredRuns.error.message}
+                onRetry={() => void mirroredRuns.refetch()}
+              />
+            )}
             {selectedRun && (
               <JsonPanel
                 title={`Live metrics: ${selectedRun}`}
@@ -922,7 +918,7 @@ export function ApexLoadWorkspacePage() {
                 onRetry={() => void runEvidence.refetch()}
               />
             )}
-          </section>
+          </section>}
         </>
       )}
     </div>

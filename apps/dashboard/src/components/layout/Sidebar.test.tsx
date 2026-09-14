@@ -45,7 +45,7 @@ describe('Sidebar', () => {
     expect(screen.getByText('Admin')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Connections' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Consumers' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'System' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'System status' })).toBeInTheDocument()
   })
 
   it('toggles the collapsed class via the collapse button', async () => {

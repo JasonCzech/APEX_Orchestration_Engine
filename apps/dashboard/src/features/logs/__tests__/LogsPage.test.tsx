@@ -156,6 +156,18 @@ describe('LogsPage', () => {
     expect(logs.captured[0]!.query?.filters).toEqual({ thread_id: 'run-123' })
   })
 
+  it('keeps a run investigation in context and provides its local return path', async () => {
+    server.use(logsHandler().handler)
+    renderLogs('?thread=run-123&run=Checkout%20baseline&returnTo=%2Fruns%2Frun-123')
+
+    expect(await screen.findByText('Investigating run')).toBeInTheDocument()
+    expect(screen.getByText('Checkout baseline')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Return to run' })).toHaveAttribute(
+      'href',
+      '/runs/run-123',
+    )
+  })
+
   it('paginates the submitted search with offset and a total caption', async () => {
     const logs = logsHandler(makeEntries(120))
     server.use(logs.handler)

@@ -356,7 +356,10 @@ describe('ConsumersPage', () => {
     )
 
     await user.click(within(row).getByRole('button', { name: 'Consumer actions: ci-bot' }))
-    expect(screen.getByRole('menuitem', { name: 'Open' })).toBeEnabled()
+    expect(within(row).getByRole('link', { name: 'ci-bot' })).toHaveAttribute(
+      'href',
+      '/admin/consumers/cons-ci',
+    )
     expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: 'Rotate key…' })).toBeDisabled()
     expect(screen.getByRole('menuitem', { name: 'Delete…' })).toBeDisabled()
