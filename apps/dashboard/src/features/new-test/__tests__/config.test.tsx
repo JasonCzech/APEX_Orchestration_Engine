@@ -83,14 +83,10 @@ describe('ConfigStep', () => {
     expect(toggles).toHaveLength(7)
     for (const toggle of toggles) expect(toggle).toHaveAttribute('aria-pressed', 'true')
 
-    // First click focuses execution for the Prompts tab; second click drops it.
+    // Phase selection only changes the plan; prompt selection is managed in Prompts.
     await user.click(within(strip).getByRole('button', { name: 'Execution' }))
-    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute(
-      'aria-current',
-      'step',
-    )
-    // Drop execution: reporting's prereq is no longer earlier in the plan.
-    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
+    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute('aria-pressed', 'false')
+    // Reporting's prerequisite is no longer earlier in the plan.
     const hints = await screen.findByTestId('phase-dependency-hints')
     expect(hints).toHaveTextContent(
       'reporting requires execution earlier in this new run',
@@ -107,6 +103,25 @@ describe('ConfigStep', () => {
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
+    rendered.unmount()
+  })
+
+  it('keeps an external execution test blocked until its target is set', async () => {
+    assistantsSearch.mockResolvedValue([])
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    await user.click(screen.getByRole('radio', { name: /APEX Load/ }))
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+
+    expect(screen.getByText('Execution readiness needs attention:')).toBeInTheDocument()
+    expect(screen.getByText('Select an application before external execution')).toBeInTheDocument()
+    expect(screen.getByText('Select a target environment before external execution')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeDisabled()
+    expect(screen.getByText('The test plan is ready; execution setup still needs attention.')).toBeInTheDocument()
     rendered.unmount()
   })
 

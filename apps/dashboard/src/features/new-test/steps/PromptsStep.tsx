@@ -17,7 +17,8 @@ import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 
 import type { StepProps } from '../NewRunWizard'
-import { focusedPromptPhase, isRecord } from '../wizardState'
+import { focusedPromptPhase, isRecord, selectedPhases } from '../wizardState'
+import { PHASE_LABELS } from '@/features/runs/runDisplay'
 
 type PromptSummary = components['schemas']['PromptSummary']
 type PromptDetail = components['schemas']['PromptDetail']
@@ -212,6 +213,7 @@ function PromptBlock({
 export function PromptsStep({ draft, onChange }: StepProps) {
   const consumer = useOptionalConsumer()
   const phase = focusedPromptPhase(draft.config)
+  const phases = selectedPhases(draft.config)
   const appId = draft.scope.app_id
   const phaseList = useQuery({
     queryKey: queryKeys.prompts.listNamespace(PHASE_NAMESPACE),
@@ -281,6 +283,25 @@ export function PromptsStep({ draft, onChange }: StepProps) {
         <p className="wizard-caption wizard-caption--danger">Select at least one phase first.</p>
       ) : (
         <div className="wizard-prompt-panel">
+          <div className="wizard-field">
+            <span className="wizard-label">Phase prompt</span>
+            <div className="wizard-phase-strip" role="group" aria-label="Prompt phase">
+              {phases.map((candidate) => (
+                <button
+                  key={candidate}
+                  type="button"
+                  className={`wizard-phase-toggle${candidate === phase ? ' wizard-phase-toggle--focused' : ''}`}
+                  aria-pressed={candidate === phase}
+                  onClick={() => onChange((prev) => ({
+                    ...prev,
+                    config: { ...prev.config, prompt_focus_phase: candidate },
+                  }))}
+                >
+                  {PHASE_LABELS[candidate]}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="wizard-row">
             <span className="topbar-meta-chip accent" data-testid="prompt-focused-phase">
               {phase.replaceAll('_', ' ')}

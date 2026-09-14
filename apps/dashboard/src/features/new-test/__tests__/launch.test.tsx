@@ -1,7 +1,7 @@
 /**
  * Launch path: the tabbed wizard builds the EXACT configurable (snapshotted),
  * creates thread + run via the SDK with D2's stream options, deletes the draft
- * best-effort, and navigates to /runs/{threadId}?tab=log.
+ * best-effort, and navigates to the run overview.
  */
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -124,10 +124,10 @@ describe('wizard launch', () => {
       }
     `)
 
-    // Best-effort draft delete + navigation to the log tab.
+    // Best-effort draft delete + navigation to the run overview.
     await waitFor(() => expect(captured.deletes).toEqual(['draft-1']))
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/thread-new'))
-    expect(router.state.location.search).toBe('?tab=log')
+    expect(router.state.location.search).toBe('')
     expect(screen.getByTestId('run-page')).toBeInTheDocument()
   })
 

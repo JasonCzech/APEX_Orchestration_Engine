@@ -22,9 +22,9 @@ import { ALL_AUTO_GATES } from '@/features/runs/launchRun'
 
 export const WIZARD_STEPS = [
   'scope',
+  'config',
   'work-items',
   'context',
-  'config',
   'prompts',
   'review',
 ] as const
@@ -424,6 +424,65 @@ export function allIssues(
   return WIZARD_STEPS.flatMap((step) =>
     stepIssues(draft, step, maxContextPackets).map((message) => ({ step, message })),
   )
+}
+
+export interface WizardReadiness {
+  /** The brief, selected phases, and authored overrides are internally valid. */
+  planningIssues: StepIssue[]
+  /** Items that must be set before a selected external execution phase can start. */
+  executionIssues: StepIssue[]
+  /** Useful context that does not prevent the pipeline from being launched. */
+  executionNotes: string[]
+}
+
+/**
+ * Keep "the form is valid" separate from "this is safe to execute". A test
+ * can deliberately stop after planning, but an external execution phase needs
+ * a concrete application and environment before it can run.
+ */
+export function assessWizardReadiness(
+  draft: WizardDraft,
+  maxContextPackets = DEFAULT_MAX_CONTEXT_PACKETS,
+): WizardReadiness {
+  const planningIssues = allIssues(draft, maxContextPackets)
+  const phases = selectedPhases(draft.config)
+  const executesAgainstTarget =
+    phases.includes('execution') && draft.config.engine !== 'sim'
+  const executionIssues: StepIssue[] = []
+  const executionNotes: string[] = []
+
+  if (!phases.includes('execution')) {
+    executionNotes.push(
+      'This plan stops before Execution. Select a target and verify the engine before adding execution.',
+    )
+  } else if (draft.config.engine === 'sim') {
+    executionNotes.push('Simulated execution does not require an external application or environment.')
+  } else if (executesAgainstTarget) {
+    if (!draft.scope.app_id) {
+      executionIssues.push({
+        step: 'scope',
+        message: 'Select an application before external execution',
+      })
+    }
+    if (!draft.scope.environment_id) {
+      executionIssues.push({
+        step: 'scope',
+        message: 'Select a target environment before external execution',
+      })
+    }
+    if (draft.config.engine === 'apex_load') {
+      const loadTest = isRecord(draft.config.golden_configurable?.['load_test'])
+        ? draft.config.golden_configurable?.['load_test']
+        : {}
+      if (typeof loadTest?.['release_id'] !== 'string') {
+        executionNotes.push(
+          'APEX Load will use the project default connection unless a mapped release is selected.',
+        )
+      }
+    }
+  }
+
+  return { planningIssues, executionIssues, executionNotes }
 }
 
 // ── Launch plan ───────────────────────────────────────────────────────────────────────

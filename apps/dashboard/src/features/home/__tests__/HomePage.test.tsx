@@ -71,7 +71,7 @@ describe('HomePage', () => {
     renderHome()
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: 'Pipeline Operation Dashboard' }),
+      await screen.findByRole('heading', { level: 1, name: 'Test Operations Dashboard' }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('heading', { level: 2, name: /Pipeline Operations? Dashboard/ }),

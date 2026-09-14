@@ -33,14 +33,14 @@ describe('NewRunWizard shell', () => {
     const tablist = screen.getByRole('tablist', { name: 'New test groups' })
     expect(within(tablist).getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual([
       'Scope',
+      'Config',
       'Work Items',
       'Context',
-      'Config',
       'Prompts',
       'Review',
     ])
     expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel', { name: 'Scope' })).toHaveTextContent('Run Scope')
+    expect(screen.getByRole('tabpanel', { name: 'Scope' })).toHaveTextContent('Test Scope')
     expect(screen.queryByRole('tabpanel', { name: 'Work Items' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: 'Work Items' }))
@@ -56,7 +56,7 @@ describe('NewRunWizard shell', () => {
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
     expect(screen.queryByText('Scope: Title is required')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Next' }))
-    expect(screen.getByRole('tab', { name: 'Work Items' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Config' })).toHaveAttribute('aria-selected', 'true')
     await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAttribute('aria-selected', 'true')
     await user.click(screen.getByRole('tab', { name: 'Review' }))

@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 /**
- * Step 2 — Work items (all optional): NL -> translate -> editable provider
+ * Step 3 — Work items (all optional): NL -> translate -> editable provider
  * query (+ confidence chip) -> execute -> selectable results; direct key add
  * with validate-on-add; saved-query quick picks that execute on pick.
  *

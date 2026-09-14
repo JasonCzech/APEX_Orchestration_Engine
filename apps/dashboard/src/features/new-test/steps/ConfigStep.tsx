@@ -3,7 +3,7 @@ import { RadioChoices } from '@/components/ux/RadioChoices'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
 import { reviewPolicySummary } from '../reviewPolicySummary'
 /**
- * Step 4 — Config: engine radio cards, golden-config picker (assistants),
+ * Step 2 — Config: engine radio cards, golden-config picker (assistants),
  * phase-subset toggle strip with blocking dependency errors (mirrors
  * PHASE_PREREQUISITES for the new thread), and the gates segmented control with the 7x2 custom
  * matrix (checked = gated).
@@ -144,14 +144,10 @@ export function ConfigStep({ draft, onChange }: StepProps) {
     const current = new Set(phases)
     let nextFocus: PhaseName | null = promptFocus
 
-    if (!current.has(phase)) {
-      current.add(phase)
-      nextFocus = phase
-    } else if (promptFocus !== phase) {
-      patchConfig({ prompt_focus_phase: phase })
-      return
-    } else {
+    if (current.has(phase)) {
       current.delete(phase)
+    } else {
+      current.add(phase)
     }
 
     const next = PHASE_NAMES.filter((name) => current.has(name))
@@ -309,6 +305,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
 
       <div className="wizard-field">
         <span className="wizard-label">Phases</span>
+        <p className="wizard-caption">Choose which phases this test includes. Prompt selection is managed separately in Prompts.</p>
         <div className="wizard-phase-strip" role="group" aria-label="Phase subset">
           {PHASE_NAMES.map((phase) => (
             <button

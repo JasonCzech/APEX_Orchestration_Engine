@@ -13,6 +13,7 @@ import { ALL_AUTO_GATES } from '@/features/runs/launchRun'
 import {
   allGatedMatrix,
   allIssues,
+  assessWizardReadiness,
   buildLaunchPreview,
   emptyDraft,
   gateMatrixOf,
@@ -51,6 +52,22 @@ describe('wizardState validation', () => {
         message: 'Override for phase/execution is empty — edit it or revert to catalog',
       },
     ])
+  })
+
+  it('separates a complete plan from readiness for external execution', () => {
+    const draft = validDraft()
+    draft.config.engine = 'apex_load'
+
+    const readiness = assessWizardReadiness(draft)
+    expect(readiness.planningIssues).toEqual([])
+    expect(readiness.executionIssues).toEqual([
+      { step: 'scope', message: 'Select an application before external execution' },
+      { step: 'scope', message: 'Select a target environment before external execution' },
+    ])
+
+    draft.scope.app_id = 'app-checkout'
+    draft.scope.environment_id = 'env-staging'
+    expect(assessWizardReadiness(draft).executionIssues).toEqual([])
   })
 })
 

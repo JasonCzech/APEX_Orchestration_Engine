@@ -28,7 +28,7 @@ import { WorkItemsStep } from './steps/WorkItemsStep'
 import { canPersistWizardDraft, useDraft, type DraftUpdater } from './useDraft'
 import { useWizardLaunch } from './useWizardLaunch'
 import {
-  allIssues,
+  assessWizardReadiness,
   isWizardStep,
   STEP_LABELS,
   WIZARD_STEPS,
@@ -98,14 +98,14 @@ function WizardSection({
 
 const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: string }> = {
   scope: {
-    title: 'Run Scope',
+    title: 'Test Scope',
     description:
-      'Name the pipeline, describe the request, and choose the project, application, and target environment.',
+      'Name the test, describe the request, and choose the project, application, and target environment.',
   },
   'work-items': {
     title: 'Work Items',
     description:
-      'Attach tickets or stories that should anchor the pipeline context and downstream reporting.',
+      'Attach tickets or stories that should anchor the test context and downstream reporting.',
   },
   context: {
     title: 'Context',
@@ -125,7 +125,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   review: {
     title: 'Launch Preview',
     description:
-      'Review the launch plan. Selected work items and documents are resolved into agent context when the pipeline starts.',
+      'Review the launch plan. Selected work items and documents are resolved into agent context when the test starts.',
   },
 }
 
@@ -288,8 +288,10 @@ function NewRunWizardContent({
   const scopeAuthorized =
     consumer === undefined ||
     canMutateAudience(consumer, draft.scope.project_id.trim(), draft.scope.app_id)
+  const readiness = assessWizardReadiness(draft, maxContextPackets)
   const issues = [
-    ...allIssues(draft, maxContextPackets),
+    ...readiness.planningIssues,
+    ...readiness.executionIssues,
     ...(!scopeAuthorized
       ? [
           {
@@ -399,7 +401,7 @@ function NewRunWizardContent({
         else if (launchedDraftId !== null) void deleteDraftById(launchedDraftId)
       }
       if (!isCurrent) return
-      navigate(`/runs/${result.threadId}?tab=log`)
+      navigate(`/runs/${result.threadId}`)
     } catch {
       // launch.error renders inline below.
       if (
@@ -610,8 +612,10 @@ function NewRunWizardContent({
             {issues.length === 0
               ? pendingStepCount > 0
                 ? 'Waiting for in-progress context changes to finish.'
-                : 'All required sections look ready.'
-              : `${issues.length} item${issues.length === 1 ? '' : 's'} still need attention.`}
+                : 'Ready to launch: the plan and execution target are set.'
+              : readiness.planningIssues.length === 0 && readiness.executionIssues.length > 0
+                ? 'The test plan is ready; execution setup still needs attention.'
+                : `${issues.length} item${issues.length === 1 ? '' : 's'} still need attention.`}
           </span>
         </div>
 

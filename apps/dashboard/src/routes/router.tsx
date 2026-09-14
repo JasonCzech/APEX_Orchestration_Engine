@@ -50,7 +50,7 @@ export const appRoutes: RouteObject[] = [
         children: [
           {
             index: true,
-            handle: handle('Pipeline Operation Dashboard'),
+            handle: handle('Test Operations Dashboard'),
             lazy: lazyPage(() => import('@/features/home/pages'), 'HomePage'),
           },
           {

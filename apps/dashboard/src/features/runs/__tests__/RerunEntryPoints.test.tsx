@@ -111,7 +111,7 @@ describe('RunsListPage row overflow menu (entry point 1)', () => {
 })
 
 describe('RunDetailPage header split button (entry point 2)', () => {
-  it('Re-run ▾ menu offers All phases / Run phases… and preselects accordingly', async () => {
+  it('Re-run ▾ menu offers All phases / Choose phases… and preselects accordingly', async () => {
     server.use(pipelineDetailHandler())
     const user = userEvent.setup()
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
@@ -120,22 +120,30 @@ describe('RunDetailPage header split button (entry point 2)', () => {
     await user.click(screen.getByRole('button', { name: 'Re-run options' }))
     expect(
       within(screen.getByRole('menu')).getAllByRole('menuitem').map((el) => el.textContent),
-    ).toEqual(['All phases', 'Run phases…'])
+    ).toEqual(['All phases', 'Choose phases…'])
 
     await user.click(screen.getByRole('menuitem', { name: 'All phases' }))
     expect(screen.getByRole('dialog', { name: 'Re-run phases' })).toBeInTheDocument()
     expect(await pressedPhases()).toHaveLength(7)
   })
 
-  it('the main Re-run segment opens the modal with all phases preselected', async () => {
-    server.use(pipelineDetailHandler())
+  it('the main Re-run selected plan segment opens the modal with the previous plan preselected', async () => {
+    server.use(
+      pipelineDetailHandler({
+        ...PIPELINE_DETAIL,
+        values: {
+          ...PIPELINE_DETAIL.values,
+          phases_plan: ['story_analysis', 'test_planning'],
+        },
+      }),
+    )
     const user = userEvent.setup()
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
 
     await screen.findByRole('group', { name: 'Phase progress' })
-    await user.click(screen.getByRole('button', { name: 'Re-run' }))
+    await user.click(screen.getByRole('button', { name: 'Re-run selected plan' }))
     expect(screen.getByRole('dialog', { name: 'Re-run phases' })).toBeInTheDocument()
-    expect(await pressedPhases()).toHaveLength(7)
+    expect(await pressedPhases()).toEqual(['Story Analysis', 'Test Planning'])
   })
 
   it('closes pre-flight state when a cached thread route replaces the run', async () => {
@@ -154,7 +162,7 @@ describe('RunDetailPage header split button (entry point 2)', () => {
     await screen.findByText('Run thread-2')
     await act(async () => router.navigate('/runs/thread-1/phases/execution'))
     await screen.findByText('Run thread-1')
-    await user.click(screen.getByRole('button', { name: 'Re-run' }))
+    await user.click(screen.getByRole('button', { name: 'Re-run selected plan' }))
     expect(screen.getByRole('dialog', { name: 'Re-run phases' })).toBeInTheDocument()
 
     await act(async () => router.navigate('/runs/thread-2/phases/execution'))

@@ -1,7 +1,7 @@
 import { reviewPolicySummary } from '../reviewPolicySummary'
 /**
  * Step 6 — Review: summary cards with edit-links back to each step,
- * outstanding validation issues, and the collapsible launch plan. Work-item
+ * planning and execution readiness, plus the collapsible launch plan. Work-item
  * keys and document ids are resolved into context packets at launch time.
  */
 import { useState, type ReactNode } from 'react'
@@ -15,7 +15,7 @@ import { PHASE_LABELS } from '@/features/runs/runDisplay'
 import { parseStatusBadge, summarizeContext } from '../contextFiles'
 import type { StepProps } from '../NewRunWizard'
 import {
-  allIssues,
+  assessWizardReadiness,
   buildLaunchPreview,
   isRecord,
   selectedPhases,
@@ -92,7 +92,8 @@ export function ReviewStep({
   const environments = useEnvironments(draft.scope.app_id)
   const configurations = useAssistants()
   const releaseConfig = draft.config.golden_configurable?.load_test as { release_id?: string; mapping_revision?: string } | undefined
-  const issues = allIssues(draft, maxContextPackets)
+  const readiness = assessWizardReadiness(draft, maxContextPackets)
+  const issues = [...readiness.planningIssues, ...readiness.executionIssues]
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
   const inherited =
@@ -129,6 +130,24 @@ export function ReviewStep({
       )}
 
       <div className="wizard-review-grid">
+        <ReviewCard title="Readiness" step={readiness.executionIssues.length > 0 ? 'scope' : 'config'} onEdit={onEditStep}>
+          {readiness.planningIssues.length === 0 ? (
+            <p className="wizard-caption">Test plan is complete.</p>
+          ) : (
+            <p className="wizard-caption wizard-caption--warning">Complete the outstanding planning items before launch.</p>
+          )}
+          {readiness.executionIssues.length === 0 ? (
+            <p className="wizard-caption">Execution readiness: {readiness.executionNotes[0] ?? 'Target and engine setup are ready.'}</p>
+          ) : (
+            <div>
+              <p className="wizard-caption wizard-caption--danger">Execution readiness needs attention:</p>
+              <ul>{readiness.executionIssues.map((issue) => <li key={issue.message}>{issue.message}</li>)}</ul>
+            </div>
+          )}
+          {readiness.executionNotes.slice(readiness.executionIssues.length === 0 ? 1 : 0).map((note) => (
+            <p key={note} className="wizard-caption">{note}</p>
+          ))}
+        </ReviewCard>
         <ReviewCard title="Scope" step="scope" onEdit={onEditStep}>
           <dl className="wizard-review-dl">
             <dt>Title</dt>

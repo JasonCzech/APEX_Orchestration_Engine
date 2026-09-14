@@ -97,7 +97,7 @@ describe('dev-data route smoke', () => {
     ['/work-items', 'Tickets/Defects'],
     ['/work-items/saved', 'Saved Queries'],
     ['/work-items/jira_align/feature%3A583?connection_id=conn-align', 'Work Item'],
-    ['/environments', 'Environment Configurations'],
+    ['/environments', 'Applications & Environments'],
     ['/environments/env-perf', 'Environment'],
     ['/context', 'Context'],
     ['/analytics', 'Analytics'],

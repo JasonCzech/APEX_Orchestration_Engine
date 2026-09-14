@@ -1,5 +1,5 @@
 /**
- * Step 3 — Context (all optional): multipart document upload (file input +
+ * Step 4 — Context (all optional): multipart document upload (file input +
  * drag-drop onto the dashed glass panel) and an existing-documents picker
  * scoped to the project. Selected ids persist in the draft; names/sizes for
  * chips come from upload results + the documents list.

@@ -53,7 +53,7 @@ describe('LaunchRunButton', () => {
     )
   })
 
-  it('launches with all-auto gates and navigates to the live activity tab', async () => {
+  it('launches with all-auto gates and navigates to the run overview', async () => {
     const user = userEvent.setup()
     const router = renderButton()
 
@@ -76,7 +76,7 @@ describe('LaunchRunButton', () => {
     }
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/thread-new'))
-    expect(router.state.location.search).toBe('?tab=log')
+    expect(router.state.location.search).toBe('')
     expect(await screen.findByTestId('run-page')).toBeInTheDocument()
   })
 

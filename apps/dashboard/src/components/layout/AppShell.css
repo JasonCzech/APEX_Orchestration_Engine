@@ -101,10 +101,8 @@
 .navigation-drawer .sidebar-drawer { display: flex; position: static; width: 100%; height: auto; min-height: calc(100dvh - 80px); border: 0; }
 .navigation-drawer .sidebar-drawer .brand-name,
 .navigation-drawer .sidebar-drawer .nav-label,
-.navigation-drawer .sidebar-drawer .nav-advanced-toggle,
-.navigation-drawer .sidebar-drawer .nav-advanced-divider,
 .navigation-drawer .sidebar-drawer .status-text,
-.navigation-drawer .sidebar-drawer .theme-select,
-.navigation-drawer .sidebar-drawer .sidebar-identity-copy { display: block; }
+.navigation-drawer .sidebar-drawer .nav-section-label { display: block; }
+.navigation-drawer .sidebar-drawer .sidebar-identity-copy { display: flex; }
 .navigation-drawer .sidebar-drawer .nav-item { justify-content: flex-start; }
 .navigation-drawer .sidebar-drawer .sidebar-footer { margin-top: auto; }

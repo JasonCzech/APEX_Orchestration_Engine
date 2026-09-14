@@ -160,9 +160,9 @@ function RunDetailContent({ threadId }: { threadId: string }) {
             <button
               type="button"
               className="btn btn-secondary btn-sm split-button-main"
-              onClick={() => setPreflight({ threadId, phases: [...PHASE_NAMES] })}
+              onClick={() => setPreflight({ threadId, phases: lastPlanSelection(state.phases_plan) })}
             >
-              Re-run
+              Re-run selected plan
             </button>
             <OverflowMenu
               label="Re-run options"
@@ -173,7 +173,7 @@ function RunDetailContent({ threadId }: { threadId: string }) {
                   onSelect: () => setPreflight({ threadId, phases: [...PHASE_NAMES] }),
                 },
                 {
-                  label: 'Run phases…',
+                  label: 'Choose phases…',
                   onSelect: () =>
                     setPreflight({ threadId, phases: lastPlanSelection(state.phases_plan) }),
                 },

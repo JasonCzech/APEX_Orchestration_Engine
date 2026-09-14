@@ -109,7 +109,7 @@ export function LaunchRunButton() {
         onSuccess: ({ threadId }) => {
           setOpen(false)
           resetAttempt()
-          void navigate(`/runs/${threadId}?tab=log`)
+          void navigate(`/runs/${threadId}`)
         },
       },
     )

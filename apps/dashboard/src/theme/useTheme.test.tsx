@@ -18,6 +18,7 @@ describe('theme switcher', () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState() })
 
+    await user.click(await screen.findByRole('button', { name: 'Account options for Dash Ops' }))
     const select = await screen.findByLabelText('Theme')
     await user.selectOptions(select, 'solarized-light')
 
@@ -26,11 +27,13 @@ describe('theme switcher', () => {
   })
 
   it('restores a persisted theme on mount', async () => {
+    const user = userEvent.setup()
     window.localStorage.setItem(THEME_STORAGE_KEY, 'monokai-dimmed')
     renderApp({ authState: authenticatedState() })
 
     await screen.findByTestId('sidebar')
     expect(document.documentElement.getAttribute('data-theme')).toBe('monokai-dimmed')
+    await user.click(await screen.findByRole('button', { name: 'Account options for Dash Ops' }))
     expect((await screen.findByLabelText<HTMLSelectElement>('Theme')).value).toBe('monokai-dimmed')
   })
 })

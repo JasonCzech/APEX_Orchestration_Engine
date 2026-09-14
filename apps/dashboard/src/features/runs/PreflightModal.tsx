@@ -84,7 +84,7 @@ export function PreflightModal({
         onSuccess: () => {
           if (!isCurrent(threadId)) return
           onClose()
-          void navigate(`/runs/${threadId}?tab=log`)
+          void navigate(`/runs/${threadId}`)
         },
       },
     )

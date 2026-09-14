@@ -179,7 +179,7 @@ describe('PreflightModal', () => {
     })
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`))
-    expect(router.state.location.search).toBe('?tab=log')
+    expect(router.state.location.search).toBe('')
     expect(onClose).toHaveBeenCalled()
   })
 

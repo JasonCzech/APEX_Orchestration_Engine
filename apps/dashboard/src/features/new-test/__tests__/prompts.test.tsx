@@ -124,7 +124,7 @@ describe('PromptsStep', () => {
     await flushAndUnmountWizard(rendered)
   })
 
-  it('changes the displayed system prompt when Config changes focus', async () => {
+  it('changes the displayed system prompt from Prompts without changing phase inclusion', async () => {
     installWizardHandlers()
     server.use(...promptHandlers())
     const user = userEvent.setup()
@@ -143,9 +143,14 @@ describe('PromptsStep', () => {
     await user.click(screen.getByRole('tab', { name: 'Config' }))
     const strip = await screen.findByRole('group', { name: 'Phase subset' })
     await user.click(within(strip).getByRole('button', { name: 'Execution' }))
+    expect(within(strip).getByRole('button', { name: 'Execution' })).toHaveAttribute('aria-pressed', 'false')
+    await user.click(within(strip).getByRole('button', { name: 'Execution' }))
 
     await user.click(screen.getByRole('tab', { name: 'Prompts' }))
     const focusedSection = screen.getByRole('tabpanel', { name: 'Prompts' })
+    expect(within(focusedSection).getByTestId('prompt-focused-phase')).toHaveTextContent('story analysis')
+    const promptPhases = within(focusedSection).getByRole('group', { name: 'Prompt phase' })
+    await user.click(within(promptPhases).getByRole('button', { name: 'Execution' }))
     await waitFor(() =>
       expect(within(focusedSection).getByTestId('prompt-focused-phase')).toHaveTextContent(
         'execution',

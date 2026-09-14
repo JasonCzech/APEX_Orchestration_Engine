@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { NavLink, useLocation } from 'react-router'
+import { useState, type ReactNode } from 'react'
+import { Link, useLocation } from 'react-router'
 
 import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
@@ -19,7 +19,6 @@ interface NavItem {
   to: string
   label: string
   icon: ReactNode
-  end?: boolean
 }
 
 interface NavSection {
@@ -66,49 +65,48 @@ function Icon({ d }: { d: string }) {
   )
 }
 
-const PRIMARY_NAV_ITEMS: NavItem[] = [
+const TESTING_NAV_ITEMS: NavItem[] = [
   {
     to: '/',
     label: 'Home',
-    end: true,
     icon: <Icon d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z" />,
   },
-  { to: '/runs/new', label: 'New Test', icon: <Icon d="M12 5v14M5 12h14" /> },
+  {
+    to: '/runs',
+    label: 'Tests',
+    icon: <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />,
+  },
+  { to: '/approvals', label: 'Approvals', icon: <Icon d="M3 13h4l2 3h6l2-3h4M5 5h14l2 8v6H3v-6z" /> },
+]
+
+const RESOURCE_NAV_ITEMS: NavItem[] = [
   {
     to: '/environments',
     label: 'Applications & Environments',
     icon: <Icon d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01" />,
   },
   {
-    to: '/runs',
-    label: 'Test History',
-    end: true,
-    icon: <Icon d="M22 12h-4l-3 9L9 3l-3 9H2" />,
-  },
-  {
     to: '/work-items',
     label: 'Tickets/Defects',
     icon: <Icon d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />,
   },
-  { to: '/approvals', label: 'Approvals', icon: <Icon d="M3 13h4l2 3h6l2-3h4M5 5h14l2 8v6H3v-6z" /> },
-  { to: '/apex-load', label: 'Load integration', icon: <Icon d="M4 18V6m5 12V3m5 15V9m5 9V5" /> },
-  { to: '/settings', label: 'Settings', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> },
-]
-
-const ADVANCED_NAV_ITEMS: NavItem[] = [
+  { to: '/context', label: 'Context', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
+  {
+    to: '/golden-configs',
+    label: 'Test Presets',
+    icon: <Icon d="m12 3 2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9L6.5 20l1-6.1L3 9.5l6.3-.9z" />,
+  },
   {
     to: '/prompts',
     label: 'Prompts',
     icon: <Icon d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5zM20 17v4H6.5a2.5 2.5 0 0 1 0-5" />,
   },
-  {
-    to: '/golden-configs',
-    label: 'Golden Configs',
-    icon: <Icon d="m12 3 2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9L6.5 20l1-6.1L3 9.5l6.3-.9z" />,
-  },
-  { to: '/context', label: 'Context', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
-  { to: '/analytics', label: 'Analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
+]
+
+const INVESTIGATION_NAV_ITEMS: NavItem[] = [
+  { to: '/analytics', label: 'Agent Analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
   { to: '/logs', label: 'Logs', icon: <Icon d="M7 3h12v18H7zM3 7h4M3 12h4M3 17h4M11 8h4M11 12h4" /> },
+  { to: '/apex-load', label: 'APEX Load', icon: <Icon d="M4 18V6m5 12V3m5 15V9m5 9V5" /> },
 ]
 
 const ADMIN_NAV_SECTION: NavSection = {
@@ -182,23 +180,62 @@ function readStoredCollapsed(): boolean {
   }
 }
 
+function isNavItemActive(item: NavItem, pathname: string): boolean {
+  if (item.to === '/') return pathname === '/'
+  if (item.to === '/runs') return pathname === '/runs' || (pathname.startsWith('/runs/') && !pathname.startsWith('/runs/new'))
+  return pathname === item.to || pathname.startsWith(`${item.to}/`)
+}
+
+function SidebarLink({ item, pathname, onNavigate }: { item: NavItem; pathname: string; onNavigate?: () => void }) {
+  const active = isNavItemActive(item, pathname)
+  return (
+    <Link
+      to={item.to}
+      aria-current={active ? 'page' : undefined}
+      className={active ? 'nav-item active' : 'nav-item'}
+      title={item.label}
+      onClick={onNavigate}
+    >
+      <span className="nav-icon">{item.icon}</span>
+      <span className="nav-label">{item.label}</span>
+      {item.to === '/approvals' && <ApprovalsBadge />}
+    </Link>
+  )
+}
+
+function NavSection({
+  section,
+  pathname,
+  onNavigate,
+}: {
+  section: NavSection
+  pathname: string
+  onNavigate?: () => void
+}) {
+  return (
+    <div className="nav-section">
+      <div className="nav-section-label">{section.label}</div>
+      {section.items.map((item) => (
+        <SidebarLink key={item.to} item={item} pathname={pathname} onNavigate={onNavigate} />
+      ))}
+    </div>
+  )
+}
+
 export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNavigate?: () => void }) {
   const [collapsed, setCollapsed] = useState(readStoredCollapsed)
+  const [accountOpen, setAccountOpen] = useState(false)
   const location = useLocation()
   const consumer = useConsumer()
   const { signOut, state: authState } = useAuth()
   const { status } = useConnectivity()
   const { preference, themes, setTheme } = useTheme()
-  const advancedPaths = [...ADVANCED_NAV_ITEMS, ...ADMIN_NAV_SECTION.items].map((item) => item.to)
-  const [advancedOpen, setAdvancedOpen] = useState(() =>
-    advancedPaths.some((path) => location.pathname.startsWith(path)),
-  )
-
-  useEffect(() => {
-    if (advancedPaths.some((path) => location.pathname.startsWith(path))) {
-      setAdvancedOpen(true)
-    }
-  }, [advancedPaths, location.pathname])
+  const testingItems = [
+    ...TESTING_NAV_ITEMS,
+    ...(authState.status === 'authenticated' && authState.systemInfo.features.cycles
+      ? [{ to: '/cycles', label: 'Test Cycles', icon: <Icon d="M4 4h16v16H4zM4 10h16M10 10v10" /> }]
+      : []),
+  ]
 
   const toggleCollapsed = () => {
     setCollapsed((prev) => {
@@ -228,88 +265,76 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
         <span className="brand-name">APEX Orchestration</span>
       </div>
 
-      <nav className="sidebar-nav" aria-label="Primary" onClick={(event) => { if ((event.target as HTMLElement).closest('a')) onNavigate?.() }}>
-        <div className="nav-section nav-section--flat">
-          {[...PRIMARY_NAV_ITEMS, ...(authState.status === 'authenticated' && authState.systemInfo.features.cycles ? [{ to: '/cycles', label: 'Test Cycles', end: false, icon: <Icon d="M4 4h16v16H4zM4 10h16M10 10v10" /> }] : [])].map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
-              title={item.label}
-            >
-              <span className="nav-icon">{item.icon}</span>
-              <span className="nav-label">{item.label}</span>
-              {item.to === '/approvals' && <ApprovalsBadge />}
-            </NavLink>
-          ))}
-        </div>
-
-        <div className="nav-section nav-section--advanced">
-          <button
-            type="button"
-            className={`nav-advanced-toggle${advancedOpen ? ' open' : ''}`}
-            aria-expanded={advancedOpen}
-            onClick={() => setAdvancedOpen((open) => !open)}
-          >
-            <span className="nav-advanced-label">Advanced</span>
-            <span className="nav-advanced-caret" aria-hidden="true">
-              <Icon d={advancedOpen ? 'm6 15 6-6 6 6' : 'm9 18 6-6-6-6'} />
-            </span>
-          </button>
-          {advancedOpen && (
-            <div className="nav-advanced-body">
-              {ADVANCED_NAV_ITEMS.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end}
-                  className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
-                  title={item.label}
-                >
-                  <span className="nav-icon">{item.icon}</span>
-                  <span className="nav-label">{item.label}</span>
-                </NavLink>
-              ))}
-              <RequireRole role={ADMIN_NAV_SECTION.requiresRole as Role}>
-                <div className="nav-advanced-divider">Admin</div>
-                {ADMIN_NAV_SECTION.items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.end}
-                    className={({ isActive }) => (isActive ? 'nav-item active' : 'nav-item')}
-                    title={item.label}
-                  >
-                    <span className="nav-icon">{item.icon}</span>
-                    <span className="nav-label">{item.label}</span>
-                  </NavLink>
-                ))}
-              </RequireRole>
-            </div>
-          )}
+      <nav className="sidebar-nav" aria-label="Primary">
+        <SidebarLink
+          item={{ to: '/runs/new', label: 'New Test', icon: <Icon d="M12 5v14M5 12h14" /> }}
+          pathname={location.pathname}
+          onNavigate={onNavigate}
+        />
+        <NavSection section={{ label: 'Testing', items: testingItems }} pathname={location.pathname} onNavigate={onNavigate} />
+        <NavSection section={{ label: 'Resources', items: RESOURCE_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
+        <NavSection section={{ label: 'Investigation', items: INVESTIGATION_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
+        <RequireRole role={ADMIN_NAV_SECTION.requiresRole as Role}>
+          <NavSection section={ADMIN_NAV_SECTION} pathname={location.pathname} onNavigate={onNavigate} />
+        </RequireRole>
+        <div className="nav-section nav-section--settings">
+          <SidebarLink
+            item={{ to: '/settings', label: 'Settings', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> }}
+            pathname={location.pathname}
+            onNavigate={onNavigate}
+          />
         </div>
       </nav>
 
       <div className="sidebar-footer">
         <div className="sidebar-footer-meta">
           {consumer && (
-            <div className="sidebar-identity" data-testid="sidebar-identity">
+            <button
+              type="button"
+              className="sidebar-identity"
+              data-testid="sidebar-identity"
+              aria-label={`Account options for ${consumer.name}`}
+              aria-expanded={accountOpen}
+              onClick={() => setAccountOpen((open) => !open)}
+            >
               <div className="sidebar-identity-avatar" aria-hidden="true">
                 {initials(consumer.name)}
               </div>
               <div className="sidebar-identity-copy">
                 <span className="sidebar-identity-name">{consumer.name}</span>
                 <span className="sidebar-identity-meta">{consumer.role}</span>
-                <DevDataSwitch />
-                <button
-                  type="button"
-                  className="sidebar-identity-action sidebar-identity-action-button"
-                  onClick={signOut}
-                >
-                  Sign out
-                </button>
               </div>
+            </button>
+          )}
+          {consumer && accountOpen && (
+            <div className="sidebar-account-panel" aria-label="Account options">
+              <DevDataSwitch />
+              <label className="sidebar-account-theme">
+                Theme
+                <select
+                  className="theme-select"
+                  aria-label="Theme"
+                  value={preference}
+                  onChange={(event) => {
+                    const next = event.target.value
+                    if (next === 'system' || isThemeName(next)) setTheme(next)
+                  }}
+                >
+                  <option value="system">System (Auto)</option>
+                  {themes.map((name) => (
+                    <option key={name} value={name}>
+                      {THEME_LABELS[name]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="sidebar-identity-action sidebar-identity-action-button"
+                onClick={signOut}
+              >
+                Sign out
+              </button>
             </div>
           )}
           <div className="sidebar-footer-row">
@@ -321,22 +346,6 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
               />
               <span className="status-text">{isDemoDataMode() ? 'Offline simulation' : STATUS_LABEL[status]}</span>
             </div>
-            <select
-              className="theme-select"
-              aria-label="Theme"
-              value={preference}
-              onChange={(event) => {
-                const next = event.target.value
-                if (next === 'system' || isThemeName(next)) setTheme(next)
-              }}
-            >
-              <option value="system">System (Auto)</option>
-              {themes.map((name) => (
-                <option key={name} value={name}>
-                  {THEME_LABELS[name]}
-                </option>
-              ))}
-            </select>
             <button
               hidden={drawer}
               type="button"

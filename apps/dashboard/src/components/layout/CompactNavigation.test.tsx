@@ -8,16 +8,18 @@ import { authenticatedState, renderApp } from '@/test/render'
 vi.mock('@/components/hooks/useCompactLayout', () => ({ useCompactLayout: () => true }))
 
 describe('compact operator navigation', () => {
-  it('exposes advanced destinations, traps focus, and returns focus on Escape', async () => {
+  it('exposes grouped destinations, traps focus, and returns focus on Escape', async () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState('operator') })
     const trigger = await screen.findByRole('button', { name: 'Open navigation' })
     await user.click(trigger)
     const dialog = screen.getByRole('dialog', { name: 'Navigation' })
-    await user.click(within(dialog).getByRole('button', { name: 'Advanced' }))
+    expect(within(dialog).getByText('Testing')).toBeInTheDocument()
+    expect(within(dialog).getByText('Resources')).toBeInTheDocument()
+    expect(within(dialog).getByText('Investigation')).toBeInTheDocument()
     expect(within(dialog).getByRole('link', { name: 'Logs' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('link', { name: 'Analytics' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: 'Agent Analytics' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: /Account options/ })).toBeInTheDocument()
     expect(within(dialog).queryByRole('link', { name: 'Consumers' })).not.toBeInTheDocument()
     for (let index = 0; index < 30; index++) {
       await user.tab()
@@ -44,7 +46,7 @@ describe('compact operator navigation', () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState('operator') })
     await user.click(await screen.findByRole('button', { name: 'Open navigation' }))
-    await user.click(screen.getByRole('link', { name: 'Test History' }))
+    await user.click(screen.getByRole('link', { name: 'Tests' }))
     await waitFor(() => expect(screen.getByRole('main')).toHaveFocus())
     expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
   })
