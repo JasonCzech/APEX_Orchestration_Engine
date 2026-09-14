@@ -76,7 +76,7 @@ const PRIMARY_NAV_ITEMS: NavItem[] = [
   { to: '/runs/new', label: 'New Test', icon: <Icon d="M12 5v14M5 12h14" /> },
   {
     to: '/environments',
-    label: 'Environment Configurations',
+    label: 'Applications & Environments',
     icon: <Icon d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01" />,
   },
   {

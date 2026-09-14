@@ -1,0 +1,9 @@
+- generic [ref=e4]:
+  - paragraph [ref=e5]: APEX Orchestration
+  - heading "Connect to the control plane" [level=1] [ref=e6]
+  - paragraph [ref=e7]: Enter your consumer API key. It is validated against the APEX system endpoint and stored only in this browser.
+  - generic [ref=e8]:
+    - generic [ref=e9]: API key
+    - textbox "API key" [ref=e10]:
+      - /placeholder: apex_…
+    - button "Connect" [disabled] [ref=e11]

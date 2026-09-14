@@ -11,10 +11,12 @@ import { Link, useNavigate, useSearchParams } from 'react-router'
 import {
   useCreatePrompt,
   usePromptList,
+  usePromptById,
   type PromptSummary,
 } from '@/api/hooks/usePrompts'
 import { isApiError } from '@/api/errors'
 import { RequireGlobalAdmin } from '@/auth/RequireRole'
+import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
@@ -46,18 +48,60 @@ function namespaceIndex(rows: PromptSummary[]): Array<{ ns: string; count: numbe
     })
 }
 
-function PromptRow({ prompt }: { prompt: PromptSummary }) {
+interface PromptGroup {
+  id: string
+  label: 'Phase' | 'Application'
+  title: string
+  rows: PromptSummary[]
+}
+
+function readableName(value: string): string {
+  const words = value.replaceAll(/[_-]+/g, ' ').trim()
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : value
+}
+
+function promptGroups(rows: PromptSummary[], namespace: string): PromptGroup[] | null {
+  if (namespace !== 'phase' && namespace !== 'application') return null
+  const grouped = new Map<string, PromptSummary[]>()
+  for (const row of rows) {
+    const id = namespace === 'phase' ? (row.key.split('/', 1)[0] ?? row.key) : row.key
+    grouped.set(id, [...(grouped.get(id) ?? []), row])
+  }
+  return [...grouped.entries()].map(([id, groupRows]) => ({
+    id,
+    label: namespace === 'phase' ? 'Phase' : 'Application',
+    title:
+      namespace === 'application'
+        ? groupRows[0]?.description || readableName(id)
+        : readableName(id),
+    rows: groupRows,
+  }))
+}
+
+function PromptRow({
+  prompt,
+  selected,
+  onSelect,
+}: {
+  prompt: PromptSummary
+  selected: boolean
+  onSelect: () => void
+}) {
   const archived = Boolean(prompt.archived_at)
-  const target = promptPath(prompt.namespace, prompt.key)
   return (
     <tr
-      className={`prompts-row${archived ? ' prompts-row-archived' : ''}`}
+      className={`prompts-row${archived ? ' prompts-row-archived' : ''}${selected ? ' prompts-row-selected' : ''}`}
       data-testid={`prompt-row-${prompt.id}`}
     >
       <td>
-        <Link to={target} className="strong prompts-key">
+        <button
+          type="button"
+          className="strong prompts-key"
+          aria-pressed={selected}
+          onClick={onSelect}
+        >
           {prompt.key}
-        </Link>
+        </button>
       </td>
       <td className="prompts-description">{prompt.description || EM_DASH}</td>
       <td>
@@ -76,6 +120,66 @@ function PromptRow({ prompt }: { prompt: PromptSummary }) {
         {formatRelative(prompt.updated_at)}
       </td>
     </tr>
+  )
+}
+
+function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
+  const detailQuery = usePromptById(prompt?.namespace ?? '', prompt?.key ?? '', prompt?.id)
+  if (!prompt) {
+    return (
+      <aside className="prompts-preview glass-panel" aria-label="Prompt preview">
+        <h2>Select a prompt</h2>
+        <p className="prompts-muted">Choose a key to read its active prompt without leaving the catalog.</p>
+      </aside>
+    )
+  }
+  if (detailQuery.isPending) {
+    return (
+      <aside className="prompts-preview glass-panel" aria-label="Prompt preview" aria-busy="true">
+        <p role="status">Loading active prompt…</p>
+      </aside>
+    )
+  }
+  if (!detailQuery.data) {
+    return (
+      <aside className="prompts-preview glass-panel" aria-label="Prompt preview">
+        <h2>Prompt unavailable</h2>
+        <p className="prompts-muted">{errorMessage(detailQuery.error, 'The active prompt could not be loaded.')}</p>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => void detailQuery.refetch()}>
+          Retry
+        </button>
+      </aside>
+    )
+  }
+  const detail = detailQuery.data
+  return (
+    <aside className="prompts-preview glass-panel" aria-label="Prompt preview">
+      <div className="prompts-preview-header">
+        <div>
+          <p className="prompts-preview-kicker">{detail.namespace}</p>
+          <h2>{detail.key}</h2>
+        </div>
+        <div className="prompts-preview-meta">
+          {detail.active_version && <span className="dash-context-chip prompts-version-chip">Active v{detail.active_version.version}</span>}
+          {detail.archived_at && <span className="topbar-meta-chip prompts-archived-chip">archived</span>}
+          <span className="prompts-muted" title={detail.updated_at ?? undefined}>{formatRelative(detail.updated_at)}</span>
+        </div>
+      </div>
+      {detail.description && <p className="prompt-description">{detail.description}</p>}
+      {detail.content ? (
+        <CodeViewer value={detail.content} ariaLabel={`Active prompt content for ${detail.key}`} />
+      ) : (
+        <div className="dash-empty prompts-preview-empty">
+          <p>No active prompt content.</p>
+        </div>
+      )}
+      <div className="prompts-preview-footer">
+        {detail.note ? <span className="prompts-muted">{detail.note}</span> : <span />}
+        <Link className="btn btn-secondary btn-sm" to={promptPath(detail.namespace, detail.key)}>
+          Open full editor
+        </Link>
+      </div>
+    </aside>
   )
 }
 
@@ -217,6 +321,7 @@ function CreatePromptPanel({
 export function PromptsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedNs = searchParams.get('ns') ?? ''
+  const selectedId = searchParams.get('prompt') ?? ''
   const includeArchived = searchParams.get('archived') === '1'
   const committedQ = searchParams.get('q') ?? ''
   const [search, setSearch] = useState(committedQ)
@@ -233,6 +338,7 @@ export function PromptsPage() {
         const next = new URLSearchParams(prev)
         if (trimmed) next.set('q', trimmed)
         else next.delete('q')
+        next.delete('prompt')
         return next
       })
     }, SEARCH_DEBOUNCE_MS)
@@ -251,13 +357,16 @@ export function PromptsPage() {
     return selectedNs ? all.filter((row) => row.namespace === selectedNs) : all
   }, [data, selectedNs])
   const tree = useMemo(() => namespaceIndex(data ?? []), [data])
+  const groups = useMemo(() => promptGroups(rows, selectedNs), [rows, selectedNs])
   const total = data?.length ?? 0
+  const selectedPrompt = rows.find((row) => row.id === selectedId) ?? rows[0]
 
   function selectNamespace(ns: string) {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev)
       if (ns) next.set('ns', ns)
       else next.delete('ns')
+      next.delete('prompt')
       return next
     })
   }
@@ -267,6 +376,15 @@ export function PromptsPage() {
       const next = new URLSearchParams(prev)
       if (checked) next.set('archived', '1')
       else next.delete('archived')
+      next.delete('prompt')
+      return next
+    })
+  }
+
+  function selectPrompt(promptId: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev)
+      next.set('prompt', promptId)
       return next
     })
   }
@@ -363,8 +481,9 @@ export function PromptsPage() {
                   </button>
                 </div>
               )}
-              <div className="data-table-wrap">
-                <table className="data-table striped prompts-table">
+              <div className="prompts-browser">
+                <div className="data-table-wrap">
+                  <table className="data-table striped prompts-table">
                 <thead>
                   <tr>
                     <th>Key</th>
@@ -373,12 +492,47 @@ export function PromptsPage() {
                     <th>Updated</th>
                   </tr>
                 </thead>
-                <tbody>
-                  {rows.map((prompt) => (
-                    <PromptRow key={prompt.id} prompt={prompt} />
-                  ))}
-                </tbody>
-                </table>
+                {groups ? (
+                  groups.map((group) => (
+                    <tbody key={group.id} className="prompts-table-group">
+                      <tr className="prompts-group-heading">
+                        <th
+                          colSpan={4}
+                          scope="rowgroup"
+                          aria-label={`${group.label}: ${group.title}, ${group.rows.length} ${group.rows.length === 1 ? 'prompt' : 'prompts'}`}
+                        >
+                          <span className="prompts-group-label">{group.label}</span>
+                          <span className="prompts-group-title">{group.title}</span>
+                          <span className="prompts-group-count">
+                            {group.rows.length} {group.rows.length === 1 ? 'prompt' : 'prompts'}
+                          </span>
+                        </th>
+                      </tr>
+                      {group.rows.map((prompt) => (
+                        <PromptRow
+                          key={prompt.id}
+                          prompt={prompt}
+                          selected={selectedPrompt?.id === prompt.id}
+                          onSelect={() => selectPrompt(prompt.id)}
+                        />
+                      ))}
+                    </tbody>
+                  ))
+                ) : (
+                  <tbody>
+                    {rows.map((prompt) => (
+                      <PromptRow
+                        key={prompt.id}
+                        prompt={prompt}
+                        selected={selectedPrompt?.id === prompt.id}
+                        onSelect={() => selectPrompt(prompt.id)}
+                      />
+                    ))}
+                  </tbody>
+                )}
+                  </table>
+                </div>
+                <PromptPreview prompt={selectedPrompt} />
               </div>
             </>
           )}

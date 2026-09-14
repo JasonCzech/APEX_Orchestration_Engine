@@ -354,7 +354,7 @@ export function HomePage() {
           New Test
         </Link>
         <Link to="/environments" className="btn btn-secondary">
-          Env Configs
+          Apps &amp; Environments
         </Link>
         <Link to="/runs" className="btn btn-secondary">
           Test History

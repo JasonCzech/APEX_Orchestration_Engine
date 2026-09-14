@@ -16,6 +16,72 @@ the migration runner registers trusted revision ancestry so a lineage-aware olde
 image accepts a newer descendant schema while rejecting behind, divergent, or
 unknown heads. Old code on a newer schema is the supported rollback posture.
 
+## Deployment topology
+
+```mermaid
+flowchart TB
+    Client["Browser dashboard / API client"]
+    CloudLB["Cloud or on-prem load balancer"]
+
+    subgraph Cluster["Kubernetes cluster"]
+        IngressPod["Ingress or Gateway controller pod(s)"]
+
+        subgraph Routing["Kubernetes routing objects"]
+            Ingress["Ingress rules or HTTPRoute\nSSE buffering disabled"]
+            AppSvc["apex-orchestration-engine Service"]
+        end
+
+        subgraph Runtime["APEX Orchestration Engine Deployment"]
+            P1["LangGraph Server + /v1 API pod 1"]
+            P2["LangGraph Server + /v1 API pod 2"]
+            PN["LangGraph Server + /v1 API pod N"]
+        end
+
+        OptionalMinIO["Optional AKS MinIO deployment\nStatefulSet + persistent volume"]
+    end
+
+    subgraph Managed["Usually external managed data services"]
+        Postgres["PostgreSQL\nLangGraph checkpoints, threads, runs, and APEX records"]
+        Redis["Redis / Valkey\nshared Pub/Sub, rate limits, and SSE admission"]
+        Archive["S3-compatible object storage\nartifacts and reports"]
+    end
+
+    subgraph Integrations["External systems reached through adapter ports"]
+        Providers["Work tracking, observability, cluster inventory,\nsource control, and execution engines\n(e.g. Jira, ELK, Kubernetes, LoadRunner, APEX Load)"]
+    end
+
+    Client --> CloudLB
+    CloudLB --> IngressPod
+    IngressPod --> Ingress
+    Ingress --> AppSvc
+    AppSvc --> P1
+    AppSvc --> P2
+    AppSvc --> PN
+
+    P1 <-->|"durable state and checkpoints"| Postgres
+    P2 <-->|"durable state and checkpoints"| Postgres
+    PN <-->|"durable state and checkpoints"| Postgres
+    P1 <-->|"shared cache and Pub/Sub"| Redis
+    P2 <-->|"shared cache and Pub/Sub"| Redis
+    PN <-->|"shared cache and Pub/Sub"| Redis
+    P1 <-->|"artifacts"| Archive
+    P2 <-->|"artifacts"| Archive
+    PN <-->|"artifacts"| Archive
+    P1 <-->|"async adapter calls"| Providers
+    P2 <-->|"async adapter calls"| Providers
+    PN <-->|"async adapter calls"| Providers
+
+    P1 -. "AKS artifact-store profile" .-> OptionalMinIO
+    P2 -. "AKS artifact-store profile" .-> OptionalMinIO
+    PN -. "AKS artifact-store profile" .-> OptionalMinIO
+```
+
+The Helm chart itself consumes external PostgreSQL, Redis, and object storage; the
+dashed MinIO path is the Azure AKS profile, where MinIO is deliberately operated
+as a separate PVC-backed in-cluster dependency. The Service can send a request or
+a reconnected SSE stream to any ready replica because durable progress is in
+PostgreSQL and cross-replica stream coordination is in Redis.
+
 ## Rationale
 All durable state lives in Postgres (LangGraph checkpoints/threads/runs + the
 `apex` schema), so replicas hold nothing: rolling restarts mid-run resume the

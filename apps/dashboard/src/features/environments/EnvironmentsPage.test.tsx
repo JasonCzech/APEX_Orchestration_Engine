@@ -8,9 +8,11 @@ import { server } from '@/test/server'
 
 import {
   APPS_FIXTURE,
+  ENV_PROD,
   ENV_STAGING,
   ENVS_FIXTURE,
   catalogReadHandlers,
+  createApplicationHandler,
   createEnvironmentHandler,
   deleteEnvironmentHandler,
   inventoryHandler,
@@ -46,6 +48,81 @@ describe('EnvironmentsPage', () => {
     const dev = within(search).getByTestId('env-row-env-search-dev')
     expect(within(dev).getByText('vm')).toHaveClass('dash-context-chip')
     expect(within(dev).getByText('—')).toBeInTheDocument()
+  })
+
+  it('keeps applications without environments visible with a direct add action', async () => {
+    server.use(...catalogReadHandlers(APPS_FIXTURE, [ENV_STAGING, ENV_PROD]))
+    const user = userEvent.setup()
+    renderList()
+
+    const search = await screen.findByRole('region', { name: 'Application Search' })
+    expect(within(search).getByText('No environments configured.')).toBeInTheDocument()
+    await user.click(within(search).getByRole('button', { name: 'Add first environment' }))
+
+    const panel = screen.getByRole('form', { name: 'New environment' })
+    expect(within(panel).getByRole('combobox', { name: 'Application' })).toHaveValue('app-search')
+  })
+
+  it('turns the empty state into an application creation path', async () => {
+    server.use(...catalogReadHandlers([], []))
+    const user = userEvent.setup()
+    renderList('admin')
+
+    expect(await screen.findByRole('heading', { name: 'No applications yet' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New environment' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Create application' }))
+    expect(screen.getByRole('form', { name: 'New application' })).toBeInTheDocument()
+  })
+
+  it('does not offer application creation to an operator without project-wide scope', async () => {
+    server.use(...catalogReadHandlers([], []))
+    renderApp({
+      initialEntries: ['/environments'],
+      authState: authenticatedState('operator', 'Unscoped Operator', []),
+    })
+
+    expect(await screen.findByRole('heading', { name: 'No applications yet' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New application' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create application' })).not.toBeInTheDocument()
+    expect(screen.getByText('Application creation requires project-wide access.')).toBeInTheDocument()
+  })
+
+  it('keeps application and environment creation mutually exclusive', async () => {
+    server.use(...catalogReadHandlers())
+    const user = userEvent.setup()
+    renderList('admin')
+
+    await user.click(await screen.findByRole('button', { name: 'New application' }))
+    expect(screen.getByRole('form', { name: 'New application' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New environment' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add environment' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Add first environment' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    await user.click(screen.getByRole('button', { name: 'New environment' }))
+    expect(screen.getByRole('form', { name: 'New environment' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New application' })).not.toBeInTheDocument()
+  })
+
+  it('creates an application and continues into environment setup', async () => {
+    const create = createApplicationHandler()
+    server.use(...catalogReadHandlers(), create.handler)
+    const user = userEvent.setup()
+    renderList('admin')
+
+    await user.click(await screen.findByRole('button', { name: 'New application' }))
+    const panel = screen.getByRole('form', { name: 'New application' })
+    await user.type(within(panel).getByRole('textbox', { name: 'Project' }), 'proj-beta')
+    await user.type(within(panel).getByRole('textbox', { name: 'Application name' }), 'Orders')
+    await user.type(within(panel).getByRole('textbox', { name: 'Application description' }), 'Order services')
+    await user.click(within(panel).getByRole('button', { name: 'Create application' }))
+
+    await waitFor(() => expect(create.captured).toEqual([{
+      project_id: 'proj-beta',
+      name: 'Orders',
+      description: 'Order services',
+    }]))
+    expect(await screen.findByRole('form', { name: 'New environment' })).toBeInTheDocument()
   })
 
   it('exposes environment details through a keyboard-focusable link', async () => {
@@ -156,6 +233,8 @@ describe('EnvironmentsPage', () => {
 
     const row = await screen.findByTestId(`env-row-${ENV_STAGING.id}`)
     expect(screen.queryByRole('button', { name: 'New environment' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New application' })).not.toBeInTheDocument()
+    expect(screen.getByText('Your role has read-only access to applications and environments.')).toBeInTheDocument()
 
     await user.click(within(row).getByRole('button', { name: 'Environment actions: staging' }))
     expect(screen.getByRole('menuitem', { name: 'Open' })).toBeInTheDocument()

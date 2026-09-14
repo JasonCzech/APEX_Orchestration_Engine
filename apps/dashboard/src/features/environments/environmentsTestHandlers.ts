@@ -7,6 +7,7 @@ import { http, HttpResponse } from 'msw'
 
 import type {
   Application,
+  ApplicationCreate,
   Environment,
   EnvironmentCreate,
   EnvironmentUpdate,
@@ -146,6 +147,25 @@ export function createEnvironmentHandler(id = 'env-new') {
         role: host.role ?? null,
       })),
       options: body.options ?? {},
+      created_at: NOW,
+      updated_at: NOW,
+    }
+    return HttpResponse.json(created, { status: 201 })
+  })
+  return { handler, captured }
+}
+
+export function createApplicationHandler(id = 'app-new') {
+  const captured: ApplicationCreate[] = []
+  const handler = http.post('*/v1/catalog/applications', async ({ request }) => {
+    const body = (await request.json()) as ApplicationCreate
+    captured.push(body)
+    const created: Application = {
+      id,
+      project_id: body.project_id,
+      name: body.name,
+      description: body.description ?? null,
+      archived_at: null,
       created_at: NOW,
       updated_at: NOW,
     }

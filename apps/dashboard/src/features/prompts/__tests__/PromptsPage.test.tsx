@@ -49,8 +49,9 @@ describe('PromptsPage', () => {
     const tree = screen.getByRole('navigation', { name: 'Namespaces' })
     const items = within(tree).getAllByRole('button')
     expect(items.map((item) => item.textContent)).toEqual([
-      'All namespaces3',
+      'All namespaces4',
       'phase2',
+      'application1',
       'ops1',
     ])
 
@@ -59,6 +60,23 @@ describe('PromptsPage', () => {
     expect(storyRow.getByText('v2')).toHaveClass('dash-context-chip')
     // archived prompt hidden until the toggle flips
     expect(screen.queryByTestId('prompt-row-p-retired')).not.toBeInTheDocument()
+  })
+
+  it('separates phase pairs and application prompts into named groups', async () => {
+    server.use(...promptCatalog().handlers)
+    const { router } = renderApp({
+      initialEntries: ['/prompts?ns=phase'],
+      authState: authenticatedState('admin', 'Dash Ops', []),
+    })
+
+    await screen.findByTestId('prompt-row-p-story')
+    expect(screen.getByRole('rowheader', { name: 'Phase: Story analysis, 1 prompt' })).toBeInTheDocument()
+    expect(screen.getByRole('rowheader', { name: 'Phase: Execution, 1 prompt' })).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /^application/ }))
+    expect(router.state.location.search).toContain('ns=application')
+    expect(await screen.findByRole('rowheader', { name: 'Application: Checkout service requirements, 1 prompt' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'checkout-service' })).toBeInTheDocument()
   })
 
   it('include-archived toggle reveals archived rows with the archived chip', async () => {
@@ -77,13 +95,14 @@ describe('PromptsPage', () => {
     const catalog = promptCatalog()
     server.use(...catalog.handlers)
     const { router } = renderApp({
-      initialEntries: ['/prompts'],
+      initialEntries: ['/prompts?prompt=p-story'],
       authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     await screen.findByTestId('prompt-row-p-story')
     await userEvent.click(screen.getByRole('button', { name: /^ops/ }))
     expect(router.state.location.search).toContain('ns=ops')
+    expect(router.state.location.search).not.toContain('prompt=')
     expect(screen.queryByTestId('prompt-row-p-story')).not.toBeInTheDocument()
     expect(await screen.findByTestId('prompt-row-p-ops')).toBeInTheDocument()
 
@@ -91,6 +110,7 @@ describe('PromptsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /^All namespaces/ }))
     await userEvent.type(screen.getByRole('searchbox', { name: 'Search prompts' }), 'summarize')
     await waitFor(() => expect(router.state.location.search).toContain('q=summarize'))
+    expect(router.state.location.search).not.toContain('prompt=')
     await waitFor(() =>
       expect(screen.queryByTestId('prompt-row-p-story')).not.toBeInTheDocument(),
     )
@@ -98,21 +118,26 @@ describe('PromptsPage', () => {
     expect(catalog.calls.listRequests.some((search) => search.includes('q=summarize'))).toBe(true)
   })
 
-  it('round-trips a slash-containing key through the encoded :name segment', async () => {
-    server.use(...promptCatalog().handlers)
+  it('opens a slash-containing key in the catalog preview before the full editor', async () => {
+    const catalog = promptCatalog()
+    server.use(...catalog.handlers)
     const { router } = renderApp({
       initialEntries: ['/prompts'],
       authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
     const row = within(await screen.findByTestId('prompt-row-p-story'))
-    await userEvent.click(row.getByRole('link', { name: 'story_analysis/system' }))
-    expect(router.state.location.pathname).toBe('/prompts/phase/story_analysis%2Fsystem')
+    await userEvent.click(row.getByRole('button', { name: 'story_analysis/system' }))
+    expect(router.state.location.pathname).toBe('/prompts')
+    expect(router.state.location.search).toContain('prompt=p-story')
+    expect(row.getByRole('button', { name: 'story_analysis/system' })).toHaveAttribute('aria-pressed', 'true')
+    expect(await within(screen.getByRole('complementary', { name: 'Prompt preview' })).findByTestId('codemirror')).toHaveValue(
+      'You are a story analyst.\nBe thorough.\nReturn bullet points.\nCite evidence for every claim.',
+    )
+    expect(catalog.calls.listRequests).toHaveLength(1)
 
-    // The detail page decodes the param back to the full key and resolves it.
-    const breadcrumb = await screen.findByRole('navigation', { name: 'Breadcrumb' })
-    expect(within(breadcrumb).getByText('story_analysis/system')).toBeInTheDocument()
-    expect(screen.getByText('active v2')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('link', { name: 'Open full editor' }))
+    expect(router.state.location.pathname).toBe('/prompts/phase/story_analysis%2Fsystem')
   })
 
   it('creates a prompt from the panel and navigates to its detail', async () => {

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router'
 import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
 /**
  * Step 1 — Scope: run intent (title + request) and the catalog scope chain
@@ -241,6 +242,9 @@ export function ScopeStep({ draft, onChange }: StepProps) {
           ))}
         </select>
         <p id="environment-hint" className="wizard-caption">{!draft.scope.app_id ? 'Choose an application to see its environments.' : 'Select the target environment for this application.'}</p>
+        <p className="wizard-caption">
+          Missing a choice? <Link to="/environments">Manage applications and environments</Link>.
+        </p>
         {environments.isError && (
           <p className="wizard-caption wizard-caption--danger">Environments failed to load. <button type="button" className="btn btn-secondary btn-sm" onClick={() => void environments.refetch()}>Retry environments</button></p>
         )}

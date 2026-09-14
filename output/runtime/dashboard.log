@@ -3,3 +3,10 @@
 > vite preview --host 127.0.0.1 --port 3000 --strictPort
 
   ➜  Local:   http://127.0.0.1:3000/
+npm error Lifecycle script `preview` failed with error:
+npm error code 143
+npm error path /Users/jasonczech/Documents/GitHub/APEX_Orchestration_Engine/apps/dashboard
+npm error workspace @apex/dashboard@0.1.0
+npm error location /Users/jasonczech/Documents/GitHub/APEX_Orchestration_Engine/apps/dashboard
+npm error command failed
+npm error command sh -c vite preview --host 127.0.0.1 --port 3000 --strictPort

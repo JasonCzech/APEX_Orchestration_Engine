@@ -1,0 +1,6 @@
+[    1346ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ https://api.x.com/1.1/onboarding/referrer.json:0
+[    2210ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://api.x.com/2/guide.json?count=5&display_location=web_sidebar:0
+[    2378ms] [ERROR] Provider's accounts list is empty. @ https://x.com/mark_k/status/2098126050425188774:0
+[    7406ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://api.x.com/2/guide.json?count=5&display_location=web_sidebar:0
+[   32598ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://api.x.com/2/guide.json?count=5&display_location=web_sidebar:0
+[   36198ms] [ERROR] [GSI_LOGGER]: FedCM get() rejects with NetworkError: Error retrieving a token. @ https://abs.twimg.com/x-web/x-web/assets/sentry-filter-BmHxm2-N.js:2

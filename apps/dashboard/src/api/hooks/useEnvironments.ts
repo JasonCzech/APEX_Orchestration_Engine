@@ -27,6 +27,7 @@ import { fetchAllOffsetPages } from '@/api/fetchAllPages'
 import { queryKeys, STALE_TIMES } from '@/api/queryKeys'
 
 export type Application = components['schemas']['ApplicationOut']
+export type ApplicationCreate = components['schemas']['ApplicationCreate']
 export type Environment = components['schemas']['EnvironmentOut']
 export type EnvironmentCreate = components['schemas']['EnvironmentCreate']
 export type EnvironmentUpdate = components['schemas']['EnvironmentUpdate']
@@ -118,6 +119,32 @@ export function useApplicationsIndex(): UseQueryResult<Application[], Error> {
     queryKey: queryKeys.catalog.applicationsIndex(),
     queryFn: ({ signal }) => fetchApplicationsIndex(signal),
     staleTime: STALE_TIMES.catalog,
+  })
+}
+
+export function useCreateApplication(): UseMutationResult<Application, Error, ApplicationCreate> {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (body: ApplicationCreate) => {
+      const { data, error, response } = await getApexClient().POST('/v1/catalog/applications', {
+        body,
+      })
+      if (!response.ok || !data) {
+        throw new ApiError(
+          response.status,
+          errorMessageOf(error, `Application create failed (${response.status})`),
+          error,
+        )
+      }
+      return data
+    },
+    onSuccess: (created) => {
+      queryClient.setQueryData<Application[]>(
+        queryKeys.catalog.applicationsIndex(),
+        (current) => current ? [...current.filter((application) => application.id !== created.id), created] : [created],
+      )
+      void queryClient.invalidateQueries({ queryKey: queryKeys.catalog.applications() })
+    },
   })
 }
 

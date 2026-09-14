@@ -68,8 +68,7 @@ export function groupEnvironments(
   }
   const groups: EnvironmentGroup[] = []
   for (const app of [...applications].sort((a, b) => a.name.localeCompare(b.name))) {
-    const list = byApp.get(app.id)
-    if (!list) continue
+    const list = byApp.get(app.id) ?? []
     byApp.delete(app.id)
     groups.push({
       key: app.id,

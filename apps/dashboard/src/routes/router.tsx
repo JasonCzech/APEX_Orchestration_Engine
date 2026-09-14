@@ -139,7 +139,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'environments',
-            handle: handle('Environment Configurations'),
+            handle: handle('Applications & Environments'),
             lazy: lazyPage(environments, 'EnvironmentsPage'),
           },
           {

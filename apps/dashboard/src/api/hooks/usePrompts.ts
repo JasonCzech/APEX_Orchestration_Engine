@@ -241,6 +241,20 @@ export function usePrompt(ns: string, key: string): UseQueryResult<PromptDetail,
   })
 }
 
+/** Catalog preview already knows the REST id, so it can skip the key-to-id list lookup. */
+export function usePromptById(
+  ns: string,
+  key: string,
+  promptId: string | undefined,
+): UseQueryResult<PromptDetail, Error> {
+  return useQuery({
+    queryKey: queryKeys.prompts.detail(ns, key),
+    queryFn: ({ signal }) => fetchPromptDetail(promptId ?? '', signal),
+    staleTime: STALE_TIMES.prompts,
+    enabled: ns.length > 0 && key.length > 0 && Boolean(promptId),
+  })
+}
+
 /** Version history (no content). Waits for the detail fetch to supply the id. */
 export function usePromptVersions(
   ns: string,

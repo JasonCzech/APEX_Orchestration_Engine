@@ -108,6 +108,29 @@ function opsPrompt(): PromptRecord {
   }
 }
 
+function applicationPrompt(): PromptRecord {
+  return {
+    id: 'p-checkout-app',
+    namespace: 'application',
+    key: 'checkout-service',
+    description: 'Checkout service requirements',
+    archived_at: null,
+    updated_at: '2026-06-07T10:00:00Z',
+    active_version_id: 'v-checkout-1',
+    versions: [
+      {
+        id: 'v-checkout-1',
+        version: 1,
+        content: 'Preserve checkout requirements.',
+        note: null,
+        created_by: 'alice',
+        created_at: '2026-06-07T10:00:00Z',
+        parent_version_id: null,
+      },
+    ],
+  }
+}
+
 function retiredPrompt(): PromptRecord {
   return {
     id: 'p-retired',
@@ -181,7 +204,13 @@ function versionInfoOf(version: VersionRecord) {
 export function promptCatalog(
   options: { accept?: { run_id: string; thread_id: string | null } } = {},
 ) {
-  const prompts: PromptRecord[] = [storyPrompt(), execPrompt(), opsPrompt(), retiredPrompt()]
+  const prompts: PromptRecord[] = [
+    storyPrompt(),
+    execPrompt(),
+    opsPrompt(),
+    applicationPrompt(),
+    retiredPrompt(),
+  ]
   const accept = options.accept ?? { run_id: 'run-1234', thread_id: 'thread-9' }
   const calls: CapturedCalls = {
     create: [],

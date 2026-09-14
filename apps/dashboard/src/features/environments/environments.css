@@ -27,6 +27,24 @@
   font-weight: 600;
 }
 
+.env-toolbar-caption,
+.env-panel-caption {
+  margin: 3px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.env-toolbar-actions,
+.env-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.env-toolbar-actions {
+  flex-shrink: 0;
+}
+
 .env-group {
   display: flex;
   flex-direction: column;
@@ -35,9 +53,27 @@
 
 .env-group-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 0 2px;
+}
+
+.env-group-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.env-permission-note {
+  margin: 0;
+  padding: 8px 2px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .env-group-title {
@@ -355,4 +391,17 @@
   height: 180px;
   border-radius: var(--radius);
   animation: pulse 1.8s ease-in-out infinite;
+}
+
+@media (max-width: 640px) {
+  .env-toolbar,
+  .env-group-header,
+  .env-group-empty {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .env-toolbar-actions {
+    flex-wrap: wrap;
+  }
 }

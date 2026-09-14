@@ -13,6 +13,7 @@ import { Link, useNavigate } from 'react-router'
 import {
   environmentWriteMutationKey,
   useApplicationsIndex,
+  useCreateApplication,
   useCreateEnvironment,
   useDeleteEnvironment,
   useEnvironmentsIndex,
@@ -40,6 +41,97 @@ import './environments.css'
 
 const EM_DASH = '—'
 const SKELETON_ROWS = 4
+
+function CreateApplicationPanel({
+  projectOptions,
+  onClose,
+  onCreated,
+}: {
+  projectOptions: string[] | null
+  onClose: () => void
+  onCreated: (application: Application) => void
+}) {
+  const create = useCreateApplication()
+  const [projectId, setProjectId] = useState(projectOptions?.length === 1 ? projectOptions[0]! : '')
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const canSubmit = projectId.trim() !== '' && name.trim() !== '' && !create.isPending
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!canSubmit) return
+    create.mutate(
+      {
+        project_id: projectId.trim(),
+        name: name.trim(),
+        description: description.trim() || null,
+      },
+      { onSuccess: onCreated },
+    )
+  }
+
+  return (
+    <form className="glass-panel env-create-panel" onSubmit={submit} aria-label="New application">
+      <div>
+        <h2 className="env-panel-title">New application</h2>
+        <p className="env-panel-caption">Applications group the environments used by tests.</p>
+      </div>
+      <div className="env-form-grid">
+        <label className="env-field">
+          <span className="env-field-label">Project</span>
+          {projectOptions ? (
+            <select
+              className="field-select"
+              aria-label="Project"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+            >
+              <option value="">Select a project…</option>
+              {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+            </select>
+          ) : (
+            <input
+              type="text"
+              className="field-input"
+              aria-label="Project"
+              placeholder="project-id"
+              value={projectId}
+              onChange={(event) => setProjectId(event.target.value)}
+            />
+          )}
+        </label>
+        <label className="env-field">
+          <span className="env-field-label">Name</span>
+          <input
+            type="text"
+            className="field-input"
+            aria-label="Application name"
+            placeholder="Checkout"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+          />
+        </label>
+      </div>
+      <label className="env-field">
+        <span className="env-field-label">Description</span>
+        <textarea
+          className="field-input"
+          aria-label="Application description"
+          rows={3}
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+        />
+      </label>
+      {create.isError && <p className="env-form-error" role="alert">Create failed: {create.error.message}</p>}
+      <div className="env-panel-actions">
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} disabled={create.isPending}>Cancel</button>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
+          {create.isPending ? 'Creating…' : 'Create application'}
+        </button>
+      </div>
+    </form>
+  )
+}
 
 function EnvironmentRow({
   environment,
@@ -108,16 +200,18 @@ function EnvironmentRow({
 /** Inline create panel — application select, name, kind, base_url, hosts, options JSON. */
 function CreateEnvironmentPanel({
   applications,
+  initialApplicationId = '',
   canApproveTarget,
   onClose,
 }: {
   applications: Application[]
+  initialApplicationId?: string
   canApproveTarget: boolean
   onClose: () => void
 }) {
   const navigate = useNavigate()
   const create = useCreateEnvironment()
-  const [applicationId, setApplicationId] = useState('')
+  const [applicationId, setApplicationId] = useState(initialApplicationId)
   const [name, setName] = useState('')
   const [kind, setKind] = useState<string>(KIND_OPTIONS[0])
   const [baseUrl, setBaseUrl] = useState('')
@@ -155,6 +249,11 @@ function CreateEnvironmentPanel({
   return (
     <form className="glass-panel env-create-panel" onSubmit={submit} aria-label="New environment">
       <h2 className="env-panel-title">New environment</h2>
+      {applications.length === 0 && (
+        <p className="env-form-error" role="alert">
+          Create an application before adding an environment.
+        </p>
+      )}
       <div className="env-form-grid">
         <label className="env-field">
           <span className="env-field-label">Application</span>
@@ -331,8 +430,16 @@ export function EnvironmentsPage() {
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
   const canApproveTarget = isGlobalAdmin(consumer)
+  const projectWideScopes = Array.from(new Set(
+    (consumer?.scopes ?? [])
+      .filter((scope) => !scope.app_id)
+      .map((scope) => scope.project_id),
+  )).sort()
+  const canCreateApplication = canMutate && (isGlobalAdmin(consumer) || projectWideScopes.length > 0)
+  const applicationProjectOptions = (consumer?.scopes.length ?? 0) > 0 ? projectWideScopes : null
 
-  const [creating, setCreating] = useState(false)
+  const [creatingApplication, setCreatingApplication] = useState(false)
+  const [creatingEnvironmentFor, setCreatingEnvironmentFor] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<Environment | null>(null)
 
   const groups = useMemo(
@@ -348,23 +455,41 @@ export function EnvironmentsPage() {
     <section className="env-page animate-enter">
       <header className="env-toolbar glass-panel">
         {/* The topbar already renders the route-handle h1; this is a section label. */}
-        <h2 className="env-page-title">Environment configurations</h2>
-        {canMutate && !creating && (
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => setCreating(true)}
-          >
-            New environment
-          </button>
-        )}
+        <div>
+          <h2 className="env-page-title">Applications &amp; environments</h2>
+          <p className="env-toolbar-caption">Define applications first, then add their test environments.</p>
+        </div>
+        <div className="env-toolbar-actions">
+          {canCreateApplication && !creatingApplication && creatingEnvironmentFor === null && (
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setCreatingApplication(true)}>
+              New application
+            </button>
+          )}
+          {canMutate && !creatingApplication && (applications.data?.length ?? 0) > 0 && creatingEnvironmentFor === null && (
+            <button type="button" className="btn btn-primary btn-sm" onClick={() => setCreatingEnvironmentFor('')}>
+              New environment
+            </button>
+          )}
+        </div>
       </header>
 
-      {creating && (
+      {creatingApplication && (
+        <CreateApplicationPanel
+          projectOptions={applicationProjectOptions}
+          onClose={() => setCreatingApplication(false)}
+          onCreated={(application) => {
+            setCreatingApplication(false)
+            setCreatingEnvironmentFor(application.id)
+          }}
+        />
+      )}
+
+      {creatingEnvironmentFor !== null && (
         <CreateEnvironmentPanel
           applications={applications.data ?? []}
+          initialApplicationId={creatingEnvironmentFor}
           canApproveTarget={canApproveTarget}
-          onClose={() => setCreating(false)}
+          onClose={() => setCreatingEnvironmentFor(null)}
         />
       )}
 
@@ -400,19 +525,44 @@ export function EnvironmentsPage() {
         />
       ) : groups.length === 0 ? (
         <div className="dash-empty">
-          <h2>No environment configurations yet</h2>
+          <h2>No applications yet</h2>
           <p className="dash-empty-hint">
-            Environment references point pipeline phases at the systems under test.
+            {canCreateApplication
+              ? 'Create an application first, then add the environments used by tests.'
+              : canMutate
+                ? 'Application creation requires project-wide access.'
+                : 'Your role has read-only access. Ask a project operator to create an application.'}
           </p>
+          {canCreateApplication && (
+            <button type="button" className="btn btn-primary" onClick={() => setCreatingApplication(true)}>
+              Create application
+            </button>
+          )}
         </div>
       ) : (
         groups.map((group) => (
           <section key={group.key} className="env-group" aria-label={`Application ${group.label}`}>
             <header className="env-group-header">
-              <h2 className="env-group-title">{group.label}</h2>
-              {group.project && <span className="env-group-project">{group.project}</span>}
+              <div className="env-group-heading">
+                <h2 className="env-group-title">{group.label}</h2>
+                {group.project && <span className="env-group-project">{group.project}</span>}
+              </div>
+              {canMutate && !creatingApplication && creatingEnvironmentFor === null && (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreatingEnvironmentFor(group.key)}>
+                  Add environment
+                </button>
+              )}
             </header>
-            <div className="data-table-wrap">
+            {group.environments.length === 0 ? (
+              <div className="glass-panel env-group-empty">
+                <span>No environments configured.</span>
+                {canMutate && !creatingApplication && creatingEnvironmentFor === null && (
+                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => setCreatingEnvironmentFor(group.key)}>
+                    Add first environment
+                  </button>
+                )}
+              </div>
+            ) : <div className="data-table-wrap">
               <table className="data-table striped env-table">
                 <thead>
                   <tr>
@@ -437,9 +587,13 @@ export function EnvironmentsPage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </div>}
           </section>
         ))
+      )}
+
+      {!isPending && !queryError && !canMutate && groups.length > 0 && (
+        <p className="env-permission-note">Your role has read-only access to applications and environments.</p>
       )}
 
       {deleting && (
