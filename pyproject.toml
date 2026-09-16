@@ -37,7 +37,7 @@ dev = [
     # unpinned range makes `ruff format --check` fail on files nobody touched
     # as soon as a fresh sync resolves a newer version. Bump deliberately, in
     # a standalone reformat commit.
-    "ruff==0.15.17",
+    "ruff==0.16.7",
     "pyright>=1.1.380",
     "langgraph-checkpoint-postgres>=3.1.0",
     "respx>=0.23.1",
