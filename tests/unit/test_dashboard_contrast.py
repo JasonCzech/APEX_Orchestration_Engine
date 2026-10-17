@@ -27,6 +27,24 @@ def test_all_shipped_theme_pairs_meet_text_contrast():
     module.main()
 
 
+@pytest.mark.parametrize("kind,old_mix", [("added", 12), ("deleted", 8)])
+def test_diff_background_cannot_reduce_readable_code_text_below_threshold(
+    tmp_path, monkeypatch, kind, old_mix
+):
+    for filename in ("tokens.css", "themes.css", "apex-light.css", "accessibility.css"):
+        css = (module.THEME_DIR / filename).read_text()
+        if filename == "tokens.css":
+            css = re.sub(
+                rf"(--code-diff-{kind}-bg: color-mix\(in srgb, var\(--code-text\) )\d+%",
+                rf"\g<1>{old_mix}%",
+                css,
+            )
+        (tmp_path / filename).write_text(css)
+    monkeypatch.setattr(module, "THEME_DIR", tmp_path)
+    with pytest.raises(SystemExit, match=f"solarized-dark: code diff {kind} 4\\."):
+        module.main()
+
+
 @pytest.mark.parametrize("token,value", [("--chart-1", "#00a8e0"), ("--chart-3", "#e5920a")])
 def test_chart_series_below_three_to_one_fail_even_when_text_passes(
     tmp_path, monkeypatch, token, value

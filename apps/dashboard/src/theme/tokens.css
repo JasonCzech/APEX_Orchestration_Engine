@@ -99,6 +99,8 @@
 
   --code-bg: #090a0f;
   --code-text: #e2e8f0;
+  --code-diff-added-bg: color-mix(in srgb, var(--code-text) 4%, var(--code-bg));
+  --code-diff-deleted-bg: color-mix(in srgb, var(--code-text) 2%, var(--code-bg));
 
   --success-bg: rgba(16, 185, 129, 0.1);
   --success-border: rgba(16, 185, 129, 0.3);

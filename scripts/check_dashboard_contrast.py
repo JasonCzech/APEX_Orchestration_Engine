@@ -43,7 +43,7 @@ def contrast(a: list[float], b: list[float]) -> float:
 def token_color(
     tokens: dict[str, str], key: str, seen: frozenset[str] = frozenset()
 ) -> list[float]:
-    """Resolve aliases and the two-token sRGB calendar mixes, rejecting cycles."""
+    """Resolve aliases and two-token sRGB surface mixes, rejecting cycles."""
     if key in seen:
         raise ValueError(f"Circular color token: {key}")
     value = tokens[key].strip()
@@ -141,6 +141,12 @@ def main() -> None:
                 composite(token_color(tokens, "--tag-bg"), background),
             )
         check("code text", token_color(tokens, "--code-text"), token_color(tokens, "--code-bg"))
+        for kind in ["added", "deleted"]:
+            check(
+                f"code diff {kind}",
+                token_color(tokens, "--code-text"),
+                token_color(tokens, f"--code-diff-{kind}-bg"),
+            )
         for background in backgrounds:
             disabled_bg = composite(token_color(tokens, "--control-disabled-bg"), background)
             check("disabled control", token_color(tokens, "--control-disabled-text"), disabled_bg)

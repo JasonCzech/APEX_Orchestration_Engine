@@ -1,29 +1,31 @@
-/* Merge decorations paint on the code surface, which may be dark in a light
+/* Keep higher specificity than CodeMirror's injected merge theme (for example
+   .cm-merge-b .cm-changedLine), so its default green/red backgrounds cannot
+   override the token colors. Merge decorations paint on a code surface that may be dark in a light
    page theme. Keep text tied to that surface and distinguish deletion by a
    strike-through as well as the gutter color. */
-.prompt-diff .cm-changedLine,
-.prompt-diff .cm-insertedLine,
-.prompt-diff .cm-changedText {
-  background: color-mix(in srgb, var(--code-text) 12%, var(--code-bg));
+.code-viewer.prompt-diff .cm-editor .cm-changedLine,
+.code-viewer.prompt-diff .cm-editor .cm-insertedLine,
+.code-viewer.prompt-diff .cm-editor .cm-changedText {
+  background: var(--code-diff-added-bg);
   color: var(--code-text);
   border-inline-start: 3px solid var(--code-text);
 }
 
-.prompt-diff ins.cm-insertedLine { text-decoration: none; }
+.code-viewer.prompt-diff .cm-editor ins.cm-insertedLine { text-decoration: none; }
 
-.prompt-diff .cm-deletedChunk,
-.prompt-diff .cm-deletedText {
-  background: color-mix(in srgb, var(--code-text) 8%, var(--code-bg));
+.code-viewer.prompt-diff .cm-editor .cm-deletedChunk,
+.code-viewer.prompt-diff .cm-editor .cm-deletedText {
+  background: var(--code-diff-deleted-bg);
   color: var(--code-text);
 }
 
-.prompt-diff .cm-deletedChunk del {
+.code-viewer.prompt-diff .cm-editor .cm-deletedChunk del {
   color: var(--code-text);
   text-decoration: line-through;
 }
 
-.prompt-diff .cm-changedText span,
-.prompt-diff .cm-deletedText span { color: inherit; }
-.prompt-diff .cm-changeGutter { width: 4px; }
-.prompt-diff .cm-changedLineGutter { background: var(--success); }
-.prompt-diff .cm-deletedLineGutter { background: var(--danger); }
+.code-viewer.prompt-diff .cm-editor .cm-changedText span,
+.code-viewer.prompt-diff .cm-editor .cm-deletedText span { color: inherit; }
+.code-viewer.prompt-diff .cm-editor .cm-changeGutter { width: 4px; }
+.code-viewer.prompt-diff .cm-editor .cm-changedLineGutter { background: var(--success); }
+.code-viewer.prompt-diff .cm-editor .cm-deletedLineGutter { background: var(--danger); }
