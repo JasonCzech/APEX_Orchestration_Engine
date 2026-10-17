@@ -8,7 +8,7 @@
  * value per call, so we fetch the recent page once and pick running → pending
  * client-side instead of issuing two requests.
  *
- * Poll policy: lightweight 5s poll only while the thread is busy (caller
+ * Poll policy: lightweight 1s poll only while the thread is busy (caller
  * passes the snapshot's thread_status) — or, when the status is unknown,
  * while a live run is actually in hand. Cross-run liveness stays poll-based
  * per the plan; this hook only feeds the per-run stream.
@@ -19,7 +19,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getLangGraphClient } from '@/api/langgraphClient'
 import { queryKeys } from '@/api/queryKeys'
 
-export const ACTIVE_RUN_POLL_MS = 5_000
+export const ACTIVE_RUN_POLL_MS = 1_000
 export const ACTIVE_RUN_SCAN_LIMIT = 20
 
 /** Run statuses that mean "this run is (about to be) streaming". */

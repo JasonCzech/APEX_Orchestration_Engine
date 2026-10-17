@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatRelative } from './time'
+import { formatRelative, formatTimestamp } from './time'
 
 const NOW = Date.parse('2026-06-12T12:00:00Z')
 
@@ -22,5 +22,20 @@ describe('formatRelative', () => {
     expect(formatRelative('2026-05-01T12:00:00Z', NOW)).toMatch(/May/)
     // prior year includes the year
     expect(formatRelative('2025-05-01T12:00:00Z', NOW)).toMatch(/2025/)
+  })
+})
+
+
+describe('formatTimestamp', () => {
+  it('identifies the year and local time zone for absolute instants', () => {
+    const iso = '2026-10-17T13:25:25Z'
+    const timeZone = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+      .formatToParts(new Date(iso)).find(part => part.type === 'timeZoneName')?.value
+    expect(formatTimestamp(iso)).toContain('2026')
+    expect(formatTimestamp(iso)).toContain(timeZone)
+  })
+
+  it('does not render an invalid or missing date as a recorded time', () => {
+    for (const value of [null, undefined, '', 'bad-date']) expect(formatTimestamp(value)).toBe('—')
   })
 })

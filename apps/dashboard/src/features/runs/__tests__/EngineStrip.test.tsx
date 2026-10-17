@@ -60,11 +60,17 @@ describe('EngineStrip', () => {
     render(<EngineStrip samples={samples} latest={samples[4]} />)
 
     const tps = screen.getByRole('tab', { name: 'TPS' })
-    const p95 = screen.getByRole('tab', { name: 'p95' })
+    const p95 = screen.getByRole('tab', { name: 'P95' })
     expect(tps).toHaveAttribute('aria-selected', 'true')
 
     await user.click(p95)
     expect(p95).toHaveAttribute('aria-selected', 'true')
     expect(tps).toHaveAttribute('aria-selected', 'false')
+    expect(p95).toHaveAttribute('tabindex', '0')
+    await user.keyboard('{Home}')
+    const first = screen.getByRole('tab', { name: 'VUsers' })
+    expect(first).toHaveFocus()
+    expect(first).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', first.id)
   })
 })

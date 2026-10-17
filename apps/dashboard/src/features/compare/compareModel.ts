@@ -3,6 +3,7 @@
  * divergence, and KPI best/worst ranking. No React, no fetching — unit-testable
  * and shared by ComparePage + the runs-grid selection affordance.
  */
+import { formatPercentRate } from '@/utils/metrics'
 import type { TestResultSummary } from '@apex/pipeline-events'
 
 /** The compare view renders 2–4 side-by-side run columns. */
@@ -86,7 +87,7 @@ export const COMPARE_KPIS: CompareKpiDef[] = [
     key: 'error_rate',
     label: 'Error rate',
     better: 'lower',
-    format: (v) => `${(v * 100).toFixed(2)}%`,
+    format: formatPercentRate,
   },
   { key: 'vusers_peak', label: 'VUsers peak', better: 'higher', format: (v) => String(Math.round(v)) },
 ]
@@ -122,9 +123,9 @@ export function bestWorst(
     if (entry.value > highest.value) highest = entry
   }
   if (lowest.value === highest.value) return null
-  return better === 'higher'
-    ? { best: highest.index, worst: lowest.index }
-    : { best: lowest.index, worst: highest.index }
+  const lowIndex = present.filter(entry => entry.value === lowest.value).length === 1 ? lowest.index : -1
+  const highIndex = present.filter(entry => entry.value === highest.value).length === 1 ? highest.index : -1
+  return better === 'higher' ? { best: highIndex, worst: lowIndex } : { best: lowIndex, worst: highIndex }
 }
 
 /** Text equivalent of the comparison tint, including an explicit baseline. */

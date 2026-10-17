@@ -53,6 +53,7 @@ export type PipelinePhaseVisual =
   | 'completed'
   | 'failed'
   | 'skipped'
+  | 'unknown'
 
 export interface StatusVisual {
   tone: StatusTone
@@ -94,8 +95,9 @@ export function pipelinePhaseVisual(status: string | null | undefined): Pipeline
     case 'skipped':
       return 'skipped'
     case 'pending':
-    default:
       return 'pending'
+    default:
+      return 'unknown'
   }
 }
 
@@ -104,11 +106,11 @@ export function pipelineStatusLabel(status: string | null | undefined): string {
   if (status === 'aborted') return 'Aborted'
   switch (pipelinePhaseVisual(status)) {
     case 'prompt_review':
-      return 'Prompt Review'
+      return 'Prompt review'
     case 'running':
       return 'Executing'
     case 'results_ready':
-      return 'Results Ready'
+      return 'Results ready'
     case 'completed':
       return 'Complete'
     case 'failed':
@@ -116,8 +118,9 @@ export function pipelineStatusLabel(status: string | null | undefined): string {
     case 'skipped':
       return 'Skipped'
     case 'pending':
-    default:
       return 'Pending'
+    default:
+      return 'Unknown'
   }
 }
 
@@ -133,16 +136,20 @@ export function executionWasOmitted(state?: PipelineState): boolean {
 
 /** A phase strip alone cannot distinguish omission from missing or imported evidence. */
 export function executionResultLabel(run: { execution_result?: string | null; phase_strip?: PipelineSummary['phase_strip'] }, state?: PipelineState): string {
-  if (run.execution_result === 'inconclusive') return 'Inconclusive'
-  if (run.execution_result === 'not_assessed') return 'Not assessed'
-  if (run.execution_result === 'passed') return 'Passed'
-  if (run.execution_result === 'failed') return 'Failed'
-  return executionWasOmitted(state) ? 'Not applicable' : 'Not available'
+  const executionStatus = state?.phase_results?.execution?.status ?? run.phase_strip?.find(entry => entry.phase === 'execution')?.status
+  if (executionStatus !== 'succeeded') return 'Not available'
+  const summary = state?.phase_results?.execution?.test_summary
+  const result = run.execution_result ?? summary?.outcome?.assessment?.status ?? (summary?.passed === true ? 'passed' : summary?.passed === false ? 'failed' : null)
+  if (result === 'inconclusive') return 'Inconclusive'
+  if (result === 'not_assessed') return 'Not assessed'
+  if (result === 'passed') return 'Passed'
+  if (result === 'failed') return 'Failed'
+  return 'Not available'
 }
 
 export function orchestrationStatusLabel(status: string | null | undefined, strip?: PipelineSummary['phase_strip']): string {
   if (status === 'idle' && strip) {
-    const selected = strip.filter(entry => entry.status !== 'none')
+    const selected = strip.filter(entry => entry.status !== 'none' && entry.status !== 'unknown')
     if (selected.some(entry => entry.status === 'aborted')) return 'Stopped by operator'
     if (selected.some(entry => entry.status === 'failed')) return 'Orchestration failed'
     if (selected.length && selected.every(entry => ['succeeded', 'skipped'].includes(entry.status))) return 'Orchestration complete'
@@ -166,6 +173,7 @@ export function normalizedPhases(
   state: PipelineState,
   fallback: PipelineSummary['phase_strip'] = [],
   useFallback = false,
+  context?: Pick<PipelineSummary, 'thread_status' | 'current_phase' | 'pending_gate'>,
 ) {
   const plan = state.phases_plan?.every(isPhaseName) ? state.phases_plan : undefined
   return PHASE_NAMES.map((phase) => {
@@ -173,20 +181,35 @@ export function normalizedPhases(
     const entry = state.phase_results?.[phase]
     // useThreadState validates fields independently after schema drift. An
     // unrelated invalid field must not replace a valid status with stale data.
+    const gate = context?.thread_status === 'interrupted' ? context.pending_gate : null
+    if (gate?.phase === phase && ['prompt_review', 'phase_review'].includes(gate.kind ?? '') && (!entry?.status || !isPipelinePhaseComplete(entry.status))) {
+      return { phase, status: gate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review', attempt: entry?.attempt }
+    }
+    if (context?.thread_status === 'error' && context.current_phase === phase && (!entry?.status || !isPipelinePhaseComplete(entry.status))) {
+      return { phase, status: state.run_aborted ? 'aborted' : 'failed', attempt: entry?.attempt }
+    }
     if (entry?.status) return { phase, status: entry.status, attempt: entry.attempt }
     const previous = useFallback ? fallback.find((item) => item.phase === phase) : undefined
     return {
       phase,
       status: plan?.includes(phase) && (!previous?.status || previous.status === 'none')
-        ? 'pending' : previous?.status ?? 'none',
+        ? 'pending' : previous?.status ?? (plan ? 'none' : 'unknown'),
       attempt: previous?.attempt ?? undefined,
     }
   })
 }
 
 export function phaseProgress(strip: PipelineSummary['phase_strip']) {
-  const included = strip.filter((entry) => entry.status !== 'none')
-  return { completed: included.filter((entry) => isPipelinePhaseComplete(entry.status)).length, total: included.length }
+  const included = strip.filter((entry) => entry.status !== 'none' && entry.status !== 'unknown')
+  return {
+    completed: included.filter(entry => isPipelinePhaseComplete(entry.status)).length,
+    succeeded: included.filter(entry => entry.status === 'succeeded').length,
+    failed: included.filter(entry => entry.status === 'failed').length,
+    aborted: included.filter(entry => entry.status === 'aborted').length,
+    skipped: included.filter(entry => entry.status === 'skipped').length,
+    total: included.length,
+    planRecorded: included.length > 0,
+  }
 }
 
 /** CSS color custom property per tone (status dots use currentColor). */
@@ -200,37 +223,35 @@ export const TONE_COLOR_VAR: Record<StatusTone, string> = {
 
 /** Compact duration: 850ms / 4.2s / 1m 15s / 1h 4m. */
 export function formatDuration(seconds: number | null | undefined): string {
-  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '—'
-  if (seconds < 1) return `${Math.round(seconds * 1000)}ms`
-  if (seconds < 60) {
-    const value = Math.round(seconds * 10) / 10
-    return `${Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1)}s`
-  }
-  if (seconds < 3600) {
-    const minutes = Math.floor(seconds / 60)
-    const rest = Math.round(seconds % 60)
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—'
+  if (seconds < 0.9995) return `${Math.round(seconds * 1000)}ms`
+  const tenths = Math.round(seconds * 10) / 10
+  if (tenths < 60) return `${Number.isInteger(tenths) ? tenths.toFixed(0) : tenths.toFixed(1)}s`
+  const wholeSeconds = Math.round(seconds)
+  if (wholeSeconds < 3600) {
+    const minutes = Math.floor(wholeSeconds / 60)
+    const rest = wholeSeconds % 60
     return rest > 0 ? `${minutes}m ${rest}s` : `${minutes}m`
   }
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.round((seconds % 3600) / 60)
+  const wholeMinutes = Math.round(seconds / 60)
+  const hours = Math.floor(wholeMinutes / 60)
+  const minutes = wholeMinutes % 60
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
 }
 
-/** Locale-aware short timestamp; em dash when absent/unparseable. */
-export function formatTimestamp(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return '—'
-  return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+export { formatTimestamp } from '@/utils/time'
+
+export function phaseProgressLabel(progress: ReturnType<typeof phaseProgress>): string {
+  if (!progress.planRecorded) return 'Phase plan not recorded for this run'
+  return `${progress.succeeded}/${progress.total} phases succeeded${progress.failed ? ` · ${progress.failed} failed` : ''}${progress.aborted ? ` · ${progress.aborted} aborted` : ''}${progress.skipped ? ` · ${progress.skipped} skipped` : ''}`
 }
 
-/** Human label for a phase status ("awaiting_prompt_review" -> "awaiting prompt review"). */
-export function statusLabel(status: string | null | undefined): string {
-  return status === 'none' ? 'Not selected' : (status ?? 'pending').replaceAll('_', ' ')
+export function toolCallTone(status: string | null | undefined): StatusTone {
+  if (['ok', 'success', 'succeeded', 'completed'].includes(status ?? '')) return 'success'
+  if (['error', 'failed', 'timeout', 'denied', 'cancelled', 'aborted'].includes(status ?? '')) return 'danger'
+  if (['running', 'started', 'pending'].includes(status ?? '')) return 'accent'
+  return 'neutral'
 }
+
+/** Kept as an alias for existing consumers: one phase vocabulary everywhere. */
+export const statusLabel = pipelineStatusLabel

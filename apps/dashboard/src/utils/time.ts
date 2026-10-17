@@ -33,3 +33,14 @@ export function formatRelative(iso: string | null | undefined, now: number = Dat
     ...(sameYear ? {} : { year: 'numeric' }),
   })
 }
+
+/** Absolute instants always identify their year and the viewer's time zone. */
+export function formatTimestamp(iso: string | null | undefined): string {
+  if (!iso) return EM_DASH
+  const date = new Date(iso)
+  if (!Number.isFinite(date.getTime())) return EM_DASH
+  return date.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
+  })
+}

@@ -59,6 +59,11 @@ describe('AnalyticsPage', () => {
     expect(within(chart).getByText('Total')).toBeInTheDocument()
     expect(chart).toHaveTextContent('Tokens over time')
     expect(chart).not.toHaveTextContent('Tokens over time by date')
+    const ticks = chart.querySelector('.recharts-xAxis')?.textContent
+    expect(ticks).toContain('Jun 5')
+    expect(ticks).not.toContain('Jun 4')
+    expect(screen.getByText(/buckets in UTC/)).toHaveTextContent('2026')
+    expect(screen.getByRole('button', { name: '7d' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('round-trips agent URL filters into the request and controls', async () => {
@@ -133,8 +138,8 @@ describe('AnalyticsPage', () => {
     expect(screen.getByTestId('stat-total-tokens')).toHaveTextContent('16.2K')
     expect(screen.getByTestId('stat-cost')).toHaveTextContent('$0.18')
     expect(screen.getByTestId('stat-latency')).toHaveTextContent('1.2s')
-    expect(screen.getByTestId('stat-latency')).toHaveTextContent('p95 2.4s')
-    expect(screen.getByTestId('stat-agents-runs')).toHaveTextContent('7 / 3')
+    expect(screen.getByTestId('stat-latency')).toHaveTextContent('P95 2.4s')
+    expect(screen.getByTestId('stat-agents-runs')).toHaveTextContent('7 agents · 3 runs')
     expect(screen.getByTestId('stat-error-rate')).toHaveClass('danger')
 
     expect(screen.getByTestId('analytics-agent-series-chart').querySelector('.recharts-surface')).toBeInTheDocument()
@@ -145,6 +150,11 @@ describe('AnalyticsPage', () => {
     const table = screen.getByTestId('analytics-breakdown-table')
     expect(within(table).getByText('claude-3-5-sonnet-latest')).toBeInTheDocument()
     expect(within(table).getByText('11.2K')).toBeInTheDocument()
+    const filters = screen.getByRole('region', { name: 'Agent filters' })
+    expect(within(filters).getByRole('button', { name: 'claude-3-5-sonnet-latest' })).toBeInTheDocument()
+    expect(within(filters).queryByRole('button', { name: 'claude-sonnet-4-20250514' })).not.toBeInTheDocument()
+    const lines = screen.getByTestId('analytics-agent-series-chart').querySelectorAll('.recharts-legend-icon')
+    expect(Array.from(lines).some(line => Boolean(line.getAttribute('stroke-dasharray')))).toBe(true)
 
     await user.click(within(table).getByRole('button', { name: /p95/i }))
     await waitFor(() => {
@@ -189,7 +199,7 @@ describe('AnalyticsPage', () => {
     expect(screen.getByText(/Reached the analytics result-window limit/)).toBeInTheDocument()
   })
 
-  it('hides cost UI when cost_visible is false', async () => {
+  it('explains withheld cost when cost_visible is false', async () => {
     const analytics = agentAnalyticsHandler({
       ...AGENT_ANALYTICS_FIXTURE,
       cost_visible: false,
@@ -201,7 +211,7 @@ describe('AnalyticsPage', () => {
     renderAnalytics()
 
     await screen.findByTestId('analytics-cards')
-    expect(screen.queryByTestId('stat-cost')).not.toBeInTheDocument()
+    expect(screen.getByTestId('stat-cost')).toHaveTextContent('Not available for your role')
     expect(screen.queryByTestId('analytics-cost-trend-chart')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Cost' })).toBeDisabled()
   })
@@ -212,7 +222,7 @@ describe('AnalyticsPage', () => {
     renderAnalytics()
 
     expect(await screen.findByText('No agent events in this window')).toBeInTheDocument()
-    expect(screen.getByTestId('stat-total-tokens')).toHaveTextContent('0')
+    expect(screen.getByTestId('stat-total-tokens')).toHaveTextContent('—')
     expect(screen.queryByTestId('analytics-agent-series-chart')).not.toBeInTheDocument()
   })
 
@@ -276,6 +286,6 @@ describe('AnalyticsPage', () => {
     const params = new URLSearchParams(router.state.location.search)
     expect(params.get('measure')).toBeNull()
     expect(params.get('sort')).toBeNull()
-    expect(screen.queryByTestId('stat-cost')).not.toBeInTheDocument()
+    expect(screen.getByTestId('stat-cost')).toHaveTextContent('Not available for your role')
   })
 })

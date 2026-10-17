@@ -8,7 +8,8 @@
  * exactly one pipelines request beyond what the shell already polls.
  */
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
-import { formatDuration } from '@/features/runs/runDisplay'
+import { formatPercentRate } from '@/utils/metrics'
+import { executionResultLabel, orchestrationStatusLabel, formatDuration } from '@/features/runs/runDisplay'
 import { runReviewPath } from '@/features/runs/reviewPath'
 
 /** One-page fleet scan — enough headroom for the grid/table/failure slices. */
@@ -51,7 +52,7 @@ export function failedRuns(
   limit: number = ATTENTION_FAILURES_LIMIT,
 ): PipelineSummary[] {
   return items
-    .filter((run) => run.execution_result === 'failed' || run.thread_status === 'error')
+    .filter((run) => executionResultLabel(run) === 'Failed' || orchestrationStatusLabel(run.thread_status, run.phase_strip) === 'Orchestration failed')
     .sort(byUpdatedDesc)
     .slice(0, limit)
 }
@@ -85,7 +86,7 @@ export function errorRateOf(
   totals: { events: number; errors: number } | undefined,
 ): string {
   if (!totals || totals.events <= 0) return '—'
-  return `${((totals.errors / totals.events) * 100).toFixed(1)}%`
+  return formatPercentRate(totals.errors / totals.events)
 }
 
 /** Deep link into the canonical Review Workspace; falls back to Needs review without an id. */
@@ -98,7 +99,7 @@ export function totalRuns(items: PipelineSummary[]): number {
 }
 
 export function passedTests(items: PipelineSummary[]): number {
-  return items.filter((run) => run.execution_result === 'passed').length
+  return items.filter((run) => executionResultLabel(run) === 'Passed').length
 }
 
 export function interruptedRuns(items: PipelineSummary[]): number {
@@ -118,4 +119,13 @@ export function avgDurationLabel(items: PipelineSummary[]): string {
   if (durations.length === 0) return EM_DASH
   const average = durations.reduce((sum, value) => sum + value, 0) / durations.length
   return formatDuration(average / 1000)
+}
+
+export function resultCounts(items: PipelineSummary[]): Record<string, number> {
+  const counts: Record<string, number> = { Passed: 0, Failed: 0, 'Not available': 0 }
+  for (const run of items) {
+    const label = executionResultLabel(run)
+    counts[label] = (counts[label] ?? 0) + 1
+  }
+  return counts
 }

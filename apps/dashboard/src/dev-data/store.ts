@@ -484,7 +484,7 @@ function makePipelineState(
         test_summary: {
           engine: 'apexload',
           passed: false,
-          kpis: { tps_avg: 82.7, p95_ms: status === 'error' ? 0 : 3650, error_rate: status === 'error' ? 0 : 0.028, vusers_peak: 300 },
+          kpis: status === 'error' ? {} : { tps_avg: 82.7, p95_ms: 3650, error_rate: 0.028, vusers_peak: 300 },
           sla_breaches: status === 'error' ? [] : ['oms_create_order_p95_ms', 'error_rate'],
           notes: status === 'error' ? 'Collection did not complete.' : 'Orchestration succeeded; the tested release is a conditional fail pending BSSe/MQ remediation.',
         },
@@ -506,9 +506,7 @@ function makePipelineState(
       },
       postmortem: {
         phase: 'postmortem',
-        status: status === 'error' ? 'running' : 'pending',
-        attempt: status === 'error' ? 1 : undefined,
-        started_at: status === 'error' ? isoMinutesAgo(30, anchor) : null,
+        status: 'pending',
       },
     },
     artifacts: [report, archive, transcript],
@@ -1005,13 +1003,13 @@ export class DevDataStore {
       if (done) yield done
     }
     const samples = [
-      { progress_pct: 0.08, vusers: 0, tps: 0, error_rate: 0, p95_ms: 0, status: 'provisioning' },
-      { progress_pct: 0.24, vusers: 100, tps: 31, error_rate: 0.002, p95_ms: 680, status: 'running' },
-      { progress_pct: 0.45, vusers: 200, tps: 62, error_rate: 0.006, p95_ms: 1_820, status: 'running' },
-      { progress_pct: 0.62, vusers: 260, tps: 79, error_rate: 0.015, p95_ms: 3_180, status: 'running' },
-      { progress_pct: 0.76, vusers: 260, tps: 77, error_rate: 0.018, p95_ms: 3_420, status: 'running' },
-      { progress_pct: 0.91, vusers: 300, tps: 85, error_rate: 0.028, p95_ms: 3_650, status: 'running' },
-      { progress_pct: 1, vusers: 0, tps: 84.7, error_rate: 0.028, p95_ms: 3_650, status: 'completed' },
+      { progress_pct: 8, vusers: 0, tps: 0, error_rate: 0, p95_ms: 0, status: 'provisioning' },
+      { progress_pct: 24, vusers: 100, tps: 31, error_rate: 0.002, p95_ms: 680, status: 'running' },
+      { progress_pct: 45, vusers: 200, tps: 62, error_rate: 0.006, p95_ms: 1_820, status: 'running' },
+      { progress_pct: 62, vusers: 260, tps: 79, error_rate: 0.015, p95_ms: 3_180, status: 'running' },
+      { progress_pct: 76, vusers: 260, tps: 77, error_rate: 0.018, p95_ms: 3_420, status: 'running' },
+      { progress_pct: 91, vusers: 300, tps: 85, error_rate: 0.028, p95_ms: 3_650, status: 'running' },
+      { progress_pct: 100, vusers: 0, tps: 84.7, error_rate: 0.028, p95_ms: 3_650, status: 'completed' },
     ] as const
     const rerunPhases = stage === 'rerun_subset'
       ? ((detail.values?.['demo_rerun_phases'] as PhaseName[] | undefined) ?? [])
@@ -1168,7 +1166,7 @@ export class DevDataStore {
     } else if (stage === 'engine_recovery') {
       const tool = emit('engine-reconcile', { type: 'tool_call', phase: 'execution', id: `${runId}-engine-reconcile`, tool: 'apex_load.reconcile', status: 'ok' })
       if (tool) yield tool
-      const poll = emit('engine-recovered', { type: 'engine_poll', phase: 'execution', attempt: 2, engine: 'apexload', external_run_id: `AL-${tid}`, status: 'provisioning', progress_pct: 0.08, live_stats: { vusers: 0, tps: 0, error_rate: 0, p95_ms: 0 }, note: 'Checkpoint reconciliation reused the original idempotency key.' })
+      const poll = emit('engine-recovered', { type: 'engine_poll', phase: 'execution', attempt: 2, engine: 'apexload', external_run_id: `AL-${tid}`, status: 'provisioning', progress_pct: 8, live_stats: { vusers: 0, tps: 0, error_rate: 0, p95_ms: 0 }, note: 'Checkpoint reconciliation reused the original idempotency key.' })
       if (poll) yield poll
       this.setPhaseState(detail, 'execution', 'awaiting_output_review', 2, 'Provisioning reconciliation succeeded without creating a duplicate native run.')
       detail.thread_status = 'interrupted'
@@ -2189,7 +2187,7 @@ export class DevDataStore {
       ['run-baseline-a', 'ACC add-a-line baseline 26.2.1', 'telecom-modernization', 'idle', 'postmortem', null],
       ['run-baseline-b', 'ACC add-a-line baseline 26.2.2', 'telecom-modernization', 'idle', 'postmortem', null],
       ['run-conditional', 'BSSe and MQ release rehearsal', 'telecom-modernization', 'idle', 'postmortem', null],
-      ['run-aborted', 'Shared environment contention rehearsal', 'telecom-modernization', 'error', 'env_triage', null],
+      ['run-aborted', 'Shared environment contention rehearsal', 'telecom-modernization', 'error', 'execution', null],
       ['run-engine-recovery', 'APEX Load provisioning recovery', 'telecom-modernization', 'interrupted', 'execution', null],
     ]
     for (const [id, title, project, status, phase, gate] of rows) {
@@ -2205,7 +2203,11 @@ export class DevDataStore {
         }
       }
       if (status === 'idle' && state.phase_results) state.phase_results.postmortem = { status: 'succeeded', attempt: 1, summary: 'Test review completed. See execution results and reports for release risks.' }
-      if (id === 'run-aborted') state.run_aborted = true
+      if (id === 'run-aborted') {
+        state.run_aborted = true
+        state.phase_results!.reporting = { phase: 'reporting', status: 'pending' }
+        state.phase_results!.postmortem = { phase: 'postmortem', status: 'pending' }
+      }
       if (gate === 'prompt') this.addPromptGate(detail)
       if (gate === 'phase') this.addPhaseGate(detail)
       if (id === 'run-engine-recovery') this.addEngineRetryGate(detail)
@@ -2294,7 +2296,7 @@ export class DevDataStore {
         postmortem: { status: status === 'error' ? 'running' : status === 'idle' ? 'succeeded' : 'pending', attempt: status === 'error' || status === 'idle' ? 1 : null },
       }),
       engine: { engine: 'apexload', external_run_id: `AL-${id.toUpperCase()}` },
-      created_at: isoMinutesAgo(status === 'busy' ? 65 : 180, this.activationTime),
+      created_at: isoMinutesAgo(180, this.activationTime),
       updated_at: status === 'interrupted' ? isoMinutesAgo(24, this.activationTime) : isoMinutesAgo(status === 'busy' ? 2 : 45, this.activationTime),
       pending_gate: null,
       values: state as Record<string, unknown>,
@@ -2356,6 +2358,7 @@ export class DevDataStore {
           kind: 'phase_review',
           phase,
           summary,
+          evidence: (detail.values?.['phase_results'] as Record<string, unknown> | undefined)?.[phase],
           result_preview: { summary, reasoning_digest: phase === 'env_triage' ? (revised ? 'Configuration correction and rescan passed.' : 'BSSe target and MQ consumer count require correction.') : 'Orchestration succeeded; the BSSe SLA is the release risk.' },
           artifacts: [{ id: phase === 'reporting' ? 'executive-report' : 'exec-report', kind: 'report', name: phase === 'reporting' ? 'ACC add-a-line-executive-report.md' : `${phase}-result.json` }],
           warnings: revised
@@ -2495,7 +2498,8 @@ export class DevDataStore {
       status: state.phases_plan && !state.phases_plan.includes(phase) ? 'none' : state.phase_results?.[phase]?.status ?? 'pending',
       attempt: state.phase_results?.[phase]?.attempt,
     }))
-    const passed = state.phase_results?.execution?.test_summary?.passed
+    const execution = state.phase_results?.execution
+    const passed = execution?.status === 'succeeded' ? execution.test_summary?.passed : undefined
     detail.execution_result = passed === true ? 'passed' : passed === false ? 'failed' : null
     return detail
   }

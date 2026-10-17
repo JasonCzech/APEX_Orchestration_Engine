@@ -13,6 +13,7 @@ import { server } from '@/test/server'
 import { ComparePage } from '../ComparePage'
 import {
   COMPARE_DETAIL_A,
+  COMPARE_DETAIL_B,
   compareDetailHandler,
   compareListHandler,
   RUN_A_ID,
@@ -80,7 +81,7 @@ describe('ComparePage', () => {
       'href',
       `/runs/${RUN_A_ID}`,
     )
-    expect(colA.getByText('Not running')).toHaveClass('status-badge', 'success')
+    expect(colA.getByText('Orchestration complete')).toHaveClass('status-badge', 'success')
     expect(colA.getByText('sim')).toHaveClass('dash-context-chip')
 
     const colB = within(screen.getByTestId(`compare-col-${RUN_B_ID}`))
@@ -89,7 +90,7 @@ describe('ComparePage', () => {
 
     // Phase cells carry status + duration + attempt; unplanned phases render an em dash.
     const execA = within(screen.getByTestId(`compare-phase-execution-${RUN_A_ID}`))
-    expect(execA.getByText('succeeded')).toHaveClass('status-badge', 'success')
+    expect(execA.getByText('Complete')).toHaveClass('status-badge', 'success')
     expect(execA.getByText('5m')).toBeInTheDocument()
     expect(execA.getByText('attempt 1')).toBeInTheDocument()
     expect(screen.getByTestId(`compare-phase-postmortem-${RUN_A_ID}`)).toHaveTextContent('—')
@@ -116,8 +117,10 @@ describe('ComparePage', () => {
     )
   })
 
-  it('tints engine KPI cells best/worst per row and shows passed badges', async () => {
-    server.use(compareDetailHandler())
+  it('tints completed execution measurements and preserves a failed acceptance result', async () => {
+    const failedSla = structuredClone(COMPARE_DETAIL_B)
+    ;(failedSla.values as { phase_results: { execution: { status: string } } }).phase_results.execution.status = 'succeeded'
+    server.use(compareDetailHandler([COMPARE_DETAIL_A, failedSla]))
     renderCompare(`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`)
 
     await screen.findByText('Engine KPIs')
@@ -130,11 +133,11 @@ describe('ComparePage', () => {
     expect(screen.getByTestId(`compare-kpi-p95_ms-${RUN_A_ID}`)).toHaveTextContent('200 ms')
     expect(screen.getByTestId(`compare-kpi-error_rate-${RUN_B_ID}`)).toHaveTextContent('2.00%')
     // Passed badges per run.
-    expect(within(screen.getByTestId(`compare-passed-${RUN_A_ID}`)).getByText('passed')).toHaveClass(
+    expect(within(screen.getByTestId(`compare-passed-${RUN_A_ID}`)).getByText('Passed')).toHaveClass(
       'status-badge',
       'success',
     )
-    expect(within(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).getByText('failed')).toHaveClass(
+    expect(within(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).getByText('Failed')).toHaveClass(
       'status-badge',
       'danger',
     )
@@ -217,7 +220,23 @@ describe('ComparePage', () => {
     const colB = within(await screen.findByTestId(`compare-col-${RUN_B_ID}`))
     expect(colB.getByText('load failed')).toHaveClass('status-badge', 'danger')
     const colA = within(screen.getByTestId(`compare-col-${RUN_A_ID}`))
-    expect(colA.getByText('Not running')).toBeInTheDocument()
+    expect(colA.getByText('Orchestration complete')).toBeInTheDocument()
     expect(screen.getByTestId(`compare-phase-execution-${RUN_B_ID}`)).toHaveTextContent('—')
   })
+})
+
+it('does not rank failed collections or give omitted phases measured zero counts', async () => {
+  const uncollected = structuredClone(COMPARE_DETAIL_B)
+  const values = uncollected.values as { phases_plan: string[]; phase_results: { execution: { test_summary: { kpis: Record<string, number> } } } }
+  values.phases_plan = ['execution']
+  values.phase_results.execution.test_summary.kpis = { p95_ms: 0, error_rate: 0 }
+  server.use(compareDetailHandler([COMPARE_DETAIL_A, uncollected]))
+  renderCompare(`/runs/compare?ids=${RUN_B_ID},${RUN_A_ID}`)
+  const cell = await screen.findByTestId(`compare-kpi-p95_ms-${RUN_B_ID}`)
+  expect(cell).toHaveTextContent('No collected result')
+  expect(cell).not.toHaveClass('compare-cell--best')
+  expect(screen.getByRole('combobox', { name: 'Comparison baseline' })).toHaveValue(RUN_A_ID)
+  expect(screen.getByRole('option', { name: /no collected result/ })).toBeDisabled()
+  expect(screen.getByTestId(`compare-passed-${RUN_B_ID}`)).toHaveTextContent('Not available')
+  expect(screen.getByTestId(`compare-counts-test_planning-${RUN_B_ID}`)).toHaveTextContent('—')
 })

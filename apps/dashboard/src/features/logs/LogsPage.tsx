@@ -5,9 +5,10 @@ import { useLogSearch, type LogEntry } from '@/api/hooks/useLogs'
 import { isApiError } from '@/api/errors'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
+import { Pagination } from '@/components/ux/Pagination'
 import { WindowPresets } from '@/components/controls/WindowPresets'
 import { DAY_MS, HOUR_MS, type WindowPreset } from '@/components/controls/timeWindow'
-import { formatRelative } from '@/utils/time'
+import { formatRelative, formatTimestamp } from '@/utils/time'
 
 import {
   buildLogSearchInput,
@@ -31,17 +32,6 @@ const LOG_WINDOW_PRESETS: WindowPreset[] = [
   { label: '7d', ms: 7 * DAY_MS },
 ]
 
-function pad(value: number): string {
-  return String(value).padStart(2, '0')
-}
-
-/** Absolute local timestamp for the mono column (relative time in the tooltip). */
-function formatLogTime(iso: string): string {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return iso
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
-}
-
 function LogRow({ entry }: { entry: LogEntry }) {
   const [open, setOpen] = useState(false)
   const fields = entry.fields ?? {}
@@ -51,7 +41,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
     <>
       <tr className="logs-row">
         <td className="log-time" title={formatRelative(entry.at)}>
-          {formatLogTime(entry.at)}
+          {formatTimestamp(entry.at)}
         </td>
         <td>
           <span className={`status-badge ${levelTone(entry.level)}`}>{entry.level}</span>
@@ -116,6 +106,7 @@ export function LogsPage() {
     hasLogsFilters(committed) ? buildLogSearchInput(committed) : null,
   )
   const [offset, setOffset] = useState(0)
+  const [limit, setLimit] = useState(LOGS_PAGE_SIZE)
 
   useEffect(() => {
     // The URL is the committed-search source of truth. In particular, browser
@@ -129,7 +120,7 @@ export function LogsPage() {
   }, [committedKey])
 
   const { data, error, isPending, isError, isPlaceholderData, refetch } = useLogSearch(
-    submitted ? { ...submitted, offset } : null,
+    submitted ? { ...submitted, offset, limit } : null,
   )
 
   const patchForm = (patch: Partial<LogsFilters>) => {
@@ -155,10 +146,9 @@ export function LogsPage() {
 
   const entries = data?.entries ?? []
   const total = data?.total
-  const prevDisabled = offset === 0
   const nextDisabled =
     offset >= LOGS_MAX_OFFSET ||
-    (total !== undefined ? offset + LOGS_PAGE_SIZE >= total : entries.length < LOGS_PAGE_SIZE)
+    (total !== undefined ? offset + limit >= total : entries.length < limit)
   const rangeCaption =
     entries.length > 0
       ? `${offset + 1}–${offset + entries.length}${total !== undefined ? ` of ${total}` : ''} entries`
@@ -181,26 +171,8 @@ export function LogsPage() {
         )}
         <footer className="logs-pagination">
           <span className="logs-pagination-caption">{rangeCaption}</span>
-          <div className="logs-pagination-buttons">
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={prevDisabled}
-              onClick={() => setOffset((value) => Math.max(0, value - LOGS_PAGE_SIZE))}
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              disabled={nextDisabled}
-              onClick={() =>
-                setOffset((value) => Math.min(LOGS_MAX_OFFSET, value + LOGS_PAGE_SIZE))
-              }
-            >
-              Next
-            </button>
-          </div>
+          <Pagination label="Logs" offset={offset} limit={limit} hasNext={!nextDisabled} pending={isPlaceholderData || isPending}
+            onChange={({ offset: nextOffset, limit: nextLimit }) => { setOffset(Math.min(LOGS_MAX_OFFSET, nextOffset)); setLimit(nextLimit) }} />
         </footer>
       </>
     ) : null

@@ -106,7 +106,8 @@ export function useRerun() {
   const queryClient = useQueryClient()
   return useMutation<RerunResult, Error, RerunInput>({
     mutationFn: rerunPhases,
-    onSuccess: (_data, variables) => {
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(queryKeys.threads.activeRun(data.threadId), data.runId)
       void queryClient.invalidateQueries({
         queryKey: queryKeys.threads.state(variables.threadId),
       })

@@ -196,6 +196,10 @@ describe('LogsPage', () => {
     await waitFor(() => expect(logs.captured).toHaveLength(2))
     expect(logs.captured[1]!.offset).toBe(50)
     expect(logs.captured[1]!.query?.text).toBe('anything')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Logs rows per page' }), '10')
+    await waitFor(() => expect(logs.captured.at(-1)?.limit).toBe(10))
+    expect(logs.captured.at(-1)?.offset).toBe(0)
+    expect(logs.captured.at(-1)?.query?.text).toBe('anything')
   })
 
   it('retains cached results and pagination when a background refresh fails', async () => {

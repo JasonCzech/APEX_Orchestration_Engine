@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
 import { makeStrip } from '@/features/runs/runsTestHandlers'
 
-import { failedRuns, passedTests } from './homeLogic'
+import { failedRuns, passedTests, resultCounts } from './homeLogic'
 
 function idleRun(id: string, status: string): PipelineSummary {
   return {
@@ -32,4 +32,12 @@ describe('home verdict totals', () => {
     expect(passedTests(runs)).toBe(1)
     expect(failedRuns(runs).map((run) => run.thread_id)).toEqual(['failed-sla'])
   })
+})
+
+it('preserves inconclusive and not-assessed outcomes rather than merging them into missing data', () => {
+  expect(resultCounts([
+    { ...idleRun('inconclusive', 'succeeded'), execution_result: 'inconclusive' },
+    { ...idleRun('not-assessed', 'succeeded'), execution_result: 'not_assessed' },
+    { ...idleRun('live', 'running'), execution_result: 'failed' },
+  ])).toEqual({ Passed: 0, Failed: 0, 'Not available': 1, Inconclusive: 1, 'Not assessed': 1 })
 })

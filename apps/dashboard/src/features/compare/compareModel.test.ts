@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { COMPARE_KPIS, kpiDifference } from './compareModel'
+import { COMPARE_KPIS, kpiDifference, bestWorst } from './compareModel'
 
 describe('accessible KPI differences', () => {
   const latency = COMPARE_KPIS.find((metric) => metric.key === 'p95_ms')!
@@ -13,4 +13,9 @@ describe('accessible KPI differences', () => {
     expect(kpiDifference(100, 100, latency)).toBe('No change')
     expect(kpiDifference(10, 0, latency)).toContain('percentage not available')
   })
+})
+
+it('does not arbitrarily tint one of two tied extrema', () => {
+  expect(bestWorst([10, 10, 30], 'lower')).toEqual({ best: -1, worst: 2 })
+  expect(bestWorst([10, 30, 30], 'lower')).toEqual({ best: 0, worst: -1 })
 })

@@ -6,7 +6,9 @@ import { isApiError } from '@/api/errors'
 import { roleAtLeast } from '@/auth/RequireRole'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { useCompactLayout } from '@/components/hooks/useCompactLayout'
+import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { ProblemCard } from '@/components/ProblemCard'
+import { Pagination } from '@/components/ux/Pagination'
 import { usePreferences } from '@/theme/preferences'
 import type { PhaseName } from '@apex/pipeline-events'
 
@@ -26,7 +28,7 @@ import {
   executionResultLabel,
   gateLabel,
   isPhaseName,
-  isPipelinePhaseComplete,
+  phaseProgressLabel,
   orchestrationStatusLabel,
   orchestrationTone,
   phaseProgress,
@@ -76,10 +78,6 @@ function verdictTone(run: PipelineSummary): string {
   }
 }
 
-function completedPhases(run: PipelineSummary): number {
-  return run.phase_strip.filter((entry) => isPipelinePhaseComplete(entry.status)).length
-}
-
 function durationLabel(run: PipelineSummary): string {
   if (!run.created_at || !run.updated_at) return EM_DASH
   const created = Date.parse(run.created_at)
@@ -122,10 +120,10 @@ function RunRow({
       <code className="runs-run-identity">{run.thread_id}</code>
       <p><strong>{orchestrationStatusLabel(run.thread_status, run.phase_strip)}</strong></p>
       <p>Test result: <strong>{executionResultLabel(run)}</strong></p>
-      <p>Progress: {completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases finished</p>
+      <p>Progress: {phaseProgressLabel(phaseProgress(run.phase_strip))}</p>
       {run.pending_gate && <button type="button" className="runs-gate-action" aria-label={`${gateLabel(run.pending_gate.kind)} for ${run.title || run.thread_id}${isPhaseName(run.pending_gate.phase) ? `, ${PHASE_LABELS[run.pending_gate.phase]}` : ''}`} onClick={() => onReview(run)}>{gateLabel(run.pending_gate.kind)}</button>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
-      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Duration</dt><dd>{durationLabel(run)}</dd></dl></details>
+      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Creation to last update</dt><dd>{durationLabel(run)}</dd></dl></details>
       <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
     </article>
   )
@@ -160,8 +158,9 @@ function RunRow({
         <span className="runs-application-cell">{run.app_id ?? EM_DASH}</span>
       </td>
       <td>
+        <PhaseStrip strip={run.phase_strip} size="sm" onSelect={phase => onOpen(run.thread_id, phase)} />
         <span className="runs-phase-progress">
-          {completedPhases(run)}/{phaseProgress(run.phase_strip).total}
+          {phaseProgressLabel(phaseProgress(run.phase_strip))}
         </span>
       </td>
       <td className="runs-time" title={run.created_at ?? undefined}>
@@ -242,7 +241,7 @@ function RunMasterListItem({
       </span>
       <span className="runs-master-item-meta">
         <span>{run.project_id ?? EM_DASH}</span>
-        <span>{completedPhases(run)}/{phaseProgress(run.phase_strip).total} phases</span>
+        <span>{phaseProgressLabel(phaseProgress(run.phase_strip))}</span>
         <span>{formatTimestamp(run.updated_at)}</span>
       </span>
       <span className={`runs-master-result ${verdictTone(run)}`}>
@@ -420,7 +419,6 @@ export function RunsListPage() {
 
   const items = data?.items ?? []
   const total = data?.total
-  const prevDisabled = filters.offset === 0 || isPlaceholderData
   const nextDisabled =
     filters.offset >= RUNS_MAX_OFFSET ||
     (total !== undefined
@@ -465,29 +463,9 @@ export function RunsListPage() {
       )}
       <footer className="runs-pagination">
         <span className="runs-pagination-caption">{rangeCaption}</span>
-        <div className="runs-pagination-buttons">
-          <label>Rows <select className="field-select" aria-label="Rows per table" value={filters.limit} onChange={event => applyFilters({limit:Number(event.target.value),offset:0})}>{Array.from(new Set([10,25,50,100,filters.limit])).sort((a,b)=>a-b).map(size => <option key={size} value={size}>{size}</option>)}</select></label>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={prevDisabled}
-            onClick={() => applyFilters({ offset: Math.max(0, filters.offset - filters.limit) })}
-          >
-            Previous
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={nextDisabled || isPlaceholderData}
-            onClick={() =>
-              applyFilters({
-                offset: Math.min(RUNS_MAX_OFFSET, filters.offset + filters.limit),
-              })
-            }
-          >
-            Next
-          </button>
-        </div>
+        <Pagination label="Runs" offset={filters.offset} limit={filters.limit}
+          hasNext={!nextDisabled} pending={isPlaceholderData}
+          onChange={({ offset, limit }) => applyFilters({ offset: Math.min(RUNS_MAX_OFFSET, offset), limit })} />
       </footer>
     </>
   )
@@ -662,13 +640,13 @@ export function RunsListPage() {
                       )}
                       <th>Run</th>
                       <th>Project</th>
-                      <th>Applications</th>
+                      <th>Application</th>
                       <th>Progress</th>
                       <th>Created</th>
-                      <th>Duration</th>
+                      <th title="Time from creation to last update, including review waits; not execution duration">Elapsed snapshot</th>
                       <th>Test result</th>
                       <th>Status</th>
-                      <th className="runs-actions-cell">Run</th>
+                      <th className="runs-actions-cell">Actions</th>
                     </tr>
                   </thead>
                   <tbody>

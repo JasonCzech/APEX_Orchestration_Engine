@@ -1,3 +1,5 @@
+import { formatDuration } from '@/features/runs/runDisplay'
+import { formatPercentRate } from '@/utils/metrics'
 export function formatTokens(value: number | null | undefined): string {
   if (!value) return value === 0 ? '0' : '—'
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
@@ -13,10 +15,11 @@ export function formatCost(value: number | null | undefined): string {
 
 export function formatLatency(value: number | null | undefined): string {
   if (value === null || value === undefined || Number.isNaN(value)) return '—'
+  if (value >= 60_000) return formatDuration(value / 1000)
   if (value >= 1000) return `${(value / 1000).toFixed(1)}s`
   return `${Math.round(value)}ms`
 }
 
 export function formatPercent(numerator: number, denominator: number): string {
-  return denominator > 0 ? `${((numerator / denominator) * 100).toFixed(1)}%` : '—'
+  return denominator > 0 ? formatPercentRate(numerator / denominator) : '—'
 }

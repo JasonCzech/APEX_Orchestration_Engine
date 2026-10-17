@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react'
+import { TabList } from '@/components/ux/TabList'
+import { formatPercentRate } from '@/utils/metrics'
+import { useId, useMemo, useState } from 'react'
 import {
   Area,
   AreaChart,
@@ -46,11 +48,11 @@ const METRICS: MetricDef[] = [
   },
   {
     key: 'error_rate',
-    label: 'Err %',
+    label: 'Error rate',
     color: 'var(--chart-4)',
-    format: (v) => `${(v * 100).toFixed(2)}%`,
+    format: formatPercentRate,
   },
-  { key: 'p95_ms', label: 'p95', color: 'var(--chart-3)', format: (v) => `${Math.round(v)} ms` },
+  { key: 'p95_ms', label: 'P95', color: 'var(--chart-3)', format: (v) => `${Math.round(v)} ms` },
 ]
 
 const TOOLTIP_CONTENT_STYLE: React.CSSProperties = {
@@ -73,6 +75,7 @@ export function EngineStrip({
   samples: readonly LiveEngineSample[]
   latest?: LiveEngineSample | null
 }) {
+  const tabsId = useId()
   const [metric, setMetric] = useState<MetricKey>('tps')
   const active = METRICS.find((candidate) => candidate.key === metric) ?? METRICS[1]!
   const latestSample = latest ?? samples[samples.length - 1] ?? null
@@ -112,22 +115,9 @@ export function EngineStrip({
         })}
       </div>
 
-      <div className="engine-metric-tabs" role="tablist" aria-label="Engine metrics">
-        {METRICS.map((def) => (
-          <button
-            key={def.key}
-            type="button"
-            role="tab"
-            aria-selected={metric === def.key}
-            className="engine-metric-tab"
-            onClick={() => setMetric(def.key)}
-          >
-            {def.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="engine-chart" data-testid="engine-chart">
+      <TabList id={tabsId} label="Engine metrics" items={METRICS.map(def => ({ id: def.key, label: def.label }))} value={metric} onChange={setMetric} />
+      {METRICS.map(def => <div key={def.key} id={`${tabsId}-panel-${def.key}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${def.key}`} hidden={metric !== def.key}>
+      {metric === def.key && <div className="engine-chart" data-testid="engine-chart">
         <ResponsiveContainer width="100%" height={180}>
           <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
@@ -168,7 +158,8 @@ export function EngineStrip({
             />
           </AreaChart>
         </ResponsiveContainer>
-      </div>
+      </div>}
+      </div>)}
     </section>
   )
 }

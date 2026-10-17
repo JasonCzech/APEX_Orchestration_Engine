@@ -1,4 +1,4 @@
-import { orchestrationTone, formatTimestamp } from '@/features/runs/runDisplay'
+import { orchestrationTone, formatTimestamp, executionResultLabel } from '@/features/runs/runDisplay'
 import { useMemo } from 'react'
 import { Link } from 'react-router'
 
@@ -21,7 +21,7 @@ import {
   avgDurationLabel,
   failedRuns,
   gateHref,
-  passedTests,
+  resultCounts,
   recentRuns,
   totalRuns,
 } from './homeLogic'
@@ -114,6 +114,7 @@ function RecentRunRow({ run }: { run: PipelineSummary }) {
           {orchestrationStatusLabel(run.thread_status, run.phase_strip)}
         </span>
       </td>
+      <td>{executionResultLabel(run)}</td>
       <td className="home-recent-time" title={run.updated_at ?? undefined}>
         {formatTimestamp(run.updated_at)}
       </td>
@@ -197,9 +198,7 @@ export function HomePage() {
 
   const usageRuns = usage.data?.runs
   const loaded = totalRuns(items)
-  const passedCount = passedTests(items)
-  const failedCount = items.filter((run) => run.execution_result === 'failed').length
-  const unknownCount = loaded - passedCount - failedCount
+  const results = resultCounts(items)
   const fleetScopeHint =
     loaded >= HOME_FLEET_LIMIT
       ? `latest ${HOME_FLEET_LIMIT}; fleet total unavailable`
@@ -238,9 +237,9 @@ export function HomePage() {
       <section className="home-metrics" aria-label="Key metrics">
         <MetricCard label="Recent runs" value={loaded} hint={fleetScopeHint} />
         <MetricCard label="Active" value={active.length} tone="warning" hint="running or awaiting review, in loaded runs" />
-        <MetricCard label="Failures" value={failures.length} tone="danger" hint="in the loaded recent runs" />
+        <MetricCard label="Runs needing investigation" value={failures.length} tone="danger" hint="test failures or orchestration errors in loaded runs" />
         <MetricCard
-          label="Avg Duration"
+          label="Avg elapsed snapshot"
           value={avgDurationLabel(items)}
           tone="results"
           hint="loaded runs: creation to last update, not execution duration"
@@ -255,7 +254,7 @@ export function HomePage() {
               Test History
             </Link>
           </div>
-          <p className="wizard-caption">Last 7 days, across accessible projects. Refreshed {usage.dataUpdatedAt ? formatTimestamp(new Date(usage.dataUpdatedAt).toISOString()) : 'not yet'}. A dash means no summary is available.</p>
+          <p className="wizard-caption">{usage.data?.window ? `${formatTimestamp(usage.data.window.from)} – ${formatTimestamp(usage.data.window.to)}, across accessible projects.` : 'Reporting window not available.'} Refreshed {usage.dataUpdatedAt ? formatTimestamp(new Date(usage.dataUpdatedAt).toISOString()) : 'not yet'}. Only succeeded and failed phases are counted here; skipped, aborted, waiting and active phases are excluded. A dash means no summary is available.</p>
           <div className="home-health-grid">
             <div>
               <span className="home-health-stat-label">Phases succeeded</span>
@@ -274,9 +273,7 @@ export function HomePage() {
             <span className="home-signal-caption">loaded runs only</span>
           </div>
           <div className="home-release-badges">
-            <span className="topbar-meta-chip success">Passed · {passedCount}</span>
-            <span className="topbar-meta-chip warning">Not available · {unknownCount}</span>
-            <span className="topbar-meta-chip danger">Failed · {failedCount}</span>
+            {Object.entries(results).map(([label, count]) => <span key={label} className={`topbar-meta-chip ${label === 'Passed' ? 'success' : label === 'Failed' ? 'danger' : 'warning'}`}>{label} · {count}</span>)}
           </div>
           <p className="home-release-note">
             Recorded execution outcomes in up to the latest {HOME_FLEET_LIMIT} loaded runs.
@@ -304,6 +301,7 @@ export function HomePage() {
                   <th>Application</th>
                   <th>Phase</th>
                   <th>Status</th>
+                  <th>Test result</th>
                   <th>Updated</th>
                 </tr>
               </thead>

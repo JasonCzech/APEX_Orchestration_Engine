@@ -155,7 +155,7 @@ describe('RunsListPage', () => {
     expect(busyRow.getByText(RUN_BUSY.thread_id)).toBeInTheDocument()
     expect(busyRow.getByText('proj-alpha')).toBeInTheDocument()
     expect(busyRow.getByText('app-storefront')).toBeInTheDocument()
-    expect(busyRow.getByText('4/7')).toBeInTheDocument()
+    expect(busyRow.getByText('3/7 phases succeeded · 1 skipped')).toBeInTheDocument()
     expect(busyRow.getByText('30m')).toBeInTheDocument()
     expect(busyRow.getByText('Not available')).toHaveClass('status-badge', 'neutral')
     expect(busyRow.getByText('Running')).toHaveClass('status-badge', 'accent')
@@ -224,7 +224,7 @@ describe('RunsListPage', () => {
     expect(within(workspace).getByLabelText('Phase snapshot')).toHaveTextContent('1 phase artifact')
     expect(within(workspace).getByText('Execution is still streaming results.')).toBeInTheDocument()
     expect(within(workspace).getByText('Generator pool is approaching capacity.')).toBeInTheDocument()
-    expect(within(workspace).getByRole('button', { name: /execution — running/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(workspace).getByRole('button', { name: /execution — executing/i })).toHaveAttribute('aria-pressed', 'true')
     await user.click(within(workspace).getByRole('tab', { name: 'Phase Details' }))
     await user.click(within(workspace).getByText('Technical phase output'))
     expect(within(workspace).getByLabelText('Phase output JSON')).toHaveTextContent(
@@ -380,6 +380,17 @@ describe('RunsListPage', () => {
     expect(await screen.findByText('10001–10025')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
     expect(screen.getByText(/Reached the runs result-window limit/)).toBeInTheDocument()
+  })
+
+  it('resets to the first page when the shared Rows control changes', async () => {
+    const { handler, captured } = pipelinesHandler(PIPELINES_FIXTURE)
+    server.use(handler)
+    const user = userEvent.setup()
+    renderRunsPage('/runs?offset=25')
+    await screen.findByRole('combobox', { name: 'Runs rows per page' })
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Runs rows per page' }), '10')
+    await waitFor(() => expect(captured.last()?.get('limit')).toBe('10'))
+    expect(captured.last()?.get('offset')).toBeNull()
   })
 
   it('debounces the search input into ?q= and resets the offset', async () => {

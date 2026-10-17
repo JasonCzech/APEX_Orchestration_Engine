@@ -83,7 +83,7 @@ describe('HomePage', () => {
     const activeCard = screen.getByText('Active').closest('article')
     expect(activeCard).not.toBeNull()
     expect(within(activeCard as HTMLElement).getByText('3')).toBeInTheDocument()
-    const failureCard = screen.getByText('Failures').closest('article')
+    const failureCard = screen.getByText('Runs needing investigation').closest('article')
     expect(failureCard).not.toBeNull()
     expect(within(failureCard as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(screen.queryByText('Tests Passed')).not.toBeInTheDocument()

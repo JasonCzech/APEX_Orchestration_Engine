@@ -31,7 +31,8 @@ describe('dev-data store', () => {
         expect(phase.status).toBe(state.phases_plan && !state.phases_plan.includes(phase.phase as import('@apex/pipeline-events').PhaseName)
           ? 'none' : state.phase_results?.[phase.phase as import('@apex/pipeline-events').PhaseName]?.status ?? 'pending')
       }
-      const passed = state.phase_results?.execution?.test_summary?.passed
+      const execution = state.phase_results?.execution
+      const passed = execution?.status === 'succeeded' ? execution.test_summary?.passed : undefined
       expect(summary.execution_result).toBe(passed === true ? 'passed' : passed === false ? 'failed' : null)
     }
     expect(list.items.find((run) => run.thread_id === 'run-conditional')?.execution_result).toBe('failed')
@@ -373,6 +374,17 @@ describe('dev-data store', () => {
     expect(await response?.text()).toContain('four')
   })
 
+  it('keeps a terminal failed fixture free of active downstream phases', async () => {
+    const store = createDevDataStore()
+    const detail = await jsonOf<{ current_phase: string; values: { phase_results: Record<string, { status: string; duration_s?: number }> } }>(
+      await store.handleApexRequest(new Request('http://localhost/v1/pipelines/run-aborted')),
+    )
+    expect(detail.current_phase).toBe('execution')
+    expect(detail.values.phase_results.execution?.status).toBe('failed')
+    expect(Object.values(detail.values.phase_results).some(entry => entry.status === 'running')).toBe(false)
+    expect(detail.values.phase_results.reporting?.duration_s).toBeUndefined()
+  })
+
   it('resumes the seeded active run at execution and completes prompt-playground streams', async () => {
     const store = createDevDataStore()
     const activeEvents: Array<{ data: unknown }> = []
@@ -452,11 +464,12 @@ describe('dev-data store', () => {
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.phase).toBe('execution')
-    expect(detail.execution_result).toBe('failed')
+    expect(detail.execution_result).toBeNull()
     run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'approve' })) }
     await consume(run.run_id)
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.phase).toBe('reporting')
+    expect(detail.execution_result).toBe('failed')
     const reportingInterrupt = detail.pending_gate.interrupt_id
     run = { ...run, ...(await resume(reportingInterrupt, { action: 'approve' })) }
     const immediatelyCreated = await jsonOf<{ items: Array<{ key: string }> }>(await store.handleApexRequest(new Request('http://localhost/v1/work-tracking/query/execute', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ connection_id: 'conn-jira', query: { provider: 'jira', query: 'project = PERF' }, limit: 50 }) })))

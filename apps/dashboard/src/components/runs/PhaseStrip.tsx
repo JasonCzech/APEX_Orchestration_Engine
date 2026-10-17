@@ -36,16 +36,17 @@ const STATUS_MODIFIERS: Record<string, string> = {
   awaiting_prompt_review: 'awaiting',
   awaiting_output_review: 'awaiting',
   pending: 'pending',
+  unknown: 'unknown',
   [NONE]: 'none',
 }
 
 function segmentModifier(status: string): string {
-  return STATUS_MODIFIERS[status] ?? 'none'
+  return STATUS_MODIFIERS[status] ?? 'unknown'
 }
 
 function segmentLabel(phase: PhaseName, status: string, attempt: number | null | undefined): string {
   const attemptSuffix = attempt != null ? ` (attempt ${attempt})` : ''
-  return `${phase} — ${status}${attemptSuffix}`
+  return `${PHASE_LABELS[phase]} — ${pipelineStatusLabel(status)}${attemptSuffix}`
 }
 
 /**
@@ -63,14 +64,16 @@ export function PhaseStrip({
 }: PhaseStripProps) {
   const byPhase = new Map(strip.map((entry) => [entry.phase, entry]))
 
-  const visiblePhases = selectedOnly ? PHASE_NAMES.filter(phase => byPhase.get(phase)?.status && byPhase.get(phase)?.status !== NONE) : PHASE_NAMES
+  const selectedPhases = selectedOnly ? PHASE_NAMES.filter(phase => byPhase.get(phase)?.status && byPhase.get(phase)?.status !== NONE) : PHASE_NAMES
+
+  const visiblePhases = selectedPhases.length ? selectedPhases : PHASE_NAMES
 
   if (size === 'lg') {
     return (
       <div className="phase-strip phase-strip--lg" role="group" aria-label="Phase progress">
         {visiblePhases.map((phase, index) => {
           const entry = byPhase.get(phase)
-          const status = entry?.status ?? NONE
+          const status = entry?.status ?? 'unknown'
           const label = segmentLabel(phase, status, entry?.attempt)
           const visual = pipelinePhaseVisual(status)
           const className = [
@@ -85,7 +88,7 @@ export function PhaseStrip({
           const content = (
             <>
               <span className="phase-step-circle" aria-hidden="true">
-                {({ succeeded: '✓', failed: '✕', aborted: '■', skipped: '–', none: '–' } as Record<string, string>)[status] ?? index + 1}
+                {({ succeeded: '✓', failed: '✕', aborted: '■', skipped: '–', none: '–', unknown: '?' } as Record<string, string>)[status] ?? index + 1}
               </span>
               <span className="phase-step-copy">
                 <span className="phase-step-name">{PHASE_LABELS[phase]}</span>
@@ -124,7 +127,7 @@ export function PhaseStrip({
     <div className={`phase-strip phase-strip--${size}`} role="group" aria-label="Phase progress">
       {PHASE_NAMES.map((phase) => {
         const entry = byPhase.get(phase)
-        const status = entry?.status ?? NONE
+        const status = entry?.status ?? 'unknown'
         const label = segmentLabel(phase, status, entry?.attempt)
         const className = `phase-seg phase-seg--${segmentModifier(status)}`
 

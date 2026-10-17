@@ -211,7 +211,8 @@ export function useWizardLaunch() {
   const queryClient = useQueryClient()
   return useMutation<LaunchedRun, Error, WizardDraft>({
     mutationFn: launchWizardRun,
-    onSuccess: () => {
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.threads.activeRun(data.threadId), data.runId)
       void queryClient.invalidateQueries({ queryKey: queryKeys.pipelines.all })
     },
   })

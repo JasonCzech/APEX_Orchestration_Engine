@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import {
   Area,
@@ -13,6 +13,7 @@ import {
   YAxis,
 } from 'recharts'
 
+import { formatTimestamp } from '@/utils/time'
 import { PHASE_NAMES } from '@apex/pipeline-events'
 
 import {
@@ -56,12 +57,6 @@ const CHART_COLORS = [
   'var(--chart-5)',
   'var(--chart-6)',
 ] as const
-const MODEL_OPTIONS = [
-  'claude-3-5-sonnet-latest',
-  'claude-3-5-haiku-latest',
-  'gpt-4o',
-  'gpt-4o-mini',
-]
 /** Bar chart shows the top N breakdown rows; the table page size can exceed this. */
 const TOP_N_BARS = 10
 const AGENT_OPTIONS = PHASE_NAMES.map((phase) => `${phase}.worker`)
@@ -83,8 +78,8 @@ function bucketTick(bucket: Bucket): (iso: string) => string {
     const date = new Date(iso)
     if (Number.isNaN(date.getTime())) return iso
     return bucket === 'hour'
-      ? `${pad(date.getHours())}:${pad(date.getMinutes())}`
-      : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      ? `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`
+      : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })
   }
 }
 
@@ -218,6 +213,8 @@ function ChipGroup({
             key={option}
             type="button"
             className="level-chip analytics-chip"
+            aria-label={option}
+            title={option}
             aria-pressed={selected.includes(option)}
             onClick={() => onToggle(option)}
           >
@@ -334,28 +331,27 @@ function AgentKpiCards({
   data: AgentAnalytics
   allZeroTokens: boolean
 }) {
+  const empty = data.totals.events === 0
   const errorRate = formatPercent(data.totals.errors, data.totals.events)
   return (
     <div className="stat-cards" data-testid="analytics-cards">
       <StatCard
         label="Total tokens"
-        value={allZeroTokens ? '—' : formatTokens(data.totals.total_tokens)}
-        hint={allZeroTokens ? 'awaiting live LLM agents' : `${formatTokens(data.totals.input_tokens)} in / ${formatTokens(data.totals.output_tokens)} out`}
+        value={empty || allZeroTokens ? '—' : formatTokens(data.totals.total_tokens)}
+        hint={empty ? 'No events in this window' : allZeroTokens ? 'Token usage not recorded' : `${formatTokens(data.totals.input_tokens)} in / ${formatTokens(data.totals.output_tokens)} out`}
         testId="stat-total-tokens"
       />
-      {data.cost_visible && (
-        <StatCard label="Est. cost" value={formatCost(data.totals.cost_usd)} testId="stat-cost" />
-      )}
+      <StatCard label="Est. cost" value={empty || !data.cost_visible ? '—' : formatCost(data.totals.cost_usd)} hint={!data.cost_visible ? 'Not available for your role' : undefined} testId="stat-cost" />
       <StatCard
         label="Avg latency"
-        value={formatLatency(data.totals.avg_latency_ms)}
-        hint={`p95 ${formatLatency(data.totals.p95_latency_ms)}`}
+        value={empty ? '—' : formatLatency(data.totals.avg_latency_ms)}
+        hint={empty ? 'No events in this window' : `P95 ${formatLatency(data.totals.p95_latency_ms)}`}
         testId="stat-latency"
       />
       <StatCard
         label="Agents / runs"
-        value={`${data.totals.agents} / ${data.totals.runs}`}
-        hint={`${data.totals.models} models`}
+        value={empty ? '—' : `${data.totals.agents} agents · ${data.totals.runs} runs`}
+        hint={empty ? 'No events in this window' : data.totals.models === 0 ? 'Model not recorded' : `${data.totals.models} recorded models`}
         testId="stat-agents-runs"
       />
       <StatCard
@@ -379,6 +375,7 @@ function AgentUsageCharts({
   measure: Measure
   bucket: Bucket
 }) {
+  const patternPrefix = useId().replaceAll(':', '')
   const stacked = useMemo(() => seriesRows(data, measure, group), [data, measure, group])
   const bars = useMemo(() => {
     const grouped = new Map<string, { sum: number; events: number }>()
@@ -409,6 +406,7 @@ function AgentUsageCharts({
         </h2>
         <ResponsiveContainer width="100%" height={240}>
           <AreaChart data={stacked.series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+            <defs>{CHART_COLORS.map((color, index) => <pattern key={color} id={`${patternPrefix}-${index}`} width={4 + index * 2} height={4 + index * 2} patternUnits="userSpaceOnUse" patternTransform={`rotate(${index * 30})`}><line x1="0" y1="0" x2="0" y2="20" stroke={color} strokeWidth="2" /></pattern>)}</defs>
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis
               dataKey="bucket_start"
@@ -440,12 +438,14 @@ function AgentUsageCharts({
                 type="monotone"
                 dataKey={field}
                 name={stacked.keys[index]}
+                legendType="plainline"
                 stackId={measure === 'latency' ? undefined : 'agent'}
                 stroke={CHART_COLORS[index % CHART_COLORS.length]}
-                fill={CHART_COLORS[index % CHART_COLORS.length]}
+                fill={`url(#${patternPrefix}-${index % CHART_COLORS.length})`}
                 fillOpacity={0.16}
                 strokeWidth={2}
-                dot={false}
+                strokeDasharray={['', '8 3', '3 3', '10 3 2 3', '2 5', '12 4'][index]}
+                dot={{ r: 2 + index % 3 }}
                 isAnimationActive={false}
               />
             ))}
@@ -519,7 +519,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
   return (
     <div className="analytics-charts analytics-charts-secondary">
       <section className="glass-panel chart-panel" data-testid="analytics-token-split-chart">
-        <h2 className="chart-title">Input vs output tokens (top series)</h2>
+        <h2 className="chart-title">Input vs output tokens (top series)</h2><p className="ux-context">Input: solid line. Output: dashed line with markers.</p>
         <ResponsiveContainer width="100%" height={200}>
           <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
@@ -527,7 +527,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
             <YAxis tickFormatter={(value) => formatTokens(Number(value))} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={54} />
             <Tooltip contentStyle={TOOLTIP_CONTENT_STYLE} isAnimationActive={false} formatter={(value) => formatTokens(Number(value))} />
             <Area type="monotone" dataKey="input" name="input" stroke="var(--chart-1)" fill="var(--chart-1)" fillOpacity={0.16} dot={false} isAnimationActive={false} />
-            <Area type="monotone" dataKey="output" name="output" stroke="var(--chart-5)" fill="var(--chart-5)" fillOpacity={0.12} dot={false} isAnimationActive={false} />
+            <Area type="monotone" dataKey="output" name="output" strokeDasharray="8 4" stroke="var(--chart-5)" fill="var(--chart-5)" fillOpacity={0.12} dot={{ r: 3 }} isAnimationActive={false} />
           </AreaChart>
         </ResponsiveContainer>
       </section>
@@ -676,7 +676,7 @@ function renderKeyCell(
   if (group === 'date') {
     return (
       <button type="button" className="analytics-link-button" onClick={() => onZoomDate(row.key)}>
-        {new Date(row.key).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+        {new Date(row.key).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' })}
       </button>
     )
   }
@@ -733,6 +733,12 @@ export function AnalyticsPage() {
     [filters, group, selectedMeasure, bucket],
   )
   const { data, error, isPending, isError, refetch } = useAgentAnalytics(query)
+  const modelQuery = useMemo(() => {
+    return { ...query, model: undefined, offset: 0, group_by: 'model' as const, limit: 100, sort: 'key' as const }
+  }, [query])
+  const models = useAgentAnalytics(modelQuery)
+  const modelOptions = [...new Set([...(models.data?.breakdown.map(row => row.key) ?? []), ...(filters.model ?? [])])].sort()
+
 
   const allZeroTokens = data !== undefined && data.totals.events > 0 && data.totals.total_tokens === 0
   const effectiveMeasure: Measure =
@@ -792,7 +798,7 @@ export function AnalyticsPage() {
     <section className="analytics-page animate-enter">
       <header className="analytics-toolbar glass-panel">
         <WindowPresets
-          value={{ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}) }}
+          value={{ ...(filters.from || data?.window.from ? { from: filters.from ?? data?.window.from } : {}), ...(filters.to || data?.window.to ? { to: filters.to ?? data?.window.to } : {}) }}
           onChange={(window) => applyFilters({ from: window.from, to: window.to, offset: undefined })}
         />
         <SegmentControl
@@ -859,10 +865,11 @@ export function AnalyticsPage() {
         )}
       </header>
 
+      {data && <p className="ux-context">{formatTimestamp(data.window.from)} – {formatTimestamp(data.window.to)} · {data.window.bucket} buckets in UTC. All metrics cover events recorded in this window. Worker latency excludes review waits for new events; older events may include reviews.</p>}
       <section className="analytics-filter-pickers glass-panel" aria-label="Agent filters">
         <ChipGroup
           label="Models"
-          options={MODEL_OPTIONS}
+          options={modelOptions}
           selected={filters.model ?? []}
           onToggle={(value) => applyFilters({ model: toggleValue(filters.model, value), offset: undefined })}
         />

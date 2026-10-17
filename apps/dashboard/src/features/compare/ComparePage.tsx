@@ -13,6 +13,8 @@ import {
   PHASE_LABELS,
   normalizedPhases,
   orchestrationStatusLabel,
+  orchestrationTone,
+  executionResultLabel,
   formatDuration,
   statusLabel,
   statusVisual,
@@ -25,7 +27,6 @@ import {
   kpiValue,
   parseCompareIds,
   slowestIndex,
-  threadStatusTone,
 } from './compareModel'
 import './compare.css'
 
@@ -152,6 +153,8 @@ function ColumnHeader({
 }) {
   const detail = run.query.data?.detail
   const title = detail?.title || run.id
+  const snapshot = run.query.data
+  const strip = snapshot ? normalizedPhases(snapshot.state, detail?.phase_strip, snapshot.stateParseFailed, detail) : []
   return (
     <th scope="col" className="compare-col-head" data-testid={`compare-col-${run.id}`}>
       <div className="compare-col-title-row">
@@ -175,8 +178,8 @@ function ColumnHeader({
           </span>
         ) : (
           <>
-            <span className={`status-badge ${threadStatusTone(detail?.thread_status)}`}>
-              {orchestrationStatusLabel(detail?.thread_status)}
+            <span className={`status-badge ${orchestrationTone(detail?.thread_status, strip)}`}>
+              {orchestrationStatusLabel(detail?.thread_status, strip)}
             </span>
             {detail?.engine?.engine && (
               <span
@@ -227,20 +230,26 @@ export function ComparePage() {
   const runs: CompareRun[] = ids.map((id, index) => ({ id, query: slots[index]! }))
   if (runs.some((run) => run.query.isPending)) return <CompareSkeleton />
 
-  const baselineId = ids.includes(chosenBaseline ?? '') ? chosenBaseline : ids[0]
-  const baselineIndex = ids.indexOf(baselineId ?? '')
   const entriesFor = (phase: (typeof PHASE_NAMES)[number]): Array<(Pick<PhaseResultEntry, 'attempt' | 'duration_s' | 'artifact_ids' | 'warnings'> & { status?: string | undefined }) | undefined> =>
     runs.map((run) => {
       const snapshot = run.query.data
       if (!snapshot) return undefined
-      const normalized = normalizedPhases(snapshot.state, snapshot.detail.phase_strip, snapshot.stateParseFailed).find((entry) => entry.phase === phase)
+      const normalized = normalizedPhases(snapshot.state, snapshot.detail.phase_strip, snapshot.stateParseFailed, snapshot.detail).find((entry) => entry.phase === phase)
       if (normalized?.status === 'none') return { status: 'none' }
       return { ...snapshot.state.phase_results?.[phase], status: normalized?.status, attempt: normalized?.attempt }
     })
 
   const summaries: Array<TestResultSummary | undefined> = runs.map(
-    (run) => run.query.data?.state.phase_results?.['execution']?.test_summary,
+    (run) => {
+      const execution = run.query.data?.state.phase_results?.execution
+      return execution?.status === 'succeeded' ? execution.test_summary : undefined
+    },
   )
+  const eligibleBaselineIds = ids.filter((_, index) =>
+    COMPARE_KPIS.some(def => kpiValue(summaries[index], def.key) !== null),
+  )
+  const baselineId = eligibleBaselineIds.includes(chosenBaseline ?? '') ? chosenBaseline : eligibleBaselineIds[0]
+  const baselineIndex = ids.indexOf(baselineId ?? '')
   const hasEngineKpis = summaries.some(Boolean)
 
   const countPhases = PHASE_NAMES.filter((phase) =>
@@ -252,7 +261,7 @@ export function ComparePage() {
       <header className="compare-toolbar glass-panel">
         <h2 className="compare-title">Compare Runs</h2>
         <span className="compare-caption">{runs.length} runs</span>
-        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} onChange={(event) => setChosenBaseline(event.target.value)}>{runs.map((run) => <option key={run.id} value={run.id}>{run.query.data?.detail.title ?? run.id}</option>)}</select></label>
+        <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} disabled={eligibleBaselineIds.length === 0} onChange={(event) => setChosenBaseline(event.target.value)}>{eligibleBaselineIds.length === 0 && <option value="">No collected result</option>}{runs.map((run) => <option key={run.id} value={run.id} disabled={!eligibleBaselineIds.includes(run.id)}>{run.query.data?.detail.title ?? run.id}{eligibleBaselineIds.includes(run.id) ? '' : ' (no collected result)'}</option>)}</select></label>
         <span className="spacer" />
         <AddRunPicker ids={ids} onAdd={(id) => setIds([...ids, id])} />
         <Link to="/runs" className="btn btn-ghost btn-sm">
@@ -293,12 +302,12 @@ export function ComparePage() {
           <tbody>
             <tr className="compare-section-row">
               <th colSpan={runs.length + 1} scope="colgroup">
-                Phases
+                Phases · elapsed time includes review waits
               </th>
             </tr>
             {PHASE_NAMES.map((phase) => {
               const entries = entriesFor(phase)
-              const slow = slowestIndex(entries.map((entry) => entry?.duration_s))
+              const slow = slowestIndex(entries.map((entry) => ['succeeded', 'failed'].includes(entry?.status ?? '') ? entry?.duration_s : null))
               return (
                 <tr key={phase}>
                   <th scope="row" className="compare-row-label">
@@ -334,7 +343,7 @@ export function ComparePage() {
               )
             })}
 
-            {hasEngineKpis && (
+            {(
               <>
                 <tr className="compare-section-row">
                   <th colSpan={runs.length + 1} scope="colgroup">
@@ -345,22 +354,17 @@ export function ComparePage() {
                   <th scope="row" className="compare-row-label">
                     Result
                   </th>
-                  {runs.map((run, index) => {
-                    const summary = summaries[index]
+                  {runs.map((run) => {
+                    const snapshot = run.query.data
+                    const result = snapshot ? executionResultLabel(snapshot.detail, snapshot.state) : 'Not available'
                     return (
                       <td key={run.id} data-testid={`compare-passed-${run.id}`}>
-                        {summary ? (
-                          <span className={`status-badge ${summary.passed === true ? 'success' : summary.passed === false ? 'danger' : 'neutral'}`}>
-                            {summary.passed === true ? 'passed' : summary.passed === false ? 'failed' : 'Not available'}
-                          </span>
-                        ) : (
-                          <span className="compare-muted">{EM_DASH}</span>
-                        )}
+                        <span className={`status-badge ${result === 'Passed' ? 'success' : result === 'Failed' ? 'danger' : 'neutral'}`}>{result}</span>
                       </td>
                     )
                   })}
                 </tr>
-                {COMPARE_KPIS.map((def) => {
+                {hasEngineKpis && COMPARE_KPIS.map((def) => {
                   const values = summaries.map((summary) => kpiValue(summary, def.key))
                   const ranked = bestWorst(values, def.better)
                   return (
@@ -385,7 +389,7 @@ export function ComparePage() {
                             className={tint}
                           >
                             {value === null ? (
-                              <span className="compare-muted">{EM_DASH}</span>
+                              <span className="compare-muted">{EM_DASH}<small className="compare-difference">No collected result</small></span>
                             ) : (
                               <><span className="compare-kpi-value">{def.format(value)}</span><small className="compare-difference">{index === baselineIndex ? 'Baseline' : kpiDifference(value, values[baselineIndex] ?? null, def)}</small></>
                             )}
@@ -414,7 +418,7 @@ export function ComparePage() {
                     const entry = entries[index]
                     return (
                       <td key={run.id} data-testid={`compare-counts-${phase}-${run.id}`}>
-                        {entry ? (
+                        {entry && entry.status !== 'none' && entry.status !== 'unknown' ? (
                           <span
                             className="compare-counts"
                             title={`${entry.artifact_ids?.length ?? 0} artifacts, ${entry.warnings?.length ?? 0} warnings`}

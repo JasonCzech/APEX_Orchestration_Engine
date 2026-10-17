@@ -82,6 +82,16 @@ describe('useActiveRun', () => {
     expect(fake.listCalls).toHaveLength(2)
   })
 
+  it('discovers a newly started short run within one second', async () => {
+    fake.listRuns = []
+    const { result } = renderHook(() => useActiveRun('t1', { threadStatus: 'busy' }), { wrapper: makeWrapper() })
+    await pump()
+    expect(result.current).toBeNull()
+    fake.listRuns = [{ run_id: 'short-run', status: 'running' }]
+    await pump(1000)
+    expect(result.current).toBe('short-run')
+  })
+
   it('is disabled (null, zero requests) when the thread is known not-busy', async () => {
     const { result } = renderHook(() => useActiveRun('t1', { threadStatus: 'idle' }), {
       wrapper: makeWrapper(),

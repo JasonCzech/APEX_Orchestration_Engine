@@ -13,6 +13,8 @@ import {
   PHASE_LABELS,
   targetPhaseFor,
   phaseProgress,
+  phaseProgressLabel,
+  formatTimestamp,
 } from './runDisplay'
 import { runReviewPath } from './reviewPath'
 
@@ -25,13 +27,13 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
   returnTo?: string
 }) {
   const execution = state.phase_results?.execution
-  const summary = execution?.test_summary
+  const summary = execution?.status === 'succeeded' ? execution.test_summary : undefined
   const executionOmitted = executionWasOmitted(state)
   const assessment = summary?.outcome?.assessment
   const assessmentLabel = assessment && ({ passed: 'Passed', failed: 'Failed', inconclusive: 'Inconclusive', not_assessed: 'Not assessed', unavailable: 'Not available' })[assessment.status]
   const acceptance = assessmentLabel ?? (executionOmitted ? 'Not applicable' : summary
     ? summary.passed === true ? 'Passed' : summary.passed === false ? 'Failed' : 'Not available'
-    : executionResultLabel({ execution_result: detail.execution_result }))
+    : executionResultLabel(detail, state))
   const errors = Object.values(state.phase_results ?? {}).flatMap((entry) => entry.errors ?? [])
   const artifacts = state.artifacts ?? []
   const handle = state.engine_handle ?? execution?.engine_handle
@@ -44,15 +46,14 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
     returnTo ?? `/runs/${detail.thread_id}`,
   )
   const phase = targetPhaseFor(detail, state)
-  const outcome = state.run_aborted ? 'Stopped by operator'
-    : orchestrationStatusLabel(detail.thread_status, normalizedPhases(state, detail.phase_strip, true))
+  const outcome = orchestrationStatusLabel(detail.thread_status, normalizedPhases(state, detail.phase_strip, true, detail))
   return (
     <section className="run-overview" aria-label="Run overview">
       <div className="ux-grid">
         <article className="glass-panel ux-card run-outcome-primary">
           <h3>{outcome}</h3>
           <p>
-            {progress.completed} of {progress.total} selected phases finished.{' '}
+            {phaseProgressLabel(progress)}.{' '}
             {execution
               ? 'Execution evidence is summarized separately below.'
               : executionOmitted ? 'Execution was not selected for this run.' : 'Execution evidence has not been recorded.'}
@@ -64,8 +65,8 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
           ))}
           {!errors.length &&
             !state.run_aborted &&
-            detail.thread_status === 'idle' &&
-            progress.completed !== progress.total && <p>No stop reason was recorded.</p>}
+            ['idle', 'error'].includes(detail.thread_status ?? '') &&
+            (detail.thread_status === 'error' || progress.completed !== progress.total) && <p>No failure or stop reason was recorded.</p>}
           {detail.pending_gate && onReviewGate ? (
             <button type="button" className="btn btn-primary" onClick={onReviewGate}>
               Review pending decision
@@ -136,7 +137,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
       </div>
       <article className="glass-panel ux-card">
         <h3>Evidence coverage</h3>
-        {summary?.outcome && <p>Load evidence: {summary.outcome.evidence.status}{summary.outcome.evidence.coverage_percent != null ? ` (${summary.outcome.evidence.coverage_percent}%)` : ''}. Assessed {new Date(summary.outcome.observed_at).toLocaleString()}.</p>}
+        {summary?.outcome && <p>Load evidence: {summary.outcome.evidence.status}{summary.outcome.evidence.coverage_percent != null ? ` (${summary.outcome.evidence.coverage_percent}%)` : ''}. Assessed {formatTimestamp(summary.outcome.observed_at)}.</p>}
         {(['diagnostics', 'evidence'] as const).map(section => {
           const href = executionLink(handle?.console_url ?? handle?.extras?.console_url ?? execution?.source_uri ?? external.uri, `/runs/${detail.thread_id}`, section)
           return href ? <a key={section} className="btn btn-secondary" href={href} target="_blank" rel="noopener noreferrer">Open Load {section}</a> : null
@@ -145,7 +146,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
         <p>
           {artifacts.length
             ? `${artifacts.length} artifacts recorded. Review source evidence before making a release decision.`
-            : 'No artifacts recorded yet. Evidence may still be collecting or the run may not have produced any.'}
+            : ['idle', 'error'].includes(detail.thread_status ?? '') ? 'No artifacts were recorded for this run.' : 'No artifacts recorded yet. Evidence may still be collecting.'}
         </p>
         <div className="ux-actions">
           {artifacts.map((artifact) => (
