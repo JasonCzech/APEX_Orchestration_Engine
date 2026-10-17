@@ -11,8 +11,14 @@ from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 
-from apex.domain.diagnostics import contains_credential_material
+from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
+from apex.domain.input_limits import validate_json_object
 from apex.domain.pipeline import ApprovalRecord, Phase
+from apex.services.pipeline_public import (
+    MAX_PUBLIC_GATE_BYTES,
+    MAX_PUBLIC_GATE_NODES,
+    public_phase_evidence,
+)
 from apex.services.run_validation import validate_gate_payload
 
 GATE_SCHEMA_VERSION = 1
@@ -140,12 +146,101 @@ def build_phase_review_payload(
         "artifacts": [dict(artifact) for artifact in artifacts],
         "warnings": list(warnings),
         "dialogue_tail": [dict(entry) for entry in dialogue_tail],
-        "evidence": dict(evidence) if evidence is not None else {},
         "actions": list(PHASE_REVIEW_ACTIONS),
     }
     if error:
         payload["error"] = error
+    payload = _fit_phase_review_preview(payload)
+    payload["evidence"] = public_phase_evidence(phase.value, evidence, gate_payload=payload)
     return payload
+
+
+def _fits_phase_review_preview(payload: JsonDict) -> bool:
+    try:
+        validate_json_object(
+            payload,
+            label="phase review preview",
+            max_bytes=MAX_PUBLIC_GATE_BYTES - 2_048,
+            max_nodes=MAX_PUBLIC_GATE_NODES - 8,
+            max_depth=24,
+        )
+    except (OverflowError, RecursionError, TypeError, ValueError):
+        return False
+    return True
+
+
+def _fit_phase_review_preview(payload: JsonDict) -> JsonDict:
+    """Keep legal generated results reviewable without enlarging the public boundary.
+
+    Output summaries, artifacts and diagnostics each have independent limits, so
+    their combined preview can still exceed the gate budget. Keep whole fields
+    and rows where possible, mark every omission, and leave durable state alone.
+    Discussion previews have a smaller public text limit than durable messages.
+    """
+    for entry in payload["dialogue_tail"]:
+        content = entry.get("content")
+        if type(content) is str and len(content) > 20_000:
+            entry["content"] = bounded_diagnostic(content, max_chars=19_999) + "…"
+            payload["projection_truncated"] = True
+    if _fits_phase_review_preview(payload):
+        return payload
+
+    result: JsonDict = {
+        **payload,
+        "summary": None,
+        "result_preview": {"summary": None, "reasoning_digest": None},
+        "artifacts": [],
+        "warnings": [],
+        "dialogue_tail": [],
+        "projection_truncated": True,
+    }
+    summary = payload["summary"]
+    if summary is not None:
+        result["summary"] = summary
+        if not _fits_phase_review_preview(result):
+            result["summary"] = None
+    # If only the reasoning digest contains meaningful output, reserve it before
+    # lists of blank legacy diagnostics can consume the remaining byte budget.
+    if not (type(summary) is str and summary.strip()):
+        for field in ("reasoning_digest", "summary"):
+            value = payload["result_preview"].get(field)
+            if type(value) is str and value.strip():
+                result["result_preview"][field] = value
+                if _fits_phase_review_preview(result):
+                    break
+                result["result_preview"][field] = None
+    # Preserve safety diagnostics and artifact references before supplementary
+    # reasoning text. A visible marker tells the reviewer the preview is partial.
+    for field in ("warnings", "artifacts", "dialogue_tail"):
+        entries = payload[field]
+        for entry in reversed(entries) if field == "dialogue_tail" else entries:
+            if field == "warnings" and (type(entry) is not str or not entry.strip()):
+                continue
+            if field == "dialogue_tail" and (
+                type(entry) is not dict
+                or type(entry.get("content")) is not str
+                or not entry["content"].strip()
+            ):
+                continue
+            if field == "artifacts" and (
+                type(entry) is not dict
+                or not all(
+                    type(entry.get(key)) is str and entry[key].strip()
+                    for key in ("id", "kind", "name")
+                )
+            ):
+                continue
+            retained = result[field]
+            result[field] = [entry, *retained] if field == "dialogue_tail" else [*retained, entry]
+            if not _fits_phase_review_preview(result):
+                result[field] = retained
+    for field in ("reasoning_digest", "summary"):
+        value = payload["result_preview"].get(field)
+        if value is not None:
+            result["result_preview"][field] = value
+            if not _fits_phase_review_preview(result):
+                result["result_preview"][field] = None
+    return result
 
 
 def parse_gate_decision(decision: Any, allowed: Sequence[str]) -> JsonDict:

@@ -87,7 +87,6 @@ from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import usage as usage_events
 from apex.services.artifact_references import persist_artifact_with_intent
 from apex.services.connections import ConnectionResolver, DbConnectionStore, close_adapter
-from apex.services.pipeline_public import public_phase_evidence
 from apex.services.pricing import MAX_TOKEN_COUNT, coerce_token_count
 from apex.services.prompts import (
     prompt_review_from_resolved,
@@ -2285,7 +2284,7 @@ def _make_output_gate(phase: Phase):
                 warnings,
                 tail,
                 error,
-                evidence=public_phase_evidence(phase.value, entry),
+                evidence=entry,
             )
             decision = parse_gate_decision(interrupt(payload), PHASE_REVIEW_ACTIONS)
             action = decision["action"]

@@ -52,6 +52,8 @@ from apex.services.launch_locks import LaunchLockManager
 from apex.services.pipeline_public import (
     MAX_PUBLIC_PIPELINE_STATE_BYTES,
     MAX_PUBLIC_PIPELINE_STATE_NODES,
+    MAX_PUBLIC_PROMPT_BODY_BYTES,
+    gate_budget_envelope,
     public_gate,
     public_pipeline_state,
     public_prompt_review,
@@ -492,7 +494,8 @@ def _project_pending_gates(gates: list[JsonDict]) -> list[JsonDict]:
     """
 
     projected_gates: list[JsonDict] = []
-    used_bytes = 2  # JSON list brackets
+    used_bytes = 2  # JSON list brackets, excluding only known prompt body strings
+    used_prompt_body_bytes = 0
     used_nodes = 1  # JSON list container
     for gate in gates:
         projected = public_gate(gate, include_payload=True)
@@ -503,16 +506,33 @@ def _project_pending_gates(gates: list[JsonDict]) -> list[JsonDict]:
         remaining_nodes = MAX_PUBLIC_PENDING_GATES_NODES - used_nodes
         if remaining_bytes < 1 or remaining_nodes < 1:
             break
+        envelope = gate_budget_envelope(projected)
+        if envelope is None:
+            continue
         cost = _bounded_json_cost(
-            projected,
+            envelope,
             max_bytes=remaining_bytes,
             max_nodes=remaining_nodes,
         )
         if cost is None:
             break
         encoded_bytes, nodes = cost
+        prompt_body_bytes = 0
+        if envelope is not projected:
+            # One allowance is shared across the entire list, not multiplied by
+            # its gate count. Nonbody bytes and all nodes retain their old caps.
+            remaining_body_bytes = MAX_PUBLIC_PROMPT_BODY_BYTES - used_prompt_body_bytes
+            full_cost = _bounded_json_cost(
+                projected,
+                max_bytes=encoded_bytes + remaining_body_bytes,
+                max_nodes=remaining_nodes,
+            )
+            if full_cost is None:
+                break
+            prompt_body_bytes = full_cost[0] - encoded_bytes
         projected_gates.append(projected)
         used_bytes += separator_bytes + encoded_bytes
+        used_prompt_body_bytes += prompt_body_bytes
         used_nodes += nodes
     return projected_gates
 

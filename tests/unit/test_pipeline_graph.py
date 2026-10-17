@@ -707,7 +707,10 @@ def test_max_length_discussion_remains_checkpointable() -> None:
 
     tail = pending_interrupt(result)["dialogue_tail"]
     assert tail[0]["content"] == message
-    assert tail[1]["content"].endswith(message)
+    assert len(tail[1]["content"]) == 20_000
+    assert tail[1]["content"].endswith("…")
+    assert pending_interrupt(result)["projection_truncated"] is True
+    assert subgraph_values(g, cfg)["dialogue"][-1]["content"].endswith(message)
     assert len(tail[1]["content"]) <= 50_000
 
 

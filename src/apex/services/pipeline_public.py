@@ -15,8 +15,9 @@ from urllib.parse import urlsplit
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.input_limits import validate_json_object
 from apex.domain.outcomes import qualified_execution_summary
-from apex.domain.pipeline import PHASE_ORDER, PhaseStatus
+from apex.domain.pipeline import MAX_GATE_DECISION_TEXT_CHARS, PHASE_ORDER, PhaseStatus
 from apex.graphs.pipeline.configurable import PipelineConfigurable
+from apex.graphs.pipeline.state import MAX_DURABLE_APPROVALS, MAX_DURABLE_DIALOGUE_ENTRIES
 from apex.services.public_projection import (
     public_engine_handle_summary,
     public_test_result_summary,
@@ -45,6 +46,13 @@ MAX_PUBLIC_PIPELINE_STATE_BYTES = 512_000
 MAX_PUBLIC_PIPELINE_STATE_NODES = 10_000
 MAX_PUBLIC_GATE_BYTES = 256_000
 MAX_PUBLIC_GATE_NODES = 4_096
+_MAX_PUBLIC_PROMPT_PART_CHARS = 100_000
+_MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS = 50_000
+# Editable prompt text must remain complete. JSON can encode one character in
+# six bytes; only these four bounded strings receive this separate allowance.
+MAX_PUBLIC_PROMPT_BODY_BYTES = 6 * (
+    3 * _MAX_PUBLIC_PROMPT_PART_CHARS + _MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS
+)
 
 
 def _text(value: Any, max_chars: int, *, allow_empty: bool = True) -> str | None:
@@ -143,13 +151,21 @@ def _public_context_preview(value: Any) -> JsonDict | None:
     return result
 
 
-def _public_dialogue(value: Any) -> JsonDict | None:
+def _public_dialogue(value: Any, *, truncate: bool = False) -> JsonDict | None:
     if type(value) is not dict:
         return None
     entry_id = _text(value.get("id"), 256, allow_empty=False)
     phase = value.get("phase")
     role = value.get("role")
-    content = _text(value.get("content"), 20_000)
+    raw_content = value.get("content")
+    content = _text(raw_content, 20_000)
+    shortened = (
+        truncate
+        and type(raw_content) is str
+        and 20_000 < len(raw_content) <= MAX_GATE_DECISION_TEXT_CHARS
+    )
+    if shortened:
+        content = bounded_diagnostic(raw_content, max_chars=19_999) + "…"
     if (
         entry_id is None
         or type(phase) is not str
@@ -160,6 +176,8 @@ def _public_dialogue(value: Any) -> JsonDict | None:
     ):
         return None
     result: JsonDict = {"id": entry_id, "phase": phase, "role": role, "content": content}
+    if shortened:
+        result["projection_truncated"] = True
     attempt = _finite_number(value.get("attempt"), minimum=1, maximum=1_000_000)
     at = _text(value.get("at"), 64)
     if type(attempt) is int:
@@ -226,24 +244,91 @@ def _public_prompt(value: Any) -> JsonDict | None:
     return result or None
 
 
-def public_phase_evidence(phase: str, value: Any) -> JsonDict:
-    """Bounded evidence shown before a human accepts a phase result."""
+def _safe_evidence_shape(value: JsonDict) -> bool:
+    """Bound raw optional containers before any field lookup or projection.
+
+    Prompt strings may legitimately exceed the response byte budget. Do not
+    serialize or clip them here: retained fields receive their normal limits,
+    redaction, and byte validation after the structural checks have passed.
+    """
+
+    stack: list[tuple[Any, int]] = [(value, 0)]
+    seen: set[int] = set()
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_PUBLIC_GATE_NODES or depth > 24:
+            return False
+        current_type = type(current)
+        if current_type is dict or current_type is list:
+            identity = id(current)
+            remaining = MAX_PUBLIC_GATE_NODES - nodes - len(stack)
+            if identity in seen or len(current) > remaining:
+                return False
+            seen.add(identity)
+            if current_type is dict:
+                for key, nested in current.items():
+                    if type(key) is not str or not key or len(key) > 255 or "\x00" in key:
+                        return False
+                    stack.append((nested, depth + 1))
+            else:
+                stack.extend((nested, depth + 1) for nested in current)
+        elif not (
+            current is None
+            or current_type is str
+            or current_type is bool
+            or current_type is int
+            or current_type is float
+        ):
+            return False
+    return True
+
+
+def public_phase_evidence(
+    phase: str, value: Any, *, gate_payload: JsonDict | None = None
+) -> JsonDict:
+    """Fit optional evidence without making the required review contract unreadable.
+
+    Preserve complete fields, not misleading partial prompt text. The checkpoint
+    and transcript remain the source of evidence omitted from this gate preview.
+    Reserve room for the outer interrupt envelope (including a Unicode id).
+    """
+    if value is None:
+        return {}
+    if type(value) is not dict or not _safe_evidence_shape(value):
+        return {"projection_truncated": True}
     projected = _public_phase_result(phase, value) or {}
-    return {
-        key: projected[key]
-        for key in (
-            "phase",
-            "attempt",
-            "provenance",
-            "model",
-            "reasoning_digest",
-            "tool_calls",
-            "resolved_prompt",
-            "resolved_prompt_source",
-            "transcript_ref",
-        )
-        if key in projected
-    }
+    evidence: JsonDict = {}
+    truncated = type(value) is dict and value.get("projection_truncated") is True
+    for key in (
+        "phase",
+        "attempt",
+        "provenance",
+        "model",
+        "resolved_prompt_source",
+        "transcript_ref",
+        "reasoning_digest",
+        "tool_calls",
+        "resolved_prompt",
+    ):
+        if key not in projected:
+            continue
+        candidate = {**evidence, key: projected[key]}
+        if _within_projection_budget(
+            {
+                **(gate_payload or {}),
+                "evidence": {**candidate, "projection_truncated": True},
+            },
+            max_bytes=MAX_PUBLIC_GATE_BYTES - 2_048,
+            max_nodes=MAX_PUBLIC_GATE_NODES - 8,
+        ):
+            evidence = candidate
+        else:
+            truncated = True
+    if truncated:
+        evidence["projection_truncated"] = True
+    return evidence
 
 
 def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
@@ -299,7 +384,7 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
                 result[field] = projected
 
     approvals = value.get("approvals")
-    if type(approvals) is list and len(approvals) <= 100:
+    if type(approvals) is list and len(approvals) <= MAX_DURABLE_APPROVALS:
         projected_approvals = [
             item for raw in approvals if (item := _public_approval(raw)) is not None
         ]
@@ -523,14 +608,91 @@ def _within_projection_budget(value: JsonDict, *, max_bytes: int, max_nodes: int
     return True
 
 
+def gate_budget_envelope(value: JsonDict, *, payload_only: bool = False) -> JsonDict | None:
+    """Remove only bounded editable prompt bodies for independent byte accounting.
+
+    Unknown fields, provenance, context packets, and all nonprompt contracts keep
+    the original envelope budget. This is an accounting view, not a projection;
+    callers must also validate and bound the complete original JSON object.
+    """
+
+    if (
+        type(value) is not dict
+        or len(value) > MAX_PUBLIC_GATE_NODES
+        or any(type(key) is not str for key in value)
+    ):
+        return None
+    kind = value.get("kind")
+    if type(kind) is not str:
+        return None
+    if kind != "prompt_review":
+        return value
+    payload = value if payload_only else value.get("payload")
+    if (
+        type(payload) is not dict
+        or len(payload) > 128
+        or any(type(key) is not str for key in payload)
+    ):
+        return None
+    prompt = payload.get("prompt")
+    if (
+        type(prompt) is not dict
+        or len(prompt) > MAX_PUBLIC_GATE_NODES
+        or any(type(key) is not str for key in prompt)
+    ):
+        return None
+    if any(
+        type(prompt.get(field)) is not str or len(prompt[field]) > _MAX_PUBLIC_PROMPT_PART_CHARS
+        for field in ("system", "user")
+    ):
+        return None
+    application = prompt.get("application")
+    context = payload.get("additional_context")
+    if (
+        "application" not in prompt
+        or (
+            application is not None
+            and (type(application) is not str or len(application) > _MAX_PUBLIC_PROMPT_PART_CHARS)
+        )
+        or type(context) is not str
+        or len(context) > _MAX_PUBLIC_ADDITIONAL_CONTEXT_CHARS
+    ):
+        return None
+    envelope = {
+        **payload,
+        "prompt": {
+            **prompt,
+            "system": "",
+            "user": "",
+            "application": None if application is None else "",
+        },
+        "additional_context": "",
+    }
+    return envelope if payload_only else {**value, "payload": envelope}
+
+
+def _within_gate_budget(value: JsonDict, *, payload_only: bool = False) -> bool:
+    envelope = gate_budget_envelope(value, payload_only=payload_only)
+    if envelope is None or not _within_projection_budget(
+        envelope, max_bytes=MAX_PUBLIC_GATE_BYTES, max_nodes=MAX_PUBLIC_GATE_NODES
+    ):
+        return False
+    return envelope is value or _within_projection_budget(
+        value,
+        max_bytes=MAX_PUBLIC_GATE_BYTES + MAX_PUBLIC_PROMPT_BODY_BYTES,
+        max_nodes=MAX_PUBLIC_GATE_NODES,
+    )
+
+
 def _compact_public_state(value: JsonDict) -> JsonDict:
-    """Keep navigation/status data when a legacy checkpoint exceeds the response budget."""
+    """Keep lifecycle and bounded audit history when large evidence needs omission."""
 
     result = {
         key: value[key]
         for key in ("title", "phases_plan", "current_phase", "run_aborted", "engine_handle")
         if key in value
     }
+    result["projection_truncated"] = True
     phase_results = value.get("phase_results")
     if type(phase_results) is dict:
         result["phase_results"] = {
@@ -542,6 +704,36 @@ def _compact_public_state(value: JsonDict) -> JsonDict:
             for phase, entry in phase_results.items()
             if type(entry) is dict
         }
+        # Keep at least the latest action from every phase before filling older
+        # history. Large prompt/dialogue text must not erase all approvals.
+        for phase, entry in phase_results.items():
+            if type(entry) is dict and entry.get("approvals"):
+                result["phase_results"][phase]["approvals"] = entry["approvals"][-1:]
+
+    def retain_history(target: JsonDict, key: str, entries: list[JsonDict]) -> None:
+        lower, upper = 0, len(entries)
+        while lower < upper:
+            count = (lower + upper + 1) // 2
+            target[key] = entries[-count:]
+            if _within_projection_budget(
+                result,
+                max_bytes=MAX_PUBLIC_PIPELINE_STATE_BYTES,
+                max_nodes=MAX_PUBLIC_PIPELINE_STATE_NODES,
+            ):
+                lower = count
+            else:
+                upper = count - 1
+        if lower:
+            target[key] = entries[-lower:]
+        else:
+            target.pop(key, None)
+
+    if type(phase_results) is dict:
+        for phase, entry in phase_results.items():
+            if type(entry) is dict and entry.get("approvals"):
+                retain_history(result["phase_results"][phase], "approvals", entry["approvals"])
+    if value.get("dialogue"):
+        retain_history(result, "dialogue", value["dialogue"])
     return result
 
 
@@ -608,12 +800,14 @@ def public_pipeline_state(value: Any) -> JsonDict:
         if len(projected_artifacts) == len(artifacts):
             result["artifacts"] = projected_artifacts
     dialogue = value.get("dialogue")
-    if type(dialogue) is list and len(dialogue) <= 100:
+    if type(dialogue) is list and len(dialogue) <= MAX_DURABLE_DIALOGUE_ENTRIES:
         projected_dialogue = [
-            item for raw in dialogue if (item := _public_dialogue(raw)) is not None
+            item for raw in dialogue if (item := _public_dialogue(raw, truncate=True)) is not None
         ]
         if len(projected_dialogue) == len(dialogue):
             result["dialogue"] = projected_dialogue
+            if any(item.get("projection_truncated") is True for item in projected_dialogue):
+                result["projection_truncated"] = True
     packets = value.get("context_packets")
     if type(packets) is list and len(packets) <= 64:
         projected_packets = [
@@ -666,11 +860,17 @@ def _meaningful_text(value: Any, max_chars: int) -> bool:
 def _valid_review_payload(kind: str, phase: str, value: Any) -> bool:
     """Require the complete human-review contract before exposing actions."""
 
-    if type(value) is not dict or not _within_projection_budget(
-        value,
-        max_bytes=MAX_PUBLIC_GATE_BYTES,
-        max_nodes=MAX_PUBLIC_GATE_NODES,
-    ):
+    if type(value) is not dict or len(value) > 128 or any(type(key) is not str for key in value):
+        return False
+    # Optional evidence is independently projected through a fixed allowlist and
+    # fitted to the remaining response budget. Older checkpoints can contain a
+    # large resolved prompt here; it must not hide an otherwise valid decision.
+    required = (
+        {key: item for key, item in value.items() if key != "evidence"}
+        if kind == "phase_review"
+        else value
+    )
+    if not _within_gate_budget(required, payload_only=True):
         return False
     schema_version = value.get("schema_version")
     payload_kind = value.get("kind")
@@ -690,6 +890,8 @@ def _valid_review_payload(kind: str, phase: str, value: Any) -> bool:
     ):
         return False
     if "error" in value and _text(value.get("error"), 4_096) is None:
+        return False
+    if "projection_truncated" in value and type(value["projection_truncated"]) is not bool:
         return False
 
     if kind == "prompt_review":
@@ -893,8 +1095,6 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
         ]
         result["warnings"] = [_text(raw, 4_096) for raw in payload["warnings"]]
         result["dialogue_tail"] = [_public_dialogue(raw) for raw in payload["dialogue_tail"]]
-        if type(payload.get("evidence")) is dict:
-            result["evidence"] = public_phase_evidence(phase, payload["evidence"])
     else:
         # Runtime recovery gates carry no provider capability: expose only the
         # bounded retry contract needed to resume the exact interrupt id.
@@ -914,6 +1114,10 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
     error = _text(payload.get("error"), 4_096)
     if error is not None:
         result["error"] = error
+    if kind == "phase_review" and payload.get("projection_truncated") is True:
+        result["projection_truncated"] = True
+    if kind == "phase_review" and type(payload.get("evidence")) is dict:
+        result["evidence"] = public_phase_evidence(phase, payload["evidence"], gate_payload=result)
     return result
 
 
@@ -943,12 +1147,16 @@ def public_gate(value: Any, *, include_payload: bool) -> JsonDict | None:
     ):
         return None
     result: JsonDict = {"interrupt_id": interrupt_id, "kind": kind, "phase": phase}
-    if include_payload:
-        result["payload"] = _public_gate_payload(kind, phase, value.get("payload"))
-        if not _within_projection_budget(
-            result,
-            max_bytes=MAX_PUBLIC_GATE_BYTES,
-            max_nodes=MAX_PUBLIC_GATE_NODES,
-        ):
+    # Summary and detail must agree on whether the complete decision can be read.
+    result["payload"] = _public_gate_payload(kind, phase, value.get("payload"))
+    if not _within_gate_budget(result):
+        # A required contract can use the entire envelope budget. Even the
+        # optional omission marker may not fit; keep the decision available
+        # rather than hiding it because its evidence preview was too large.
+        if kind == "phase_review":
+            result["payload"].pop("evidence", None)
+        if not _within_gate_budget(result):
             return None
+    if not include_payload:
+        result.pop("payload")
     return result

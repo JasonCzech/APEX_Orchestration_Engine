@@ -20,6 +20,8 @@ from apex.services import pipeline_read as pipeline_read_module
 from apex.services.pipeline_public import (
     MAX_PUBLIC_GATE_BYTES,
     MAX_PUBLIC_PIPELINE_STATE_BYTES,
+    MAX_PUBLIC_PROMPT_BODY_BYTES,
+    gate_budget_envelope,
     public_gate,
     public_pipeline_state,
 )
@@ -967,7 +969,13 @@ def test_get_pipeline_returns_state_values_and_interrupts() -> None:
 
 
 def test_get_pipeline_caps_aggregate_gate_payload_response() -> None:
-    payload = {**GATE_PAYLOAD, "additional_context": "C" * 50_000}
+    # Context packets are envelope data and cannot borrow the prompt-body budget.
+    payload = {
+        **GATE_PAYLOAD,
+        "context_packets": [
+            {"id": None, "source": None, "title": None, "summary": "C" * 4_000} for _ in range(60)
+        ],
+    }
     state = {
         "values": THREAD_INTERRUPTED["values"],
         "tasks": [
@@ -1002,6 +1010,37 @@ def test_get_pipeline_caps_aggregate_gate_payload_response() -> None:
     assert len(response.content) <= (
         MAX_PUBLIC_PENDING_GATES_BYTES + MAX_PUBLIC_PIPELINE_STATE_BYTES + 100_000
     )
+
+
+def test_get_pipeline_keeps_complete_large_prompts_with_one_shared_body_budget() -> None:
+    payload = build_prompt_review_payload(
+        Phase.TEST_PLANNING,
+        {"system": "😀" * 50_000, "user": "😀" * 50_000, "application": "😀" * 50_000},
+        {"origin": "run_override"},
+        [],
+        [],
+    )
+    state = {
+        "values": THREAD_INTERRUPTED["values"],
+        "tasks": [{"interrupts": _pending_interrupts(0, 10, payload=payload)}],
+        "interrupts": [],
+    }
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.get("/v1/pipelines/t-1")
+    assert response.status_code == 200
+    gates = response.json()["interrupts"]
+    # Each body is 600 KB; three share 1.8 MB, and a fourth exceeds the single allowance.
+    assert len(gates) == 3
+    assert all(gate["payload"] == payload for gate in gates)
+    encoded = json.dumps(gates, ensure_ascii=False, separators=(",", ":")).encode()
+    envelope = json.dumps(
+        [gate_budget_envelope(gate) for gate in gates], ensure_ascii=False, separators=(",", ":")
+    ).encode()
+    assert len(encoded) > MAX_PUBLIC_PENDING_GATES_BYTES
+    assert len(envelope) <= MAX_PUBLIC_PENDING_GATES_BYTES
+    assert len(encoded) - len(envelope) <= MAX_PUBLIC_PROMPT_BODY_BYTES
+    assert len(encoded) <= MAX_PUBLIC_PENDING_GATES_BYTES + MAX_PUBLIC_PROMPT_BODY_BYTES
 
 
 def test_pending_gate_projection_enforces_aggregate_node_budget_without_large_preflight_copy(
@@ -1041,7 +1080,9 @@ def test_pending_gate_projection_enforces_aggregate_node_budget_without_large_pr
     assert response.status_code == 200
     gates = response.json()["interrupts"]
     assert 1 <= len(gates) < MAX_PUBLIC_PENDING_GATES
-    assert measured_candidates == [f"int-{index}" for index in range(len(gates) + 1)]
+    assert measured_candidates == [
+        gate_id for index in range(len(gates)) for gate_id in [f"int-{index}"] * 2
+    ] + [f"int-{len(gates)}"]
     # The aggregate JSON tree stays below the node cap; preflight only ever
     # encodes one bounded gate dictionary, never the full provider collection.
     stack: list[Any] = [gates]

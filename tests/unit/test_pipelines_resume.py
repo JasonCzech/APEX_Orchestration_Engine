@@ -15,9 +15,11 @@ from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
 from apex.domain.pipeline import (
     ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
     EngineConnectionAffinityMissingError,
+    Phase,
 )
 from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
+from apex.graphs.pipeline.gates import build_prompt_review_payload
 from apex.routers.engines import get_engine_abort_service
 from apex.routers.pipelines import get_pipeline_read_service, router
 from apex.services.engine_abort import (
@@ -809,6 +811,28 @@ def test_resume_gate_rejects_incomplete_or_empty_human_review(payload: JsonDict)
     assert response.status_code == 409
     assert response.json()["title"] == "pipeline_configuration_conflict"
     assert runs.create_calls == []
+
+
+def test_resume_large_unicode_prompt_modify_preserves_the_exact_edit() -> None:
+    runs = FakeRuns()
+    state = state_with_interrupt("prompt-1")
+    original = {"system": "测" * 45_000, "user": "验" * 45_000}
+    state["tasks"][0]["interrupts"][0]["value"] = build_prompt_review_payload(
+        Phase.EXECUTION, original, {"origin": "run_override"}, [], []
+    )
+    edited = {
+        "system": original["system"] + " edited",
+        "user": original["user"],
+        "application": None,
+    }
+    with TestClient(make_app(FakeClient(FakeThreads({"t-1": state}), runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/prompt-1/resume",
+            json={"action": "modify", "prompt": edited},
+        )
+    assert response.status_code == 202
+    assert len(runs.create_calls) == 1
+    assert runs.create_calls[0]["command"]["resume"]["prompt-1"]["prompt"] == edited
 
 
 @pytest.mark.parametrize(
