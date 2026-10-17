@@ -35,7 +35,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
   const executionOmitted = executionWasOmitted(state)
   const assessment = summary?.outcome?.assessment
   const assessmentLabel = assessment && ({ passed: 'Passed', failed: 'Failed', inconclusive: 'Inconclusive', not_assessed: 'Not assessed', unavailable: 'Not available' })[assessment.status]
-  const acceptance = assessmentLabel ?? (executionOmitted ? 'Not applicable' : summary
+  const acceptance = assessmentLabel ?? (executionOmitted ? 'Not available' : summary
     ? summary.passed === true ? 'Passed' : summary.passed === false ? 'Failed' : 'Not available'
     : executionResultLabel(detail, state))
   const errors = Object.values(state.phase_results ?? {}).flatMap((entry) => entry.errors ?? [])

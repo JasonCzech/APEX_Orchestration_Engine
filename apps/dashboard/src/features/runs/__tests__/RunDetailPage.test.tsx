@@ -261,10 +261,10 @@ describe('RunDetailPage', () => {
   })
 
   it.each([
-    [{ uri: 'https://load.example/#/report/123' }, 'Not available'],
-    [['not an evidence object'], 'Not applicable'],
-    ['invalid evidence', 'Not applicable'],
-  ])('preserves valid imported evidence after unrelated schema drift (%j)', async (externalResults, expectedAcceptance) => {
+    [{ uri: 'https://load.example/#/report/123' }, true],
+    [['not an evidence object'], false],
+    ['invalid evidence', false],
+  ])('preserves valid imported evidence after unrelated schema drift (%j)', async (externalResults, hasExecutionReference) => {
     const detail = {
       ...structuredClone(PIPELINE_DETAIL),
       execution_result: null,
@@ -278,13 +278,27 @@ describe('RunDetailPage', () => {
     server.use(pipelineDetailHandler(detail))
     renderRunRoutes([`/runs/${THREAD_ID}`])
     const overview = await screen.findByRole('region', { name: 'Run overview' })
-    expect(within(overview).getByText(expectedAcceptance)).toBeInTheDocument()
-    if (expectedAcceptance === 'Not available') {
-      expect(within(overview).queryByText('Not applicable')).not.toBeInTheDocument()
+    expect(within(overview).getByText('Not available')).toBeInTheDocument()
+    expect(within(overview).queryByText('Not applicable')).not.toBeInTheDocument()
+    if (hasExecutionReference) {
       expect(within(overview).getByText(/An execution reference is recorded; collected execution evidence is unavailable\./)).toBeInTheDocument()
       expect(within(overview).queryByText(/Execution evidence has not been recorded\./)).not.toBeInTheDocument()
       expect(within(overview).getByRole('link', { name: 'Open load execution' })).toHaveAttribute('href', expect.stringContaining('#/report/123'))
     }
+  })
+
+  it('uses the same unavailable verdict in the header and overview when execution was not selected', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), execution_result: null,
+      phase_strip: [{ phase: 'reporting', status: 'succeeded' }],
+      values: { phases_plan: ['reporting'], phase_results: { reporting: { status: 'succeeded' } } } }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    const acceptance = within(overview).getByRole('heading', { name: 'Test acceptance' }).parentElement!
+    expect(within(acceptance).getByText('Not available', { exact: true })).toBeInTheDocument()
+    expect(acceptance).toHaveTextContent('Execution was not selected; there is no test acceptance decision for this run.')
+    expect(screen.getByText('Test result:').parentElement).toHaveTextContent('Test result: Not available')
+    expect(screen.queryByText('Not applicable')).not.toBeInTheDocument()
   })
 
   it('uses the themed link style for Evidence Coverage artifacts', async () => {

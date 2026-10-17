@@ -25,6 +25,31 @@ test('demo activity offers saved reasoning and resolves the application consiste
 const phases = ['story_analysis', 'test_planning', 'env_triage', 'script_scenario', 'execution', 'reporting', 'postmortem']
 const application = '24fc7150-cd9c-4bfe-bc48-e6cd49e515be'
 
+test('omitted execution has one unavailable verdict with a separate explanation', async ({ page }) => {
+  const run = { thread_id: 'report-only', title: 'Report only', thread_status: 'idle', current_phase: 'reporting',
+    execution_result: null, pending_gate: null, interrupts: [],
+    phase_strip: [{ phase: 'reporting', status: 'succeeded' }],
+    values: { phases_plan: ['reporting'], phase_results: { reporting: { status: 'succeeded' } } } }
+  await page.addInitScript(() => localStorage.setItem('apex.apiKey', 'omitted-execution-fixture'))
+  await page.route('**/config.json', route => route.fulfill({ json: { dataMode: 'connected', apexOrigin: '', langgraphOrigin: '' } }))
+  await page.route('**/v1/**', route => {
+    const path = new URL(route.request().url()).pathname
+    let json: unknown = []
+    if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: {}, limits: { max_context_packets: 32 }, consumer: { id: 'viewer', name: 'Viewer', role: 'viewer', scopes: [] } }
+    else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'viewer', name: 'Viewer', consumer_type: 'dashboard', role: 'viewer', scopes: [], is_unscoped: true, capabilities: {} }
+    else if (path === '/v1/pipelines') json = { items: [], total: 0, limit: 100, offset: 0 }
+    else if (path === '/v1/pipelines/report-only') json = run
+    return route.fulfill({ json })
+  })
+  await page.goto('/runs/report-only')
+  const overview = page.getByRole('region', { name: 'Run overview', exact: true })
+  const acceptance = overview.getByRole('article').filter({ has: page.getByRole('heading', { name: 'Test acceptance', exact: true }) })
+  await expect(acceptance.getByText('Not available', { exact: true })).toBeVisible()
+  await expect(acceptance).toContainText('Execution was not selected; there is no test acceptance decision for this run.')
+  await expect(page.getByText('Not applicable', { exact: true })).toHaveCount(0)
+  await expect(page.locator('.run-workspace-meta').filter({ hasText: 'Test result:' })).toHaveText('Test result: Not available')
+})
+
 function reviewRun(id: string, title: string, phase: string, kind: 'prompt_review' | 'phase_review', timestamp: string) {
   const phase_strip = phases.map((name, index) => ({ phase: name, attempt: 1,
     status: name === phase ? kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
