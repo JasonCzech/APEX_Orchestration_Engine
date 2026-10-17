@@ -8,7 +8,8 @@ import { reviewPolicySummary } from '../reviewPolicySummary'
  * PHASE_PREREQUISITES for the new thread), and the gates segmented control with the 7x2 custom
  * matrix (checked = gated).
  */
-import { useEffect, useRef } from 'react'
+import { Dialog } from '@/components/Dialog'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -57,6 +58,7 @@ function phaseLabel(phase: PhaseName): string {
 }
 
 export function ConfigStep({ draft, onChange }: StepProps) {
+  const [pendingPreset, setPendingPreset] = useState<GoldenConfig | null>(null)
   const assistants = useAssistants()
   const config = draft.config
   const phases = selectedPhases(config)
@@ -68,6 +70,15 @@ export function ConfigStep({ draft, onChange }: StepProps) {
   }
 
   function applyGoldenConfig(golden: GoldenConfig) {
+    if (Object.keys(draft.prompt_overrides).length > 0 || draft.document_ids.length > 0 ||
+      draft.work_items.length > 0 || draft.scope.environment_id || draft.config.golden_config_id ||
+      draft.config.engine !== 'sim' || draft.config.unsupported_engine || draft.config.phases !== null ||
+      draft.config.gates_mode !== 'all_gated') {
+      setPendingPreset(golden)
+    } else commitGoldenConfig(golden)
+  }
+
+  function commitGoldenConfig(golden: GoldenConfig) {
     onChange((prev) => {
       const bundle = golden.configurable
       const next: WizardConfig = {
@@ -75,6 +86,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         // A newly selected assistant inherits PipelineConfigurable defaults,
         // never UI overrides left behind by the previously selected assistant.
         engine: 'sim',
+        unsupported_engine: null,
         gates_mode: 'all_gated',
         golden_config_id: golden.assistantId,
         golden_configurable: { ...bundle },
@@ -83,6 +95,8 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       const engine = bundle['engine']
       if (typeof engine === 'string' && (ENGINES as readonly string[]).includes(engine)) {
         next.engine = engine as EngineId
+      } else if (engine !== undefined && engine !== null) {
+        next.unsupported_engine = String(engine)
       }
       if (bundle['gates'] !== undefined && bundle['gates'] !== null) {
         next.gates_mode = 'custom'
@@ -155,15 +169,8 @@ export function ConfigStep({ draft, onChange }: StepProps) {
       nextFocus = next[0] ?? null
     }
     onChange((prev) => {
-      const allowed = new Set(next.map((name) => `phase/${name}`))
-      const prompt_overrides = Object.fromEntries(
-        Object.entries(prev.prompt_overrides).filter(
-          ([key]) => !key.startsWith('phase/') || allowed.has(key),
-        ),
-      )
       return {
         ...prev,
-        prompt_overrides,
         config: {
           ...prev.config,
           phases: next.length === PHASE_NAMES.length ? null : next,
@@ -223,6 +230,12 @@ export function ConfigStep({ draft, onChange }: StepProps) {
 
   return (
     <section className="wizard-step" aria-label="Config">
+      {pendingPreset && <Dialog ariaLabel="Apply test preset" className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" onClose={() => setPendingPreset(null)}>
+        <h2>Apply {pendingPreset.name}?</h2>
+        <p>This replaces the engine, phase selection, review policy and all prompt overrides. If its project or application differs, attached documents are removed; a different project also removes work items and context summaries.</p>
+        <div className="wizard-row"><button type="button" className="btn btn-secondary" onClick={() => setPendingPreset(null)}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => { commitGoldenConfig(pendingPreset); setPendingPreset(null) }}>Apply preset</button></div>
+      </Dialog>}
+      {config.unsupported_engine && <p className="tonal-card danger" role="alert">This preset pins engine “{config.unsupported_engine}”, which this deployment does not support. Choose a supported engine before launch.</p>}
       <div className="wizard-field">
         <span className="wizard-label">Engine</span>
         <div className="wizard-engine-cards" role="radiogroup" aria-label="Execution engine">
@@ -231,7 +244,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
               key={engine}
               type="button"
               role="radio"
-              aria-checked={config.engine === engine}
+              aria-checked={!config.unsupported_engine && config.engine === engine}
               tabIndex={config.engine === engine ? 0 : -1}
               onKeyDown={(event) => {
                 const index = ENGINES.indexOf(engine)
@@ -240,13 +253,13 @@ export function ConfigStep({ draft, onChange }: StepProps) {
                     : event.key === 'Home' ? 0 : event.key === 'End' ? ENGINES.length - 1 : -1
                 if (next < 0) return
                 event.preventDefault()
-                patchConfig({ engine: ENGINES[next]! })
+                patchConfig({ engine: ENGINES[next]!, unsupported_engine: null })
                 event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus()
               }}
               className={`glass-panel wizard-engine-card${
-                config.engine === engine ? ' wizard-engine-card--selected' : ''
+                !config.unsupported_engine && config.engine === engine ? ' wizard-engine-card--selected' : ''
               }`}
-              onClick={() => patchConfig({ engine })}
+              onClick={() => patchConfig({ engine, unsupported_engine: null })}
             >
               <span className="wizard-engine-name">{ENGINE_CAPTIONS[engine].label}</span>
               <span className="wizard-caption">{ENGINE_CAPTIONS[engine].caption}</span>

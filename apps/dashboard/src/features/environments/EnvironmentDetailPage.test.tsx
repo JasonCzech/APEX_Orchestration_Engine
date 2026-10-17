@@ -118,7 +118,7 @@ describe('EnvironmentDetailPage', () => {
     const form = await screen.findByRole('form', { name: 'Edit environment' })
     const save = within(form).getByRole('button', { name: 'Save changes' })
     const closeEditor = screen.getByRole('button', { name: 'Close editor' })
-    const rescan = screen.getByRole('button', { name: 'Rescan' })
+    const rescan = await screen.findByRole('button', { name: 'Rescan' })
     expect(save).toBeEnabled()
 
     await user.click(rescan)

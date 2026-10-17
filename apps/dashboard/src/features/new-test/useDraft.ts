@@ -377,6 +377,9 @@ export function useDraft({
       ? getFreshDraftHandoff(queryClient, mountAuthRevision, mountSessionRevision)
       : undefined
   const initialDraft = initialFreshHandoff?.snapshot ?? emptyDraft()
+  if (!initialFreshHandoff && !initialDraftId && consumer?.scopes.length === 1) {
+    initialDraft.scope = { project_id: consumer.scopes[0]!.project_id, app_id: consumer.scopes[0]!.app_id ?? null, environment_id: null }
+  }
   const initialFreshNeedsPersistence =
     initialFreshHandoff !== undefined &&
     initialFreshHandoff.persistedRevision < initialFreshHandoff.revision

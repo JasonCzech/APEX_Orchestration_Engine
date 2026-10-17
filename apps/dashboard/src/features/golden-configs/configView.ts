@@ -182,7 +182,7 @@ export function engineOf(configurable: Record<string, unknown>): string {
 }
 
 export function engineLabel(engine: string): string {
-  return ENGINE_LABELS[engine] ?? engine
+  return ENGINE_LABELS[engine] ?? `Unknown engine (${engine})`
 }
 
 export interface ConfigSummary {

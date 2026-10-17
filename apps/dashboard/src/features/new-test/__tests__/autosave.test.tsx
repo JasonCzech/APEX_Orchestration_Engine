@@ -36,6 +36,7 @@ describe('wizard draft autosave', () => {
     const { captured } = installWizardHandlers()
     const { router } = renderWizard()
 
+    setField('Project', 'demo')
     setField('Title', 'Soak test')
     expect(captured.creates).toHaveLength(0) // debounce still pending
     expect(screen.getByTestId('draft-save-state')).toHaveTextContent('Unsaved changes')

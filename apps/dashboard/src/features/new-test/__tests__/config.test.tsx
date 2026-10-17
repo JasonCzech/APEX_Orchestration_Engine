@@ -179,6 +179,7 @@ describe('ConfigStep', () => {
     // Switching to an assistant that omits engine/gates must restore backend
     // defaults instead of leaking the previous assistant's pinned values.
     await user.click(screen.getByRole('button', { name: /Baseline defaults/ }))
+    await user.click(screen.getByRole('button', { name: 'Apply preset' }))
     expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute(
       'aria-checked',
       'true',
@@ -187,6 +188,41 @@ describe('ConfigStep', () => {
     expect(screen.queryByTestId('gates-matrix')).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Save Draft' }))
     await screen.findByText('Draft saved')
+    rendered.unmount()
+  })
+
+  it('confirms replacing a custom review policy before applying a preset', async () => {
+    assistantsSearch.mockResolvedValue([GOLDEN])
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard('/runs/new?step=config')
+    await user.click(screen.getByRole('radio', { name: 'Run automatically' }))
+    await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Apply test preset' })
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('radio', { name: 'Run automatically' })).toBeChecked()
+    expect(screen.queryByTestId('config-inherited-chip')).not.toBeInTheDocument()
+    rendered.unmount()
+  })
+
+  it('requires an explicit supported engine when a preset pins an unknown engine', async () => {
+    assistantsSearch.mockResolvedValue([{ ...GOLDEN, config: { configurable: { engine: 'apexload' } } }])
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    await user.click(await screen.findByRole('button', { name: /Nightly checkout soak/ }))
+    expect(screen.getByText(/pins engine “apexload”/)).toBeInTheDocument()
+    const engines = within(screen.getByRole('radiogroup', { name: 'Execution engine' })).getAllByRole('radio')
+    expect(engines.every(engine => engine.getAttribute('aria-checked') === 'false')).toBe(true)
+    expect(engines.every(engine => !engine.classList.contains('wizard-engine-card--selected'))).toBe(true)
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeDisabled()
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    await user.click(screen.getByRole('radio', { name: /Simulated/ }))
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeEnabled()
     rendered.unmount()
   })
 
@@ -212,6 +248,8 @@ describe('ConfigStep', () => {
         '/runs/new?step=config&golden=asst-defaulted',
       )
     })
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Apply preset' }))
 
     await waitFor(() =>
       expect(screen.getByRole('radio', { name: /Simulated/ })).toHaveAttribute(

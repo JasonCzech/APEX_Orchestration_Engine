@@ -446,7 +446,7 @@ export function WorkItemsStep({
         </div>
       )}
 
-      <p className="wizard-caption">Saved query needs a connection update? <Link to="/work-items/saved">Open saved queries</Link>. You can also add a work item directly or continue without work items.</p>
+      <p className="wizard-caption">{Boolean(savedQueries.data?.length) && <>Saved query needs a connection update? <Link to="/work-items/saved">Open saved queries</Link>. </>}You can also add a work item directly or continue without work items.</p>
 
       {translated && (
         <div className="wizard-field" data-testid="translated-query">

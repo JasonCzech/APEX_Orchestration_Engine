@@ -26,7 +26,7 @@ import {
   type SnapshotView,
 } from '@/api/hooks/useInventory'
 import { useConsumer } from '@/auth/AuthProvider'
-import { isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
+import { canMutateAudience, isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { JsonViewer } from '@/components/viewers/JsonViewer'
@@ -275,7 +275,7 @@ function InventoryPanel({
         <h2 className="env-card-title">Inventory</h2>
         {inventory.data?.snapshot && (
           <span className="env-scan-caption">
-            Scanned {formatRelative(inventory.data.snapshot.scanned_at)}
+            Scanned {formatRelative(inventory.data.snapshot.scanned_at)} · {inventory.data.snapshot.source ?? 'Scan source not recorded'}{inventory.data.snapshot.connection_name ? ` · ${inventory.data.snapshot.connection_name}` : ''}
             {inventory.data.snapshot.stale && (
               <span className="status-badge warning env-stale-chip">stale</span>
             )}
@@ -283,6 +283,8 @@ function InventoryPanel({
         )}
       </header>
 
+      {canMutate && inventory.data?.snapshot && <button type="button" className="btn btn-secondary btn-sm" onClick={() => rescan.mutate()} disabled={writePending}>{rescan.isPending ? 'Scanning…' : 'Rescan'}</button>}
+      {inventory.data?.snapshot?.source === 'Simulated inventory' && <p className="tonal-card warning">This is a fixed demonstration inventory. It does not describe the environment’s live hosts.</p>}
       {rescan.isError && (
         <div className="env-inline-error" role="alert">
           <span>{rescan.error.message}</span>
@@ -350,7 +352,8 @@ export function EnvironmentDetailPage() {
   const applications = useApplicationsIndex()
   const rescan = useRescanEnvironment(id)
   const consumer = useConsumer()
-  const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const owningApplication = applications.data?.find((application) => application.id === environment.data?.application_id)
+  const canMutate = canMutateAudience(consumer, owningApplication?.project_id, owningApplication?.id)
   const canApproveTarget = isGlobalAdmin(consumer)
   // ?edit=1 lets the list's row menu land directly in edit mode.
   const editRequested = canMutate && searchParams.get('edit') === '1'
@@ -426,14 +429,7 @@ export function EnvironmentDetailPage() {
             >
               {editing ? 'Close editor' : 'Edit'}
             </button>
-            <button
-              type="button"
-              className="btn btn-primary btn-sm"
-              onClick={() => rescan.mutate()}
-              disabled={writeCount > 0}
-            >
-              {rescan.isPending ? 'Scanning…' : 'Rescan'}
-            </button>
+
           </div>
         )}
       </header>

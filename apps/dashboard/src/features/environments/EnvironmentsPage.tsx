@@ -8,7 +8,7 @@
  * (the list payload does not reliably carry snapshot summaries).
  */
 import { useMemo, useState, type FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import {
   environmentWriteMutationKey,
@@ -22,11 +22,11 @@ import {
 } from '@/api/hooks/useEnvironments'
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
-import { isGlobalAdmin, roleAtLeast } from '@/auth/RequireRole'
+import { canLaunchPipelines, canMutateAudience, isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
-import { OverflowMenu } from '@/features/runs/PreflightModal'
+import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { formatRelative } from '@/utils/time'
 
 import { HostsEditor, KindChip } from './environmentsForm'
@@ -428,7 +428,7 @@ export function EnvironmentsPage() {
   const applications = useApplicationsIndex()
   const environments = useEnvironmentsIndex()
   const consumer = useConsumer()
-  const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const canMutate = canLaunchPipelines(consumer)
   const canApproveTarget = isGlobalAdmin(consumer)
   const projectWideScopes = Array.from(new Set(
     (consumer?.scopes ?? [])
@@ -438,13 +438,21 @@ export function EnvironmentsPage() {
   const canCreateApplication = canMutate && (isGlobalAdmin(consumer) || projectWideScopes.length > 0)
   const applicationProjectOptions = (consumer?.scopes.length ?? 0) > 0 ? projectWideScopes : null
 
+  const [searchParams] = useSearchParams()
+  const applicationFilter = searchParams.get('application')
+  const [search, setSearch] = useState('')
+  const [projectFilter, setProjectFilter] = useState('')
   const [creatingApplication, setCreatingApplication] = useState(false)
   const [creatingEnvironmentFor, setCreatingEnvironmentFor] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<Environment | null>(null)
 
   const groups = useMemo(
-    () => groupEnvironments(applications.data ?? [], environments.data ?? []),
-    [applications.data, environments.data],
+    () => groupEnvironments(applications.data ?? [], environments.data ?? []).filter((group) =>
+      (!applicationFilter || group.key === applicationFilter) &&
+      (!projectFilter || group.project === projectFilter) &&
+      (!search.trim() || `${group.label} ${group.project ?? ''} ${group.environments.map((environment) => environment.name).join(' ')}`.toLowerCase().includes(search.trim().toLowerCase())),
+    ),
+    [applications.data, environments.data, applicationFilter, projectFilter, search],
   )
 
   const isPending = applications.isPending || environments.isPending
@@ -465,14 +473,11 @@ export function EnvironmentsPage() {
               New application
             </button>
           )}
-          {canMutate && !creatingApplication && (applications.data?.length ?? 0) > 0 && creatingEnvironmentFor === null && (
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => setCreatingEnvironmentFor('')}>
-              New environment
-            </button>
-          )}
         </div>
       </header>
 
+      {applicationFilter && <Link className="btn btn-ghost" to="/environments">All applications</Link>}
+      <details className="ux-filters" open><summary>Filters</summary><div><label className="ux-field">Search applications and environments<input className="field-input" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label className="ux-field">Project<select className="field-select" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">All projects</option>{[...new Set((applications.data ?? []).map((app) => app.project_id))].sort().map((project) => <option key={project}>{project}</option>)}</select></label></div></details>
       {creatingApplication && (
         <CreateApplicationPanel
           projectOptions={applicationProjectOptions}
@@ -525,11 +530,11 @@ export function EnvironmentsPage() {
         />
       ) : groups.length === 0 ? (
         <div className="dash-empty">
-          <h2>No applications yet</h2>
+          <h2>{search || projectFilter || applicationFilter ? 'No matching applications' : 'No applications yet'}</h2>
           <p className="dash-empty-hint">
             {canCreateApplication
               ? 'Create an application first, then add the environments used by tests.'
-              : canMutate
+              : consumer?.role !== 'viewer'
                 ? 'Application creation requires project-wide access.'
                 : 'Your role has read-only access. Ask a project operator to create an application.'}
           </p>
@@ -544,10 +549,10 @@ export function EnvironmentsPage() {
           <section key={group.key} className="env-group" aria-label={`Application ${group.label}`}>
             <header className="env-group-header">
               <div className="env-group-heading">
-                <h2 className="env-group-title">{group.label}</h2>
+                <h2 className="env-group-title"><Link to={`/environments?application=${encodeURIComponent(group.key)}`}>{group.label}</Link></h2>
                 {group.project && <span className="env-group-project">{group.project}</span>}
               </div>
-              {canMutate && !creatingApplication && creatingEnvironmentFor === null && (
+              {canMutateAudience(consumer, group.project, group.key) && !creatingApplication && creatingEnvironmentFor === null && (
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreatingEnvironmentFor(group.key)}>
                   Add environment
                 </button>
@@ -556,7 +561,7 @@ export function EnvironmentsPage() {
             {group.environments.length === 0 ? (
               <div className="glass-panel env-group-empty">
                 <span>No environments configured.</span>
-                {canMutate && !creatingApplication && creatingEnvironmentFor === null && (
+                {canMutateAudience(consumer, group.project, group.key) && !creatingApplication && creatingEnvironmentFor === null && (
                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => setCreatingEnvironmentFor(group.key)}>
                     Add first environment
                   </button>
@@ -581,7 +586,7 @@ export function EnvironmentsPage() {
                     <EnvironmentRow
                       key={environment.id}
                       environment={environment}
-                      canMutate={canMutate}
+                      canMutate={canMutateAudience(consumer, group.project, group.key)}
                       onDelete={setDeleting}
                     />
                   ))}

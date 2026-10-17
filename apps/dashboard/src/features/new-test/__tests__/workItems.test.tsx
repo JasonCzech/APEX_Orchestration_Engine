@@ -49,7 +49,9 @@ describe('WorkItemsStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Work items/i }))
 
     await user.type(
       await screen.findByLabelText('Find by description'),
@@ -100,7 +102,9 @@ describe('WorkItemsStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Work items/i }))
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
     await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
@@ -137,7 +141,9 @@ describe('WorkItemsStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Work items/i }))
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
     await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
@@ -185,7 +191,9 @@ describe('WorkItemsStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Work items/i }))
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
     await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
@@ -223,7 +231,9 @@ describe('WorkItemsStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=work-items')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Work items/i }))
 
     const keyInput = await screen.findByLabelText('Add by key')
     await user.type(keyInput, 'PHX-241')

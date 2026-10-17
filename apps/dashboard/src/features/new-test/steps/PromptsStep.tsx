@@ -6,6 +6,7 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import CodeMirror from '@uiw/react-codemirror'
+import { EditorView } from '@codemirror/view'
 
 import type { components } from '@apex/api-client'
 import type { PhaseName } from '@apex/pipeline-events'
@@ -164,6 +165,8 @@ function PromptBlock({
             value={override.content}
             editable
             aria-label={editorLabel}
+            extensions={[EditorView.contentAttributes.of({ 'aria-label': editorLabel })]}
+            indentWithTab={false}
             basicSetup={{
               lineNumbers: true,
               foldGutter: false,
@@ -179,6 +182,9 @@ function PromptBlock({
         <div className="code-viewer">
           <CodeMirror
             value={prompt.content}
+            aria-label={`${label} catalog content`}
+            extensions={[EditorView.contentAttributes.of({ 'aria-label': `${label} catalog content` })]}
+            indentWithTab={false}
             readOnly
             editable={false}
             basicSetup={{
@@ -230,6 +236,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
   })
 
   const system = useCatalogPrompt(phaseList.data, phase ? `${phase}/system` : null)
+  const userPrompt = useCatalogPrompt(phaseList.data, phase ? `${phase}/user` : null)
   const application = useCatalogPrompt(
     applicationList.data,
     appId,
@@ -238,6 +245,10 @@ export function PromptsStep({ draft, onChange }: StepProps) {
 
   function systemOverrideKey(phaseName: PhaseName): string {
     return `${PHASE_NAMESPACE}/${phaseName}`
+  }
+
+  function userOverrideKey(phaseName: PhaseName): string {
+    return `${PHASE_NAMESPACE}/${phaseName}/user`
   }
 
   function applicationOverrideKey(applicationId: string): string {
@@ -258,12 +269,13 @@ export function PromptsStep({ draft, onChange }: StepProps) {
       : undefined
   }
   const systemOverride = phase ? effectiveOverride(systemOverrideKey(phase)) : undefined
+  const userOverride = phase ? effectiveOverride(userOverrideKey(phase)) : undefined
   const applicationOverride = appId ? effectiveOverride(applicationOverrideKey(appId)) : undefined
 
   return (
     <section className="wizard-step" aria-label="Prompts">
       <p className="wizard-step-hint">
-        Preview the focused phase system prompt and the selected application's requirements prompt.
+        Preview the focused phase system and user prompts, and the selected application's requirements prompt.
       </p>
       {phaseList.isError && (
         <p className="wizard-caption wizard-caption--danger" role="alert">
@@ -320,7 +332,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
             error={system.error}
             override={systemOverride}
             overrideLabel={phase}
-            editorLabel={`${phase} system prompt override`}
+            editorLabel={`${PHASE_LABELS[phase]} system prompt override`}
             emptyText="Not in the catalog — the built-in phase template runs."
             testId="system-prompt-block"
             onOverride={(seed) =>
@@ -355,6 +367,52 @@ export function PromptsStep({ draft, onChange }: StepProps) {
                   [systemOverrideKey(phase)]: { content },
                 },
                 prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== systemOverrideKey(phase)),
+              }))
+            }
+          />
+
+          <PromptBlock
+            label="User prompt"
+            prompt={userPrompt.prompt}
+            loading={userPrompt.loading}
+            error={userPrompt.error}
+            override={userOverride}
+            overrideLabel={`${phase}-user`}
+            editorLabel={`${PHASE_LABELS[phase]} user prompt override`}
+            emptyText="Not in the catalog — the built-in phase template runs."
+            testId="user-prompt-block"
+            onOverride={(seed) =>
+              onChange((prev) => ({
+                ...prev,
+                prompt_overrides: {
+                  ...prev.prompt_overrides,
+                  [userOverrideKey(phase)]: { content: seed },
+                },
+                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== userOverrideKey(phase)),
+              }))
+            }
+            onRevert={() =>
+              onChange((prev) => {
+                const next = { ...prev.prompt_overrides }
+                delete next[userOverrideKey(phase)]
+                const inherited =
+                  prev.config.golden_configurable && isRecord(prev.config.golden_configurable['prompt_overrides'])
+                    ? prev.config.golden_configurable['prompt_overrides']
+                    : {}
+                const removals = Object.prototype.hasOwnProperty.call(inherited, userOverrideKey(phase))
+                  ? [...new Set([...prev.prompt_override_removals, userOverrideKey(phase)])]
+                  : prev.prompt_override_removals.filter((key) => key !== userOverrideKey(phase))
+                return { ...prev, prompt_overrides: next, prompt_override_removals: removals }
+              })
+            }
+            onEdit={(content) =>
+              onChange((prev) => ({
+                ...prev,
+                prompt_overrides: {
+                  ...prev.prompt_overrides,
+                  [userOverrideKey(phase)]: { content },
+                },
+                prompt_override_removals: prev.prompt_override_removals.filter((key) => key !== userOverrideKey(phase)),
               }))
             }
           />

@@ -69,7 +69,7 @@ export function RequireRole({
   return <>{children}</>
 }
 
-/** Catalog mutations are restricted to unscoped administrators. */
+/** Renders controls for platform-wide administration, such as preset configuration. */
 export function RequireGlobalAdmin({
   children,
   fallback = null,
@@ -83,4 +83,20 @@ export function RequireGlobalAdmin({
     return <>{fallback}</>
   }
   return <>{children}</>
+}
+
+/** Capability to create at least one pipeline, before choosing its audience. */
+export function canLaunchPipelines(consumer: ConsumerInfo | null | undefined): boolean {
+  return Boolean(consumer && roleAtLeast(consumer.role, 'operator') &&
+    (isGlobalAdmin(consumer) || consumer.scopes.length > 0))
+}
+
+export function pipelineLaunchRefusal(consumer: ConsumerInfo | null | undefined): string | null {
+  if (!consumer || !roleAtLeast(consumer.role, 'operator')) {
+    return "Launching tests requires role 'operator' or higher."
+  }
+  if (!canLaunchPipelines(consumer)) {
+    return 'Pipeline scope is not authorized. Ask an administrator to grant access to the project you need.'
+  }
+  return null
 }

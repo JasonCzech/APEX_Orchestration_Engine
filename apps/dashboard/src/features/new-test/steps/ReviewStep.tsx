@@ -83,16 +83,21 @@ function ReviewCard({
 
 export function ReviewStep({
   draft,
+  onChange,
   onEditStep,
   maxContextPackets,
-}: Pick<StepProps, 'draft' | 'maxContextPackets'> & {
+}: Pick<StepProps, 'draft' | 'maxContextPackets' | 'onChange'> & {
   onEditStep: (step: WizardStepId, field?: string) => void
 }) {
   const applications = useApplications(draft.scope.project_id || undefined)
   const environments = useEnvironments(draft.scope.app_id)
   const configurations = useAssistants()
   const releaseConfig = draft.config.golden_configurable?.load_test as { release_id?: string; mapping_revision?: string } | undefined
-  const readiness = assessWizardReadiness(draft, maxContextPackets)
+  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined, undefined, draft.scope.app_id)
+  const readiness = assessWizardReadiness(draft, maxContextPackets, {
+    ids: documents.isError ? undefined : documents.data?.map((doc) => doc.id),
+    failed: documents.isError,
+  })
   const issues = [...readiness.planningIssues, ...readiness.executionIssues]
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
@@ -104,12 +109,13 @@ export function ReviewStep({
     new Set([...Object.keys(inherited), ...Object.keys(draft.prompt_overrides)]),
   ).filter((key) => !draft.prompt_override_removals.includes(key))
 
-  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined)
   const knownDocs = new Map((documents.data ?? []).map((doc) => [doc.id, doc]))
   const contextSummary = summarizeContext(draft.document_ids.map((id) => knownDocs.get(id)))
 
   return (
     <section className="wizard-step" aria-label="Review">
+      {documents.isError && draft.document_ids.length > 0 && <button type="button" className="btn btn-secondary" onClick={() => void documents.refetch()}>Retry document verification</button>}
+      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Overrides for excluded phases are saved in this draft and will not be sent at launch.</p>}
       {issues.length > 0 && (
         <div className="wizard-issues" role="alert" data-testid="review-issues">
           <span className="wizard-label">Outstanding issues</span>
@@ -179,7 +185,7 @@ export function ReviewStep({
           <ul>{draft.document_ids.map((id) => {
             const doc = knownDocs.get(id)
             const status = parseStatusBadge(doc?.parse_status)
-            return <li key={id}><ReferenceName id={id} name={doc?.name} /> — {doc ? `${status.label} · ${status.included ? 'Included' : 'Text not included'}` : 'Inclusion not verified'}</li>
+            return <li key={id}><ReferenceName id={id} name={doc?.name} /> — {doc ? `${status.label} · ${status.included ? 'Included' : 'Text not included'}` : 'Inclusion not verified'}{!doc && documents.data && <button type="button" className="btn btn-secondary btn-sm" onClick={() => onChange((previous) => ({ ...previous, document_ids: previous.document_ids.filter((item) => item !== id) }))}>Remove missing document</button>}</li>
           })}</ul>
           {contextSummary.includedCount > 0 && (
             <p className="wizard-caption">

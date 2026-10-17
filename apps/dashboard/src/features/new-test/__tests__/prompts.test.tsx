@@ -93,6 +93,7 @@ function promptHandlers({ includeApplication = true }: { includeApplication?: bo
 
 async function selectCheckoutApplication(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('tab', { name: 'Scope' }))
+  if (!(screen.getByLabelText('Project') as HTMLInputElement).value) await user.type(screen.getByLabelText('Project'), 'demo')
   await screen.findByRole('option', { name: 'Checkout' })
   await user.selectOptions(screen.getByLabelText('Application'), 'app-checkout')
 }
@@ -117,7 +118,7 @@ describe('PromptsStep', () => {
     )
 
     expect(within(promptSection).queryByText('You are the execution phase operator.')).toBeNull()
-    expect(within(promptSection).queryByText('User prompt')).toBeNull()
+    expect(within(promptSection).getByText('User prompt')).toBeInTheDocument()
     expect(
       within(promptSection).getByText('Select an application in Scope to load its requirements prompt.'),
     ).toBeInTheDocument()
@@ -235,7 +236,7 @@ describe('PromptsStep', () => {
     const systemBlock = await within(promptSection).findByTestId('system-prompt-block')
     await waitFor(() => expect(within(systemBlock).getByText('catalog@v2')).toBeInTheDocument())
     await user.click(within(systemBlock).getByRole('button', { name: 'Override for this run' }))
-    const systemEditor = within(systemBlock).getByLabelText('story_analysis system prompt override')
+    const systemEditor = within(systemBlock).getByLabelText('Story Analysis system prompt override')
     await user.clear(systemEditor)
     await user.type(systemEditor, 'Custom story system prompt')
 

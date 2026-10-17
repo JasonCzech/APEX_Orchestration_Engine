@@ -593,7 +593,8 @@ describe('useDraft operation ordering', () => {
       { wrapper },
     )
     expect(second.result.current.draft.title).toBe('')
-    expect(second.result.current.draft.scope.project_id).not.toBe('proj-alpha')
+    // A fresh draft selects this consumer's sole authorized project.
+    expect(second.result.current.draft.scope.project_id).toBe('proj-alpha')
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
     })
@@ -662,7 +663,8 @@ describe('useDraft operation ordering', () => {
       { wrapper },
     )
     expect(second.result.current.draft.title).toBe('')
-    expect(second.result.current.draft.scope.project_id).not.toBe('proj-alpha')
+    // A fresh draft selects this consumer's sole authorized project.
+    expect(second.result.current.draft.scope.project_id).toBe('proj-alpha')
   })
 
   it('does not delete a draft after a queued save crosses a session transition', async () => {

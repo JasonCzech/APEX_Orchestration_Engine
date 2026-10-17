@@ -12,7 +12,7 @@
  * ?golden=<assistant_id>; the wizard preselects the matching golden config.
  */
 import { useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
 
 import { PHASE_NAMES } from '@apex/pipeline-events'
 
@@ -25,7 +25,8 @@ import {
 import { usePendingMutationCount } from '@/api/hooks/usePendingMutationCount'
 import { useConsumer } from '@/auth/AuthProvider'
 import { isGlobalAdmin } from '@/auth/RequireRole'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { canLaunchPipelines } from '@/auth/RequireRole'
+import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { ProblemCard } from '@/components/ProblemCard'
 import { formatRelative } from '@/utils/time'
@@ -88,6 +89,10 @@ function GateMatrix({ configurable }: { configurable: Record<string, unknown> })
 function ReadSections({ entry }: { entry: GoldenConfigEntry }) {
   const configurable = entry.configurable
   const scope = scopeView(configurable)
+  const applications = useApplications(scope.project ?? undefined)
+  const environments = useEnvironments(scope.app)
+  const application = applications.data?.find((item) => item.id === scope.app)
+  const environment = environments.data?.find((item) => item.id === scope.environment)
   const engine = engineOf(configurable)
   const pins = promptPinsView(configurable)
   const limits = limitsView(configurable)
@@ -101,9 +106,9 @@ function ReadSections({ entry }: { entry: GoldenConfigEntry }) {
           <dt>Project</dt>
           <dd>{scope.project ?? EM_DASH}</dd>
           <dt>Application</dt>
-          <dd>{scope.app ?? EM_DASH}</dd>
+          <dd>{application?.name ?? (scope.app ? 'Name unavailable' : EM_DASH)}{scope.app && <small> · <code>{scope.app}</code></small>}</dd>
           <dt>Environment</dt>
-          <dd>{scope.environment ?? EM_DASH}</dd>
+          <dd>{environment?.name ?? (scope.environment ? 'Name unavailable' : EM_DASH)}{scope.environment && <small> · <code>{scope.environment}</code></small>}</dd>
         </dl>
       </section>
 
@@ -183,6 +188,10 @@ function EditPanel({
   const parse = parseConfigurableJson(text)
   const canSave = parse.ok && !writePending
 
+  function patchConfig(patch: Record<string, unknown>) {
+    if (parse.ok) setText(JSON.stringify({ ...parse.value, ...patch }, null, 2))
+  }
+
   function save() {
     if (!parse.ok || writePending) return
     update.mutate(
@@ -198,6 +207,16 @@ function EditPanel({
         The full config.configurable bundle, replaced on save. Saving publishes a new assistant
         version.
       </p>
+      {parse.ok && <fieldset disabled={writePending}>
+        <legend>Preset settings</legend>
+        <label>Engine<select className="field-select" aria-label="Preset engine" value={engineOf(parse.value)} onChange={(event) => patchConfig({ engine: event.target.value })}>
+          {['sim', 'apex_load', 'loadrunner'].map((engine) => <option key={engine} value={engine}>{engineLabel(engine)}</option>)}
+          {!['sim', 'apex_load', 'loadrunner'].includes(engineOf(parse.value)) && <option value={engineOf(parse.value)}>{engineLabel(engineOf(parse.value))}</option>}
+        </select></label>
+        <table className="data-table"><caption>Review policy</caption><thead><tr><th>Phase</th><th>Prompt review</th><th>Output review</th></tr></thead><tbody>{PHASE_NAMES.map((phase) => <tr key={phase}><th>{phaseLabel(phase)}</th>{(['prompt_review', 'output_review'] as const).map((gate) => <td key={gate}><select className="field-select" aria-label={`${phaseLabel(phase)} ${gate.replace('_', ' ')}`} value={gateMatrixView(parse.value['gates'])[phase][gate]} onChange={(event) => { const matrix = gateMatrixView(parse.value['gates']); patchConfig({ gates: { ...matrix, [phase]: { ...matrix[phase], [gate]: event.target.value } } }) }}><option value="gated">Review required</option><option value="auto">Automatic</option></select></td>)}</tr>)}</tbody></table>
+        {promptPinsView(parse.value).map((pin) => <label key={pin.key}>{pin.key}<textarea className="field-input" aria-label={`Prompt pin ${pin.key}`} value={pin.detail ?? ''} onChange={(event) => { const overrides = parse.value['prompt_overrides'] as Record<string, unknown>; patchConfig({ prompt_overrides: { ...overrides, [pin.key]: { [pin.kind === 'version' ? 'version_id' : 'content']: event.target.value } } }) }} /></label>)}
+      </fieldset>}
+      <details><summary>Advanced JSON</summary>
       <textarea
         className="field-input gc-json-editor"
         aria-label="Configurable JSON"
@@ -207,6 +226,7 @@ function EditPanel({
         disabled={writePending}
         onChange={(event) => setText(event.target.value)}
       />
+      </details>
       {!parse.ok && (
         <p className="gc-form-error" role="alert">
           {parse.message}
@@ -238,7 +258,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
   const navigate = useNavigate()
   const consumer = useConsumer()
   const canEdit = isGlobalAdmin(consumer)
-  const canStartRun = consumer ? roleAtLeast(consumer.role, 'operator') : false
+  const canStartRun = canLaunchPipelines(consumer)
   const query = useGoldenConfig(assistantId)
   const writeCount = usePendingMutationCount(goldenConfigWriteMutationKey(assistantId))
   const writePending = writeCount > 0
@@ -267,6 +287,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
 
   return (
     <section className="gc-page animate-enter">
+      <Link to="/golden-configs">All test presets</Link>
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
@@ -288,16 +309,17 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
         </div>
         <div className="gc-actions-row">
           {writePending && <span className="topbar-meta-chip warning">saving…</span>}
-          {canEdit && !editing && (
+          {!canEdit && <span className="gc-muted">Editing presets requires an unscoped admin key.</span>}
+          {!editing && (
             <button
               type="button"
               className="btn btn-ghost btn-sm"
-              disabled={writePending}
+              disabled={writePending || !canEdit}
               onClick={() => {
-                if (!writePending) setEditing(true)
+                if (!writePending && canEdit) setEditing(true)
               }}
             >
-              Edit JSON
+              Edit preset
             </button>
           )}
           {canStartRun && (

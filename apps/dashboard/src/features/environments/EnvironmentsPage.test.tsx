@@ -50,6 +50,21 @@ describe('EnvironmentsPage', () => {
     expect(within(dev).getByText('—')).toBeInTheDocument()
   })
 
+  it('opens an application workspace and searches its environments', async () => {
+    server.use(...catalogReadHandlers())
+    const user = userEvent.setup()
+    const rendered = renderList()
+    await user.click(await screen.findByRole('link', { name: 'Checkout' }))
+    expect(rendered.router.state.location.search).toBe('?application=app-checkout')
+    expect(screen.queryByRole('region', { name: 'Application Search' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New environment' })).not.toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Search applications and environments' }), 'does not exist')
+    expect(screen.getByRole('heading', { name: 'No matching applications' })).toBeInTheDocument()
+    await user.clear(screen.getByRole('textbox', { name: 'Search applications and environments' }))
+    await user.click(screen.getByRole('link', { name: 'All applications' }))
+    expect(screen.getByRole('region', { name: 'Application Search' })).toBeInTheDocument()
+  })
+
   it('keeps applications without environments visible with a direct add action', async () => {
     server.use(...catalogReadHandlers(APPS_FIXTURE, [ENV_STAGING, ENV_PROD]))
     const user = userEvent.setup()
@@ -99,7 +114,7 @@ describe('EnvironmentsPage', () => {
     expect(screen.queryByRole('button', { name: 'Add first environment' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
-    await user.click(screen.getByRole('button', { name: 'New environment' }))
+    await user.click(within(screen.getByRole('region', { name: 'Application Checkout' })).getByRole('button', { name: 'Add environment' }))
     expect(screen.getByRole('form', { name: 'New environment' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New application' })).not.toBeInTheDocument()
   })
@@ -164,7 +179,7 @@ describe('EnvironmentsPage', () => {
     const user = userEvent.setup()
     const { router } = renderList('admin')
 
-    await user.click(await screen.findByRole('button', { name: 'New environment' }))
+    await user.click(within(await screen.findByRole('region', { name: 'Application Checkout' })).getByRole('button', { name: 'Add environment' }))
     const panel = screen.getByRole('form', { name: 'New environment' })
     await user.selectOptions(
       within(panel).getByRole('combobox', { name: 'Application' }),

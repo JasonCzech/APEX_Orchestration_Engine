@@ -11,7 +11,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 import { server } from '@/test/server'
@@ -28,6 +28,11 @@ vi.mock('@/api/langgraphClient', () => ({
       assistants: { search: assistantsSearch, get: assistantsGet, update: assistantsUpdate },
     }),
 }))
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  server.use(...wizardDraftHandlers())
+})
 
 const GOLDEN = {
   assistant_id: 'asst-gold',
@@ -120,6 +125,15 @@ function wizardDraftHandlers() {
 }
 
 describe('GoldenConfigsPage', () => {
+  it('hydrates authorized details when search returns only the permitted summary fields', async () => {
+    assistantsSearch.mockResolvedValue([{ assistant_id: GOLDEN.assistant_id, graph_id: 'pipeline', name: GOLDEN.name, version: 3 }])
+    assistantsGet.mockResolvedValue(GOLDEN)
+    renderApp({ initialEntries: ['/golden-configs'], authState: authenticatedState() })
+    const card = await screen.findByTestId('gc-card-asst-gold')
+    expect(assistantsGet).toHaveBeenCalledWith('asst-gold', { signal: expect.any(AbortSignal) })
+    expect(within(card).getByText('LoadRunner')).toBeInTheDocument()
+  })
+
   it('renders config summary chips and marks the system default', async () => {
     assistantsSearch.mockResolvedValue([GOLDEN, SYSTEM_DEFAULT])
     assistantsGet.mockImplementation((assistantId: string) =>
@@ -130,17 +144,15 @@ describe('GoldenConfigsPage', () => {
     const card = await screen.findByTestId('gc-card-asst-gold')
     expect(assistantsSearch).toHaveBeenLastCalledWith({
       graphId: 'pipeline',
-      limit: 100,
+      limit: 5,
       offset: 0,
       select: [
         'assistant_id',
         'graph_id',
         'name',
         'description',
-        'config',
         'created_at',
         'updated_at',
-        'metadata',
         'version',
       ],
       signal: expect.any(AbortSignal),
@@ -249,7 +261,8 @@ describe('GoldenConfigDetailPage', () => {
     })
 
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit JSON' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit preset' })).toBeDisabled()
+    expect(screen.getByText('Editing presets requires an unscoped admin key.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Start run with this config' })).not.toBeInTheDocument()
   })
 
@@ -261,7 +274,8 @@ describe('GoldenConfigDetailPage', () => {
     })
 
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Edit JSON' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit preset' })).toBeDisabled()
+    expect(screen.getByText('Editing presets requires an unscoped admin key.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeInTheDocument()
   })
 
@@ -278,7 +292,7 @@ describe('GoldenConfigDetailPage', () => {
       authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
-    await user.click(await screen.findByRole('button', { name: 'Edit JSON' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit preset' }))
     const editor = screen.getByRole('textbox', { name: 'Configurable JSON' })
     expect(editor).toHaveValue(JSON.stringify(GOLDEN.config.configurable, null, 2))
 
@@ -333,7 +347,7 @@ describe('GoldenConfigDetailPage', () => {
       authState: authenticatedState('admin', 'Dash Ops', []),
     })
 
-    await user.click(await screen.findByRole('button', { name: 'Edit JSON' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit preset' }))
     const editor = screen.getByRole('textbox', { name: 'Configurable JSON' })
     await user.clear(editor)
     await user.paste('{"engine":"sim"}')
@@ -342,14 +356,14 @@ describe('GoldenConfigDetailPage', () => {
 
     await act(async () => router.navigate('/golden-configs/asst-sys'))
     await screen.findByRole('heading', { name: 'pipeline' })
-    expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Edit preset' })).toBeEnabled()
 
     await act(async () => router.navigate('/golden-configs'))
     await screen.findByTestId('gc-card-asst-gold')
     await act(async () => router.navigate('/golden-configs/asst-gold'))
 
     expect(await screen.findByText('saving…')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Edit preset' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeDisabled()
     expect(assistantsUpdate).toHaveBeenCalledTimes(1)
 
@@ -360,7 +374,7 @@ describe('GoldenConfigDetailPage', () => {
 
     await waitFor(() => expect(screen.getByText('v4')).toBeInTheDocument())
     expect(screen.queryByText('saving…')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Edit JSON' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Edit preset' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeEnabled()
   })
 
@@ -377,7 +391,8 @@ describe('GoldenConfigDetailPage', () => {
     await screen.findByRole('heading', { name: 'pipeline' })
     await act(async () => router.navigate('/golden-configs/asst-gold'))
     await screen.findByRole('heading', { name: 'Nightly checkout soak' })
-    await user.click(screen.getByRole('button', { name: 'Edit JSON' }))
+    await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+    await user.click(screen.getByText('Advanced JSON'))
     const editor = screen.getByRole('textbox', { name: 'Configurable JSON' })
     await user.clear(editor)
     await user.paste('{"engine":"A-only"}')
@@ -386,7 +401,8 @@ describe('GoldenConfigDetailPage', () => {
     await screen.findByRole('heading', { name: 'pipeline' })
     expect(screen.queryByRole('textbox', { name: 'Configurable JSON' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: 'Edit JSON' }))
+    await user.click(screen.getByRole('button', { name: 'Edit preset' }))
+    await user.click(screen.getByText('Advanced JSON'))
     expect(screen.getByRole('textbox', { name: 'Configurable JSON' })).toHaveValue('{}')
   })
 })

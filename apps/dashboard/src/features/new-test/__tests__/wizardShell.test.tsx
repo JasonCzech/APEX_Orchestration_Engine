@@ -15,6 +15,35 @@ import {
 } from './wizardTestUtils'
 
 describe('NewRunWizard shell', () => {
+  it('waits for a complete project edit and confirms before clearing attached work', async () => {
+    installWizardHandlers([draftRead({ id: 'draft-scope', payload: {
+      title: 'Existing test', request: 'Existing request',
+      scope: { project_id: 'demo', app_id: 'app-checkout', environment_id: 'env-staging' },
+      document_ids: ['doc-existing'], prompt_overrides: { 'phase/story_analysis/system': { content: 'Edited prompt' } },
+    } })])
+    const user = userEvent.setup()
+    const rendered = renderWizard('/runs/new?draft=draft-scope')
+    const project = await screen.findByLabelText('Project')
+    await waitFor(() => expect(project).toHaveValue('demo'))
+    await user.clear(project)
+    await user.type(project, 'new-project')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.tab()
+    const dialog = await screen.findByRole('dialog', { name: 'Change test scope' })
+    expect(dialog).toHaveTextContent('1 attached documents')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(project).toHaveValue('demo')
+    await user.clear(project)
+    await user.type(project, 'new-project')
+    await user.tab()
+    await user.click(within(await screen.findByRole('dialog', { name: 'Change test scope' })).getByRole('button', { name: 'Change project' }))
+    expect(project).toHaveValue('new-project')
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    expect(screen.queryByText('doc-existing')).not.toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
+  })
+
+
   it('focuses the exact missing field after returning from Review', async () => {
     installWizardHandlers()
     const user = userEvent.setup()

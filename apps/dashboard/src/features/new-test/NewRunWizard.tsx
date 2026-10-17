@@ -9,11 +9,13 @@ import {
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
+import { useDocumentsList } from '@/api/hooks/useDocuments'
 import { useDraftsList } from '@/api/hooks/useDrafts'
 import { useOptionalAuth } from '@/auth/AuthProvider'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import {
   canMutateAudience,
+  pipelineLaunchRefusal,
   RequireRole,
   roleAtLeast,
 } from '@/auth/RequireRole'
@@ -110,7 +112,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   context: {
     title: 'Context',
     description:
-      'Add documents and context summaries so the phases have the evidence they need before execution starts.',
+      'Add documents so the phases have the evidence they need before execution starts.',
   },
   config: {
     title: 'Execution Configuration',
@@ -127,14 +129,6 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
     description:
       'Review the launch plan. Selected work items and documents are resolved into agent context when the test starts.',
   },
-}
-
-function afterNextPaint(callback: () => void) {
-  if (typeof window.requestAnimationFrame === 'function') {
-    window.requestAnimationFrame(callback)
-  } else {
-    window.setTimeout(callback, 0)
-  }
 }
 
 function WizardStepContent({
@@ -185,7 +179,7 @@ function WizardStepContent({
     case 'prompts':
       return <PromptsStep draft={draft} onChange={onChange} />
     case 'review':
-      return <ReviewStep draft={draft} onEditStep={onEditStep} maxContextPackets={maxContextPackets} />
+      return <ReviewStep draft={draft} onChange={onChange} onEditStep={onEditStep} maxContextPackets={maxContextPackets} />
   }
 }
 
@@ -215,11 +209,12 @@ function NewRunWizardContent({
   const navigate = useNavigate()
   const rawStep = searchParams.get('step')
   const activeStep: WizardStepId = isWizardStep(rawStep) ? rawStep : 'scope'
-  const pendingFocusRef = useRef<{ step: WizardStepId; id: string } | null>(null)
+  const pendingFocusRef = useRef<{ step: WizardStepId; id: string; previous: Element | null } | null>(null)
   useEffect(() => {
     const target = pendingFocusRef.current
     if (target?.step !== activeStep) return
     pendingFocusRef.current = null
+    if (document.activeElement !== target.previous && document.activeElement !== document.body) return
     document.getElementById(target.id)?.focus()
     document.getElementById(target.id)?.scrollIntoView?.({ block: 'nearest' })
   }, [activeStep])
@@ -288,7 +283,12 @@ function NewRunWizardContent({
   const scopeAuthorized =
     consumer === undefined ||
     canMutateAudience(consumer, draft.scope.project_id.trim(), draft.scope.app_id)
-  const readiness = assessWizardReadiness(draft, maxContextPackets)
+  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined, undefined, draft.scope.app_id)
+  const readiness = assessWizardReadiness(draft, maxContextPackets, {
+    ids: documents.isError ? undefined : documents.data?.map((doc) => doc.id),
+    failed: documents.isError,
+  })
+  const launchRefusal = consumer === undefined ? null : pipelineLaunchRefusal(consumer)
   const issues = [
     ...readiness.planningIssues,
     ...readiness.executionIssues,
@@ -442,7 +442,7 @@ function NewRunWizardContent({
   function jumpToTab(step: WizardStepId, field?: string) {
     const id = field ?? `wizard-tab-${step}`
     if (step === activeStep) document.getElementById(id)?.focus()
-    else pendingFocusRef.current = { step, id }
+    else pendingFocusRef.current = { step, id, previous: document.activeElement }
     selectStep(step)
   }
 
@@ -462,10 +462,7 @@ function NewRunWizardContent({
 
     if (nextStep === null) return
     event.preventDefault()
-    selectStep(nextStep)
-    afterNextPaint(() => {
-      document.getElementById(`wizard-tab-${nextStep}`)?.focus()
-    })
+    jumpToTab(nextStep)
   }
 
   function renderStepSection(step: WizardStepId) {
@@ -526,6 +523,7 @@ function NewRunWizardContent({
 
   return (
     <div className="wizard-page animate-enter">
+      {launchRefusal && <p className="tonal-card warning" role="alert">{launchRefusal}</p>}
       <ScopeContext project={draft.scope.project_id} application={draft.scope.app_id} environment={draft.scope.environment_id} />
 
       {SAVE_LABELS[saveState] && (
@@ -612,10 +610,10 @@ function NewRunWizardContent({
             {issues.length === 0
               ? pendingStepCount > 0
                 ? 'Waiting for in-progress context changes to finish.'
-                : 'Ready to launch: the plan and execution target are set.'
+                : `Plan is valid. ${readiness.executionNotes[0] ?? 'External execution target is selected.'}`
               : readiness.planningIssues.length === 0 && readiness.executionIssues.length > 0
                 ? 'The test plan is ready; execution setup still needs attention.'
-                : `${issues.length} item${issues.length === 1 ? '' : 's'} still need attention.`}
+                : `${issues.length} item${issues.length === 1 ? '' : 's'} still ${issues.length === 1 ? 'needs' : 'need'} attention.`}
           </span>
         </div>
 

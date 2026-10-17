@@ -64,6 +64,7 @@ export interface WizardScope {
 
 export interface WizardConfig {
   engine: EngineId
+  unsupported_engine?: string | null
   /** null = all 7 phases (canonical order). */
   phases: PhaseName[] | null
   /** UI focus for the Prompts tab; not sent to the backend. */
@@ -106,12 +107,13 @@ export function emptyDraft(): WizardDraft {
     launch_idempotency_key: createLaunchIdempotencyKey(),
     title: '',
     request: '',
-    scope: { project_id: 'demo', app_id: null, environment_id: null },
+    scope: { project_id: '', app_id: null, environment_id: null },
     work_items: [],
     document_ids: [],
     context_summary_ids: [],
     config: {
       engine: 'sim',
+      unsupported_engine: null,
       phases: null,
       prompt_focus_phase: PHASE_NAMES[0]!,
       gates_mode: 'all_gated',
@@ -248,6 +250,8 @@ export function parseDraftPayload(payload: unknown): WizardDraft {
       engine: (ENGINES as readonly string[]).includes(engine as string)
         ? (engine as EngineId)
         : base.config.engine,
+      unsupported_engine: stringOrNull(config['unsupported_engine']) ??
+        (typeof engine === 'string' && !(ENGINES as readonly string[]).includes(engine) ? engine : null),
       phases: normalizePhases(config['phases']),
       prompt_focus_phase: isPhaseName(config['prompt_focus_phase'])
         ? config['prompt_focus_phase']
@@ -386,6 +390,7 @@ export function stepIssues(
       break
     }
     case 'config': {
+      if (draft.config.unsupported_engine) issues.push(`Engine ${draft.config.unsupported_engine} is not supported by this deployment; choose a supported engine`)
       if (draft.config.phases !== null && draft.config.phases.length === 0) {
         issues.push('Select at least one phase')
       } else {
@@ -443,8 +448,21 @@ export interface WizardReadiness {
 export function assessWizardReadiness(
   draft: WizardDraft,
   maxContextPackets = DEFAULT_MAX_CONTEXT_PACKETS,
+  documents?: { ids?: readonly string[]; failed?: boolean },
 ): WizardReadiness {
   const planningIssues = allIssues(draft, maxContextPackets)
+  if (draft.document_ids.length > 0 && documents) {
+    if (!documents.ids) {
+      planningIssues.push({ step: 'context', message: documents.failed
+        ? 'Attached documents could not be verified; retry before launch'
+        : 'Verifying attached documents before launch' })
+    } else {
+      const available = new Set(documents.ids)
+      for (const id of draft.document_ids) {
+        if (!available.has(id)) planningIssues.push({ step: 'context', message: `Attached document ${id} is missing or unavailable; remove it before launch` })
+      }
+    }
+  }
   const phases = selectedPhases(draft.config)
   const executesAgainstTarget =
     phases.includes('execution') && draft.config.engine !== 'sim'
@@ -510,6 +528,13 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
     effectiveOverrides[key] = value
   }
   for (const [key, value] of overrides) effectiveOverrides[key] = { content: value.content }
+  const includedPhases = new Set(selectedPhases(config))
+  for (const key of Object.keys(effectiveOverrides)) {
+    if ((key.startsWith('phase/') && !includedPhases.has(key.split('/')[1] as PhaseName)) ||
+      (key.startsWith('application/') && key !== `application/${scope.app_id}`)) {
+      delete effectiveOverrides[key]
+    }
+  }
   const configurable: Record<string, unknown> = {
     ...inherited,
     project_id: scope.project_id.trim(),

@@ -31,7 +31,7 @@ async function fetchGoldenConfigs(signal?: AbortSignal): Promise<GoldenConfig[]>
     }))
 }
 
-const ASSISTANT_PAGE_SIZE = 100
+const ASSISTANT_PAGE_SIZE = 5
 
 export function goldenConfigWriteMutationKey(assistantId: string) {
   return ['golden-configs', 'write', assistantId] as const
@@ -47,7 +47,7 @@ async function fetchPipelineAssistants(signal?: AbortSignal): Promise<Assistant[
     pageSize: ASSISTANT_PAGE_SIZE,
     fetchPage: async (limit, offset) => {
       const client = await getLangGraphClient()
-      return client.assistants.search({
+      const summaries = await client.assistants.search({
         graphId: 'pipeline',
         limit,
         offset,
@@ -56,14 +56,17 @@ async function fetchPipelineAssistants(signal?: AbortSignal): Promise<Assistant[
           'graph_id',
           'name',
           'description',
-          'config',
           'created_at',
           'updated_at',
-          'metadata',
           'version',
         ],
         signal,
       })
+      // The public list surface omits configuration and metadata deliberately.
+      // Load each bounded item through its individually authorized projection.
+      return Promise.all(summaries.map((assistant) =>
+        assistant.config ? Promise.resolve(assistant) : client.assistants.get(assistant.assistant_id, { signal }),
+      ))
     },
   })
 }
@@ -78,6 +81,7 @@ export function useAssistants(): UseQueryResult<GoldenConfig[], Error> {
     queryKey: queryKeys.goldenConfigs.list(),
     queryFn: ({ signal }) => fetchGoldenConfigs(signal),
     staleTime: 60_000,
+    retry: false,
   })
 }
 
@@ -119,6 +123,7 @@ export function useGoldenConfigsIndex(): UseQueryResult<GoldenConfigEntry[], Err
     queryKey: queryKeys.goldenConfigs.index(),
     queryFn: ({ signal }) => fetchGoldenConfigsIndex(signal),
     staleTime: 60_000,
+    retry: false,
   })
 }
 
@@ -136,6 +141,7 @@ export function useGoldenConfig(assistantId: string): UseQueryResult<GoldenConfi
     queryKey: queryKeys.goldenConfigs.detail(assistantId),
     queryFn: ({ signal }) => fetchGoldenConfig(assistantId, signal),
     staleTime: 60_000,
+    retry: false,
   })
 }
 

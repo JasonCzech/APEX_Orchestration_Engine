@@ -187,6 +187,7 @@ export async function fillScope(
   user: { type: (element: Element, text: string) => Promise<void> },
   screen: { getByLabelText: (label: string) => HTMLElement },
 ) {
+  if (!(screen.getByLabelText('Project') as HTMLInputElement).value) await user.type(screen.getByLabelText('Project'), 'demo')
   await user.type(screen.getByLabelText('Title'), 'Checkout soak')
   await user.type(screen.getByLabelText('Request'), 'Soak the checkout flow for 1h')
 }

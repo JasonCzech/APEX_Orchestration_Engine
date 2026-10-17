@@ -82,7 +82,9 @@ describe('ContextStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=context')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Context/i }))
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['spec body'], 'spec.txt', { type: 'text/plain' }))
@@ -153,6 +155,7 @@ describe('ContextStep', () => {
   })
 
   it('rejects an unsupported dropped file with a friendly error and does not upload', async () => {
+    const user = userEvent.setup()
     installWizardHandlers()
     let posted = false
     server.use(
@@ -164,7 +167,9 @@ describe('ContextStep', () => {
         return HttpResponse.json({}, { status: 201 })
       }),
     )
-    const rendered = renderWizard('/runs/new?step=context')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Context/i }))
 
     const dropzone = await screen.findByTestId('document-dropzone')
     fireEvent.drop(dropzone, {
@@ -230,7 +235,9 @@ describe('ContextStep', () => {
       ),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=context')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Context/i }))
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['# Story'], 'story.md', { type: 'text/markdown' }))
@@ -268,7 +275,9 @@ describe('ContextStep', () => {
       ),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=context')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Context/i }))
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['%PDF'], 'broken.pdf', { type: 'application/pdf' }))
@@ -305,7 +314,9 @@ describe('ContextStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=context')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Context/i }))
 
     await user.upload(await screen.findByLabelText('Upload documents'), [
       new File(['first'], 'first.txt', { type: 'text/plain' }),
@@ -353,7 +364,9 @@ describe('ContextStep', () => {
       }),
     )
     const user = userEvent.setup()
-    const rendered = renderWizard('/runs/new?step=context')
+    const rendered = renderWizard()
+    await fillScope(user, screen)
+    await user.click(screen.getByRole('tab', { name: /Context/i }))
 
     await user.upload(await screen.findByLabelText('Upload documents'), [
       new File(['first'], 'first.txt', { type: 'text/plain' }),

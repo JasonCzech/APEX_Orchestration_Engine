@@ -15,6 +15,7 @@ import {
   allIssues,
   assessWizardReadiness,
   buildLaunchPreview,
+  buildConfigurable,
   emptyDraft,
   gateMatrixOf,
   isStepValid,
@@ -26,6 +27,7 @@ import {
 
 function validDraft(): WizardDraft {
   const draft = emptyDraft()
+  draft.scope.project_id = 'demo'
   draft.title = 'Checkout soak'
   draft.request = 'Soak the checkout flow'
   return draft
@@ -254,4 +256,62 @@ describe('parseDraftPayload', () => {
       { key: 'PHX-241', connection_id: 'conn-jira', provider: 'jira' },
     ])
   })
+})
+
+
+describe('holistic wizard readiness', () => {
+  it('does not invent a project for a new draft', () => {
+    expect(emptyDraft().scope.project_id).toBe('')
+  })
+
+  it('blocks launch until every attached document is verified and available', () => {
+    const draft = validDraft()
+    draft.document_ids = ['retained', 'deleted']
+    expect(assessWizardReadiness(draft, undefined, {}).planningIssues).toEqual([
+      { step: 'context', message: 'Verifying attached documents before launch' },
+    ])
+    expect(assessWizardReadiness(draft, undefined, { ids: ['retained'] }).planningIssues).toEqual([
+      { step: 'context', message: 'Attached document deleted is missing or unavailable; remove it before launch' },
+    ])
+    expect(assessWizardReadiness(draft, undefined, { failed: true }).planningIssues[0]?.message).toContain('could not be verified')
+    expect(assessWizardReadiness(draft, undefined, { ids: draft.document_ids }).planningIssues).toEqual([])
+  })
+
+  it('retains excluded prompt overrides in the draft but excludes them from launch', () => {
+    const draft = validDraft()
+    draft.config.phases = ['story_analysis']
+    draft.prompt_overrides = {
+      'phase/story_analysis/user': { content: 'Use the supplied requirements.' },
+      'phase/execution': { content: 'Keep this authored edit.' },
+    }
+    expect(buildLaunchPreview(draft).configurable['prompt_overrides']).toEqual({
+      'phase/story_analysis/user': { content: 'Use the supplied requirements.' },
+    })
+    expect(draft.prompt_overrides['phase/execution']?.content).toBe('Keep this authored edit.')
+    draft.config.phases = null
+    expect(buildLaunchPreview(draft).configurable['prompt_overrides']).toEqual(draft.prompt_overrides)
+  })
+
+  it('does not silently restore an unsupported engine as a launchable simulator', () => {
+    const draft = parseDraftPayload({ config: { engine: 'future-engine' } })
+    expect(draft.config.unsupported_engine).toBe('future-engine')
+    expect(assessWizardReadiness(draft).planningIssues.some((issue) => issue.message.includes('not supported'))).toBe(true)
+    expect(parseDraftPayload(JSON.parse(JSON.stringify(draft))).config.unsupported_engine).toBe('future-engine')
+  })
+})
+
+
+it('excludes inherited and authored application prompts outside the current application', () => {
+  const draft = emptyDraft()
+  draft.scope.app_id = 'app-current'
+  draft.config.golden_configurable = { prompt_overrides: {
+    'application/app-old': { version_id: 'old-version' },
+    'application/app-current': { version_id: 'current-version' },
+  } }
+  draft.prompt_overrides = { 'application/app-other': { content: 'Other app prompt' } }
+  expect(buildConfigurable(draft)['prompt_overrides']).toEqual({
+    'application/app-current': { version_id: 'current-version' },
+  })
+  draft.scope.app_id = null
+  expect(buildConfigurable(draft)['prompt_overrides']).toBeUndefined()
 })

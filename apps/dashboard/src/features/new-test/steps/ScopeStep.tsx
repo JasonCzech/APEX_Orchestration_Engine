@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Dialog } from '@/components/Dialog'
 import { Link } from 'react-router'
 import { useApplicationsIndex } from '@/api/hooks/useEnvironments'
 /**
@@ -11,6 +12,9 @@ import { useOptionalConsumer } from '@/auth/AuthProvider'
 import type { StepProps } from '../NewRunWizard'
 
 export function ScopeStep({ draft, onChange }: StepProps) {
+  const [projectInput, setProjectInput] = useState(draft.scope.project_id)
+  useEffect(() => setProjectInput(draft.scope.project_id), [draft.scope.project_id])
+  const [scopeChange, setScopeChange] = useState<{ kind: 'project' | 'application'; value: string } | null>(null)
   const [touched, setTouched] = useState({title:false, request:false})
   const catalog = useApplicationsIndex()
   const consumer = useOptionalConsumer()
@@ -55,6 +59,33 @@ export function ScopeStep({ draft, onChange }: StepProps) {
   const selectedApp = applications.data?.find((app) => app.id === draft.scope.app_id)
   const selectedEnv = environments.data?.find((env) => env.id === draft.scope.environment_id)
 
+  function hasDependentChanges(kind: 'project' | 'application') {
+    return draft.document_ids.length > 0 || Boolean(draft.scope.environment_id) ||
+      Object.keys(draft.prompt_overrides).length > 0 || Boolean(draft.config.golden_config_id) ||
+      (kind === 'project' && (draft.work_items.length > 0 || draft.context_summary_ids.length > 0))
+  }
+
+  function requestScopeChange(kind: 'project' | 'application', value: string) {
+    if (value === (kind === 'project' ? draft.scope.project_id : draft.scope.app_id ?? '')) return
+    if (hasDependentChanges(kind)) setScopeChange({ kind, value })
+    else applyScopeChange(kind, value)
+  }
+
+  function cancelScopeChange() {
+    setProjectInput(draft.scope.project_id)
+    setScopeChange(null)
+  }
+
+  function applyScopeChange(kind: 'project' | 'application', value: string) {
+    if (kind === 'project') changeProject(value)
+    else onChange((prev) => ({
+      ...prev,
+      document_ids: [],
+      prompt_overrides: Object.fromEntries(Object.entries(prev.prompt_overrides).filter(([key]) => !key.startsWith('application/') || key === `application/${value}`)),
+      scope: { ...prev.scope, app_id: value || null, environment_id: null },
+    }))
+  }
+
   function changeProject(projectId: string) {
     const nextScopes = (consumer?.scopes ?? []).filter((scope) => scope.project_id === projectId)
     const nextHasProjectWideScope = nextScopes.some((scope) => !scope.app_id)
@@ -89,6 +120,11 @@ export function ScopeStep({ draft, onChange }: StepProps) {
 
   return (
     <section className="wizard-step" aria-label="Scope">
+      {scopeChange && <Dialog ariaLabel="Change test scope" className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" onClose={cancelScopeChange}>
+        <h2>Change {scopeChange.kind}?</h2>
+        <p>This clears {draft.document_ids.length} attached documents, the selected environment and {scopeChange.kind === 'project' ? 'all prompt overrides, work items and preset selections' : 'application prompt overrides'}. Saved documents remain available to attach again.</p>
+        <div className="wizard-row"><button type="button" className="btn btn-secondary" onClick={cancelScopeChange}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => { applyScopeChange(scopeChange.kind, scopeChange.value); setScopeChange(null) }}>Change {scopeChange.kind}</button></div>
+      </Dialog>}
       <div className="wizard-field">
         <label className="wizard-label" htmlFor="wizard-title">
           Title
@@ -141,7 +177,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
             id="wizard-project"
             className="field-select"
             value={scopedProjects.includes(draft.scope.project_id) ? draft.scope.project_id : ''}
-            onChange={(event) => changeProject(event.target.value)}
+            onChange={(event) => requestScopeChange('project', event.target.value)}
           >
             <option value="" disabled>
               Select an authorized project…
@@ -157,8 +193,12 @@ export function ScopeStep({ draft, onChange }: StepProps) {
             id="wizard-project"
             list="known-projects"
             className="field-input"
-            value={draft.scope.project_id}
-            onChange={(event) => changeProject(event.target.value)}
+            value={projectInput}
+            onChange={(event) => {
+              setProjectInput(event.target.value)
+              if (!hasDependentChanges('project')) requestScopeChange('project', event.target.value)
+            }}
+            onBlur={() => requestScopeChange('project', projectInput)}
           />
         )}
         <datalist id="known-projects">{Array.from(new Set((catalog.data ?? []).map(app => app.project_id))).sort().map(id => <option key={id} value={id} />)}</datalist>
@@ -182,22 +222,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
               ? draft.scope.app_id ?? ''
               : ''
           }
-          onChange={(event) =>
-            onChange((prev) => {
-              const nextApp = event.target.value || null
-              const prompt_overrides = Object.fromEntries(
-                Object.entries(prev.prompt_overrides).filter(
-                  ([key]) => !key.startsWith('application/') || key === `application/${nextApp}`,
-                ),
-              )
-              return {
-                ...prev,
-                prompt_overrides,
-                document_ids: [],
-                scope: { ...prev.scope, app_id: nextApp, environment_id: null },
-              }
-            })
-          }
+          onChange={(event) => requestScopeChange('application', event.target.value)}
         >
           <option value="" disabled={requiresApplication}>
             {requiresApplication ? 'Select an authorized application…' : '— none —'}
