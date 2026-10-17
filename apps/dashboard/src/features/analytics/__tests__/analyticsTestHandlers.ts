@@ -183,8 +183,11 @@ export const ZERO_TOKEN_AGENT_ANALYTICS_FIXTURE: AgentAnalytics = {
 export function agentAnalyticsHandler(fixture: AgentAnalytics = AGENT_ANALYTICS_FIXTURE) {
   const captured: URLSearchParams[] = []
   const handler = http.get('*/v1/analytics/agents', ({ request }) => {
-    captured.push(new URL(request.url).searchParams)
-    return HttpResponse.json(fixture)
+    const params = new URL(request.url).searchParams
+    captured.push(params)
+    return HttpResponse.json({ ...fixture, window: { ...fixture.window,
+      from: params.get('from') ?? fixture.window.from, to: params.get('to') ?? fixture.window.to,
+    } })
   })
   return { handler, captured }
 }

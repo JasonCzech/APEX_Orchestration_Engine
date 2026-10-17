@@ -21,6 +21,8 @@ from apex.services.agent_analytics import (
     MAX_ANALYTICS_KEY_CHARS,
     SERIES_KEY_CAP,
     AgentAnalyticsRepository,
+    AgentOrder,
+    AgentSort,
     _as_float,
     _escape_like,
     _key_string,
@@ -229,5 +231,70 @@ def test_latency_sample_count_uses_the_same_non_null_observations_as_average(
                 select(metrics["events"], metrics["latency_samples"], metrics["avg_latency_ms"])
             ).one()
             assert tuple(row) == (len(latencies), sample_count, average)
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sort", ["cost_usd", "avg_latency_ms"])
+@pytest.mark.parametrize("order", ["asc", "desc"])
+async def test_bounded_series_keeps_measured_zero_before_missing_groups(
+    sort: AgentSort, order: AgentOrder
+) -> None:
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    captured = _Session(executes=[[METRICS], [], [], []], scalars=[0, 0, 15])
+    await AgentAnalyticsRepository(cast(AsyncSession, captured)).aggregate(
+        window_from=start,
+        window_to=start + timedelta(days=1),
+        bucket="day",
+        group_by="model",
+        sort=sort,
+        order=order,
+    )
+    # Execute the repository's actual bounded-key query against real null/zero
+    # rows. Unlike percentile_cont, SUM/AVG have matching SQLite semantics.
+    key_query = captured.statements[-2]
+    engine = create_engine("sqlite://").execution_options(schema_translate_map={"apex": None})
+    try:
+        cast(Table, AgentEvent.__table__).create(engine)
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    AgentEvent(
+                        at=start,
+                        phase="execution",
+                        agent_name="worker",
+                        status="ok",
+                        model=f"a-missing-{index:02}",
+                    )
+                    for index in range(SERIES_KEY_CAP + 1)
+                ]
+                + [
+                    AgentEvent(
+                        at=start,
+                        phase="execution",
+                        agent_name="worker",
+                        status="ok",
+                        model="z-zero",
+                        latency_ms=0,
+                        cost_usd=Decimal(0),
+                    ),
+                    AgentEvent(
+                        at=start,
+                        phase="execution",
+                        agent_name="worker",
+                        status="ok",
+                        model="z-positive",
+                        latency_ms=100,
+                        cost_usd=Decimal(1),
+                    ),
+                ]
+            )
+            session.flush()
+            keys = list(session.scalars(key_query))
+            assert keys[:2] == (
+                ["z-zero", "z-positive"] if order == "asc" else ["z-positive", "z-zero"]
+            )
+            assert len(keys) == SERIES_KEY_CAP
     finally:
         engine.dispose()

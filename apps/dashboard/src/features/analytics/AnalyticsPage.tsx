@@ -26,12 +26,14 @@ import { PHASE_NAMES } from '@apex/pipeline-events'
 import {
   useAgentAnalytics,
   type AgentAnalytics,
+  type AgentAnalyticsQuery,
   type AgentAnalyticsBreakdownRow,
   type AgentOrder,
   type AgentSort,
 } from '@/api/hooks/useAgentAnalytics'
 import { isApiError } from '@/api/errors'
 import { ProblemCard } from '@/components/ProblemCard'
+import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { WindowPresets } from '@/components/controls/WindowPresets'
 
 import {
@@ -403,6 +405,27 @@ function AgentUsageCharts({
   )
 }
 
+/** The API bounds chart keys by query sort; table sorting must not select chart winners. */
+function AnalyticsCharts({ query, group, measure, allZeroTokens }: {
+  query: AgentAnalyticsQuery; group: GroupBy; measure: Measure; allZeroTokens: boolean
+}) {
+  const charts = useAgentAnalytics({ ...query, sort: defaultSortFor(measure), order: 'desc', offset: 0, limit: DEFAULT_LIMIT })
+  if (charts.isPending) return <Skeleton label="Loading analytics charts" rows={3} />
+  if (!charts.data) return <ProblemCard title="Analytics charts unavailable" message={errorMessage(charts.error)} onRetry={() => void charts.refetch()} />
+  const data = charts.data
+  const groups = new Set(data.series.map(row => row.key)).size
+  return <>
+    {charts.isError && <CachedDataWarning error={charts.error} onRetry={() => void charts.refetch()} />}
+    {group !== 'date' && <p className="ux-context" data-testid="analytics-chart-population">
+      Charts cover {groups} of {data.page.total} groups, selected by descending {labelForMeasure(measure).toLowerCase()}.
+      {groups < data.page.total ? ' Remaining groups are excluded from charts; the totals above cover all groups.' : ''}
+      {' '}Other combines selected groups beyond the first five.
+    </p>}
+    <AgentUsageCharts data={data} group={group} measure={measure} bucket={data.window.bucket} />
+    {!allZeroTokens && <TokenSplitCharts data={data} />}
+  </>
+}
+
 function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
   const rows = useMemo(() => {
     const buckets = new Map<string, { bucket_start: string; input: number; output: number; costRows: AgentAnalytics['series'] }>()
@@ -425,7 +448,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
   return (
     <div className="analytics-charts analytics-charts-secondary">
       <section className="glass-panel chart-panel" data-testid="analytics-token-split-chart">
-        <h2 className="chart-title">Input vs output tokens (top series)</h2><p className="ux-context">Input: solid line. Output: dashed line with markers.</p>
+        <h2 className="chart-title">Input vs output tokens (selected groups)</h2><p className="ux-context">Input: solid line. Output: dashed line with markers.</p>
         <ResponsiveContainer width="100%" height={200}>
           <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
@@ -439,7 +462,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
       </section>
       {data.cost_visible && (
         <section className="glass-panel chart-panel" data-testid="analytics-cost-trend-chart">
-          <h2 className="chart-title">Cost trend (top series)</h2>
+          <h2 className="chart-title">Cost trend (selected groups)</h2>
           {rows.some(row => row.cost !== null) ? <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
@@ -784,13 +807,12 @@ export function AnalyticsPage() {
             </StateCard>
           ) : (
             <>
-              <AgentUsageCharts
-                data={data}
+              <AnalyticsCharts
+                query={{ ...query, from: data.window.from, to: data.window.to }}
                 group={group}
                 measure={effectiveMeasure}
-                bucket={data.window.bucket}
+                allZeroTokens={allZeroTokens}
               />
-              {!allZeroTokens && <TokenSplitCharts data={data} />}
               <AgentBreakdownTable
                 data={data}
                 group={group}

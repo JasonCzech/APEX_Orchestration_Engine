@@ -3,6 +3,7 @@ import { cloneElement, isValidElement, type ReactNode } from 'react'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
 
 import { DAY_MS } from '@/components/controls/timeWindow'
 import { authenticatedState, renderApp } from '@/test/render'
@@ -37,6 +38,45 @@ function renderAnalytics(search = '') {
 }
 
 describe('AnalyticsPage', () => {
+  it.each([
+    { measure: 'tokens', tableSort: 'key', order: 'asc', expectedSort: 'total_tokens' },
+    { measure: 'latency', tableSort: 'p95_latency_ms', order: 'desc', expectedSort: 'avg_latency_ms' },
+  ])('selects the highest $measure groups independently of table sorting', async ({ measure, tableSort, order, expectedSort }) => {
+    const rows = Array.from({ length: 13 }, (_, index) => ({
+      ...AGENT_ANALYTICS_FIXTURE.series[0]!, key: index === 12 ? 'winner-13' : `group-${String(index).padStart(2, '0')}`,
+      total_tokens: index === 12 ? 999 : 100, avg_latency_ms: index === 12 ? 999 : 100,
+      p95_latency_ms: index === 12 ? 999 : 5000,
+    }))
+    const requests: URLSearchParams[] = []
+    server.use(http.get('*/v1/analytics/agents', ({ request }) => {
+      const params = new URL(request.url).searchParams
+      requests.push(params)
+      const sort = params.get('sort')
+      const sorted = [...rows].sort((a, b) => sort === 'key' ? a.key.localeCompare(b.key)
+        : (b[sort as 'total_tokens' | 'avg_latency_ms' | 'p95_latency_ms'] ?? 0) - (a[sort as 'total_tokens' | 'avg_latency_ms' | 'p95_latency_ms'] ?? 0))
+      return HttpResponse.json({ ...AGENT_ANALYTICS_FIXTURE, series: sorted.slice(0, 12),
+        breakdown: sorted.map(row => ({ ...row, thread_id: null })), page: { offset: 0, limit: 20, total: 13 } })
+    }))
+    renderAnalytics(`?measure=${measure}&sort=${tableSort}&dir=${order}`)
+    const chart = await screen.findByTestId('analytics-agent-series-chart')
+    expect(within(chart).getByText('winner-13')).toBeInTheDocument()
+    expect(screen.getByTestId('analytics-agent-top-chart')).toHaveTextContent('winner-13')
+    expect(screen.getByTestId('analytics-chart-population')).toHaveTextContent('Charts cover 12 of 13 groups')
+    expect(screen.getByTestId('analytics-chart-population')).toHaveTextContent('Remaining groups are excluded')
+    expect(requests.some(params => params.get('sort') === expectedSort && params.get('order') === 'desc' && params.get('from') === AGENT_ANALYTICS_FIXTURE.window.from)).toBe(true)
+  })
+
+  it('keeps the table available when its separate chart query fails', async () => {
+    server.use(http.get('*/v1/analytics/agents', ({ request }) =>
+      new URL(request.url).searchParams.get('sort') === 'total_tokens'
+        ? HttpResponse.json({ detail: 'Chart query failed' }, { status: 503 })
+        : HttpResponse.json(AGENT_ANALYTICS_FIXTURE)))
+    renderAnalytics('?sort=key')
+    expect(await screen.findByRole('heading', { name: 'Analytics charts unavailable' })).toBeInTheDocument()
+    expect(screen.getByTestId('analytics-breakdown-table')).toHaveTextContent('claude-3-5-sonnet-latest')
+    expect(screen.queryByTestId('analytics-agent-top-chart')).not.toBeInTheDocument()
+  })
+
   it('keeps legacy recorded averages visible without inventing aggregate weights', async () => {
     const fixture = {
       ...AGENT_ANALYTICS_FIXTURE,
@@ -224,7 +264,7 @@ describe('AnalyticsPage', () => {
     expect(screen.getByTestId('stat-agents-runs')).toHaveTextContent('7 agents · 3 runs')
     expect(screen.getByTestId('stat-error-rate')).toHaveClass('danger')
 
-    expect(screen.getByTestId('analytics-agent-series-chart').querySelector('.recharts-surface')).toBeInTheDocument()
+    expect((await screen.findByTestId('analytics-agent-series-chart')).querySelector('.recharts-surface')).toBeInTheDocument()
     expect(screen.getByTestId('analytics-agent-top-chart').querySelector('.recharts-surface')).toBeInTheDocument()
     expect(screen.getByTestId('analytics-token-split-chart').querySelector('.recharts-surface')).toBeInTheDocument()
     expect(screen.getByTestId('analytics-cost-trend-chart').querySelector('.recharts-surface')).toBeInTheDocument()
@@ -317,7 +357,7 @@ describe('AnalyticsPage', () => {
       'Token capture begins with live LLM agents',
     )
     expect(screen.getByTestId('stat-total-tokens')).toHaveTextContent('—')
-    expect(screen.getByTestId('analytics-agent-series-chart')).toHaveTextContent(
+    expect(await screen.findByTestId('analytics-agent-series-chart')).toHaveTextContent(
       'Average latency over time by model',
     )
   })
@@ -342,9 +382,9 @@ describe('AnalyticsPage', () => {
       }),
     )
     await waitFor(() =>
-      expect(analytics.captured[analytics.captured.length - 1]!.get('sort')).toBe('p95_latency_ms'),
+      expect(analytics.captured[analytics.captured.length - 1]!.get('sort')).toBe('avg_latency_ms'),
     )
-    expect(screen.getByTestId('analytics-agent-series-chart')).toHaveTextContent(
+    expect(await screen.findByTestId('analytics-agent-series-chart')).toHaveTextContent(
       /Latency over time by phase/i,
     )
   })

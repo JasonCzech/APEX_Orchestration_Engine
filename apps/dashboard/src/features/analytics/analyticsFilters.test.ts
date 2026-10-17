@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseAnalyticsFilters, serializeAnalyticsFilters } from './analyticsFilters'
+import { defaultSortFor, parseAnalyticsFilters, serializeAnalyticsFilters } from './analyticsFilters'
 
 describe('analytics row limits', () => {
   it.each([['50', 50], ['200', 100], ['0', undefined], ['-1', undefined], ['2.5', undefined], ['bad', undefined]])('normalizes %s to %s', (raw, expected) => {
@@ -9,4 +9,8 @@ describe('analytics row limits', () => {
     expect(serializeAnalyticsFilters({ limit: 50, offset: 0 }).toString()).toBe('limit=50')
     expect(serializeAnalyticsFilters({ limit: 20 }).toString()).toBe('')
   })
+})
+
+it('sorts the latency measure by its average rather than a percentile', () => {
+  expect(defaultSortFor('latency')).toBe('avg_latency_ms')
 })

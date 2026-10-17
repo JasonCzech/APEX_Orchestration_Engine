@@ -155,7 +155,12 @@ class AgentAnalyticsRepository:
         total_rows = _as_int(await self._session.scalar(count_stmt))
 
         sort_expr = self._sort_expression(sort, group_col)
-        ordered = (sort_expr.asc() if order == "asc" else sort_expr.desc(), group_col.asc())
+        # Missing measurements must not tie with real zero values or displace
+        # measured groups from the bounded chart population.
+        ordered = (
+            (sort_expr.asc() if order == "asc" else sort_expr.desc()).nulls_last(),
+            group_col.asc(),
+        )
         grouped_cols = [group_col, *metrics]
         grouped: Select[tuple[Any, ...]] = (
             select(*grouped_cols)
@@ -289,9 +294,4 @@ class AgentAnalyticsRepository:
     def _sort_expression(self, sort: AgentSort, group_col: Any) -> Any:
         if sort == "key":
             return group_col
-        expr = self._metric_map()[sort]
-        # Order NULLs as 0 for the nullable measures so unknown-cost / latency-less
-        # rows sink instead of floating to the top under Postgres NULL ordering.
-        if sort in _FLOAT_METRICS:
-            return func.coalesce(expr, 0)
-        return expr
+        return self._metric_map()[sort]

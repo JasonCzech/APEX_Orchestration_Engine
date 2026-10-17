@@ -171,7 +171,7 @@ export function effectiveBucket(filters: AnalyticsFilters, now: number = Date.no
 
 export function defaultSortFor(measure: Measure): AgentSort {
   if (measure === 'cost') return 'cost_usd'
-  if (measure === 'latency') return 'p95_latency_ms'
+  if (measure === 'latency') return 'avg_latency_ms'
   return 'total_tokens'
 }
 
