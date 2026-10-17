@@ -40,6 +40,7 @@ def test_structured_assessment_overrides_legacy_boolean(status, passed):
     summary = public_test_result_summary(
         {"engine": "apex_load", "passed": True, "outcome": outcome}
     )
+    assert summary is not None
     assert summary["passed"] is passed
     assert summary["outcome"]["assessment"]["status"] == status
 
@@ -49,6 +50,7 @@ def test_unknown_contract_does_not_surface_legacy_pass():
     summary = public_test_result_summary(
         {"engine": "apex_load", "passed": True, "outcome": outcome}
     )
+    assert summary is not None
     assert summary["passed"] is None
     assert "outcome" not in summary
 
@@ -66,10 +68,13 @@ def test_structured_assessment_survives_execution_checkpoint_validation():
     from apex.graphs.pipeline.execution_phase import _validated_engine_summary
     from apex.graphs.pipeline.phase_subgraph import _validated_checkpoint_summary
 
-    source = TestResultSummary(engine="apex_load", passed=None, outcome=OUTCOME)
+    source = TestResultSummary(
+        engine="apex_load", passed=None, outcome=IntegrationOutcome.model_validate(OUTCOME)
+    )
     checked = _validated_engine_summary(source, expected_engine="apex_load")
     restored = _validated_checkpoint_summary(checked.model_dump(mode="json"))
     assert restored is not None
+    assert restored.outcome is not None
     assert restored.outcome.assessment.status == "not_assessed"
 
 
@@ -95,8 +100,14 @@ def test_contract_does_not_coerce_boolean_version_or_string_coverage():
 
 
 @pytest.mark.parametrize(
-    "status,expected", [("passed", True), ("failed", False), ("not_assessed", None),
-                        ("inconclusive", None), ("unavailable", None)]
+    "status,expected",
+    [
+        ("passed", True),
+        ("failed", False),
+        ("not_assessed", None),
+        ("inconclusive", None),
+        ("unavailable", None),
+    ],
 )
 def test_engine_boundary_uses_structured_assessment_for_execution_decisions(status, expected):
     from apex.graphs.pipeline.execution_phase import _validated_engine_summary

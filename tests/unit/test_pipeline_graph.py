@@ -1027,6 +1027,7 @@ def test_discussions_preserve_each_authenticated_actor_before_final_approval():
         gates={"story_analysis": {"prompt_review": "auto", "output_review": "gated"}},
         phases=["story_analysis"],
     )
+    assert "configurable" in cfg
     g.invoke({"title": "Demo"}, cfg)
     for identity, message in [
         ("operator-one", "Explain the scope"),

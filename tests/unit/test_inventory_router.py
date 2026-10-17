@@ -751,8 +751,9 @@ async def test_stub_inventory_records_source_for_future_reads(repo):
         )
     )
     view = await InventoryService(repo).rescan(EnvRef(id="env", name="Test"), adapter)
+    assert view.snapshot is not None
     assert view.snapshot.source == "Simulated inventory"
     assert view.snapshot.connection_name == "Demonstration inventory"
-    assert (
-        await InventoryService(repo).latest_inventory("env")
-    ).snapshot.source == "Simulated inventory"
+    latest = await InventoryService(repo).latest_inventory("env")
+    assert latest.snapshot is not None
+    assert latest.snapshot.source == "Simulated inventory"
