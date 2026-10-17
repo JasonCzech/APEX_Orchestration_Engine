@@ -82,6 +82,8 @@ describe('ContextPage', () => {
 
     const accepted = await screen.findByTestId('summary-accepted')
     expect(within(accepted).getByText('run-1')).toBeInTheDocument()
+    expect(accepted).toHaveTextContent('Execution ID: run-1')
+    expect(accepted).toHaveTextContent('Run ID: thread-99')
     // Thread id parsed from the stream_url -> /runs deep link.
     expect(within(accepted).getByRole('link', { name: 'Open run' })).toHaveAttribute(
       'href',

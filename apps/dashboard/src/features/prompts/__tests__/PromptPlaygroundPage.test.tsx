@@ -57,6 +57,8 @@ describe('PromptPlaygroundPage', () => {
     )
     const accepted = within(await screen.findByTestId('playground-accepted'))
     expect(accepted.getByText('run-77')).toBeInTheDocument()
+    expect(screen.getByTestId('playground-accepted')).toHaveTextContent('Execution ID: run-77')
+    expect(screen.getByTestId('playground-accepted')).toHaveTextContent('Run ID: thread-9')
     expect(accepted.getByRole('link', { name: 'Open run' })).toHaveAttribute(
       'href',
       '/runs/thread-9',

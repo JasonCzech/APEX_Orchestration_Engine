@@ -373,7 +373,8 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             data-testid="summary-accepted"
           >
             <span className="strong">Summary run accepted</span>
-            <span className="ctx-run-id">{latest.runId}</span>
+            <span>Execution ID: <code className="ctx-run-id">{latest.runId}</code></span>
+            {latest.threadId && <span>Run ID: <code className="ctx-run-id">{latest.threadId}</code></span>}
             {latest.threadId ? (
               <Link className="btn btn-secondary btn-sm" to={`/runs/${latest.threadId}`}>
                 Open run
@@ -397,7 +398,8 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             <ul className="ctx-history" data-testid="summary-history">
               {history.map((entry) => (
                 <li key={entry.runId} className="ctx-history-item">
-                    <span className="ctx-run-id">{entry.runId}</span>
+                    <span>Execution ID: <code className="ctx-run-id">{entry.runId}</code></span>
+                    {entry.threadId && <span>Run ID: <code className="ctx-run-id">{entry.threadId}</code></span>}
                     {!entry.threadId && (
                       <SummaryStreamButton streamUrl={entry.streamUrl} />
                     )}

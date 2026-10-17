@@ -366,7 +366,8 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
           {latest ? (
             <div className="tonal-card success prompt-run-card" data-testid="playground-accepted">
               <span className="strong">Template check accepted</span>
-              <span className="prompt-run-id">{latest.runId}</span>
+              <span>Execution ID: <code className="prompt-run-id">{latest.runId}</code></span>
+              {latest.threadId && <span>Run ID: <code className="prompt-run-id">{latest.threadId}</code></span>}
               {latest.threadId ? (
                 <Link className="btn btn-secondary btn-sm" to={`/runs/${latest.threadId}`}>
                   Open run
@@ -387,7 +388,8 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
               <ul className="prompt-run-history" data-testid="playground-history">
                 {history.map((entry) => (
                   <li key={entry.runId} className="prompt-run-history-item">
-                    <span className="prompt-run-id">{entry.runId}</span>
+                    <span>Execution ID: <code className="prompt-run-id">{entry.runId}</code></span>
+                    {entry.threadId && <span>Run ID: <code className="prompt-run-id">{entry.threadId}</code></span>}
                     <span className="prompts-muted">
                       {entry.label} · {formatRelative(entry.at)}
                     </span>

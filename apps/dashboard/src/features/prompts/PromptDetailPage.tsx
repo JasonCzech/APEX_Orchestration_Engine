@@ -2,14 +2,14 @@ import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { TabList, TabPanels } from '@/components/ux/TabList'
 import { Dialog } from '@/components/Dialog'
+import { OverflowMenu } from '@/components/ux/OverflowMenu'
 /**
  * /prompts/:ns/:name (?tab=content|versions) — prompt detail (plan UX 2.e).
  * Header: namespace/key breadcrumb, active vN chip, [Preview template],
- * [Archive|Unarchive] (operator+, optimistic with revert-on-error),
- * [New version] (operator+). Content tab: read-only active content + note +
+ * [New version] and an archive overflow action (global admin only). Content tab: read-only active content + note +
  * description; new-version mode swaps in an editable editor pre-filled with
  * the active content, a note field, a line-diff-vs-active indicator and
- * [Save as vN+1]. Versions tab: newest-first timeline with per-version
+ * [Save and activate vN+1]. Versions tab: newest-first timeline with per-version
  * [View] and [Set active] (rollback behind a confirm modal).
  */
 import { useId, useMemo, useRef, useState } from 'react'
@@ -124,6 +124,7 @@ function NewVersionEditor({
           {errorMessage(save.error, 'Save failed.')}
         </div>
       )}
+      <p className="tonal-card warning">Saving makes this the active catalog version immediately. New runs that follow the active version will use this content.</p>
       <div className="prompt-modal-actions">
         <button type="button" className="btn btn-ghost" onClick={onCancel} disabled={writePending}>
           Cancel
@@ -134,7 +135,7 @@ function NewVersionEditor({
           onClick={submit}
           disabled={unchanged || writePending}
         >
-          {save.isPending ? 'Saving…' : `Save as v${nextVersion}`}
+          {save.isPending ? 'Saving…' : `Save and activate v${nextVersion}`}
         </button>
       </div>
     </div>
@@ -312,6 +313,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
             <span aria-hidden="true"> / </span>
             <span className="strong">{detail.key}</span>
           </nav>
+          <h2 className="prompt-detail-name">{detail.key}</h2>
           <div className="prompts-badges">
             {detail.active_version && (
               <span className="dash-context-chip prompts-version-chip">
@@ -328,14 +330,6 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
           <RequireGlobalAdmin>
             <button
               type="button"
-              className="btn btn-ghost"
-              onClick={() => archived ? setArchived.mutate(false) : setArchiveConfirm(true)}
-              disabled={writePending}
-            >
-              {archived ? 'Unarchive' : 'Archive'}
-            </button>
-            <button
-              type="button"
               className="btn btn-primary"
               onClick={() => {
                 selectTab('content')
@@ -348,6 +342,14 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
             >
               New version
             </button>
+            <OverflowMenu
+              label={`Prompt actions: ${detail.key}`}
+              items={[{
+                label: archived ? 'Unarchive' : 'Archive…',
+                disabled: writePending,
+                onSelect: () => archived ? setArchived.mutate(false) : setArchiveConfirm(true),
+              }]}
+            />
           </RequireGlobalAdmin>
         </div>
       </header>

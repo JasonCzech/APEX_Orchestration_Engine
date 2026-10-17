@@ -50,19 +50,21 @@ describe('PromptDetailPage', () => {
     renderApp({ initialEntries: [DETAIL_URL], authState: authenticatedState('admin', 'Dash Ops', []) })
 
     expect(await screen.findByText('active v2')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'story_analysis/system' })).toBeVisible()
     await userEvent.click(screen.getByRole('button', { name: 'New version' }))
 
+    expect(screen.getByText('Saving makes this the active catalog version immediately. New runs that follow the active version will use this content.')).toBeVisible()
     const editor = screen.getByLabelText('New version content')
     expect(editor).toHaveValue(STORY_V2_CONTENT)
     expect(screen.getByText('No changes vs active')).toBeInTheDocument()
     // unchanged content cannot be saved
-    expect(screen.getByRole('button', { name: 'Save as v3' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save and activate v3' })).toBeDisabled()
 
     await userEvent.type(editor, '\nAlways cite line numbers.')
     expect(screen.getByLabelText('Changes vs active')).toHaveTextContent('+1 −0 lines vs active')
 
     await userEvent.type(screen.getByLabelText('Version note'), 'cite lines')
-    await userEvent.click(screen.getByRole('button', { name: 'Save as v3' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save and activate v3' }))
 
     await waitFor(() => expect(catalog.calls.saveVersion).toHaveLength(1))
     expect(catalog.calls.saveVersion[0]).toEqual({
@@ -113,10 +115,12 @@ describe('PromptDetailPage', () => {
     await screen.findByText('active v2')
     await user.click(screen.getByRole('button', { name: 'New version' }))
     await user.type(screen.getByLabelText('New version content'), '\nWait for this write.')
-    await user.click(screen.getByRole('button', { name: 'Save as v3' }))
+    await user.click(screen.getByRole('button', { name: 'Save and activate v3' }))
     await saveStarted
 
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Prompt actions: story_analysis/system' }))
+    expect(screen.getByRole('menuitem', { name: 'Archive…' })).toBeDisabled()
+    await user.keyboard('{Escape}')
     expect(screen.getByRole('button', { name: 'New version' })).toBeDisabled()
     expect(screen.getByRole('tab', { name: 'Versions' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()
@@ -194,7 +198,8 @@ describe('PromptDetailPage', () => {
     await screen.findByText('active v2')
     expect(screen.queryByText('archived')).not.toBeInTheDocument()
 
-    await userEvent.click(screen.getByRole('button', { name: 'Archive' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Prompt actions: story_analysis/system' }))
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Archive…' }))
     await userEvent.click(screen.getByRole('button', { name: 'Confirm archive' }))
     // optimistic: the chip flips before the server answers
     expect(await screen.findByText('archived')).toBeInTheDocument()
@@ -202,7 +207,8 @@ describe('PromptDetailPage', () => {
     // 500 lands: revert + error surface
     await waitFor(() => expect(screen.queryByText('archived')).not.toBeInTheDocument())
     expect(screen.getByRole('alert')).toHaveTextContent('catalog write failed')
-    expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Prompt actions: story_analysis/system' }))
+    expect(screen.getByRole('menuitem', { name: 'Archive…' })).toBeInTheDocument()
   })
 
   it('hides every mutation from viewers', async () => {
@@ -214,7 +220,7 @@ describe('PromptDetailPage', () => {
 
     await screen.findByTestId('prompt-version-v-1')
     expect(screen.queryByRole('button', { name: 'New version' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Archive' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Prompt actions: story_analysis/system' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Set active' })).not.toBeInTheDocument()
     // read affordances stay
     expect(screen.getByRole('link', { name: 'Preview template' })).toBeInTheDocument()
