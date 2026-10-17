@@ -118,6 +118,8 @@ export const PhaseReviewPayloadSchema = z
     schema_version: schemaVersion,
     kind: z.literal("phase_review"),
     phase: PhaseNameSchema,
+    /** The review preview omits or shortens evidence to fit its display budget. */
+    projection_truncated: z.boolean().optional(),
     summary: z.string().nullable(),
     result_preview: ResultPreviewSchema,
     /** Public agent evidence available before the operator accepts the output. */

@@ -38,6 +38,9 @@ export function PhaseReviewPanel({
   return (
     <div className="gate-panel phase-review-layout" data-testid="phase-review-panel">
       <div className="phase-review-main">
+        {payload.projection_truncated === true && <p role="note" className="tonal-card warning">
+          Some output or discussion was omitted from this review preview because it exceeded the display limit.
+        </p>}
         {paragraphs.length > 0 ? (
           <div className="gate-summary" data-testid="gate-summary">
             {paragraphs.map((paragraph, index) => (
@@ -45,7 +48,7 @@ export function PhaseReviewPanel({
             ))}
           </div>
         ) : (
-          <div className="dash-empty small">No summary provided for this phase result.</div>
+          <div className="dash-empty small">{payload.projection_truncated === true ? 'The phase summary is unavailable in this review preview.' : 'No summary provided for this phase result.'}</div>
         )}
 
         {payload.warnings.map((warning, index) => (
@@ -93,7 +96,10 @@ export function PhaseReviewPanel({
       <div className="phase-review-sidebar">
         <section className="gate-info-card" aria-label="Evidence for this decision">
           <h4>Agent evidence</h4>
-          {payload.evidence ? <ReasoningTab threadId={threadId} phase={payload.phase} entry={payload.evidence} state={{}} /> : <p>No agent evidence was supplied with this review. Reasoning, tool calls and prompt provenance are unavailable in this snapshot.</p>}
+          {payload.evidence?.projection_truncated === true && <p role="note" className="tonal-card warning">
+            Some agent evidence was omitted from this review preview because it exceeded the display limit.
+          </p>}
+          {payload.evidence ? <ReasoningTab threadId={threadId} phase={payload.phase} entry={payload.evidence} state={{}} /> : <p>Agent evidence is unavailable in this review preview. Reasoning, tool calls and prompt provenance may be available in the run details.</p>}
           {payload.evidence?.provenance && <p>Output source: {payload.evidence.provenance === 'llm' ? 'AI-generated' : payload.evidence.provenance.replaceAll('_', ' ')}</p>}
           {typeof payload.evidence?.model === 'string' && <p>Model: {payload.evidence.model}</p>}
         </section>

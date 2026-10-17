@@ -643,6 +643,13 @@ describe("thread-state mirror schemas", () => {
     expect(parsed.run_config?.["connections"]).toEqual({ work_tracking: "conn-work" });
   });
 
+  it("preserves explicit incomplete projection notices for state and review evidence", () => {
+    expect(PipelineStateSchema.parse({ projection_truncated: true }).projection_truncated).toBe(true);
+    expect(PhaseResultEntrySchema.parse({ projection_truncated: true }).projection_truncated).toBe(true);
+    expect(PipelineStateSchema.safeParse({ projection_truncated: "true" }).success).toBe(false);
+    expect(PhaseResultEntrySchema.safeParse({ projection_truncated: "true" }).success).toBe(false);
+  });
+
   it("stays lenient: partial mid-run entries and unknown keys still parse", () => {
     // plan_resolver seed (PhaseResult.as_state of a pending phase) minus extras
     expect(

@@ -27,7 +27,7 @@ import { EngineStrip } from './EngineStrip'
 import type { LiveStreamViewLike } from './liveTypes'
 import { PromptReviewSection } from './PromptReviewSection'
 import { promptSourceLabel, promptSourceTone } from './promptProvenance'
-import { toolCallTone, formatDuration, formatTimestamp, PHASE_LABELS, pipelineStatusLabel } from './runDisplay'
+import { executionResultLabel, toolCallTone, formatDuration, formatTimestamp, PHASE_LABELS, pipelineStatusLabel } from './runDisplay'
 
 const TABS = ['details', 'log', 'reasoning'] as const
 type WorkspaceTab = (typeof TABS)[number]
@@ -108,7 +108,7 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
-      <PhaseOperatorSummary entry={entry} status={phaseStatus} />
+      <PhaseOperatorSummary entry={entry} status={phaseStatus} incomplete={state.projection_truncated === true || entry?.projection_truncated === true} />
       <TabList id={tabsId} label="Phase workspace tabs" items={TABS.map(id => ({id, label: TAB_LABELS[id]}))} value={tab} onChange={selectTab} />
       <TabPanels id={tabsId} items={TABS} value={tab} focusable>
       {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Available agent evidence appears below before you decide.</p>}
@@ -150,7 +150,7 @@ export function PhaseWorkspace({
   )
 }
 
-function KpiPills({ summary }: { summary: TestResultSummary }) {
+function KpiPills({ summary, result }: { summary: TestResultSummary; result: string }) {
   const kpis = summary.kpis ?? {}
   const pills: Array<{ label: string; value: string }> = [
     { label: 'TPS avg', value: fmtKpi(kpis['tps_avg']) },
@@ -169,8 +169,8 @@ function KpiPills({ summary }: { summary: TestResultSummary }) {
           <span className="kpi-value">{pill.value}</span>
         </span>
       ))}
-      <span className={`status-badge ${summary.passed === true ? 'success' : summary.passed === false ? 'danger' : 'neutral'}`}>
-        {summary.passed === true ? 'Passed' : summary.passed === false ? 'Failed' : 'Not available'}
+      <span className={`status-badge ${result === 'Passed' ? 'success' : result === 'Failed' ? 'danger' : 'neutral'}`}>
+        {result}
       </span>
     </div>
   )
@@ -270,18 +270,19 @@ function PhaseDetailsTab({
   entry: PhaseResultEntry | undefined
   state: PipelineState
 }) {
+  const incomplete = state.projection_truncated === true || entry?.projection_truncated === true
   if (!entry) {
     return (
-      <StateCard kind="empty" compact title="No result recorded for this phase." action={null}>The snapshot contains no phase result.</StateCard>
+      <StateCard kind="empty" compact title={incomplete ? 'Phase result unavailable in this preview.' : 'No result recorded for this phase.'} action={null} />
     )
   }
 
   return (
     <div aria-label="Phase details">
       <p className="workspace-caption">
-        Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : 'Not recorded'}
+        Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : incomplete ? 'Unavailable in this preview' : 'Not recorded'}
       </p>
-      {entry.test_summary && <KpiPills summary={entry.test_summary} />}
+      {entry.status === 'succeeded' && entry.test_summary && <KpiPills summary={entry.test_summary} result={executionResultLabel({}, { phase_results: { execution: entry } })} />}
 
       {(entry.approvals?.length ?? 0) > 0 && (
         <>
@@ -298,12 +299,12 @@ function PhaseDetailsTab({
   )
 }
 
-function PhaseOperatorSummary({ entry, status }: { entry: PhaseResultEntry | undefined; status?: string }) {
+function PhaseOperatorSummary({ entry, status, incomplete = false }: { entry: PhaseResultEntry | undefined; status?: string; incomplete?: boolean }) {
   if (!entry) {
     return (
       <section className="phase-operator-summary" aria-label="Phase snapshot">
         <h3>What happened</h3>
-        <p>No result recorded for this phase.</p>
+        <p>{incomplete ? 'Phase result unavailable in this preview.' : 'No result recorded for this phase.'}</p>
       </section>
     )
   }
@@ -317,7 +318,7 @@ function PhaseOperatorSummary({ entry, status }: { entry: PhaseResultEntry | und
         <div><dt>Attempt</dt><dd>{entry.attempt ?? 'Not started'}</dd></div>
         <div><dt>Elapsed time (includes reviews)</dt><dd>{formatDuration(entry.duration_s)}</dd></div>
         <div><dt>Started</dt><dd>{formatTimestamp(entry.started_at)}</dd></div>
-        <div><dt>Evidence</dt><dd>{artifactCount === 0 ? 'No phase artifacts' : `${artifactCount} phase artifact${artifactCount === 1 ? '' : 's'}`}</dd></div>
+        <div><dt>Evidence</dt><dd>{artifactCount === 0 ? incomplete ? 'Unavailable in this preview' : 'No phase artifacts' : `${artifactCount} phase artifact${artifactCount === 1 ? '' : 's'}`}</dd></div>
       </dl>
       {(entry.warnings?.length ?? 0) > 0 && (
         <div className="phase-operator-attention">
@@ -332,8 +333,8 @@ function PhaseOperatorSummary({ entry, status }: { entry: PhaseResultEntry | und
         </div>
       )}
       <h3>What happened</h3>
-      <p className="workspace-caption">Output source: {entry.provenance === 'llm' ? 'AI-generated' : entry.provenance === 'stub' ? 'Stub — demonstration output' : entry.provenance?.replaceAll('_', ' ') ?? 'Not recorded'}</p>
-      {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>No operator-readable summary has been recorded for this phase.</p>}
+      <p className="workspace-caption">Output source: {entry.provenance === 'llm' ? 'AI-generated' : entry.provenance === 'stub' ? 'Stub — demonstration output' : entry.provenance?.replaceAll('_', ' ') ?? (incomplete ? 'Unavailable in this preview' : 'Not recorded')}</p>
+      {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>{incomplete ? 'The phase summary is unavailable in this preview.' : 'No operator-readable summary has been recorded for this phase.'}</p>}
     </section>
   )
 }
@@ -364,7 +365,8 @@ export function ReasoningTab({
 
   if (!hasReasoning) {
     return (
-      <StateCard kind="empty" compact title="No reasoning details recorded for this phase." action={null} />
+      <StateCard kind="empty" compact title={entry?.projection_truncated === true || state.projection_truncated === true
+        ? 'Reasoning details are unavailable in this preview.' : 'No reasoning details recorded for this phase.'} action={null} />
     )
   }
 

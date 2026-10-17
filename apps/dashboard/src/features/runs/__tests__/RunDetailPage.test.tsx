@@ -1,3 +1,4 @@
+import { cloneElement, isValidElement, type ReactNode } from 'react'
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
@@ -7,6 +8,7 @@ import { ENGINE_RETRY_KINDS } from '@apex/pipeline-events'
 import { bumpSessionRevision } from '@/auth/keyStorage'
 import { server } from '@/test/server'
 import { queryKeys } from '@/api/queryKeys'
+import type { ThreadStateSnapshot } from '@/api/hooks/useThreadState'
 
 import {
   PIPELINE_DETAIL,
@@ -23,6 +25,16 @@ vi.mock('@uiw/react-codemirror', async () => {
   return {
     default: ({ value }: { value: string }) =>
       createElement('pre', { 'data-testid': 'codemirror' }, value),
+  }
+})
+
+// Running-phase regressions also render the live metrics container in jsdom.
+vi.mock('recharts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('recharts')>()
+  return { ...actual, ResponsiveContainer: ({ children }: { children: ReactNode }) =>
+    isValidElement(children)
+      ? cloneElement(children as React.ReactElement<{ width?: number; height?: number }>, { width: 600, height: 180 })
+      : children,
   }
 })
 
@@ -86,6 +98,90 @@ describe('RunDetailPage', () => {
     renderRunRoutes([`/runs/${THREAD_ID}`])
     const overview = await screen.findByRole('region', { name: 'Run overview' })
     expect(within(overview).getByText(/4\/6 phases succeeded · 1 skipped/)).toBeInTheDocument()
+  })
+
+  it('retains valid dialogue without rendering malformed content after schema drift', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    detail.values = { ...detail.values, dialogue: [
+      { id: 'valid-dialogue', phase: 'test_planning', role: 'operator', content: 'Keep the valid discussion.' },
+      { id: 'invalid-dialogue', phase: 'test_planning', role: 'agent', content: { unexpected: 'object' } },
+    ] }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning?tab=reasoning`])
+    expect(await screen.findByText('Keep the valid discussion.')).toBeInTheDocument()
+    expect(screen.queryByText('Unexpected Application Error!')).not.toBeInTheDocument()
+  })
+
+  it('validates nested engine and review fields while preserving valid siblings after drift', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    const validPrompt = { system: 'Valid system', phase_prompt: 'Valid phase prompt', application: null,
+      additional_context: '', source: { origin: 'catalog' }, updated_at: '2026-10-17T00:00:00Z', updated_by: 'operator' }
+    const validApplication = { content: 'Valid application', source: { origin: 'catalog' },
+      updated_at: '2026-10-17T00:00:00Z', updated_by: 'operator' }
+    detail.values = { ...detail.values,
+      engine_handle: { engine: 'apex_load', application_id: { unexpected: 'object' }, release_id: 'release-valid',
+        extras: { mapping_revision: { unexpected: 'object' } }, console_url: 'https://load.example/#/report/123' },
+      prompt_reviews: { story_analysis: validPrompt, test_planning: { ...validPrompt, system: { unexpected: 'object' } } },
+      application_reviews: { valid: validApplication, invalid: { ...validApplication, content: { unexpected: 'object' } } },
+    }
+    server.use(pipelineDetailHandler(detail))
+    const { queryClient } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText('release-valid')).toBeInTheDocument()
+    expect(within(overview).getByRole('link', { name: 'Open load execution' })).toHaveAttribute('href', expect.stringContaining('#/report/123'))
+    const snapshot = queryClient.getQueryData<ThreadStateSnapshot>(queryKeys.threads.state(THREAD_ID))
+    expect(snapshot?.stateParseFailed).toBe(true)
+    expect(snapshot?.state.engine_handle?.application_id).toBeUndefined()
+    expect(snapshot?.state.engine_handle?.extras).toBeUndefined()
+    expect(snapshot?.state.prompt_reviews).toEqual({ story_analysis: validPrompt })
+    expect(snapshot?.state.application_reviews).toEqual({ valid: validApplication })
+    expect(screen.queryByText('Unexpected Application Error!')).not.toBeInTheDocument()
+  })
+
+  it('describes absent bounded evidence as unavailable across overview and phase details', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
+      current_phase: 'test_planning', phase_strip: [{ phase: 'test_planning', status: 'failed', attempt: 1 }],
+      values: { projection_truncated: true, phases_plan: ['test_planning'], current_phase: 'test_planning',
+        phase_results: { test_planning: { status: 'failed', attempt: 1 } } },
+    }
+    server.use(pipelineDetailHandler(detail))
+    const { router } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(/Execution evidence is unavailable in this preview\./)).toBeInTheDocument()
+    expect(within(overview).getByText('The failure or stop reason is unavailable in this preview.')).toBeInTheDocument()
+    expect(within(overview).getByText('Artifact details are unavailable in this preview.')).toBeInTheDocument()
+    expect(within(overview).queryByText('Not applicable')).not.toBeInTheDocument()
+    expect(within(overview).queryByText('No failure or stop reason was recorded.')).not.toBeInTheDocument()
+    expect(within(overview).queryByText('No artifacts were recorded for this run.')).not.toBeInTheDocument()
+    await act(async () => { await router.navigate(`/runs/${THREAD_ID}/phases/test_planning?tab=details`) })
+    const phase = await screen.findByRole('region', { name: 'Phase snapshot' })
+    expect(within(phase).getByText('The phase summary is unavailable in this preview.')).toBeInTheDocument()
+    expect(within(phase).getByText('Unavailable in this preview', { exact: true })).toBeInTheDocument()
+    expect(within(phase).queryByText('No phase artifacts')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Output source: Unavailable in this preview')).toHaveLength(2)
+  })
+
+  it('marks omitted phase evidence unavailable when only the phase preview was truncated', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    detail.values = { phases_plan: ['test_planning'], current_phase: 'test_planning',
+      phase_results: { test_planning: { status: 'awaiting_output_review', attempt: 1, projection_truncated: true } } }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning?tab=details`])
+    const phase = await screen.findByRole('region', { name: 'Phase snapshot' })
+    expect(within(phase).getByText('The phase summary is unavailable in this preview.')).toBeInTheDocument()
+    expect(within(phase).getByText('Unavailable in this preview', { exact: true })).toBeInTheDocument()
+    expect(within(phase).queryByText('No phase artifacts')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Output source: Unavailable in this preview')).toHaveLength(2)
+  })
+
+  it.each([false, true])('discloses a bounded snapshot with unrelated schema drift (%s)', async drift => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    detail.values = { projection_truncated: true, current_phase: 'test_planning', ...(drift ? { title: 42 } : {}) }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning?tab=reasoning`])
+    expect(await screen.findByRole('note')).toHaveTextContent('The displayed history may be incomplete.')
+    expect(await screen.findByText('Reasoning details are unavailable in this preview.')).toBeInTheDocument()
+    expect(screen.queryByText('No reasoning details recorded for this phase.')).not.toBeInTheDocument()
   })
 
   it.each([
@@ -207,6 +303,33 @@ describe('RunDetailPage', () => {
     expect(within(row).getByText('0.42%')).toBeInTheDocument()
     expect(within(row).getByText('50')).toBeInTheDocument()
     expect(within(row).getByText('Passed')).toBeInTheDocument()
+  })
+
+  it.each(['pending', 'running', 'awaiting_output_review', 'failed', 'aborted'])('withholds execution KPI results from phase details while status is %s', async status => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    const state = detail.values as { phase_results: { execution: { status: string; test_summary: { passed: boolean } } } }
+    state.phase_results.execution.status = status
+    state.phase_results.execution.test_summary.passed = false
+    detail.execution_result = null
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
+    await screen.findByRole('region', { name: 'Execution workspace' })
+    expect(screen.queryByTestId('kpi-row')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['inconclusive', 'Inconclusive'], ['not_assessed', 'Not assessed'], ['unavailable', 'Not available'],
+  ])('shows the structured %s assessment in completed phase details', async (status, label) => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    const state = detail.values as { phase_results: { execution: { test_summary: Record<string, unknown> } } }
+    Object.assign(state.phase_results.execution.test_summary, { passed: null, outcome: {
+      schema_version: 1, execution_id: 'execution-1', observed_at: '2026-10-17T00:00:00Z',
+      assessment: { status, reason_code: 'review_required', explanation: 'Recorded assessment.' },
+      execution: { termination_reason: 'duration_completed' }, evidence: { status: 'partial' },
+    } })
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
+    expect(within(await screen.findByTestId('kpi-row')).getByText(label!)).toBeInTheDocument()
   })
 
   it('keeps unknown test outcomes distinct from pass and failure', async () => {

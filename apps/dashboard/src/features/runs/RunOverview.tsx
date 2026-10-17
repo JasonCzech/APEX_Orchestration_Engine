@@ -38,6 +38,8 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
     : executionResultLabel(detail, state))
   const errors = Object.values(state.phase_results ?? {}).flatMap((entry) => entry.errors ?? [])
   const artifacts = state.artifacts ?? []
+  const incomplete = state.projection_truncated === true
+  const missingEvidence = incomplete ? 'Unavailable in this preview' : 'Not recorded'
   const handle = state.engine_handle ?? execution?.engine_handle
   const external =
     state.external_results && typeof state.external_results === 'object'
@@ -61,7 +63,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
               : executionOmitted ? 'Execution was not selected for this run.'
                 : state.external_results || handle
                   ? 'An execution reference is recorded; collected execution evidence is unavailable.'
-                  : 'Execution evidence has not been recorded.'}
+                  : incomplete ? 'Execution evidence is unavailable in this preview.' : 'Execution evidence has not been recorded.'}
           </p>
           {errors.map((error, i) => (
             <p key={i} role="alert">
@@ -71,7 +73,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
           {!errors.length &&
             !state.run_aborted &&
             ['idle', 'error'].includes(detail.thread_status ?? '') &&
-            (detail.thread_status === 'error' || progress.completed !== progress.total) && <p>No failure or stop reason was recorded.</p>}
+            (detail.thread_status === 'error' || progress.completed !== progress.total) && <p>{incomplete ? 'The failure or stop reason is unavailable in this preview.' : 'No failure or stop reason was recorded.'}</p>}
           {detail.pending_gate && onReviewGate ? (
             <button type="button" className="btn btn-primary" onClick={onReviewGate}>
               Review pending decision
@@ -116,11 +118,11 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
             <dd>{detail.project_id ?? 'Not recorded'}</dd>
             <dt>Application</dt>
             <dd>{detail.app_id ?? 'Not recorded'}</dd>
-            <dt>Load application</dt><dd>{summary?.outcome?.scope?.application_id ?? handle?.application_id ?? handle?.extras?.application_id ?? 'Not recorded'}</dd>
-            <dt>Load release</dt><dd>{summary?.outcome?.scope?.release_id ?? handle?.release_id ?? handle?.extras?.release_id ?? 'Not recorded'}</dd>
-            <dt>Mapping revision</dt><dd>{handle?.mapping_revision ?? handle?.extras?.mapping_revision ?? 'Not recorded'}</dd>
+            <dt>Load application</dt><dd>{summary?.outcome?.scope?.application_id ?? handle?.application_id ?? handle?.extras?.application_id ?? missingEvidence}</dd>
+            <dt>Load release</dt><dd>{summary?.outcome?.scope?.release_id ?? handle?.release_id ?? handle?.extras?.release_id ?? missingEvidence}</dd>
+            <dt>Mapping revision</dt><dd>{handle?.mapping_revision ?? handle?.extras?.mapping_revision ?? missingEvidence}</dd>
             <dt>Source</dt>
-            <dd>{execution?.provenance ?? 'Not recorded'}</dd>
+            <dd>{execution?.provenance ?? missingEvidence}</dd>
           </dl>
           {loadUrl && (
             <a
@@ -151,7 +153,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
         <p>
           {artifacts.length
             ? `${artifacts.length} artifacts recorded. Review source evidence before making a release decision.`
-            : ['idle', 'error'].includes(detail.thread_status ?? '') ? 'No artifacts were recorded for this run.' : 'No artifacts recorded yet. Evidence may still be collecting.'}
+            : incomplete ? 'Artifact details are unavailable in this preview.' : ['idle', 'error'].includes(detail.thread_status ?? '') ? 'No artifacts were recorded for this run.' : 'No artifacts recorded yet. Evidence may still be collecting.'}
         </p>
         <div className="ux-actions">
           {artifacts.map((artifact) => (

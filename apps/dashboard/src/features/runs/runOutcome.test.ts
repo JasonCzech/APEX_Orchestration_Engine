@@ -22,6 +22,7 @@ describe('execution evidence provenance', () => {
   it('keeps omitted execution distinct from an established test verdict', () => {
     const omitted = { phases_plan: ['story_analysis'] } as import('@apex/pipeline-events').PipelineState
     expect(executionWasOmitted(omitted)).toBe(true)
+    expect(executionWasOmitted({ ...omitted, projection_truncated: true })).toBe(false)
     expect(executionResultLabel({}, omitted)).toBe('Not available')
     expect(executionWasOmitted({})).toBe(false)
     expect(executionResultLabel({ execution_result: 'failed' }, omitted)).toBe('Not available')

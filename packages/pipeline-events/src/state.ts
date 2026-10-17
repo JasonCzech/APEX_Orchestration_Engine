@@ -82,6 +82,7 @@ export const DialogueEntrySchema = z
     phase: PhaseNameSchema.optional(),
     role: z.enum(["operator", "agent"]),
     content: z.string(),
+    projection_truncated: z.boolean().optional(),
     at: z.string().optional(),
   })
   .passthrough();
@@ -235,6 +236,8 @@ export type EnginePollSample = z.infer<typeof EnginePollSampleSchema>;
  */
 export const PhaseResultEntrySchema = z
   .object({
+    /** Optional gate evidence fields were omitted to keep the decision readable. */
+    projection_truncated: z.boolean().optional(),
     provenance: z.enum(["stub", "llm", "simulator", "live_provider", "imported"]).optional(),
     // PhaseResult model fields
     phase: PhaseNameSchema.optional(),
@@ -274,6 +277,8 @@ export type PhaseResultEntry = z.infer<typeof PhaseResultEntrySchema>;
 /** apex.graphs.pipeline.state.PipelineState (thread values from the SDK). */
 export const PipelineStateSchema = z
   .object({
+    /** Large evidence was omitted; the retained audit history may be incomplete. */
+    projection_truncated: z.boolean().optional(),
     title: z.string().optional(),
     request: z.string().optional(),
     phases_plan: z.array(PhaseNameSchema).optional(),

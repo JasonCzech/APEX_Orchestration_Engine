@@ -208,6 +208,9 @@ export function RunWorkspace({
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
+      {state.projection_truncated === true && <p role="note" className="tonal-card warning">
+        Some recorded evidence was omitted from this snapshot because it exceeds the display limit. The displayed history may be incomplete.
+      </p>}
       <header className="run-detail-header">
         <div className="run-detail-heading">
           {embedded && <span className="run-workspace-kicker">Run workspace</span>}

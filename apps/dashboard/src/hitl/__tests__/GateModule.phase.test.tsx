@@ -53,6 +53,31 @@ function renderHarness(threadId: string) {
 }
 
 describe('GateModule phase_review', () => {
+  it('discloses omitted preview evidence while keeping the review actionable', async () => {
+    const threadId = 'th-bounded-evidence'
+    const interrupt = phaseInterrupt('int-bounded')
+    interrupt.payload = { ...(interrupt.payload as object), evidence: { projection_truncated: true } }
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [interrupt]))
+    server.use(handler)
+    renderHarness(threadId)
+    expect(await screen.findByRole('note')).toHaveTextContent('Some agent evidence was omitted from this review preview')
+    expect(screen.getByText('Reasoning details are unavailable in this preview.')).toBeInTheDocument()
+    expect(screen.queryByText('No reasoning details recorded for this phase.')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Accept phase output & continue' })).toBeEnabled()
+  })
+
+  it('discloses bounded output and discussion while keeping the decision available', async () => {
+    const threadId = 'th-bounded-output'
+    const interrupt = phaseInterrupt('int-bounded-output')
+    interrupt.payload = { ...(interrupt.payload as object), projection_truncated: true, summary: null }
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [interrupt]))
+    server.use(handler)
+    renderHarness(threadId)
+    expect(await screen.findByRole('note')).toHaveTextContent('Some output or discussion was omitted from this review preview')
+    expect(screen.getByText('The phase summary is unavailable in this review preview.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Accept phase output & continue' })).toBeEnabled()
+  })
+
   it('renders the review surfaces and discuss sends the composer message', async () => {
     const threadId = 'th-discuss'
     const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [phaseInterrupt('int-d')]))

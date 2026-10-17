@@ -130,7 +130,7 @@ export function isPipelinePhaseComplete(status: string | null | undefined): bool
 
 /** Only a full snapshot can prove that execution was omitted without imported evidence. */
 export function executionWasOmitted(state?: PipelineState): boolean {
-  return Boolean(state?.phases_plan?.length && !state.phases_plan.includes('execution') &&
+  return Boolean(state?.projection_truncated !== true && state?.phases_plan?.length && !state.phases_plan.includes('execution') &&
     !state.phase_results?.execution && !state.external_results && !state.engine_handle)
 }
 

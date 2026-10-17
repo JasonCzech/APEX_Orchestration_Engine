@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
+import type { ZodType } from 'zod'
 
 import type { components } from '@apex/api-client'
-import { PhaseResultEntrySchema, PipelineStateSchema, type PipelineState } from '@apex/pipeline-events'
+import { ArtifactRefSchema, ContextPacketSchema, DialogueEntrySchema, EngineHandleSchema, PhaseResultEntrySchema, PipelineStateSchema, type PipelineState } from '@apex/pipeline-events'
 
 import { getApexClient } from '@/api/apexClient'
 import { ApiError, errorMessageOf } from '@/api/errors'
@@ -24,7 +25,7 @@ export interface ThreadStateSnapshot {
   state: PipelineState
   /** Pending HITL gates (empty when the thread is not interrupted). */
   interrupts: GateInterrupt[]
-  /** True when the zod mirror rejected `values`; `state` is then the raw object. */
+  /** True when the zod mirror rejected `values`; `state` retains only independently validated fields. */
   stateParseFailed: boolean
 }
 
@@ -45,6 +46,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function validArrayItems<T>(values: unknown[], schema: ZodType<T>): T[] {
+  return values.flatMap(value => {
+    const parsed = schema.safeParse(value)
+    return parsed.success ? [parsed.data] : []
+  })
+}
+
 /** Keep the run page usable when one server field drifts from the mirror schema. */
 function normalizeDriftedState(raw: unknown): PipelineState {
   const source = isRecord(raw) ? raw : {}
@@ -58,9 +66,16 @@ function normalizeDriftedState(raw: unknown): PipelineState {
     safe.current_phase = source.current_phase
   }
   if (typeof source.run_aborted === 'boolean') safe.run_aborted = source.run_aborted
+  if (typeof source.projection_truncated === 'boolean') safe.projection_truncated = source.projection_truncated
   if (isRecord(source.run_config)) safe.run_config = source.run_config
-  if (isRecord(source.prompt_reviews)) safe.prompt_reviews = source.prompt_reviews
-  if (isRecord(source.application_reviews)) safe.application_reviews = source.application_reviews
+  for (const field of ['prompt_reviews', 'application_reviews'] as const) {
+    const entries = source[field]
+    if (!isRecord(entries)) continue
+    safe[field] = Object.fromEntries(Object.entries(entries).flatMap(([key, entry]) => {
+      const parsed = PipelineStateSchema.shape[field].safeParse({ [key]: entry })
+      return parsed.success && parsed.data ? Object.entries(parsed.data) : []
+    }))
+  }
   if (isRecord(source.phase_results)) {
     safe.phase_results = Object.fromEntries(
       Object.entries(source.phase_results)
@@ -82,10 +97,18 @@ function normalizeDriftedState(raw: unknown): PipelineState {
         }),
     )
   }
-  if (Array.isArray(source.artifacts)) safe.artifacts = source.artifacts.filter(isRecord)
-  if (Array.isArray(source.dialogue)) safe.dialogue = source.dialogue.filter(isRecord)
-  if (Array.isArray(source.context_packets)) safe.context_packets = source.context_packets.filter(isRecord)
-  if (isRecord(source.engine_handle)) safe.engine_handle = source.engine_handle
+  if (Array.isArray(source.artifacts)) safe.artifacts = validArrayItems(source.artifacts, ArtifactRefSchema)
+  if (Array.isArray(source.dialogue)) safe.dialogue = validArrayItems(source.dialogue, DialogueEntrySchema)
+  if (Array.isArray(source.context_packets)) safe.context_packets = validArrayItems(source.context_packets, ContextPacketSchema)
+  if (isRecord(source.engine_handle)) {
+    const engine: Record<string, unknown> = {}
+    for (const [field, schema] of Object.entries(EngineHandleSchema.shape)) {
+      const parsed = schema.safeParse(source.engine_handle[field])
+      if (parsed.success) engine[field] = parsed.data
+    }
+    const parsed = EngineHandleSchema.safeParse(engine)
+    if (parsed.success) safe.engine_handle = parsed.data
+  }
   // Imported execution evidence is a JSON object in the snapshot contract.
   // Losing it because another field drifted would falsely mark an analysis-only
   // plan as having no applicable execution evidence.
@@ -107,7 +130,7 @@ async function fetchThreadState(threadId: string): Promise<ThreadStateSnapshot> 
   const rawValues = data.values ?? {}
   const parsed = PipelineStateSchema.safeParse(rawValues)
   if (!parsed.success) {
-    // Mirror policy: state schemas never blank the page — log and render raw.
+    // Mirror policy: schema drift must not blank the page; validate fields independently.
     console.warn('[useThreadState] PipelineState mirror rejected thread values', {
       issueCount: parsed.error.issues.length,
     })
