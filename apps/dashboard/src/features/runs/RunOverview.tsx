@@ -58,7 +58,10 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
             {phaseProgressLabel(progress)}.{' '}
             {execution
               ? 'Execution evidence is summarized separately below.'
-              : executionOmitted ? 'Execution was not selected for this run.' : 'Execution evidence has not been recorded.'}
+              : executionOmitted ? 'Execution was not selected for this run.'
+                : state.external_results || handle
+                  ? 'An execution reference is recorded; collected execution evidence is unavailable.'
+                  : 'Execution evidence has not been recorded.'}
           </p>
           {errors.map((error, i) => (
             <p key={i} role="alert">

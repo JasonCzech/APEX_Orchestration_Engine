@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import { queryKeys } from '@/api/queryKeys'
-import { createTestQueryClient } from '@/test/render'
+import { authenticatedState, createTestQueryClient, renderApp } from '@/test/render'
 import { server } from '@/test/server'
 
 import { ComparePage } from '../ComparePage'
@@ -53,6 +53,14 @@ function idsParam(router: ReturnType<typeof createMemoryRouter>): string | null 
 }
 
 describe('ComparePage', () => {
+  it('uses the route heading without repeating it in the comparison toolbar', async () => {
+    server.use(compareDetailHandler())
+    renderApp({ initialEntries: [`/runs/compare?ids=${RUN_A_ID},${RUN_B_ID}`], authState: authenticatedState() })
+    await screen.findByTestId(`compare-col-${RUN_A_ID}`)
+    expect(screen.getAllByRole('heading', { name: /^Compare runs$/i })).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'Compare runs', level: 1 })).toBeInTheDocument()
+  })
+
   it('shows the selection empty state when fewer than 2 ids are given', async () => {
     renderCompare(`/runs/compare?ids=${RUN_A_ID}`)
 

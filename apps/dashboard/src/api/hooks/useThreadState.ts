@@ -86,6 +86,10 @@ function normalizeDriftedState(raw: unknown): PipelineState {
   if (Array.isArray(source.dialogue)) safe.dialogue = source.dialogue.filter(isRecord)
   if (Array.isArray(source.context_packets)) safe.context_packets = source.context_packets.filter(isRecord)
   if (isRecord(source.engine_handle)) safe.engine_handle = source.engine_handle
+  // Imported execution evidence is a JSON object in the snapshot contract.
+  // Losing it because another field drifted would falsely mark an analysis-only
+  // plan as having no applicable execution evidence.
+  if (isRecord(source.external_results)) safe.external_results = source.external_results
   return safe as PipelineState
 }
 

@@ -820,7 +820,7 @@ export function AnalyticsPage() {
           onToggle={(value) => applyFilters({ model: toggleValue(filters.model, value), offset: undefined })}
         />
         <ChipGroup
-          label="Stages"
+          label="Phases"
           options={PHASE_NAMES}
           selected={filters.stage ?? []}
           onToggle={(value) => applyFilters({ stage: toggleValue(filters.stage, value), offset: undefined })}

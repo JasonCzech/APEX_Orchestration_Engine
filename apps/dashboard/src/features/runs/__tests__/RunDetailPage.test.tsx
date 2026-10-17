@@ -87,6 +87,33 @@ describe('RunDetailPage', () => {
     expect(within(overview).getByText(/4\/6 phases succeeded · 1 skipped/)).toBeInTheDocument()
   })
 
+  it.each([
+    [{ uri: 'https://load.example/#/report/123' }, 'Not available'],
+    [['not an evidence object'], 'Not applicable'],
+    ['invalid evidence', 'Not applicable'],
+  ])('preserves valid imported evidence after unrelated schema drift (%j)', async (externalResults, expectedAcceptance) => {
+    const detail = {
+      ...structuredClone(PIPELINE_DETAIL),
+      execution_result: null,
+      phase_strip: [{ phase: 'reporting', status: 'succeeded' }],
+      values: {
+        title: 42,
+        phases_plan: ['reporting'],
+        external_results: externalResults,
+      },
+    }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(expectedAcceptance)).toBeInTheDocument()
+    if (expectedAcceptance === 'Not available') {
+      expect(within(overview).queryByText('Not applicable')).not.toBeInTheDocument()
+      expect(within(overview).getByText(/An execution reference is recorded; collected execution evidence is unavailable\./)).toBeInTheDocument()
+      expect(within(overview).queryByText(/Execution evidence has not been recorded\./)).not.toBeInTheDocument()
+      expect(within(overview).getByRole('link', { name: 'Open load execution' })).toHaveAttribute('href', expect.stringContaining('#/report/123'))
+    }
+  })
+
   it('uses the themed link style for Evidence Coverage artifacts', async () => {
     server.use(pipelineDetailHandler())
     renderRunRoutes([`/runs/${THREAD_ID}`])

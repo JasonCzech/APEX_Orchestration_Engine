@@ -102,6 +102,7 @@ describe('AnalyticsPage', () => {
       'true',
     )
     expect(screen.getByRole('button', { name: 'error' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(screen.getByRole('group', { name: 'Phases filter' })).getByRole('button', { name: 'reporting' })).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('window presets write absolute from/to to the URL and auto-bucket hourly for 24h', async () => {

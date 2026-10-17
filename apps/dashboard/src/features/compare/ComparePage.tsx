@@ -239,7 +239,6 @@ export function ComparePage() {
   return (
     <section className="compare-page animate-enter">
       <header className="compare-toolbar glass-panel">
-        <h2 className="compare-title">Compare Runs</h2>
         <span className="compare-caption">{runs.length} runs</span>
         <label>Baseline <select aria-label="Comparison baseline" value={baselineId ?? ''} disabled={eligibleBaselineIds.length === 0} onChange={(event) => setChosenBaseline(event.target.value)}>{eligibleBaselineIds.length === 0 && <option value="">No collected result</option>}{runs.map((run) => <option key={run.id} value={run.id} disabled={!eligibleBaselineIds.includes(run.id)}>{run.query.data?.detail.title ?? run.id}{eligibleBaselineIds.includes(run.id) ? '' : ' (no collected result)'}</option>)}</select></label>
         <span className="spacer" />
