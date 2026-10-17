@@ -133,7 +133,12 @@ export function ExecutionWorkspace({
                   ...logical,
                   expected_revision: data.revision,
                   idempotency_key: request.current.key,
-                })
+                }, { onSuccess: () => {
+                  // Retry an uncertain request with its original identity; a
+                  // confirmed preparation completes that operation. The same
+                  // bindings can then be prepared again, including after archive.
+                  request.current = null
+                } })
               }}
             >
               <fieldset disabled={busy} className="cycle-execution-fields">

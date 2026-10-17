@@ -184,7 +184,7 @@ export function ProviderScriptImport({
                         ...logical,
                         expected_revision: preview.data.revision,
                         idempotency_key: key.current.value,
-                      })
+                      }, { onSuccess: () => { key.current = null } })
                     }}
                   >
                     <fieldset

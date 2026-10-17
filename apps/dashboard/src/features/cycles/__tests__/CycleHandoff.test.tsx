@@ -72,13 +72,32 @@ function mount(role: 'admin' | 'viewer' = 'admin') {
   })
 }
 describe('Cycle follow-up', () => {
-  it('retains action entries on conflict and submits the same operation when retried', async () => {
+  it('treats an identical follow-up added after acknowledged success as a new action', async () => {
+    const user = userEvent.setup()
+    const requests: Record<string, unknown>[] = []
+    server.use(http.post('*/v1/cycles/cycle/followups', async ({ request }) => {
+      requests.push(await request.json() as Record<string, unknown>)
+      return HttpResponse.json(cycle)
+    }))
+    mount()
+    for (let index = 0; index < 2; index += 1) {
+      await user.type(await screen.findByLabelText('Action title'), 'Repeat target validation')
+      await user.type(screen.getByLabelText('Action owner'), 'Performance team')
+      await user.click(screen.getByRole('button', { name: 'Save action' }))
+      await waitFor(() => expect(screen.getByLabelText('Action title')).toHaveValue(''))
+    }
+    expect(requests).toHaveLength(2)
+    expect(requests[1]).toMatchObject({ title: requests[0]?.title, owner: requests[0]?.owner })
+    expect(requests[1]?.idempotency_key).not.toBe(requests[0]?.idempotency_key)
+  })
+
+  it.each([409, 503])('retains action entries after HTTP %s and submits the same operation when retried', async (status) => {
     const user = userEvent.setup()
     const requests: unknown[] = []
     server.use(
       http.post('*/v1/cycles/cycle/followups', async ({ request }) => {
         requests.push(await request.json())
-        return HttpResponse.json({ detail: 'Cycle changed' }, { status: 409 })
+        return HttpResponse.json({ detail: 'Action could not be confirmed' }, { status })
       }),
     )
     mount()

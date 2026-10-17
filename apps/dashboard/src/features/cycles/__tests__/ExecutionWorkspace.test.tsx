@@ -171,6 +171,46 @@ describe('Execution preparation', () => {
 })
 
 describe('Archiving execution preparations', () => {
+  it('creates a new preparation for unchanged bindings after the acknowledged preparation is archived', async () => {
+    const user = userEvent.setup()
+    let items: components['schemas']['PreparationRead'][] = []
+    let revision = 3
+    const requests: Record<string, unknown>[] = []
+    const receipts = new Map<unknown, string>()
+    server.use(
+      http.post('*/v1/cycles/c1/executions', async ({ request }) => {
+        const body = await request.json() as Record<string, unknown>
+        requests.push(body)
+        const existing = receipts.get(body.idempotency_key)
+        if (existing) return HttpResponse.json({ id: existing, revision })
+        const id = `preparation-${receipts.size + 1}`
+        receipts.set(body.idempotency_key, id)
+        items = [...items, { ...preparation, id }]
+        revision += 1
+        return HttpResponse.json({ id, revision })
+      }),
+      http.post('*/v1/cycles/c1/executions/:id/archive', ({ params }) => {
+        items = items.map(item => item.id === params.id ? { ...item, archived_at: '2026-10-17T12:00:00Z', archived_by: 'Dash Ops' } : item)
+        revision += 1
+        return HttpResponse.json({ id: params.id, revision })
+      }),
+    )
+    mount('admin', () => items, () => revision)
+    await user.selectOptions(await screen.findByLabelText('Approved test plan'), 'plan')
+    await user.selectOptions(screen.getByLabelText('Approved script'), 'script')
+    await user.click(screen.getByRole('button', { name: 'Prepare execution' }))
+    await user.click(await screen.findByRole('button', { name: 'Archive preparation' }))
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive preparation' }))
+    await screen.findByText(/No active execution preparations/)
+    await user.click(screen.getByRole('button', { name: 'Prepare execution' }))
+    await waitFor(() => expect(requests).toHaveLength(2))
+    expect(requests[1]?.idempotency_key).not.toBe(requests[0]?.idempotency_key)
+    expect(requests[1]?.expected_revision).toBe(5)
+    await screen.findByRole('button', { name: 'Archive preparation' })
+    expect(items.filter(item => !item.archived_at)).toHaveLength(1)
+    expect(items.filter(item => item.archived_at)).toHaveLength(1)
+  })
+
   it('confirms exact identity and revision, then retains archived audit details', async () => {
     const user = userEvent.setup()
     let items = [preparation]

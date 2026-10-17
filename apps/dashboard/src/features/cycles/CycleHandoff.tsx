@@ -107,7 +107,10 @@ export function CycleHandoff({
                 expected_revision: actionRevision ?? cycle.revision,
                 idempotency_key: actionKey.current.key,
               },
-              { onSuccess: clearAction },
+              { onSuccess: () => {
+                actionKey.current = null
+                clearAction()
+              } },
             )
           }}
         >

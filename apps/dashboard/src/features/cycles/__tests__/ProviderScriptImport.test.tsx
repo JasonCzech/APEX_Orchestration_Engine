@@ -135,7 +135,7 @@ describe('Provider script import', () => {
     expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled()
   })
-  it('binds the preview and preserves details and operation identity after conflict', async () => {
+  it.each([409, 503])('binds the preview and preserves operation identity after HTTP %s until acknowledged', async (status) => {
     const submissions: Record<string, unknown>[] = []
     server.use(
       http.post(
@@ -144,8 +144,8 @@ describe('Provider script import', () => {
           submissions.push((await request.json()) as Record<string, unknown>)
           if (submissions.length === 1)
             return HttpResponse.json(
-              { detail: 'Cycle changed' },
-              { status: 409 },
+              { detail: 'Import could not be confirmed' },
+              { status },
             )
           return HttpResponse.json({ version_id: 'imported-draft' })
         },
@@ -190,6 +190,15 @@ describe('Provider script import', () => {
       plan_version_id: 'plan',
     })
     expect(submissions[1]).toEqual(submissions[0])
+    // A further explicit import after its acknowledged success is a new draft,
+    // even when the provider export and authored details are unchanged.
+    await user.click(screen.getByRole('button', { name: 'Import export as draft' }))
+    await waitFor(() => expect(submissions).toHaveLength(3))
+    expect(submissions[2]?.idempotency_key).not.toBe(submissions[1]?.idempotency_key)
+    expect(submissions[2]).toMatchObject({
+      remote_script_id: 'remote', expected_source_checksum: exported.source_checksum,
+      parameters: 'None required', coverage: 'Checkout requirement',
+    })
   })
   it('allows viewers to inspect exports without import controls', async () => {
     mount('viewer')

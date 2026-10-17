@@ -100,3 +100,74 @@ for (const profile of ['viewer', 'operator-unscoped', 'operator-scoped', 'admin'
     await verifyArchive()
   })
 }
+
+for (const profile of ['operator-scoped', 'admin'] as const) {
+  test(`execution preparation retries and new intents stay distinct for ${profile}`, async ({ page }) => {
+    const role = profile === 'admin' ? 'admin' : 'operator'
+    const scopes = profile === 'operator-scoped' ? [{ project_id: 'project-one', app_id: null }] : []
+    const approved = { ...version, status: 'approved', approval_current: true, available_actions: [] }
+    let cycle = { ...original, versions: [
+      { ...approved, content: { vusers: 10, ramp_s: 1, duration_s: 60 } },
+      { ...approved, id: 'script-version', title: 'Checkout script', kind: 'script', dependencies: [version.id], content: { engine: 'apex-load', format: 'apex_native_json' } },
+    ] }
+    let items: Array<typeof preparation & { archived_at: string | null; archived_by: string | null }> = []
+    const receipts = new Map<string, string>()
+    const requests: Array<{ idempotency_key: string; expected_revision: number }> = []
+    await page.addInitScript(() => { localStorage.setItem('apex.apiKey', 'cycle-browser-fixture'); localStorage.setItem('apex.preferences.v1', '{"reduceMotion":true}') })
+    await page.route('**/config.json', route => route.fulfill({ json: { dataMode: 'connected', apexOrigin: '', langgraphOrigin: '' } }))
+    await page.route('**/v1/**', async route => {
+      const path = new URL(route.request().url()).pathname
+      let json: unknown = {}
+      if (path === '/v1/system/info') json = { name: 'APEX Orchestration', version: 'test', environment: 'test', features: { cycles: true }, limits: { max_context_packets: 32 }, consumer: { id: 'reviewer', name: 'Cycle reviewer', role, scopes } }
+      else if (path === '/v1/auth/me') json = { principal_kind: 'api_consumer', principal_id: 'reviewer', name: 'Cycle reviewer', consumer_type: 'dashboard', role, scopes, is_unscoped: !scopes.length, mfa_required: false, step_up_required: false, capabilities: {} }
+      else if (path === '/v1/catalog/applications') json = [{ id: 'app-one', project_id: 'project-one', name: 'Checkout API' }]
+      else if (path === '/v1/catalog/environments') json = [{ id: 'env-one', application_id: 'app-one', name: 'Performance staging' }]
+      else if (path === '/v1/pipelines' || path === '/v1/engine-runs') json = { items: [], total: 0 }
+      else if (path === '/v1/cycles/c1') json = cycle
+      else if (path.endsWith('/archive')) {
+        const id = path.split('/').at(-2)
+        items = items.map(item => item.id === id ? { ...item, archived_at: '2026-10-17T13:00:00Z', archived_by: 'reviewer' } : item)
+        cycle = { ...cycle, revision: cycle.revision + 1 }
+        json = { id, revision: cycle.revision }
+      }
+      else if (path.endsWith('/script-validations')) json = { revision: cycle.revision, blockers: [], validations: [] }
+      else if (path === '/v1/cycles/c1/executions' && route.request().method() === 'POST') {
+        const body = route.request().postDataJSON()
+        requests.push(body)
+        let id = receipts.get(body.idempotency_key)
+        if (!id) {
+          id = `preparation-${receipts.size + 1}`
+          receipts.set(body.idempotency_key, id)
+          items = [...items, { ...preparation, id, archived_at: null, archived_by: null }]
+          cycle = { ...cycle, revision: cycle.revision + 1 }
+        }
+        // The initial operation completed but the caller received no receipt.
+        // Its retry must recover that operation before a later new intent.
+        if (requests.length === 1) return route.fulfill({ status: 503, json: { detail: 'Preparation receipt unavailable' } })
+        json = { id, revision: cycle.revision }
+      }
+      else if (path === '/v1/cycles/c1/executions') json = { revision: cycle.revision, preparations: items, connections: [], linked_runs: [], recent_runs: [], inventory_snapshot_id: null, inventory_scanned_at: null, target_version: 1 }
+      return route.fulfill({ json })
+    })
+    await page.goto('/cycles/c1?tab=executions')
+    await page.getByLabel('Approved test plan').selectOption(version.id)
+    await page.getByLabel('Approved script').selectOption('script-version')
+    await page.getByRole('button', { name: 'Prepare execution', exact: true }).click()
+    await expect(page.getByRole('alert')).toContainText('Preparation receipt unavailable')
+    await page.getByRole('button', { name: 'Prepare execution', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Archive preparation', exact: true })).toBeVisible()
+    expect(requests).toHaveLength(2)
+    expect(requests[1]!.idempotency_key).toBe(requests[0]!.idempotency_key)
+    expect(items).toHaveLength(1)
+    await page.getByRole('button', { name: 'Archive preparation', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Archive preparation', exact: true }).click()
+    await expect(page.getByText(/No active execution preparations/)).toBeVisible()
+    await page.getByRole('button', { name: 'Prepare execution', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Archive preparation', exact: true })).toBeVisible()
+    expect(requests).toHaveLength(3)
+    expect(requests[2]!.idempotency_key).not.toBe(requests[1]!.idempotency_key)
+    expect(requests[2]!.expected_revision).toBe(5)
+    expect(items.filter(item => !item.archived_at)).toHaveLength(1)
+    expect(items.filter(item => item.archived_at)).toHaveLength(1)
+  })
+}
