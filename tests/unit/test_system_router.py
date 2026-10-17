@@ -44,7 +44,7 @@ def test_system_info_with_dev_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["name"] == "APEX Orchestration Engine"
     assert set(body) == {"name", "version", "environment", "features", "limits", "consumer"}
     assert body["limits"]["max_context_packets"] > 0
-    assert body["consumer"] == {"name": "dev", "role": "admin", "scopes": []}
+    assert body["consumer"] == {"id": "dev", "name": "dev", "role": "admin", "scopes": []}
 
 
 def test_system_info_bearer_header_works(monkeypatch: pytest.MonkeyPatch) -> None:

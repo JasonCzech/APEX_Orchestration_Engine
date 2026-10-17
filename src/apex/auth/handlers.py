@@ -1995,6 +1995,13 @@ async def on_threads_create_run(
         action=action,
         trusted_loopback=trusted_loopback,
     )
+    # Stamp a scalar from the authenticated request after validating supplied
+    # runtime controls. ProxyUser.identity is a descriptor, so graph code must
+    # not have to execute it (or trust caller-controlled attribution) to audit a
+    # decision. Mutate the runtime's captured configurable mapping in place.
+    run_args = _run_arguments(payload)
+    run_config = run_args.setdefault("config", {})
+    run_config.setdefault("configurable", {})["langgraph_auth_user_id"] = identity.consumer_id
     if trusted_loopback:
         return result
     return _require_direct_runs_allowed(result)

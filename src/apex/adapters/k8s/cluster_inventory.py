@@ -119,6 +119,7 @@ class KubernetesClusterInventoryAdapter:
     ) -> None:
         options: dict[str, Any] = dict(conn.options) if conn is not None else {}
         conn_id = conn.id if conn is not None else "<none>"
+        self.inventory_connection_name = conn.name if conn is not None else "In-cluster Kubernetes"
         _validate_namespace_options(options)
 
         raw_mode = str(options.get("auth_mode", "bearer")).strip().lower()

@@ -64,3 +64,25 @@ def test_legacy_generic_approval_is_not_current_for_structured_review():
     )
     draft["status"] = "approved"
     assert not approval_current([draft], draft["id"])
+
+
+@pytest.mark.parametrize(
+    "kind,key,label",
+    [
+        ("test_plan", "vusers", "Concurrent users"),
+        ("readiness", "target_version", "Approved target version"),
+    ],
+)
+def test_integer_deliverable_fields_reject_fractional_values(kind, key, label):
+    assert f"{label} must be a whole number" in content_issues(kind, {key: 12.75})
+    assert not any(label in issue for issue in content_issues(kind, {key: 12}))
+    assert not any(label in issue for issue in content_issues(kind, {key: 12.0}))
+    assert next(field for field in DELIVERABLE_FIELDS[kind] if field.key == key).integer
+
+
+def test_readiness_fields_explain_evidence_and_arrival_rate_limit():
+    assert all(field.help for field in DELIVERABLE_FIELDS["readiness"])
+    arrival = next(
+        field for field in DELIVERABLE_FIELDS["test_plan"] if field.key == "arrival_rate"
+    )
+    assert "not supported" in arrival.help

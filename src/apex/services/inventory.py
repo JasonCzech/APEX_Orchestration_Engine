@@ -78,6 +78,9 @@ async def inventory_scan_admission() -> AsyncIterator[None]:
 
 
 class SnapshotView(BaseModel):
+    id: str | None = None
+    source: str | None = None
+    connection_name: str | None = None
     scanned_at: datetime
     services: list[ServiceInfo]
     stale: bool
@@ -147,6 +150,21 @@ class InventoryService:
                 # well-formed port result, then replace it so a provider cannot make a
                 # snapshot permanently fresh (or prematurely stale).
                 data["scanned_at"] = scanned_at.isoformat()
+                # These labels are adapter-owned facts, never inferred from the
+                # environment's hosts or a provider's returned service names.
+                from apex.adapters.k8s.cluster_inventory import KubernetesClusterInventoryAdapter
+                from apex.adapters.stubs.cluster_inventory import StubClusterInventoryAdapter
+
+                if isinstance(resolved_adapter, StubClusterInventoryAdapter):
+                    data["source"] = "Simulated inventory"
+                    connection = resolved_adapter._conn
+                    if connection is not None:
+                        data["connection_name"] = bounded_diagnostic(connection.name, max_chars=255)
+                elif isinstance(resolved_adapter, KubernetesClusterInventoryAdapter):
+                    data["source"] = "Kubernetes API"
+                    data["connection_name"] = bounded_diagnostic(
+                        resolved_adapter.inventory_connection_name, max_chars=255
+                    )
                 row = await self._repository.add(
                     env.id,
                     data=data,
@@ -295,6 +313,18 @@ def _view(environment_id: str, row: EnvironmentSnapshot | None) -> InventoryView
     return InventoryView(
         environment_id=environment_id,
         snapshot=SnapshotView(
-            scanned_at=row.scanned_at, services=services, stale=is_stale(row.scanned_at)
+            id=row.id,
+            scanned_at=row.scanned_at,
+            services=services,
+            stale=is_stale(row.scanned_at),
+            source=data.get("source")
+            if type(data.get("source")) is str
+            and data.get("source") in {"Simulated inventory", "Kubernetes API"}
+            else None,
+            connection_name=(
+                bounded_diagnostic(data["connection_name"], max_chars=255)
+                if type(data.get("connection_name")) is str
+                else None
+            ),
         ),
     )

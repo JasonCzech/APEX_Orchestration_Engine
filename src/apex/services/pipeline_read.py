@@ -241,6 +241,44 @@ async def _thread_and_state_definitively(
 # ── Pure mapping helpers ─────────────────────────────────────────────────────
 
 
+def phase_display_values(
+    values: JsonDict, *, thread_status: Any, gates: list[JsonDict]
+) -> JsonDict:
+    """Project checkpoint state with authoritative thread/gate lifecycle facts.
+
+    Pending storage entries describe work before it started. A current interrupt
+    or terminal thread error is stronger evidence; never imply it is still pending.
+    This is a read projection and does not mutate the durable checkpoint.
+    """
+    results = dict(values.get("phase_results") or {})
+    current = values.get("current_phase")
+    plan = values.get("phases_plan")
+    candidates = gates if thread_status == "interrupted" else []
+    for gate in candidates:
+        if gate.get("kind") not in {"prompt_review", "phase_review"}:
+            continue
+        phase = gate.get("phase")
+        if phase not in {item.value for item in PHASE_ORDER}:
+            continue
+        if isinstance(plan, list) and phase not in plan:
+            continue
+        entry = dict(results.get(phase) or {})
+        if entry.get("status") not in {"succeeded", "failed", "aborted", "skipped"}:
+            entry["status"] = (
+                "awaiting_prompt_review"
+                if gate.get("kind") == "prompt_review"
+                else "awaiting_output_review"
+            )
+            results[phase] = entry
+    if thread_status == "error" and current in {item.value for item in PHASE_ORDER}:
+        if not isinstance(plan, list) or current in plan:
+            entry = dict(results.get(current) or {})
+            if entry.get("status") not in {"succeeded", "failed", "aborted", "skipped"}:
+                entry["status"] = "aborted" if values.get("run_aborted") is True else "failed"
+                results[current] = entry
+    return {**values, "phase_results": results}
+
+
 def build_phase_strip(values: JsonDict | None) -> list[JsonDict]:
     """Canonical-order strip from state ``phase_results``; absent phases -> "none"."""
     public_values = public_pipeline_state(values or {})
@@ -517,7 +555,9 @@ def execution_result_from_values(values: JsonDict) -> str | None:
     """Only a recorded test outcome is evidence of a pass or failure."""
     results = values.get("phase_results")
     execution = results.get("execution") if isinstance(results, dict) else None
-    summary = execution.get("test_summary") if isinstance(execution, dict) else None
+    if not isinstance(execution, dict) or execution.get("status") != "succeeded":
+        return None
+    summary = execution.get("test_summary")
     outcome = summary.get("outcome") if isinstance(summary, dict) else None
     assessment = outcome.get("assessment") if isinstance(outcome, dict) else None
     status = assessment.get("status") if isinstance(assessment, dict) else None
@@ -545,6 +585,9 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
     raw_metadata = thread.get("metadata")
     metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     gates = pending_gates_from_thread(thread)
+    public_values = phase_display_values(
+        public_values, thread_status=thread.get("status"), gates=gates
+    )
     return {
         "thread_id": public_text(thread.get("thread_id"), 256, allow_empty=False) or "",
         "title": public_values.get("title") or public_text(metadata.get("title"), 500),
@@ -1136,11 +1179,16 @@ class PipelineReadService:
         if type(thread) is not dict or type(state) is not dict:
             raise RuntimeError("pipeline read provider returned an invalid response")
         gates = _project_pending_gates(pending_gates_from_state(state))
-        summary = map_thread_summary(thread)
+        values = phase_display_values(
+            public_pipeline_state(state.get("values")),
+            thread_status=thread.get("status"),
+            gates=gates,
+        )
+        summary = map_thread_summary({**thread, "values": values, "interrupts": {}})
         summary["pending_gate"] = _public_gate(gates[0] if gates else None)
         return {
             **summary,
-            "values": public_pipeline_state(state.get("values")),
+            "values": values,
             "interrupts": gates,
         }
 

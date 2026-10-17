@@ -883,7 +883,11 @@ async def test_threads_create_run_stamps_single_app_scope_on_existing_thread() -
         "app_id": {"$eq": "a1"},
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: {"$eq": True},
     }
-    assert value["config"]["configurable"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["config"]["configurable"] == {
+        "project_id": "p1",
+        "app_id": "a1",
+        "langgraph_auth_user_id": "c1",
+    }
     assert value["metadata"] == {
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
         "created_by": "c1",
@@ -939,7 +943,11 @@ async def test_threads_create_run_stamps_single_app_scope_stateless() -> None:
         "project_id": "p1",
         "app_id": "a1",
     }
-    assert value["config"]["configurable"] == {"project_id": "p1", "app_id": "a1"}
+    assert value["config"]["configurable"] == {
+        "project_id": "p1",
+        "app_id": "a1",
+        "langgraph_auth_user_id": "c1",
+    }
     assert value["metadata"] == {
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
         "created_by": "c1",
@@ -2949,3 +2957,17 @@ async def test_langgraph_scope_denial_is_audited(monkeypatch: pytest.MonkeyPatch
     assert event.principal_id == "c1"
     assert event.principal_scopes == {"scopes": [{"project_id": "p1", "app_id": None}]}
     assert event.status_code == 403
+
+
+async def test_run_attribution_is_stamped_from_authenticated_consumer() -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {"config": {"configurable": {"project_id": "p1"}}},
+    }
+    captured = value["kwargs"]["config"]["configurable"]
+    await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
+    assert captured["langgraph_auth_user_id"] == identity.consumer_id
+    from apex.graphs.pipeline.gates import resolve_actor
+
+    assert resolve_actor(value["kwargs"]["config"]) == identity.consumer_id

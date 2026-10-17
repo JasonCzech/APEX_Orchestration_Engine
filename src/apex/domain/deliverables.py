@@ -13,6 +13,7 @@ class DeliverableField(BaseModel):
     label: str
     control: Literal["text", "multiline", "number", "select"] = "multiline"
     required: bool = True
+    integer: bool = False
     options: list[str] = []
     minimum: float | None = None
     maximum: float | None = None
@@ -45,10 +46,21 @@ DELIVERABLE_FIELDS: dict[str, list[DeliverableField]] = {
         field("objectives", "Objectives"),
         field("journeys", "User journeys and requirement coverage"),
         field("workload_mix", "Workload mix", help="Record each journey and its share of traffic."),
-        field("vusers", "Concurrent users", control="number", minimum=1, maximum=1_000_000),
+        field(
+            "vusers",
+            "Concurrent users",
+            control="number",
+            minimum=1,
+            maximum=1_000_000,
+            integer=True,
+        ),
         field(
             "arrival_rate",
             "Arrival rate (requests per second)",
+            help=(
+                "Planning reference only. Arrival-rate execution is not supported by the "
+                "pipeline; leave this unset to dispatch a concurrent-user plan."
+            ),
             control="number",
             required=False,
             minimum=0,
@@ -92,25 +104,66 @@ DELIVERABLE_FIELDS: dict[str, list[DeliverableField]] = {
         field("exit_criteria", "Exit criteria"),
     ],
     "readiness": [
-        field("expected", "Expected environment configuration"),
-        field("observed", "Observed inventory and telemetry"),
-        field("evidence", "Evidence references and observation times"),
+        field(
+            "expected",
+            "Expected environment configuration",
+            help=(
+                "Describe the application build, hosts, resources and dependencies required "
+                "for this test."
+            ),
+        ),
+        field(
+            "observed",
+            "Observed inventory and telemetry",
+            help=(
+                "Compare the latest inventory and monitoring observations with the expected "
+                "configuration."
+            ),
+        ),
+        field(
+            "evidence",
+            "Evidence references and observation times",
+            help="Record immutable evidence references and the date and time of each observation.",
+        ),
         field(
             "status",
             "Readiness assessment",
+            help=(
+                "Ready means the recorded evidence meets this plan's entry criteria; "
+                "blockers require remediation."
+            ),
             control="select",
             options=["not_checked", "blocked", "warning", "ready"],
         ),
-        field("inventory_snapshot_id", "Inventory snapshot ID", control="text", required=False),
+        field(
+            "inventory_snapshot_id",
+            "Inventory snapshot ID",
+            control="text",
+            required=False,
+            help="Use the ID of the latest scan from the selected environment's inventory.",
+        ),
         field(
             "target_version",
             "Approved target version",
+            help=(
+                "Use the whole-number version of the approved environment target verified "
+                "by this readiness review."
+            ),
+            integer=True,
             control="number",
             required=False,
             minimum=0,
             maximum=2_147_483_647,
         ),
-        field("remediation", "Blockers, owners and remediation notes", required=False),
+        field(
+            "remediation",
+            "Blockers, owners and remediation notes",
+            required=False,
+            help=(
+                "Name each blocker, its accountable owner, corrective action and next "
+                "verification time."
+            ),
+        ),
     ],
     "script": [
         field(
@@ -195,6 +248,8 @@ def content_issues(kind: str, content: dict[str, Any]) -> list[str]:
                 or (spec.maximum is not None and value > spec.maximum)
             ):
                 issues.append(f"{spec.label} must be between {spec.minimum:g} and {spec.maximum:g}")
+            elif spec.integer and type(value) is float and not value.is_integer():
+                issues.append(f"{spec.label} must be a whole number")
         elif not isinstance(value, str) or not value.strip() or len(value) > 50_000:
             issues.append(f"{spec.label} must be non-empty text under 50,000 characters")
         elif spec.control == "select" and value not in spec.options:

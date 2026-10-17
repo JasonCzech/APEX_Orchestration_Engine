@@ -2136,6 +2136,8 @@ export interface components {
         };
         /** ConsumerInfo */
         ConsumerInfo: {
+            /** Id */
+            id?: string | null;
             /** Name */
             name: string;
             role: components["schemas"]["Role"];
@@ -2368,6 +2370,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "findings",
              *           "label": "Findings",
              *           "options": [],
@@ -2376,6 +2379,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "factors",
              *           "label": "Contributing factors",
              *           "options": [],
@@ -2384,6 +2388,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "lessons",
              *           "label": "Lessons learned",
              *           "options": [],
@@ -2392,6 +2397,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "actions",
              *           "label": "Follow-up actions, owners and status",
              *           "options": [],
@@ -2401,7 +2407,8 @@ export interface components {
              *       "readiness": [
              *         {
              *           "control": "multiline",
-             *           "help": "",
+             *           "help": "Describe the application build, hosts, resources and dependencies required for this test.",
+             *           "integer": false,
              *           "key": "expected",
              *           "label": "Expected environment configuration",
              *           "options": [],
@@ -2409,7 +2416,8 @@ export interface components {
              *         },
              *         {
              *           "control": "multiline",
-             *           "help": "",
+             *           "help": "Compare the latest inventory and monitoring observations with the expected configuration.",
+             *           "integer": false,
              *           "key": "observed",
              *           "label": "Observed inventory and telemetry",
              *           "options": [],
@@ -2417,7 +2425,8 @@ export interface components {
              *         },
              *         {
              *           "control": "multiline",
-             *           "help": "",
+             *           "help": "Record immutable evidence references and the date and time of each observation.",
+             *           "integer": false,
              *           "key": "evidence",
              *           "label": "Evidence references and observation times",
              *           "options": [],
@@ -2425,7 +2434,8 @@ export interface components {
              *         },
              *         {
              *           "control": "select",
-             *           "help": "",
+             *           "help": "Ready means the recorded evidence meets this plan's entry criteria; blockers require remediation.",
+             *           "integer": false,
              *           "key": "status",
              *           "label": "Readiness assessment",
              *           "options": [
@@ -2438,7 +2448,8 @@ export interface components {
              *         },
              *         {
              *           "control": "text",
-             *           "help": "",
+             *           "help": "Use the ID of the latest scan from the selected environment's inventory.",
+             *           "integer": false,
              *           "key": "inventory_snapshot_id",
              *           "label": "Inventory snapshot ID",
              *           "options": [],
@@ -2446,7 +2457,8 @@ export interface components {
              *         },
              *         {
              *           "control": "number",
-             *           "help": "",
+             *           "help": "Use the whole-number version of the approved environment target verified by this readiness review.",
+             *           "integer": true,
              *           "key": "target_version",
              *           "label": "Approved target version",
              *           "maximum": 2147483647,
@@ -2456,7 +2468,8 @@ export interface components {
              *         },
              *         {
              *           "control": "multiline",
-             *           "help": "",
+             *           "help": "Name each blocker, its accountable owner, corrective action and next verification time.",
+             *           "integer": false,
              *           "key": "remediation",
              *           "label": "Blockers, owners and remediation notes",
              *           "options": [],
@@ -2467,6 +2480,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "executive_summary",
              *           "label": "Executive summary",
              *           "options": [],
@@ -2475,6 +2489,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "technical_analysis",
              *           "label": "Technical analysis",
              *           "options": [],
@@ -2483,6 +2498,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "Reference immutable measurements, engine and attempt. Do not replace raw measurements with interpretation.",
+             *           "integer": false,
              *           "key": "evidence",
              *           "label": "Execution evidence and versions",
              *           "options": [],
@@ -2491,6 +2507,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "findings",
              *           "label": "Findings and baseline differences",
              *           "options": [],
@@ -2499,6 +2516,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "exclusions",
              *           "label": "Exclusions and limitations",
              *           "options": [],
@@ -2507,6 +2525,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "accepted_risks",
              *           "label": "Accepted risks",
              *           "options": [],
@@ -2515,6 +2534,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "recommendation",
              *           "label": "Recommendation",
              *           "options": [],
@@ -2525,6 +2545,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "Include requirement keys, titles and performance risks.",
+             *           "integer": false,
              *           "key": "requirements",
              *           "label": "Requirements and risks",
              *           "options": [],
@@ -2533,6 +2554,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "Record each source title, provider, revision, retrieval time and readability. Retrieval connectors are not available in this editor yet.",
+             *           "integer": false,
              *           "key": "source_manifest",
              *           "label": "Frozen source references",
              *           "options": [],
@@ -2541,6 +2563,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "included",
              *           "label": "Included journeys",
              *           "options": [],
@@ -2549,6 +2572,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "excluded",
              *           "label": "Excluded scope",
              *           "options": [],
@@ -2559,6 +2583,7 @@ export interface components {
              *         {
              *           "control": "select",
              *           "help": "",
+             *           "integer": false,
              *           "key": "engine",
              *           "label": "Execution platform",
              *           "options": [
@@ -2570,6 +2595,7 @@ export interface components {
              *         {
              *           "control": "select",
              *           "help": "",
+             *           "integer": false,
              *           "key": "format",
              *           "label": "Script format",
              *           "options": [
@@ -2582,6 +2608,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "Paste native JSON or source text. For an external import, record an immutable artifact reference. This approval does not launch a test.",
+             *           "integer": false,
              *           "key": "source",
              *           "label": "Script source or immutable import reference",
              *           "options": [],
@@ -2590,6 +2617,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "parameters",
              *           "label": "Parameter files and dependencies",
              *           "options": [],
@@ -2598,6 +2626,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "coverage",
              *           "label": "Requirement and journey coverage",
              *           "options": [],
@@ -2606,6 +2635,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "Record validation results and tool/provider version. Provider preflight remains required before execution.",
+             *           "integer": false,
              *           "key": "validation",
              *           "label": "Inspection and validation evidence",
              *           "options": [],
@@ -2616,6 +2646,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "objectives",
              *           "label": "Objectives",
              *           "options": [],
@@ -2624,6 +2655,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "journeys",
              *           "label": "User journeys and requirement coverage",
              *           "options": [],
@@ -2632,6 +2664,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "Record each journey and its share of traffic.",
+             *           "integer": false,
              *           "key": "workload_mix",
              *           "label": "Workload mix",
              *           "options": [],
@@ -2640,6 +2673,7 @@ export interface components {
              *         {
              *           "control": "number",
              *           "help": "",
+             *           "integer": true,
              *           "key": "vusers",
              *           "label": "Concurrent users",
              *           "maximum": 1000000,
@@ -2649,7 +2683,8 @@ export interface components {
              *         },
              *         {
              *           "control": "number",
-             *           "help": "",
+             *           "help": "Planning reference only. Arrival-rate execution is not supported by the pipeline; leave this unset to dispatch a concurrent-user plan.",
+             *           "integer": false,
              *           "key": "arrival_rate",
              *           "label": "Arrival rate (requests per second)",
              *           "maximum": 1000000,
@@ -2660,6 +2695,7 @@ export interface components {
              *         {
              *           "control": "number",
              *           "help": "",
+             *           "integer": false,
              *           "key": "ramp_s",
              *           "label": "Ramp (seconds)",
              *           "maximum": 86400,
@@ -2670,6 +2706,7 @@ export interface components {
              *         {
              *           "control": "number",
              *           "help": "",
+             *           "integer": false,
              *           "key": "duration_s",
              *           "label": "Steady-state duration (seconds)",
              *           "maximum": 86400,
@@ -2680,6 +2717,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "test_data",
              *           "label": "Test data and parameterization",
              *           "options": [],
@@ -2688,6 +2726,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "For each transaction, state latency percentile, error-rate limit and throughput target.",
+             *           "integer": false,
              *           "key": "thresholds",
              *           "label": "Transaction thresholds",
              *           "options": [],
@@ -2696,6 +2735,7 @@ export interface components {
              *         {
              *           "control": "number",
              *           "help": "",
+             *           "integer": false,
              *           "key": "p95_ms_threshold",
              *           "label": "Overall p95 latency limit (ms)",
              *           "maximum": 1000000000000,
@@ -2706,6 +2746,7 @@ export interface components {
              *         {
              *           "control": "number",
              *           "help": "",
+             *           "integer": false,
              *           "key": "error_rate_threshold",
              *           "label": "Overall error-rate limit (fraction 0–1)",
              *           "maximum": 1,
@@ -2716,6 +2757,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "observability",
              *           "label": "Observability and evidence collection",
              *           "options": [],
@@ -2724,6 +2766,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "entry_criteria",
              *           "label": "Entry criteria",
              *           "options": [],
@@ -2732,6 +2775,7 @@ export interface components {
              *         {
              *           "control": "multiline",
              *           "help": "",
+             *           "integer": false,
              *           "key": "exit_criteria",
              *           "label": "Exit criteria",
              *           "options": [],
@@ -2930,6 +2974,11 @@ export interface components {
              * @default
              */
             help: string;
+            /**
+             * Integer
+             * @default false
+             */
+            integer: boolean;
             /** Key */
             key: string;
             /** Label */
@@ -4513,6 +4562,10 @@ export interface components {
         };
         /** SnapshotView */
         SnapshotView: {
+            /** Connection Name */
+            connection_name?: string | null;
+            /** Id */
+            id?: string | null;
             /**
              * Scanned At
              * Format: date-time
@@ -4520,6 +4573,8 @@ export interface components {
             scanned_at: string;
             /** Services */
             services: components["schemas"]["ServiceInfo"][];
+            /** Source */
+            source?: string | null;
             /** Stale */
             stale: boolean;
         };

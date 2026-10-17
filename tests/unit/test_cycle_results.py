@@ -40,8 +40,12 @@ def test_outcome_is_independent_of_completed_orchestration(passed, outcome):
 
 
 @pytest.mark.parametrize("status", ["running", "collecting", "failed", "aborted"])
-def test_incomplete_or_stopped_execution_cannot_display_a_pass(status):
-    assert result_view(run(passed=True, status=status)).test_outcome is None
+@pytest.mark.parametrize("passed", [True, False, None])
+@pytest.mark.parametrize("breaches", [[], ["Partial observed SLA breach"]])
+def test_incomplete_or_stopped_execution_cannot_display_a_verdict(status, passed, breaches):
+    result = result_view(run(passed=passed, status=status, breaches=breaches))
+    assert result.test_outcome is None
+    assert any("until execution completes" in warning for warning in result.warnings)
 
 
 def test_breaches_override_contradictory_pass_with_explanation():

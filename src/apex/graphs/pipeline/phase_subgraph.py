@@ -20,6 +20,7 @@ import hashlib
 import json
 import math
 from datetime import datetime
+from time import perf_counter
 from types import GetSetDescriptorType, MemberDescriptorType
 from typing import Any
 
@@ -86,6 +87,7 @@ from apex.ports.artifact_store import StoredArtifact, transcript_artifact_key
 from apex.services import usage as usage_events
 from apex.services.artifact_references import persist_artifact_with_intent
 from apex.services.connections import ConnectionResolver, DbConnectionStore, close_adapter
+from apex.services.pipeline_public import public_phase_evidence
 from apex.services.pricing import MAX_TOKEN_COUNT, coerce_token_count
 from apex.services.prompts import (
     prompt_review_from_resolved,
@@ -1985,8 +1987,17 @@ def _safe_tool_args(args: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+def _agent_latency_ms(value: Any) -> int | None:
+    """Validate retained observational data without coercion or int overflow."""
+    if type(value) not in {int, float}:
+        return None
+    if not 0 <= value <= 86_400_000:
+        return None
+    return round(value)
+
+
 def _make_agent(phase: Phase):
-    def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
+    def invoke_agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         if cfg.agent_backend == "anthropic":
             entry = _entry(state, phase)
@@ -2023,6 +2034,16 @@ def _make_agent(phase: Phase):
                     errors=[bounded_diagnostic(f"LLM agent error: {detail}")],
                 )
         return _stub_agent_body(phase, state, config)
+
+    def agent(state: PipelineState, config: RunnableConfig) -> JsonDict:
+        started = perf_counter()
+        result = invoke_agent(state, config)
+        elapsed_ms = max(0, round((perf_counter() - started) * 1000))
+        previous_ms = _agent_latency_ms(_entry(state, phase).get("agent_latency_ms")) or 0
+        result["phase_results"][phase.value]["agent_latency_ms"] = min(
+            86_400_000, previous_ms + elapsed_ms
+        )
+        return result
 
     return agent
 
@@ -2257,7 +2278,14 @@ def _make_output_gate(phase: Phase):
         for _ in range(max_turns + MAX_GATE_LOOPS):
             tail = (phase_dialogue + new_dialogue)[-3:]
             payload = build_phase_review_payload(
-                phase, summary, result_preview, artifact_previews, warnings, tail, error
+                phase,
+                summary,
+                result_preview,
+                artifact_previews,
+                warnings,
+                tail,
+                error,
+                evidence=public_phase_evidence(phase.value, entry),
             )
             decision = parse_gate_decision(interrupt(payload), PHASE_REVIEW_ACTIONS)
             action = decision["action"]
@@ -2352,7 +2380,26 @@ def _make_output_gate(phase: Phase):
                         ),
                     ).model_dump(mode="json"),
                 ]
-                continue  # re-interrupt with the refreshed dialogue tail
+                # Persist each discussion before opening the next interrupt.
+                # Keeping it in this node's replay-local loop loses its author
+                # when another operator resumes the gate, and hides the audit
+                # entry until an eventual approve/abort.
+                update = _phase_update(
+                    phase,
+                    attempt,
+                    approvals=[
+                        make_approval(
+                            phase,
+                            attempt,
+                            "phase_review",
+                            "discuss",
+                            config,
+                            message,
+                            sequence=operator_turns + 1,
+                        )
+                    ],
+                )
+                return Command(goto="open_output_gate", update={**update, "dialogue": new_dialogue})
             if action == "abort":
                 update = _phase_update(
                     phase,
@@ -2558,12 +2605,16 @@ def _make_finalize(phase: Phase):
             and not contains_credential_material(recorded_model)
             else None
         )
+        # Compute latency is measured around the worker, never from phase wall
+        # time (which includes operator reviews). Legacy checkpoints and engine
+        # phases without a worker measurement remain unknown.
+        agent_latency = _agent_latency_ms(entry.get("agent_latency_ms"))
         usage_events.record_agent_event_sync(
             phase=phase.value,
             status=status,
             attempt=attempt,
             config=config,
-            latency_ms=max(0, round(duration_s * 1000)) if duration_s is not None else None,
+            latency_ms=round(agent_latency) if agent_latency is not None else None,
             usage=normalized_usage if normalized_usage else None,
             agent_name=f"{phase.value}.worker",
             model=safe_model,

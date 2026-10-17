@@ -725,3 +725,34 @@ async def test_rescan_admission_releases_after_exception_and_cancellation(
         environment,
         FakeClusterInventoryAdapter(snapshot=fresh_domain_snapshot()),
     )
+
+
+@pytest.mark.parametrize("source", [[], {}, 4, True, "unrecognized source"])
+def test_legacy_inventory_source_metadata_cannot_break_read(source):
+    row = make_row("env", NOW, services=[])
+    row.data["source"] = source
+    row.data["connection_name"] = ["invalid"]
+    snapshot = inventory_service._view("env", row).snapshot
+    assert snapshot is not None
+    assert snapshot.source is None
+    assert snapshot.connection_name is None
+
+
+async def test_stub_inventory_records_source_for_future_reads(repo):
+    from apex.adapters.registry import ConnectionConfig, PortKind
+    from apex.adapters.stubs.cluster_inventory import StubClusterInventoryAdapter
+
+    adapter = StubClusterInventoryAdapter(
+        ConnectionConfig(
+            id="demo",
+            kind=PortKind.CLUSTER_INVENTORY,
+            provider="stub",
+            name="Demonstration inventory",
+        )
+    )
+    view = await InventoryService(repo).rescan(EnvRef(id="env", name="Test"), adapter)
+    assert view.snapshot.source == "Simulated inventory"
+    assert view.snapshot.connection_name == "Demonstration inventory"
+    assert (
+        await InventoryService(repo).latest_inventory("env")
+    ).snapshot.source == "Simulated inventory"

@@ -1,5 +1,6 @@
 """Freeze a reviewed history projection into a new report draft, without publication."""
 
+import re
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -73,13 +74,23 @@ async def freeze_evidence(
         "source": "engine_run_history",
         "results": [r.model_dump(mode="json") for r in results],
     }
+    captured_label = datetime.fromisoformat(snapshot["captured_at"]).strftime(
+        "%Y-%m-%d %H:%M:%S UTC"
+    )
+    title_suffix = f" (evidence captured {captured_label})"
+    base_title = re.sub(
+        r" \(evidence captured \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\)$",
+        "",
+        source["title"],
+    )
+    captured_title = base_title[: 255 - len(title_suffix)] + title_suffix
     try:
         version = add_version(
             cycle.versions,
             VersionCreate(
                 expected_revision=body.expected_revision,
                 kind="report",
-                title=source["title"],
+                title=captured_title,
                 content={**source["content"], "_execution_evidence": snapshot},
                 dependencies=source["dependencies"],
                 replaces=version_id,

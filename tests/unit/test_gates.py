@@ -154,3 +154,14 @@ def test_make_approval_records_actor_and_note() -> None:
     assert approval["actor"] == "op"
     assert approval["note"] == "tighten SLAs"
     assert approval["at"]
+
+
+def test_prompt_review_retains_safe_editor_attribution():
+    payload = build_prompt_review_payload(
+        Phase.STORY_ANALYSIS,
+        {"system": "s", "user": "u"},
+        {"origin": "gate_edit", "ref": "edited", "editor": "consumer-17"},
+        [],
+        [],
+    )
+    assert payload["prompt"]["source"]["editor"] == "consumer-17"

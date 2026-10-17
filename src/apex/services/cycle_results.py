@@ -57,7 +57,7 @@ def result_view(run: Any) -> CycleResult:
         warnings.append("Summary engine conflicts with the linked attempt; evidence withheld.")
         summary = None
     outcome = None
-    if summary:
+    if summary and run.status == "completed":
         if summary["passed"] is False:
             outcome = "failed"
         elif summary["passed"] is True and run.status == "completed":
@@ -68,13 +68,9 @@ def result_view(run: Any) -> CycleResult:
                     "Recorded pass contradicts SLA breaches; treat the result as failed."
                 )
             outcome = "failed"
-        if summary["passed"] is True and run.status != "completed":
-            warnings.append(
-                "A pass is unavailable because execution did not complete successfully."
-            )
     if run.status != "completed":
         warnings.append(
-            "Execution evidence may be partial; status does not determine test outcome."
+            "Test outcome is unavailable until execution completes; the recorded evidence may be partial."
         )
     kpis = summary["kpis"] if summary else {}
     metrics = []

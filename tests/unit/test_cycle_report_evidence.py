@@ -26,8 +26,13 @@ def report():
 
 
 @pytest.mark.asyncio
-async def test_capture_freezes_exact_evidence_and_replay_does_not_read_history(monkeypatch):
+@pytest.mark.parametrize("previous_capture", [False, True])
+async def test_capture_freezes_exact_evidence_and_replay_does_not_read_history(
+    monkeypatch, previous_capture
+):
     original = report()
+    if previous_capture:
+        original["title"] += " (evidence captured 2026-10-16 10:20:30 UTC)"
     execution = run(passed=False)
     cycle = SimpleNamespace(
         id="cycle", project_id="project", app_id="app", revision=2, versions=[original]
@@ -48,6 +53,10 @@ async def test_capture_freezes_exact_evidence_and_replay_does_not_read_history(m
     draft = saved[-1]
     assert saved[0] == original
     assert draft["status"] == "draft" and draft["reviews"] == []
+    assert draft["title"].startswith("Report (evidence captured ")
+    assert draft["title"].endswith(" UTC)")
+    assert draft["title"].count("(evidence captured ") == 1
+    assert len(draft["title"]) <= 255
     assert draft["checksum"] == version_digest(draft["content"])
     assert draft["content"]["_execution_evidence"]["results"][0]["test_outcome"] == "failed"
     execution.summary["passed"] = True

@@ -226,6 +226,26 @@ def _public_prompt(value: Any) -> JsonDict | None:
     return result or None
 
 
+def public_phase_evidence(phase: str, value: Any) -> JsonDict:
+    """Bounded evidence shown before a human accepts a phase result."""
+    projected = _public_phase_result(phase, value) or {}
+    return {
+        key: projected[key]
+        for key in (
+            "phase",
+            "attempt",
+            "provenance",
+            "model",
+            "reasoning_digest",
+            "tool_calls",
+            "resolved_prompt",
+            "resolved_prompt_source",
+            "transcript_ref",
+        )
+        if key in projected
+    }
+
+
 def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
     if type(phase) is not str or phase not in _PHASES or type(value) is not dict:
         return None
@@ -254,6 +274,13 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
         item = _text(value.get(field), maximum)
         if item is not None:
             result[field] = item
+    model = value.get("model")
+    if (
+        type(model) is str
+        and 0 < len(model) <= 200
+        and not contains_credential_material(model)
+    ):
+        result["model"] = model
     duration = _finite_number(value.get("duration_s"), minimum=0, maximum=86_400_000)
     if duration is not None:
         result["duration_s"] = duration
@@ -832,6 +859,11 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
             "source": {
                 "origin": source["origin"],
                 "ref": None if source["ref"] is None else _text(source["ref"], 2_048),
+                **(
+                    {"editor": _text(source["editor"], 255)}
+                    if _text(source.get("editor"), 255) is not None
+                    else {}
+                ),
             },
         }
         result["additional_context"] = _text(payload["additional_context"], 50_000)
@@ -865,6 +897,8 @@ def _public_gate_payload(kind: str, phase: str, value: Any) -> JsonDict:
         ]
         result["warnings"] = [_text(raw, 4_096) for raw in payload["warnings"]]
         result["dialogue_tail"] = [_public_dialogue(raw) for raw in payload["dialogue_tail"]]
+        if type(payload.get("evidence")) is dict:
+            result["evidence"] = public_phase_evidence(phase, payload["evidence"])
     else:
         # Runtime recovery gates carry no provider capability: expose only the
         # bounded retry contract needed to resume the exact interrupt id.

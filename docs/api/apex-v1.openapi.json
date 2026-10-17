@@ -1312,6 +1312,17 @@
       },
       "ConsumerInfo": {
         "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2083,6 +2094,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "findings",
                   "label": "Findings",
                   "options": [],
@@ -2091,6 +2103,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "factors",
                   "label": "Contributing factors",
                   "options": [],
@@ -2099,6 +2112,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "lessons",
                   "label": "Lessons learned",
                   "options": [],
@@ -2107,6 +2121,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "actions",
                   "label": "Follow-up actions, owners and status",
                   "options": [],
@@ -2116,7 +2131,8 @@
               "readiness": [
                 {
                   "control": "multiline",
-                  "help": "",
+                  "help": "Describe the application build, hosts, resources and dependencies required for this test.",
+                  "integer": false,
                   "key": "expected",
                   "label": "Expected environment configuration",
                   "options": [],
@@ -2124,7 +2140,8 @@
                 },
                 {
                   "control": "multiline",
-                  "help": "",
+                  "help": "Compare the latest inventory and monitoring observations with the expected configuration.",
+                  "integer": false,
                   "key": "observed",
                   "label": "Observed inventory and telemetry",
                   "options": [],
@@ -2132,7 +2149,8 @@
                 },
                 {
                   "control": "multiline",
-                  "help": "",
+                  "help": "Record immutable evidence references and the date and time of each observation.",
+                  "integer": false,
                   "key": "evidence",
                   "label": "Evidence references and observation times",
                   "options": [],
@@ -2140,7 +2158,8 @@
                 },
                 {
                   "control": "select",
-                  "help": "",
+                  "help": "Ready means the recorded evidence meets this plan's entry criteria; blockers require remediation.",
+                  "integer": false,
                   "key": "status",
                   "label": "Readiness assessment",
                   "options": [
@@ -2153,7 +2172,8 @@
                 },
                 {
                   "control": "text",
-                  "help": "",
+                  "help": "Use the ID of the latest scan from the selected environment's inventory.",
+                  "integer": false,
                   "key": "inventory_snapshot_id",
                   "label": "Inventory snapshot ID",
                   "options": [],
@@ -2161,7 +2181,8 @@
                 },
                 {
                   "control": "number",
-                  "help": "",
+                  "help": "Use the whole-number version of the approved environment target verified by this readiness review.",
+                  "integer": true,
                   "key": "target_version",
                   "label": "Approved target version",
                   "maximum": 2147483647.0,
@@ -2171,7 +2192,8 @@
                 },
                 {
                   "control": "multiline",
-                  "help": "",
+                  "help": "Name each blocker, its accountable owner, corrective action and next verification time.",
+                  "integer": false,
                   "key": "remediation",
                   "label": "Blockers, owners and remediation notes",
                   "options": [],
@@ -2182,6 +2204,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "executive_summary",
                   "label": "Executive summary",
                   "options": [],
@@ -2190,6 +2213,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "technical_analysis",
                   "label": "Technical analysis",
                   "options": [],
@@ -2198,6 +2222,7 @@
                 {
                   "control": "multiline",
                   "help": "Reference immutable measurements, engine and attempt. Do not replace raw measurements with interpretation.",
+                  "integer": false,
                   "key": "evidence",
                   "label": "Execution evidence and versions",
                   "options": [],
@@ -2206,6 +2231,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "findings",
                   "label": "Findings and baseline differences",
                   "options": [],
@@ -2214,6 +2240,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "exclusions",
                   "label": "Exclusions and limitations",
                   "options": [],
@@ -2222,6 +2249,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "accepted_risks",
                   "label": "Accepted risks",
                   "options": [],
@@ -2230,6 +2258,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "recommendation",
                   "label": "Recommendation",
                   "options": [],
@@ -2240,6 +2269,7 @@
                 {
                   "control": "multiline",
                   "help": "Include requirement keys, titles and performance risks.",
+                  "integer": false,
                   "key": "requirements",
                   "label": "Requirements and risks",
                   "options": [],
@@ -2248,6 +2278,7 @@
                 {
                   "control": "multiline",
                   "help": "Record each source title, provider, revision, retrieval time and readability. Retrieval connectors are not available in this editor yet.",
+                  "integer": false,
                   "key": "source_manifest",
                   "label": "Frozen source references",
                   "options": [],
@@ -2256,6 +2287,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "included",
                   "label": "Included journeys",
                   "options": [],
@@ -2264,6 +2296,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "excluded",
                   "label": "Excluded scope",
                   "options": [],
@@ -2274,6 +2307,7 @@
                 {
                   "control": "select",
                   "help": "",
+                  "integer": false,
                   "key": "engine",
                   "label": "Execution platform",
                   "options": [
@@ -2285,6 +2319,7 @@
                 {
                   "control": "select",
                   "help": "",
+                  "integer": false,
                   "key": "format",
                   "label": "Script format",
                   "options": [
@@ -2297,6 +2332,7 @@
                 {
                   "control": "multiline",
                   "help": "Paste native JSON or source text. For an external import, record an immutable artifact reference. This approval does not launch a test.",
+                  "integer": false,
                   "key": "source",
                   "label": "Script source or immutable import reference",
                   "options": [],
@@ -2305,6 +2341,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "parameters",
                   "label": "Parameter files and dependencies",
                   "options": [],
@@ -2313,6 +2350,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "coverage",
                   "label": "Requirement and journey coverage",
                   "options": [],
@@ -2321,6 +2359,7 @@
                 {
                   "control": "multiline",
                   "help": "Record validation results and tool/provider version. Provider preflight remains required before execution.",
+                  "integer": false,
                   "key": "validation",
                   "label": "Inspection and validation evidence",
                   "options": [],
@@ -2331,6 +2370,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "objectives",
                   "label": "Objectives",
                   "options": [],
@@ -2339,6 +2379,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "journeys",
                   "label": "User journeys and requirement coverage",
                   "options": [],
@@ -2347,6 +2388,7 @@
                 {
                   "control": "multiline",
                   "help": "Record each journey and its share of traffic.",
+                  "integer": false,
                   "key": "workload_mix",
                   "label": "Workload mix",
                   "options": [],
@@ -2355,6 +2397,7 @@
                 {
                   "control": "number",
                   "help": "",
+                  "integer": true,
                   "key": "vusers",
                   "label": "Concurrent users",
                   "maximum": 1000000.0,
@@ -2364,7 +2407,8 @@
                 },
                 {
                   "control": "number",
-                  "help": "",
+                  "help": "Planning reference only. Arrival-rate execution is not supported by the pipeline; leave this unset to dispatch a concurrent-user plan.",
+                  "integer": false,
                   "key": "arrival_rate",
                   "label": "Arrival rate (requests per second)",
                   "maximum": 1000000.0,
@@ -2375,6 +2419,7 @@
                 {
                   "control": "number",
                   "help": "",
+                  "integer": false,
                   "key": "ramp_s",
                   "label": "Ramp (seconds)",
                   "maximum": 86400.0,
@@ -2385,6 +2430,7 @@
                 {
                   "control": "number",
                   "help": "",
+                  "integer": false,
                   "key": "duration_s",
                   "label": "Steady-state duration (seconds)",
                   "maximum": 86400.0,
@@ -2395,6 +2441,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "test_data",
                   "label": "Test data and parameterization",
                   "options": [],
@@ -2403,6 +2450,7 @@
                 {
                   "control": "multiline",
                   "help": "For each transaction, state latency percentile, error-rate limit and throughput target.",
+                  "integer": false,
                   "key": "thresholds",
                   "label": "Transaction thresholds",
                   "options": [],
@@ -2411,6 +2459,7 @@
                 {
                   "control": "number",
                   "help": "",
+                  "integer": false,
                   "key": "p95_ms_threshold",
                   "label": "Overall p95 latency limit (ms)",
                   "maximum": 1000000000000.0,
@@ -2421,6 +2470,7 @@
                 {
                   "control": "number",
                   "help": "",
+                  "integer": false,
                   "key": "error_rate_threshold",
                   "label": "Overall error-rate limit (fraction 0\u20131)",
                   "maximum": 1.0,
@@ -2431,6 +2481,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "observability",
                   "label": "Observability and evidence collection",
                   "options": [],
@@ -2439,6 +2490,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "entry_criteria",
                   "label": "Entry criteria",
                   "options": [],
@@ -2447,6 +2499,7 @@
                 {
                   "control": "multiline",
                   "help": "",
+                  "integer": false,
                   "key": "exit_criteria",
                   "label": "Exit criteria",
                   "options": [],
@@ -2905,6 +2958,11 @@
             "default": "",
             "title": "Help",
             "type": "string"
+          },
+          "integer": {
+            "default": false,
+            "title": "Integer",
+            "type": "boolean"
           },
           "key": {
             "title": "Key",
@@ -7987,6 +8045,28 @@
       },
       "SnapshotView": {
         "properties": {
+          "connection_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Name"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
           "scanned_at": {
             "format": "date-time",
             "title": "Scanned At",
@@ -7998,6 +8078,17 @@
             },
             "title": "Services",
             "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
           },
           "stale": {
             "title": "Stale",

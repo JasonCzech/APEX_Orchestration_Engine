@@ -684,6 +684,10 @@ def test_discuss_appends_dialogue_and_reinterrupts() -> None:
     assert [entry["role"] for entry in tail] == ["operator", "agent"]
     assert tail[0]["content"] == "why this scope?"
     assert "why this scope?" in tail[1]["content"]
+    entry = subgraph_values(g, cfg)["phase_results"]["story_analysis"]
+    assert [(a["action"], a["note"]) for a in entry["approvals"]] == [
+        ("discuss", "why this scope?")
+    ]
 
     result = g.invoke(Command(resume={"action": "approve"}), cfg)
     assert "__interrupt__" not in result
@@ -965,3 +969,74 @@ def test_new_run_resets_application_review_before_a_different_app_edit() -> None
             "updated_by": "op",
         }
     }
+
+
+@pytest.mark.parametrize(
+    "latency", [None, 27, "bad", -1, float("inf"), float("nan"), 10**1000, True]
+)
+def test_agent_analytics_never_uses_gate_wall_time(
+    monkeypatch: pytest.MonkeyPatch, latency: Any
+) -> None:
+    from unittest.mock import Mock
+
+    record = Mock()
+    monkeypatch.setattr(phase_subgraph.usage_events, "record_agent_event_sync", record)
+    state = cast(
+        PipelineState,
+        {
+            "phase_results": {
+                "story_analysis": {
+                    "attempt": 1,
+                    "status": "succeeded",
+                    "summary": "output",
+                    "started_at": "2000-01-01T00:00:00+00:00",
+                    "agent_latency_ms": latency,
+                }
+            }
+        },
+    )
+    phase_subgraph._make_finalize(Phase.STORY_ANALYSIS)(state, config("latency-wait"))
+    assert record.call_args.kwargs["latency_ms"] == (27 if latency == 27 else None)
+
+
+def test_worker_measures_only_its_own_invocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        phase_subgraph.PipelineConfigurable,
+        "from_state_for_phase",
+        lambda *_: SimpleNamespace(agent_backend="stub"),
+    )
+    monkeypatch.setattr(
+        phase_subgraph,
+        "_stub_agent_body",
+        lambda *_: {"phase_results": {"story_analysis": {"attempt": 1, "summary": "done"}}},
+    )
+    clock = iter([10.0, 10.025, 20.0, 20.010])
+    monkeypatch.setattr(phase_subgraph, "perf_counter", lambda: next(clock))
+    result = phase_subgraph._make_agent(Phase.STORY_ANALYSIS)(cast(PipelineState, {}), {})
+    assert result["phase_results"]["story_analysis"]["agent_latency_ms"] == 25
+    revised = phase_subgraph._make_agent(Phase.STORY_ANALYSIS)(cast(PipelineState, result), {})
+    assert revised["phase_results"]["story_analysis"]["agent_latency_ms"] == 35
+
+
+def test_discussions_preserve_each_authenticated_actor_before_final_approval():
+    g = compiled()
+    cfg = config(
+        "multi-operator-discussion",
+        gates={"story_analysis": {"prompt_review": "auto", "output_review": "gated"}},
+        phases=["story_analysis"],
+    )
+    g.invoke({"title": "Demo"}, cfg)
+    for identity, message in [
+        ("operator-one", "Explain the scope"),
+        ("operator-two", "Explain the risks"),
+    ]:
+        cfg["configurable"]["langgraph_auth_user_id"] = identity
+        g.invoke(Command(resume={"action": "discuss", "message": message}), cfg)
+    approvals = subgraph_values(g, cfg)["phase_results"]["story_analysis"]["approvals"]
+    assert [(item["action"], item["actor"]) for item in approvals] == [
+        ("discuss", "operator-one"),
+        ("discuss", "operator-two"),
+    ]
+    assert len({item["id"] for item in approvals}) == 2

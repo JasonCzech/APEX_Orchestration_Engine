@@ -96,7 +96,11 @@ def build_prompt_review_payload(
             "system": prompt.get("system"),
             "user": prompt.get("user"),
             "application": prompt.get("application"),
-            "source": {"origin": source.get("origin"), "ref": source.get("ref")},
+            "source": {
+                "origin": source.get("origin"),
+                "ref": source.get("ref"),
+                **({"editor": source["editor"]} if _safe_actor(source.get("editor")) else {}),
+            },
         },
         "additional_context": additional_context,
         "context_packets": [
@@ -125,6 +129,7 @@ def build_phase_review_payload(
     warnings: Sequence[str],
     dialogue_tail: Sequence[JsonDict],
     error: str | None = None,
+    evidence: JsonDict | None = None,
 ) -> JsonDict:
     payload: JsonDict = {
         "schema_version": GATE_SCHEMA_VERSION,
@@ -135,6 +140,7 @@ def build_phase_review_payload(
         "artifacts": [dict(artifact) for artifact in artifacts],
         "warnings": list(warnings),
         "dialogue_tail": [dict(entry) for entry in dialogue_tail],
+        "evidence": dict(evidence) if evidence is not None else {},
         "actions": list(PHASE_REVIEW_ACTIONS),
     }
     if error:

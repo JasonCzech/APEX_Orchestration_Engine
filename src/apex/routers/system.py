@@ -8,6 +8,7 @@ router = APIRouter(tags=["system"])
 
 
 class ConsumerInfo(BaseModel):
+    id: str | None = None
     name: str
     role: Role
     scopes: list[ScopeRef]
@@ -34,5 +35,7 @@ async def get_system_info(settings: SettingsDep, identity: CurrentIdentity) -> S
         environment=settings.environment,
         features={"cycles": settings.cycles_enabled},
         limits=SystemLimits(max_context_packets=settings.runs.max_context_packets),
-        consumer=ConsumerInfo(name=identity.name, role=identity.role, scopes=identity.scopes),
+        consumer=ConsumerInfo(
+            id=identity.consumer_id, name=identity.name, role=identity.role, scopes=identity.scopes
+        ),
     )

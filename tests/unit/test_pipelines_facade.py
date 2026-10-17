@@ -1947,3 +1947,85 @@ def test_phase_summary_respects_selected_plan() -> None:
     assert by_phase["execution"] == "aborted"
     assert by_phase["reporting"] == "pending"
     assert by_phase["story_analysis"] == "none"
+
+
+@pytest.mark.parametrize(
+    "status", ["running", "awaiting_output_review", "failed", "aborted", "pending"]
+)
+def test_summary_withholds_uncollected_execution_verdict(status: str) -> None:
+    summary = map_thread_summary(
+        {
+            "thread_id": "incomplete",
+            "values": {
+                "phase_results": {
+                    "execution": {
+                        "status": status,
+                        "test_summary": {"engine": "sim", "passed": False},
+                    }
+                }
+            },
+        }
+    )
+    assert summary["execution_result"] is None
+
+
+def test_summary_marks_error_current_phase_failed_without_changing_checkpoint() -> None:
+    values = {
+        "current_phase": "execution",
+        "phases_plan": ["execution"],
+        "phase_results": {"execution": {"status": "pending", "attempt": 1}},
+    }
+    summary = map_thread_summary({"thread_id": "error", "status": "error", "values": values})
+    assert (
+        next(item for item in summary["phase_strip"] if item["phase"] == "execution")["status"]
+        == "failed"
+    )
+    assert values["phase_results"]["execution"]["status"] == "pending"
+
+
+async def test_detail_uses_checkpoint_for_both_summary_and_phase_values() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    client = SimpleNamespace(
+        threads=SimpleNamespace(
+            get=AsyncMock(
+                return_value={
+                    "thread_id": "drift",
+                    "status": "idle",
+                    "values": {"phase_results": {"execution": {"status": "running"}}},
+                }
+            ),
+            get_state=AsyncMock(
+                return_value={
+                    "values": {
+                        "phases_plan": ["execution"],
+                        "phase_results": {
+                            "execution": {
+                                "status": "succeeded",
+                                "test_summary": {"engine": "sim", "passed": True},
+                            }
+                        },
+                    }
+                }
+            ),
+        )
+    )
+    result = await PipelineReadService(cast(Any, client)).get_pipeline("drift")
+    assert result["execution_result"] == "passed"
+    assert (
+        next(item for item in result["phase_strip"] if item["phase"] == "execution")["status"]
+        == result["values"]["phase_results"]["execution"]["status"]
+        == "succeeded"
+    )
+
+
+@pytest.mark.parametrize(
+    "kind", ["engine_provision_retry", "engine_collection_retry", "engine_cleanup_retry"]
+)
+def test_recovery_gates_do_not_claim_phase_output_is_ready(kind: str) -> None:
+    values = {"phase_results": {"execution": {"status": "pending"}}}
+    projected = pipeline_read_module.phase_display_values(
+        values, thread_status="interrupted", gates=[{"phase": "execution", "kind": kind}]
+    )
+    assert projected["phase_results"]["execution"]["status"] == "pending"
