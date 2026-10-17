@@ -99,6 +99,31 @@ class _RequestInputRejected(Exception):
         super().__init__(detail)
 
 
+def _request_body_rejection(
+    error: BaseException,
+) -> _RequestBodyTooLarge | _RequestBodyTimedOut | _RequestInputRejected | None:
+    """Unwrap guard-only task groups without suppressing sibling server faults.
+
+    Inspect every leaf before sending a response. A mixed group, including a
+    cancellation, must propagate intact. If several guards rejected the same
+    request, retain the first rejection in the runtime's exception order.
+    """
+    pending = [error]
+    first = None
+    while pending:
+        current = pending.pop()
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(reversed(current.exceptions))
+        elif isinstance(
+            current, (_RequestBodyTooLarge, _RequestBodyTimedOut, _RequestInputRejected)
+        ):
+            if first is None:
+                first = current
+        else:
+            return None
+    return first
+
+
 async def _await_task_definitively(task: asyncio.Task[None]) -> None:
     """Settle owned cleanup despite repeated cancellation of its caller."""
 
@@ -499,18 +524,23 @@ class RequestBodyLimitMiddleware:
 
         try:
             await self._app(scope, capped_receive, tracked_send)
-        except _RequestBodyTooLarge:
+        except (
+            _RequestBodyTooLarge,
+            _RequestBodyTimedOut,
+            _RequestInputRejected,
+            BaseExceptionGroup,
+        ) as exc:
             if response_started:
                 raise
-            await _send_payload_too_large(send, limit)
-        except _RequestBodyTimedOut:
-            if response_started:
+            rejection = _request_body_rejection(exc)
+            if rejection is None:
                 raise
-            await _send_request_timeout(send, self._settings.timeout_s)
-        except _RequestInputRejected as exc:
-            if response_started:
-                raise
-            await _send_unprocessable_entity(send, exc.detail)
+            if isinstance(rejection, _RequestBodyTooLarge):
+                await _send_payload_too_large(send, limit)
+            elif isinstance(rejection, _RequestBodyTimedOut):
+                await _send_request_timeout(send, self._settings.timeout_s)
+            else:
+                await _send_unprocessable_entity(send, rejection.detail)
 
     def _limit_for(self, scope: Mapping[str, Any]) -> int:
         if (
