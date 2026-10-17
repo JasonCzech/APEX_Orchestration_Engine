@@ -17,7 +17,7 @@ export interface PhaseStripSegment {
 
 export interface PhaseStripProps {
   strip: PhaseStripSegment[]
-  /** When present, segments become focusable buttons. */
+  /** When present, medium/large segments become focusable buttons. Small strips are summaries. */
   onSelect?: (phase: PhaseName) => void
   size?: 'sm' | 'md' | 'lg'
   selectedOnly?: boolean
@@ -52,8 +52,8 @@ function segmentLabel(phase: PhaseName, status: string, attempt: number | null |
 /**
  * 7-segment phase micro-viz (plan UX 2.d) — one segment per canonical phase,
  * colored by status token. Renders all 7 phases in canonical order regardless
- * of input order; phases missing from the strip render as "none" (transparent
- * with border). Interactive (button per segment) when onSelect is provided.
+ * of input order; phases missing from the strip render as unknown. Small strips
+ * are one labelled graphic; larger strips can expose a button per phase.
  */
 export function PhaseStrip({
   strip,
@@ -67,6 +67,18 @@ export function PhaseStrip({
   const selectedPhases = selectedOnly ? PHASE_NAMES.filter(phase => byPhase.get(phase)?.status && byPhase.get(phase)?.status !== NONE) : PHASE_NAMES
 
   const visiblePhases = selectedPhases.length ? selectedPhases : PHASE_NAMES
+
+  if (size === 'sm') {
+    const labels = PHASE_NAMES.map(phase => {
+      const entry = byPhase.get(phase)
+      return segmentLabel(phase, entry?.status ?? 'unknown', entry?.attempt)
+    })
+    return <div className="phase-strip phase-strip--sm" role="img" aria-label={`Phase progress. ${labels.join('; ')}`}>
+      {PHASE_NAMES.map((phase, index) => <span key={phase} aria-hidden="true"
+        className={`phase-seg phase-seg--${segmentModifier(byPhase.get(phase)?.status ?? 'unknown')}`}
+        title={labels[index]} />)}
+    </div>
+  }
 
   if (size === 'lg') {
     return (

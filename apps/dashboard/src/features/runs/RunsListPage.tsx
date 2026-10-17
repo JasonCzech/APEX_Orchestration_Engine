@@ -164,7 +164,7 @@ function RunRow({
         <span className="runs-application-cell">{run.app_id ?? EM_DASH}</span>
       </td>
       <td>
-        <PhaseStrip strip={run.phase_strip} size="sm" onSelect={phase => onOpen(run.thread_id, phase)} />
+        <PhaseStrip strip={run.phase_strip} size="sm" />
         <span className="runs-phase-progress">
           {phaseProgressLabel(phaseProgress(run.phase_strip))}
         </span>

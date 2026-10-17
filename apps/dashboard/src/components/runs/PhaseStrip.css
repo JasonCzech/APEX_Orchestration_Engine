@@ -138,7 +138,7 @@
 }
 
 .phase-step--running .phase-step-circle {
-  animation: phaseStripPulse 1.6s ease-in-out infinite;
+  animation: pulse 1.6s ease-in-out infinite;
 }
 
 .phase-step--results_ready .phase-step-circle,
@@ -229,13 +229,13 @@ button.phase-seg:hover {
 .phase-seg--running {
   background: var(--accent);
   border-color: var(--accent);
-  animation: phaseStripPulse 1.6s ease-in-out infinite;
+  animation: pulse 1.6s ease-in-out infinite;
 }
 
 .phase-seg--awaiting {
   background: var(--warning);
   border-color: var(--warning);
-  animation: phaseStripPulse 1.6s ease-in-out infinite;
+  animation: pulse 1.6s ease-in-out infinite;
 }
 
 .phase-seg--pending {
@@ -250,15 +250,6 @@ button.phase-seg:hover {
   border-color: var(--border);
 }
 
-@keyframes phaseStripPulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
-}
 
 
 .phase-step--unknown .phase-step-circle { border-style: dashed; color: var(--text-muted); }

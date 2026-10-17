@@ -14,7 +14,7 @@ const STRIP: PhaseStripSegment[] = [
   { phase: 'script_scenario', status: 'failed', attempt: 3 },
   { phase: 'execution', status: 'running', attempt: 2 },
   { phase: 'reporting', status: 'pending' },
-  // postmortem intentionally absent -> "none" segment
+  // postmortem intentionally absent -> unknown segment
 ]
 
 describe('PhaseStrip', () => {
@@ -73,9 +73,25 @@ describe('PhaseStrip', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
-  it('applies the size modifier class', () => {
-    render(<PhaseStrip strip={STRIP} size="sm" />)
-    expect(screen.getByRole('group', { name: 'Phase progress' })).toHaveClass('phase-strip--sm')
+  it('exposes a small strip as one complete graphic without tiny interactive targets', async () => {
+    const select = vi.fn()
+    const user = userEvent.setup()
+    render(<><button>Before strip</button><PhaseStrip strip={STRIP} size="sm" onSelect={select} /><button>After strip</button></>)
+    const graphic = screen.getByRole('img', { name: /^Phase progress\./ })
+    expect(graphic).toHaveClass('phase-strip--sm')
+    for (const phase of PHASE_NAMES) expect(graphic).toHaveAccessibleName(expect.stringContaining(PHASE_LABELS[phase]))
+    expect(graphic).toHaveAccessibleName(expect.stringContaining('Execution — Executing (attempt 2)'))
+    expect(graphic).toHaveAccessibleName(expect.stringContaining('Postmortem — Unknown'))
+    expect(graphic.children).toHaveLength(7)
+    expect(within(graphic).queryByRole('button')).not.toBeInTheDocument()
+    expect(graphic.querySelector('button, a, [tabindex]')).toBeNull()
+    for (const segment of graphic.children) expect(segment).toHaveAttribute('aria-hidden', 'true')
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'Before strip' })).toHaveFocus()
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'After strip' })).toHaveFocus()
+    await user.click(graphic.children[0]!)
+    expect(select).not.toHaveBeenCalled()
   })
 })
 
