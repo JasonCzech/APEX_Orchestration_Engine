@@ -2,6 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
+import { ENGINE_RETRY_KINDS } from '@apex/pipeline-events'
 
 import { bumpSessionRevision } from '@/auth/keyStorage'
 import { server } from '@/test/server'
@@ -231,6 +232,35 @@ describe('RunDetailPage', () => {
       'href',
       `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
     )
+  })
+
+  it.each(ENGINE_RETRY_KINDS)('does not relabel an engine recovery checkpoint as phase-result review: %s', async kind => {
+    const detail = {
+      ...structuredClone(PIPELINE_DETAIL),
+      thread_status: 'interrupted',
+      current_phase: 'execution',
+      phase_strip: [{ phase: 'execution', status: 'running', attempt: 1 }],
+      values: {
+        phases_plan: ['execution'],
+        phase_results: { execution: { status: 'running', attempt: 1 } },
+      },
+      pending_gate: { interrupt_id: 'recovery-1', kind, phase: 'execution' },
+      interrupts: [{
+        interrupt_id: 'recovery-1', kind, phase: 'execution',
+        payload: {
+          schema_version: 1, kind, phase: 'execution', attempt: 1,
+          thread_id: THREAD_ID, actions: ['retry'], message: 'Provider recovery required.',
+        },
+      }],
+    }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/reporting?tab=details`])
+    // Wait for the gate machine to hydrate; the first snapshot render alone
+    // does not exercise the page-level pending-interrupt override.
+    await screen.findByTestId('gate-slim-banner')
+    const phases = screen.getByRole('group', { name: 'Phase progress' })
+    expect(within(phases).getByRole('button', { name: 'Execution — Executing (attempt 1)' })).toBeInTheDocument()
+    expect(within(phases).queryByRole('button', { name: /Execution — Awaiting output review/ })).not.toBeInTheDocument()
   })
 
   it('surfaces a problem card with retry when the snapshot fails', async () => {

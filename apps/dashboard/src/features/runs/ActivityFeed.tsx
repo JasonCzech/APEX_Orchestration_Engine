@@ -1,5 +1,6 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
+import { formatPercentRate } from '@/utils/metrics'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { PhaseName } from '@apex/pipeline-events'
@@ -103,11 +104,7 @@ function fmtPct(value: number | null | undefined): string {
 function engineSampleLine(sample: LiveEngineSample): string {
   const stats = sample.live_stats
   const statsText = stats
-    ? `vu ${fmtMetric(stats.vusers, 0)} · tps ${fmtMetric(stats.tps)} · err ${
-        stats.error_rate === null || stats.error_rate === undefined
-          ? '—'
-          : `${(stats.error_rate * 100).toFixed(2)}%`
-      } · p95 ${fmtMetric(stats.p95_ms, 0)}ms`
+    ? `vu ${fmtMetric(stats.vusers, 0)} · tps ${fmtMetric(stats.tps)} · err ${formatPercentRate(stats.error_rate)} · p95 ${fmtMetric(stats.p95_ms, 0)}ms`
     : 'no live stats'
   return `${sample.status ?? '?'} ${fmtPct(sample.progress_pct)} — ${statsText}`
 }

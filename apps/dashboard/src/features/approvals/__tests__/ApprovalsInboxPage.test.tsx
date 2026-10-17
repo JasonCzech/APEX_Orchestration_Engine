@@ -191,6 +191,83 @@ describe('ApprovalsInboxPage', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new'))
   })
 
+  it.each([false, true])('preserves a canonical review missing from the queue snapshot (empty queue: %s)', async empty => {
+    const source = useInboxHandlers(empty ? [] : [OLD])
+    const { router, queryClient } = renderInbox('/runs/run-new-2/reviews/int-new?source=overview')
+    const gate = await screen.findByTestId('gate-module-mock')
+    expect(gate).toHaveAttribute('data-thread', NEW.thread_id)
+    expect(gate).toHaveAttribute('data-interrupt', 'int-new')
+    expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new')
+    expect(screen.queryByTestId('approvals-empty')).not.toBeInTheDocument()
+    expect(screen.getByText('Selected review is outside the current queue snapshot')).toBeInTheDocument()
+
+    source.current = [OLD, NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await waitForSelected(NEW.thread_id)
+    expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new')
+    expect(screen.queryByText('Selected review is outside the current queue snapshot')).not.toBeInTheDocument()
+  })
+
+  it('preserves a new interrupt link when the queue still carries the prior interrupt for that run', async () => {
+    useInboxHandlers([OLD, { ...NEW, pending_gate: { ...NEW.pending_gate!, interrupt_id: 'int-previous' } }])
+    const { router } = renderInbox('/runs/run-new-2/reviews/int-new?source=overview')
+    expect(await screen.findByTestId('gate-module-mock')).toHaveAttribute('data-interrupt', 'int-new')
+    expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new')
+    expect(screen.getByText('Selected review is outside the current queue snapshot')).toBeInTheDocument()
+  })
+
+  it('loads the requested review from its own snapshot when the inbox fails', async () => {
+    useInboxHandlers()
+    server.use(http.get('*/v1/pipelines', () => HttpResponse.json({ detail: 'Queue temporarily unavailable' }, { status: 503 })))
+    const { router } = renderInbox('/runs/run-new-2/reviews/int-new?source=overview')
+    expect(await screen.findByTestId('gate-module-mock')).toHaveAttribute('data-interrupt', 'int-new')
+    expect(await screen.findByText('Queue temporarily unavailable')).toBeInTheDocument()
+    expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new')
+    expect(screen.getByRole('region', { name: 'Pending reviews' })).toContainElement(screen.getByRole('button', { name: 'Retry' }))
+  })
+
+  it('protects an unlisted local revision through a stale queue echo and clears it after settling', async () => {
+    const source = useInboxHandlers([OLD])
+    const user = userEvent.setup()
+    const { router, queryClient } = renderInbox('/runs/run-new-2/reviews/int-new?source=overview')
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    source.current = [OLD, NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await waitForSelected(NEW.thread_id)
+    source.current = [OLD]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-new')
+    expect(screen.getByTestId('gate-module-mock')).toHaveAttribute('data-thread', NEW.thread_id)
+    server.use(http.get('*/v1/pipelines/run-new-2', () => HttpResponse.json({ ...DETAILS[NEW.thread_id], thread_status: 'idle', pending_gate: null, interrupts: [] })))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(NEW.thread_id) }) })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-old-1/reviews/int-old'))
+  })
+
+  it('keeps the run’s reopened review when the refreshed inbox still omits it', async () => {
+    const source = useInboxHandlers([OLD])
+    const user = userEvent.setup()
+    const { router, queryClient } = renderInbox('/runs/run-new-2/reviews/int-new?source=overview')
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    source.current = [OLD, NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await waitForSelected(NEW.thread_id)
+    source.current = [OLD]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    const reopened = { ...NEW, pending_gate: { ...NEW.pending_gate!, interrupt_id: 'int-revised' }, updated_at: new Date(Date.parse(T_NEWER) + 1000).toISOString() }
+    server.use(http.get('*/v1/pipelines/run-new-2', () => HttpResponse.json(gatedDetail(reopened))))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(NEW.thread_id) }) })
+    await waitFor(() => expect(screen.getByTestId('gate-module-mock')).toHaveAttribute('data-interrupt', 'int-revised'))
+    await user.click(screen.getByRole('button', { name: 'mock-reopened' }))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(router.state.location.pathname).toBe('/runs/run-new-2/reviews/int-revised')
+    expect(screen.getByTestId('gate-module-mock')).toHaveAttribute('data-thread', NEW.thread_id)
+    expect(screen.getByTestId('gate-module-mock')).toHaveAttribute('data-interrupt', 'int-revised')
+    source.current = [OLD, reopened]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await waitForSelected(NEW.thread_id)
+    expect(screen.queryByText('Selected review is outside the current queue snapshot')).not.toBeInTheDocument()
+  })
+
   it('routes a same-turn safe focus shortcut only to the new deep-linked gate', async () => {
     useInboxHandlers()
     const { router } = renderInbox('/approvals/run-old-1/int-old')
@@ -408,18 +485,21 @@ describe('ApprovalsInboxPage', () => {
     const { queryClient } = renderInbox()
     await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
     await user.click(await findRow(NEW.thread_id))
-    const reopened = { ...OLD, pending_gate: { ...OLD.pending_gate!, interrupt_id: 'int-background' } }
+    const reopened = { ...OLD, title: 'Reopened background review', pending_gate: { ...OLD.pending_gate!, interrupt_id: 'int-background' } }
     source.current = [reopened, NEW]
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await waitFor(() => expect(screen.getByTestId(`approvals-row-${OLD.thread_id}`)).toHaveTextContent('Reopened background review'))
     expect(await findRow(OLD.thread_id)).not.toHaveTextContent('Agent working')
     source.current = [NEW]
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
-    const priorRow = screen.queryByTestId(`approvals-row-${OLD.thread_id}`)
-    if (priorRow) {
-      expect(priorRow).toHaveClass('removed')
-      expect(priorRow).not.toHaveTextContent('Agent working')
-    }
+    await waitFor(() => {
+      const priorRow = screen.queryByTestId(`approvals-row-${OLD.thread_id}`)
+      if (priorRow) {
+        expect(priorRow).toHaveClass('removed')
+        expect(priorRow).not.toHaveTextContent('Agent working')
+      }
+    })
   })
 
   it('observes a locally revised run that finishes after its workspace is unmounted', async () => {

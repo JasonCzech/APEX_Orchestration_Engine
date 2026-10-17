@@ -128,7 +128,7 @@ export function RunWorkspace({
   const { detail, state, stateParseFailed } = query.data
   const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed, detail)
   const pendingGate = query.data.interrupts.some(interrupt => interrupt.interrupt_id === hitl.gate?.interrupt_id) ? hitl.gate : null
-  if (pendingGate) {
+  if (pendingGate?.kind === 'prompt_review' || pendingGate?.kind === 'phase_review') {
     const current = phaseStrip.find(entry => entry.phase === pendingGate.phase)
     if (current) current.status = pendingGate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
   }

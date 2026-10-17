@@ -1,6 +1,6 @@
 # Accessibility, review safety and shared UI remediation
 
-2026-10-17. Implemented in **APEX Orchestration**, on `codex/holistic-ux-remediation-2026-10-17`. APEX Load was a design reference; its repository was not modified. The original findings and independent corrections remain in `ux-holistic-2026-10-17/`.
+2026-10-17. Implemented in **APEX Orchestration**, on `codex/holistic-ux-remediation-2026-10-17`. APEX Load was a design reference; its repository was not modified. The original findings and independent corrections remain in the source checkout’s `docs/qa/ux-holistic-2026-10-17/`.
 
 ## Accessibility disposition
 
@@ -79,5 +79,7 @@
 - Contrast review found transparent colour mixes could divide by zero; fixed with a dedicated test. Six contrast unit tests pass; 750 palette/surface pairs pass at 4.5:1 or above.
 - The affected 319-test set passed after four stale human-label assertions were corrected (315 initial passes, 31/31 focused rerun including all four failures). Earlier state/admin/form targeted checks also passed; final combined-suite results are recorded by the lead.
 - Production build succeeded after integrating current `origin/main`. Production Playwright passed **12/12**: five cold-route tab workflows, mobile targets/disabled opacity, filtered/not-found recovery, two real-CodeMirror review workflows, and three resource workflows across viewer/operator/admin.
+- Final integrated review closed the remaining wizard CodeMirror focus/style gap, applied the shared live error-rate formatter, and prevented engine-recovery checkpoints from being relabelled as phase-result reviews. The incremental focused suites pass **100 tests**, including all four recovery kinds.
+- The full offline launch-to-review journey exposed a stale inbox redirecting a canonical review link to another run. Direct links now resolve against their own run snapshot, even with a missing or failed queue. Further independent review/fix cycles cover unlisted local revisions, stale interrupt echoes and a reopened review arriving before the queue; queue absence cannot override that recorded active review. Six new regressions and the existing retention/advance tests pass.
 
 This is regression verification of the reported defects, not a WCAG conformance certification. Browser checks exercise DOM focus and live-region semantics; an actual assistive-technology user session, real external provider execution and production auth expiry remain separate validation contexts. No raw reasoning is fabricated: the UI shows only retained public evidence.

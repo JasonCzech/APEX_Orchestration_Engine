@@ -143,6 +143,23 @@ describe('ActivityFeed', () => {
     expect(rows[0]?.querySelectorAll('.activity-engine-samples li')).toHaveLength(10)
   })
 
+  it.each([
+    [0, '0.00%'],
+    [0.0042, '0.42%'],
+    [Number.POSITIVE_INFINITY, '—'],
+    [Number.NaN, '—'],
+  ])('formats the engine error rate %s consistently as %s', (rate, expected) => {
+    const samples = engineSamples(10).map(sample => ({
+      ...sample,
+      live_stats: { ...sample.live_stats, error_rate: rate },
+    }))
+    render(<ActivityFeed phase="execution" streamStatus="live" engineSamples={samples} />)
+    const row = screen.getByTestId('activity-engine-row')
+    const lines = row.querySelectorAll('.activity-engine-samples li')
+    expect(lines).toHaveLength(10)
+    for (const line of lines) expect(line).toHaveTextContent(`err ${expected}`)
+  })
+
   it('sticks to the bottom and offers a jump-to-live pill when scrolled up', async () => {
     const user = userEvent.setup()
     const { rerender } = render(

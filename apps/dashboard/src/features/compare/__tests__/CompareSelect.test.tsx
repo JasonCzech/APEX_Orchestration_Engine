@@ -4,7 +4,8 @@
  * /runs/compare?ids=… . Lives with the compare feature — the RunsListPage edit
  * itself is additive and its own suite stays untouched.
  */
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import { http, HttpResponse } from 'msw'
 import userEvent from '@testing-library/user-event'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { describe, expect, it } from 'vitest'
@@ -79,7 +80,14 @@ describe('RunsListPage compare selection', () => {
   })
 
   it('keeps row navigation intact while selecting, and clears selection on toggle-off', async () => {
-    server.use(pipelinesHandler(PIPELINES_FIXTURE).handler)
+    let activeRunReads = 0
+    server.use(
+      pipelinesHandler(PIPELINES_FIXTURE).handler,
+      http.get(`*/threads/${RUN_BUSY.thread_id}/runs`, () => {
+        activeRunReads += 1
+        return HttpResponse.json([])
+      }),
+    )
     const user = userEvent.setup()
     const router = renderRunsPage()
 
@@ -104,5 +112,6 @@ describe('RunsListPage compare selection', () => {
       RUN_BUSY.thread_id,
     )
     expect(new URLSearchParams(router.state.location.search).get('runSection')).toBe('workspace')
+    await waitFor(() => expect(activeRunReads).toBe(1))
   })
 })

@@ -1,6 +1,6 @@
 /* Read-only CodeMirror surfaces, themed via the APEX Load token sheet.
    CodeMirror's defaults assume a light page; these overrides re-skin the
-   editor chrome with --code-bg/--code-text so all 5 themes hold. */
+   editor chrome with --code-bg/--code-text across all six themes. */
 
 .code-viewer {
   border: 1px solid var(--border);
@@ -33,6 +33,14 @@
 
 .code-viewer .cm-content {
   caret-color: transparent;
+}
+
+.code-viewer.editable .cm-content {
+  caret-color: var(--code-text);
+}
+
+.code-viewer .cm-cursor {
+  border-left-color: var(--code-text);
 }
 
 .code-viewer .cm-selectionBackground,

@@ -11,6 +11,7 @@ import {
   CONN_JIRA,
   connectionsReadHandlers,
   createConnectionHandler,
+  probeHandler,
   toggleConnectionHandlers,
 } from './adminTestHandlers'
 
@@ -139,7 +140,8 @@ describe('ConnectionsPage', () => {
 
   it('lets a scoped admin submit an authorized public base URL without exposing secrets', async () => {
     const create = createConnectionHandler()
-    server.use(...connectionsReadHandlers([]), create.handler)
+    const probe = probeHandler({ ok: true, latency_ms: 4, detail: 'Project connection is available' })
+    server.use(...connectionsReadHandlers([]), create.handler, probe.handler)
     const user = userEvent.setup()
     renderApp({
       initialEntries: ['/admin/connections'],
@@ -172,6 +174,7 @@ describe('ConnectionsPage', () => {
         user_email: 'qa@example.com',
       },
     })
+    await waitFor(() => expect(probe.callCount()).toBe(1))
   })
 
   it('requires a provider-specific field before the guided form can submit', async () => {

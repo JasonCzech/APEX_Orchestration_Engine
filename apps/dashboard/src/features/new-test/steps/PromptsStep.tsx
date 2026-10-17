@@ -20,6 +20,7 @@ import { useOptionalConsumer } from '@/auth/AuthProvider'
 import type { StepProps } from '../NewRunWizard'
 import { focusedPromptPhase, isRecord, selectedPhases } from '../wizardState'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
+import '@/components/viewers/viewers.css'
 
 type PromptSummary = components['schemas']['PromptSummary']
 type PromptDetail = components['schemas']['PromptDetail']
@@ -165,7 +166,7 @@ function PromptBlock({
             value={override.content}
             editable
             aria-label={editorLabel}
-            extensions={[EditorView.contentAttributes.of({ 'aria-label': editorLabel })]}
+            extensions={[EditorView.contentAttributes.of({ 'aria-label': editorLabel, tabindex: '0' })]}
             indentWithTab={false}
             basicSetup={{
               lineNumbers: true,
@@ -183,7 +184,7 @@ function PromptBlock({
           <CodeMirror
             value={prompt.content}
             aria-label={`${label} catalog content`}
-            extensions={[EditorView.contentAttributes.of({ 'aria-label': `${label} catalog content` })]}
+            extensions={[EditorView.contentAttributes.of({ 'aria-label': `${label} catalog content`, tabindex: '0' })]}
             indentWithTab={false}
             readOnly
             editable={false}

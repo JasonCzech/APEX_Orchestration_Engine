@@ -24,6 +24,7 @@ function renderWorkspace(entry = '/apex-load') {
 describe('ApexLoadWorkspacePage', () => {
   it('clears scenario context atomically when navigating to another connection', async () => {
     const scheduleReads: string[] = []
+    const occurrenceReads: string[] = []
     server.use(
       http.get('*/v1/apex-load/connections', () => HttpResponse.json({ items: [
         { id: 'a', name: 'A', project_id: 'a' }, { id: 'b', name: 'B', project_id: 'b' },
@@ -32,7 +33,10 @@ describe('ApexLoadWorkspacePage', () => {
         scheduleReads.push(`${params.connectionId}/${params.scenarioId}`)
         return HttpResponse.json({ items: [{ id: `schedule-${params.connectionId}`, name: `Schedule ${params.connectionId}` }] })
       }),
-      http.get('*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules/:scheduleId/occurrences', () => HttpResponse.json({ items: [] })),
+      http.get('*/v1/apex-load/connections/:connectionId/scenarios/:scenarioId/schedules/:scheduleId/occurrences', ({ params }) => {
+        occurrenceReads.push(`${params.connectionId}/${params.scenarioId}/${params.scheduleId}`)
+        return HttpResponse.json({ items: [] })
+      }),
       http.get('*/v1/apex-load/connections/:connectionId/:resource', ({ params }) => HttpResponse.json({
         items: params.resource === 'scenarios' ? [{ id: `scenario-${params.connectionId}`, name: `Scenario ${params.connectionId}` }] : [],
         details: {},
@@ -47,8 +51,10 @@ describe('ApexLoadWorkspacePage', () => {
     expect(authoring).toHaveFocus()
     expect(screen.getByRole('tabpanel', { name: 'Scenarios & schedules' })).toHaveAttribute('id', authoring.getAttribute('aria-controls'))
     await screen.findByText('Schedule a')
+    await waitFor(() => expect(occurrenceReads).toContain('a/scenario-a/schedule-a'))
     await act(() => router.navigate('/apex-load?connection=b'))
     await screen.findByText('Schedule b')
+    await waitFor(() => expect(occurrenceReads).toEqual(['a/scenario-a/schedule-a', 'b/scenario-b/schedule-b']))
     expect(scheduleReads).toEqual(['a/scenario-a', 'b/scenario-b'])
   })
 

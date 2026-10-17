@@ -1,9 +1,12 @@
 import { act, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
+import { http, HttpResponse } from 'msw'
 import { authenticatedState, renderApp } from '@/test/render'
+import { server } from '@/test/server'
 
 describe('deferred route focus', () => {
   it('preserves focus already moved into the destination before its animation frame', async () => {
+    server.use(http.get('*/v1/prompts', () => HttpResponse.json([])))
     const frames = new Map<number, FrameRequestCallback>()
     let nextFrame = 1
     const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {

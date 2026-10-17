@@ -1,5 +1,36 @@
 import { expect, test } from '@playwright/test'
 
+test('wizard catalog prompts and overrides are keyboard reachable without changing content', async ({ page }) => {
+  await page.goto('/runs/new?step=prompts')
+  const block = page.getByTestId('system-prompt-block')
+  const reader = block.locator('.cm-content')
+  await expect(reader).toHaveAttribute('contenteditable', 'false')
+  await expect(reader).toHaveAttribute('aria-label', 'System prompt catalog content')
+  await expect(reader).toHaveAttribute('tabindex', '0')
+  await expect(block.locator('.cm-scroller')).toHaveCSS('max-height', '480px')
+  const override = block.getByRole('button', { name: 'Override for this run' })
+  await override.focus()
+  await page.keyboard.press('Shift+Tab')
+  await expect(reader).toBeFocused()
+  const content = await reader.innerText()
+  await page.keyboard.press('Tab')
+  await expect(override).toBeFocused()
+  expect(await reader.innerText()).toBe(content)
+
+  await override.click()
+  const editor = block.locator('.cm-content')
+  await expect(editor).toHaveAttribute('contenteditable', 'true')
+  await expect(editor).toHaveAttribute('tabindex', '0')
+  await editor.focus()
+  const cursor = block.locator('.cm-cursor').first()
+  await expect(cursor).toBeVisible()
+  await expect(cursor).toHaveCSS('border-left-color', await editor.evaluate(element => getComputedStyle(element).color))
+  const original = await editor.innerText()
+  await page.keyboard.press('Tab')
+  await expect(editor).not.toBeFocused()
+  expect(await editor.innerText()).toBe(original)
+})
+
 for (const path of ['/settings', '/admin/connections', '/admin/connections/conn-apex-load', '/apex-load', '/prompts/phase/story_analysis%2Fsystem']) {
   test(`cold route tabs retain real panel targets: ${path}`, async ({ page }) => {
     await page.goto(path)

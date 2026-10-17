@@ -8,6 +8,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
+import type { Extension } from '@codemirror/state'
 
 import { server } from '@/test/server'
 
@@ -17,27 +18,38 @@ import { flushAndUnmountWizard, installWizardHandlers, renderWizard } from './wi
 // (same boundary mock the hitl/artifacts suites use).
 vi.mock('@uiw/react-codemirror', async () => {
   const { createElement } = await import('react')
+  const { EditorState } = await import('@codemirror/state')
+  const { EditorView } = await import('@codemirror/view')
   return {
     default: ({
       value,
       onChange,
       editable,
       readOnly,
+      extensions = [],
       'aria-label': ariaLabel,
     }: {
       value: string
       onChange?: (value: string) => void
       editable?: boolean
       readOnly?: boolean
+      extensions?: Extension[]
       'aria-label'?: string
-    }) =>
-      createElement('textarea', {
+    }) => {
+      const attributes = EditorState.create({ extensions }).facet(EditorView.contentAttributes)
+      const tabIndex = attributes.reduce<string | undefined>(
+        (value, entry) => typeof entry === 'function' ? value : entry.tabindex ?? value,
+        undefined,
+      )
+      return createElement('textarea', {
         'data-testid': 'codemirror',
         'aria-label': ariaLabel,
         value,
         readOnly: readOnly === true || editable === false,
+        tabIndex: Number(tabIndex ?? -1),
         onChange: (event: { target: { value: string } }) => onChange?.(event.target.value),
-      }),
+      })
+    },
   }
 })
 
@@ -116,6 +128,7 @@ describe('PromptsStep', () => {
     expect(within(systemBlock).getByTestId('codemirror')).toHaveValue(
       'You are the story analysis phase operator.',
     )
+    expect(within(systemBlock).getByTestId('codemirror')).toHaveAttribute('tabindex', '0')
 
     expect(within(promptSection).queryByText('You are the execution phase operator.')).toBeNull()
     expect(within(promptSection).getByText('User prompt')).toBeInTheDocument()
@@ -237,6 +250,7 @@ describe('PromptsStep', () => {
     await waitFor(() => expect(within(systemBlock).getByText('catalog@v2')).toBeInTheDocument())
     await user.click(within(systemBlock).getByRole('button', { name: 'Override for this run' }))
     const systemEditor = within(systemBlock).getByLabelText('Story Analysis system prompt override')
+    expect(systemEditor).toHaveAttribute('tabindex', '0')
     await user.clear(systemEditor)
     await user.type(systemEditor, 'Custom story system prompt')
 
