@@ -420,6 +420,22 @@ describe('ContextPage', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
+  it('documents: treats an application-only empty result as filtered and restores documents on clear', async () => {
+    server.use(documentsListHandler([{ ...DOC_SPEC, app_id: 'app-checkout' }]).handler)
+    const user = userEvent.setup()
+    renderContext('/context?tab=documents')
+    await screen.findByTestId(`doc-row-${DOC_SPEC.id}`)
+    await user.type(screen.getByLabelText('Filter by application'), 'app-other')
+    await user.click(screen.getByRole('button', { name: 'Apply' }))
+    const empty = await screen.findByRole('region', { name: 'No documents' })
+    expect(empty).toHaveAttribute('data-state', 'filtered')
+    expect(empty).toHaveTextContent('Nothing matches the current filters.')
+    await user.click(within(empty).getByRole('button', { name: 'Clear filters' }))
+    await screen.findByTestId(`doc-row-${DOC_SPEC.id}`)
+    expect(screen.getByLabelText('Filter by application')).toHaveValue('')
+    expect(screen.queryByRole('region', { name: 'No documents' })).not.toBeInTheDocument()
+  })
+
   it('documents: opens a detail preview with full identity and source knowledge guidance', async () => {
     server.use(documentsListHandler().handler,
       http.get('*/v1/documents/doc-spec', () => HttpResponse.json({ ...DOC_SPEC, summary: 'Checkout requirements', text_preview: 'Bounded source text for the operator.' })))

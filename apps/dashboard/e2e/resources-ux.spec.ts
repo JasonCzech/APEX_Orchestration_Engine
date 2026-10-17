@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 for (const role of ['viewer', 'operator', 'admin'] as const) {
   test(`document and evidence workflows support ${role} with keyboard and mobile layout`, async ({ page }) => {
-    const doc = { id: 'document-full-identity', name: 'Checkout requirements.pdf', media_type: 'application/pdf', size_bytes: 2048, artifact_key: 'documents/spec', project_id: 'project-one', app_id: null, summary: 'Checkout source evidence', uploaded_by: 'author', created_at: '2026-10-17T12:00:00Z', text_preview: 'Bounded source text for the operator.' }
+    const doc = { id: 'document-full-identity', name: 'Checkout requirements.pdf', media_type: 'application/pdf', size_bytes: 2048, artifact_key: 'documents/spec', project_id: 'project-one', app_id: 'app-one', summary: 'Checkout source evidence', uploaded_by: 'author', created_at: '2026-10-17T12:00:00Z', text_preview: 'Bounded source text for the operator.' }
     const scoped = role !== 'admin' ? [{ project_id: 'project-one', app_id: null }] : []
     await page.addInitScript(() => { localStorage.setItem('apex.apiKey', 'resources-fixture'); localStorage.setItem('apex.preferences.v1', '{"reduceMotion":true}') })
     await page.route('**/config.json', route => route.fulfill({ json: { dataMode: 'connected', apexOrigin: '', langgraphOrigin: '' } }))
@@ -32,6 +32,14 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
     await page.getByRole('button', { name: `Document actions: ${doc.name}` }).click()
     await expect(page.getByRole('menuitem', { name: 'Delete…' })).toHaveCount(role === 'viewer' ? 0 : 1)
     await page.keyboard.press('Escape')
+    await page.getByLabel('Filter by application').fill('app-other')
+    await page.getByRole('button', { name: 'Apply', exact: true }).click()
+    const filtered = page.getByRole('region', { name: 'No documents', exact: true })
+    await expect(filtered).toHaveAttribute('data-state', 'filtered')
+    await expect(filtered).toContainText('Nothing matches the current filters.')
+    await filtered.getByRole('button', { name: 'Clear filters' }).click()
+    await expect(page.getByRole('button', { name: doc.name, exact: true })).toBeVisible()
+    await expect(page.getByLabel('Filter by application')).toHaveValue('')
     await page.goto('/evidence')
     const selector = page.getByRole('combobox', { name: 'Filter by run' })
     await selector.focus()

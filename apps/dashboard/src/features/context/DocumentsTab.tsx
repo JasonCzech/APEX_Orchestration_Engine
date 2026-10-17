@@ -222,11 +222,12 @@ export function DocumentsTab() {
   }
 
   const items = documents.data ?? []
+  const activeFilterCount = Object.values(activeFilters).filter(Boolean).length
 
   return (
     <>
       <form aria-label="Document filters" onSubmit={applyFilters}>
-        <TableToolbar label="Document controls" className="ctx-toolbar glass-panel" filterCount={Object.values(filters).filter(Boolean).length} onClear={uploadingBatch ? undefined : () => { setProjectDraft(''); setAppDraft(''); setQDraft(''); setFilters({}) }}>
+        <TableToolbar label="Document controls" className="ctx-toolbar glass-panel" filterCount={activeFilterCount} onClear={uploadingBatch ? undefined : () => { setProjectDraft(''); setAppDraft(''); setQDraft(''); setFilters({}) }}>
         <ProjectField label="Project" ariaLabel="Filter by project" value={projectDraft} disabled={uploadingBatch} onChange={changeProject} />
         {requiresApplication ? (
           <label className="ctx-filter-field">
@@ -333,9 +334,9 @@ export function DocumentsTab() {
           onRetry={() => void documents.refetch()}
         />
       ) : items.length === 0 ? (
-        <StateCard kind={filters.project || filters.q ? 'filtered' : 'empty'} title="No documents"
-          action={filters.project || filters.q ? <button className="btn btn-secondary" disabled={uploadingBatch} onClick={() => { setProjectDraft(''); setAppDraft(''); setQDraft(''); setFilters({}) }}>Clear filters</button> : canUpload ? <button className="btn btn-secondary" onClick={() => inputRef.current?.click()}>Upload documents</button> : <Link to="/runs/new?step=context">Open test knowledge</Link>}>
-          <p>{filters.project || filters.q ? 'Nothing matches the current filters.' : 'Upload specs, runbooks or prior reports to make them available as test knowledge.'}</p>
+        <StateCard kind={activeFilterCount ? 'filtered' : 'empty'} title="No documents"
+          action={activeFilterCount ? <button className="btn btn-secondary" disabled={uploadingBatch} onClick={() => { setProjectDraft(''); setAppDraft(''); setQDraft(''); setFilters({}) }}>Clear filters</button> : canUpload ? <button className="btn btn-secondary" onClick={() => inputRef.current?.click()}>Upload documents</button> : <Link to="/runs/new?step=context">Open test knowledge</Link>}>
+          <p>{activeFilterCount ? 'Nothing matches the current filters.' : 'Upload specs, runbooks or prior reports to make them available as test knowledge.'}</p>
         </StateCard>
       ) : (
         <div className="data-table-wrap">
