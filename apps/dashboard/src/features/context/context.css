@@ -298,7 +298,7 @@
   margin-bottom: 14px;
 }
 
-.ctx-pane-heading h3 {
+.ctx-pane-heading h2 {
   margin: 2px 0 0;
   font-size: var(--font-size-lg);
   line-height: 1.3;
@@ -540,7 +540,7 @@
   background: var(--bg-primary);
 }
 
-.ctx-detail-panel h4 {
+.ctx-detail-panel h3 {
   margin: 0 0 8px;
   font-size: var(--font-size-xs);
 }
@@ -691,3 +691,5 @@
   border-radius: 8px;
   animation: pulse 1.8s ease-in-out infinite;
 }
+
+.ctx-document-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; padding: 1rem; background: var(--code-bg); color: var(--code-text); }

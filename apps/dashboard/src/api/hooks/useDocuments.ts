@@ -349,3 +349,12 @@ export function useDeleteDocument() {
     },
   })
 }
+
+/** Fetch the authorized detail projection, including a bounded text preview. */
+export function useDocument(id: string): UseQueryResult<DocumentOut, Error> {
+  return useQuery({ queryKey: queryKeys.documents.detail(id), enabled: Boolean(id), queryFn: async ({ signal }) => {
+    const { data, error, response } = await getApexClient().GET('/v1/documents/{document_id}', { params: { path: { document_id: id } }, signal })
+    if (!response.ok || !data) throw new ApiError(response.status, errorMessageOf(error, 'Document details could not be loaded.'), error)
+    return data
+  } })
+}

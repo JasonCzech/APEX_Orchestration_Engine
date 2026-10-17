@@ -71,12 +71,12 @@ describe('ContextPage', () => {
       'Checkout latency context',
     )
     // Work-item keys: Enter and the Add key button both append chips.
-    const keyInput = screen.getByLabelText('Work item keys')
+    const keyInput = screen.getByLabelText('Ticket keys')
     await user.type(keyInput, 'PHX-101{Enter}')
     await user.type(keyInput, 'PHX-102')
     await user.click(screen.getByRole('button', { name: 'Add key' }))
     expect(within(screen.getByTestId('summary-keys')).getByText('PHX-101')).toBeInTheDocument()
-    await user.type(screen.getByRole('textbox', { name: 'Project id' }), 'proj-alpha')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Project id' }), 'proj-alpha')
 
     await user.click(screen.getByRole('button', { name: 'Generate summary' }))
 
@@ -388,12 +388,12 @@ describe('ContextPage', () => {
     renderContext('/context?tab=documents')
 
     const row = await screen.findByTestId(`doc-row-${DOC_SPEC.id}`)
-    expect(within(row).getByText('checkout-spec.pdf')).toHaveClass('strong')
+    expect(within(row).getByText('checkout-spec.pdf').closest('td')).toHaveClass('strong')
     expect(within(row).getByText('application/pdf')).toHaveClass('dash-context-chip')
     expect(within(row).getByText('2.0 MB')).toBeInTheDocument()
 
     // Committed filters hit the server as ?project & ?q.
-    await user.type(screen.getByLabelText('Filter by project'), 'proj-alpha')
+    await user.selectOptions(screen.getByLabelText('Filter by project'), 'proj-alpha')
     await user.type(screen.getByLabelText('Search documents'), 'spec')
     await user.click(screen.getByRole('button', { name: 'Apply' }))
     await waitFor(() =>
@@ -411,12 +411,40 @@ describe('ContextPage', () => {
       ]),
     )
 
-    await user.click(screen.getByRole('button', { name: 'Delete checkout-spec.pdf' }))
+    await user.click(screen.getByRole('button', { name: 'Document actions: checkout-spec.pdf' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete…' }))
     const dialog = await screen.findByRole('dialog', { name: 'Delete document checkout-spec.pdf' })
     expect(del.captured).toHaveLength(0)
     await user.click(within(dialog).getByRole('button', { name: 'Delete document' }))
     await waitFor(() => expect(del.captured).toEqual([DOC_SPEC.id]))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('documents: opens a detail preview with full identity and source knowledge guidance', async () => {
+    server.use(documentsListHandler().handler,
+      http.get('*/v1/documents/doc-spec', () => HttpResponse.json({ ...DOC_SPEC, summary: 'Checkout requirements', text_preview: 'Bounded source text for the operator.' })))
+    const user = userEvent.setup()
+    renderContext('/context?tab=documents')
+    await user.click(await screen.findByRole('button', { name: 'checkout-spec.pdf' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Document details: checkout-spec.pdf' })
+    expect(await within(dialog).findByText('Bounded source text for the operator.')).toBeInTheDocument()
+    expect(within(dialog).getByText('Checkout requirements')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Copy Document ID' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: 'Open test knowledge' })).toHaveAttribute('href', '/runs/new?step=context')
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('documents: does not assert preview absence when the details request fails', async () => {
+    server.use(documentsListHandler().handler,
+      http.get('*/v1/documents/doc-spec', () => HttpResponse.json({ detail: 'Document store unavailable' }, { status: 503 })))
+    const user = userEvent.setup()
+    renderContext('/context?tab=documents')
+    await user.click(await screen.findByRole('button', { name: 'checkout-spec.pdf' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Document details: checkout-spec.pdf' })
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Document store unavailable')
+    expect(within(dialog).queryByText('No text preview is available for this document.')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Retry' })).toBeEnabled()
   })
 
   it('documents: lets app-scoped operators select an authorized upload audience', async () => {
@@ -429,7 +457,7 @@ describe('ContextPage', () => {
       { project_id: 'proj-alpha', app_id: 'app-admin' },
     ])
 
-    await user.type(await screen.findByLabelText('Filter by project'), 'proj-alpha')
+    await user.selectOptions(await screen.findByLabelText('Filter by project'), 'proj-alpha')
     expect(screen.queryByRole('button', { name: 'Upload' })).not.toBeInTheDocument()
 
     await user.selectOptions(
@@ -477,7 +505,7 @@ describe('ContextPage', () => {
     )
     const user = userEvent.setup()
     renderContext('/context?tab=documents')
-    await user.type(await screen.findByLabelText('Filter by project'), 'proj-alpha')
+    await user.selectOptions(await screen.findByLabelText('Filter by project'), 'proj-alpha')
 
     await user.upload(screen.getByLabelText('Upload documents'), [
       new File(['first'], 'first.txt', { type: 'text/plain' }),
@@ -528,7 +556,7 @@ describe('ContextPage', () => {
     renderContext('/context?tab=documents')
     const project = await screen.findByLabelText('Filter by project')
     const app = screen.getByLabelText('Filter by application')
-    await user.type(project, 'proj-alpha')
+    await user.selectOptions(project, 'proj-alpha')
     await user.type(app, 'app-checkout')
 
     await user.upload(screen.getByLabelText('Upload documents'), [
@@ -585,7 +613,7 @@ describe('ContextPage', () => {
     )
     const user = userEvent.setup()
     const { queryClient } = renderContext('/context?tab=documents')
-    await user.type(await screen.findByLabelText('Filter by project'), 'proj-alpha')
+    await user.selectOptions(await screen.findByLabelText('Filter by project'), 'proj-alpha')
     const file = new File(['same content'], 'same.txt', {
       type: 'text/plain',
       lastModified: 123,
@@ -651,7 +679,7 @@ describe('ContextPage', () => {
     )
     const user = userEvent.setup()
     const { queryClient } = renderContext('/context?tab=documents')
-    await user.type(await screen.findByLabelText('Filter by project'), 'proj-alpha')
+    await user.selectOptions(await screen.findByLabelText('Filter by project'), 'proj-alpha')
 
     await user.upload(
       screen.getByLabelText('Upload documents'),
@@ -717,23 +745,36 @@ describe('ContextPage', () => {
 
     await user.clear(search)
     await user.selectOptions(screen.getByLabelText('Filter by project'), 'proj-alpha')
-    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await user.click(screen.getByRole('button', { name: /Apply filters/ }))
     await waitFor(() =>
       expect(evidence.captured.at(-1)).toEqual({ project: 'proj-alpha', threadId: null }),
     )
     expect(screen.getByRole('option', { name: 'Proj Beta' })).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('Filter by test'), 'thread-7')
-    await user.click(screen.getByRole('button', { name: 'Apply filters' }))
+    await user.click(screen.getByRole('combobox', { name: 'Filter by run' }))
+    await user.type(screen.getByRole('combobox', { name: 'Filter by run' }), 'Checkout release test')
+    await user.click(within(screen.getByRole('listbox', { name: 'Filter by run choices' })).getByRole('option', { name: /Checkout release test/ }))
+    await user.click(screen.getByRole('button', { name: /Apply filters/ }))
     await waitFor(() =>
       expect(evidence.captured.at(-1)).toEqual({ project: 'proj-alpha', threadId: 'thread-7' }),
     )
-    expect(screen.getByLabelText('Filter by test')).toHaveValue('thread-7')
+    expect(screen.getByLabelText('Filter by run')).toHaveValue('Checkout release test')
 
     await user.click(screen.getByRole('tab', { name: 'Content' }))
     await user.keyboard('{ArrowRight}')
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('tabpanel')).toHaveTextContent('Evidence ID')
+  })
+
+  it('evidence: explains unverifiable application membership beyond the recent run lookup', async () => {
+    server.use(evidenceHandler([{ id: 'old-evidence', source: 'document', title: 'Older observed finding', summary: 'Recorded evidence', thread_id: 'old-run', ref: null }]).handler, ...evidenceAssociationHandlers())
+    const user = userEvent.setup()
+    renderContext('/evidence?app=app-checkout')
+    expect(await screen.findByRole('heading', { name: '1 evidence item has unverified application membership' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'No verified evidence matches these filters' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'View evidence without application filter' }))
+    expect(await screen.findByTestId('evidence-old-evidence')).toHaveTextContent('Older observed finding')
+    expect(screen.getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/old-run')
   })
 
   it('evidence: retains unknown deep-linked filter values', async () => {
@@ -762,6 +803,10 @@ describe('ContextPage', () => {
 
     expect(await screen.findByTestId('evidence-ev-jira-1')).toHaveTextContent('thread-7')
     expect(screen.getByRole('status')).toHaveTextContent('association names are unavailable')
+    expect(screen.getByRole('link', { name: 'Open run' })).toHaveAttribute('href', '/runs/thread-7')
+    expect(screen.getAllByText('Run details unavailable').length).toBeGreaterThan(0)
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Provenance' }))
+    expect(within(screen.getByRole('tabpanel')).getAllByText('Run details unavailable')).toHaveLength(2)
     expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
   })
 

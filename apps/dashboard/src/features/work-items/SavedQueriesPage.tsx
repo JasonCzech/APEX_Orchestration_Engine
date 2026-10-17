@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /work-items/saved — saved provider queries (plan Part 2 route table).
  * Row actions: Run (everyone — navigates to the console with
@@ -22,7 +25,7 @@ import { hasFullProjectScope, isGlobalAdmin, roleAtLeast } from '@/auth/RequireR
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
-import { OverflowMenu } from '@/features/runs/PreflightModal'
+import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { formatRelative } from '@/utils/time'
 
 import { consolePath } from './workItemsLogic'
@@ -32,7 +35,7 @@ const EM_DASH = '—'
 const SKELETON_ROWS = 4
 
 /** Edit modal — PATCH name/provider/query/description. */
-function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => void }) {
+function EditQueryModal({ saved, onClose, onSaved }: { saved: SavedQuery; onClose: () => void; onSaved: () => void }) {
   const update = useUpdateSavedQuery(saved.id)
   const writeCount = usePendingMutationCount(savedQueryWriteMutationKey(saved.id))
   const writePending = writeCount > 0
@@ -116,7 +119,7 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
           ...(needsBinding && connectionId ? { connection_id: connectionId } : {}),
         },
       },
-      { onSuccess: onClose },
+      { onSuccess: () => { onSaved(); onClose() } },
     )
   }
 
@@ -139,10 +142,11 @@ function EditQueryModal({ saved, onClose }: { saved: SavedQuery; onClose: () => 
           </p>
         )}
         <label className="wi-field">
-          <span className="wi-field-label">Name</span>
+          <span className="wi-field-label">Name (required)</span>
           <input
             type="text"
             className="field-input"
+            required
             aria-label="Query name"
             value={name}
             disabled={operationPending}
@@ -336,6 +340,7 @@ function SavedQueryRow({
 }
 
 export function SavedQueriesPage() {
+  useTimestampPreference()
   const savedQueries = useSavedQueries()
   const consumer = useConsumer()
   const canMutate = consumer ? roleAtLeast(consumer.role, 'operator') : false
@@ -346,6 +351,7 @@ export function SavedQueriesPage() {
     return hasFullProjectScope(consumer, saved.project_id)
   }
 
+  const [savedMessage, setSavedMessage] = useState('')
   const [editing, setEditing] = useState<SavedQuery | null>(null)
   const [deleting, setDeleting] = useState<SavedQuery | null>(null)
 
@@ -371,16 +377,7 @@ export function SavedQueriesPage() {
       )}
 
       {savedQueries.isPending ? (
-        <div
-          className="wi-skeleton"
-          role="status"
-          aria-busy="true"
-          aria-label="Loading saved queries"
-        >
-          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-            <div key={i} className="glass-panel wi-skeleton-row" />
-          ))}
-        </div>
+        <Skeleton label="Loading saved queries" rows={SKELETON_ROWS} />
       ) : savedQueries.isError && !savedQueries.data ? (
         <ProblemCard
           title="Saved queries unavailable"
@@ -388,15 +385,9 @@ export function SavedQueriesPage() {
           onRetry={() => void savedQueries.refetch()}
         />
       ) : items.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No saved queries yet</h2>
-          <p className="dash-empty-hint">
-            Save a provider query from the console to reuse it here and in the run wizard.
-          </p>
-          <Link className="btn btn-secondary" to="/work-items">
-            Open the console
-          </Link>
-        </div>
+        <StateCard kind="empty" title="No saved queries yet" action={<Link className="btn btn-secondary" to="/work-items">Open the console</Link>}>
+          Save a provider query from the console to reuse it here and in the run wizard.
+        </StateCard>
       ) : (
         <div className="data-table-wrap">
           <table className="data-table striped">
@@ -418,7 +409,7 @@ export function SavedQueriesPage() {
                   key={saved.id}
                   saved={saved}
                   canMutate={canMutateRow(saved)}
-                  onEdit={setEditing}
+                  onEdit={saved => { setSavedMessage(''); setEditing(saved) }}
                   onDelete={setDeleting}
                 />
               ))}
@@ -427,7 +418,8 @@ export function SavedQueriesPage() {
         </div>
       )}
 
-      {editing && <EditQueryModal saved={editing} onClose={() => setEditing(null)} />}
+      {savedMessage && <p role="status">{savedMessage}</p>}
+      {editing && <EditQueryModal saved={editing} onClose={() => setEditing(null)} onSaved={() => setSavedMessage('Query changes saved.')} />}
       {deleting && <DeleteQueryModal saved={deleting} onClose={() => setDeleting(null)} />}
     </section>
   )

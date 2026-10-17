@@ -99,6 +99,14 @@ describe('SavedQueriesPage', () => {
       ]),
     )
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('Query changes saved.')).toHaveAttribute('role', 'status')
+    await user.click(screen.getByRole('button', { name: /Saved query actions:/ }))
+    await user.click(screen.getByRole('menuitem', { name: 'Edit…' }))
+    expect(screen.queryByText('Query changes saved.')).not.toBeInTheDocument()
+    const secondEdit = screen.getByRole('dialog')
+    await user.click(within(secondEdit).getByRole('button', { name: 'Save changes' }))
+    expect(await screen.findByText('Query changes saved.')).toHaveAttribute('role', 'status')
+    expect(update.captured).toHaveLength(2)
   })
 
   it('locks the saved-query row across route remounts while an update is pending', async () => {

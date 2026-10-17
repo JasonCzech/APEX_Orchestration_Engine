@@ -82,6 +82,8 @@ describe('WorkItemsPage', () => {
       },
     ])
     expect(screen.getByText('1–2 of 2')).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Provider query' }), ' amended')
+    expect(screen.queryByText('confidence 82%')).not.toBeInTheDocument()
   })
 
   it('shows triage columns, falling back to an em dash for absent fields', async () => {
@@ -417,7 +419,7 @@ describe('WorkItemsPage', () => {
       authState: authenticatedState('operator'),
     })
 
-    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    const newItemButton = await screen.findByRole('button', { name: 'New ticket' })
     await waitFor(() => expect(binding.connectionIds).toEqual(['conn-ado']))
     expect(await screen.findByRole('alert')).toHaveTextContent('Query failed')
     expect(newItemButton).toBeDisabled()
@@ -496,7 +498,7 @@ describe('WorkItemsPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Manual query' }))
     await user.type(screen.getByRole('textbox', { name: 'Provider' }), 'jira')
     await user.type(screen.getByRole('textbox', { name: 'Provider query' }), 'project = ALPHA')
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Page size' }), '50')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Query rows' }), '50')
     await user.click(screen.getByRole('button', { name: 'Execute' }))
     await screen.findByTestId('wi-row-PHX-101')
 
@@ -549,6 +551,8 @@ describe('WorkItemsPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Save query' }))
     const dialog = await screen.findByRole('dialog', { name: 'Save query' })
+    expect(within(dialog).getByLabelText('Query to save')).toHaveTextContent(SAVED_OPEN.query)
+    expect(within(dialog).getByRole('textbox', { name: 'Query name' })).toBeRequired()
     await user.type(within(dialog).getByRole('textbox', { name: 'Query name' }), 'My triage')
     await user.type(
       within(dialog).getByRole('textbox', { name: 'Query description' }),
@@ -569,6 +573,14 @@ describe('WorkItemsPage', () => {
       ]),
     )
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('Query saved.')).toHaveAttribute('role', 'status')
+    await user.click(screen.getByRole('button', { name: 'Save query' }))
+    expect(screen.queryByText('Query saved.')).not.toBeInTheDocument()
+    const secondSave = screen.getByRole('dialog', { name: 'Save query' })
+    await user.type(within(secondSave).getByRole('textbox', { name: 'Query name' }), 'Second saved query')
+    await user.click(within(secondSave).getByRole('button', { name: 'Save query' }))
+    expect(await screen.findByText('Query saved.')).toHaveAttribute('role', 'status')
+    expect(create.captured).toHaveLength(2)
   })
 
   it('creates a new item from the modal and lands on its detail', async () => {
@@ -585,10 +597,10 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     const { router } = renderConsole()
 
-    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    const newItemButton = await screen.findByRole('button', { name: 'New ticket' })
     await waitFor(() => expect(newItemButton).toBeEnabled())
     await user.click(newItemButton)
-    const dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    const dialog = await screen.findByRole('dialog', { name: 'New ticket' })
     await user.type(
       within(dialog).getByRole('textbox', { name: 'Item title' }),
       'Harden gateway retries',
@@ -598,7 +610,7 @@ describe('WorkItemsPage', () => {
       within(dialog).getByRole('textbox', { name: 'Item description' }),
       'Spike output',
     )
-    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }))
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/work-items/jira/PHX-300'))
     const params = new URLSearchParams(router.state.location.search)
@@ -658,12 +670,12 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     const { router } = renderConsole()
 
-    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    const newItemButton = await screen.findByRole('button', { name: 'New ticket' })
     await waitFor(() => expect(newItemButton).toBeEnabled())
     await user.click(newItemButton)
-    const dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    const dialog = await screen.findByRole('dialog', { name: 'New ticket' })
     await user.type(within(dialog).getByRole('textbox', { name: 'Item title' }), 'Finish later')
-    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }))
     await createStarted
     expect(window.sessionStorage.getItem(storageKey)).not.toBeNull()
 
@@ -674,10 +686,10 @@ describe('WorkItemsPage', () => {
     expect(router.state.location.pathname).toBe('/settings')
 
     await act(async () => router.navigate('/work-items'))
-    const remountedButton = await screen.findByRole('button', { name: 'New item' })
+    const remountedButton = await screen.findByRole('button', { name: 'New ticket' })
     await waitFor(() => expect(remountedButton).toBeEnabled())
     await user.click(remountedButton)
-    const remountedDialog = await screen.findByRole('dialog', { name: 'New work item' })
+    const remountedDialog = await screen.findByRole('dialog', { name: 'New ticket' })
     expect(within(remountedDialog).getByRole('textbox', { name: 'Item title' })).toHaveValue('')
     expect(within(remountedDialog).queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -688,10 +700,10 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     renderConsole()
 
-    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    const newItemButton = await screen.findByRole('button', { name: 'New ticket' })
     await waitFor(() => expect(newItemButton).toBeEnabled())
     await user.click(newItemButton)
-    const dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    const dialog = await screen.findByRole('dialog', { name: 'New ticket' })
     await user.type(
       within(dialog).getByRole('textbox', { name: 'Item title' }),
       'Must be safely retryable',
@@ -699,7 +711,7 @@ describe('WorkItemsPage', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => undefined)
 
     try {
-      const submit = within(dialog).getByRole('button', { name: 'Create item' })
+      const submit = within(dialog).getByRole('button', { name: 'Create ticket' })
       await user.click(submit)
 
       expect(await within(dialog).findByRole('alert')).toHaveTextContent(
@@ -719,7 +731,7 @@ describe('WorkItemsPage', () => {
     renderConsole('viewer')
 
     expect(await screen.findByLabelText('Find by description')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'New item' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
 
     await user.type(screen.getByLabelText('Find by description'), 'anything open')
     await user.click(screen.getByRole('button', { name: 'Translate' }))
@@ -739,24 +751,24 @@ describe('WorkItemsPage', () => {
     const user = userEvent.setup()
     renderConsole()
 
-    const newItemButton = await screen.findByRole('button', { name: 'New item' })
+    const newItemButton = await screen.findByRole('button', { name: 'New ticket' })
     await waitFor(() => expect(newItemButton).toBeEnabled())
     await user.click(newItemButton)
-    let dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    let dialog = await screen.findByRole('dialog', { name: 'New ticket' })
     await user.type(within(dialog).getByRole('textbox', { name: 'Item title' }), 'Retry me')
-    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }))
     await within(dialog).findByRole('alert')
     await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
-    await user.click(screen.getByRole('button', { name: 'New item' }))
-    dialog = await screen.findByRole('dialog', { name: 'New work item' })
+    await user.click(screen.getByRole('button', { name: 'New ticket' }))
+    dialog = await screen.findByRole('dialog', { name: 'New ticket' })
     const title = within(dialog).getByRole('textbox', { name: 'Item title' })
     expect(title).toHaveValue('Retry me')
     await user.clear(title)
     await user.type(title, 'Different payload')
     await user.clear(title)
     await user.type(title, 'Retry me')
-    await user.click(within(dialog).getByRole('button', { name: 'Create item' }))
+    await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }))
     await waitFor(() => expect(keys).toHaveLength(2))
 
     expect(keys[0]).toMatch(/^create-/)
@@ -781,6 +793,6 @@ describe('WorkItemsPage', () => {
     })
 
     expect(await screen.findByLabelText('Find by description')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'New item' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New ticket' })).not.toBeInTheDocument()
   })
 })

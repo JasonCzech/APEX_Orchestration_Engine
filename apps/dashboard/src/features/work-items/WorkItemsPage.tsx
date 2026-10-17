@@ -1,3 +1,6 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { TableToolbar } from '@/components/ux/TableToolbar'
 /**
  * /work-items — the query console (plan Part 2 route table; wizard step 2's
  * translate -> execute pattern, full-page). NL text translates to an editable
@@ -27,6 +30,7 @@ import {
 import { useConsumer } from '@/auth/AuthProvider'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { canMutateAudience } from '@/auth/RequireRole'
+import { Pagination } from '@/components/ux/Pagination'
 import { Dialog } from '@/components/Dialog'
 
 import { ExternalLink, KindChip, LabelChips, StatusBadge } from './workItemsBits'
@@ -43,7 +47,6 @@ import {
 import { queryDialect, workItemPath } from './workItemsLogic'
 import './work-items.css'
 
-const LIMIT_OPTIONS = [10, 25, 50]
 // Jira Align adds portfolio types alongside the story/defect basics.
 const KIND_OPTIONS = ['story', 'task', 'bug', 'epic', 'capability', 'feature', 'objective']
 const WORK_ITEMS_MAX_WINDOW = 1_000
@@ -81,12 +84,14 @@ function SaveQueryModal({
   project,
   connectionId,
   onClose,
+  onSaved,
 }: {
   provider: string
   query: string
   project?: string
   connectionId?: string
   onClose: () => void
+  onSaved: () => void
 }) {
   const create = useCreateSavedQuery()
   const [name, setName] = useState('')
@@ -105,7 +110,7 @@ function SaveQueryModal({
         ...(connectionId ? { connection_id: connectionId } : {}),
         project_id: project ?? null,
       },
-      { onSuccess: onClose },
+      { onSuccess: () => { onSaved(); onClose() } },
     )
   }
 
@@ -124,11 +129,13 @@ function SaveQueryModal({
       <p className="wi-modal-caption">
         Saves the current <strong>{provider}</strong> query for quick reuse.
       </p>
+      <pre className="wi-query-preview" aria-label="Query to save">{query}</pre>
       <label className="wi-field">
-        <span className="wi-field-label">Name</span>
+        <span className="wi-field-label">Name (required)</span>
         <input
           type="text"
           className="field-input"
+          required
           aria-label="Query name"
           placeholder="Open payment stories"
           value={name}
@@ -266,14 +273,14 @@ function NewItemModal({
     <Dialog
       overlayClassName="wi-overlay"
       className="wi-modal glass-panel"
-      ariaLabel="New work item"
+      ariaLabel="New ticket"
       onClose={onClose}
       closeOnBackdrop={!create.isPending}
       closeOnEscape={!create.isPending}
       panelAs="form"
       onSubmit={submit}
     >
-      <h2 className="wi-modal-title">New work item</h2>
+      <h2 className="wi-modal-title">New ticket</h2>
       <label className="wi-field">
         <span className="wi-field-label">Title</span>
         <input
@@ -332,7 +339,7 @@ function NewItemModal({
           Cancel
         </button>
         <button type="submit" className="btn btn-primary btn-sm" disabled={!canSubmit}>
-          {create.isPending ? 'Creating…' : 'Create item'}
+          {create.isPending ? 'Creating…' : 'Create ticket'}
         </button>
       </div>
     </Dialog>
@@ -450,6 +457,7 @@ export function WorkItemsPage() {
     connectionId?: string
   } | null>(null)
   const [availableBinding, setAvailableBinding] = useState<WorkTrackingBinding | null>(null)
+  const [savedMessage, setSavedMessage] = useState('')
   const [saving, setSaving] = useState(false)
   const [creating, setCreating] = useState(false)
   const projectRef = useRef(project)
@@ -768,7 +776,6 @@ export function WorkItemsPage() {
   const items = page?.items ?? []
   const total = page && page.total > 0 ? page.total : undefined
   const pageLimit = submitted?.limit ?? limit
-  const prevDisabled = offset === 0 || execute.isPending
   const nextDisabled =
     execute.isPending ||
     offset + pageLimit >= WORK_ITEMS_MAX_WINDOW ||
@@ -800,7 +807,7 @@ export function WorkItemsPage() {
             disabled={!projectSelected || !mutationBinding}
             onClick={() => setCreating(true)}
           >
-            New item
+            New ticket
           </button>
         )}
       </header>
@@ -908,7 +915,7 @@ export function WorkItemsPage() {
               )}
             </span>
             <div className="wi-row">
-              <input
+              <label className="wi-field"><span className="wi-field-label">Provider</span><input
                 className="field-input wi-mono"
                 aria-label="Provider"
                 placeholder="jira"
@@ -917,6 +924,7 @@ export function WorkItemsPage() {
                 onChange={(event) => {
                   const nextProvider = event.target.value
                   setProvider(nextProvider)
+                  setConfidence(null)
                   if (
                     availableBinding?.provider.toLowerCase() !==
                     nextProvider.trim().toLowerCase()
@@ -924,7 +932,7 @@ export function WorkItemsPage() {
                     setEditorConnectionId(null)
                   }
                 }}
-              />
+              /></label>
               {confidence !== null && (
                 <span
                   className={`topbar-meta-chip ${confidence >= 0.7 ? 'success' : 'warning'}`}
@@ -934,28 +942,21 @@ export function WorkItemsPage() {
                 </span>
               )}
             </div>
-            <div className="wi-row">
+            <TableToolbar label="Query controls" className="wi-row">
               <input
                 className="field-input wi-grow wi-mono"
                 aria-label="Provider query"
                 placeholder={dialect?.placeholder ?? 'project = PHX AND status = "Open"'}
                 value={queryText}
                 disabled={translate.isPending || execute.isPending}
-                onChange={(event) => setQueryText(event.target.value)}
+                onChange={(event) => { setQueryText(event.target.value); setConfidence(null) }}
               />
-              <select
-                className="field-select"
-                aria-label="Page size"
-                value={limit}
-                disabled={translate.isPending || execute.isPending}
-                onChange={(event) => setLimit(Number(event.target.value))}
-              >
-                {LIMIT_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option} / page
-                  </option>
-                ))}
-              </select>
+
+              <label className="wi-field"><span className="wi-field-label">Rows per query</span>
+                <select aria-label="Query rows" value={limit} disabled={execute.isPending} onChange={event => setLimit(Number(event.target.value))}>
+                  {[10, 25, 50].map(size => <option key={size} value={size}>{size}</option>)}
+                </select>
+              </label>
               <button
                 type="button"
                 className="btn btn-primary"
@@ -982,12 +983,12 @@ export function WorkItemsPage() {
                     translate.isPending ||
                     execute.isPending
                   }
-                  onClick={() => setSaving(true)}
+                  onClick={() => { setSavedMessage(''); setSaving(true) }}
                 >
                   Save query
                 </button>
               )}
-            </div>
+            </TableToolbar>
           </div>
         )}
 
@@ -1059,24 +1060,18 @@ export function WorkItemsPage() {
       )}
 
       {execute.isPending ? (
-        <div className="wi-skeleton" role="status" aria-busy="true" aria-label="Running query">
-          {Array.from({ length: 3 }, (_, i) => (
-            <div key={i} className="glass-panel wi-skeleton-row" />
-          ))}
-        </div>
+        <Skeleton label="Running query…" />
       ) : page === null && !execute.isError ? (
-        <div className="dash-empty">
-          <h2>Run a query to see work items</h2>
+        <StateCard kind="empty" title="Run a query to see tickets" action={<button className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>(mode === 'nl' ? '#wi-nl-query' : '[aria-label="Provider query"]')?.focus()}>Enter a query</button>}>
           <p className="dash-empty-hint">
             Describe what you need and translate it, run a saved query, or write a provider query in
             manual mode.
           </p>
-        </div>
+        </StateCard>
       ) : page !== null && items.length === 0 ? (
-        <div className="dash-empty compact">
-          <h2>No work items matched</h2>
-          <p className="dash-empty-hint">Adjust the query and execute again.</p>
-        </div>
+        <StateCard kind="filtered" title="No tickets matched" compact action={<button className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('[aria-label="Provider query"]')?.focus()}>Edit query</button>}>
+          <p>Adjust the query and execute again.</p>
+        </StateCard>
       ) : page !== null ? (
         <>
           <ResultsTable
@@ -1092,46 +1087,12 @@ export function WorkItemsPage() {
           )}
           <footer className="wi-pagination">
             <span className="wi-pagination-caption">{rangeCaption}</span>
-            <div className="wi-pagination-buttons">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={prevDisabled}
-                onClick={() =>
-                  submitted &&
-                  runQuery(
-                    submitted.query,
-                    Math.max(0, offset - submitted.limit),
-                    submitted.limit,
-                    submitted.project,
-                    submitted.connectionId,
-                  )
-                }
-              >
-                Previous
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                disabled={nextDisabled}
-                onClick={() =>
-                  submitted &&
-                  runQuery(
-                    submitted.query,
-                    offset + submitted.limit,
-                    submitted.limit,
-                    submitted.project,
-                    submitted.connectionId,
-                  )
-                }
-              >
-                Next
-              </button>
-            </div>
+            <Pagination label="Tickets" offset={offset} limit={submitted?.limit ?? limit} options={[10, 25, 50]} pending={execute.isPending} hasNext={!nextDisabled} onChange={(selection) => { if (!submitted) return; setLimit(selection.limit); runQuery(submitted.query, selection.offset, selection.limit, submitted.project, submitted.connectionId) }} />
           </footer>
         </>
       ) : null}
 
+      {savedMessage && <p role="status">{savedMessage}</p>}
       {saving && (
         <SaveQueryModal
           provider={provider}
@@ -1139,6 +1100,7 @@ export function WorkItemsPage() {
           project={project || undefined}
           connectionId={project ? saveConnectionId : undefined}
           onClose={() => setSaving(false)}
+          onSaved={() => setSavedMessage('Query saved.')}
         />
       )}
       {creating && (

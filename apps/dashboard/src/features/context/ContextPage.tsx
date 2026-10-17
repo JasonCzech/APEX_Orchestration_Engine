@@ -4,6 +4,7 @@
  * place; invalid/missing values fall back to documents. Evidence now has its
  * own investigation route.
  */
+import { TabList } from '@/components/ux/TabList'
 import { Navigate, useSearchParams } from 'react-router'
 
 import { CONTEXT_TABS, isContextTab, type ContextTab } from './contextLogic'
@@ -35,26 +36,12 @@ export function ContextPage() {
     <section className="ctx-page animate-enter">
       <header className="ctx-toolbar glass-panel">
         <div className="ctx-heading">
-          <h2 className="ctx-page-title">Knowledge &amp; Documents</h2>
           <p className="ctx-toolbar-caption">Reusable source material for planning and running tests.</p>
         </div>
-        <div className="ctx-tabs" role="tablist" aria-label="Knowledge sections">
-          {CONTEXT_TABS.map((entry) => (
-            <button
-              key={entry}
-              type="button"
-              role="tab"
-              aria-selected={tab === entry}
-              className={`ctx-tab${tab === entry ? ' active' : ''}`}
-              onClick={() => selectTab(entry)}
-            >
-              {TAB_LABELS[entry]}
-            </button>
-          ))}
-        </div>
+        <TabList id="knowledge-sections" label="Knowledge sections" items={CONTEXT_TABS.map(id => ({ id, label: TAB_LABELS[id] }))} value={tab} onChange={selectTab} />
       </header>
 
-      {tab === 'documents' ? <DocumentsTab /> : <SummariesTab lifecycle={summaries} />}
+      {CONTEXT_TABS.map(entry => <div key={entry} id={`knowledge-sections-panel-${entry}`} role="tabpanel" aria-labelledby={`knowledge-sections-tab-${entry}`} hidden={tab !== entry}>{tab === entry && (entry === 'documents' ? <DocumentsTab /> : <SummariesTab lifecycle={summaries} />)}</div>)}
     </section>
   )
 }

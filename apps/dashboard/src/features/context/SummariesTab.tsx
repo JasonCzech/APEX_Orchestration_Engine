@@ -1,9 +1,12 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
 /**
  * Summaries tab — subject + work-item key chips + project -> POST
  * /v1/context/summaries (202). The accepted card and session-local history
  * follow the prompt playground pattern (D5): no polling, deep-link to
  * /runs/{thread_id} when the stream URL carries one.
  */
+import { ProjectField } from '@/components/ux/ProjectField'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 
@@ -257,6 +260,7 @@ function SummaryStreamButton({ streamUrl }: { streamUrl: string }) {
 }
 
 export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
+  useTimestampPreference()
   const {
     createSummary,
     isSubmitting,
@@ -281,7 +285,7 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
         aria-label="Generate summary"
         onSubmit={submit}
       >
-        <h3 className="ctx-card-title">Generate summary</h3>
+        <h2 className="ctx-card-title">Generate summary</h2>
         <label className="ctx-field">
           <span className="ctx-field-label">Subject</span>
           <input
@@ -295,7 +299,7 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
         </label>
         <div className="ctx-field">
           <label className="ctx-field-label" htmlFor="ctx-key-draft">
-            Work item keys
+            Ticket keys
           </label>
           <div className="ctx-row">
             <input
@@ -339,17 +343,7 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             </div>
           )}
         </div>
-        <label className="ctx-field">
-          <span className="ctx-field-label">Project</span>
-          <input
-            type="text"
-            className="field-input"
-            aria-label="Project id"
-            placeholder="proj-alpha"
-            value={project}
-            onChange={(event) => setProject(event.target.value)}
-          />
-        </label>
+        <ProjectField label="Project" ariaLabel="Project id" value={project} onChange={setProject} />
         {createSummary.isError && (
           <div className="ctx-inline-error" role="alert">
             <span>Summary request failed: {createSummary.error.message}</span>
@@ -389,18 +383,17 @@ export function SummariesTab({ lifecycle }: { lifecycle: SummaryLifecycle }) {
             )}
           </div>
         ) : (
-          <div className="dash-empty compact">
-            <h2>No summary runs yet</h2>
+          <StateCard kind="empty" title="No summary runs yet" compact action={<button className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('[aria-label="Summary subject"]')?.focus()}>Enter a subject</button>}>
             <p className="dash-empty-hint">
               Submit a subject to kick off a summary run. Results land on the run&apos;s thread —
               this panel only tracks this session&apos;s submissions.
             </p>
-          </div>
+          </StateCard>
         )}
 
         {history.length > 0 && (
           <>
-            <h4 className="ctx-history-title">This session</h4>
+            <h2 className="ctx-history-title">This session</h2>
             <ul className="ctx-history" data-testid="summary-history">
               {history.map((entry) => (
                 <li key={entry.runId} className="ctx-history-item">

@@ -375,3 +375,5 @@
   border-radius: 8px;
   animation: pulse 1.8s ease-in-out infinite;
 }
+
+.wi-query-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; background: var(--code-bg); color: var(--code-text); padding: 1rem; }
