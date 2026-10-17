@@ -1,0 +1,1049 @@
+{
+  "date": "2026-10-17",
+  "repository": "APEX_Orchestration_Engine",
+  "code_commit": "f12fd6e09fad61e828f228e2ff26d826ee0c508e",
+  "production_index_sha256": "f0d05cb3426c367bc43b089f4b1682a256db225580b9aac7c12df5213f243281",
+  "browser": "Playwright Chromium",
+  "mode": "Production bundle; demo plus explicit connected HTTP fixtures. No live provider execution claimed.",
+  "stats": {
+    "startTime": "2026-10-17T23:36:46.469Z",
+    "duration": 35970.700000000004,
+    "expected": 77,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "tests": [
+    {
+      "file": "analytics-measurements.spec.ts",
+      "title": "analytics keeps missing measurements distinct from zero and preserves chart gaps",
+      "status": "passed",
+      "duration_ms": 884
+    },
+    {
+      "file": "analytics-measurements.spec.ts",
+      "title": "chart winners stay independent of table sorting across a bounded population",
+      "status": "passed",
+      "duration_ms": 661
+    },
+    {
+      "file": "bounded-evidence.spec.ts",
+      "title": "bounded and drifted evidence stays truthful and readable for viewer",
+      "status": "passed",
+      "duration_ms": 2156
+    },
+    {
+      "file": "bounded-evidence.spec.ts",
+      "title": "bounded and drifted evidence stays truthful and readable for operator",
+      "status": "passed",
+      "duration_ms": 2095
+    },
+    {
+      "file": "bounded-evidence.spec.ts",
+      "title": "large Unicode prompt bodies stay complete and keyboard escapable for an operator",
+      "status": "passed",
+      "duration_ms": 908
+    },
+    {
+      "file": "chart-contrast.spec.ts",
+      "title": "chart strokes contrast with the rendered panel and retain non-color encodings: dark",
+      "status": "passed",
+      "duration_ms": 671
+    },
+    {
+      "file": "chart-contrast.spec.ts",
+      "title": "chart strokes contrast with the rendered panel and retain non-color encodings: light",
+      "status": "passed",
+      "duration_ms": 409
+    },
+    {
+      "file": "chart-contrast.spec.ts",
+      "title": "chart strokes contrast with the rendered panel and retain non-color encodings: apex-light",
+      "status": "passed",
+      "duration_ms": 370
+    },
+    {
+      "file": "chart-contrast.spec.ts",
+      "title": "chart strokes contrast with the rendered panel and retain non-color encodings: solarized-dark",
+      "status": "passed",
+      "duration_ms": 437
+    },
+    {
+      "file": "chart-contrast.spec.ts",
+      "title": "chart strokes contrast with the rendered panel and retain non-color encodings: solarized-light",
+      "status": "passed",
+      "duration_ms": 416
+    },
+    {
+      "file": "chart-contrast.spec.ts",
+      "title": "chart strokes contrast with the rendered panel and retain non-color encodings: monokai-dimmed",
+      "status": "passed",
+      "duration_ms": 458
+    },
+    {
+      "file": "cycles-ux.spec.ts",
+      "title": "cycle review and editing honor viewer capability",
+      "status": "passed",
+      "duration_ms": 793
+    },
+    {
+      "file": "cycles-ux.spec.ts",
+      "title": "cycle review and editing honor operator-unscoped capability",
+      "status": "passed",
+      "duration_ms": 446
+    },
+    {
+      "file": "cycles-ux.spec.ts",
+      "title": "cycle review and editing honor operator-scoped capability",
+      "status": "passed",
+      "duration_ms": 1378
+    },
+    {
+      "file": "cycles-ux.spec.ts",
+      "title": "cycle review and editing honor admin capability",
+      "status": "passed",
+      "duration_ms": 1309
+    },
+    {
+      "file": "cycles-ux.spec.ts",
+      "title": "execution preparation retries and new intents stay distinct for operator-scoped",
+      "status": "passed",
+      "duration_ms": 881
+    },
+    {
+      "file": "cycles-ux.spec.ts",
+      "title": "execution preparation retries and new intents stay distinct for admin",
+      "status": "passed",
+      "duration_ms": 1089
+    },
+    {
+      "file": "demo-mode.spec.ts",
+      "title": "production demo completes the offline Jira Align to Jira Cloud journey",
+      "status": "passed",
+      "duration_ms": 34535
+    },
+    {
+      "file": "demo-mode.spec.ts",
+      "title": "APEX Load mutations persist across refresh and reset to canonical fixtures",
+      "status": "passed",
+      "duration_ms": 609
+    },
+    {
+      "file": "demo-mode.spec.ts",
+      "title": "engine selection supports one keyboard tab stop and wrapping arrows",
+      "status": "passed",
+      "duration_ms": 254
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "shared brand face loads locally with system mono in dark",
+      "status": "passed",
+      "duration_ms": 754
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "shared brand face loads locally with system mono in light",
+      "status": "passed",
+      "duration_ms": 891
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "shared brand face loads locally with system mono in apex-light",
+      "status": "passed",
+      "duration_ms": 704
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "shared brand face loads locally with system mono in solarized-dark",
+      "status": "passed",
+      "duration_ms": 599
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "shared brand face loads locally with system mono in solarized-light",
+      "status": "passed",
+      "duration_ms": 662
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "shared brand face loads locally with system mono in monokai-dimmed",
+      "status": "passed",
+      "duration_ms": 796
+    },
+    {
+      "file": "font-parity.spec.ts",
+      "title": "production bundle contains only the four approved brand font files",
+      "status": "passed",
+      "duration_ms": 4
+    },
+    {
+      "file": "hitl-review-safety.spec.ts",
+      "title": "gate keyboard editing preserves prompts, drafts and queue focus",
+      "status": "passed",
+      "duration_ms": 1551
+    },
+    {
+      "file": "hitl-review-safety.spec.ts",
+      "title": "a local output revision remains selected through its new interrupt",
+      "status": "passed",
+      "duration_ms": 915
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared surfaces on a cold page load: dark",
+      "status": "passed",
+      "duration_ms": 716
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared surfaces on a cold page load: light",
+      "status": "passed",
+      "duration_ms": 524
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared surfaces on a cold page load: apex-light",
+      "status": "passed",
+      "duration_ms": 429
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared surfaces on a cold page load: solarized-dark",
+      "status": "passed",
+      "duration_ms": 438
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared surfaces on a cold page load: solarized-light",
+      "status": "passed",
+      "duration_ms": 507
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared surfaces on a cold page load: monokai-dimmed",
+      "status": "passed",
+      "duration_ms": 453
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "theme and motion preferences apply while config is still pending",
+      "status": "passed",
+      "duration_ms": 235
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared typography reflows at 390px",
+      "status": "passed",
+      "duration_ms": 401
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared typography reflows at 768px",
+      "status": "passed",
+      "duration_ms": 445
+    },
+    {
+      "file": "holistic-ux.spec.ts",
+      "title": "shared typography reflows at 1440px",
+      "status": "passed",
+      "duration_ms": 492
+    },
+    {
+      "file": "interface-usability.spec.ts",
+      "title": "compact grid phase progress is one labelled graphic and detail phases remain keyboard actions",
+      "status": "passed",
+      "duration_ms": 664
+    },
+    {
+      "file": "interface-usability.spec.ts",
+      "title": "retained tool statuses and reasoning provenance stay distinct and explicitly labelled",
+      "status": "passed",
+      "duration_ms": 609
+    },
+    {
+      "file": "interface-usability.spec.ts",
+      "title": "consumer deletion requires its exact name before the irreversible request",
+      "status": "passed",
+      "duration_ms": 520
+    },
+    {
+      "file": "prompt-diff-contrast.spec.ts",
+      "title": "actual added and deleted prompt text retains contrast in dark",
+      "status": "passed",
+      "duration_ms": 595
+    },
+    {
+      "file": "prompt-diff-contrast.spec.ts",
+      "title": "actual added and deleted prompt text retains contrast in light",
+      "status": "passed",
+      "duration_ms": 475
+    },
+    {
+      "file": "prompt-diff-contrast.spec.ts",
+      "title": "actual added and deleted prompt text retains contrast in apex-light",
+      "status": "passed",
+      "duration_ms": 485
+    },
+    {
+      "file": "prompt-diff-contrast.spec.ts",
+      "title": "actual added and deleted prompt text retains contrast in solarized-dark",
+      "status": "passed",
+      "duration_ms": 619
+    },
+    {
+      "file": "prompt-diff-contrast.spec.ts",
+      "title": "actual added and deleted prompt text retains contrast in solarized-light",
+      "status": "passed",
+      "duration_ms": 455
+    },
+    {
+      "file": "prompt-diff-contrast.spec.ts",
+      "title": "actual added and deleted prompt text retains contrast in monokai-dimmed",
+      "status": "passed",
+      "duration_ms": 519
+    },
+    {
+      "file": "resources-ux.spec.ts",
+      "title": "document and evidence workflows support viewer with keyboard and mobile layout",
+      "status": "passed",
+      "duration_ms": 888
+    },
+    {
+      "file": "resources-ux.spec.ts",
+      "title": "document and evidence workflows support operator with keyboard and mobile layout",
+      "status": "passed",
+      "duration_ms": 940
+    },
+    {
+      "file": "resources-ux.spec.ts",
+      "title": "document and evidence workflows support admin with keyboard and mobile layout",
+      "status": "passed",
+      "duration_ms": 966
+    },
+    {
+      "file": "route-census.spec.ts",
+      "title": "all declared routes expose heading, tab-panel and compact-target contracts in the production bundle",
+      "status": "passed",
+      "duration_ms": 8462
+    },
+    {
+      "file": "run-context-clarity.spec.ts",
+      "title": "demo activity offers saved reasoning and resolves the application consistently",
+      "status": "passed",
+      "duration_ms": 795
+    },
+    {
+      "file": "run-context-clarity.spec.ts",
+      "title": "omitted execution has one unavailable verdict with a separate explanation",
+      "status": "passed",
+      "duration_ms": 360
+    },
+    {
+      "file": "run-context-clarity.spec.ts",
+      "title": "queue selection announces concise context and keeps full details accessible for viewer",
+      "status": "passed",
+      "duration_ms": 736
+    },
+    {
+      "file": "run-context-clarity.spec.ts",
+      "title": "queue selection announces concise context and keeps full details accessible for operator",
+      "status": "passed",
+      "duration_ms": 673
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "wizard catalog prompts and overrides are keyboard reachable without changing content",
+      "status": "passed",
+      "duration_ms": 606
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "cold route tabs retain real panel targets: /settings",
+      "status": "passed",
+      "duration_ms": 303
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "cold route tabs retain real panel targets: /admin/connections",
+      "status": "passed",
+      "duration_ms": 335
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "cold route tabs retain real panel targets: /admin/connections/conn-apex-load",
+      "status": "passed",
+      "duration_ms": 337
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "cold route tabs retain real panel targets: /apex-load",
+      "status": "passed",
+      "duration_ms": 350
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "cold route tabs retain real panel targets: /prompts/phase/story_analysis%2Fsystem",
+      "status": "passed",
+      "duration_ms": 315
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "small interactive controls have direct targets and disabled actions remain readable",
+      "status": "passed",
+      "duration_ms": 588
+    },
+    {
+      "file": "shared-state-accessibility.spec.ts",
+      "title": "not-found and filtered states offer clear recovery without live-region noise",
+      "status": "passed",
+      "duration_ms": 713
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "desktop rail keeps navigation accessible and expansion stable for viewer",
+      "status": "passed",
+      "duration_ms": 1003
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "desktop rail keeps navigation accessible and expansion stable for operator",
+      "status": "passed",
+      "duration_ms": 1069
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "desktop rail keeps navigation accessible and expansion stable for admin",
+      "status": "passed",
+      "duration_ms": 958
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "desktop sidebar honors stored collapsed preference true",
+      "status": "passed",
+      "duration_ms": 171
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "desktop sidebar honors stored collapsed preference false",
+      "status": "passed",
+      "duration_ms": 190
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "mobile navigation remains a drawer and does not change the desktop preference",
+      "status": "passed",
+      "duration_ms": 296
+    },
+    {
+      "file": "shell-parity-sidebar.spec.ts",
+      "title": "desktop navigation preserves a dirty gate through its navigation guard",
+      "status": "passed",
+      "duration_ms": 975
+    },
+    {
+      "file": "timestamp-preference.spec.ts",
+      "title": "UTC preference updates another open route without losing its draft or expansion",
+      "status": "passed",
+      "duration_ms": 761
+    },
+    {
+      "file": "workflow-triage.spec.ts",
+      "title": "every cycle review action confirms exact identity and clears its note, with visible revision history",
+      "status": "passed",
+      "duration_ms": 1705
+    },
+    {
+      "file": "workflow-triage.spec.ts",
+      "title": "cycle conflict recovery preserves text and explicitly selects the newer replacement base",
+      "status": "passed",
+      "duration_ms": 570
+    },
+    {
+      "file": "workflow-triage.spec.ts",
+      "title": "cycle authoring exposes real field contracts, inventory identity and unconfigured provider guidance",
+      "status": "passed",
+      "duration_ms": 779
+    },
+    {
+      "file": "workflow-triage.spec.ts",
+      "title": "report comparison hides unchanged fields and evidence capture selects the exact new version",
+      "status": "passed",
+      "duration_ms": 345
+    },
+    {
+      "file": "workflow-triage.spec.ts",
+      "title": "prompt version activation is explicit and accepted resource jobs distinguish execution and run identities",
+      "status": "passed",
+      "duration_ms": 626
+    }
+  ],
+  "attachments": {
+    "dark-v2-contrast": {
+      "surface": 15.04750367710457,
+      "text": [
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 15.04750367710457
+        }
+      ]
+    },
+    "dark-v1-contrast": {
+      "surface": 15.627693535042427,
+      "text": [
+        {
+          "content": "All accounts, endpoints, infrastructure, traffic, thresholds, and results are synthetic demo assumptions, not verified environment configuration or measured production behavior. Use exclusive account leases, unique SIMs and request keys, reset added lines and test charges after each run, and verify cleanup. Event times are relative to demo activation.",
+          "ratio": 15.627693535042427
+        },
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 15.627693535042427
+        }
+      ]
+    },
+    "light-v2-contrast": {
+      "surface": 13.864061393700585,
+      "text": [
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 13.864061393700585
+        }
+      ]
+    },
+    "light-v1-contrast": {
+      "surface": 14.483296974858893,
+      "text": [
+        {
+          "content": "All accounts, endpoints, infrastructure, traffic, thresholds, and results are synthetic demo assumptions, not verified environment configuration or measured production behavior. Use exclusive account leases, unique SIMs and request keys, reset added lines and test charges after each run, and verify cleanup. Event times are relative to demo activation.",
+          "ratio": 14.483296974858893
+        },
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 14.483296974858893
+        }
+      ]
+    },
+    "apex-light-v2-contrast": {
+      "surface": 12.617365454319321,
+      "text": [
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 12.617365454319321
+        }
+      ]
+    },
+    "apex-light-v1-contrast": {
+      "surface": 13.236233873427086,
+      "text": [
+        {
+          "content": "All accounts, endpoints, infrastructure, traffic, thresholds, and results are synthetic demo assumptions, not verified environment configuration or measured production behavior. Use exclusive account leases, unique SIMs and request keys, reset added lines and test charges after each run, and verify cleanup. Event times are relative to demo activation.",
+          "ratio": 13.236233873427086
+        },
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 13.236233873427086
+        }
+      ]
+    },
+    "solarized-dark-v2-contrast": {
+      "surface": 4.590433642618925,
+      "text": [
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 4.590433642618925
+        }
+      ]
+    },
+    "solarized-dark-v1-contrast": {
+      "surface": 4.725017587832304,
+      "text": [
+        {
+          "content": "All accounts, endpoints, infrastructure, traffic, thresholds, and results are synthetic demo assumptions, not verified environment configuration or measured production behavior. Use exclusive account leases, unique SIMs and request keys, reset added lines and test charges after each run, and verify cleanup. Event times are relative to demo activation.",
+          "ratio": 4.725017587832304
+        },
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 4.725017587832304
+        }
+      ]
+    },
+    "solarized-light-v2-contrast": {
+      "surface": 5.539577369576702,
+      "text": [
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 5.539577369576702
+        }
+      ]
+    },
+    "solarized-light-v1-contrast": {
+      "surface": 5.708513732033792,
+      "text": [
+        {
+          "content": "All accounts, endpoints, infrastructure, traffic, thresholds, and results are synthetic demo assumptions, not verified environment configuration or measured production behavior. Use exclusive account leases, unique SIMs and request keys, reset added lines and test charges after each run, and verify cleanup. Event times are relative to demo activation.",
+          "ratio": 5.708513732033792
+        },
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 5.708513732033792
+        }
+      ]
+    },
+    "monokai-dimmed-v2-contrast": {
+      "surface": 12.491686610040999,
+      "text": [
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 12.491686610040999
+        }
+      ]
+    },
+    "monokai-dimmed-v1-contrast": {
+      "surface": 13.213070351455734,
+      "text": [
+        {
+          "content": "All accounts, endpoints, infrastructure, traffic, thresholds, and results are synthetic demo assumptions, not verified environment configuration or measured production behavior. Use exclusive account leases, unique SIMs and request keys, reset added lines and test charges after each run, and verify cleanup. Event times are relative to demo activation.",
+          "ratio": 13.213070351455734
+        },
+        {
+          "content": "Cite the supplied evidence and clearly label assumptions.",
+          "ratio": 13.213070351455734
+        }
+      ]
+    },
+    "route-census.json": [
+      {
+        "route": "/",
+        "resolvedUrl": "/",
+        "disposition": "loaded",
+        "headings": [
+          "Test operations dashboard",
+          "Needs your attention",
+          "Execution health",
+          "Test results",
+          "Recent runs",
+          "Resume drafts"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/approvals",
+        "resolvedUrl": "/runs/run-engine-recovery/reviews/int-engine-retry",
+        "disposition": "review-selection",
+        "headings": [
+          "Review",
+          "APEX Load provisioning recovery",
+          "Selected phases",
+          "Recover engine provisioning \u2014 Execution",
+          "Needs attention",
+          "What happened",
+          "Artifacts"
+        ],
+        "tabs": 3
+      },
+      {
+        "route": "/approvals/run-prompt-review/int-prompt",
+        "resolvedUrl": "/runs/run-prompt-review/reviews/int-prompt",
+        "disposition": "review-redirect",
+        "headings": [
+          "Review",
+          "PI 26.3 workload prompt review",
+          "Selected phases",
+          "Review prompts \u2014 Test Planning",
+          "Phase Summary",
+          "Additional context",
+          "Tools in Play",
+          "Post-Result Notes",
+          "Needs attention",
+          "What happened"
+        ],
+        "tabs": 6
+      },
+      {
+        "route": "/cycles",
+        "resolvedUrl": "/cycles",
+        "disposition": "unconfigured",
+        "headings": [
+          "Test cycles",
+          "Test cycles"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/cycles/census-cycle",
+        "resolvedUrl": "/cycles/census-cycle",
+        "disposition": "unconfigured",
+        "headings": [
+          "Cycle workspace",
+          "Test cycles"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/runs",
+        "resolvedUrl": "/runs",
+        "disposition": "loaded",
+        "headings": [
+          "Tests"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/runs/new",
+        "resolvedUrl": "/runs/new",
+        "disposition": "loaded",
+        "headings": [
+          "New test",
+          "Test scope"
+        ],
+        "tabs": 6
+      },
+      {
+        "route": "/runs/compare?ids=run-baseline-a,run-baseline-b",
+        "resolvedUrl": "/runs/compare",
+        "disposition": "loaded",
+        "headings": [
+          "Compare runs"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/runs/run-baseline-a",
+        "resolvedUrl": "/runs/run-baseline-a",
+        "disposition": "loaded",
+        "headings": [
+          "Run detail",
+          "ACC add-a-line baseline 26.2.1",
+          "Orchestration complete",
+          "Test acceptance",
+          "Run context",
+          "Evidence coverage"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/runs/run-prompt-review/reviews/int-prompt",
+        "resolvedUrl": "/runs/run-prompt-review/reviews/int-prompt",
+        "disposition": "loaded",
+        "headings": [
+          "Review",
+          "PI 26.3 workload prompt review",
+          "Selected phases",
+          "Review prompts \u2014 Test Planning",
+          "Phase Summary",
+          "Additional context",
+          "Tools in Play",
+          "Post-Result Notes",
+          "Needs attention",
+          "What happened"
+        ],
+        "tabs": 6
+      },
+      {
+        "route": "/runs/run-active/phases/execution",
+        "resolvedUrl": "/runs/run-active/phases/execution",
+        "disposition": "loaded",
+        "headings": [
+          "Phase detail",
+          "ACC add-a-line active ramp",
+          "Selected phases",
+          "Needs attention",
+          "What happened"
+        ],
+        "tabs": 7
+      },
+      {
+        "route": "/runs/run-baseline-a/timeline",
+        "resolvedUrl": "/runs/run-baseline-a/timeline",
+        "disposition": "loaded",
+        "headings": [
+          "Run timeline",
+          "ACC add-a-line baseline 26.2.1",
+          "Timeline"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/runs/run-baseline-a/artifacts/exec-report",
+        "resolvedUrl": "/runs/run-baseline-a/artifacts/exec-report",
+        "disposition": "loaded",
+        "headings": [
+          "Artifact viewer"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/prompts",
+        "resolvedUrl": "/prompts",
+        "disposition": "loaded",
+        "headings": [
+          "Prompts",
+          "ACC add-a-line requirements"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/prompts/application/app-digital-device",
+        "resolvedUrl": "/prompts/application/app-digital-device",
+        "disposition": "loaded",
+        "headings": [
+          "Prompt",
+          "app-digital-device"
+        ],
+        "tabs": 2
+      },
+      {
+        "route": "/prompts/application/app-digital-device/versions/1",
+        "resolvedUrl": "/prompts/application/app-digital-device/versions/1",
+        "disposition": "loaded",
+        "headings": [
+          "Prompt version"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/prompts/application/app-digital-device/playground",
+        "resolvedUrl": "/prompts/application/app-digital-device/playground",
+        "disposition": "loaded",
+        "headings": [
+          "Template preview",
+          "No checks yet"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/golden-configs",
+        "resolvedUrl": "/test-presets",
+        "disposition": "redirect",
+        "headings": [
+          "Test presets"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/golden-configs/asst-release",
+        "resolvedUrl": "/test-presets/asst-release",
+        "disposition": "redirect",
+        "headings": [
+          "Test preset",
+          "ACC add-a-line Release Certification",
+          "Scope defaults",
+          "Engine",
+          "Gate policy all gated",
+          "Prompt overrides",
+          "Limits"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/test-presets",
+        "resolvedUrl": "/test-presets",
+        "disposition": "loaded",
+        "headings": [
+          "Test presets"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/test-presets/asst-release",
+        "resolvedUrl": "/test-presets/asst-release",
+        "disposition": "loaded",
+        "headings": [
+          "Test preset",
+          "ACC add-a-line Release Certification",
+          "Scope defaults",
+          "Engine",
+          "Gate policy all gated",
+          "Prompt overrides",
+          "Limits"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/work-items",
+        "resolvedUrl": "/work-items",
+        "disposition": "loaded",
+        "headings": [
+          "Tickets",
+          "Run a query to see tickets"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/work-items/saved",
+        "resolvedUrl": "/work-items/saved",
+        "disposition": "loaded",
+        "headings": [
+          "Saved queries",
+          "Tickets"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/work-items/jira/PERF-241?connection_id=conn-jira",
+        "resolvedUrl": "/work-items/jira/PERF-241",
+        "disposition": "loaded",
+        "headings": [
+          "Ticket",
+          "[Perf] MQ consumer scaling validation"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/environments",
+        "resolvedUrl": "/environments",
+        "disposition": "loaded",
+        "headings": [
+          "Applications & environments",
+          "ACC",
+          "BSSe",
+          "Mulesoft"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/environments/env-perf",
+        "resolvedUrl": "/environments/env-perf",
+        "disposition": "loaded",
+        "headings": [
+          "Environment",
+          "PERFHYPER2",
+          "Configuration",
+          "Hosts",
+          "Inventory"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/context",
+        "resolvedUrl": "/context",
+        "disposition": "loaded",
+        "headings": [
+          "Knowledge & documents"
+        ],
+        "tabs": 2
+      },
+      {
+        "route": "/evidence",
+        "resolvedUrl": "/evidence",
+        "disposition": "loaded",
+        "headings": [
+          "Evidence",
+          "Projects",
+          "Evidence",
+          "ACC add-a-line acceptance criteria",
+          "Finding"
+        ],
+        "tabs": 3
+      },
+      {
+        "route": "/analytics",
+        "resolvedUrl": "/analytics",
+        "disposition": "loaded",
+        "headings": [
+          "Agent analytics",
+          "Tokens over time by model",
+          "Top 3 model by tokens",
+          "Input vs output tokens (selected groups)",
+          "Cost trend (selected groups)"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/logs",
+        "resolvedUrl": "/logs",
+        "disposition": "loaded",
+        "headings": [
+          "Logs",
+          "Search the logs"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/apex-load",
+        "resolvedUrl": "/apex-load",
+        "disposition": "loaded",
+        "headings": [
+          "APEX Load",
+          "Project connection selected",
+          "Load executions and analysis"
+        ],
+        "tabs": 2
+      },
+      {
+        "route": "/admin/connections",
+        "resolvedUrl": "/admin/connections",
+        "disposition": "loaded",
+        "headings": [
+          "Connections"
+        ],
+        "tabs": 2
+      },
+      {
+        "route": "/admin/connections/conn-jira",
+        "resolvedUrl": "/admin/connections/conn-jira",
+        "disposition": "loaded",
+        "headings": [
+          "Connection",
+          "Jira Cloud Performance Defects"
+        ],
+        "tabs": 2
+      },
+      {
+        "route": "/admin/consumers",
+        "resolvedUrl": "/admin/consumers",
+        "disposition": "loaded",
+        "headings": [
+          "API consumers"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/admin/consumers/cons-admin",
+        "resolvedUrl": "/admin/consumers/cons-admin",
+        "disposition": "loaded",
+        "headings": [
+          "Consumer",
+          "Demo Presenter"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/admin/system",
+        "resolvedUrl": "/admin/system",
+        "disposition": "loaded",
+        "headings": [
+          "System status",
+          "System",
+          "Your identity",
+          "Features",
+          "Connectivity",
+          "Quick links"
+        ],
+        "tabs": 0
+      },
+      {
+        "route": "/settings",
+        "resolvedUrl": "/settings",
+        "disposition": "loaded",
+        "headings": [
+          "Settings",
+          "Appearance",
+          "Display, tables & editor",
+          "Notifications",
+          "About"
+        ],
+        "tabs": 2
+      },
+      {
+        "route": "/census-unknown-route",
+        "resolvedUrl": "/census-unknown-route",
+        "disposition": "not-found",
+        "headings": [
+          "Not found",
+          "Page unavailable"
+        ],
+        "tabs": 0
+      }
+    ]
+  }
+}
