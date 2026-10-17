@@ -37,6 +37,72 @@ function renderAnalytics(search = '') {
 }
 
 describe('AnalyticsPage', () => {
+  it('keeps legacy recorded averages visible without inventing aggregate weights', async () => {
+    const fixture = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      series: AGENT_ANALYTICS_FIXTURE.series.map(row => ({ ...row, latency_samples: null })),
+    }
+    server.use(agentAnalyticsHandler(fixture).handler)
+    renderAnalytics('?measure=latency')
+    expect(await screen.findByRole('heading', { name: 'Latency aggregation unavailable' })).toBeInTheDocument()
+    expect(screen.getByTestId('analytics-breakdown-table')).toHaveTextContent('1.4s')
+    expect(screen.queryByTestId('analytics-agent-top-chart')).not.toBeInTheDocument()
+  })
+
+  it.each(['latency', 'cost'])('does not turn missing %s measurements into zero-valued charts', async measure => {
+    const missing = { avg_latency_ms: null, p95_latency_ms: null, cost_usd: null }
+    const fixture = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      totals: { ...AGENT_ANALYTICS_FIXTURE.totals, ...missing },
+      series: AGENT_ANALYTICS_FIXTURE.series.map(row => ({ ...row, ...missing })),
+      breakdown: AGENT_ANALYTICS_FIXTURE.breakdown.map(row => ({ ...row, ...missing })),
+    }
+    server.use(agentAnalyticsHandler(fixture).handler)
+    renderAnalytics(`?measure=${measure}`)
+    expect((await screen.findAllByRole('heading', { name: `No recorded ${measure === 'latency' ? 'average latency' : measure} measurements` })).length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('analytics-agent-top-chart')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('analytics-agent-series-chart')).not.toBeInTheDocument()
+    expect(screen.getByTestId('analytics-cost-trend-chart').querySelector('.recharts-surface')).not.toBeInTheDocument()
+  })
+
+  it.each(['latency', 'cost'])('retains legitimate zero %s measurements in charts', async measure => {
+    const zero = { avg_latency_ms: 0, p95_latency_ms: 0, cost_usd: 0 }
+    const fixture = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      totals: { ...AGENT_ANALYTICS_FIXTURE.totals, ...zero },
+      series: AGENT_ANALYTICS_FIXTURE.series.map(row => ({ ...row, ...zero })),
+      breakdown: AGENT_ANALYTICS_FIXTURE.breakdown.map(row => ({ ...row, ...zero })),
+    }
+    server.use(agentAnalyticsHandler(fixture).handler)
+    renderAnalytics(`?measure=${measure}`)
+    const chart = await screen.findByTestId('analytics-agent-series-chart')
+    expect(chart.querySelectorAll('.recharts-area-dot').length).toBe(3)
+    expect(screen.getByTestId('analytics-agent-top-chart')).toHaveTextContent('Top 2 model')
+    expect(screen.getByTestId('analytics-cost-trend-chart').querySelector('.recharts-area-curve')).toBeInTheDocument()
+  })
+
+  it.each(['model', 'date'])('keeps missing buckets as gaps when grouping by %s', async group => {
+    const sample = AGENT_ANALYTICS_FIXTURE.series[0]!
+    const fixture = {
+      ...AGENT_ANALYTICS_FIXTURE,
+      series: [
+        { ...sample, bucket_start: '2026-06-05T00:00:00Z', avg_latency_ms: 0 },
+        { ...sample, bucket_start: '2026-06-06T00:00:00Z', avg_latency_ms: null, p95_latency_ms: null, cost_usd: null },
+        { ...sample, bucket_start: '2026-06-07T00:00:00Z', avg_latency_ms: 1000 },
+        { ...sample, key: 'unmeasured-agent', avg_latency_ms: null, p95_latency_ms: null, cost_usd: null },
+      ],
+    }
+    server.use(agentAnalyticsHandler(fixture).handler)
+    renderAnalytics(`?measure=latency&group=${group}`)
+    const chart = await screen.findByTestId('analytics-agent-series-chart')
+    expect(chart.querySelectorAll('.recharts-area-dot')).toHaveLength(2)
+    expect(chart.querySelector('.recharts-xAxis')).toHaveTextContent('Jun 6')
+    expect(chart.querySelector('.recharts-area-curve')?.getAttribute('d')?.match(/M/g)).toHaveLength(2)
+    expect(screen.getByTestId('analytics-agent-top-chart')).toHaveTextContent(`Top 1 ${group === 'date' ? 'date' : 'model'}`)
+    expect(chart).not.toHaveTextContent('unmeasured-agent')
+    expect(screen.getByTestId('analytics-cost-trend-chart').querySelector('.recharts-area-curve')?.getAttribute('d')?.match(/M/g)).toHaveLength(2)
+  })
+
   it('builds date grouping as one Total trend instead of one series per date', async () => {
     const dateData = {
       ...AGENT_ANALYTICS_FIXTURE,
@@ -252,7 +318,7 @@ describe('AnalyticsPage', () => {
     )
     expect(screen.getByTestId('stat-total-tokens')).toHaveTextContent('—')
     expect(screen.getByTestId('analytics-agent-series-chart')).toHaveTextContent(
-      'Latency over time by model',
+      'Average latency over time by model',
     )
   })
 

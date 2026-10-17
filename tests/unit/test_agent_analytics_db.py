@@ -161,12 +161,15 @@ def test_agent_event_capture_and_aggregation_round_trip(
 
         data = asyncio.run(aggregate())
         assert data["totals"]["events"] == 2
+        assert data["totals"]["latency_samples"] == 2
         assert data["totals"]["errors"] == 1
         assert data["totals"]["total_tokens"] == 1150
         assert data["totals"]["runs"] == 1
         assert data["totals"]["cost_usd"] == 0.00438
         rows = {row["key"]: row for row in data["breakdown"]}
         assert rows["reporting"]["total_tokens"] == 1100
+        assert rows["reporting"]["latency_samples"] == 1
+        assert all(point["latency_samples"] == 1 for point in data["series"])
         assert rows["execution"]["errors"] == 1
         assert rows["execution"]["cost_usd"] is None
 

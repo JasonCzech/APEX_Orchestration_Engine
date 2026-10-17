@@ -40,6 +40,7 @@ CANNED = {
         "reasoning_tokens": 80,
         "cost_usd": 0.012345,
         "avg_latency_ms": 1250.0,
+        "latency_samples": 2,
         "p95_latency_ms": 2100.0,
         "runs": 2,
         "agents": 3,
@@ -59,6 +60,7 @@ CANNED = {
             "reasoning_tokens": 60,
             "cost_usd": 0.01,
             "avg_latency_ms": 1200.0,
+            "latency_samples": 1,
             "p95_latency_ms": 2000.0,
             "runs": 2,
         }
@@ -77,6 +79,7 @@ CANNED = {
             "reasoning_tokens": 60,
             "cost_usd": 0.01,
             "avg_latency_ms": 1200.0,
+            "latency_samples": 1,
             "p95_latency_ms": 2000.0,
             "runs": 2,
         }
@@ -141,6 +144,9 @@ def test_response_shape_defaults_and_cost_hidden() -> None:
     assert body["window"]["bucket"] == "day"
     assert body["window"]["group_by"] == "model"
     assert body["cost_visible"] is False
+    assert body["totals"]["latency_samples"] == 2
+    assert body["breakdown"][0]["latency_samples"] == 1
+    assert body["series"][0]["latency_samples"] == 1
     assert body["totals"]["cost_usd"] is None
     assert body["breakdown"][0]["cost_usd"] is None
     assert body["series"][0]["cost_usd"] is None
@@ -151,6 +157,22 @@ def test_response_shape_defaults_and_cost_hidden() -> None:
     assert call["order"] == "desc"
     assert call["limit"] == 20
     assert call["offset"] == 0
+
+
+def test_legacy_reader_does_not_invent_a_latency_sample_count() -> None:
+    class LegacyReader(FakeAgentAnalyticsRepository):
+        async def aggregate(self, **kwargs: Any) -> dict[str, Any]:
+            result = await super().aggregate(**kwargs)
+            for row in [result["totals"], *result["breakdown"], *result["series"]]:
+                row.pop("latency_samples")
+            return result
+
+    with make_client(LegacyReader(), ADMIN) as client:
+        response = client.get("/v1/analytics/agents")
+    assert response.status_code == 200
+    body = response.json()
+    for row in [body["totals"], *body["breakdown"], *body["series"]]:
+        assert row["latency_samples"] is None
 
 
 def test_explicit_params_and_csv_filters_pass_through() -> None:

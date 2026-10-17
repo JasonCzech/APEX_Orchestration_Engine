@@ -184,6 +184,11 @@ class AgentAnalyticsTotals(BaseModel):
     reasoning_tokens: int
     cost_usd: float | None = None
     avg_latency_ms: float | None = None
+    latency_samples: int | None = Field(
+        default=None,
+        ge=0,
+        description="Count of events with recorded latency; null for legacy readers.",
+    )
     p95_latency_ms: float | None = None
     runs: int
     agents: int = 0
@@ -203,6 +208,11 @@ class AgentAnalyticsBreakdownRow(BaseModel):
     reasoning_tokens: int
     cost_usd: float | None = None
     avg_latency_ms: float | None = None
+    latency_samples: int | None = Field(
+        default=None,
+        ge=0,
+        description="Count of events with recorded latency; null for legacy readers.",
+    )
     p95_latency_ms: float | None = None
     runs: int
 
@@ -220,6 +230,11 @@ class AgentAnalyticsSeriesPoint(BaseModel):
     reasoning_tokens: int
     cost_usd: float | None = None
     avg_latency_ms: float | None = None
+    latency_samples: int | None = Field(
+        default=None,
+        ge=0,
+        description="Count of events with recorded latency; null for legacy readers.",
+    )
     p95_latency_ms: float | None = None
     runs: int
 

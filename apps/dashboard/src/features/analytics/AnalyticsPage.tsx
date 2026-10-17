@@ -27,7 +27,6 @@ import {
   useAgentAnalytics,
   type AgentAnalytics,
   type AgentAnalyticsBreakdownRow,
-  type AgentAnalyticsSeriesPoint,
   type AgentOrder,
   type AgentSort,
 } from '@/api/hooks/useAgentAnalytics'
@@ -51,6 +50,7 @@ import {
   type GroupBy,
   type Measure,
 } from './analyticsFilters'
+import { aggregateMeasurements, latencySamples, measurementSeries, metricValue, rankedMeasurements } from './analyticsMeasurements'
 import { formatCost, formatLatency, formatPercent, formatTokens } from './analyticsFormat'
 import './analytics.css'
 
@@ -97,13 +97,7 @@ function labelForGroup(group: GroupBy): string {
 }
 
 function labelForMeasure(measure: Measure): string {
-  return { tokens: 'Tokens', cost: 'Cost', latency: 'Latency' }[measure]
-}
-
-function metricValue(row: AgentAnalyticsBreakdownRow | AgentAnalyticsSeriesPoint, measure: Measure): number {
-  if (measure === 'cost') return row.cost_usd ?? 0
-  if (measure === 'latency') return row.avg_latency_ms ?? row.p95_latency_ms ?? 0
-  return row.total_tokens
+  return { tokens: 'Tokens', cost: 'Cost', latency: 'Average latency' }[measure]
 }
 
 function formatMeasure(value: number | null | undefined, measure: Measure): string {
@@ -240,77 +234,6 @@ function agentQuery(filters: AnalyticsFilters, group: GroupBy, measure: Measure,
   }
 }
 
-function seriesRows(data: AgentAnalytics, measure: Measure, group: GroupBy) {
-  if (group === 'date') {
-    const buckets = new Map<string, { sum: number; events: number }>()
-    for (const row of data.series) {
-      const current = buckets.get(row.bucket_start) ?? { sum: 0, events: 0 }
-      const weight = measure === 'latency' ? Math.max(1, row.events) : 1
-      current.sum += metricValue(row, measure) * weight
-      current.events += weight
-      buckets.set(row.bucket_start, current)
-    }
-    return {
-      keys: ['Total'],
-      fields: ['total'],
-      series: Array.from(buckets, ([bucket_start, values]) => ({
-        bucket_start,
-        total:
-          measure === 'latency'
-            ? values.sum / Math.max(1, values.events)
-            : values.sum,
-      })).sort((a, b) => a.bucket_start.localeCompare(b.bucket_start)),
-    }
-  }
-
-  // `breakdown` is the currently requested table page, while `series` is the
-  // server-selected chart population. Deriving legend keys from breakdown
-  // makes every page after offset 0 render empty/mislabeled series. Rank the
-  // keys from the series payload itself so chart identity is independent of
-  // table pagination.
-  const totalsByKey = new Map<string, number>()
-  const countsByKey = new Map<string, number>()
-  for (const row of data.series) {
-    const weight = measure === 'latency' ? Math.max(1, row.events) : 1
-    totalsByKey.set(row.key, (totalsByKey.get(row.key) ?? 0) + metricValue(row, measure) * weight)
-    countsByKey.set(row.key, (countsByKey.get(row.key) ?? 0) + weight)
-  }
-  if (measure === 'latency') {
-    for (const [key, total] of totalsByKey) totalsByKey.set(key, total / (countsByKey.get(key) ?? 1))
-  }
-  const rankedKeys = Array.from(totalsByKey, ([key, value]) => ({ key, value }))
-    .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
-    .map(({ key }) => key)
-  const keys = rankedKeys.slice(0, 5)
-  const rest = rankedKeys.slice(5)
-  const buckets = new Map<string, Record<string, number | string>>()
-  for (const row of data.series) {
-    const bucket = row.bucket_start
-    const target = buckets.get(bucket) ?? { bucket_start: bucket }
-    if (keys.includes(row.key)) {
-      const field = `series_${keys.indexOf(row.key)}`
-        target[field] = measure === 'latency'
-        ? metricValue(row, measure)
-        : Number(target[field] ?? 0) + metricValue(row, measure)
-    } else if (rest.includes(row.key)) {
-      target.other = measure === 'latency'
-        ? (Number(target.other ?? 0) * Number(target.other_events ?? 0) + metricValue(row, measure) * Math.max(1, row.events)) /
-          (Number(target.other_events ?? 0) + Math.max(1, row.events))
-        : Number(target.other ?? 0) + metricValue(row, measure)
-      if (measure === 'latency') target.other_events = Number(target.other_events ?? 0) + Math.max(1, row.events)
-    }
-    buckets.set(bucket, target)
-  }
-  const series = Array.from(buckets.values()).sort((a, b) =>
-    String(a.bucket_start).localeCompare(String(b.bucket_start)),
-  )
-  return {
-    keys: rest.length ? [...keys, 'Other'] : keys,
-    fields: rest.length ? [...keys.map((_, i) => `series_${i}`), 'other'] : keys.map((_, i) => `series_${i}`),
-    series,
-  }
-}
-
 function AgentKpiCards({
   data,
   allZeroTokens,
@@ -363,26 +286,19 @@ function AgentUsageCharts({
   bucket: Bucket
 }) {
   const patternPrefix = useId().replaceAll(':', '')
-  const stacked = useMemo(() => seriesRows(data, measure, group), [data, measure, group])
-  const bars = useMemo(() => {
-    const grouped = new Map<string, { sum: number; events: number }>()
-    for (const row of data.series) {
-      const current = grouped.get(row.key) ?? { sum: 0, events: 0 }
-      const weight = measure === 'latency' ? Math.max(1, row.events) : 1
-      current.sum += metricValue(row, measure) * weight
-      current.events += weight
-      grouped.set(row.key, current)
-    }
-    return Array.from(grouped, ([key, values]) => ({
-      key,
-      label: truncate(key),
-      value: measure === 'latency'
-        ? values.sum / Math.max(1, values.events)
-        : values.sum,
-    }))
-      .sort((a, b) => b.value - a.value || a.key.localeCompare(b.key))
-      .slice(0, TOP_N_BARS)
-  }, [data.series, measure])
+  const stacked = useMemo(() => measurementSeries(data.series, measure, group), [data.series, measure, group])
+  const bars = useMemo(() => rankedMeasurements(data.series, measure).slice(0, TOP_N_BARS).map(row => ({ ...row, label: truncate(row.key) })), [data.series, measure])
+
+  if (measure === 'latency' && data.series.some(row => metricValue(row, measure) !== null && latencySamples(row) === null)) {
+    return <StateCard kind="unconfigured" title="Latency aggregation unavailable" action={null} compact>
+      <p>Recorded averages remain in the table. This response has no latency sample counts, so combined averages and rankings cannot be calculated reliably.</p>
+    </StateCard>
+  }
+  if (bars.length === 0) {
+    return <StateCard kind="empty" title={`No recorded ${labelForMeasure(measure).toLowerCase()} measurements`} action={null} compact>
+      <p>The chart series contain no recorded values for this measurement. Missing values are not plotted as zero.</p>
+    </StateCard>
+  }
 
   return (
     <div className="analytics-charts">
@@ -391,6 +307,7 @@ function AgentUsageCharts({
           {labelForMeasure(measure)} over time
           {group === 'date' ? '' : ` by ${labelForGroup(group).toLowerCase()}`}
         </h2>
+        {data.series.some(row => metricValue(row, measure) === null) && <p className="ux-context">Charts include recorded measurements only. Missing values appear as gaps and are excluded from ranking.</p>}
         <ResponsiveContainer width="100%" height={240}>
           <AreaChart data={stacked.series} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <defs>{CHART_COLORS.map((color, index) => <pattern key={color} id={`${patternPrefix}-${index}`} width={4 + index * 2} height={4 + index * 2} patternUnits="userSpaceOnUse" patternTransform={`rotate(${index * 30})`}><line x1="0" y1="0" x2="0" y2="20" stroke={color} strokeWidth="2" /></pattern>)}</defs>
@@ -432,6 +349,7 @@ function AgentUsageCharts({
                 fillOpacity={0.16}
                 strokeWidth={2}
                 strokeDasharray={['', '8 3', '3 3', '10 3 2 3', '2 5', '12 4'][index]}
+                connectNulls={false}
                 dot={{ r: 2 + index % 3 }}
                 isAnimationActive={false}
               />
@@ -487,20 +405,21 @@ function AgentUsageCharts({
 
 function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
   const rows = useMemo(() => {
-    const buckets = new Map<string, { bucket_start: string; input: number; output: number; cost: number }>()
+    const buckets = new Map<string, { bucket_start: string; input: number; output: number; costRows: AgentAnalytics['series'] }>()
     for (const row of data.series) {
       const bucket = buckets.get(row.bucket_start) ?? {
         bucket_start: row.bucket_start,
         input: 0,
         output: 0,
-        cost: 0,
+        costRows: [],
       }
       bucket.input += row.input_tokens
       bucket.output += row.output_tokens
-      bucket.cost += row.cost_usd ?? 0
+      bucket.costRows.push(row)
       buckets.set(row.bucket_start, bucket)
     }
-    return Array.from(buckets.values()).sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
+    return Array.from(buckets.values(), ({ costRows, ...bucket }) => ({ ...bucket, cost: aggregateMeasurements(costRows, 'cost') }))
+      .sort((a, b) => a.bucket_start.localeCompare(b.bucket_start))
   }, [data.series])
 
   return (
@@ -521,15 +440,15 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
       {data.cost_visible && (
         <section className="glass-panel chart-panel" data-testid="analytics-cost-trend-chart">
           <h2 className="chart-title">Cost trend (top series)</h2>
-          <ResponsiveContainer width="100%" height={200}>
+          {rows.some(row => row.cost !== null) ? <ResponsiveContainer width="100%" height={200}>
             <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="bucket_start" tickFormatter={bucketTick(data.window.bucket)} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
               <YAxis tickFormatter={(value) => formatCost(Number(value))} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={54} />
               <Tooltip contentStyle={CHART_TOOLTIP_STYLE} isAnimationActive={false} formatter={(value) => formatCost(Number(value))} />
-              <Area type="monotone" dataKey="cost" name="cost" stroke="var(--chart-3)" fill="var(--chart-3)" fillOpacity={0.14} dot={false} isAnimationActive={false} />
+              <Area type="monotone" dataKey="cost" name="cost" stroke="var(--chart-3)" fill="var(--chart-3)" fillOpacity={0.14} dot={false} connectNulls={false} isAnimationActive={false} />
             </AreaChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer> : <StateCard kind="empty" title="No recorded cost measurements" action={null} compact><p>Cost was not recorded for these events.</p></StateCard>}
         </section>
       )}
     </div>

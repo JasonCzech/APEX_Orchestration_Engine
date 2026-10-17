@@ -172,6 +172,19 @@
             "title": "Key",
             "type": "string"
           },
+          "latency_samples": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Count of events with recorded latency; null for legacy readers.",
+            "title": "Latency Samples"
+          },
           "output_tokens": {
             "title": "Output Tokens",
             "type": "integer"
@@ -343,6 +356,19 @@
             "title": "Key",
             "type": "string"
           },
+          "latency_samples": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Count of events with recorded latency; null for legacy readers.",
+            "title": "Latency Samples"
+          },
           "output_tokens": {
             "title": "Output Tokens",
             "type": "integer"
@@ -435,6 +461,19 @@
           "input_tokens": {
             "title": "Input Tokens",
             "type": "integer"
+          },
+          "latency_samples": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Count of events with recorded latency; null for legacy readers.",
+            "title": "Latency Samples"
           },
           "models": {
             "default": 0,

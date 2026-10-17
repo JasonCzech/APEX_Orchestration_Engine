@@ -11,9 +11,12 @@ from decimal import Decimal
 from typing import Any, cast
 
 import pytest
+from sqlalchemy import Table, create_engine, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from apex.auth.identity import ScopeRef
+from apex.persistence.models import AgentEvent
 from apex.services.agent_analytics import (
     MAX_ANALYTICS_KEY_CHARS,
     SERIES_KEY_CAP,
@@ -23,7 +26,7 @@ from apex.services.agent_analytics import (
     _key_string,
 )
 
-METRICS = (11, 2, 100, 40, 140, 5, 6, 7, Decimal("1.25"), 12.5, 18.75, 3)
+METRICS = (11, 2, 100, 40, 140, 5, 6, 7, Decimal("1.25"), 12.5, 18.75, 3, 4)
 
 
 class _Rows:
@@ -102,6 +105,7 @@ async def test_aggregate_shapes_filtered_test_breakdown_and_bounded_series() -> 
         "reasoning_tokens": 7,
         "cost_usd": 1.25,
         "avg_latency_ms": 12.5,
+        "latency_samples": 4,
         "p95_latency_ms": 18.75,
         "runs": 3,
         "agents": 4,
@@ -109,6 +113,8 @@ async def test_aggregate_shapes_filtered_test_breakdown_and_bounded_series() -> 
     }
     assert result["breakdown"][0]["thread_id"] == "run-2"
     assert result["breakdown"][1]["key"] == "unknown"
+    assert result["breakdown"][0]["latency_samples"] == 4
+    assert result["series"][0]["latency_samples"] == 4
     assert result["series"][0]["bucket_start"] == bucket_start
     assert result["series"][1]["key"] == "unknown"
     assert result["page"] == {"limit": 7, "offset": 3, "total": 2}
@@ -133,7 +139,7 @@ async def test_aggregate_shapes_filtered_test_breakdown_and_bounded_series() -> 
 @pytest.mark.asyncio
 async def test_date_aggregate_skips_key_prefetch_and_handles_empty_nullable_metrics() -> None:
     start = datetime(2026, 7, 1, tzinfo=UTC)
-    empty_metrics = (0, None, None, 0, 0, 0, 0, 0, None, None, float("inf"), None)
+    empty_metrics = (0, None, None, 0, 0, 0, 0, 0, None, None, float("inf"), None, 0)
     session = _Session(
         executes=[
             [empty_metrics],
@@ -153,6 +159,7 @@ async def test_date_aggregate_skips_key_prefetch_and_handles_empty_nullable_metr
         order="desc",
     )
 
+    assert result["totals"]["latency_samples"] == 0
     assert result["totals"]["events"] == 0
     assert result["totals"]["cost_usd"] is None
     assert result["totals"]["p95_latency_ms"] is None
@@ -195,3 +202,32 @@ def test_analytics_key_projection_redacts_credentials_and_bounds_legacy_values()
     assert _key_string(credential) == "[REDACTED]"
     assert credential not in _key_string(credential)
     assert _key_string("x" * (MAX_ANALYTICS_KEY_CHARS + 100)) == "x" * MAX_ANALYTICS_KEY_CHARS
+
+
+@pytest.mark.parametrize(
+    ("latencies", "sample_count", "average"),
+    [([], 0, None), ([None, None], 0, None), ([None, 0, 100], 2, 50.0)],
+)
+def test_latency_sample_count_uses_the_same_non_null_observations_as_average(
+    latencies: list[int | None], sample_count: int, average: float | None
+) -> None:
+    engine = create_engine("sqlite://").execution_options(schema_translate_map={"apex": None})
+    try:
+        cast(Table, AgentEvent.__table__).create(engine)
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    AgentEvent(
+                        phase="execution", agent_name="worker", status="ok", latency_ms=value
+                    )
+                    for value in latencies
+                ]
+            )
+            session.flush()
+            metrics = AgentAnalyticsRepository(cast(AsyncSession, session))._metric_map()
+            row = session.execute(
+                select(metrics["events"], metrics["latency_samples"], metrics["avg_latency_ms"])
+            ).one()
+            assert tuple(row) == (len(latencies), sample_count, average)
+    finally:
+        engine.dispose()

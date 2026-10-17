@@ -50,6 +50,7 @@ _METRIC_ORDER = (
     "avg_latency_ms",
     "p95_latency_ms",
     "runs",
+    "latency_samples",
 )
 _FLOAT_METRICS = frozenset({"cost_usd", "avg_latency_ms", "p95_latency_ms"})
 
@@ -259,6 +260,7 @@ class AgentAnalyticsRepository:
             "reasoning_tokens": func.coalesce(func.sum(AgentEvent.reasoning_tokens), 0),
             "cost_usd": func.sum(AgentEvent.cost_usd),
             "avg_latency_ms": func.avg(AgentEvent.latency_ms),
+            "latency_samples": func.count(AgentEvent.latency_ms),
             "p95_latency_ms": func.percentile_cont(0.95).within_group(AgentEvent.latency_ms),
             "runs": func.count(func.distinct(AgentEvent.thread_id)),
         }

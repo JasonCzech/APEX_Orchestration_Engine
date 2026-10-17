@@ -299,6 +299,7 @@ function agentTotals(events: AgentMetricEvent[]): AgentAnalyticsTotals {
       ? Math.round(events.reduce((sum, event) => sum + event.latency_ms, 0) / events.length)
       : null,
     p95_latency_ms: percentile95(latencies),
+    latency_samples: latencies.length,
     runs: new Set(events.map((event) => event.thread_id)).size,
     agents: new Set(events.map((event) => event.agent_name)).size,
     models: new Set(events.map((event) => event.model)).size,
@@ -320,6 +321,7 @@ function agentBreakdownRow(key: string, events: AgentMetricEvent[]): AgentAnalyt
     cost_usd: totals.cost_usd,
     avg_latency_ms: totals.avg_latency_ms,
     p95_latency_ms: totals.p95_latency_ms,
+    latency_samples: totals.latency_samples,
     runs: totals.runs,
     thread_id: events.every((event) => event.thread_id === key) ? key : null,
   }
@@ -341,6 +343,7 @@ function agentSeriesPoint(bucketStart: string, key: string, events: AgentMetricE
     cost_usd: totals.cost_usd,
     avg_latency_ms: totals.avg_latency_ms,
     p95_latency_ms: totals.p95_latency_ms,
+    latency_samples: totals.latency_samples,
     runs: totals.runs,
   }
 }

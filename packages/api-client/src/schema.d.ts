@@ -1785,6 +1785,11 @@ export interface components {
             input_tokens: number;
             /** Key */
             key: string;
+            /**
+             * Latency Samples
+             * @description Count of events with recorded latency; null for legacy readers.
+             */
+            latency_samples?: number | null;
             /** Output Tokens */
             output_tokens: number;
             /** P95 Latency Ms */
@@ -1842,6 +1847,11 @@ export interface components {
             input_tokens: number;
             /** Key */
             key: string;
+            /**
+             * Latency Samples
+             * @description Count of events with recorded latency; null for legacy readers.
+             */
+            latency_samples?: number | null;
             /** Output Tokens */
             output_tokens: number;
             /** P95 Latency Ms */
@@ -1874,6 +1884,11 @@ export interface components {
             events: number;
             /** Input Tokens */
             input_tokens: number;
+            /**
+             * Latency Samples
+             * @description Count of events with recorded latency; null for legacy readers.
+             */
+            latency_samples?: number | null;
             /**
              * Models
              * @default 0
