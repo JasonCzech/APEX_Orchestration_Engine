@@ -12,17 +12,19 @@ describe('outcome meaning', () => {
     expect(orchestrationStatusLabel('idle', strip('failed'))).toBe('Orchestration failed')
     expect(orchestrationStatusLabel('idle', strip('aborted'))).toBe('Stopped by operator')
     expect(orchestrationStatusLabel('idle', strip('pending'))).toBe('Orchestration stopped')
-    expect(executionResultLabel({ execution_result: 'failed', phase_strip: strip('succeeded') })).toBe('Failed')
+    expect(executionResultLabel({ execution_result: 'failed', phase_strip: strip('succeeded') })).toBe('Not available')
+    expect(executionResultLabel({ execution_result: 'failed', phase_strip: [{ phase: 'execution', status: 'succeeded' }] })).toBe('Failed')
   })
 })
 
 
 describe('execution evidence provenance', () => {
-  it('requires an explicit plan and an evidence-free snapshot for Not applicable', () => {
+  it('keeps omitted execution distinct from an established test verdict', () => {
     const omitted = { phases_plan: ['story_analysis'] } as import('@apex/pipeline-events').PipelineState
-    expect(executionResultLabel({}, omitted)).toBe('Not applicable')
+    expect(executionWasOmitted(omitted)).toBe(true)
+    expect(executionResultLabel({}, omitted)).toBe('Not available')
     expect(executionWasOmitted({})).toBe(false)
-    expect(executionResultLabel({ execution_result: 'failed' }, omitted)).toBe('Failed')
+    expect(executionResultLabel({ execution_result: 'failed' }, omitted)).toBe('Not available')
     expect(executionResultLabel({}, { phases_plan: ['execution'] })).toBe('Not available')
   })
   it('keeps imported or retained execution evidence applicable to analysis-only plans', () => {

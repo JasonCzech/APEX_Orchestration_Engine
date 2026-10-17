@@ -133,6 +133,20 @@ function renderRunsPage(initialEntry = '/runs') {
 }
 
 describe('RunsListPage', () => {
+  it('sorts only the loaded page and exposes the active order to assistive technology', async () => {
+    server.use(pipelinesHandler([RUN_GATED, RUN_BUSY]).handler)
+    const user = userEvent.setup()
+    renderRunsPage()
+    await screen.findByTestId(`runs-row-${RUN_GATED.thread_id}`)
+    expect(screen.getByText('Sorting applies to this page.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Sort this page by Run' }))
+    expect(screen.getAllByTestId(/^runs-row-/).map(row => row.getAttribute('data-testid'))).toEqual([`runs-row-${RUN_BUSY.thread_id}`, `runs-row-${RUN_GATED.thread_id}`])
+    expect(screen.getByRole('button', { name: 'Sort this page by Run' }).closest('th')).toHaveAttribute('aria-sort', 'ascending')
+    await user.click(screen.getByRole('button', { name: 'Sort this page by Run' }))
+    expect(screen.getByRole('button', { name: 'Sort this page by Run' }).closest('th')).toHaveAttribute('aria-sort', 'descending')
+    expect(screen.getAllByTestId(/^runs-row-/)[0]).toHaveAttribute('data-testid', `runs-row-${RUN_GATED.thread_id}`)
+  })
+
   it('distinguishes Open run actions when run titles are duplicated', async () => {
     const duplicate = { ...RUN_BUSY, thread_id: 'duplicate-run-id' }
     server.use(pipelinesHandler([RUN_BUSY, duplicate]).handler)
@@ -162,7 +176,7 @@ describe('RunsListPage', () => {
 
     const gatedRow = within(screen.getByTestId(`runs-row-${RUN_GATED.thread_id}`))
     expect(gatedRow.getByText('Not available')).toHaveClass('status-badge', 'neutral')
-    expect(gatedRow.getByText('Awaiting approval')).toHaveClass('status-badge', 'warning')
+    expect(gatedRow.getByText('Awaiting review')).toHaveClass('status-badge', 'warning')
     expect(gatedRow.getByText('—')).toBeInTheDocument()
   })
 

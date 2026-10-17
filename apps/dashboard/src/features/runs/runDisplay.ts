@@ -155,7 +155,7 @@ export function orchestrationStatusLabel(status: string | null | undefined, stri
     if (selected.length && selected.every(entry => ['succeeded', 'skipped'].includes(entry.status))) return 'Orchestration complete'
     return 'Orchestration stopped'
   }
-  return ({ busy: 'Running', interrupted: 'Awaiting approval', idle: 'Not running', error: 'Orchestration failed' } as Record<string, string>)[status ?? ''] ?? 'Unknown'
+  return ({ busy: 'Running', interrupted: 'Awaiting review', idle: 'Not running', error: 'Orchestration failed' } as Record<string, string>)[status ?? ''] ?? 'Unknown'
 }
 
 export function orchestrationTone(status: string | null | undefined, strip?: PipelineSummary['phase_strip']): string {

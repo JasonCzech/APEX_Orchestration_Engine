@@ -107,7 +107,7 @@ describe('RunsListPage row overflow menu (entry point 1)', () => {
 
     expect(within(menu).queryByRole('menuitem', { name: 'Open overview' })).not.toBeInTheDocument()
     expect(within(menu).getByRole('menuitem', { name: 'Re-run…' })).toBeInTheDocument()
-    expect(within(menu).getByRole('menuitem', { name: 'Copy run ID' })).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Copy run ID' })).toBeInTheDocument()
   })
 })
 

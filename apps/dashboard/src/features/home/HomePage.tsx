@@ -1,3 +1,5 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { orchestrationTone, formatTimestamp, executionResultLabel } from '@/features/runs/runDisplay'
 import { useMemo } from 'react'
 import { Link } from 'react-router'
@@ -75,9 +77,7 @@ function MetricCard({
 function ApprovalQueue({ gates }: { gates: ApprovalItem[] }) {
   if (gates.length === 0) {
     return (
-      <div className="dash-empty small">
-        No pending approvals right now.
-      </div>
+      <StateCard kind="empty" title="No pending reviews right now." action={null} compact />
     )
   }
 
@@ -123,20 +123,14 @@ function RecentRunRow({ run }: { run: PipelineSummary }) {
 }
 
 function HomeSkeleton() {
-  return (
-    <div className="home-skeleton" role="status" aria-busy="true" aria-label="Loading dashboard">
-      <div className="glass-panel home-skeleton-block" />
-      <div className="glass-panel home-skeleton-block" />
-      <div className="glass-panel home-skeleton-block tall" />
-    </div>
-  )
+  return <Skeleton label="Loading dashboard" rows={3} />
 }
 
 export function HomePage() {
   const topbarActions = useMemo(
     () => (
       <Link to="/runs/new" className="btn btn-primary">
-        New Test
+        New test
       </Link>
     ),
     [],
@@ -183,14 +177,10 @@ export function HomePage() {
   ) {
     return (
       <section className="home-page animate-enter">
-        <div className="dash-empty home-hero" data-testid="home-hero">
-          <h2>Start your first pipeline</h2>
-          <p className="dash-empty-hint">
-            Launch a new test to populate health signals, approvals, and pipeline history.
-          </p>
-          <Link to="/runs/new" className="btn btn-primary">
-            New Test
-          </Link>
+        <div data-testid="home-hero">
+          <StateCard kind="empty" title="Start your first test" action={<Link to="/runs/new" className="btn btn-primary">New test</Link>}>
+            <p>Launch a new test to populate health signals, reviews, and run history.</p>
+          </StateCard>
         </div>
       </section>
     )
@@ -208,18 +198,16 @@ export function HomePage() {
     <section className="home-page animate-enter">
       <section className="glass-panel home-approval-panel" aria-label="Needs your attention">
         <div className="home-section-head">
-          <h3 className="home-section-title">Needs your attention</h3>
+          <h2 className="home-section-title">Needs your attention</h2>
           <Link to="/approvals" className="home-view-all">
             Open queue
           </Link>
         </div>
         {inbox.isLoading ? (
-          <div role="status" aria-busy="true">
-            Loading pending approvals…
-          </div>
+          <Skeleton label="Loading pending reviews" rows={2} />
         ) : inbox.error ? (
           <QueryErrorNotice
-            title="Approvals unavailable"
+            title="Reviews unavailable"
             error={inbox.error}
             onRetry={inbox.refetch}
           />
@@ -249,9 +237,9 @@ export function HomePage() {
       <section className="home-signal-grid">
         <article className="glass-panel home-signal-card">
           <div className="home-section-head">
-            <h3 className="home-section-title">Execution Health</h3>
+            <h2 className="home-section-title">Execution health</h2>
             <Link to="/runs" className="home-view-all">
-              Test History
+              Run history
             </Link>
           </div>
           <p className="wizard-caption">{usage.data?.window ? `${formatTimestamp(usage.data.window.from)} – ${formatTimestamp(usage.data.window.to)}, across accessible projects.` : 'Reporting window not available.'} Refreshed {usage.dataUpdatedAt ? formatTimestamp(new Date(usage.dataUpdatedAt).toISOString()) : 'not yet'}. Only succeeded and failed phases are counted here; skipped, aborted, waiting and active phases are excluded. A dash means no summary is available.</p>
@@ -269,7 +257,7 @@ export function HomePage() {
 
         <article className="glass-panel home-signal-card">
           <div className="home-section-head">
-            <h3 className="home-section-title">Test Results</h3>
+            <h2 className="home-section-title">Test results</h2>
             <span className="home-signal-caption">loaded runs only</span>
           </div>
           <div className="home-release-badges">
@@ -285,13 +273,13 @@ export function HomePage() {
 
       <section className="glass-panel home-recent" aria-label="Recent runs" data-testid="home-recent">
         <div className="home-section-head">
-          <h3 className="home-section-title">Recent Runs</h3>
+          <h2 className="home-section-title">Recent runs</h2>
           <Link to="/runs" className="home-view-all">
             View all
           </Link>
         </div>
         {recent.length === 0 ? (
-          <div className="dash-empty small">No runs yet.</div>
+          <StateCard kind="empty" title="No runs yet." action={<Link to="/runs/new" className="btn btn-primary">New test</Link>} compact />
         ) : (
           <div className="data-table-wrap">
             <table className="data-table striped home-recent-table">
@@ -318,7 +306,7 @@ export function HomePage() {
       {(drafts.isError || draftItems.length > 0) && (
         <section className="glass-panel home-drafts" data-testid="home-drafts">
           <div className="home-section-head">
-            <h3 className="home-section-title">Resume Drafts</h3>
+            <h2 className="home-section-title">Resume drafts</h2>
           </div>
           {drafts.isError && !drafts.data ? (
             <QueryErrorNotice
@@ -349,13 +337,13 @@ export function HomePage() {
 
       <section className="home-quick-nav">
         <Link to="/runs/new" className="btn btn-primary">
-          New Test
+          New test
         </Link>
         <Link to="/environments" className="btn btn-secondary">
-          Apps &amp; Environments
+          Applications &amp; environments
         </Link>
         <Link to="/runs" className="btn btn-secondary">
-          Test History
+          Run history
         </Link>
         <Link to="/work-items" className="btn btn-secondary">
           Tickets

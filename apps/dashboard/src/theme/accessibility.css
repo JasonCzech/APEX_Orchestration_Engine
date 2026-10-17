@@ -82,3 +82,21 @@ a.btn-primary:active {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Visually hidden (screen-reader-only) text — actions column header. */
+.sr-only {
+  position: absolute;
+  inset: 0;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+
+.data-table-wrap { position: relative; }

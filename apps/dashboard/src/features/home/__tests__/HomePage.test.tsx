@@ -71,12 +71,13 @@ describe('HomePage', () => {
     renderHome()
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: 'Test Operations Dashboard' }),
+      await screen.findByRole('heading', { level: 1, name: 'Test operations dashboard' }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('heading', { level: 2, name: /Pipeline Operations? Dashboard/ }),
     ).not.toBeInTheDocument()
-    const totalCard = (await screen.findByText('Recent runs')).closest('article')
+    expect(await screen.findByRole('heading', { level: 2, name: 'Needs your attention' })).toBeInTheDocument()
+    const totalCard = (await screen.findByText('Recent runs', { selector: '.home-metric-label' })).closest('article')
     expect(totalCard).not.toBeNull()
     expect(within(totalCard as HTMLElement).getByText('5')).toBeInTheDocument()
     expect(within(totalCard as HTMLElement).getByText('recent accessible runs')).toBeInTheDocument()
@@ -88,7 +89,7 @@ describe('HomePage', () => {
     expect(within(failureCard as HTMLElement).getByText('1')).toBeInTheDocument()
     expect(screen.queryByText('Tests Passed')).not.toBeInTheDocument()
 
-    const release = screen.getByRole('heading', { name: 'Test Results' }).closest('article')
+    const release = screen.getByRole('heading', { level: 2, name: 'Test results' }).closest('article')
     expect(release).not.toBeNull()
     expect(within(release as HTMLElement).getByText('Passed · 0')).toBeInTheDocument()
     expect(within(release as HTMLElement).getByText('Not available · 5')).toBeInTheDocument()
@@ -128,8 +129,8 @@ describe('HomePage', () => {
 
     const panel = await screen.findByRole('region', { name: 'Needs your attention' })
     const alert = within(panel).getByRole('alert')
-    expect(alert).toHaveTextContent('Approvals unavailable')
-    expect(within(panel).queryByText('No pending approvals right now.')).not.toBeInTheDocument()
+    expect(alert).toHaveTextContent('Reviews unavailable')
+    expect(within(panel).queryByText('No pending reviews right now.')).not.toBeInTheDocument()
 
     approvalsFail = false
     await user.click(within(alert).getByRole('button', { name: 'Retry' }))
@@ -256,10 +257,10 @@ describe('HomePage', () => {
     renderHome()
 
     expect(await screen.findByTestId('home-recent-run-idle')).toBeInTheDocument()
-    expect(screen.getByText('No pending approvals right now.')).toBeInTheDocument()
+    expect(screen.getByText('No pending reviews right now.')).toBeInTheDocument()
     expect(screen.queryByTestId('home-drafts')).not.toBeInTheDocument()
     expect(
-      screen.getAllByRole('link', { name: 'New Test' }).every((link) => link.getAttribute('href') === '/runs/new'),
+      screen.getAllByRole('link', { name: 'New test' }).every((link) => link.getAttribute('href') === '/runs/new'),
     ).toBe(true)
   })
 
@@ -268,8 +269,8 @@ describe('HomePage', () => {
     renderHome()
 
     const hero = await screen.findByTestId('home-hero')
-    expect(within(hero).getByRole('heading', { name: 'Start your first pipeline' })).toBeVisible()
-    expect(within(hero).getByRole('link', { name: 'New Test' })).toHaveAttribute(
+    expect(within(hero).getByRole('heading', { name: 'Start your first test' })).toBeVisible()
+    expect(within(hero).getByRole('link', { name: 'New test' })).toHaveAttribute(
       'href',
       '/runs/new',
     )
@@ -279,7 +280,7 @@ describe('HomePage', () => {
     useHomeHandlers()
     renderHome()
 
-    const panel = await screen.findByRole('heading', { name: 'Execution Health' })
+    const panel = await screen.findByRole('heading', { level: 2, name: 'Execution health' })
     const card = panel.closest('article')
     expect(card).not.toBeNull()
     const successBlock = within(card as HTMLElement).getByText('Phases succeeded').closest('div')

@@ -1,0 +1,64 @@
+/* ── Overflow menu (kebab/dropdown shared by the entry points) ───────────── */
+
+.overflow-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.overflow-menu-trigger {
+  min-width: 32px;
+  min-height: 32px;
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--font-size-md);
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.overflow-menu-trigger:hover,
+.overflow-menu-trigger[aria-expanded='true'] {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+.overflow-menu-list {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  z-index: 70;
+  min-width: 168px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  border-radius: var(--radius);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.overflow-menu-item {
+  min-height: 32px;
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-align: left;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: normal;
+}
+
+.overflow-menu-item:hover,
+.overflow-menu-item:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}

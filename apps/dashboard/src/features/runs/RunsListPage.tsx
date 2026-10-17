@@ -1,3 +1,5 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
@@ -8,13 +10,17 @@ import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { ProblemCard } from '@/components/ProblemCard'
+import { CopyableId } from '@/components/ux/CopyableId'
 import { Pagination } from '@/components/ux/Pagination'
+import { TableToolbar } from '@/components/ux/TableToolbar'
+import { SortableHeader } from '@/components/ux/SortableHeader'
 import { usePreferences } from '@/theme/preferences'
 import type { PhaseName } from '@apex/pipeline-events'
 
 import { CompareSelectBar } from '../compare/CompareSelectBar'
 import { MAX_COMPARE_RUNS } from '../compare/compareModel'
-import { OverflowMenu, PreflightModal } from './PreflightModal'
+import { OverflowMenu } from '@/components/ux/OverflowMenu'
+import { PreflightModal } from './PreflightModal'
 import {
   hasActiveFilters,
   parseRunsFilters,
@@ -38,10 +44,10 @@ import {
 } from './runDisplay'
 import { RunWorkspace, type RunWorkspaceSection } from './RunDetailPage'
 import { runReviewPath } from './reviewPath'
+import { sortRunPage, type RunSort, type RunSortKey } from './runsSort'
 import './RunsListPage.css'
 
 const SEARCH_DEBOUNCE_MS = 300
-const SKELETON_ROWS = 6
 const EM_DASH = '—'
 
 function useMasterDetailLayout() {
@@ -117,7 +123,7 @@ function RunRow({
       <button type="button" className="runs-run-title runs-run-button" aria-label={`Open ${run.title || 'Untitled run'} details`} onClick={() => onOpen(run.thread_id)}>
         {run.title || 'Untitled run'}
       </button>
-      <code className="runs-run-identity">{run.thread_id}</code>
+      <CopyableId value={run.thread_id} label="run ID" />
       <p><strong>{orchestrationStatusLabel(run.thread_status, run.phase_strip)}</strong></p>
       <p>Test result: <strong>{executionResultLabel(run)}</strong></p>
       <p>Progress: {phaseProgressLabel(phaseProgress(run.phase_strip))}</p>
@@ -147,9 +153,9 @@ function RunRow({
       <td>
         <button type="button" className="runs-run-link runs-run-button" aria-label={`Open ${run.title || 'Untitled run'} details`} onClick={() => onOpen(run.thread_id)}>
           <span className="runs-run-title strong">{run.title || 'Untitled run'}</span>
-          <code className="runs-run-identity">{run.thread_id}</code>
           <span className="runs-run-id">{isPhaseName(displayPhase) ? PHASE_LABELS[displayPhase] : 'Phase not recorded'}</span>
         </button>
+        <CopyableId value={run.thread_id} label="run ID" />
       </td>
       <td>
         <span className="runs-story-cell">{run.project_id ?? EM_DASH}</span>
@@ -201,13 +207,12 @@ function RunRow({
           >
             Open run
           </button>
-          <OverflowMenu
+          {canRerun && <OverflowMenu
             label={`Run actions: ${run.title || run.thread_id}`}
             items={[
-              ...(canRerun ? [{ label: 'Re-run…', onSelect: () => onRerun(run.thread_id) }] : []),
-              { label: 'Copy run ID', onSelect: () => { void navigator.clipboard?.writeText(run.thread_id) } },
+              { label: 'Re-run…', onSelect: () => onRerun(run.thread_id) },
             ]}
-          />
+          />}
         </div>
       </td>
     </tr>
@@ -252,13 +257,7 @@ function RunMasterListItem({
 }
 
 function RunsSkeleton() {
-  return (
-    <div className="runs-skeleton" role="status" aria-busy="true" aria-label="Loading runs">
-      {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-        <div key={i} className="glass-panel runs-skeleton-row" />
-      ))}
-    </div>
-  )
+  return <Skeleton label="Loading runs" rows={6} />
 }
 
 /**
@@ -417,7 +416,9 @@ export function RunsListPage() {
 
   const { data, error, isPending, isError, isPlaceholderData, refetch } = usePipelines(filters)
 
-  const items = data?.items ?? []
+  const [sort, setSort] = useState<RunSort | null>(null)
+  const items = useMemo(() => sortRunPage(data?.items ?? [], sort), [data?.items, sort])
+  const onSort = (key: RunSortKey) => setSort(current => ({ key, direction: current?.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))
   const total = data?.total
   const nextDisabled =
     filters.offset >= RUNS_MAX_OFFSET ||
@@ -472,7 +473,7 @@ export function RunsListPage() {
 
   return (
     <section className="runs-page animate-enter">
-      <header className="runs-toolbar glass-panel">
+      <TableToolbar label="Run search and actions" filterCount={[filters.q, filters.status, filters.project].filter(Boolean).length} onClear={clearFilters} className="runs-toolbar glass-panel">
         <nav className="ux-actions runs-view-switch" aria-label="Test operations views">
           <Link className="btn btn-secondary" aria-current="page" to="/runs">All runs</Link>
           <Link className="btn btn-secondary" to="/approvals">Needs review</Link>
@@ -501,11 +502,6 @@ export function RunsListPage() {
             </option>
           ))}
         </select>
-        {hasActiveFilters(filters) && (
-          <button type="button" className="btn btn-ghost btn-sm" onClick={clearFilters}>
-            Clear filters
-          </button>
-        )}
         <button
           type="button"
           className={`btn btn-sm ${compareMode ? 'btn-secondary' : 'btn-ghost'}`}
@@ -515,8 +511,8 @@ export function RunsListPage() {
           Compare
         </button>
         {/* D2 minimal launch (live-UI agent); full wizard lands on /runs/new in D4. */}
-        <Link to="/runs/new" className="btn btn-primary">New Test</Link>
-      </header>
+        <Link to="/runs/new" className="btn btn-primary">New test</Link>
+      </TableToolbar>
       <details className="ux-filters"><summary>Filters{hasActiveFilters(filters) ? ' · Active' : ''}</summary><div>
         <label className="ux-field">Project<input className="field-input" aria-label="Filter by project" value={filters.project ?? ''} onChange={event => applyFilters({project:event.target.value || undefined,offset:0})} /></label>
         <p className="ux-context">Filters apply to the accessible run history. Use search to narrow run titles.</p>
@@ -529,26 +525,12 @@ export function RunsListPage() {
         <RunsSkeleton />
       ) : items.length === 0 ? (
         <>
-          <div className="dash-empty">
-            <h2>{filters.offset > 0 ? 'No more runs' : 'No runs found'}</h2>
-            {filters.offset > 0 ? (
-              <p className="dash-empty-hint">Return to the previous page to continue browsing.</p>
-            ) : hasActiveFilters(filters) ? (
-              <>
-                <p className="dash-empty-hint">No runs match the current filters.</p>
-                <button type="button" className="btn btn-secondary" onClick={clearFilters}>
-                  Clear filters
-                </button>
-              </>
-            ) : (
-              <>
-                <p className="dash-empty-hint">Launch your first pipeline run to see it here.</p>
-                <Link to="/runs/new" className="btn btn-primary runs-empty-cta">
-                  Start a new run
-                </Link>
-              </>
-            )}
-          </div>
+          <StateCard kind={hasActiveFilters(filters) ? 'filtered' : 'empty'} title={filters.offset > 0 ? 'No more runs' : 'No runs found'}
+            action={filters.offset > 0 ? null : hasActiveFilters(filters)
+              ? <button type="button" className="btn btn-secondary" onClick={clearFilters}>Clear filters</button>
+              : <Link to="/runs/new" className="btn btn-primary">Start a new run</Link>}>
+            <p>{filters.offset > 0 ? 'Return to the previous page to continue browsing.' : hasActiveFilters(filters) ? 'No runs match the current filters.' : 'Launch your first run to see it here.'}</p>
+          </StateCard>
           {filters.offset > 0 && paginationFooter}
         </>
       ) : (
@@ -594,7 +576,7 @@ export function RunsListPage() {
               <aside className="runs-master-list glass-panel" aria-label="Run history">
                 <div className="runs-master-list-head">
                   <div>
-                    <span className="home-section-title">Test History</span>
+                    <span className="home-section-title">Run history</span>
                     <strong>{rangeCaption}</strong>
                   </div>
                   <button type="button" className="btn btn-ghost btn-sm" onClick={closeRunWorkspace}>
@@ -631,6 +613,7 @@ export function RunsListPage() {
             <>
               <div className="data-table-wrap">
                 <table className="data-table striped runs-table">
+                  <caption className="ux-context">Sorting applies to this page.</caption>
                   <thead>
                     <tr>
                       {compareMode && (
@@ -638,14 +621,16 @@ export function RunsListPage() {
                           <span className="sr-only">Select for compare</span>
                         </th>
                       )}
-                      <th>Run</th>
-                      <th>Project</th>
-                      <th>Application</th>
-                      <th>Progress</th>
-                      <th>Created</th>
-                      <th title="Time from creation to last update, including review waits; not execution duration">Elapsed snapshot</th>
-                      <th>Test result</th>
-                      <th>Status</th>
+                      {([
+                        ['title', 'Run'], ['project', 'Project'], ['application', 'Application'],
+                        ['progress', 'Progress'], ['created', 'Created'], ['elapsed', 'Elapsed snapshot'],
+                        ['result', 'Test result'], ['status', 'Status'],
+                      ] as const).map(([key, label]) => (
+                        <SortableHeader key={key} active={sort?.key === key} direction={sort?.direction ?? 'asc'}
+                          label={`Sort this page by ${label}`} onSort={() => onSort(key)}>
+                          {key === 'elapsed' ? <span title="Time from creation to last update, including review waits; not execution duration">{label}</span> : label}
+                        </SortableHeader>
+                      ))}
                       <th className="runs-actions-cell">Actions</th>
                     </tr>
                   </thead>

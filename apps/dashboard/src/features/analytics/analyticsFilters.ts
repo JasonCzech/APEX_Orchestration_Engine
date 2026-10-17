@@ -37,6 +37,7 @@ export interface AnalyticsFilters {
   sort?: AgentSort
   dir?: AgentOrder
   offset?: number
+  limit?: number
 }
 
 export function isBucket(value: unknown): value is Bucket {
@@ -128,6 +129,8 @@ export function parseAnalyticsFilters(params: URLSearchParams): AnalyticsFilters
     ...(isStatus(status) ? { status } : {}),
     ...(isSort(sort) ? { sort } : {}),
     ...(isOrder(dir) ? { dir } : {}),
+    ...(parseIntParam(params.get('limit'), 100)
+      ? { limit: parseIntParam(params.get('limit'), 100) } : {}),
     ...(parseIntParam(params.get('offset'), ANALYTICS_MAX_OFFSET)
       ? { offset: parseIntParam(params.get('offset'), ANALYTICS_MAX_OFFSET) }
       : {}),
@@ -152,6 +155,7 @@ export function serializeAnalyticsFilters(filters: AnalyticsFilters): URLSearchP
   if (filters.sort) params.set('sort', filters.sort)
   if (filters.dir) params.set('dir', filters.dir)
   if (filters.offset) params.set('offset', String(filters.offset))
+  if (filters.limit && filters.limit !== DEFAULT_LIMIT) params.set('limit', String(filters.limit))
   return params
 }
 

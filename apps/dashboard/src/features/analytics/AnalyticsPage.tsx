@@ -1,3 +1,9 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { TableToolbar } from '@/components/ux/TableToolbar'
+import { Pagination, type PageSelection } from '@/components/ux/Pagination'
+import { SortableHeader } from '@/components/ux/SortableHeader'
+import { CHART_TOOLTIP_STYLE } from '@/utils/chartTheme'
 import { useCallback, useEffect, useId, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import {
@@ -37,7 +43,6 @@ import {
   MEASURES,
   defaultSortFor,
   effectiveBucket,
-  hasAnalyticsFilters,
   parseAnalyticsFilters,
   serializeAnalyticsFilters,
   type AnalyticsFilters,
@@ -61,13 +66,6 @@ const CHART_COLORS = [
 const TOP_N_BARS = 10
 const AGENT_OPTIONS = PHASE_NAMES.map((phase) => `${phase}.worker`)
 
-const TOOLTIP_CONTENT_STYLE: React.CSSProperties = {
-  background: 'var(--bg-elevated)',
-  border: '1px solid var(--border)',
-  borderRadius: 8,
-  color: 'var(--text-primary)',
-  fontSize: 11,
-}
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
@@ -90,9 +88,9 @@ function truncate(value: string, max = 24): string {
 function labelForGroup(group: GroupBy): string {
   return {
     model: 'Model',
-    stage: 'Stage',
+    stage: 'Phase',
     agent: 'Worker agent',
-    test: 'Test',
+    test: 'Run',
     date: 'Date',
   }[group]
 }
@@ -142,19 +140,7 @@ function StatCard({
 }
 
 function AnalyticsSkeleton() {
-  return (
-    <div role="status" aria-busy="true" aria-label="Loading agent analytics">
-      <div className="stat-cards">
-        {Array.from({ length: 5 }, (_, i) => (
-          <div key={i} className="glass-panel stat-card analytics-skeleton-card" />
-        ))}
-      </div>
-      <div className="analytics-charts">
-        <div className="glass-panel chart-panel analytics-skeleton-chart" />
-        <div className="glass-panel chart-panel analytics-skeleton-chart" />
-      </div>
-    </div>
-  )
+  return <Skeleton label="Loading agent analytics" rows={5} />
 }
 
 function SegmentControl<T extends string>({
@@ -248,7 +234,7 @@ function agentQuery(filters: AnalyticsFilters, group: GroupBy, measure: Measure,
     ...(filters.status ? { status: filters.status } : {}),
     sort: filters.sort ?? defaultSortFor(measure),
     order: filters.dir ?? 'desc',
-    limit: DEFAULT_LIMIT,
+    limit: filters.limit ?? DEFAULT_LIMIT,
     offset: filters.offset ?? 0,
   }
 }
@@ -426,7 +412,7 @@ function AgentUsageCharts({
               tickFormatter={(value) => formatMeasure(Number(value), measure)}
             />
             <Tooltip
-              contentStyle={TOOLTIP_CONTENT_STYLE}
+              contentStyle={CHART_TOOLTIP_STYLE}
               isAnimationActive={false}
               labelFormatter={(iso) => bucketTick(bucket)(String(iso))}
               formatter={(value, name) => [formatMeasure(Number(value), measure), name]}
@@ -479,7 +465,7 @@ function AgentUsageCharts({
               interval={0}
             />
             <Tooltip
-              contentStyle={TOOLTIP_CONTENT_STYLE}
+              contentStyle={CHART_TOOLTIP_STYLE}
               isAnimationActive={false}
               cursor={{ fill: 'var(--bg-hover)' }}
               formatter={(value) => [formatMeasure(Number(value), measure), labelForMeasure(measure)]}
@@ -525,7 +511,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
             <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="bucket_start" tickFormatter={bucketTick(data.window.bucket)} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
             <YAxis tickFormatter={(value) => formatTokens(Number(value))} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={54} />
-            <Tooltip contentStyle={TOOLTIP_CONTENT_STYLE} isAnimationActive={false} formatter={(value) => formatTokens(Number(value))} />
+            <Tooltip contentStyle={CHART_TOOLTIP_STYLE} isAnimationActive={false} formatter={(value) => formatTokens(Number(value))} />
             <Area type="monotone" dataKey="input" name="input" stroke="var(--chart-1)" fill="var(--chart-1)" fillOpacity={0.16} dot={false} isAnimationActive={false} />
             <Area type="monotone" dataKey="output" name="output" strokeDasharray="8 4" stroke="var(--chart-5)" fill="var(--chart-5)" fillOpacity={0.12} dot={{ r: 3 }} isAnimationActive={false} />
           </AreaChart>
@@ -539,7 +525,7 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
               <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="bucket_start" tickFormatter={bucketTick(data.window.bucket)} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
               <YAxis tickFormatter={(value) => formatCost(Number(value))} tick={{ fontSize: 10 }} tickLine={false} axisLine={false} width={54} />
-              <Tooltip contentStyle={TOOLTIP_CONTENT_STYLE} isAnimationActive={false} formatter={(value) => formatCost(Number(value))} />
+              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} isAnimationActive={false} formatter={(value) => formatCost(Number(value))} />
               <Area type="monotone" dataKey="cost" name="cost" stroke="var(--chart-3)" fill="var(--chart-3)" fillOpacity={0.14} dot={false} isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
@@ -552,11 +538,6 @@ function TokenSplitCharts({ data }: { data: AgentAnalytics }) {
 function nextSort(current: AgentSort, currentDir: AgentOrder, next: AgentSort): AgentOrder {
   if (current !== next) return 'desc'
   return currentDir === 'desc' ? 'asc' : 'desc'
-}
-
-function sortState(active: boolean, dir: AgentOrder): 'ascending' | 'descending' | 'none' {
-  if (!active) return 'none'
-  return dir === 'asc' ? 'ascending' : 'descending'
 }
 
 function AgentBreakdownTable({
@@ -576,10 +557,9 @@ function AgentBreakdownTable({
   onSort: (sort: AgentSort) => void
   onFilter: (group: GroupBy, value: string) => void
   onZoomDate: (iso: string) => void
-  onPage: (offset: number) => void
+  onPage: (page: PageSelection) => void
 }) {
   const page = data.page
-  const prevDisabled = page.offset <= 0
   const nextDisabled =
     page.offset >= ANALYTICS_MAX_OFFSET || page.offset + page.limit >= page.total
   const reachedResultWindow =
@@ -591,15 +571,7 @@ function AgentBreakdownTable({
       : `${page.offset + 1}-${Math.min(page.offset + data.breakdown.length, page.total)} of ${page.total}`
 
   function SortHead({ id, children }: { id: AgentSort; children: React.ReactNode }) {
-    const active = sort === id
-    return (
-      <th scope="col" aria-sort={sortState(active, dir)}>
-        <button type="button" className="analytics-sort" onClick={() => onSort(id)}>
-          {children}
-          <span aria-hidden="true">{active ? (dir === 'asc' ? '↑' : '↓') : ''}</span>
-        </button>
-      </th>
-    )
+    return <SortableHeader active={sort === id} direction={dir} onSort={() => onSort(id)} className="analytics-sort">{children}</SortableHeader>
   }
 
   return (
@@ -641,24 +613,8 @@ function AgentBreakdownTable({
       )}
       <footer className="analytics-pagination">
         <span className="analytics-pagination-caption">{caption}</span>
-        <div className="analytics-pagination-buttons">
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={prevDisabled}
-            onClick={() => onPage(Math.max(0, page.offset - page.limit))}
-          >
-            Previous
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            disabled={nextDisabled}
-            onClick={() => onPage(Math.min(ANALYTICS_MAX_OFFSET, page.offset + page.limit))}
-          >
-            Next
-          </button>
-        </div>
+        <Pagination label="Analytics" offset={page.offset} limit={page.limit} options={[10, 20, 50, 100]}
+          hasNext={!nextDisabled} pending={false} onChange={({ offset, limit }) => onPage({ offset: Math.min(ANALYTICS_MAX_OFFSET, offset), limit })} />
       </footer>
     </>
   )
@@ -796,7 +752,7 @@ export function AnalyticsPage() {
 
   return (
     <section className="analytics-page animate-enter">
-      <header className="analytics-toolbar glass-panel">
+      <TableToolbar label="Analytics filters" filterCount={[filters.from || filters.to, filters.project, filters.model?.length, filters.stage?.length, filters.agent?.length, filters.test, filters.status].filter(Boolean).length} onClear={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams()) }} className="analytics-toolbar glass-panel">
         <WindowPresets
           value={{ ...(filters.from || data?.window.from ? { from: filters.from ?? data?.window.from } : {}), ...(filters.to || data?.window.to ? { to: filters.to ?? data?.window.to } : {}) }}
           onChange={(window) => applyFilters({ from: window.from, to: window.to, offset: undefined })}
@@ -805,7 +761,7 @@ export function AnalyticsPage() {
           label="Group by"
           value={group}
           options={GROUP_BYS}
-          labels={{ model: 'Model', stage: 'Stage', agent: 'Agent', test: 'Test', date: 'Date' }}
+          labels={{ model: 'Model', stage: 'Phase', agent: 'Agent', test: 'Run', date: 'Date' }}
           onChange={setGroup}
         />
         <SegmentControl
@@ -827,8 +783,8 @@ export function AnalyticsPage() {
         <input
           type="search"
           className="field-input analytics-test"
-          placeholder="test or run id..."
-          aria-label="Filter by test"
+          placeholder="Run ID…"
+          aria-label="Filter by run"
           value={test}
           onChange={(event) => setTest(event.target.value)}
         />
@@ -850,20 +806,8 @@ export function AnalyticsPage() {
             </button>
           ))}
         </div>
-        {hasAnalyticsFilters(filters) && (
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={() => {
-              setProject('')
-              setTest('')
-              setSearchParams(new URLSearchParams())
-            }}
-          >
-            Clear filters
-          </button>
-        )}
-      </header>
+
+      </TableToolbar>
 
       {data && <p className="ux-context">{formatTimestamp(data.window.from)} – {formatTimestamp(data.window.to)} · {data.window.bucket} buckets in UTC. All metrics cover events recorded in this window. Worker latency excludes review waits for new events; older events may include reviews.</p>}
       <section className="analytics-filter-pickers glass-panel" aria-label="Agent filters">
@@ -914,10 +858,9 @@ export function AnalyticsPage() {
           )}
 
           {isEmptyWindow ? (
-            <div className="dash-empty">
-              <h2>No agent events in this window</h2>
-              <p className="dash-empty-hint">Try a wider time window or clear a model, agent, or test filter.</p>
-            </div>
+            <StateCard kind="filtered" title="No agent events in this window" action={<button type="button" className="btn btn-secondary" onClick={() => { setProject(''); setTest(''); setSearchParams(new URLSearchParams()) }}>Reset window and filters</button>}>
+              <p>Try a wider time window or clear a model, agent, or run filter.</p>
+            </StateCard>
           ) : (
             <>
               <AgentUsageCharts
@@ -935,7 +878,7 @@ export function AnalyticsPage() {
                 onSort={onSort}
                 onFilter={addBreakdownFilter}
                 onZoomDate={zoomDate}
-                onPage={(offset) => applyFilters({ offset })}
+                onPage={(page) => applyFilters(page)}
               />
             </>
           )}

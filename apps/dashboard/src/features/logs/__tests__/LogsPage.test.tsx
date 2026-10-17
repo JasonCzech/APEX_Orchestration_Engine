@@ -150,7 +150,7 @@ describe('LogsPage', () => {
     renderLogs('?thread=run-123')
 
     await screen.findByRole('table')
-    expect(screen.getByRole('textbox', { name: 'Thread id filter' })).toHaveValue('run-123')
+    expect(screen.getByRole('textbox', { name: 'Run ID filter' })).toHaveValue('run-123')
     // The deep link searches with the conventional thread_id exact-match filter.
     expect(logs.captured).toHaveLength(1)
     expect(logs.captured[0]!.query?.filters).toEqual({ thread_id: 'run-123' })

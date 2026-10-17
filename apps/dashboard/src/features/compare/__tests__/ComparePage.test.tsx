@@ -56,7 +56,7 @@ describe('ComparePage', () => {
   it('shows the selection empty state when fewer than 2 ids are given', async () => {
     renderCompare(`/runs/compare?ids=${RUN_A_ID}`)
 
-    expect(await screen.findByRole('heading', { level: 2, name: 'Compare Runs' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { level: 2, name: 'Choose runs to compare' })).toBeInTheDocument()
     expect(screen.getByText(/One run selected — comparison needs at least two/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Go to runs' })).toHaveAttribute('href', '/runs')
   })

@@ -7,7 +7,7 @@ describe('operator results and phase consistency', () => {
     expect(executionResultLabel({ execution_result: 'passed', phase_strip: [{ phase: 'execution', status: 'succeeded' }] })).toBe('Passed')
     expect(executionResultLabel({})).toBe('Not available')
     expect(executionResultLabel({ execution_result: null })).toBe('Not available')
-    expect(orchestrationStatusLabel('interrupted')).toBe('Awaiting approval')
+    expect(orchestrationStatusLabel('interrupted')).toBe('Awaiting review')
   })
   it('uses validated state over a stale summary and excludes unselected phases', () => {
     const strip = normalizedPhases({ phases_plan: ['execution', 'reporting'], phase_results: { execution: { status: 'failed' }, reporting: { status: 'pending' } } }, [{ phase: 'execution', status: 'succeeded' }, { phase: 'reporting', status: 'succeeded' }])

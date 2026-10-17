@@ -1,3 +1,6 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { TableToolbar } from '@/components/ux/TableToolbar'
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
@@ -23,7 +26,6 @@ import {
 } from './logsFilters'
 import './logs.css'
 
-const SKELETON_ROWS = 8
 
 /** Logs default to short windows (server default = last hour when unset). */
 const LOG_WINDOW_PRESETS: WindowPreset[] = [
@@ -76,13 +78,7 @@ function LogRow({ entry }: { entry: LogEntry }) {
 }
 
 function LogsSkeleton() {
-  return (
-    <div className="logs-skeleton" role="status" aria-busy="true" aria-label="Searching logs">
-      {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-        <div key={i} className="glass-panel logs-skeleton-row" />
-      ))}
-    </div>
-  )
+  return <Skeleton label="Searching logs" rows={8} />
 }
 
 /**
@@ -180,7 +176,7 @@ export function LogsPage() {
   return (
     <section className="logs-page animate-enter">
       <form className="logs-toolbar glass-panel" role="search" aria-label="Log search" onSubmit={onSubmit}>
-        <div className="logs-toolbar-row">
+        <TableToolbar label="Log query" className="logs-toolbar-row">
           <label className="logs-query-field">
             <span>Search query</span>
             <input
@@ -195,8 +191,8 @@ export function LogsPage() {
           <button type="submit" className="btn btn-primary">
             Search
           </button>
-        </div>
-        <div className="logs-toolbar-row">
+        </TableToolbar>
+        <TableToolbar label="Log filters" filterCount={[committed.q, committed.from || committed.to, committed.thread, committed.service, committed.level].filter(Boolean).length} onClear={() => { setForm({}); setSearchParams(new URLSearchParams()); setSubmitted(null); setOffset(0) }} className="logs-toolbar-row">
           <label className="logs-filter-field">
             <span>Time window</span>
             <WindowPresets
@@ -235,12 +231,12 @@ export function LogsPage() {
               type="text"
               className="field-input logs-thread"
               placeholder="Any run"
-              aria-label="Thread id filter"
+              aria-label="Run ID filter"
               value={form.thread ?? ''}
               onChange={(event) => patchForm({ thread: event.target.value })}
             />
           </label>
-        </div>
+        </TableToolbar>
       </form>
 
       {form.thread && (
@@ -259,12 +255,9 @@ export function LogsPage() {
       )}
 
       {!submitted ? (
-        <div className="dash-empty">
-          <h2>Search the logs</h2>
-          <p className="dash-empty-hint">
-            Set a window and filters, then press Search — nothing runs on keystrokes.
-          </p>
-        </div>
+        <StateCard kind="empty" title="Search the logs" action={<button type="button" className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('.logs-query')?.focus()}>Enter a query</button>}>
+          <p>Set a window and filters, then press Search — nothing runs on keystrokes.</p>
+        </StateCard>
       ) : queryRejected && !hasCurrentData ? (
         <>
           <section className="glass-panel logs-query-error" role="alert">
@@ -299,10 +292,9 @@ export function LogsPage() {
             <CachedDataWarning error={error} onRetry={() => void refetch()} />
           )}
           {entries.length === 0 ? (
-            <div className="dash-empty">
-              <h2>No log entries in this window</h2>
-              <p className="dash-empty-hint">Widen the time window or relax the filters.</p>
-            </div>
+            <StateCard kind="filtered" title="No log entries in this window" action={<button type="button" className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('.logs-query')?.focus()}>Adjust search</button>}>
+              <p>Widen the time window or relax the filters.</p>
+            </StateCard>
           ) : (
             <div className="data-table-wrap">
               <table className="data-table striped logs-table">

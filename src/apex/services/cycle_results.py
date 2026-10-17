@@ -70,7 +70,8 @@ def result_view(run: Any) -> CycleResult:
             outcome = "failed"
     if run.status != "completed":
         warnings.append(
-            "Test outcome is unavailable until execution completes; the recorded evidence may be partial."
+            "Test outcome is unavailable until execution completes; "
+            "the recorded evidence may be partial."
         )
     kpis = summary["kpis"] if summary else {}
     metrics = []

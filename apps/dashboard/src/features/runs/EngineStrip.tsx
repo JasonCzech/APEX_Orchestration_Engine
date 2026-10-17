@@ -1,3 +1,4 @@
+import { CHART_TOOLTIP_STYLE } from '@/utils/chartTheme'
 import { TabList } from '@/components/ux/TabList'
 import { formatPercentRate } from '@/utils/metrics'
 import { useId, useMemo, useState } from 'react'
@@ -55,13 +56,6 @@ const METRICS: MetricDef[] = [
   { key: 'p95_ms', label: 'P95', color: 'var(--chart-3)', format: (v) => `${Math.round(v)} ms` },
 ]
 
-const TOOLTIP_CONTENT_STYLE: React.CSSProperties = {
-  background: 'var(--bg-elevated)',
-  border: '1px solid var(--border)',
-  borderRadius: 8,
-  color: 'var(--text-primary)',
-  fontSize: 11,
-}
 
 function metricValue(sample: LiveEngineSample | null | undefined, key: MetricKey): number | null {
   const value = sample?.live_stats?.[key]
@@ -137,7 +131,7 @@ export function EngineStrip({
               width={44}
             />
             <Tooltip
-              contentStyle={TOOLTIP_CONTENT_STYLE}
+              contentStyle={CHART_TOOLTIP_STYLE}
               isAnimationActive={false}
               labelFormatter={(tick) => `tick ${String(tick)}`}
               formatter={(value) => [

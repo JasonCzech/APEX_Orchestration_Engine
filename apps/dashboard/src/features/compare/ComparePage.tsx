@@ -1,3 +1,5 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { useCallback, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
@@ -43,39 +45,17 @@ function errorMessage(error: unknown): string {
   return 'This run could not be loaded.'
 }
 
-/** <2 ids — explain how to build a selection from /runs. The h2 matches the
- * route handle so shell-level routing tests keyed on "Compare Runs" hold. */
+/** Explain how to build a comparison from the runs list. */
 function CompareEmpty({ count }: { count: number }) {
   return (
-    <div className="dash-empty">
-      <h2>Compare Runs</h2>
-      <p className="dash-empty-hint">
-        {count === 1
-          ? 'One run selected — comparison needs at least two.'
-          : 'No runs selected.'}{' '}
-        Pick 2–{MAX_COMPARE_RUNS} runs on the runs list (toggle [Compare], tick the rows, then hit
-        Compare), or pass ?ids=a,b in the URL.
-      </p>
-      <Link to="/runs" className="btn btn-primary compare-empty-cta">
-        Go to runs
-      </Link>
-    </div>
+    <StateCard kind="empty" title="Choose runs to compare" action={<Link to="/runs" className="btn btn-primary">Go to runs</Link>}>
+      <p>{count === 1 ? 'One run selected — comparison needs at least two.' : 'No runs selected.'} Pick 2–{MAX_COMPARE_RUNS} runs on the runs list, then select Compare.</p>
+    </StateCard>
   )
 }
 
 function CompareSkeleton() {
-  return (
-    <div
-      className="compare-skeleton"
-      role="status"
-      aria-busy="true"
-      aria-label="Loading comparison"
-    >
-      {Array.from({ length: 3 }, (_, i) => (
-        <div key={i} className="glass-panel compare-skeleton-row" />
-      ))}
-    </div>
-  )
+  return <Skeleton label="Loading comparison" rows={3} />
 }
 
 /** [Add run] — recent runs via usePipelines, excluding already-selected ids.

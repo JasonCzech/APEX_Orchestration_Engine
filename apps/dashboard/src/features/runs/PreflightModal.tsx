@@ -6,11 +6,8 @@
  * Warn-don't-block: blocked rows render as danger and a caption warns that
  * the server will reject at plan resolution, but Start stays enabled — the
  * backend plan_resolver is the authority.
- *
- * Also exports OverflowMenu, the small glass dropdown both entry points share
- * (menu role, Escape/outside-click close, arrow-key focus).
  */
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -202,114 +199,5 @@ function ReadinessItem({ row }: { row: ReadinessRow }) {
   )
 }
 
-/* ── OverflowMenu — shared glass dropdown for the re-run entry points ────── */
-
-export interface OverflowMenuItem {
-  label: string
-  onSelect: () => void
-  disabled?: boolean
-}
-
-export interface OverflowMenuProps {
-  /** Accessible name of the trigger button and the menu. */
-  label: string
-  items: OverflowMenuItem[]
-  /** Trigger content; defaults to the kebab glyph. */
-  trigger?: ReactNode
-  className?: string
-}
-
-export function OverflowMenu({ label, items, trigger = '⋯', className = '' }: OverflowMenuProps) {
-  const [open, setOpen] = useState(false)
-  const rootRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const listRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return undefined
-    function onDocMouseDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', onDocMouseDown)
-    return () => document.removeEventListener('mousedown', onDocMouseDown)
-  }, [open])
-
-  // Focus the first item when the menu opens (menu-button pattern).
-  useEffect(() => {
-    if (open) {
-      listRef.current
-        ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
-        ?.focus()
-    }
-  }, [open])
-
-  function moveFocus(delta: 1 | -1) {
-    const nodes = listRef.current?.querySelectorAll<HTMLButtonElement>(
-      '[role="menuitem"]:not(:disabled)',
-    )
-    if (!nodes || nodes.length === 0) return
-    const list = Array.from(nodes)
-    const index = list.indexOf(document.activeElement as HTMLButtonElement)
-    const next = list[(index + delta + list.length) % list.length]
-    next?.focus()
-  }
-
-  function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key === 'Escape') {
-      event.stopPropagation()
-      setOpen(false)
-      triggerRef.current?.focus()
-    } else if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      moveFocus(1)
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      moveFocus(-1)
-    }
-  }
-
-  return (
-    <div
-      className={`overflow-menu ${className}`.trim()}
-      ref={rootRef}
-      onKeyDown={onKeyDown}
-      // Entry point 2 mounts this inside a clickable grid row — opening the
-      // menu or picking an item must never trigger the row navigation.
-      onClick={(event) => event.stopPropagation()}
-    >
-      <button
-        type="button"
-        ref={triggerRef}
-        className="overflow-menu-trigger"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={label}
-        onClick={() => setOpen((value) => !value)}
-      >
-        {trigger}
-      </button>
-      {open && (
-        <div className="overflow-menu-list glass-panel" role="menu" aria-label={label} ref={listRef}>
-          {items.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              role="menuitem"
-              className="overflow-menu-item"
-              disabled={item.disabled}
-              onClick={() => {
-                if (item.disabled) return
-                setOpen(false)
-                item.onSelect()
-              }}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
+// Compatibility export while callers move to the shared component.
+export { OverflowMenu } from '@/components/ux/OverflowMenu'

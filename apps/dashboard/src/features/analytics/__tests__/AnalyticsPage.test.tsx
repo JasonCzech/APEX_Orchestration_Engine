@@ -90,10 +90,10 @@ describe('AnalyticsPage', () => {
     expect(request.get('offset')).toBe('20')
 
     expect(screen.getByRole('searchbox', { name: 'Filter by project' })).toHaveValue('proj-alpha')
-    expect(screen.getByRole('searchbox', { name: 'Filter by test' })).toHaveValue('run-succeeded')
+    expect(screen.getByRole('searchbox', { name: 'Filter by run' })).toHaveValue('run-succeeded')
     const groupControl = screen.getByRole('group', { name: 'Group by' })
     const measureControl = screen.getByRole('group', { name: 'Measure' })
-    expect(within(groupControl).getByRole('button', { name: 'Stage' })).toHaveAttribute(
+    expect(within(groupControl).getByRole('button', { name: 'Phase' })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
@@ -126,6 +126,21 @@ describe('AnalyticsPage', () => {
     expect(last.get('bucket')).toBe('hour')
     expect(last.get('from')).toBe(params.get('from'))
     expect(last.get('to')).toBe(params.get('to'))
+  })
+
+  it('changes breakdown rows and resets a later page in one query', async () => {
+    const analytics = agentAnalyticsHandler()
+    server.use(analytics.handler)
+    const user = userEvent.setup()
+    const { router } = renderAnalytics('?offset=20')
+    await screen.findByTestId('analytics-breakdown-table')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Analytics rows per page' }), '50')
+    await waitFor(() => {
+      const params = new URLSearchParams(router.state.location.search)
+      expect(params.get('limit')).toBe('50')
+      expect(params.get('offset')).toBeNull()
+      expect(analytics.captured.some(params => params.get('limit') === '50' && params.get('offset') === null)).toBe(true)
+    })
   })
 
   it('renders agent KPI cards, charts, and sortable breakdown table', async () => {
@@ -248,7 +263,7 @@ describe('AnalyticsPage', () => {
 
     await screen.findByTestId('analytics-cards')
     await user.click(
-      within(screen.getByRole('group', { name: 'Group by' })).getByRole('button', { name: 'Stage' }),
+      within(screen.getByRole('group', { name: 'Group by' })).getByRole('button', { name: 'Phase' }),
     )
     await waitFor(() =>
       expect(analytics.captured[analytics.captured.length - 1]!.get('group_by')).toBe('stage'),
@@ -263,7 +278,7 @@ describe('AnalyticsPage', () => {
       expect(analytics.captured[analytics.captured.length - 1]!.get('sort')).toBe('p95_latency_ms'),
     )
     expect(screen.getByTestId('analytics-agent-series-chart')).toHaveTextContent(
-      /Latency over time by stage/i,
+      /Latency over time by phase/i,
     )
   })
 
