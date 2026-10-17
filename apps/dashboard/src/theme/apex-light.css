@@ -1,4 +1,16 @@
 :root[data-theme='apex-light'] {
+  color-scheme: light;
+  --accent-text: var(--accent);
+  --subtle-fill-strong: rgba(26, 26, 46, 0.07);
+  --danger-fill: #ca313f;
+  --danger-fill-text: #ffffff;
+  --warning-fill-text: #ffffff;
+  --brand-highlight: #00a8e0;
+  --tab-link: #0075a5;
+  --tag-bg: #e5f6fc;
+  --tag-text: #1a1a2e;
+  --chart-7: #5533ff;
+  --chart-8: #6b3d00;
   --bg-primary: #f5f7fa;
   --bg-secondary: #f0f3f7;
   --bg-card: #ffffff;
@@ -77,8 +89,8 @@
   --run-calendar-ad-hoc-border: #d4c5f0;
   --run-calendar-ad-hoc-text: #6f42c1;
 
-  --radius: 12px;
-  --font-sans: 'Nunito', 'Inter', system-ui, sans-serif;
+  --radius: 16px;
+  --font-sans: 'Nunito Variable', 'Inter Variable', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
 }
 
@@ -120,7 +132,7 @@
 [data-theme='apex-light'] .dash-context-chip,
 [data-theme='apex-light'] .status-badge,
 [data-theme='apex-light'] .topbar-meta-chip {
-  border-radius: 20px;
+  border-radius: 4px;
 }
 
 [data-theme='apex-light'] .theme-select,

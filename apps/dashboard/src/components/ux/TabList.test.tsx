@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { TabList } from './TabList'
 function Example() {
   const [value, setValue] = useState('one')
@@ -39,4 +39,12 @@ describe('APEX tabs', () => {
     await user.keyboard('{End}{ArrowRight}')
     expect(screen.getByRole('tab', { name: 'Summary' })).toHaveFocus()
   })
+  it('locks all tab interactions during a write', async () => {
+    const onChange = vi.fn()
+    render(<TabList disabled label="Locked tabs" value="one" onChange={onChange} items={[{ id: 'one', label: 'Summary' }, { id: 'two', label: 'Details' }]} />)
+    expect(screen.getByRole('tab', { name: 'Summary' })).toBeDisabled()
+    await userEvent.click(screen.getByRole('tab', { name: 'Details' }))
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
 })

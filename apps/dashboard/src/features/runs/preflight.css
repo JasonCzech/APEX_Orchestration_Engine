@@ -7,13 +7,13 @@
 .preflight-overlay {
   position: fixed;
   inset: 0;
-  background: color-mix(in srgb, var(--bg-primary, #000) 55%, transparent);
-  backdrop-filter: blur(2px);
+  background: var(--modal-backdrop);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: flex-start;
   justify-content: center;
   padding-top: 10vh;
-  z-index: 60;
+  z-index: auto;
 }
 
 .preflight-modal {
@@ -28,20 +28,20 @@
 }
 
 .preflight-title {
-  font-size: 15px;
+  font-size: var(--font-size-lg);
   font-weight: 800;
   color: var(--text-primary);
   margin: 0;
 }
 
 .preflight-caption {
-  font-size: 11.5px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
   margin: 0;
 }
 
 .preflight-loading {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   padding: 18px 0;
   text-align: center;
@@ -60,7 +60,7 @@
   border-radius: 999px;
   background: var(--bg-secondary);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   padding: 4px 10px;
   cursor: pointer;
@@ -75,7 +75,7 @@
 .preflight-phase-toggle[aria-pressed='true'] {
   background: var(--accent-soft);
   border-color: var(--accent-border);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Readiness rows (tones: ok neutral, reuse accent, stale amber, blocked red). */
@@ -92,7 +92,7 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -106,10 +106,10 @@
 
 .preflight-row-phase {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.05em);
+  text-transform: var(--label-case, uppercase);
   color: var(--text-primary);
   min-width: 104px;
 }
@@ -158,7 +158,7 @@
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   padding: 5px 12px;
   cursor: pointer;
@@ -174,7 +174,7 @@
 
 .preflight-gates-segment[aria-pressed='true'] {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Footer. */
@@ -188,7 +188,7 @@
 
 .preflight-blocker-caption {
   margin-right: auto;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
   color: var(--danger-text);
 }
@@ -206,7 +206,7 @@
   border: 1px solid transparent;
   border-radius: 6px;
   color: var(--text-muted);
-  font-size: 14px;
+  font-size: var(--font-size-md);
   line-height: 1;
   padding: 2px 6px;
   cursor: pointer;
@@ -238,7 +238,7 @@
   border: none;
   border-radius: 7px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   text-align: left;
   padding: 6px 10px;
@@ -290,8 +290,8 @@
   border-left: none;
   border-radius: 0 999px 999px 0;
   background: var(--accent-soft);
-  color: var(--accent);
-  font-size: 11px;
+  color: var(--accent-text);
+  font-size: var(--font-size-xs);
   padding: 4px 8px;
 }
 

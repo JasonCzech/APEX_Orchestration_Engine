@@ -30,11 +30,11 @@
 }
 
 .analytics-control-label {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.06em);
 }
 
 .analytics-filter-pickers {
@@ -61,9 +61,9 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--label-tracking, 0.04em);
   padding: 3px 10px;
   transition: background var(--transition-fast), color var(--transition-fast),
     border-color var(--transition-fast);
@@ -86,7 +86,7 @@
 }
 
 .analytics-status .level-chip {
-  text-transform: uppercase;
+  text-transform: var(--label-case, uppercase);
 }
 
 /* ── Stat cards row ─────────────────────────────────────────────────────── */
@@ -105,10 +105,10 @@
 }
 
 .stat-label {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.06em);
   color: var(--text-muted);
 }
 
@@ -121,7 +121,7 @@
 }
 
 .stat-hint {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -160,10 +160,10 @@
 }
 
 .chart-title {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.06em);
   color: var(--text-secondary);
   margin-bottom: 10px;
 }
@@ -210,7 +210,7 @@ th[aria-sort='descending'] .analytics-sort {
 }
 
 .analytics-link-button:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .analytics-pagination {
@@ -221,7 +221,7 @@ th[aria-sort='descending'] .analytics-sort {
 }
 
 .analytics-pagination-caption {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
@@ -233,7 +233,7 @@ th[aria-sort='descending'] .analytics-sort {
 .analytics-result-window-note {
   margin: 0;
   color: var(--warning-text);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .analytics-zero-hint {
@@ -242,7 +242,7 @@ th[aria-sort='descending'] .analytics-sort {
   color: var(--warning-text);
   border-radius: 8px;
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .analytics-stale-banner {
@@ -251,7 +251,7 @@ th[aria-sort='descending'] .analytics-sort {
   color: var(--warning-text);
   border-radius: 8px;
   padding: 8px 12px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 /* ── Loading skeletons (card/chart shaped) ──────────────────────────────── */

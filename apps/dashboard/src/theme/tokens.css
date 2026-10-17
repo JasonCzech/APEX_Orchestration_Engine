@@ -16,17 +16,39 @@
   --bg-hover: rgba(255, 255, 255, 0.05);
   --border: rgba(255, 255, 255, 0.08);
   --border-subtle: rgba(255, 255, 255, 0.04);
+  --subtle-fill: rgba(255, 255, 255, 0.035);
+  --subtle-fill-strong: rgba(255, 255, 255, 0.07);
+
+  /* Shared compatibility aliases used by focused feature styles. */
+  --bg-input: var(--bg-primary);
+  --bg-active: var(--accent-soft);
+  --bg-tertiary: var(--bg-elevated);
+  --card-bg: var(--bg-card);
+  --primary: var(--accent);
+  --accent-transparent: color-mix(in srgb, var(--accent) 30%, transparent);
+  --text: var(--text-primary);
+  --warning-soft: var(--warning-bg);
+  --radius-sm: 8px;
+  /* Shared style for every theme: themes only change colour. */
+  --label-case: none;
+  --label-tracking: normal;
 
   --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  --text-muted: #94a3b8;
 
   /* Electric Violet Accent */
   --accent: #8b5cf6;
   --accent-rgb: 139, 92, 246;
   --accent-soft: rgba(139, 92, 246, 0.15);
   --accent-border: rgba(139, 92, 246, 0.4);
-  --accent-contrast: #ffffff;
+  --accent-contrast: #050508;
+  /* Logo wave: contrasts with both the accent tile and the accent-contrast letters. */
+  --logo-wave: #c4b5fd;
+  /* Text-safe accent and filled-danger tokens (≥4.5:1). */
+  --accent-text: #a78bfa;
+  --danger-fill: #dc2626;
+  --danger-fill-text: #ffffff;
   --accent-hover: #a78bfa;
 
   /* State Colors */
@@ -40,23 +62,34 @@
   --info-rgb: 59, 130, 246;
 
   /* Chart Colors (Vibrant Neon) */
-  --chart-1: #8b5cf6;
-  --chart-2: #10b981;
-  --chart-3: #f59e0b;
-  --chart-4: #ef4444;
-  --chart-5: #3b82f6;
-  --chart-6: #ec4899;
+  --chart-1: #895af4;
+  --chart-2: #17ac78;
+  --chart-3: #c8800d;
+  --chart-4: #da2d33;
+  --chart-5: #3a81f5;
+  --chart-6: #ed499a;
+  --chart-7: #a3e635;
+  --chart-8: #f0abfc;
 
   /* Premium Effects */
   --app-sheen: rgba(139, 92, 246, 0.05);
   --topbar-bg: rgba(5, 5, 8, 0.7);
   --control-bg: rgba(255, 255, 255, 0.03);
   --control-hover: rgba(255, 255, 255, 0.08);
+  --dropdown-menu-bg: var(--bg-secondary);
+  --select-bg: var(--bg-secondary);
+  --select-hover-bg: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary));
+  --select-menu-bg: var(--dropdown-menu-bg);
+  --select-arrow: var(--text-secondary);
   --theme-toggle-active-bg: #ffffff;
   --theme-toggle-active-text: #0f1117;
 
-  --glow-sm: 0 0 12px rgba(139, 92, 246, 0.15);
-  --glow-md: 0 4px 24px rgba(139, 92, 246, 0.25);
+  --glow-sm: 0 0 0 3px rgba(var(--accent-rgb), 0.15);
+  --glow-md: 0 6px 20px rgba(var(--accent-rgb), 0.12);
+  --brand-highlight: var(--accent);
+  --tab-link: var(--info-text);
+  --tag-bg: var(--info-bg);
+  --tag-text: var(--info-text);
   --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 16px 48px rgba(0, 0, 0, 0.6);
   --modal-backdrop: rgba(0, 0, 0, 0.75);
@@ -72,6 +105,8 @@
   --warning-bg: rgba(245, 158, 11, 0.1);
   --warning-border: rgba(245, 158, 11, 0.3);
   --warning-text: #fbbf24;
+  /* Text on a solid --warning fill (badges, warning buttons). */
+  --warning-fill-text: #111111;
 
   --danger-bg: rgba(239, 68, 68, 0.1);
   --danger-border: rgba(239, 68, 68, 0.3);
@@ -88,11 +123,14 @@
   --run-calendar-ad-hoc-border: color-mix(in srgb, var(--chart-3) 48%, var(--border));
   --run-calendar-ad-hoc-text: var(--chart-3);
 
-  --radius: 12px;
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 16px;
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);
   --transition-spring: 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  color-scheme: dark;
+
+  --font-sans: 'Inter Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+  --accent-results: var(--accent-text);
 }
 
 /* --- Base element resets — source: APEX Load index.css (post-theme blocks) --- */
@@ -135,7 +173,7 @@ h1, h2, h3, h4 {
    .nav-item supply more specific colors where appropriate. */
 a,
 a:visited {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 a:hover {

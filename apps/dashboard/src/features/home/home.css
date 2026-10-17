@@ -6,10 +6,10 @@
 
 .home-section-title {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.12em);
+  text-transform: var(--label-case, uppercase);
   color: var(--text-muted);
 }
 
@@ -22,9 +22,9 @@
 }
 
 .home-view-all {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: none;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
 }
 
@@ -68,10 +68,10 @@
 
 .home-metric-label {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.08em);
+  text-transform: var(--label-case, uppercase);
 }
 
 .home-metric-value {
@@ -83,7 +83,7 @@
 
 .home-metric-hint {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .home-signal-grid {
@@ -108,10 +108,10 @@
 .home-health-stat-label {
   display: block;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.04em);
+  text-transform: var(--label-case, uppercase);
   margin-bottom: 6px;
 }
 
@@ -124,7 +124,7 @@
 .home-signal-caption,
 .home-release-note {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .home-release-badges {
@@ -180,7 +180,7 @@
 .home-draft-updated,
 .home-recent-time {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   white-space: nowrap;
 }
 
@@ -199,7 +199,7 @@
 }
 
 .home-recent-link:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .home-quick-nav {

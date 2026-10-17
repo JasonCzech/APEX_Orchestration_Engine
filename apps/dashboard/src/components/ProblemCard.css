@@ -17,7 +17,7 @@
 
 .problem-card p {
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--font-size-md);
   line-height: 1.6;
 }
 

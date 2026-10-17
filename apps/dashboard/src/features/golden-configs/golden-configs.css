@@ -22,7 +22,7 @@
 
 .gc-page-hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
@@ -57,7 +57,7 @@
 }
 
 .gc-card-name {
-  font-size: 14px;
+  font-size: var(--font-size-md);
   font-weight: 700;
   color: var(--text-primary);
   overflow: hidden;
@@ -67,7 +67,7 @@
 
 .gc-card-description {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
 }
 
@@ -88,7 +88,7 @@
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -152,7 +152,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -166,14 +166,14 @@
 
 .gc-kv dt,
 .gc-kv-row dt {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
 .gc-kv dd,
 .gc-kv-row dd {
   margin: 0 0 6px;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   color: var(--text-primary);
 }
 
@@ -190,7 +190,7 @@
 
 .gc-muted {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
@@ -201,7 +201,7 @@
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
 }
 
@@ -222,7 +222,7 @@
 }
 
 .gc-skip-note {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -245,7 +245,7 @@
 }
 
 .gc-pin-key {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   background: var(--code-bg);
   color: var(--code-text);
   padding: 2px 6px;
@@ -256,7 +256,7 @@
 
 .gc-raw summary {
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -267,20 +267,20 @@
   border-radius: 8px;
   background: var(--code-bg);
   color: var(--code-text);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   overflow: auto;
   max-height: 420px;
 }
 
 .gc-json-editor {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   line-height: 1.5;
   resize: vertical;
 }
 
 .gc-form-error {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--danger-text, var(--danger));
 }

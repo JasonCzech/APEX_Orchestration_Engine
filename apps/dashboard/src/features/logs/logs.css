@@ -26,7 +26,7 @@
   flex-direction: column;
   gap: 4px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
 }
 
@@ -42,7 +42,7 @@
 .logs-query {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .logs-service {
@@ -52,7 +52,7 @@
 .logs-thread {
   width: 200px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .logs-context {
@@ -73,12 +73,12 @@
 
 .logs-context-label {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .logs-context code {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   overflow-wrap: anywhere;
 }
 
@@ -95,9 +95,9 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: var(--label-tracking, 0.04em);
   padding: 3px 10px;
   transition: background var(--transition-fast), color var(--transition-fast),
     border-color var(--transition-fast);
@@ -118,7 +118,7 @@
 
 .logs-table .log-time {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
   white-space: nowrap;
 }
@@ -126,7 +126,7 @@
 .logs-table .log-message {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .logs-table .log-expand-cell {
@@ -143,7 +143,7 @@
   margin: 0;
   padding: 8px 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--code-text);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -158,13 +158,13 @@
 }
 
 .logs-query-error h2 {
-  font-size: 14px;
+  font-size: var(--font-size-md);
   color: var(--danger-text);
   margin-bottom: 6px;
 }
 
 .logs-query-error p {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow-wrap: anywhere;
@@ -180,7 +180,7 @@
 }
 
 .logs-pagination-caption {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
 
@@ -192,7 +192,7 @@
 .logs-result-window-note {
   margin: 0;
   color: var(--warning-text);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 @keyframes logs-pulse {

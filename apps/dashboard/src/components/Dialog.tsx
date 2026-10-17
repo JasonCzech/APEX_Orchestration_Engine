@@ -106,7 +106,7 @@ export function Dialog({
   return createPortal(
     <div
       ref={overlayRef}
-      className={overlayClassName}
+      className={`ux-dialog-overlay ${overlayClassName}`}
       style={{ pointerEvents: 'auto' }}
       onMouseDown={(event) => {
         if (!isTopDialog(dialogTokenRef.current)) return
@@ -196,6 +196,7 @@ function getDialogPortalHost(): HTMLElement {
 
   const host = document.createElement('div')
   host.id = DIALOG_PORTAL_ID
+  host.className = 'ux-dialog-layer'
   host.style.position = 'fixed'
   host.style.inset = '0'
   host.style.zIndex = '1000'

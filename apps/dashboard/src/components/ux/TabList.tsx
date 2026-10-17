@@ -7,22 +7,25 @@ export function TabList<T extends string>({
   value,
   onChange,
   id: suppliedId,
+  disabled = false,
 }: {
   label: string
   items: readonly { id: T; label: string }[]
   value: T
   onChange: (id: T) => void
   id?: string
+  disabled?: boolean
 }) {
   const generatedId = useId()
   const id = suppliedId ?? generatedId
   return (
-    <div className="workspace-tabs" role="tablist" aria-label={label}>
+    <div className="workspace-tabs ux-underline-tabs" role="tablist" aria-label={label}>
       {items.map((item, index) => (
         <button
           key={item.id}
           id={`${id}-tab-${item.id}`}
           type="button"
+          disabled={disabled}
           role="tab"
           className="workspace-tab"
           aria-selected={value === item.id}
@@ -30,6 +33,7 @@ export function TabList<T extends string>({
           tabIndex={value === item.id ? 0 : -1}
           onClick={() => onChange(item.id)}
           onKeyDown={(event) => {
+            if (disabled) return
             const next =
               event.key === 'ArrowRight'
                 ? (index + 1) % items.length

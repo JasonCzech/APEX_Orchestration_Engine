@@ -15,7 +15,10 @@
   min-height: 32px;
 }
 .btn:disabled {
-  opacity: 0.45;
+  opacity: 1;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-color: var(--border);
   box-shadow: none;
   cursor: not-allowed;
 }
@@ -33,15 +36,7 @@
   background: var(--accent-soft);
   color: var(--text-primary);
 }
-button:focus-visible,
-a:focus-visible,
-select:focus-visible,
-input:focus-visible,
-textarea:focus-visible,
-summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
+
 .main-topbar {
   flex-wrap: wrap;
   gap: 12px;
@@ -70,7 +65,7 @@ summary:focus-visible {
   flex: 1;
 }
 .gate-module-header details {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
 }
 .gate-module-header code {
@@ -78,7 +73,7 @@ summary:focus-visible {
 }
 .gate-summary {
   max-width: 90ch;
-  font-size: 14px;
+  font-size: var(--font-size-md);
   line-height: 1.65;
 }
 .gate-next-action {
@@ -128,7 +123,7 @@ summary:focus-visible {
 }
 .ux-context {
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   overflow-wrap: anywhere;
 }
 .ux-filters {
@@ -180,7 +175,7 @@ summary:focus-visible {
   overflow-wrap: anywhere;
 }
 .code-viewer .cm-editor {
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }
 .code-viewer .cm-content span {
   color: var(--code-text);
@@ -230,7 +225,7 @@ summary:focus-visible {
   font-size: 18px;
 }
 .settings-page .settings-section p {
-  font-size: 13px;
+  font-size: var(--font-size-base);
   color: var(--text-secondary);
 }
 
@@ -272,7 +267,7 @@ nav[aria-label='Run sections'] { margin:12px 0 18px; }
 .radio-choices input { margin-right:8px; accent-color:var(--accent); }
 .settings-theme-card:focus-within { outline:2px solid var(--accent); outline-offset:3px; }
 .settings-theme-card input { accent-color:var(--accent); }
-.scope-context a, .wizard-caption a { color:var(--accent); text-underline-offset:3px; }
+.scope-context a, .wizard-caption a { color: var(--accent-text); text-underline-offset:3px; }
 .gate-decision-context { color:var(--text-secondary); font-size:.875rem; line-height:1.55; }
 .gate-decision-context p { margin:6px 0; }
 .runs-run-identity { display:block; font-size:.75rem; color:var(--text-muted); overflow-wrap:anywhere; white-space:normal; }

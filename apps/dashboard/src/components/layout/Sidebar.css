@@ -45,7 +45,7 @@
 }
 
 .brand-name {
-  font-size: 15px;
+  font-size: var(--font-size-lg);
   font-weight: 700;
   letter-spacing: -0.03em;
   white-space: nowrap;
@@ -77,10 +77,10 @@
 .nav-section-label {
   padding: 6px 12px 4px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.12em);
+  text-transform: var(--label-case, uppercase);
   white-space: nowrap;
 }
 
@@ -98,7 +98,7 @@
   background: transparent;
   color: var(--text-secondary);
   border-radius: 6px;
-  font-size: 14px;
+  font-size: var(--font-size-md);
   font-weight: 500;
   width: 100%;
   text-align: left;
@@ -121,11 +121,11 @@
 
 .nav-item.active {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .nav-item.active .nav-icon {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .nav-icon {
@@ -162,7 +162,7 @@
   min-width: 15px;
   height: 15px;
   padding: 0 3px;
-  font-size: 9px;
+  font-size: var(--font-size-xs);
   line-height: 15px;
 }
 
@@ -238,9 +238,9 @@
   flex-shrink: 0;
   background: linear-gradient(135deg, var(--accent-soft), rgba(59, 130, 246, 0.28));
   color: var(--text-primary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--label-tracking, 0.06em);
 }
 
 .sidebar-identity-copy {
@@ -275,7 +275,7 @@
   justify-content: space-between;
   gap: 8px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .sidebar.collapsed .sidebar-identity-copy {
@@ -291,19 +291,19 @@
 
 .sidebar-identity-name {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 600;
 }
 
 .sidebar-identity-meta {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   text-transform: capitalize;
 }
 
 .sidebar-identity-action {
-  color: var(--accent);
-  font-size: 12px;
+  color: var(--accent-text);
+  font-size: var(--font-size-sm);
   font-weight: 600;
   text-decoration: none;
 }
@@ -334,10 +334,10 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.04em);
+  text-transform: var(--label-case, uppercase);
   transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
@@ -373,7 +373,7 @@
 }
 
 .sidebar-devdata-state {
-  font-size: 9px;
+  font-size: var(--font-size-xs);
 }
 
 .sidebar-footer-row {
@@ -395,7 +395,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 500;
   min-width: 0;
 }
@@ -456,7 +456,7 @@
   background: var(--bg-card);
   color: var(--text-secondary);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   padding: 4px 6px;
   cursor: pointer;
 }

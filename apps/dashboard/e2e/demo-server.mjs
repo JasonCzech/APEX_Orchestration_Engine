@@ -28,4 +28,4 @@ createServer(async (request, response) => {
   }
   response.writeHead(200, { 'content-type': types[extname(file)] ?? 'application/octet-stream' })
   createReadStream(file).pipe(response)
-}).listen(4174, '127.0.0.1')
+}).listen(Number(process.env.APEX_DASHBOARD_TEST_PORT ?? 4174), '127.0.0.1')

@@ -40,6 +40,19 @@ def contrast(a: list[float], b: list[float]) -> float:
     return (high + 0.05) / (low + 0.05)
 
 
+def token_color(tokens: dict[str, str], key: str) -> list[float]:
+    """Resolve token aliases without hiding missing or circular declarations."""
+    visited: set[str] = set()
+    while key not in visited:
+        visited.add(key)
+        value = tokens[key].strip()
+        alias = re.fullmatch(r"var\((--[\w-]+)\)", value)
+        if not alias:
+            return color(value)
+        key = alias[1]
+    raise ValueError(f"Circular color token: {key}")
+
+
 def main() -> None:
     defaults: dict[str, str] = {}
     themes: dict[str, dict[str, str]] = {
@@ -71,6 +84,8 @@ def main() -> None:
             composite(color(tokens[key]), root)
             for key in ["--bg-secondary", "--bg-card", "--bg-surface", "--bg-elevated"]
         ]
+        # Selected rows and human dialogue use a translucent accent overlay.
+        backgrounds += [composite(color(tokens["--accent-soft"]), bg) for bg in backgrounds]
         ratios: list[float] = []
 
         def check(
@@ -85,16 +100,20 @@ def main() -> None:
             if ratio < 4.5:
                 failures.append(f"{name}: {label} {ratio:.2f}:1")
 
-        for key in ["--text-primary", "--text-secondary", "--text-muted", "--accent"]:
+        for key in ["--text-primary", "--text-secondary", "--text-muted", "--accent-text"]:
             for background in backgrounds:
-                check(key, color(tokens[key]), background)
+                check(key, token_color(tokens, key), background)
         for tone in ["success", "warning", "danger", "info"]:
             for background in backgrounds:
                 fill = composite(color(tokens[f"--{tone}-bg"]), background)
                 check(tone, color(tokens[f"--{tone}-text"]), fill)
         for fill in ["--accent", "--accent-hover"]:
             check("primary button", color(tokens["--accent-contrast"]), color(tokens[fill]))
-        check("danger button", color(tokens["--danger-contrast"]), color(tokens["--danger"]))
+        check("danger button", token_color(tokens, "--danger-fill-text"), token_color(tokens, "--danger-fill"))
+        check("warning fill", token_color(tokens, "--warning-fill-text"), token_color(tokens, "--warning"))
+        for background in backgrounds:
+            check("tag", token_color(tokens, "--tag-text"), composite(token_color(tokens, "--tag-bg"), background))
+        check("code text", token_color(tokens, "--code-text"), token_color(tokens, "--code-bg"))
         print(f"{name}: minimum {min(ratios):.2f}:1 across {len(ratios)} shared token pairs")
     if failures:
         raise SystemExit("\n".join(failures))

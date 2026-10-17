@@ -4,7 +4,7 @@
  * Ported verbatim from the APEX Load design-language reference:
  *   Project_Stormrunner/dashboard/src/index.css.
  * All four alternate themes found in the source are ported:
- *   1. [data-theme='light']           — Sleek Light (Pearl / Glass)
+ *   1. [data-theme='light']           — Cobalt Light
  *   2. [data-theme='solarized-dark']  — Premium Solarized Dark
  *   3. [data-theme='solarized-light'] — Premium Solarized Light
  *   4. [data-theme='monokai-dimmed']  — Premium Monokai Dimmed (Warm Olive/Charcoal)
@@ -12,79 +12,97 @@
  */
 
 :root[data-theme='light'] {
-  /* Sleek Light Theme (Pearl / Glass) */
-  --bg-primary: #f8fafc;
-  --bg-secondary: #f1f5f9;
-  --bg-card: rgba(255, 255, 255, 0.85);
-  --bg-surface: rgba(255, 255, 255, 0.95);
+  /* AT&T-inspired Light Theme (palette sampled from att.com) */
+  /* AT&T colour roles: AT&T blue highlight, link-blue tabs, cyan tags. */
+  --brand-highlight: #009fdb;
+  --tab-link: #0072b2;
+  --tag-bg: #baeefc;
+  --tag-text: #1d2329;
+  --bg-primary: #f3f4f6;
+  --bg-secondary: #ffffff;
+  --bg-card: rgba(255, 255, 255, 1);
+  --bg-surface: rgba(255, 255, 255, 1);
   --bg-elevated: #ffffff;
-  --bg-hover: rgba(0, 0, 0, 0.03);
-  --border: rgba(0, 0, 0, 0.08);
-  --border-subtle: rgba(0, 0, 0, 0.04);
+  --bg-hover: rgba(0, 114, 178, 0.06);
+  --border: #dcdfe3;
+  --border-subtle: #eceef1;
+  --subtle-fill: rgba(29, 35, 41, 0.035);
+  --subtle-fill-strong: rgba(29, 35, 41, 0.07);
 
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
+  --text-primary: #1d2329;
+  --text-secondary: #454b52;
+  --text-muted: #5a6068;
 
-  /* Electric Indigo Accent */
-  --accent: #4f46e5;
-  --accent-rgb: 79, 70, 229;
-  --accent-soft: rgba(79, 70, 229, 0.08);
-  --accent-border: rgba(79, 70, 229, 0.25);
+  /* AT&T Cobalt Accent (primary CTA) */
+  --accent: #00388f;
+  --accent-rgb: 0, 56, 143;
+  --accent-soft: rgba(0, 114, 178, 0.09);
+  --accent-border: rgba(0, 56, 143, 0.3);
   --accent-contrast: #ffffff;
-  --accent-hover: #4338ca;
+  --logo-wave: #009fdb;
+  /* Text-safe accent and filled-danger tokens (≥4.5:1). */
+  --accent-text: var(--accent);
+  --danger-fill: #c70032;
+  --danger-fill-text: #ffffff;
+  --accent-hover: #002a6b;
 
   /* State Colors */
-  --success: #059669;
-  --success-rgb: 5, 150, 105;
-  --warning: #d97706;
-  --warning-rgb: 217, 119, 6;
-  --danger: #dc2626;
-  --danger-rgb: 220, 38, 38;
-  --info: #2563eb;
-  --info-rgb: 37, 99, 235;
+  --success: #2d7e24;
+  --success-rgb: 45, 126, 36;
+  --warning: #b35900;
+  --warning-rgb: 179, 89, 0;
+  --danger: #c70032;
+  --danger-rgb: 199, 0, 50;
+  --info: #0072b2;
+  --info-rgb: 0, 114, 178;
 
-  /* Chart Colors */
-  --chart-1: #4f46e5;
-  --chart-2: #059669;
-  --chart-3: #d97706;
-  --chart-4: #dc2626;
-  --chart-5: #2563eb;
-  --chart-6: #db2777;
+  /* Chart Colors (AT&T brand family) */
+  --chart-1: #1b50a9;
+  --chart-2: #36772f;
+  --chart-3: #da772f;
+  --chart-4: #c90633;
+  --chart-5: #0d9bd4;
+  --chart-6: #ae28ba;
+  --chart-7: #5533ff;
+  --chart-8: #6b3d00;
 
-  /* Premium Effects */
-  --app-sheen: rgba(79, 70, 229, 0.03);
-  --topbar-bg: rgba(248, 250, 252, 0.75);
-  --control-bg: rgba(0, 0, 0, 0.03);
-  --control-hover: rgba(0, 0, 0, 0.06);
-  --theme-toggle-active-bg: #0f172a;
+  /* Effects */
+  --app-sheen: transparent;
+  --topbar-bg: #ffffff;
+  --control-bg: #ffffff;
+  --control-hover: #f2fafd;
+  --theme-toggle-active-bg: #00388f;
   --theme-toggle-active-text: #ffffff;
 
-  --glow-sm: 0 0 16px rgba(79, 70, 229, 0.1);
-  --glow-md: 0 8px 32px rgba(79, 70, 229, 0.15);
-  --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 12px 36px rgba(0, 0, 0, 0.12);
-  --modal-backdrop: rgba(15, 23, 42, 0.4);
-  --focus-ring: rgba(99, 102, 241, 0.6);
+  --glow-sm: 0 0 0 3px rgba(0, 159, 219, 0.15);
+  --glow-md: 0 6px 20px rgba(0, 56, 143, 0.12);
+  --shadow-sm: 0 2px 8px rgba(29, 35, 41, 0.08);
+  --shadow-md: 0 10px 28px rgba(29, 35, 41, 0.14);
+  --modal-backdrop: rgba(29, 35, 41, 0.5);
+  --focus-ring: rgba(0, 87, 184, 0.7);
 
-  --code-bg: #f1f5f9;
-  --code-text: #1e293b;
+  --code-bg: #f2fafd;
+  --code-text: #1d2329;
 
-  --success-bg: rgba(16, 185, 129, 0.1);
-  --success-border: rgba(16, 185, 129, 0.2);
-  --success-text: #047857;
+  --success-bg: rgba(45, 126, 36, 0.09);
+  --success-border: rgba(45, 126, 36, 0.28);
+  --success-text: #23651c;
 
-  --warning-bg: rgba(245, 158, 11, 0.1);
-  --warning-border: rgba(245, 158, 11, 0.2);
-  --warning-text: #b45309;
+  --warning-bg: rgba(234, 116, 0, 0.1);
+  --warning-border: rgba(234, 116, 0, 0.32);
+  /* Clears 4.5:1 on a warning fill inside a selected row, too (#994c00 was 4.48:1). */
+  --warning-text: #8a4400;
+  /* Text on a solid --warning fill (badges, warning buttons). */
+  --warning-fill-text: #ffffff;
 
-  --danger-bg: rgba(239, 68, 68, 0.1);
-  --danger-border: rgba(239, 68, 68, 0.2);
-  --danger-text: #b91c1c;
+  --danger-bg: rgba(199, 0, 50, 0.07);
+  --danger-border: rgba(199, 0, 50, 0.28);
+  --danger-text: #a8002a;
 
-  --info-bg: rgba(59, 130, 246, 0.1);
-  --info-border: rgba(59, 130, 246, 0.2);
-  --info-text: #1d4ed8;
+  --info-bg: rgba(0, 159, 219, 0.1);
+  --info-border: rgba(0, 114, 178, 0.28);
+  --info-text: #005a8c;
+  color-scheme: light;
 }
 
 :root[data-theme='solarized-dark'] {
@@ -93,21 +111,30 @@
   --bg-secondary: #073642;
   --bg-card: rgba(7, 54, 66, 0.85);
   --bg-surface: rgba(7, 54, 66, 0.95);
-  --bg-elevated: #586e75;
+  /* A lifted base02, not base01 (#586e75): base01 is Solarized's
+     secondary-content grey, and text of every tone failed AA on it. */
+  --bg-elevated: #0a4050;
   --bg-hover: rgba(133, 153, 0, 0.06);
   --border: #586e75;
   --border-subtle: #073642;
+  --subtle-fill: rgba(147, 161, 161, 0.08);
+  --subtle-fill-strong: rgba(147, 161, 161, 0.15);
 
   --text-primary: #fdf6e3;
   --text-secondary: #eee8d5;
-  --text-muted: #93a1a1;
+  --text-muted: #a3b1b1;
 
-  --accent: #268bd2;
-  --accent-rgb: 38, 139, 210;
-  --accent-soft: rgba(38, 139, 210, 0.1);
-  --accent-border: rgba(38, 139, 210, 0.3);
-  --accent-contrast: #fdf6e3;
-  --accent-hover: #2aa198;
+  --accent: #67b7e1;
+  --accent-rgb: 103, 183, 225;
+  --accent-soft: rgba(103, 183, 225, 0.1);
+  --accent-border: rgba(103, 183, 225, 0.38);
+  --accent-contrast: #002b36;
+  --logo-wave: #fdf6e3;
+  /* Text-safe accent and filled-danger tokens (≥4.5:1). */
+  --accent-text: var(--accent);
+  --danger-fill: #c0261f;
+  --danger-fill-text: #ffffff;
+  --accent-hover: #7dd3c7;
 
   --success: #859900;
   --success-rgb: 133, 153, 0;
@@ -118,12 +145,14 @@
   --info: #268bd2;
   --info-rgb: 38, 139, 210;
 
-  --chart-1: #268bd2;
-  --chart-2: #859900;
-  --chart-3: #b58900;
-  --chart-4: #dc322f;
-  --chart-5: #d33682;
-  --chart-6: #6c71c4;
+  --chart-1: #288dd4;
+  --chart-2: #849800;
+  --chart-3: #08a198;
+  --chart-4: #e13833;
+  --chart-5: #cd3e9d;
+  --chart-6: #7176cc;
+  --chart-7: #b58900;
+  --chart-8: #f5a3d0;
 
   --app-sheen: rgba(38, 139, 210, 0.04);
   --topbar-bg: rgba(0, 43, 54, 0.75);
@@ -132,31 +161,31 @@
   --theme-toggle-active-bg: #839496;
   --theme-toggle-active-text: #002b36;
 
-  --glow-sm: 0 0 16px rgba(38, 139, 210, 0.1);
-  --glow-md: 0 8px 32px rgba(38, 139, 210, 0.15);
   --shadow-sm: 0 4px 16px rgba(0, 43, 54, 0.5);
   --shadow-md: 0 12px 36px rgba(0, 43, 54, 0.8);
   --modal-backdrop: rgba(0, 43, 54, 0.8);
-  --focus-ring: rgba(38, 139, 210, 0.6);
+  --focus-ring: rgba(38, 139, 210, 0.95);
 
   --code-bg: #073642;
   --code-text: #93a1a1;
 
   --success-bg: rgba(133, 153, 0, 0.12);
   --success-border: rgba(133, 153, 0, 0.25);
-  --success-text: #859900;
+  --success-text: #acbe48;
 
   --warning-bg: rgba(181, 137, 0, 0.12);
   --warning-border: rgba(181, 137, 0, 0.25);
-  --warning-text: #b58900;
+  --warning-text: #d9b84b;
+  /* Text on a solid --warning fill (badges, warning buttons). */
+  --warning-fill-text: #111111;
 
   --danger-bg: rgba(220, 50, 47, 0.12);
   --danger-border: rgba(220, 50, 47, 0.25);
-  --danger-text: #dc322f;
+  --danger-text: #ff8175;
 
   --info-bg: rgba(38, 139, 210, 0.12);
   --info-border: rgba(38, 139, 210, 0.25);
-  --info-text: #268bd2;
+  --info-text: #66b8ed;
 
   --run-calendar-cron-bg: rgba(42, 161, 152, 0.18);
   --run-calendar-cron-border: rgba(42, 161, 152, 0.46);
@@ -164,6 +193,7 @@
   --run-calendar-ad-hoc-bg: rgba(211, 54, 130, 0.18);
   --run-calendar-ad-hoc-border: rgba(211, 54, 130, 0.46);
   --run-calendar-ad-hoc-text: #d33682;
+  color-scheme: dark;
 }
 
 :root[data-theme='solarized-light'] {
@@ -176,17 +206,26 @@
   --bg-hover: rgba(133, 153, 0, 0.06);
   --border: #93a1a1;
   --border-subtle: #eee8d5;
+  --subtle-fill: rgba(88, 110, 117, 0.06);
+  --subtle-fill-strong: rgba(88, 110, 117, 0.12);
 
   --text-primary: #002b36;
   --text-secondary: #073642;
-  --text-muted: #586e75;
+  /* Muted text and the accent clear 4.5:1 on the selected-state fills
+     (#e0dcbf), not only on the page (#52676f and #5f6f00 were 4.0–4.4:1). */
+  --text-muted: #4a5d64;
 
-  --accent: #859900;
-  --accent-rgb: 133, 153, 0;
-  --accent-soft: rgba(133, 153, 0, 0.11);
-  --accent-border: rgba(133, 153, 0, 0.32);
+  --accent: #536100;
+  --accent-rgb: 83, 97, 0;
+  --accent-soft: rgba(83, 97, 0, 0.11);
+  --accent-border: rgba(83, 97, 0, 0.36);
   --accent-contrast: #fdf6e3;
-  --accent-hover: #6f7f00;
+  --logo-wave: #a4b81c;
+  /* Text-safe accent and filled-danger tokens (≥4.5:1). */
+  --accent-text: var(--accent);
+  --danger-fill: #c0261f;
+  --danger-fill-text: #ffffff;
+  --accent-hover: #444f00;
 
   --success: #859900;
   --success-rgb: 133, 153, 0;
@@ -197,12 +236,14 @@
   --info: #657b83;
   --info-rgb: 101, 123, 131;
 
-  --chart-1: #b58900;
-  --chart-2: #859900;
-  --chart-3: #cb4b16;
-  --chart-4: #dc322f;
-  --chart-5: #d33682;
-  --chart-6: #657b83;
+  --chart-1: #a47c04;
+  --chart-2: #2489d0;
+  --chart-3: #7b8e07;
+  --chart-4: #c00414;
+  --chart-5: #6e73c9;
+  --chart-6: #d23581;
+  --chart-7: #cb4b16;
+  --chart-8: #0f4c81;
 
   --app-sheen: rgba(133, 153, 0, 0.04);
   --topbar-bg: rgba(253, 246, 227, 0.75);
@@ -211,31 +252,32 @@
   --theme-toggle-active-bg: #657b83;
   --theme-toggle-active-text: #fdf6e3;
 
-  --glow-sm: 0 0 16px rgba(133, 153, 0, 0.1);
-  --glow-md: 0 8px 32px rgba(133, 153, 0, 0.15);
   --shadow-sm: 0 4px 16px rgba(238, 232, 213, 0.5);
   --shadow-md: 0 12px 36px rgba(238, 232, 213, 0.8);
   --modal-backdrop: rgba(253, 246, 227, 0.8);
-  --focus-ring: rgba(133, 153, 0, 0.6);
+  --focus-ring: rgba(77, 91, 0, 0.9);
 
   --code-bg: #eee8d5;
   --code-text: #586e75;
 
   --success-bg: rgba(133, 153, 0, 0.12);
   --success-border: rgba(133, 153, 0, 0.25);
-  --success-text: #859900;
+  --success-text: #526000;
 
   --warning-bg: rgba(181, 137, 0, 0.12);
   --warning-border: rgba(181, 137, 0, 0.25);
-  --warning-text: #b58900;
+  --warning-text: #785900;
+  /* Text on a solid --warning fill (badges, warning buttons). */
+  --warning-fill-text: #111111;
 
   --danger-bg: rgba(220, 50, 47, 0.12);
   --danger-border: rgba(220, 50, 47, 0.25);
-  --danger-text: #dc322f;
+  --danger-text: #b02523;
 
   --info-bg: rgba(101, 123, 131, 0.12);
   --info-border: rgba(101, 123, 131, 0.25);
-  --info-text: #657b83;
+  --info-text: #40565e;
+  color-scheme: light;
 }
 
 :root[data-theme='monokai-dimmed'] {
@@ -244,14 +286,16 @@
   --bg-secondary: #272822;
   --bg-card: rgba(39, 40, 34, 0.85);
   --bg-surface: rgba(46, 47, 40, 0.95);
-  --bg-elevated: #3e3d32;
+  --bg-elevated: #3b3a30;
   --bg-hover: rgba(216, 88, 136, 0.08);
   --border: #49483e;
   --border-subtle: #33322a;
+  --subtle-fill: rgba(248, 248, 242, 0.05);
+  --subtle-fill-strong: rgba(248, 248, 242, 0.1);
 
   --text-primary: #f8f8f2;
   --text-secondary: #ccccc6;
-  --text-muted: #8f908a;
+  --text-muted: #a4a59f;
 
   /* Vibrant Monokai Magenta */
   --accent: #ff6188;
@@ -259,6 +303,12 @@
   --accent-soft: rgba(255, 97, 136, 0.12);
   --accent-border: rgba(255, 97, 136, 0.3);
   --accent-contrast: #1e1f1c;
+  --logo-wave: #ffd866;
+  /* Text-safe accent and filled-danger tokens (≥4.5:1). The accent pink stays
+     the fill; text takes a lighter tint that also reads on --bg-elevated. */
+  --accent-text: #ff86a4;
+  --danger-fill: #c2410c;
+  --danger-fill-text: #ffffff;
   --accent-hover: #ff8eaa;
 
   /* Vibrant Monokai State Colors */
@@ -272,12 +322,14 @@
   --info-rgb: 120, 220, 232;
 
   /* Vibrant Monokai Charts */
-  --chart-1: #ff6188;
-  --chart-2: #a9dc76;
-  --chart-3: #ffd866;
-  --chart-4: #fc9867;
-  --chart-5: #78dce8;
-  --chart-6: #ab9df2;
+  --chart-1: #e06089;
+  --chart-2: #60a83b;
+  --chart-3: #8e7103;
+  --chart-4: #d96e62;
+  --chart-5: #11a5b3;
+  --chart-6: #947dec;
+  --chart-7: #4fa86b;
+  --chart-8: #fcfcfa;
 
   --app-sheen: rgba(255, 97, 136, 0.04);
   --topbar-bg: rgba(30, 31, 28, 0.75);
@@ -286,12 +338,10 @@
   --theme-toggle-active-bg: #f8f8f2;
   --theme-toggle-active-text: #1e1f1c;
 
-  --glow-sm: 0 0 16px rgba(255, 97, 136, 0.1);
-  --glow-md: 0 8px 32px rgba(255, 97, 136, 0.15);
   --shadow-sm: 0 4px 16px rgba(0, 0, 0, 0.4);
   --shadow-md: 0 12px 36px rgba(0, 0, 0, 0.6);
   --modal-backdrop: rgba(0, 0, 0, 0.6);
-  --focus-ring: rgba(255, 97, 136, 0.6);
+  --focus-ring: rgba(255, 97, 136, 0.9);
 
   --code-bg: #272822;
   --code-text: #f8f8f2;
@@ -303,6 +353,8 @@
   --warning-bg: rgba(255, 216, 102, 0.12);
   --warning-border: rgba(255, 216, 102, 0.25);
   --warning-text: #ffde85;
+  /* Text on a solid --warning fill (badges, warning buttons). */
+  --warning-fill-text: #111111;
 
   --danger-bg: rgba(252, 152, 103, 0.12);
   --danger-border: rgba(252, 152, 103, 0.25);
@@ -311,4 +363,5 @@
   --info-bg: rgba(120, 220, 232, 0.12);
   --info-border: rgba(120, 220, 232, 0.25);
   --info-text: #90e2eb;
+  color-scheme: dark;
 }

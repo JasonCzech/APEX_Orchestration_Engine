@@ -20,11 +20,11 @@
 }
 
 .api-key-gate-kicker {
-  text-transform: uppercase;
-  letter-spacing: 0.18em;
-  font-size: 11px;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.18em);
+  font-size: var(--font-size-xs);
   font-weight: 700;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .api-key-gate-card h1 {
@@ -34,7 +34,7 @@
 
 .api-key-gate-copy {
   color: var(--text-secondary);
-  font-size: 14px;
+  font-size: var(--font-size-md);
   line-height: 1.6;
 }
 
@@ -46,10 +46,10 @@
 }
 
 .api-key-gate-label {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.06em);
   color: var(--text-muted);
 }
 
@@ -59,7 +59,7 @@
   border: 1px solid var(--border);
   background: var(--control-bg);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: var(--font-size-md);
 }
 
 .api-key-gate-input:focus {
@@ -84,5 +84,5 @@
   border: 1px solid var(--danger-border);
   border-radius: 10px;
   padding: 10px 14px;
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }

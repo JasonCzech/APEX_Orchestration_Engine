@@ -69,7 +69,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 800;
   flex: 0 0 auto;
   transition: transform var(--transition-fast), border-color var(--transition-fast),
@@ -85,17 +85,17 @@
 
 .phase-step-name {
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 700;
   line-height: 1.2;
 }
 
 .phase-step-status {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.05em);
 }
 
 .phase-step-connector {
@@ -117,24 +117,24 @@
 }
 
 .phase-step--pending .phase-step-circle,
-.phase-step--pending .phase-step-connector {
+.phase-step-connector--pending {
   border-color: var(--border);
   background: var(--bg-secondary);
   color: var(--text-muted);
 }
 
 .phase-step--prompt_review .phase-step-circle,
-.phase-step--prompt_review .phase-step-connector {
+.phase-step-connector--prompt_review {
   border-color: var(--info-border);
   background: var(--info-bg);
   color: var(--info-text);
 }
 
 .phase-step--running .phase-step-circle,
-.phase-step--running .phase-step-connector {
+.phase-step-connector--running {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .phase-step--running .phase-step-circle {
@@ -142,28 +142,28 @@
 }
 
 .phase-step--results_ready .phase-step-circle,
-.phase-step--results_ready .phase-step-connector {
+.phase-step-connector--results_ready {
   border-color: color-mix(in srgb, var(--accent-results) 32%, var(--border));
   background: color-mix(in srgb, var(--accent-results) 12%, var(--bg-card));
   color: var(--accent-results);
 }
 
 .phase-step--completed .phase-step-circle,
-.phase-step--completed .phase-step-connector {
+.phase-step-connector--completed {
   border-color: var(--success-border);
   background: var(--success-bg);
   color: var(--success);
 }
 
 .phase-step--failed .phase-step-circle,
-.phase-step--failed .phase-step-connector {
+.phase-step-connector--failed {
   border-color: var(--danger-border);
   background: var(--danger-bg);
   color: var(--danger);
 }
 
 .phase-step--skipped .phase-step-circle,
-.phase-step--skipped .phase-step-connector {
+.phase-step-connector--skipped {
   border-color: var(--border);
   background: repeating-linear-gradient(
     45deg,
@@ -266,3 +266,6 @@ button.phase-seg:hover {
     transition: none;
   }
 }
+
+.phase-step--unknown .phase-step-circle { border-style: dashed; color: var(--text-muted); }
+.phase-seg--unknown { border: 1px dashed var(--text-muted); }

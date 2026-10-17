@@ -11,7 +11,7 @@
 }
 
 .artifact-viewer-name {
-  font-size: 15px;
+  font-size: var(--font-size-lg);
   font-weight: 800;
   color: var(--text-primary);
   min-width: 0;
@@ -22,7 +22,7 @@
 
 .artifact-viewer-header .meta {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }
 
@@ -43,7 +43,7 @@
   display: flex;
   gap: 16px;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
@@ -56,4 +56,4 @@
 
 .markdown-report { background: var(--bg-card); color: var(--text-primary); padding: 24px; line-height: 1.65; overflow-wrap: anywhere; }
 .markdown-report pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.markdown-report a { color: var(--accent); text-decoration: underline; }
+.markdown-report a { color: var(--accent-text); text-decoration: underline; }

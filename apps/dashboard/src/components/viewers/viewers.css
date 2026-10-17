@@ -12,7 +12,7 @@
 .code-viewer .cm-editor {
   background: var(--code-bg);
   color: var(--code-text);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .code-viewer .cm-editor.cm-focused {
@@ -28,7 +28,7 @@
 .code-viewer .cm-gutters {
   background: transparent;
   border-right: 1px solid var(--border);
-  color: var(--text-muted);
+  color: var(--code-muted);
 }
 
 .code-viewer .cm-content {

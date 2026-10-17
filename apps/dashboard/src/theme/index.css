@@ -14,6 +14,8 @@
 @import './primitives.css';
 @import './accessibility.css';
 @import './ux.css';
+@import './typography.css';
+@import './themeComponents.css';
 
 /*
  * Base layout vars — derived from APEX Load's shell dimensions

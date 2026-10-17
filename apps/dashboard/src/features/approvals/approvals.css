@@ -116,7 +116,7 @@
 }
 
 .approvals-row-title {
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
@@ -126,7 +126,7 @@
 
 .approvals-age {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
@@ -146,13 +146,13 @@
 }
 
 .approvals-row-phase {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .approvals-row-project {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -184,7 +184,7 @@
 
 .approvals-empty h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--font-size-lg);
   color: var(--text-primary);
 }
 
@@ -210,8 +210,8 @@
 .approvals-overlay-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 300;
-  background: rgba(0, 0, 0, 0.35);
+  z-index: auto;
+  background: var(--modal-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -226,7 +226,7 @@
 
 .approvals-shortcuts h3 {
   margin: 0 0 12px;
-  font-size: 14px;
+  font-size: var(--font-size-md);
   font-weight: 700;
 }
 
@@ -249,7 +249,7 @@
 
 .approvals-shortcut-row dd {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
 }
 
@@ -261,6 +261,6 @@
   border-radius: 5px;
   background: var(--bg-secondary);
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }

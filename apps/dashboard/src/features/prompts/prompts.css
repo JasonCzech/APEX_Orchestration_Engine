@@ -27,7 +27,7 @@
   align-items: center;
   gap: 6px;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   user-select: none;
 }
 
@@ -63,7 +63,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   text-align: left;
   cursor: pointer;
 }
@@ -80,7 +80,7 @@
 }
 
 .prompts-tree-count {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
   background: var(--bg-secondary);
   border-radius: 999px;
@@ -116,22 +116,22 @@
 .prompts-group-label {
   display: block;
   margin-bottom: 2px;
-  color: var(--accent);
-  font-size: 10px;
+  color: var(--accent-text);
+  font-size: var(--font-size-xs);
   font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+  letter-spacing: var(--label-tracking, 0.09em);
+  text-transform: var(--label-case, uppercase);
 }
 
 .prompts-group-title {
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 650;
 }
 
 .prompts-group-count {
   float: right;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 500;
 }
 
@@ -143,11 +143,11 @@
   border: 0;
   background: transparent;
   padding: 0;
-  color: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
   text-align: left;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .prompts-key:hover,
@@ -178,7 +178,7 @@
 
 .prompts-key-meta {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
 }
 
 .prompts-preview-header,
@@ -194,7 +194,7 @@
   align-items: flex-end;
   flex-direction: column;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   white-space: nowrap;
 }
 
@@ -208,7 +208,7 @@
 
 .prompts-preview-kicker {
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
@@ -311,11 +311,11 @@
 .prompt-modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--modal-backdrop);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 60;
+  z-index: auto;
   padding: 24px;
 }
 
@@ -342,7 +342,7 @@
 .prompt-modal-caption {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   line-height: 1.5;
 }
 
@@ -365,7 +365,7 @@
 }
 
 .prompt-field-label {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -388,7 +388,7 @@
 }
 
 .prompt-breadcrumb {
-  font-size: 14px;
+  font-size: var(--font-size-md);
 }
 
 .prompt-breadcrumb a {
@@ -417,7 +417,7 @@
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
   padding: 8px 14px;
   border-radius: 8px 8px 0 0;
   cursor: pointer;
@@ -448,7 +448,7 @@
 
 .prompt-note {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }
 
 .prompt-editor-bar {
@@ -464,7 +464,7 @@
 }
 
 .prompt-diff-indicator {
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-variant-numeric: tabular-nums;
 }
 
@@ -522,13 +522,13 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }
 
 .prompt-timeline-note {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }
 
 .prompt-timeline-actions {
@@ -546,7 +546,7 @@
 
 .prompt-diff-legend {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 /* unifiedMergeView tones on the token sheet (defaults assume a light page). */
@@ -605,7 +605,7 @@
 
 .prompt-sample-input {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   resize: vertical;
 }
 
@@ -618,14 +618,14 @@
 
 .prompt-run-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
   word-break: break-all;
 }
 
 .prompt-history-title {
   margin: 4px 0 0;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -647,11 +647,11 @@
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 13px;
+  font-size: var(--font-size-base);
 }
 
 .prompt-run-link {
-  color: var(--accent);
+  color: var(--accent-text);
   margin-left: auto;
 }
 
@@ -662,3 +662,18 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Merge decorations paint on the code surface, which can be dark in a light
+   page theme. Keep text tied to that surface and use borders/glyphs as well. */
+.prompt-diff .cm-changedLine, .prompt-diff .cm-insertedLine,
+.prompt-diff .cm-changedText {
+  background: color-mix(in srgb, var(--code-text) 12%, var(--code-bg));
+  color: var(--code-text);
+  border-inline-start: 3px solid var(--code-text);
+}
+.prompt-diff .cm-deletedChunk, .prompt-diff .cm-deletedText {
+  background: color-mix(in srgb, var(--code-text) 8%, var(--code-bg));
+  color: var(--code-text);
+}
+.prompt-diff .cm-deletedChunk del { color: var(--code-text); text-decoration: line-through; }
+.prompt-diff .cm-changedText span, .prompt-diff .cm-deletedText span { color: inherit; }

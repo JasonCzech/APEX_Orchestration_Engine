@@ -23,7 +23,7 @@
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   padding: 4px 10px;
   border-radius: 6px;
@@ -53,13 +53,13 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.04em);
 }
 
 .window-custom-field .field-input {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   padding: 4px 8px;
 }

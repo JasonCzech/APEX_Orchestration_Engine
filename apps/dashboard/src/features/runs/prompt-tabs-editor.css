@@ -11,12 +11,12 @@
   border: 1px solid transparent;
   border-radius: 999px;
   padding: 8px 14px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 800;
   color: var(--text-secondary);
   cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.08em);
 }
 
 .prompt-review-tab:hover:not(:disabled) {
@@ -24,7 +24,7 @@
 }
 
 .prompt-review-tab[aria-selected='true'] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent-border);
   background: var(--accent-soft);
 }
@@ -40,7 +40,7 @@
 
 .prompt-review-tab-note {
   margin: 0 0 8px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   color: var(--text-muted);
 }

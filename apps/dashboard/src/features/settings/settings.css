@@ -18,7 +18,7 @@
 
 .settings-section-title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -89,7 +89,7 @@
 }
 
 .settings-theme-name {
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
 }
 
@@ -110,13 +110,13 @@
 }
 
 .settings-kv-row dt {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
 .settings-kv-row dd {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   color: var(--text-primary);
   display: flex;
   align-items: center;
@@ -130,7 +130,7 @@
 }
 
 .settings-field-label {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -146,7 +146,7 @@
 
 .settings-note {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .settings-note--success {
@@ -167,7 +167,7 @@
 
 .settings-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -177,7 +177,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .settings-status--ok {

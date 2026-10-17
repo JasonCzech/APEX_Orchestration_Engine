@@ -152,7 +152,7 @@ src/
 │   └── pages.tsx         #   router.tsx never changes — features swap their pages module
 ├── routes/router.tsx     # the single route table (lazy per-feature chunks)
 ├── components/           # shell (sidebar/topbar + topbar-contribution), controls, viewers
-├── theme/                # design tokens + 5 themes (see Theming)
+├── theme/                # design tokens + 6 themes (see Theming)
 ├── auth/                 # ApiKeyGate + AuthProvider (role from /v1/system/info)
 ├── config/               # runtime /config.json loader
 └── test/                 # renderApp harness + MSW server (see Testing)
@@ -212,25 +212,28 @@ Conventions:
 
 ## Theming
 
-Five themes, switched via `data-theme` on `<html>` (`src/theme/useTheme.ts`,
+Six themes, switched via `data-theme` on `<html>` (`src/theme/useTheme.ts`,
 persisted in localStorage):
 
 | `data-theme` | Name |
 |---|---|
-| `dark` *(default)* | Premium Dark (OLED / Deep Space, electric-violet accent, glassmorphism) |
-| `light` | Sleek Light (Pearl / Glass) |
+| `apex-light` *(default)* | Light (CTx), the Orchestration compatibility palette |
+| `dark` | Dark (OLED / Deep Space) |
+| `light` | Light (cobalt palette) |
 | `solarized-dark` | Premium Solarized Dark |
 | `solarized-light` | Premium Solarized Light |
 | `monokai-dimmed` | Premium Monokai Dimmed |
 
 **Tokens-only rule:** component CSS may use `var(--token)` values exclusively —
 no literal colors, shadows, or radii. `src/theme/tokens.css` (the dark default)
-is ported **verbatim** from the APEX Load reference implementation
-(`Project_Stormrunner/dashboard/src/index.css`), with identical token names so
+shares palette names and values with the APEX Load reference implementation
+(`Project_Stormrunner/dashboard/src/index.css`), with contrast-tested text colors and identical token names so
 APEX Load component patterns drop in unchanged; `themes.css` overrides the
 token set per theme, and `primitives.css` carries the shared `.btn` /
 `.glass-panel` / badge / chip / metric-pill / table primitives. A new theme is
-a new token block — zero component changes.
+a new token block — zero component changes. The `system` preference resolves to Dark or Light.
+`public/theme-init.js` applies theme and motion preferences before runtime configuration loads.
+Fonts are bundled locally; `theme/typography.css` defines the shared six-step type scale.
 
 ## Deployment
 

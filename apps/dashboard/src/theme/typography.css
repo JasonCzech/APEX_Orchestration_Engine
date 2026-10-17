@@ -1,0 +1,19 @@
+/* Shared APEX type scale. Dense labels never fall below the 11px floor. */
+:root {
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 15px;
+  --font-size-title: 20px;
+}
+body .main-content > :not(.main-topbar) { font-size: var(--font-size-base); }
+body .main-content :is(.section-title, .settings-section-title) { font-size: var(--font-size-lg); }
+body .main-content :is(.data-table th, .ux-field > label, .ux-form-field > label) {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  letter-spacing: var(--label-tracking);
+  text-transform: var(--label-case);
+}
+input, select, textarea, button { font-size: inherit; }

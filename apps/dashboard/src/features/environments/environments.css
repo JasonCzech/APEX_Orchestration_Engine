@@ -23,14 +23,14 @@
 
 .env-page-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--font-size-md);
   font-weight: 600;
 }
 
 .env-toolbar-caption,
 .env-panel-caption {
   margin: 3px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -66,26 +66,26 @@
   gap: 12px;
   padding: 12px 14px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .env-permission-note {
   margin: 0;
   padding: 8px 2px;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-xs);
 }
 
 .env-group-title {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.04em);
 }
 
 .env-group-project {
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -99,7 +99,7 @@
 
 .env-name-link:hover,
 .env-name-link:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -113,7 +113,7 @@
   white-space: nowrap;
   vertical-align: bottom;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }
 
@@ -133,8 +133,8 @@
 }
 
 .env-kind-chip {
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.03em);
 }
 
 /* Create panel / edit form */
@@ -150,7 +150,7 @@
 
 .env-advanced-options {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .env-advanced-options summary {
@@ -164,7 +164,7 @@
 
 .env-panel-title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 600;
 }
 
@@ -182,22 +182,22 @@
 }
 
 .env-field-label {
-  font-size: 10px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.05em);
   color: var(--text-muted);
 }
 
 .env-options-input {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   resize: vertical;
 }
 
 .env-form-error {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--danger-text);
 }
 
@@ -233,12 +233,12 @@
 .env-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: auto;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--modal-backdrop);
 }
 
 .env-modal {
@@ -252,7 +252,7 @@
 
 .env-modal-caption {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
   color: var(--text-secondary);
 }
 
@@ -278,7 +278,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
 }
 
@@ -287,7 +287,7 @@
 }
 
 .env-breadcrumb a:hover {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .env-breadcrumb-sep {
@@ -328,16 +328,16 @@
 
 .env-card-title {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--font-size-base);
   font-weight: 600;
 }
 
 .env-card-subtitle {
   margin: 4px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.05em);
   color: var(--text-muted);
 }
 
@@ -346,7 +346,7 @@
   grid-template-columns: auto 1fr;
   gap: 4px 12px;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 .env-ref-grid dt {
@@ -362,14 +362,14 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--font-size-xs);
   color: var(--text-muted);
   white-space: nowrap;
 }
 
 .env-stale-chip {
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  text-transform: var(--label-case, uppercase);
+  letter-spacing: var(--label-tracking, 0.03em);
 }
 
 /* Inline danger card (probe-style rescan/load errors — NOT a toast) */
@@ -384,7 +384,7 @@
   border-radius: 8px;
   background: var(--danger-bg);
   color: var(--danger-text);
-  font-size: 12px;
+  font-size: var(--font-size-sm);
 }
 
 /* Loading skeleton */
