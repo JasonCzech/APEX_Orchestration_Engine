@@ -2,6 +2,7 @@
 
 import pytest
 
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY
 from apex.domain.pipeline import Phase
 from apex.graphs.pipeline.gates import (
     PHASE_REVIEW_ACTIONS,
@@ -165,3 +166,18 @@ def test_prompt_review_retains_safe_editor_attribution():
         [],
     )
     assert payload["prompt"]["source"]["editor"] == "consumer-17"
+
+
+def test_resolve_actor_prefers_current_server_context_over_old_runtime_identity() -> None:
+    assert (
+        resolve_actor(
+            {
+                "configurable": {
+                    RUNTIME_ACTOR_ID_KEY: "current-operator",
+                    "langgraph_auth_user_id": "previous-operator",
+                    "langgraph_auth_user": {"identity": "previous-operator"},
+                }
+            }
+        )
+        == "current-operator"
+    )

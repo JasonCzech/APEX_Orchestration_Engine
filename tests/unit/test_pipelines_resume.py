@@ -1,27 +1,36 @@
 """Gate CAS resume + abort: superseded 409, invalid action 422, conflict mapping."""
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command, StateSnapshot
 from langgraph_sdk.errors import ConflictError
 
+from apex.adapters.stubs import MemoryArtifactStore
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role
+from apex.app.security import _direct_langgraph_body_limit_error
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, ConsumerType, Role
 from apex.domain.pipeline import (
     ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
     EngineConnectionAffinityMissingError,
     Phase,
 )
+from apex.graphs.pipeline import phase_subgraph
 from apex.graphs.pipeline.configurable import Limits, PipelineConfigurable
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 from apex.graphs.pipeline.gates import build_prompt_review_payload
+from apex.graphs.pipeline.graph import builder
 from apex.routers.engines import get_engine_abort_service
 from apex.routers.pipelines import get_pipeline_read_service, router
+from apex.services.connections import ConnectionResolver
 from apex.services.engine_abort import (
     EngineAbortConfirmationPendingError,
     EngineAbortResult,
@@ -453,7 +462,9 @@ async def test_resume_snapshot_parent_cancellation_settles_both_reads() -> None:
             return await self._read()
 
     service = PipelineReadService(FakeClient(Threads({}), FakeRuns()))
-    operation = asyncio.create_task(service.resume_gate("t-1", "int-1", "approve", {}))
+    operation = asyncio.create_task(
+        service.resume_gate("t-1", "int-1", "approve", {}, principal_id="c1")
+    )
     await asyncio.wait_for(both_started.wait(), timeout=1)
 
     operation.cancel()
@@ -671,7 +682,173 @@ def test_resume_gate_accepts_and_creates_reject_run() -> None:
     assert call["multitask_strategy"] == "reject"
     assert call["durability"] == "sync"
     assert call["config"]["recursion_limit"] > 25
+    assert call["config"]["configurable"][RUNTIME_ACTOR_ID_KEY] == "c1"
     assert call["command"] == {"resume": {"int-1": {"action": "approve", "note": "lgtm"}}}
+
+
+@pytest.mark.parametrize(
+    "field", ["actor", "principal_id", "langgraph_auth_user_id", RUNTIME_ACTOR_ID_KEY]
+)
+def test_resume_route_rejects_caller_supplied_attribution(field: str) -> None:
+    runs = FakeRuns()
+    with TestClient(
+        make_app(FakeClient(FakeThreads({"t-1": state_with_interrupt("int-1")}), runs))
+    ) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/gates/int-1/resume", json={"action": "approve", field: "forged"}
+        )
+    assert response.status_code == 422
+    assert runs.create_calls == []
+
+
+@pytest.mark.parametrize("principal_id", ["", "x" * 256, "invalid\x00actor", "password=secret"])
+async def test_resume_service_requires_valid_attribution_before_starting_a_run(
+    principal_id: str,
+) -> None:
+    runs = FakeRuns()
+    service = PipelineReadService(FakeClient(FakeThreads({}), runs))
+    with pytest.raises(ValueError, match="authenticated principal"):
+        await service.resume_gate("t-1", "int-1", "approve", {}, principal_id=principal_id)
+    assert runs.create_calls == []
+
+
+@pytest.mark.parametrize("skip", [False, True])
+def test_resume_route_persists_each_authenticated_consumer_in_real_graph_approvals(
+    monkeypatch: pytest.MonkeyPatch, skip: bool
+) -> None:
+    """Exercise HTTP dependency -> facade -> checkpointed graph, with two operators."""
+    monkeypatch.setattr(phase_subgraph, "_make_artifact_resolver", lambda: ConnectionResolver())
+    MemoryArtifactStore.clear()
+    graph = builder.compile(checkpointer=InMemorySaver())
+    initial_config: RunnableConfig = {
+        "configurable": {
+            "thread_id": "t-1",
+            "phases": ["story_analysis"],
+            "langgraph_auth_user_id": "previous-operator",
+            "langgraph_auth_user": {"identity": "previous-operator"},
+        }
+    }
+    graph.invoke({"title": "Attribution regression"}, initial_config)
+
+    class GraphThreads(FakeThreads):
+        async def get_state(self, thread_id: str) -> JsonDict:
+            snapshot = await graph.aget_state({"configurable": {"thread_id": thread_id}})
+            return {
+                "values": snapshot.values,
+                "tasks": [
+                    {
+                        "interrupts": [
+                            {"id": item.id, "value": item.value} for item in task.interrupts
+                        ]
+                    }
+                    for task in snapshot.tasks
+                ],
+            }
+
+    class GraphRuns(FakeRuns):
+        async def create(self, thread_id: str, assistant_id: str, **kwargs: Any) -> JsonDict:
+            assert (
+                _direct_langgraph_body_limit_error(
+                    "run_create", json.dumps(kwargs).encode(), trusted_loopback=True
+                )
+                is None
+            )
+            result = await super().create(thread_id, assistant_id, **kwargs)
+            # Simulate persisted runtime metadata being merged into a new run.
+            # The facade must explicitly override it with this request's actor.
+            run_config: RunnableConfig = {
+                "configurable": {
+                    **initial_config["configurable"],
+                    **kwargs["config"]["configurable"],
+                },
+                "recursion_limit": kwargs["config"]["recursion_limit"],
+            }
+            await graph.ainvoke(Command(resume=kwargs["command"]["resume"]), run_config)
+            return result
+
+    runs = GraphRuns()
+    app = make_app(FakeClient(GraphThreads({"t-1": {}}), runs))
+    current_consumer = ConsumerIdentity(
+        consumer_id="consumer-one",
+        name="First operator",
+        consumer_type=ConsumerType.DASHBOARD,
+        role=Role.OPERATOR,
+    )
+    app.dependency_overrides[get_current_identity] = lambda: current_consumer
+
+    def pending_id() -> str:
+        return graph.get_state(initial_config).tasks[0].interrupts[0].id
+
+    def persisted_approvals() -> list[JsonDict]:
+        snapshot = graph.get_state(initial_config, subgraphs=True)
+        if snapshot.tasks:
+            subgraph_state = snapshot.tasks[0].state
+            assert isinstance(subgraph_state, StateSnapshot)
+            values = subgraph_state.values
+        else:
+            values = snapshot.values
+        return values["phase_results"]["story_analysis"]["approvals"]
+
+    def decide(client: TestClient, action: str, **extras: Any) -> None:
+        response = client.post(
+            f"/v1/pipelines/t-1/gates/{pending_id()}/resume", json={"action": action, **extras}
+        )
+        assert response.status_code == 202, response.text
+
+    try:
+        with TestClient(app) as client:
+            if skip:
+                decide(client, "skip_phase")
+                assert [(a["action"], a["actor"]) for a in persisted_approvals()] == [
+                    ("skip_phase", "consumer-one")
+                ]
+            else:
+                original_interrupt_id = pending_id()
+                decide(client, "approve")
+                assert [(a["action"], a["actor"]) for a in persisted_approvals()] == [
+                    ("approve", "consumer-one")
+                ]
+                current_consumer = current_consumer.model_copy(
+                    update={"consumer_id": "consumer-two"}
+                )
+                stale = client.post(
+                    f"/v1/pipelines/t-1/gates/{original_interrupt_id}/resume",
+                    json={"action": "approve"},
+                )
+                assert stale.status_code == 409
+                assert len(runs.create_calls) == 1
+                decide(client, "discuss", message="Explain the scope")
+                current_consumer = current_consumer.model_copy(
+                    update={"consumer_id": "consumer-one"}
+                )
+                decide(client, "revise", instructions="Include the latency target")
+                current_consumer = current_consumer.model_copy(
+                    update={"consumer_id": "consumer-two"}
+                )
+                decide(client, "approve")
+                assert [(a["action"], a["actor"]) for a in persisted_approvals()] == [
+                    ("approve", "consumer-one"),
+                    ("discuss", "consumer-two"),
+                    ("revise", "consumer-one"),
+                    ("approve", "consumer-two"),
+                ]
+            response = client.get("/v1/pipelines/t-1")
+            assert response.status_code == 200
+            public_approvals = response.json()["values"]["phase_results"]["story_analysis"][
+                "approvals"
+            ]
+            assert [(item["action"], item["actor"]) for item in public_approvals] == [
+                (item["action"], item["actor"]) for item in persisted_approvals()
+            ]
+            final = graph.get_state(initial_config)
+            assert not final.tasks
+            assert "langgraph_auth_user_id" not in final.values["run_config"]
+            assert RUNTIME_ACTOR_ID_KEY not in final.values["run_config"]
+            assert RUNTIME_ACTOR_ID_KEY not in response.text
+            approvals = persisted_approvals()
+            assert len({item["id"] for item in approvals}) == len(approvals)
+    finally:
+        MemoryArtifactStore.clear()
 
 
 def test_resume_engine_recovery_gate_retries_the_exact_durable_interrupt() -> None:
@@ -1014,7 +1191,7 @@ async def test_resume_gate_rejects_path_delimiting_native_run_id() -> None:
     )
 
     with pytest.raises(RuntimeError, match="invalid identifier") as excinfo:
-        await service.resume_gate("t-1", "int-1", "approve", {})
+        await service.resume_gate("t-1", "int-1", "approve", {}, principal_id="c1")
 
     assert "resume-secret-canary" not in str(excinfo.value)
 
@@ -1035,7 +1212,7 @@ async def test_resume_gate_rejects_run_response_subclass_without_hooks() -> None
     )
 
     with pytest.raises(RuntimeError, match="invalid response"):
-        await service.resume_gate("t-1", "int-1", "approve", {})
+        await service.resume_gate("t-1", "int-1", "approve", {}, principal_id="c1")
 
     assert response.called is False
 

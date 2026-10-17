@@ -23,6 +23,7 @@ from uuid import NAMESPACE_URL, uuid5
 import structlog
 from langgraph_sdk.errors import APIStatusError, ConflictError, NotFoundError
 
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY
 from apex.domain.diagnostics import contains_credential_material, safe_type_name
 from apex.domain.input_limits import (
     MAX_DESCRIPTION_CHARS,
@@ -1720,7 +1721,13 @@ class PipelineReadService:
         )
 
     async def resume_gate(
-        self, thread_id: str, interrupt_id: str, action: str, extras: JsonDict
+        self,
+        thread_id: str,
+        interrupt_id: str,
+        action: str,
+        extras: JsonDict,
+        *,
+        principal_id: str,
     ) -> str:
         """Compare-and-set gate resume (plan: resume conflict semantics).
 
@@ -1731,6 +1738,14 @@ class PipelineReadService:
         3. Resume run uses multitask_strategy="reject"; a server 409 (lost race)
            maps to GateSupersededError too.
         """
+        if (
+            type(principal_id) is not str
+            or not principal_id
+            or len(principal_id) > 255
+            or "\x00" in principal_id
+            or contains_credential_material(principal_id)
+        ):
+            raise ValueError("gate resume requires a valid authenticated principal")
         resume: JsonDict = {"action": action}
         resume.update({key: value for key, value in extras.items() if value is not None})
         validate_gate_payload(resume)
@@ -1773,6 +1788,10 @@ class PipelineReadService:
             validated_config = _validated_durable_replay_config(run_config)
             _ensure_durable_config_ownership(validated_config, thread)
             assistant_id = validated_config.assistant_id
+            # Attribution belongs to this request, never to the launch actor or
+            # a checkpoint's runtime config. Stamp it after validating the durable
+            # application contract; this runtime field is not persisted in run_config.
+            run_config[RUNTIME_ACTOR_ID_KEY] = principal_id
             conflict = False
             try:
                 run = await self._client.runs.create(

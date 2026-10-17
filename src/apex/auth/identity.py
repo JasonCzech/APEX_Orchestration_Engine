@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from apex.domain.input_limits import MAX_CHILD_ITEMS, ScopeId
 
+# Server-owned run context, deliberately distinct from LangGraph's reserved
+# auth keys (which are removed from incoming native requests).
+RUNTIME_ACTOR_ID_KEY = "apex_actor_id"
+
 
 class ConsumerType(StrEnum):
     DASHBOARD = "dashboard"

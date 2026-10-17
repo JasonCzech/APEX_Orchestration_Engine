@@ -31,7 +31,7 @@ from apex.auth.handlers import (
     scope_filter,
     user_payload,
 )
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import AuthStoreUnavailableError
 from apex.services.langgraph_client import (
     LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
@@ -887,6 +887,7 @@ async def test_threads_create_run_stamps_single_app_scope_on_existing_thread() -
         "project_id": "p1",
         "app_id": "a1",
         "langgraph_auth_user_id": "c1",
+        RUNTIME_ACTOR_ID_KEY: "c1",
     }
     assert value["metadata"] == {
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
@@ -947,6 +948,7 @@ async def test_threads_create_run_stamps_single_app_scope_stateless() -> None:
         "project_id": "p1",
         "app_id": "a1",
         "langgraph_auth_user_id": "c1",
+        RUNTIME_ACTOR_ID_KEY: "c1",
     }
     assert value["metadata"] == {
         _DIRECT_RUNS_ALLOWED_METADATA_KEY: True,
@@ -1206,6 +1208,7 @@ async def test_threads_create_run_scopes_realistic_nested_kwargs_in_place() -> N
         "langgraph_request_id": "request-1",
         "langsmith-trace": "trace-1",
         "langsmith-metadata": {"source": "test"},
+        RUNTIME_ACTOR_ID_KEY: "c1",
         "project_id": "p1",
         "app_id": "a1",
     }
@@ -2963,11 +2966,36 @@ async def test_run_attribution_is_stamped_from_authenticated_consumer() -> None:
     identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
     value: Any = {
         "assistant_id": "pipeline",
-        "kwargs": {"config": {"configurable": {"project_id": "p1"}}},
+        "kwargs": {"config": {"configurable": {"project_id": "p1"}}, "context": {}},
     }
+    captured_context = value["kwargs"]["context"]
     captured = value["kwargs"]["config"]["configurable"]
     await on_threads_create_run(ctx=make_ctx(identity, action="create_run"), value=value)
     assert captured["langgraph_auth_user_id"] == identity.consumer_id
+    assert captured[RUNTIME_ACTOR_ID_KEY] == identity.consumer_id
+    assert captured_context[RUNTIME_ACTOR_ID_KEY] == identity.consumer_id
     from apex.graphs.pipeline.gates import resolve_actor
 
     assert resolve_actor(value["kwargs"]["config"]) == identity.consumer_id
+
+
+@pytest.mark.parametrize("trusted_loopback", [False, True])
+@pytest.mark.parametrize("actor", ["c1", "other", "", 42, "x" * 256, "bad\x00actor"])
+async def test_runtime_actor_is_only_accepted_from_matching_trusted_facade(
+    trusted_loopback: bool, actor: Any
+) -> None:
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {
+            "config": {"configurable": {"project_id": "p1", RUNTIME_ACTOR_ID_KEY: actor}},
+        },
+    }
+    ctx = make_ctx(identity, action="create_run", trusted_loopback=trusted_loopback)
+    if trusted_loopback and actor == "c1":
+        await on_threads_create_run(ctx=ctx, value=value)
+        assert value["kwargs"]["config"]["configurable"][RUNTIME_ACTOR_ID_KEY] == "c1"
+    else:
+        with pytest.raises(Auth.exceptions.HTTPException) as error:
+            await on_threads_create_run(ctx=ctx, value=value)
+        assert error.value.status_code == 422

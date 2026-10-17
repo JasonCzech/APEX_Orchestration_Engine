@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from langchain_core.runnables import RunnableConfig
 
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.input_limits import validate_json_object
 from apex.domain.pipeline import ApprovalRecord, Phase
@@ -38,9 +39,10 @@ def resolve_actor(config: RunnableConfig | None) -> str:
         configurable = {}
     if type(configurable) is not dict:
         return "unknown"
-    runtime_identity = configurable.get("langgraph_auth_user_id")
-    if _safe_actor(runtime_identity):
-        return runtime_identity
+    for key in (RUNTIME_ACTOR_ID_KEY, "langgraph_auth_user_id"):
+        runtime_identity = configurable.get(key)
+        if _safe_actor(runtime_identity):
+            return runtime_identity
     user = configurable.get("langgraph_auth_user")
     if user is None:
         return "unknown"

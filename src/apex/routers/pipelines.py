@@ -738,6 +738,7 @@ async def resume_gate(
     thread_id: ThreadId,
     interrupt_id: InterruptId,
     body: ResumeGateRequest,
+    identity: CurrentIdentity,
     service: PipelineService,
 ) -> Any:
     """Compare-and-set resume: 409 gate_superseded when the interrupt is stale."""
@@ -754,6 +755,7 @@ async def resume_gate(
                 "message": body.message,
                 "note": body.note,
             },
+            principal_id=identity.consumer_id,
         )
     except NotFoundError:
         failure = HTTPException(status_code=404, detail="pipeline thread not found")

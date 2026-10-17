@@ -15,7 +15,7 @@ from langgraph_sdk.auth import is_studio_user
 from pydantic import ValidationError
 
 from apex.app.security import mark_stream_request_authenticated
-from apex.auth.identity import ConsumerIdentity, ConsumerType, Role, ScopeRef
+from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, ConsumerType, Role, ScopeRef
 from apex.auth.service import AuthStoreUnavailableError, extract_api_key, get_default_resolver
 from apex.domain.diagnostics import bounded_diagnostic, contains_credential_material
 from apex.domain.input_limits import validate_json_object, validation_error_summary
@@ -1405,10 +1405,23 @@ def _validate_runtime_run_configurable(
     contract.
     """
 
-    allowed = _LANGGRAPH_RUN_RUNTIME_KEYS | _LANGGRAPH_TRACE_CONFIG_KEYS
+    allowed = _LANGGRAPH_RUN_RUNTIME_KEYS | _LANGGRAPH_TRACE_CONFIG_KEYS | {RUNTIME_ACTOR_ID_KEY}
     unknown_count = sum(key not in allowed for key in runtime)
     if unknown_count:
         raise ValueError(f"config.configurable contains {unknown_count} unsupported field(s)")
+
+    if RUNTIME_ACTOR_ID_KEY in runtime:
+        if not trusted_loopback:
+            raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} is server-owned")
+        actor_id = runtime[RUNTIME_ACTOR_ID_KEY]
+        _validate_runtime_text(
+            actor_id,
+            label=RUNTIME_ACTOR_ID_KEY,
+            max_chars=_MAX_LANGGRAPH_IDENTIFIER_CHARS,
+            allow_none=False,
+        )
+        if actor_id != identity.consumer_id:
+            raise ValueError(f"{RUNTIME_ACTOR_ID_KEY} does not match the authenticated consumer")
 
     if "langgraph_auth_user" in runtime:
         runtime_user_payload = _runtime_auth_user_payload(runtime["langgraph_auth_user"])
@@ -1998,10 +2011,15 @@ async def on_threads_create_run(
     # Stamp a scalar from the authenticated request after validating supplied
     # runtime controls. ProxyUser.identity is a descriptor, so graph code must
     # not have to execute it (or trust caller-controlled attribution) to audit a
-    # decision. Mutate the runtime's captured configurable mapping in place.
+    # decision. Native create_valid_run copies configurable into context before
+    # this hook; both captured mappings need the same server-owned scalar.
     run_args = _run_arguments(payload)
     run_config = run_args.setdefault("config", {})
     run_config.setdefault("configurable", {})["langgraph_auth_user_id"] = identity.consumer_id
+    run_config["configurable"][RUNTIME_ACTOR_ID_KEY] = identity.consumer_id
+    run_context = run_args.get("context")
+    if isinstance(run_context, dict):
+        run_context[RUNTIME_ACTOR_ID_KEY] = identity.consumer_id
     if trusted_loopback:
         return result
     return _require_direct_runs_allowed(result)
