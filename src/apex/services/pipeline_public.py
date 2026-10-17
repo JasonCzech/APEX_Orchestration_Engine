@@ -275,11 +275,7 @@ def _public_phase_result(phase: str, value: Any) -> JsonDict | None:
         if item is not None:
             result[field] = item
     model = value.get("model")
-    if (
-        type(model) is str
-        and 0 < len(model) <= 200
-        and not contains_credential_material(model)
-    ):
+    if type(model) is str and 0 < len(model) <= 200 and not contains_credential_material(model):
         result["model"] = model
     duration = _finite_number(value.get("duration_s"), minimum=0, maximum=86_400_000)
     if duration is not None:

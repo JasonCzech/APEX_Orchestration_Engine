@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Dialog } from '@/components/Dialog'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { useRef, useState } from 'react'
 import { useEnvironments } from '@/api/hooks/useCatalog'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
@@ -8,6 +11,7 @@ import { actorLabel } from './cycleDisplay'
 import { ProviderValidation } from './ProviderValidation'
 import { Link } from 'react-router'
 import {
+  useArchivePreparation,
   useExecutions,
   useLinkRun,
   usePrepareExecution,
@@ -22,6 +26,7 @@ export function ExecutionWorkspace({
   cycle: Cycle
   canEdit: boolean
 }) {
+  useTimestampPreference()
   const names = useRunNames(cycle.project_id)
   const consumer = useOptionalConsumer()
   const environments = useEnvironments(cycle.app_id)
@@ -29,6 +34,10 @@ export function ExecutionWorkspace({
   const query = useExecutions(cycle.id)
   const prepare = usePrepareExecution(cycle.id)
   const link = useLinkRun(cycle.id)
+  const archive = useArchivePreparation(cycle.id)
+  const [archiveTarget, setArchiveTarget] = useState<{ id: string; title: string; revision: number } | null>(null)
+  const [showArchived, setShowArchived] = useState(false)
+  const [archiveNotice, setArchiveNotice] = useState('')
   const [planId, setPlanId] = useState('')
   const [scriptId, setScriptId] = useState('')
   const [readinessId, setReadinessId] = useState('')
@@ -56,7 +65,9 @@ export function ExecutionWorkspace({
   const plan = plans.find((v) => v.id === planId)
   const script = scripts.find((v) => v.id === scriptId)
   const data = query.data
-  const busy = prepare.isPending || link.isPending
+  const busy = prepare.isPending || link.isPending || archive.isPending
+  const archivedCount = data?.preparations.filter(item => item.archived_at).length ?? 0
+  const visiblePreparations = data?.preparations.filter(item => showArchived || !item.archived_at) ?? []
   const matchingConnections = data?.connections.filter(connection => connection.provider === String(script?.content.engine).replaceAll('-', '_')) ?? []
   return (
     <section className="cycle-panel glass-panel">
@@ -73,7 +84,7 @@ export function ExecutionWorkspace({
         </strong>{' '}
         · Executions sharing this environment must run sequentially.
       </p>
-      {query.isPending && <p role="status">Loading execution prerequisites…</p>}
+      {query.isPending && <Skeleton label="Loading execution prerequisites" rows={2} />}
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}
@@ -260,19 +271,25 @@ export function ExecutionWorkspace({
             </p>
           )}
           <h3>Prepared executions</h3>
+          {archiveNotice && <p role="status">{archiveNotice}</p>}
+          {archivedCount > 0 && <label className="checkbox-label">
+            <input type="checkbox" checked={showArchived} onChange={event => setShowArchived(event.target.checked)} />
+            Show archived preparations ({archivedCount})
+          </label>}
+          {data.preparations.length > 0 && visiblePreparations.length === 0 && <p>No active execution preparations. Show archived preparations to inspect retained bindings and validation history.</p>}
           {data.preparations.length === 0 && (
             <p>
               No execution preparations yet. Approve a test plan and a script
               that references it to begin.
             </p>
           )}
-          {data.preparations.map((p) => (
+          {visiblePreparations.map((p) => (
             <article className="cycle-panel" key={p.id}>
               <h4>
                 {p.snapshot.script_title} · {p.snapshot.engine}
               </h4>
               <p>
-                <strong>Launch blocked</strong> · {p.snapshot.mode} ·{' '}
+                <strong>{p.archived_at ? 'Archived' : 'Launch blocked'}</strong> · {p.snapshot.mode} ·{' '}
                 {p.snapshot.launch_authority === 'native_schedule'
                   ? 'Native schedule owns launch'
                   : 'Pipeline owns launch'}{' '}
@@ -308,8 +325,10 @@ export function ExecutionWorkspace({
               <ProviderValidation
                 cycleId={cycle.id}
                 preparationId={p.id}
-                canEdit={canEdit}
+                archived={Boolean(p.archived_at)}
+                canEdit={canEdit && !p.archived_at && !busy}
               />
+              {p.archived_at ? <p>Archived {formatTimestamp(p.archived_at)} by {actorLabel(p.archived_by ?? '', consumer)}. Bindings and validation history are retained.</p> : canEdit && <button className="btn btn-danger" disabled={busy} onClick={() => { archive.reset(); setArchiveNotice(''); setArchiveTarget({ id: p.id, title: p.snapshot.script_title, revision: data.revision }) }}>Archive preparation</button>}
               <details>
                 <summary>Binding and audit details</summary>
                 <dl>
@@ -399,6 +418,27 @@ export function ExecutionWorkspace({
           <Link to="/runs">Inspect test history</Link>
         </>
       )}
+      {archiveTarget && <Dialog
+        ariaLabel="Archive execution preparation"
+        className="cycle-leave-dialog"
+        overlayClassName="cycle-dialog-overlay"
+        onClose={() => { if (!archive.isPending) setArchiveTarget(null) }}
+        closeOnEscape={!archive.isPending}
+        closeOnBackdrop={!archive.isPending}
+      >
+        <h2>Archive execution preparation</h2>
+        <p>Archive the preparation for <strong>{archiveTarget.title}</strong>?</p>
+        <p><code>{archiveTarget.id}</code> · cycle revision {archiveTarget.revision}</p>
+        <p>This archive cannot be undone. It stops new provider validation and removes the preparation from the active list. Its bindings and validation history remain available. Already-started provider work and linked runs are not cancelled.</p>
+        {archive.error && <p role="alert">{archive.error.message} Close this dialog and review the latest prerequisites before trying again.</p>}
+        <div className="cycle-actions">
+          <button className="btn btn-secondary" disabled={archive.isPending} onClick={() => setArchiveTarget(null)}>Cancel</button>
+          <button className="btn btn-danger" disabled={archive.isPending || Boolean(archive.error) || !canEdit} onClick={() => {
+            const target = archiveTarget
+            archive.mutate({ preparationId: target.id, expected_revision: target.revision }, { onSuccess: () => { setArchiveNotice(`Preparation archived: ${target.title}.`); setArchiveTarget(null) } })
+          }}>{archive.isPending ? 'Archiving…' : 'Archive preparation'}</button>
+        </div>
+      </Dialog>}
     </section>
   )
 }

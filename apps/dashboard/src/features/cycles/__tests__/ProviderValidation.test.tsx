@@ -18,7 +18,7 @@ const record = {
   finished_at: null,
   current: false,
 }
-function mount(canEdit = true) {
+function mount(canEdit = true, archived = false) {
   render(
     <QueryClientProvider
       client={
@@ -29,6 +29,7 @@ function mount(canEdit = true) {
         cycleId="cycle"
         preparationId="prep"
         canEdit={canEdit}
+        archived={archived}
       />
     </QueryClientProvider>,
   )
@@ -103,4 +104,17 @@ describe('Provider source validation', () => {
       screen.queryByRole('button', { name: 'Validate with APEX Load' }),
     ).not.toBeInTheDocument()
   })
+  it.each([
+    ['pending', 'Historical validation remains pending'],
+    ['accepted', 'Historical acceptance retained for this archived preparation.'],
+  ])('keeps archived %s history readable without suggesting unavailable actions', async (status, expected) => {
+    server.use(http.get('*/v1/cycles/cycle/executions/prep/script-validations', () =>
+      HttpResponse.json({ revision: 9, blockers: ['Preparation archived'], validations: [{ ...record, status }] }),
+    ))
+    mount(true, true)
+    await screen.findByText(expected)
+    expect(screen.queryByRole('button', { name: /Validate with|Resume provider/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/resume to recover|validate again/i)).not.toBeInTheDocument()
+  })
+
 })

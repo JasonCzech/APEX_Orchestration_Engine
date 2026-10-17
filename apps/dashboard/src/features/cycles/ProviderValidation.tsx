@@ -14,10 +14,12 @@ export function ProviderValidation({
   cycleId,
   preparationId,
   canEdit,
+  archived = false,
 }: {
   cycleId: string
   preparationId: string
   canEdit: boolean
+  archived?: boolean
 }) {
   useTimestampPreference()
   const query = useScriptValidations(cycleId, preparationId)
@@ -49,7 +51,7 @@ export function ProviderValidation({
               ))}
             </ul>
           )}
-          {canEdit && (
+          {canEdit && !archived && (
             <button
               className="btn btn-secondary"
               disabled={validate.isPending || query.data.blockers.length > 0}
@@ -85,11 +87,13 @@ export function ProviderValidation({
             {query.data.validations.map((v) => (
               <li key={v.id}>
                 <strong>
-                  {labels[v.status] ?? 'Validation status unknown'}
+                  {archived && v.status === 'pending' ? 'Historical validation remains pending' : labels[v.status] ?? 'Validation status unknown'}
                 </strong>
                 {v.status === 'accepted' && (
                   <p>
-                    {v.current
+                    {archived
+                      ? 'Historical acceptance retained for this archived preparation.'
+                      : v.current
                       ? 'Current source acceptance (valid for up to 24 hours while bindings remain current).'
                       : 'Historical acceptance — refresh prerequisites and validate again.'}
                   </p>

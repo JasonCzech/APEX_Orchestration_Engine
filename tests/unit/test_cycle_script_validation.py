@@ -76,7 +76,11 @@ async def test_simulation_and_loadrunner_have_actionable_blockers(monkeypatch):
     )
     monkeypatch.setattr(api, "find", AsyncMock(return_value=cycle))
     session = AsyncMock()
-    session.scalar.side_effect = [SimpleNamespace(snapshot=prepared.model_dump()), None, None]
+    session.scalar.side_effect = [
+        SimpleNamespace(snapshot=prepared.model_dump(), archived_at=None),
+        None,
+        None,
+    ]
     _, _, _, blockers = await api.validation_context("cycle", "prep", session, Mock())
     assert any("Simulation" in b for b in blockers)
     assert any("LoadRunner" in b for b in blockers)

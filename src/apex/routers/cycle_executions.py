@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select, update
 
 from apex.app.dependencies import CurrentIdentity
 from apex.domain.cycle_executions import (
+    ArchiveExecutionPreparation,
     ExecutionSnapshot,
     LinkCycleRun,
     PreflightCheck,
@@ -59,6 +60,8 @@ class PreparationRead(BaseModel):
     snapshot: ExecutionSnapshot
     checks: list[PreflightCheck]
     checked_at: datetime
+    archived_at: datetime | None = None
+    archived_by: str | None = None
     launch_available: Literal[False] = False
 
 
@@ -164,6 +167,8 @@ async def read_executions(cycle_id: RecordId, session: Session, identity: Curren
                 created_by=row.created_by,
                 snapshot=snapshot,
                 checked_at=checked_at,
+                archived_at=row.archived_at,
+                archived_by=row.archived_by,
                 checks=execution_checks(
                     snapshot,
                     cycle.versions,
@@ -176,6 +181,21 @@ async def read_executions(cycle_id: RecordId, session: Session, identity: Curren
                     inventory_id=inventory.id if inventory else None,
                     inventory_at=inventory.scanned_at if inventory else None,
                     now=checked_at,
+                )
+                + (
+                    [
+                        PreflightCheck(
+                            key="archived",
+                            label="Archived preparation",
+                            status="blocked",
+                            detail=(
+                                "This preparation is retained for audit "
+                                "and cannot be used for new work."
+                            ),
+                        )
+                    ]
+                    if row.archived_at is not None
+                    else []
                 ),
             )
         )
@@ -253,7 +273,9 @@ async def prepare_execution(
         .where(CycleExecutionPreparation.cycle_id == cycle.id)
     )
     if count is not None and count >= 100:
-        raise HTTPException(409, "Cycle preparation limit reached")
+        raise HTTPException(
+            409, "Cycle preparation history limit reached, including archived preparations"
+        )
     target, connections, _ = await context(session, cycle)
     connection = next((c for c in connections if c.id == body.connection_id), None)
     if body.connection_id and connection is None:
@@ -305,6 +327,37 @@ async def prepare_execution(
     await session.commit()
     await session.refresh(row)
     return ExecutionMutationRead(id=row.id, revision=body.expected_revision + 1)
+
+
+@router.post(
+    "/{cycle_id}/executions/{preparation_id}/archive",
+    response_model=ExecutionMutationRead,
+    operation_id="archiveCycleExecutionPreparation",
+)
+async def archive_preparation(
+    cycle_id: RecordId,
+    preparation_id: RecordId,
+    body: ArchiveExecutionPreparation,
+    session: Session,
+    identity: Operator,
+):
+    """Retain bindings and validation history; prevent new work on this preparation."""
+    cycle = await find(session, identity, cycle_id)
+    preparation = await session.scalar(
+        select(CycleExecutionPreparation).where(
+            CycleExecutionPreparation.id == preparation_id,
+            CycleExecutionPreparation.cycle_id == cycle.id,
+        )
+    )
+    if preparation is None:
+        raise HTTPException(404, "Execution preparation not found")
+    if preparation.archived_at is not None:
+        return ExecutionMutationRead(id=preparation.id, revision=cycle.revision)
+    await reserve_revision(session, cycle, body.expected_revision)
+    preparation.archived_at = datetime.now(UTC)
+    preparation.archived_by = identity.consumer_id
+    await session.commit()
+    return ExecutionMutationRead(id=preparation.id, revision=body.expected_revision + 1)
 
 
 @router.post("/{cycle_id}/runs", response_model=ExecutionMutationRead, operation_id="linkCycleRun")

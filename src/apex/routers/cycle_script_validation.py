@@ -75,6 +75,11 @@ async def validation_context(cycle_id, preparation_id, session, identity):
         raise HTTPException(404, "Execution preparation not found")
     snapshot = ExecutionSnapshot.model_validate(preparation.snapshot)
     blockers: list[str] = []
+    if preparation.archived_at is not None:
+        blockers.append(
+            "This execution preparation is archived. Its validation history is retained; "
+            "prepare a new execution to perform further validation."
+        )
     if snapshot.mode != "live":
         blockers.append(
             "Simulation preparations do not contact live providers. Prepare a live "

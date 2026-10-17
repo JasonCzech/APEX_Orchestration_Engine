@@ -35,6 +35,11 @@ class LinkCycleRun(BaseModel):
     engine_run_id: RecordId
 
 
+class ArchiveExecutionPreparation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=1, strict=True)
+
+
 class PreflightCheck(BaseModel):
     key: str
     label: str

@@ -128,6 +128,20 @@ export function usePrepareExecution(id: string) {
     },
   })
 }
+export function useArchivePreparation(id: string) {
+  const cache = useQueryClient()
+  return useMutation({
+    retry: false,
+    mutationFn: async ({ preparationId, ...body }: components['schemas']['ArchiveExecutionPreparation'] & { preparationId: string }) =>
+      unwrap(await getApexClient().POST('/v1/cycles/{cycle_id}/executions/{preparation_id}/archive', {
+        params: { path: { cycle_id: id, preparation_id: preparationId } }, body,
+      })),
+    onSettled: () => {
+      void cache.invalidateQueries({ queryKey: ['cycles'] })
+    },
+  })
+}
+
 export function useLinkRun(id: string) {
   const cache = useQueryClient()
   return useMutation({

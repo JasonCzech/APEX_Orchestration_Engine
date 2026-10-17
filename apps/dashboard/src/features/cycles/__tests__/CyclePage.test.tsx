@@ -395,11 +395,16 @@ it('withholds mutations when the authenticated operator is outside the cycle sco
 it('distinguishes an inaccessible cycle from a retryable loading failure', async () => {
   const state = authenticatedState('operator', 'Scoped operator', [{ project_id: 'another-project' }])
   if (state.status === 'authenticated') state.systemInfo.features = { cycles: true }
-  server.use(http.get('*/v1/cycles/c1', () => HttpResponse.json({ detail: 'Cycle not found' }, { status: 404 })))
+  let executionReads = 0
+  server.use(
+    http.get('*/v1/cycles/c1', () => HttpResponse.json({ detail: 'Cycle not found' }, { status: 404 })),
+    http.get('*/v1/cycles/c1/executions', () => { executionReads++; return HttpResponse.json({ detail: 'Cycle not found' }, { status: 404 }) }),
+  )
   renderApp({ initialEntries: ['/cycles/c1'], authState: state })
   await screen.findByRole('heading', { name: 'Cycle unavailable' })
   expect(screen.getByRole('link', { name: 'Back to all cycles' })).toHaveAttribute('href', '/cycles')
   expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+  expect(executionReads).toBe(0)
 })
 
 it('requires an explicit replacement-base choice when another author revised the same deliverable', async () => {

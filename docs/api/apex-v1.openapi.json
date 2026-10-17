@@ -656,6 +656,21 @@
         "title": "ApplicationUpdate",
         "type": "object"
       },
+      "ArchiveExecutionPreparation": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "ArchiveExecutionPreparation",
+        "type": "object"
+      },
       "Assessment": {
         "additionalProperties": false,
         "properties": {
@@ -6267,6 +6282,29 @@
       },
       "PreparationRead": {
         "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "archived_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived By"
+          },
           "checked_at": {
             "format": "date-time",
             "title": "Checked At",
@@ -13075,6 +13113,74 @@
           }
         },
         "summary": "Prepare Execution",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/archive": {
+      "post": {
+        "description": "Retain bindings and validation history; prevent new work on this preparation.",
+        "operationId": "archiveCycleExecutionPreparation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArchiveExecutionPreparation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionMutationRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Archive Preparation",
         "tags": [
           "cycles"
         ]

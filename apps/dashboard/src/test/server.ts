@@ -107,6 +107,10 @@ export const handlers = [
   ),
   // The Home dashboard (/, D7) additionally reads drafts + usage analytics on
   // mount; default to empty so tests that merely pass through '/' stay quiet.
+  // Shared project/name selectors read the authorized catalog on mount. Tests
+  // exercising catalog data or failures override these empty scoped responses.
+  http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
+  http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
   http.get('*/v1/drafts', () => HttpResponse.json([])),
   http.get('*/v1/analytics/usage', () => HttpResponse.json(EMPTY_USAGE)),
   http.get('*/v1/analytics/agents', () => HttpResponse.json(EMPTY_AGENT_ANALYTICS)),

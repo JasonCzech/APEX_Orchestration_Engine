@@ -61,15 +61,15 @@ def _packaged_lineage(*extra: tuple[str, str]) -> list[tuple[str, str]]:
 
 
 async def test_schema_readiness_accepts_exact_packaged_head() -> None:
-    await schema_readiness.validate_schema_head(_Engine(_Connection(["0038"])))
+    await schema_readiness.validate_schema_head(_Engine(_Connection(["0039"])))
 
 
 async def test_schema_readiness_accepts_registered_descendant_for_safe_code_rollback() -> None:
     await schema_readiness.validate_schema_head(
         _Engine(
             _Connection(
-                ["future-0038"],
-                lineage=_packaged_lineage(("future-0038", "0038")),
+                ["future-0039"],
+                lineage=_packaged_lineage(("future-0039", "0039")),
             )
         )
     )
@@ -81,8 +81,8 @@ async def test_schema_readiness_accepts_registered_future_branches() -> None:
             _Connection(
                 ["future-a", "future-b"],
                 lineage=_packaged_lineage(
-                    ("future-a", "0038"),
-                    ("future-b", "0038"),
+                    ("future-a", "0039"),
+                    ("future-b", "0039"),
                 ),
             )
         )
@@ -95,13 +95,13 @@ async def test_schema_readiness_accepts_registered_future_branches() -> None:
         ([], []),
         (["0024"], []),
         (["0028"], []),
-        (["0038", "unexpected-branch"], []),
+        (["0039", "unexpected-branch"], []),
         (["future-divergent"], [("future-divergent", "0024")]),
         (["future-incomplete"], [("future-incomplete", "missing-parent")]),
-        (["0038", "future-0038"], [("future-0038", "0038")]),
+        (["0039", "future-0039"], [("future-0039", "0039")]),
         (
-            ["future-0038", "future-0039"],
-            [("future-0038", "0038"), ("future-0039", "future-0038")],
+            ["future-0039", "future-0040"],
+            [("future-0039", "0039"), ("future-0040", "future-0039")],
         ),
         (
             ["future-cycle-a"],
@@ -113,17 +113,17 @@ async def test_schema_readiness_rejects_missing_stale_or_divergent_heads(
     versions: list[str],
     extra_lineage: list[tuple[str, str]],
 ) -> None:
-    with pytest.raises(schema_readiness.SchemaNotReadyError, match="packaged head is 0038"):
+    with pytest.raises(schema_readiness.SchemaNotReadyError, match="packaged head is 0039"):
         await schema_readiness.validate_schema_head(
             _Engine(_Connection(versions, lineage=_packaged_lineage(*extra_lineage)))
         )
 
 
 async def test_schema_readiness_rejects_mutated_known_lineage() -> None:
-    lineage = [edge for edge in _packaged_lineage() if edge[0] != "0038"] + [("0038", "0010")]
+    lineage = [edge for edge in _packaged_lineage() if edge[0] != "0039"] + [("0039", "0010")]
 
     with pytest.raises(schema_readiness.SchemaNotReadyError, match="lineage could not be proven"):
-        await schema_readiness.validate_schema_head(_Engine(_Connection(["0038"], lineage=lineage)))
+        await schema_readiness.validate_schema_head(_Engine(_Connection(["0039"], lineage=lineage)))
 
 
 async def test_schema_readiness_does_not_reflect_database_revision_labels() -> None:
@@ -167,4 +167,4 @@ def test_packaged_schema_head_tracks_latest_revision() -> None:
     schema_readiness.packaged_schema_scripts.cache_clear()
     schema_readiness.packaged_schema_heads.cache_clear()
 
-    assert schema_readiness.packaged_schema_heads() == frozenset({"0038"})
+    assert schema_readiness.packaged_schema_heads() == frozenset({"0039"})

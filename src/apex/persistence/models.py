@@ -919,7 +919,7 @@ class TestCycle(Base):
 
 
 class CycleExecutionPreparation(Base):
-    """Immutable approved-version bindings; never an engine launch receipt."""
+    """Immutable bindings with an auditable archive marker; never a launch receipt."""
 
     __tablename__ = "cycle_execution_preparations"
     __table_args__ = (UniqueConstraint("cycle_id", "idempotency_key"),)
@@ -932,6 +932,8 @@ class CycleExecutionPreparation(Base):
     snapshot: Mapped[dict[str, Any]] = mapped_column(JsonColumn)
     created_by: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_by: Mapped[str | None] = mapped_column(String(255))
 
 
 class CycleRunLink(Base):

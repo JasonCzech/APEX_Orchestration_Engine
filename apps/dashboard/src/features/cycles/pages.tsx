@@ -499,7 +499,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
   } | null>(null)
   const selectedVersionId = params.get('version')
   useEffect(() => { setEditing(null) }, [tab, selectedVersionId])
-  const executions = useExecutions(cycleId, enabled && tab === 'overview')
+  const executions = useExecutions(cycleId, enabled && Boolean(query.data) && tab === 'overview')
   const cycle = query.data
   const applications = useApplications(cycle?.project_id)
   const environments = useEnvironments(cycle?.app_id)

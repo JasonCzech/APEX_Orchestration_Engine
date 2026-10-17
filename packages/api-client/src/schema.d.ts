@@ -825,6 +825,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive Preparation
+         * @description Retain bindings and validation history; prevent new work on this preparation.
+         */
+        post: operations["archiveCycleExecutionPreparation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cycles/{cycle_id}/executions/{preparation_id}/script-validations": {
         parameters: {
             query?: never;
@@ -1931,6 +1951,11 @@ export interface components {
             description?: string | null;
             /** Name */
             name?: string | null;
+        };
+        /** ArchiveExecutionPreparation */
+        ArchiveExecutionPreparation: {
+            /** Expected Revision */
+            expected_revision: number;
         };
         /** Assessment */
         Assessment: {
@@ -3995,6 +4020,10 @@ export interface components {
         };
         /** PreparationRead */
         PreparationRead: {
+            /** Archived At */
+            archived_at?: string | null;
+            /** Archived By */
+            archived_by?: string | null;
             /**
              * Checked At
              * Format: date-time
@@ -7114,6 +7143,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["PrepareExecution"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionMutationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archiveCycleExecutionPreparation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArchiveExecutionPreparation"];
             };
         };
         responses: {
