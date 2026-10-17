@@ -46,6 +46,7 @@
 | AGT-16 | Fixed with A11Y-07: the phase strip exposes the same vocabulary it displays. |
 | G-01 / G-02 | Fixed: skip confirmation plus a priority navigation guard for dirty prompt, discuss and revision drafts. QueryClient-owned buffers are keyed by interrupt ID and restored after leaving and returning. |
 | G-03 | Fixed: accepted local modify/revise/discuss waits for that run's new review instead of reporting completion elsewhere. Independent review found and fixed two cross-cache races: a stale inbox must not settle a local action, and switching runs must not leave a phantom “Agent working” row. Captured thread/inbox generations guard both paths. |
+| A-06 | Fixed: Execute phase and Re-run with changes use plain action verbs; decorative glyphs are not part of their accessible names. |
 | A-01 / A-02 | Fixed: actual option focus and queue announcements; after a completed decision, selection advances to the next open row rather than resetting to the top. |
 | R-01 / R-02 / S-02 | Fixed jointly: terminal phase copy describes recorded absence, live chips are suppressed on terminal runs, elapsed time explicitly includes reviews, and stream transitions are announced. |
 | ARE-24 / ARE-25 | Fixed: prompt diff colours use code-compatible text and backgrounds with added/removed cues; PromptDiff owns its CSS on cold Cycles routes. Creating a prompt explicitly discloses that it immediately becomes active; archive uses confirmation. |
