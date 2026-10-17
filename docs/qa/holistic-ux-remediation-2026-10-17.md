@@ -80,3 +80,31 @@ Task-owned browser sessions and servers were closed. Cleanup removed 41 Python/V
 Historical audit actors cannot be reconstructed; the new path attributes future decisions to the authenticated consumer. Historical agent latency that included review waits cannot be reconstructed either. Missing metrics and titles remain unavailable rather than being synthesized.
 
 A configured external provider, live production stream, external ticket creation, publication, retrieval connectors and cross-product APEX Load handoff still require their actual services and credentials. The historical `/assistants/search` deployment 500 was not reproduced on the integrated main: current contract violations were corrected and covered, without claiming an unseen runtime cause was solved. These are verification limits and explicit product capability states, not simulated evidence of successful integration.
+
+## Follow-up cross-cutting review
+
+A fresh review of the integrated Orchestration branch reproduced and corrected these additional issues:
+
+- Execution preparations, provider imports and follow-up actions retained an idempotency key after confirmed success. Explicitly repeating the same action could replay an old result, including an archived preparation. Confirmed success now completes the key's lifetime; uncertain retries retain their original key.
+- Analytics selected its bounded chart population using the table sort, so a chart labelled as the top groups could omit the actual winner. Chart queries now select by the displayed measure over the same fixed time window. Missing measurements sort after measured zero values, and the chart discloses its bounded population.
+- Large Unicode prompts or combined phase output could hide an otherwise valid review gate. Output producers fit previews within the existing byte and node limits, preserve whole fields where possible, and explicitly mark shortened or omitted content. Public readers preserve valid required decisions when optional evidence cannot fit. Editable prompt bodies remain complete and receive a separate finite allowance derived from their existing character limits and worst-case JSON encoding; the rest of the gate retains its existing envelope limits. The pending-gate list shares one body allowance across its aggregate, with the existing envelope, node and count limits retained. Durable evidence is unchanged.
+- Public audit history had lower record limits than durable history; large snapshots could also discard every approval. Projection now retains bounded recent history, including each phase's latest decision, and identifies incomplete previews. Long legal discussion messages no longer erase all visible dialogue.
+- Schema-drift fallback accepted malformed nested engine, review and dialogue values that could crash React or CodeMirror. It now validates those values independently and preserves valid sibling fields. Overview, phase and gate surfaces describe omitted evidence as unavailable rather than asserting it was never recorded.
+- Phase details could publish a test verdict before execution succeeded and did not consistently display structured assessments. It now uses the shared result-label contract and requires successful execution before showing collected KPIs.
+- An application-only document filter showed the ordinary empty-library state. It now shows a filtered result with a working clear action.
+
+Each correction received regression coverage and independent review. Further findings, including malformed native mapping keys and nested optional evidence, were reproduced, corrected and reviewed again. Required payloads validate keys before field comparisons; optional evidence receives bounded structural validation before projection. Absent evidence remains distinct from omitted evidence. The final independent cross-cutting review found no remaining actionable issues in the reviewed changes.
+
+| Follow-up verification | Result |
+| --- | --- |
+| Full backend suite after final fixes | 5,895 passed, 23 skipped; one upstream Starlette deprecation warning. |
+| Full dashboard suite | 1,098 passed across 135 files. |
+| Shared event contracts | 48 passed. |
+| Final production browser suite | 38 passed. Includes viewer/operator handling of partial evidence, complete large Unicode prompt content and Tab navigation, analytics ranking, and the existing role, theme and workflow checks. |
+| Production build and type checking | Dashboard production build and TypeScript passed; full backend Pyright passed with zero errors or warnings. |
+| Python lint and formatting | Ruff passed; all 395 checked files formatted. |
+| Dashboard lint | No errors; 23 existing Fast Refresh export warnings. |
+
+The branch was integrated with current `origin/main` before final builds and full backend validation. The code corrections were committed in five logical changes: `22b4003`, `517d794`, `224e297`, `1ae8053` and `7b6c80d`. Each commit followed a clear review round. No APEX Load source was changed.
+
+Follow-up cleanup removed 40 Python/Vite/TypeScript cache paths (16.50 MiB) and one disposable browser result file. Removal was verified; dependencies, production bundles and all tracked captures were preserved. No task-owned Playwright/browser or test-server process remains. No Go or Docker builds were used. The rollout requirements and external-service verification boundaries above remain unchanged.
