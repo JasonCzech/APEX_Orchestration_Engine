@@ -1,7 +1,7 @@
-"""Check shared dashboard text/control tokens against WCAG contrast formulas.
+"""Check shared dashboard text/control and chart tokens against contrast formulas.
 
 Covers the six shipped palettes and alpha-composited shared surfaces. This is
-not a substitute for testing rendered focus, overlays, charts, and typography.
+not a substitute for testing rendered focus, overlays, chart encodings, and typography.
 """
 
 from __future__ import annotations
@@ -108,10 +108,11 @@ def main() -> None:
             background: list[float],
             ratios: list[float] = ratios,
             name: str = name,
+            minimum: float = 4.5,
         ) -> None:
             ratio = contrast(composite(ink, background), background)
             ratios.append(ratio)
-            if ratio < 4.5:
+            if ratio < minimum:
                 failures.append(f"{name}: {label} {ratio:.2f}:1")
 
         for key in ["--text-primary", "--text-secondary", "--text-muted", "--accent-text"]:
@@ -147,6 +148,21 @@ def main() -> None:
                 fill = composite(token_color(tokens, f"--run-calendar-{kind}-bg"), background)
                 check(f"calendar {kind}", token_color(tokens, f"--run-calendar-{kind}-text"), fill)
         print(f"{name}: minimum {min(ratios):.2f}:1 across {len(ratios)} shared token pairs")
+        # Analytics charts sit on glass-panel (--bg-card), composited over the
+        # page background. Series strokes and pattern lines need 3:1 here;
+        # decorative translucent area fills are not the identifying marks.
+        chart_background = composite(token_color(tokens, "--bg-card"), root)
+        chart_ratios: list[float] = []
+        for index in range(1, 9):
+            key = f"--chart-{index}"
+            check(
+                key,
+                token_color(tokens, key),
+                chart_background,
+                ratios=chart_ratios,
+                minimum=3.0,
+            )
+        print(f"{name}: chart minimum {min(chart_ratios):.2f}:1 across 8 series/panel pairs")
     if failures:
         raise SystemExit("\n".join(failures))
 

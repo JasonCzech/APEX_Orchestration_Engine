@@ -1,6 +1,7 @@
 """Regressions for the dashboard contrast check's token alias resolution."""
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,20 @@ def test_color_alias_cycle_is_not_silently_accepted():
 
 def test_all_shipped_theme_pairs_meet_text_contrast():
     module.main()
+
+
+@pytest.mark.parametrize("token,value", [("--chart-1", "#00a8e0"), ("--chart-3", "#e5920a")])
+def test_chart_series_below_three_to_one_fail_even_when_text_passes(
+    tmp_path, monkeypatch, token, value
+):
+    for filename in ("tokens.css", "themes.css", "apex-light.css", "accessibility.css"):
+        css = (module.THEME_DIR / filename).read_text()
+        if filename == "apex-light.css":
+            css = re.sub(rf"{token}: #[0-9a-f]+;", f"{token}: {value};", css)
+        (tmp_path / filename).write_text(css)
+    monkeypatch.setattr(module, "THEME_DIR", tmp_path)
+    with pytest.raises(SystemExit, match=f"apex-light: {token} 2\\."):
+        module.main()
 
 
 def test_calendar_mix_uses_premultiplied_alpha():
