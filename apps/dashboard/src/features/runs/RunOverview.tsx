@@ -5,6 +5,7 @@ import type { PhaseName, PipelineState } from '@apex/pipeline-events'
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
+import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import {
   executionResultLabel,
   formatDuration,
@@ -117,7 +118,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
             <dt>Project</dt>
             <dd>{detail.project_id ?? 'Not recorded'}</dd>
             <dt>Application</dt>
-            <dd>{detail.app_id ?? 'Not recorded'}</dd>
+            <dd><ApplicationLabel project={detail.project_id} application={detail.app_id} /></dd>
             <dt>Load application</dt><dd>{summary?.outcome?.scope?.application_id ?? handle?.application_id ?? handle?.extras?.application_id ?? missingEvidence}</dd>
             <dt>Load release</dt><dd>{summary?.outcome?.scope?.release_id ?? handle?.release_id ?? handle?.extras?.release_id ?? missingEvidence}</dd>
             <dt>Mapping revision</dt><dd>{handle?.mapping_revision ?? handle?.extras?.mapping_revision ?? missingEvidence}</dd>

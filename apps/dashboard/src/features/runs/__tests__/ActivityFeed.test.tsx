@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { ActivityFeed } from '../ActivityFeed'
 
@@ -223,5 +223,20 @@ describe('ActivityFeed', () => {
   it('renders the empty state until events arrive', () => {
     render(<ActivityFeed phase="reporting" streamStatus="idle" />)
     expect(screen.getByText('No live activity for this phase yet.')).toBeInTheDocument()
+  })
+
+  it('discloses demo snapshots and offers durable reasoning without changing connected-live copy', async () => {
+    const openReasoning = vi.fn()
+    const { rerender } = render(<ActivityFeed phase="execution" streamStatus="idle" demo onOpenReasoning={openReasoning} />)
+    expect(screen.getByText('No demo activity was captured for this phase.')).toBeInTheDocument()
+    expect(screen.queryByText(/No live activity for this phase yet/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Activity streams in while/)).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Open Agent reasoning' }))
+    expect(openReasoning).toHaveBeenCalledOnce()
+    rerender(<ActivityFeed phase="execution" streamStatus="live" onOpenReasoning={openReasoning} />)
+    expect(screen.getByText('Events appear here as the run streams.')).toBeInTheDocument()
+    expect(screen.queryByText(/No demo activity/)).not.toBeInTheDocument()
+    rerender(<ActivityFeed phase="execution" streamStatus="live" progress={{ status: 'running', attempt: 1 }} toolCalls={[toolCall('t1', 'engine.poll')]} />)
+    expect(screen.getByTestId('activity-tool-card')).toHaveTextContent('engine.poll')
   })
 })

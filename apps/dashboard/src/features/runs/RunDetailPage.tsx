@@ -1,6 +1,6 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -71,6 +71,8 @@ export function RunWorkspace({
   renderGate,
   showEmbeddedControls = true,
   waitAge,
+  reviewTriage = false,
+  queuePosition,
 }: {
   threadId: string
   section?: RunWorkspaceSection
@@ -82,6 +84,8 @@ export function RunWorkspace({
   renderGate?: (interrupt: GateInterrupt, returnTo: string) => ReactNode
   showEmbeddedControls?: boolean
   waitAge?: string
+  reviewTriage?: boolean
+  queuePosition?: { position: number; total: number }
 }) {
   useTimestampPreference()
   const compact = useCompactLayout()
@@ -97,6 +101,16 @@ export function RunWorkspace({
   // cross-phase banner, and the header abort all drive the same instance. The
   // stream's pendingGateHint accelerates discovery ahead of the 10s poll.
   const hitl = useGate(threadId, { gateHint: live.stream.pendingGateHint })
+  const summaryGateId = query.data?.detail.pending_gate?.interrupt_id
+  const snapshotInterrupt = summaryGateId
+    ? query.data?.interrupts.find(interrupt => interrupt.interrupt_id === summaryGateId)
+    : query.data?.interrupts[0]
+  const serverUpdatedAt = query.data?.detail.updated_at
+  // LangGraph may reuse an interrupt id. Canonical content/server revisions
+  // distinguish new review generations without treating every poll as one.
+  const gateGeneration = useMemo(() => snapshotInterrupt
+    ? JSON.stringify([serverUpdatedAt ?? null, snapshotInterrupt.payload ?? null]) : undefined,
+  [snapshotInterrupt, serverUpdatedAt])
   // D4: header Re-run split button — non-null opens the pre-flight modal
   // with this preselection.
   const [preflight, setPreflight] = useState<{
@@ -128,6 +142,10 @@ export function RunWorkspace({
   const { detail, state, stateParseFailed } = query.data
   const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed, detail)
   const pendingGate = query.data.interrupts.some(interrupt => interrupt.interrupt_id === hitl.gate?.interrupt_id) ? hitl.gate : null
+  const summaryGate = detail.pending_gate
+  const announcementGate = summaryGate && typeof summaryGate.kind === 'string' && isPhaseName(summaryGate.phase)
+    ? { kind: summaryGate.kind, phase: summaryGate.phase, interrupt_id: summaryGate.interrupt_id }
+    : pendingGate
   if (pendingGate?.kind === 'prompt_review' || pendingGate?.kind === 'phase_review') {
     const current = phaseStrip.find(entry => entry.phase === pendingGate.phase)
     if (current) current.status = pendingGate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
@@ -204,7 +222,9 @@ export function RunWorkspace({
 
   return (
     <section className={`run-workspace${embedded ? ' run-workspace--embedded' : ''}`} aria-label="Run workspace">
-      <RunAnnouncements title={detail.title ?? threadId} phases={phaseStrip} gate={pendingGate} streamStatus={live.stream.status} terminal={['idle', 'error'].includes(detail.thread_status ?? '')} />
+      <RunAnnouncements threadId={threadId} title={detail.title ?? threadId} phases={phaseStrip} currentPhase={detail.current_phase ?? state.current_phase}
+        gate={announcementGate} gateGeneration={gateGeneration} streamStatus={live.stream.status} terminal={['idle', 'error'].includes(detail.thread_status ?? '')}
+        triage={reviewTriage} queuePosition={queuePosition} />
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}

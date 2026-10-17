@@ -40,15 +40,35 @@ test('gate keyboard editing preserves prompts, drafts and queue focus', async ({
   await expect(skip).toContainText('later phases that require its output cannot run')
   await expect(skip).toContainText('Your unsaved prompt edits will not be applied')
   await skip.getByRole('button', { name: 'Cancel' }).click()
-  await gate.getByRole('button', { name: 'Save edits and re-review' }).click()
-  await expect(gate.getByRole('button', { name: 'Execute phase', exact: true })).toBeVisible({ timeout: 20_000 })
-  await expect(promptRow).toHaveAttribute('aria-selected', 'true')
-  await expect(promptRow).not.toContainText('actioned elsewhere')
+  const updates = page.getByRole('status', { name: 'Run updates', exact: true })
+  // A later transport transition may replace the gate announcement. Observe
+  // the actual live-region mutations rather than requiring stale gate text.
+  const history = await updates.evaluateHandle(region => {
+    const messages: string[] = []
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) messages.push(node.textContent ?? '')
+      }
+    })
+    observer.observe(region, { childList: true, subtree: true })
+    return { messages, observer }
+  })
+  try {
+    await gate.getByRole('button', { name: 'Save edits and re-review' }).click()
+    await expect(gate.getByRole('button', { name: 'Execute phase', exact: true })).toBeVisible({ timeout: 20_000 })
+    await expect(promptRow).toHaveAttribute('aria-selected', 'true')
+    await expect(promptRow).not.toContainText('actioned elsewhere')
+    await expect.poll(() => history.evaluate(({ messages }) => messages.some(message =>
+      /Review prompts (?:open|reopened|updated) on Test Planning/.test(message)))).toBe(true)
 
-  await promptRow.focus()
-  await page.keyboard.press('j')
-  await expect(page.getByRole('option', { selected: true })).toBeFocused()
-  await expect(page.getByRole('status').filter({ hasText: 'open on' })).toHaveCount(1)
+    await promptRow.focus()
+    await page.keyboard.press('j')
+    await expect(page.getByRole('option', { selected: true })).toBeFocused()
+    await expect(updates).toHaveCount(1)
+  } finally {
+    await history.evaluate(({ observer }) => observer.disconnect())
+    await history.dispose()
+  }
 })
 
 test('a local output revision remains selected through its new interrupt', async ({ page }) => {

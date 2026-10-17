@@ -113,6 +113,8 @@ export function ActivityFeed({
   phase,
   streamStatus,
   terminal = false,
+  demo = false,
+  onOpenReasoning,
   progress,
   toolCalls,
   agentEvents,
@@ -122,6 +124,9 @@ export function ActivityFeed({
   phase: PhaseName
   /** LiveStreamStatus from the stream view; drives the empty-state hint only. */
   terminal?: boolean
+  /** Empty demo feeds must not promise live events that this view has not received. */
+  demo?: boolean
+  onOpenReasoning?: () => void
   streamStatus?: string
   /** Latest phase_status for THIS phase (stream.phaseProgress[phase]). */
   progress?: LivePhaseProgress | null
@@ -310,8 +315,9 @@ export function ActivityFeed({
   if (feed.entries.length === 0) {
     return (
       <div role="region" aria-label="Activity">
-        <StateCard kind="empty" compact title={terminal ? 'No live activity was captured in this session.' : 'No live activity for this phase yet.'} action={null}>
-          {terminal ? 'Open Agent reasoning for the durable evidence and full transcript.' : streamStatus === 'live' || streamStatus === 'connecting'
+        <StateCard kind="empty" compact title={demo ? 'No demo activity was captured for this phase.' : terminal ? 'No live activity was captured in this session.' : 'No live activity for this phase yet.'}
+          action={onOpenReasoning ? <button type="button" className="btn btn-secondary" onClick={onOpenReasoning}>Open Agent reasoning</button> : null}>
+          {demo ? 'Open Agent reasoning to inspect saved evidence and any available transcripts.' : terminal ? 'Open Agent reasoning for the durable evidence and full transcript.' : streamStatus === 'live' || streamStatus === 'connecting'
             ? 'Events appear here as the run streams.'
             : 'Activity streams in while the run is executing; the other tabs show the durable snapshot.'}
         </StateCard>

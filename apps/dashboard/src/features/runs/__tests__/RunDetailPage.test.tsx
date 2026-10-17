@@ -64,6 +64,67 @@ describe('RunDetailPage', () => {
     expect(screen.getByRole('link', { name: 'Open Reporting' })).toHaveAttribute('href', `/runs/${THREAD_ID}/phases/reporting`)
   })
 
+  it.each(['resolved', 'missing', 'unavailable'] as const)('uses one application label in scope and run context (%s)', async catalog => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), app_id: 'application-uuid' }
+    server.use(pipelineDetailHandler(detail), http.get('*/v1/catalog/applications', () =>
+      catalog === 'unavailable' ? HttpResponse.json({ detail: 'Catalog unavailable' }, { status: 503 })
+        : HttpResponse.json(catalog === 'resolved' ? [{ id: detail.app_id, name: 'ACC' }] : [])))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    const scope = screen.getByRole('navigation', { name: 'Current run scope' })
+    const expected = catalog === 'resolved' ? 'ACC' : detail.app_id
+    expect(await within(overview).findByText(expected, { exact: true })).toHaveAttribute('title', detail.app_id)
+    expect(await within(scope).findByText(expected, { exact: true })).toHaveAttribute('title', detail.app_id)
+  })
+
+  it('uses the matching interrupt when gate summary metadata is absent', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL_INTERRUPTED),
+      pending_gate: { interrupt_id: 'int-1', kind: null, phase: null } }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Run updates' })).toHaveTextContent('Review phase results open on Reporting.'))
+    expect(screen.getByRole('status', { name: 'Run updates' })).not.toHaveTextContent('null')
+  })
+
+  it('announces canonical same-id review updates but leaves unchanged polls silent', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
+    const interrupt = detail.interrupts?.[0]
+    if (!interrupt) throw new Error('The fixture must have a review interrupt')
+    server.use(pipelineDetailHandler(detail))
+    const { queryClient } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    const region = await screen.findByRole('status', { name: 'Run updates' })
+    await waitFor(() => expect(region).toHaveTextContent('Review phase results open on Reporting.'))
+    const mutations: MutationRecord[] = []
+    const observer = new MutationObserver(records => mutations.push(...records))
+    observer.observe(region, { childList: true, subtree: true, characterData: true })
+    const refresh = async () => {
+      mutations.length = 0
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(THREAD_ID) })
+      })
+    }
+    try {
+      detail.updated_at = '2026-06-01T10:12:00+00:00'
+      await refresh()
+      await waitFor(() => expect(region).toHaveTextContent('Review phase results updated on Reporting.'))
+      expect(mutations.length).toBeGreaterThan(0)
+      await refresh()
+      expect(mutations).toHaveLength(0)
+
+      interrupt.payload = {
+        ...interrupt.payload,
+        summary: 'Revised report compiled with additional evidence.',
+      }
+      await refresh()
+      await waitFor(() => expect(mutations.length).toBeGreaterThan(0))
+      expect(region).toHaveTextContent('Review phase results updated on Reporting.')
+      await refresh()
+      expect(mutations).toHaveLength(0)
+    } finally {
+      observer.disconnect()
+    }
+  })
+
   it.each([true, false])('explains a recorded acceptance verdict without notes (%s)', async passed => {
     const detail = structuredClone(PIPELINE_DETAIL)
     const state = detail.values as { phase_results: { execution: { test_summary: { passed: boolean; notes?: string | null } } } }

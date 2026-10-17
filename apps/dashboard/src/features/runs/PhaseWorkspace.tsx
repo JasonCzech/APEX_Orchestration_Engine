@@ -1,4 +1,5 @@
 import { useTimestampPreference } from '@/theme/preferences'
+import { isDemoDataMode } from '@/config/runtimeConfig'
 import { StateCard } from '@/components/ux/StateCard'
 import { formatPercentRate } from '@/utils/metrics'
 import { useId, type ReactNode } from 'react'
@@ -122,6 +123,11 @@ export function PhaseWorkspace({
             key={JSON.stringify([threadId, phase, runId ?? 'snapshot'])}
             phase={phase}
             terminal={terminal}
+            demo={isDemoDataMode()}
+            onOpenReasoning={() => {
+              selectTab('reasoning')
+              document.getElementById(`${tabsId}-tab-reasoning`)?.focus()
+            }}
             streamStatus={stream?.status}
             progress={stream?.phaseProgress?.[phase]}
             toolCalls={stream?.toolCalls}

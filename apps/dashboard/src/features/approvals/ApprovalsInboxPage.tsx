@@ -507,6 +507,7 @@ export function ApprovalsInboxPage() {
                 onResolved={handleResolved}
                 onReopening={markReopening}
                 waitAge={rows.find((row) => row.thread_id === selection.threadId)?.age}
+                queuePosition={selectionInQueue ? { position: rows.findIndex(row => row.thread_id === selection.threadId) + 1, total: rows.length } : undefined}
                 section={reviewSection}
                 phase={reviewPhase}
                 onSectionChange={setReviewSection}
@@ -579,6 +580,7 @@ function GatePreview({
   phase,
   onSectionChange,
   waitAge,
+  queuePosition,
 }: {
   selection: Selection
   handleRef: React.MutableRefObject<GateModuleHandle | null>
@@ -588,6 +590,7 @@ function GatePreview({
   phase: string | null
   onSectionChange: (section: RunWorkspaceSection, phase?: string) => void
   waitAge?: string
+  queuePosition?: { position: number; total: number }
 }) {
   const query = useThreadState(selection.threadId)
   const reportReopening = useCallback((pending: boolean) => onReopening(selection.threadId, pending), [onReopening, selection.threadId])
@@ -639,6 +642,8 @@ function GatePreview({
           embedded
           showEmbeddedControls={false}
           waitAge={waitAge}
+          reviewTriage
+          queuePosition={queuePosition}
           section={section}
           phase={phase ?? (isPhaseName(interrupt?.phase) ? interrupt.phase : null)}
           onSectionChange={(nextSection, nextPhase) => onSectionChange(nextSection, nextPhase)}
