@@ -97,7 +97,7 @@ export type GateMachineState =
   | { tag: 'failed'; gate: GateInstance; action: GateAction; draft: GateDraft; error: Error }
 
 export type GateEvent =
-  | { type: 'GATE_DISCOVERED'; gate: GateInstance; reopenSameId?: boolean }
+  | { type: 'GATE_DISCOVERED'; gate: GateInstance; reopenSameId?: boolean; draft?: GateDraft }
   | { type: 'GATE_CLEARED'; settled?: boolean }
   | { type: 'EDIT'; patch: GateDraftPatch }
   | { type: 'SUBMIT'; action: GateAction }
@@ -176,8 +176,8 @@ function mergeDraft(gate: GateInstance, draft: GateDraft, patch: GateDraftPatch)
   return next
 }
 
-function openFor(gate: GateInstance): GateMachineState {
-  return { tag: 'open', gate, draft: initialDraftFor(gate), dirty: false }
+function openFor(gate: GateInstance, draft = initialDraftFor(gate)): GateMachineState {
+  return { tag: 'open', gate, draft, dirty: isPromptDirty(gate, draft) }
 }
 
 /**
@@ -201,7 +201,7 @@ export function gateReducer(state: GateMachineState, event: GateEvent): GateMach
 
   switch (state.tag) {
     case 'no_gate':
-      return event.type === 'GATE_DISCOVERED' ? openFor(event.gate) : state
+      return event.type === 'GATE_DISCOVERED' ? openFor(event.gate, event.draft) : state
 
     case 'open':
       switch (event.type) {

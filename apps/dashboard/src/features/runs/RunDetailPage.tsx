@@ -16,6 +16,7 @@ import { GateModuleView, GateSlimBanner } from '@/hitl/GateModule'
 import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
 
+import { RunAnnouncements } from './RunAnnouncements'
 import { RunOverview } from './RunOverview'
 import { RunTimeline } from './RunTimeline'
 import { LiveStatusChip } from './LiveStatusChip'
@@ -23,7 +24,7 @@ import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu, PreflightModal } from './PreflightModal'
 import { runReviewPath } from './reviewPath'
-import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, phaseProgress, orchestrationStatusLabel, statusVisual, targetPhaseFor } from './runDisplay'
+import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -107,9 +108,10 @@ export function RunWorkspace({
   // recover handles that are absent from the compact pipeline summary.
   const abortRun = useAbortRun(threadId)
 
+
   useEffect(() => {
-    if (embedded) headingRef.current?.focus()
-  }, [embedded, threadId, query.isPending])
+    if (embedded && showEmbeddedControls) headingRef.current?.focus()
+  }, [embedded, showEmbeddedControls, threadId, query.isPending])
 
   if (query.isPending) return <RunDetailSkeleton />
   if (query.isError && !query.data) {
@@ -123,10 +125,11 @@ export function RunWorkspace({
   }
 
   const { detail, state, stateParseFailed } = query.data
-  const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed)
-  if (hitl.gate) {
-    const current = phaseStrip.find(entry => entry.phase === hitl.gate?.phase)
-    if (current) current.status = hitl.gate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
+  const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed, detail)
+  const pendingGate = query.data.interrupts.some(interrupt => interrupt.interrupt_id === hitl.gate?.interrupt_id) ? hitl.gate : null
+  if (pendingGate) {
+    const current = phaseStrip.find(entry => entry.phase === pendingGate.phase)
+    if (current) current.status = pendingGate.kind === 'prompt_review' ? 'awaiting_prompt_review' : 'awaiting_output_review'
   }
   const progress = phaseProgress(phaseStrip)
 
@@ -148,9 +151,6 @@ export function RunWorkspace({
     return <Navigate to={`/runs/${threadId}/phases/${selectedPhase}${search}`} replace />
   }
 
-  const threadTone = statusVisual(
-    detail.thread_status === 'interrupted' ? 'awaiting_output_review' : detail.thread_status,
-  )
   const logsSearchParams = new URLSearchParams({
     thread: threadId,
     run: detail.title ?? threadId,
@@ -162,7 +162,7 @@ export function RunWorkspace({
   // Gate placement (plan 2.a): full module above the workspace tabs when the
   // gate's phase is the selected phase, else a slim banner linking there.
   const gateInterrupt = hitl.gate
-    ? query.data.interrupts.find((interrupt) => interrupt.interrupt_id === hitl.gate?.interrupt_id)
+    ? query.data.interrupts.find((interrupt) => interrupt.interrupt_id === hitl.gate?.interrupt_id) ?? { interrupt_id: hitl.gate.interrupt_id, kind: hitl.gate.kind, phase: hitl.gate.phase, payload: hitl.gate.payload ?? undefined }
     : undefined
   const gateSlot =
     hitl.gate &&
@@ -203,6 +203,7 @@ export function RunWorkspace({
 
   return (
     <section className={`run-workspace${embedded ? ' run-workspace--embedded' : ''}`} aria-label="Run workspace">
+      <RunAnnouncements title={detail.title ?? threadId} phases={phaseStrip} gate={pendingGate} streamStatus={live.stream.status} terminal={['idle', 'error'].includes(detail.thread_status ?? '')} />
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
@@ -213,12 +214,12 @@ export function RunWorkspace({
             {detail.title ?? detail.thread_id}
           </h2>
         </div>
-        <span role="status" aria-live="polite" className={`status-badge ${threadStatusBadge(detail.thread_status, threadTone.tone)}`}>
+        <span className={`status-badge ${orchestrationTone(detail.thread_status, phaseStrip)}`}>
           {orchestrationStatusLabel(detail.thread_status, phaseStrip)}
         </span>
         <span className="run-workspace-meta">Test result: <strong>{executionResultLabel(detail, state)}</strong></span>
-        <span className="run-workspace-meta"><strong>{progress.completed}/{progress.total}</strong> phases finished</span>
-        {waitAge && <span className="run-workspace-meta">Waiting <strong>{waitAge}</strong></span>}
+        <span className="run-workspace-meta">{phaseProgressLabel(progress)}</span>
+        {waitAge && <span className="run-workspace-meta">Waiting <strong>{waitAge.endsWith(' ago') ? `for ${waitAge.slice(0, -4)}` : `since ${waitAge}`}</strong></span>}
         {stateParseFailed && (
           <span
             className="topbar-meta-chip warning"
@@ -333,14 +334,14 @@ export function RunWorkspace({
           </div>
           <div className="run-pipeline-counter-group">
             <span className={`run-pipeline-counter${detail.thread_status === 'busy' ? ' live' : ''}`}>
-              {progress.completed}/{progress.total}
+              {phaseProgressLabel(progress)}
             </span>
-            <LiveStatusChip status={live.stream.status} />
+            {['idle', 'error'].includes(detail.thread_status ?? '') ? <span className="ux-context">Recorded snapshot</span> : <LiveStatusChip status={live.stream.status} />}
             <span className="ux-context">Run updated {formatTimestamp(detail.updated_at)}</span>
           </div>
         </div>
         <details key={compact ? 'compact' : 'wide'} className="run-phase-navigation" open={!compact}>
-        <summary>Phase navigation · {progress.completed}/{progress.total}</summary>
+        <summary>Phase navigation · {phaseProgressLabel(progress)}</summary>
         <PhaseStrip
           strip={phaseStrip}
           size="lg"
@@ -361,6 +362,8 @@ export function RunWorkspace({
           state={state}
           stream={live.stream}
           runId={live.runId}
+          terminal={['idle', 'error'].includes(detail.thread_status ?? '')}
+          phaseStatus={phaseStrip.find(item => item.phase === selectedPhase)?.status}
           threadBusy={detail.thread_status === 'busy'}
           gateSlot={gateSlot}
           appId={detail.app_id ?? null}
@@ -371,19 +374,4 @@ export function RunWorkspace({
       </>}
     </section>
   )
-}
-
-function threadStatusBadge(status: string | null | undefined, fallback: string): string {
-  switch (status) {
-    case 'busy':
-      return 'accent'
-    case 'interrupted':
-      return 'warning'
-    case 'idle':
-      return 'neutral'
-    case 'error':
-      return 'danger'
-    default:
-      return fallback
-  }
 }

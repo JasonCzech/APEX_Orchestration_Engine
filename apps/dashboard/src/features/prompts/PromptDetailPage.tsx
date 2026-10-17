@@ -1,3 +1,5 @@
+import { TabList } from '@/components/ux/TabList'
+import { Dialog } from '@/components/Dialog'
 /**
  * /prompts/:ns/:name (?tab=content|versions) — prompt detail (plan UX 2.e).
  * Header: namespace/key breadcrumb, active vN chip, [Preview template],
@@ -8,7 +10,7 @@
  * [Save as vN+1]. Versions tab: newest-first timeline with per-version
  * [View] and [Set active] (rollback behind a confirm modal).
  */
-import { useMemo, useRef, useState } from 'react'
+import { useId, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 
 import {
@@ -248,6 +250,8 @@ export function PromptDetailPage() {
 }
 
 function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
+  const tabsId = useId()
+  const [archiveConfirm, setArchiveConfirm] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   const tab: Tab = searchParams.get('tab') === 'versions' ? 'versions' : 'content'
   const [editing, setEditing] = useState(false)
@@ -326,7 +330,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
             <button
               type="button"
               className="btn btn-ghost"
-              onClick={() => setArchived.mutate(!archived)}
+              onClick={() => archived ? setArchived.mutate(false) : setArchiveConfirm(true)}
               disabled={writePending}
             >
               {archived ? 'Unarchive' : 'Archive'}
@@ -354,22 +358,12 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
         </div>
       )}
 
-      <div className="prompt-tabs" role="tablist" aria-label="Prompt sections">
-        {(['content', 'versions'] as const).map((entry) => (
-          <button
-            key={entry}
-            type="button"
-            role="tab"
-            aria-selected={tab === entry}
-            className={`prompt-tab${tab === entry ? ' active' : ''}`}
-            onClick={() => selectTab(entry)}
-            disabled={writePending}
-          >
-            {entry === 'content' ? 'Content' : 'Versions'}
-          </button>
-        ))}
-      </div>
-
+      {archiveConfirm && <Dialog className="prompt-modal glass-panel" overlayClassName="prompt-modal-overlay" ariaLabel="Archive prompt?" onClose={() => setArchiveConfirm(false)}>
+        <h2>Archive {detail.key}?</h2><p>This hides the prompt from the active catalog. Existing versions are retained and you can unarchive it later.</p>
+        <div className="ux-actions"><button type="button" className="btn btn-secondary" onClick={() => setArchiveConfirm(false)}>Cancel</button><button type="button" className="btn btn-danger" disabled={writePending} onClick={() => { setArchiveConfirm(false); setArchived.mutate(true) }}>Confirm archive</button></div>
+      </Dialog>}
+      <TabList disabled={writePending} id={tabsId} label="Prompt sections" value={tab} items={[{ id: 'content', label: 'Content' }, { id: 'versions', label: 'Versions' }]} onChange={selectTab} />
+      <div id={`${tabsId}-panel-${tab}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${tab}`}>
       {tab === 'content' ? (
         editing ? (
           <NewVersionEditor
@@ -412,6 +406,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
       ) : (
         <VersionsTimeline key={detail.id} ns={ns} name={name} detail={detail} />
       )}
+      </div>
     </section>
   )
 }

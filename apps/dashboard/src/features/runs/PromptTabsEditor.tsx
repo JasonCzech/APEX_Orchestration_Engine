@@ -1,4 +1,7 @@
-import { useEffect, useState } from 'react'
+import '@/components/viewers/viewers.css'
+import { useEffect, useId, useState } from 'react'
+import { EditorView } from '@codemirror/view'
+import { TabList } from '@/components/ux/TabList'
 
 import CodeMirror from '@uiw/react-codemirror'
 import { PLATFORM_SYSTEM_POLICY } from '../prompts/platformPolicy'
@@ -37,6 +40,7 @@ export function PromptTabsEditor({
   active?: PromptTabField
   onActiveChange?: (field: PromptTabField) => void
 }) {
+  const tabsId = useId()
   const [activeInternal, setActiveInternal] = useState<PromptTabField>('system')
   const active = activeProp ?? activeInternal
   const setActive = (field: PromptTabField) => {
@@ -61,28 +65,11 @@ export function PromptTabsEditor({
         <pre style={{ whiteSpace: 'pre-wrap' }}>{PLATFORM_SYSTEM_POLICY}</pre>
         <p>The runtime also applies the phase output schema. Edits below cannot override these rules.</p>
       </details>
-      <div className="prompt-review-tabs" role="tablist" aria-label="Prompt Review tabs">
-        {TABS.map((tab) => {
-          const disabled = tab.field === 'application' && !appAvailable
-          return (
-            <button
-              key={tab.field}
-              type="button"
-              role="tab"
-              className="prompt-review-tab"
-              aria-selected={active === tab.field}
-              disabled={disabled}
-              onClick={() => {
-                if (!disabled) setActive(tab.field)
-              }}
-            >
-              {tab.label}
-            </button>
-          )
-        })}
-      </div>
+      <TabList id={tabsId} label="Prompt review tabs"
+        items={TABS.filter(tab => tab.field !== 'application' || appAvailable).map(tab => ({ id: tab.field, label: tab.label }))}
+        value={active} onChange={setActive} />
       {activeDisabled ? (
-        <div className="dash-empty small" role="tabpanel">
+        <div className="dash-empty small" role="tabpanel" id={`${tabsId}-panel-${active}`} aria-labelledby={`${tabsId}-tab-${active}`}>
           No application prompt for this run.
         </div>
       ) : (
@@ -95,11 +82,13 @@ export function PromptTabsEditor({
           )}
           <div
             className={`code-viewer prompt-review-editor${editable ? ' editable' : ''}`}
-            role="tabpanel"
+            role="tabpanel" id={`${tabsId}-panel-${active}`} aria-labelledby={`${tabsId}-tab-${active}`}
             data-testid={`prompt-tab-editor-${active}`}
           >
             <CodeMirror
               value={activeValue}
+              indentWithTab={false}
+              extensions={[EditorView.contentAttributes.of({ 'aria-label': activeLabel, tabindex: '0' })]}
               editable={editable}
               readOnly={!editable}
               aria-label={activeLabel}

@@ -186,7 +186,7 @@ describe('GateModuleView machine states', () => {
     expect(card).toHaveTextContent('Resume failed: resume exploded')
     // Draft intact proof: the editors render the preserved draft text.
     const panel = screen.getByTestId('prompt-review-panel')
-    const system = within(panel).getByLabelText('System Prompt')
+    const system = within(panel).getByRole('textbox', { name: 'System Prompt' })
     expect(system).toHaveValue('EDITED SYSTEM')
     // And the dirty chip reflects the preserved diff.
     expect(screen.getByTestId('gate-dirty-chip')).toBeInTheDocument()

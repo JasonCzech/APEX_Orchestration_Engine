@@ -9,7 +9,7 @@ import type {
   LivePhaseProgress,
   LiveToolCall,
 } from './liveTypes'
-import { formatTimestamp, PHASE_LABELS, statusLabel, statusVisual, TONE_COLOR_VAR } from './runDisplay'
+import { toolCallTone, formatTimestamp, PHASE_LABELS, statusLabel, statusVisual, TONE_COLOR_VAR } from './runDisplay'
 
 /**
  * Live activity feed for ONE selected phase (D2, plan flagship screen):
@@ -113,6 +113,7 @@ function engineSampleLine(sample: LiveEngineSample): string {
 export function ActivityFeed({
   phase,
   streamStatus,
+  terminal = false,
   progress,
   toolCalls,
   agentEvents,
@@ -121,6 +122,7 @@ export function ActivityFeed({
 }: {
   phase: PhaseName
   /** LiveStreamStatus from the stream view; drives the empty-state hint only. */
+  terminal?: boolean
   streamStatus?: string
   /** Latest phase_status for THIS phase (stream.phaseProgress[phase]). */
   progress?: LivePhaseProgress | null
@@ -308,9 +310,9 @@ export function ActivityFeed({
   if (feed.entries.length === 0) {
     return (
       <div className="dash-empty small" role="tabpanel" aria-label="Activity">
-        No live activity for this phase yet.
+        {terminal ? 'No live activity was captured in this session.' : 'No live activity for this phase yet.'}
         <span className="dash-empty-hint">
-          {streamStatus === 'live' || streamStatus === 'connecting'
+          {terminal ? 'Open Agent reasoning for the durable evidence and full transcript.' : streamStatus === 'live' || streamStatus === 'connecting'
             ? 'Events appear here as the run streams.'
             : 'Activity streams in while the run is executing; the other tabs show the durable snapshot.'}
         </span>
@@ -354,7 +356,7 @@ export function ActivityFeed({
             )
           }
           if (entry.kind === 'tool') {
-            const tone = entry.status === 'error' ? 'danger' : 'success'
+            const tone = toolCallTone(entry.status)
             return (
               <div className="activity-tool-card" key={entry.key} data-testid="activity-tool-card">
                 <span className="kind-chip">tool</span>

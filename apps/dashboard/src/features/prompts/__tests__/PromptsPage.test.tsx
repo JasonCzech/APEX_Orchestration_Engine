@@ -157,7 +157,7 @@ describe('PromptsPage', () => {
     await userEvent.type(dialog.getByLabelText('Description'), 'Triage prompt')
     await userEvent.type(dialog.getByLabelText('Prompt content'), 'Sort by severity.')
     await userEvent.type(dialog.getByLabelText('Version note'), 'first cut')
-    await userEvent.click(dialog.getByRole('button', { name: 'Create prompt' }))
+    await userEvent.click(dialog.getByRole('button', { name: 'Create and activate prompt' }))
 
     await waitFor(() =>
       expect(router.state.location.pathname).toBe('/prompts/ops/triage%2Fsystem'),

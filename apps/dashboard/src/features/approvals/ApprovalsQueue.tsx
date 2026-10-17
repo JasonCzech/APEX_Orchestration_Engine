@@ -13,6 +13,7 @@ export type RowRemovalReason = 'local' | 'elsewhere'
 
 export interface QueueRow extends ApprovalItem {
   /** Set when the gate is no longer pending — row stays grayed until the next poll. */
+  reopening?: boolean
   removed?: RowRemovalReason
 }
 
@@ -36,7 +37,7 @@ export function ApprovalsQueue({
 }) {
   useEffect(() => {
     const selected = selectedThreadId ? document.getElementById(rowDomId(selectedThreadId)) : null
-    if (document.activeElement?.closest('.approvals-queue')) selected?.focus()
+    selected?.focus({ preventScroll: true })
     selected?.scrollIntoView?.({ block: 'nearest' })
   }, [selectedThreadId])
   return (
@@ -44,9 +45,8 @@ export function ApprovalsQueue({
       className="approvals-queue"
       role="listbox"
       aria-label="Needs review queue"
-      aria-activedescendant={selectedThreadId ? rowDomId(selectedThreadId) : undefined}
     >
-      {rows.map((row) => {
+      {rows.map((row, index) => {
         const selected = row.thread_id === selectedThreadId
         const classes = [
           'approvals-row',
@@ -62,7 +62,10 @@ export function ApprovalsQueue({
             data-testid={rowDomId(row.thread_id)}
             className={classes}
             role="option"
-            aria-label={`${row.title}. ${gateLabel(row.pending_gate.kind)}. ${isPhaseName(row.pending_gate.phase) ? PHASE_LABELS[row.pending_gate.phase] : 'Phase not recorded'}.`}
+            aria-label={`${row.title}. ${gateLabel(row.pending_gate.kind)}. ${isPhaseName(row.pending_gate.phase) ? PHASE_LABELS[row.pending_gate.phase] : 'Phase not recorded'}. Project ${row.project_id ?? 'not recorded'}. Run ${row.thread_id}. Updated ${row.age}.` }
+            aria-posinset={index + 1}
+            aria-setsize={rows.length}
+            data-route-focus={selected ? true : undefined}
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!row.removed) onSelect(row) } }}
@@ -84,7 +87,7 @@ export function ApprovalsQueue({
             </div>
             <p className="approval-identity"><code>{row.thread_id}</code><br />Updated {formatTimestamp(row.updated_at)}</p>
             <div className="approvals-row-meta">
-              {row.removed ? (
+              {row.reopening ? <span className="topbar-meta-chip">Agent working — review will reopen</span> : row.removed ? (
                 <span className="topbar-meta-chip approvals-removed-chip">
                   {row.removed === 'elsewhere' ? 'actioned elsewhere' : 'actioned'}
                 </span>

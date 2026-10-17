@@ -241,10 +241,13 @@ describe('ApprovalsInboxPage', () => {
     )
 
     await user.keyboard('j')
+    expect(await findRow('run-new-2')).toHaveFocus()
+    expect(await findRow('run-new-2')).toHaveAttribute('aria-posinset', '2')
     expect(await findRow('run-new-2')).toHaveAttribute('aria-selected', 'true')
     await user.keyboard('j') // clamped at the end
     expect(await findRow('run-new-2')).toHaveAttribute('aria-selected', 'true')
     await user.keyboard('k')
+    expect(await findRow('run-old-1')).toHaveFocus()
     expect(await findRow('run-old-1')).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -358,6 +361,112 @@ describe('ApprovalsInboxPage', () => {
     expect(oldRow).toHaveAttribute('aria-disabled', 'true')
     expect(within(oldRow).getByText('actioned elsewhere')).toBeInTheDocument()
     expect(await findRow('run-new-2')).not.toHaveClass('removed')
+  })
+
+  it('retains a locally reopening gate when the list temporarily loses its interrupt', async () => {
+    const source = useInboxHandlers()
+    const user = userEvent.setup()
+    const { queryClient, router } = renderInbox()
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    source.current = [NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(await findRow(OLD.thread_id)).not.toHaveClass('removed')
+    expect(await findRow(OLD.thread_id)).toHaveTextContent('Agent working')
+    expect(router.state.location.pathname).toContain(OLD.thread_id)
+    const reopened = { ...OLD, pending_gate: { ...OLD.pending_gate!, interrupt_id: 'int-revised' } }
+    source.current = [reopened, NEW]
+    server.use(http.get('*/v1/pipelines/run-old-1', () => HttpResponse.json(gatedDetail(reopened))))
+    // The thread finishes before the separate inbox poll catches up. The
+    // completion callback must refresh the inbox before releasing the row.
+    await user.click(screen.getByRole('button', { name: 'mock-reopened' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-old-1/reviews/int-revised'))
+    expect(await findRow(OLD.thread_id)).not.toHaveTextContent('actioned elsewhere')
+  })
+
+  it('keeps a local reopening row through an inbox refresh failure and recovers on retry', async () => {
+    const source = useInboxHandlers()
+    const user = userEvent.setup()
+    const { queryClient, router } = renderInbox()
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    source.current = [NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    const reopened = { ...OLD, pending_gate: { ...OLD.pending_gate!, interrupt_id: 'int-recovered' } }
+    source.current = [reopened, NEW]
+    server.use(http.get('*/v1/pipelines', () => new HttpResponse(null, { status: 503 }), { once: true }))
+    await user.click(screen.getByRole('button', { name: 'mock-reopened' }))
+    await waitFor(() => expect(queryClient.getQueryState(queryKeys.approvals.inbox())?.status).toBe('error'))
+    expect(await findRow(OLD.thread_id)).toHaveTextContent('Agent working')
+    expect(router.state.location.pathname).toContain(OLD.thread_id)
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/runs/run-old-1/reviews/int-recovered'))
+    expect(await findRow(OLD.thread_id)).not.toHaveTextContent('actioned elsewhere')
+  })
+
+  it('reconciles a local re-review after leaving its workspace, without retaining a working placeholder', async () => {
+    const source = useInboxHandlers()
+    const user = userEvent.setup()
+    const { queryClient } = renderInbox()
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    await user.click(await findRow(NEW.thread_id))
+    const reopened = { ...OLD, pending_gate: { ...OLD.pending_gate!, interrupt_id: 'int-background' } }
+    source.current = [reopened, NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(await findRow(OLD.thread_id)).not.toHaveTextContent('Agent working')
+    source.current = [NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(await findRow(OLD.thread_id)).toHaveClass('removed')
+    expect(await findRow(OLD.thread_id)).not.toHaveTextContent('Agent working')
+  })
+
+  it('observes a locally revised run that finishes after its workspace is unmounted', async () => {
+    const source = useInboxHandlers()
+    const user = userEvent.setup()
+    const { queryClient } = renderInbox()
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    await user.click(await findRow(NEW.thread_id))
+    source.current = [NEW]
+    server.use(http.get('*/v1/pipelines/run-old-1', () => HttpResponse.json({ ...DETAILS['run-old-1'], thread_status: 'error', pending_gate: null, interrupts: [] })))
+    await act(async () => { await queryClient.invalidateQueries() })
+    await waitFor(() => expect(screen.queryByText('Agent working — review will reopen')).not.toBeInTheDocument())
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(screen.queryByTestId(`approvals-row-${OLD.thread_id}`)).not.toBeInTheDocument()
+    await waitForSelected(NEW.thread_id)
+  })
+
+  it('uses the pre-submit thread snapshot baseline when list and detail timestamps differ', async () => {
+    const source = useInboxHandlers()
+    const newerTimestamp = new Date(Date.parse(T_OLDEST) + 1000).toISOString()
+    const preSubmitDetail = { ...DETAILS['run-old-1'], updated_at: newerTimestamp }
+    server.use(http.get('*/v1/pipelines/run-old-1', () => HttpResponse.json(preSubmitDetail)))
+    const user = userEvent.setup()
+    const { queryClient } = renderInbox()
+    await user.click(await screen.findByRole('button', { name: 'mock-revise' }))
+    await user.click(await findRow(NEW.thread_id))
+    // Even a newly fetched pre-submit detail must not mean the local revise finished.
+    source.current = [NEW]
+    await act(async () => { await queryClient.invalidateQueries() })
+    expect(await findRow(OLD.thread_id)).toHaveTextContent('Agent working')
+    // A stale list echo is also older than the captured thread baseline.
+    source.current = [OLD, NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    source.current = [NEW]
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
+    expect(await findRow(OLD.thread_id)).toHaveTextContent('Agent working')
+    server.use(http.get('*/v1/pipelines/run-old-1', () => HttpResponse.json({ ...preSubmitDetail, thread_status: 'error', pending_gate: null, interrupts: [] })))
+    await act(async () => { await queryClient.invalidateQueries() })
+    await waitFor(() => expect(screen.queryByText('Agent working — review will reopen')).not.toBeInTheDocument())
+  })
+
+  it('advances from a middle decision to its following gate, not the first gate', async () => {
+    const rows = Array.from({ length: 4 }, (_, i) => gatedRun(`run-middle-${i}`, { kind: 'prompt_review', phase: 'test_planning', interruptId: `int-middle-${i}`, updatedAt: new Date(Date.now() - (4 - i) * 60_000).toISOString() }))
+    const source = mutableListHandler(rows)
+    server.use(source.handler, detailsHandler(Object.fromEntries(rows.map(row => [row.thread_id, gatedDetail(row)]))))
+    const user = userEvent.setup()
+    renderInbox('/runs/run-middle-1/reviews/int-middle-1?source=queue')
+    await user.click(await screen.findByRole('button', { name: 'mock-approve' }))
+    await waitForSelected('run-middle-2')
+    expect(await findRow('run-middle-0')).toHaveAttribute('aria-selected', 'false')
   })
 
   it('keeps cached approval actions visible when a refresh fails', async () => {

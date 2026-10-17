@@ -84,7 +84,7 @@ describe('RunDetailPage', () => {
     server.use(pipelineDetailHandler(detail))
     renderRunRoutes([`/runs/${THREAD_ID}`])
     const overview = await screen.findByRole('region', { name: 'Run overview' })
-    expect(within(overview).getByText(/5 of 6 selected phases finished/)).toBeInTheDocument()
+    expect(within(overview).getByText(/4\/6 phases succeeded · 1 skipped/)).toBeInTheDocument()
   })
 
   it('uses the themed link style for Evidence Coverage artifacts', async () => {
@@ -118,13 +118,13 @@ describe('RunDetailPage', () => {
     expect(screen.queryByRole('navigation', { name: 'Pipeline phases' })).not.toBeInTheDocument()
     expect(screen.queryByText(/Pipeline context/i)).not.toBeInTheDocument()
     expect(
-      within(progress).getByRole('button', { name: 'test_planning — succeeded (attempt 2)' }),
+      within(progress).getByRole('button', { name: 'Test Planning — Complete (attempt 2)' }),
     ).toBeInTheDocument()
     expect(
-      within(progress).getByRole('button', { name: 'env_triage — skipped (attempt 1)' }),
+      within(progress).getByRole('button', { name: 'Env Triage — Skipped (attempt 1)' }),
     ).toBeInTheDocument()
     expect(
-      within(progress).getByRole('button', { name: 'reporting — running (attempt 1)' }),
+      within(progress).getByRole('button', { name: 'Reporting — Executing (attempt 1)' }),
     ).toBeInTheDocument()
   })
 
@@ -155,17 +155,17 @@ describe('RunDetailPage', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=reasoning`])
 
     const chip = await screen.findByTestId('prompt-provenance')
-    expect(chip).toHaveTextContent('catalog · story_analysis@v3')
+    expect(chip).toHaveTextContent('Catalog · story_analysis@v3')
     expect(screen.getAllByTestId('codemirror')[0]).toHaveTextContent(
       'You are the story analysis agent.',
     )
   })
 
-  it('renders the reasoning empty state for phases without reasoning details', async () => {
+  it('links the transcript even when no other reasoning details are recorded', async () => {
     server.use(pipelineDetailHandler())
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=reasoning`])
 
-    expect(await screen.findByText('No reasoning details recorded for this phase yet.')).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Full agent transcript (attempt 1)' })).toHaveAttribute('href', `/runs/${THREAD_ID}/artifacts/execution-a1-transcript`)
   })
 
   it('renders execution KPI pills and the passed badge from test_summary', async () => {

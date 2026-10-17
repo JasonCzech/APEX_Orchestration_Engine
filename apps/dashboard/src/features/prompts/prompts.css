@@ -549,45 +549,6 @@
   font-size: var(--font-size-sm);
 }
 
-/* unifiedMergeView tones on the token sheet (defaults assume a light page). */
-.prompt-diff .cm-changedLine,
-.prompt-diff .cm-insertedLine {
-  background: var(--success-bg);
-}
-
-.prompt-diff ins.cm-insertedLine {
-  text-decoration: none;
-}
-
-.prompt-diff .cm-changedText {
-  background: var(--success-bg);
-  color: var(--success-text);
-}
-
-.prompt-diff .cm-deletedChunk {
-  background: var(--danger-bg);
-}
-
-.prompt-diff .cm-deletedChunk del {
-  text-decoration: line-through;
-}
-
-.prompt-diff .cm-deletedText {
-  color: var(--danger-text);
-}
-
-.prompt-diff .cm-changeGutter {
-  width: 4px;
-}
-
-.prompt-diff .cm-changedLineGutter {
-  background: var(--success);
-}
-
-.prompt-diff .cm-deletedLineGutter {
-  background: var(--danger);
-}
-
 /* ── Playground ──────────────────────────────────────────────────────────── */
 
 .prompt-playground-split {
@@ -662,18 +623,3 @@
     grid-template-columns: 1fr;
   }
 }
-
-/* Merge decorations paint on the code surface, which can be dark in a light
-   page theme. Keep text tied to that surface and use borders/glyphs as well. */
-.prompt-diff .cm-changedLine, .prompt-diff .cm-insertedLine,
-.prompt-diff .cm-changedText {
-  background: color-mix(in srgb, var(--code-text) 12%, var(--code-bg));
-  color: var(--code-text);
-  border-inline-start: 3px solid var(--code-text);
-}
-.prompt-diff .cm-deletedChunk, .prompt-diff .cm-deletedText {
-  background: color-mix(in srgb, var(--code-text) 8%, var(--code-bg));
-  color: var(--code-text);
-}
-.prompt-diff .cm-deletedChunk del { color: var(--code-text); text-decoration: line-through; }
-.prompt-diff .cm-changedText span, .prompt-diff .cm-deletedText span { color: inherit; }

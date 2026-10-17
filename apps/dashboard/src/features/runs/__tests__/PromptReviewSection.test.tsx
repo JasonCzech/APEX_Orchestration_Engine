@@ -86,16 +86,16 @@ describe('PromptReviewSection', () => {
       section.compareDocumentPosition(workspaceTabs) & Node.DOCUMENT_POSITION_PRECEDING,
     ).toBeTruthy()
 
-    const systemEditor = await within(section).findByLabelText('System Prompt')
+    const systemEditor = await within(section).findByRole('textbox', { name: 'System Prompt' })
     await waitFor(() => expect(systemEditor).toHaveValue('Server system for story_analysis'))
 
     await user.click(within(section).getByRole('tab', { name: 'Phase Prompt' }))
-    const phaseEditor = within(section).getByLabelText('Phase Prompt')
+    const phaseEditor = within(section).getByRole('textbox', { name: 'Phase Prompt' })
     await user.clear(phaseEditor)
     await user.type(phaseEditor, 'Edited phase prompt.')
 
     await user.click(within(section).getByRole('tab', { name: 'Additional Context' }))
-    const contextEditor = within(section).getByLabelText('Additional Context')
+    const contextEditor = within(section).getByRole('textbox', { name: 'Additional Context' })
     await user.type(contextEditor, 'Extra operator context.')
 
     await user.click(within(section).getByRole('button', { name: 'Save to run' }))
@@ -141,7 +141,7 @@ describe('PromptReviewSection', () => {
     ])
 
     const firstSection = await screen.findByTestId('prompt-review-section')
-    const firstEditor = await within(firstSection).findByLabelText('System Prompt')
+    const firstEditor = await within(firstSection).findByRole('textbox', { name: 'System Prompt' })
     await waitFor(() => expect(firstEditor).toHaveValue('Server system for story_analysis'))
     await user.type(firstEditor, ' pending')
     await user.click(within(firstSection).getByRole('button', { name: 'Save to run' }))
@@ -151,7 +151,7 @@ describe('PromptReviewSection', () => {
       await router.navigate(`/runs/${THREAD_ID}/phases/test_planning?tab=details`)
     })
     const nextSection = await screen.findByTestId('prompt-review-section')
-    const nextEditor = await within(nextSection).findByLabelText('System Prompt')
+    const nextEditor = await within(nextSection).findByRole('textbox', { name: 'System Prompt' })
     await waitFor(() => expect(nextEditor).toHaveValue('Server system for test_planning'))
     expect(nextEditor).toHaveAttribute('readonly')
     expect(within(nextSection).getByRole('button', { name: 'Save to run' })).toBeDisabled()
@@ -196,7 +196,7 @@ describe('PromptReviewSection', () => {
 
     expect(await screen.findByTestId('prompt-review-panel')).toBeInTheDocument()
     expect(screen.queryByTestId('prompt-review-section')).not.toBeInTheDocument()
-    expect(screen.getAllByRole('tablist', { name: 'Prompt Review tabs' })).toHaveLength(1)
+    expect(screen.getAllByRole('tablist', { name: 'Prompt review tabs' })).toHaveLength(1)
   })
 
   it('labels the Application Prompt as app-wide and links to the application catalog', async () => {

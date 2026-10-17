@@ -1,42 +1,10 @@
-import type { LiveStreamStatus } from './liveTypes'
-
-const KNOWN: Record<LiveStreamStatus, { label: string; title: string }> = {
-  idle: {
-    label: 'Snapshot refresh active',
-    title: 'No live stream — this run is not currently streaming. The snapshot poll keeps the page current.',
-  },
-  connecting: {
-    label: 'Connecting live updates',
-    title: 'Opening the live event stream for this run…',
-  },
-  live: {
-    label: 'Live updates connected',
-    title: 'Live — events from this run stream in as they happen.',
-  },
-  reconnecting: {
-    label: 'Reconnecting live updates',
-    title: 'Stream dropped — reconnecting with backoff. The snapshot poll heals any missed events.',
-  },
-  ended: {
-    label: 'Recorded snapshot',
-    title: 'The run finished streaming. The snapshot below is the durable record.',
-  },
-  error: {
-    label: 'Live updates unavailable',
-    title: 'The live stream failed. The snapshot poll keeps the page correct; reload to retry the stream.',
-  },
-}
-
-function isKnown(status: string): status is LiveStreamStatus {
-  return status in KNOWN
-}
+import { isKnown, KNOWN } from './liveStatusDisplay'
 
 /**
  * Header chip showing the SSE connection state (D2). Plain status text +
  * tone-colored pulse dot; the title attribute explains each state. Unknown
  * statuses (future streaming-layer states) render muted with the raw text.
- * Deliberately NOT role="status": the run rail's gate banner owns that
- * landmark on this page (and the chip's churn would spam screen readers).
+ * RunAnnouncements owns the one live region for gate, phase and transport changes.
  */
 export function LiveStatusChip({ status }: { status: string }) {
   const known = isKnown(status) ? KNOWN[status] : null

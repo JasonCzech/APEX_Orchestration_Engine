@@ -195,6 +195,7 @@ describe('PromptDetailPage', () => {
     expect(screen.queryByText('archived')).not.toBeInTheDocument()
 
     await userEvent.click(screen.getByRole('button', { name: 'Archive' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm archive' }))
     // optimistic: the chip flips before the server answers
     expect(await screen.findByText('archived')).toBeInTheDocument()
 

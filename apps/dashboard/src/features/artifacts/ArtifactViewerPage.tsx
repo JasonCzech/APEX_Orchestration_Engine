@@ -5,7 +5,7 @@ import { Link, useLocation, useParams } from 'react-router'
 
 import { useQuery } from '@tanstack/react-query'
 
-import { PHASE_NAMES, type ArtifactRef, type PipelineState } from '@apex/pipeline-events'
+import { parseGateInterrupt, PHASE_NAMES, type ArtifactRef, type PipelineState } from '@apex/pipeline-events'
 
 import { useThreadState } from '@/api/hooks/useThreadState'
 import { queryKeys } from '@/api/queryKeys'
@@ -41,6 +41,16 @@ function renderKindOf(mediaType: string): RenderKind {
   if (normalized.includes('json')) return 'json'
   if (normalized.startsWith('text/')) return 'text'
   return 'binary'
+}
+
+function parseTranscript(text: string): (Record<string, unknown> & { resolved_prompt?: Record<string, unknown> }) | null {
+  try {
+    const value: unknown = JSON.parse(text.slice(text.indexOf('\n') + 1))
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+    const record = value as Record<string, unknown>
+    const prompt = record.resolved_prompt
+    return { ...record, resolved_prompt: prompt && typeof prompt === 'object' && !Array.isArray(prompt) ? prompt as Record<string, unknown> : {} }
+  } catch { return null }
 }
 
 interface LoadedArtifact {
@@ -90,7 +100,8 @@ export function ArtifactViewerPage() {
   const showingSource = sourceFor === name
   const threadQuery = useThreadState(threadId)
 
-  const ref = threadQuery.data ? findArtifact(threadQuery.data.state, name) : undefined
+  const pendingTranscript = threadQuery.data?.interrupts.map(interrupt => parseGateInterrupt(interrupt.payload)).find(payload => payload?.kind === 'phase_review' && payload.evidence?.transcript_ref?.id === name)
+  const ref = (threadQuery.data ? findArtifact(threadQuery.data.state, name) : undefined) ?? (pendingTranscript?.kind === 'phase_review' ? pendingTranscript.evidence?.transcript_ref ?? undefined : undefined)
   const url = ref ? artifactProxyUrl(ref.uri) : null
 
   const artifactQuery = useQuery({
@@ -151,6 +162,8 @@ export function ArtifactViewerPage() {
   }
 
   const loaded = artifactQuery.data
+  const transcript = loaded?.kind === 'text' && loaded.text?.startsWith('APEX phase transcript\n')
+    ? parseTranscript(loaded.text) : null
 
   return (
     <>
@@ -207,6 +220,12 @@ export function ArtifactViewerPage() {
           }
           onRetry={() => void artifactQuery.refetch()}
         />
+      ) : transcript ? (
+        <section className="artifact-viewer-body" aria-label="Full agent transcript">
+          <h2>Full agent transcript</h2>
+          {Object.entries(transcript.resolved_prompt ?? {}).map(([field, value]) => typeof value === 'string' ? <section key={field}><h3>{field.replaceAll('_', ' ')} prompt</h3><CodeViewer value={value} ariaLabel={`${field} prompt`} /></section> : null)}
+          <JsonViewer value={transcript} ariaLabel="Transcript record" />
+        </section>
       ) : loaded?.kind === 'json' ? (
         <div className="artifact-viewer-body">
           <JsonViewer value={loaded.text ?? ''} ariaLabel={`${ref.name ?? ref.id} JSON contents`} />

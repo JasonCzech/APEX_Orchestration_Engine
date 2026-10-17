@@ -23,7 +23,7 @@
 import { z } from "zod";
 
 import { PhaseNameSchema, type SchemaDriftReporter } from "./events";
-import { DialogueEntrySchema, PromptOriginSchema } from "./state";
+import { DialogueEntrySchema, PhaseResultEntrySchema, PromptOriginSchema } from "./state";
 
 export const GATE_SCHEMA_VERSION = 1;
 
@@ -44,13 +44,14 @@ const schemaVersion = z.literal(GATE_SCHEMA_VERSION);
 
 /**
  * prompt.source inside the prompt_review payload. The builder copies only
- * origin/ref (editor is dropped). Actionable public gates require a concrete
+ * origin/ref and an optional authenticated editor. Actionable public gates require a concrete
  * origin; ref remains nullable.
  */
 export const ReviewPromptSourceSchema = z
   .object({
     origin: PromptOriginSchema,
     ref: z.string().nullable(),
+    editor: z.string().nullish(),
   })
   .passthrough();
 export type ReviewPromptSource = z.infer<typeof ReviewPromptSourceSchema>;
@@ -119,6 +120,8 @@ export const PhaseReviewPayloadSchema = z
     phase: PhaseNameSchema,
     summary: z.string().nullable(),
     result_preview: ResultPreviewSchema,
+    /** Public agent evidence available before the operator accepts the output. */
+    evidence: PhaseResultEntrySchema.optional(),
     artifacts: z.array(ArtifactPreviewSchema),
     warnings: z.array(z.string()),
     /** Last <=3 dialogue entries for this phase (DialogueEntry dumps). */

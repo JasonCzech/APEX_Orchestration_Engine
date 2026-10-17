@@ -676,3 +676,21 @@ it("preserves unavailable outcomes and live metrics without inventing zeros", as
   expect(stats.tps).toBe(0);
   expect(stats.p95_ms).toBeNull();
 });
+
+
+describe("pre-decision agent evidence", () => {
+  it("preserves prompt attribution and descriptive tool outcomes before acceptance", () => {
+    const evidence = {
+      provenance: "llm",
+      reasoning_digest: "Checked the source contract.",
+      resolved_prompt: { system: "Use governed tools." },
+      resolved_prompt_source: { origin: "run_override", ref: "phase/test_planning@v2", editor: "Ada" },
+      tool_calls: [{ id: "tool-1", tool: "catalog.lookup", status: "timeout" }],
+      transcript_ref: { id: "transcript-1", uri: "apex-artifact:///transcripts/phase-1.txt" },
+    };
+    const parsed = PhaseReviewPayloadSchema.parse({ ...phaseReview, evidence });
+    expect(parsed.evidence).toEqual(evidence);
+    const prompt = PromptReviewPayloadSchema.parse({ ...promptReview, prompt: { ...promptReview.prompt, source: { ...promptReview.prompt.source, editor: "Ada" } } });
+    expect(prompt.prompt.source.editor).toBe("Ada");
+  });
+});

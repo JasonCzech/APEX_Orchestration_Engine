@@ -44,7 +44,8 @@ function ShellContent() {
       // the scroll offset from the page just left.
       nextMain.scrollTop =
         navigationType === 'POP' ? (scrollPositions.current.get(location.key) ?? 0) : 0
-      nextMain.focus()
+      // Review queue navigation owns focus on its selected option.
+      if (!document.activeElement?.matches('[data-route-focus="true"]')) nextMain.focus()
     })
     return () => cancelAnimationFrame(frame)
   }, [location.key, location.pathname, navigationType])

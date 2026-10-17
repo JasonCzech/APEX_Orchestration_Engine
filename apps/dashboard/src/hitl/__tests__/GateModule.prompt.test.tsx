@@ -93,7 +93,7 @@ function HandleHarness({
 }
 
 describe('GateModule prompt_review', () => {
-  it('edit -> dirty chip -> Save Edit & Re-review posts {action:"modify", prompt:{...}}', async () => {
+  it('edit -> dirty chip -> Save edits and re-review posts {action:"modify", prompt:{...}}', async () => {
     const threadId = 'th-prompt'
     const { handler, ref } = mutableDetailHandler(
       threadId,
@@ -106,13 +106,13 @@ describe('GateModule prompt_review', () => {
 
     // Hydrated panel: provenance chip + editable editors seeded from payload.
     expect(await screen.findByTestId('gate-provenance')).toHaveTextContent(
-      'catalog · test_planning@v2',
+      'Catalog · test_planning@v2',
     )
     const panel = await screen.findByTestId('prompt-review-panel')
-    let systemEditor = within(panel).getByLabelText('System Prompt')
+    let systemEditor = within(panel).getByRole('textbox', { name: 'System Prompt' })
     expect(systemEditor).toHaveValue('You are the planning agent.')
     await user.click(within(panel).getByRole('tab', { name: 'Application Prompt' }))
-    let applicationEditor = within(panel).getByLabelText('Application Prompt')
+    let applicationEditor = within(panel).getByRole('textbox', { name: 'Application Prompt' })
     expect(applicationEditor).toHaveValue('Checkout must preserve carts during payment retries.')
 
     // Pristine: no dirty chip, base execute action is available.
@@ -121,15 +121,15 @@ describe('GateModule prompt_review', () => {
 
     // Edit the system prompt -> dirty diff indicator + edited execute label.
     await user.click(within(panel).getByRole('tab', { name: 'System Prompt' }))
-    systemEditor = within(panel).getByLabelText('System Prompt')
+    systemEditor = within(panel).getByRole('textbox', { name: 'System Prompt' })
     fireEvent.change(systemEditor, { target: { value: 'You are the EDITED planning agent.' } })
     await user.click(within(panel).getByRole('tab', { name: 'Application Prompt' }))
-    applicationEditor = within(panel).getByLabelText('Application Prompt')
+    applicationEditor = within(panel).getByRole('textbox', { name: 'Application Prompt' })
     fireEvent.change(applicationEditor, {
       target: { value: 'Checkout must preserve carts and payment retry telemetry.' },
     })
     expect(await screen.findByTestId('gate-dirty-chip')).toHaveTextContent('edited')
-    const modify = screen.getByRole('button', { name: /Save Edit & Re-review/i })
+    const modify = screen.getByRole('button', { name: /Save edits and re-review/i })
     expect(modify).toBeEnabled()
 
     const reviewed = promptInterrupt('int-p')
@@ -160,7 +160,7 @@ describe('GateModule prompt_review', () => {
       expect(screen.getByRole('button', { name: /Execute Phase/i })).toBeEnabled(),
     )
     await user.click(screen.getByRole('tab', { name: 'System Prompt' }))
-    expect(screen.getByLabelText('System Prompt')).toHaveValue(
+    expect(screen.getByRole('textbox', { name: 'System Prompt' })).toHaveValue(
       'You are the EDITED planning agent.',
     )
   })
@@ -218,4 +218,24 @@ describe('GateModule prompt_review', () => {
     expect(screen.getByRole('button', { name: 'Confirm abort' })).toBeDisabled()
     expect(resume.captured.calls).toHaveLength(0)
   })
+  it('confirms skipping and warns about the draft before sending a decision', async () => {
+    const threadId = 'th-skip-confirm'
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-skip')]))
+    const resume = resumeHandler(202)
+    server.use(handler, resume.handler)
+    const user = userEvent.setup()
+    renderHarness(threadId)
+    fireEvent.change(await screen.findByRole('textbox', { name: 'System Prompt' }), { target: { value: 'Operator edit' } })
+    await user.click(screen.getByRole('button', { name: 'Skip phase' }))
+    const dialog = screen.getByRole('dialog', { name: 'Skip this phase?' })
+    expect(dialog).toHaveTextContent('later phases that require its output cannot run')
+    expect(dialog).toHaveTextContent('Your unsaved prompt edits will not be applied')
+    expect(resume.captured.calls).toHaveLength(0)
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('textbox', { name: 'System Prompt' })).toHaveValue('Operator edit')
+    await user.click(screen.getByRole('button', { name: 'Skip phase' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm skip' }))
+    await waitFor(() => expect(resume.captured.last()).toMatchObject({ body: { action: 'skip_phase' } }))
+  })
+
 })

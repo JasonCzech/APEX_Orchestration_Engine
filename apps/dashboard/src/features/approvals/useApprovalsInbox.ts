@@ -11,7 +11,7 @@
  * is surfaced via `removedItems` for exactly one poll cycle, so the page can
  * gray it inline instead of yanking it from the queue mid-review.
  */
-import { useRef } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { useQuery } from '@tanstack/react-query'
 
@@ -119,7 +119,9 @@ export interface ApprovalsInboxResult {
   isLoading: boolean
   error: Error | null
   refreshError: Error | null
-  refetch: () => void
+  /** Last successful snapshot, used to coordinate separate thread/inbox caches. */
+  updatedAt: number
+  refetch: () => Promise<void>
 }
 
 function toItem(
@@ -184,6 +186,9 @@ export function useApprovalsInbox(): ApprovalsInboxResult {
     }
   }
 
+  const { refetch: refetchQuery } = query
+  const refetch = useCallback(async () => { await refetchQuery() }, [refetchQuery])
+
   return {
     items,
     removedItems: snapshot.current.removed,
@@ -192,6 +197,7 @@ export function useApprovalsInbox(): ApprovalsInboxResult {
     isLoading: query.isPending,
     error: query.isError && !query.data ? query.error : null,
     refreshError: query.isError && query.data ? query.error : null,
-    refetch: () => void query.refetch(),
+    updatedAt: query.dataUpdatedAt,
+    refetch,
   }
 }

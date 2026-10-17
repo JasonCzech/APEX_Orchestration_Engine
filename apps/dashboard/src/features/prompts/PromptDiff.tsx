@@ -1,13 +1,16 @@
+import '@/components/viewers/viewers.css'
+import './prompt-diff.css'
 /**
  * Unified diff for prompt versions — @codemirror/merge's unifiedMergeView
  * extension on the existing read-only CodeMirror surface (installed cleanly
  * against the workspace's @codemirror/view 6.43, so no hand-rolled fallback
  * needed). `original` is the comparison base; the rendered document is
  * `value`, with deleted chunks inlined and inserted lines toned via
- * prompts.css on the token sheet.
+ * prompt-diff.css on the token sheet.
  */
 import { useMemo } from 'react'
 
+import { EditorView } from '@codemirror/view'
 import { unifiedMergeView } from '@codemirror/merge'
 import CodeMirror from '@uiw/react-codemirror'
 
@@ -23,8 +26,8 @@ export function PromptDiff({
   ariaLabel: string
 }) {
   const extensions = useMemo(
-    () => [unifiedMergeView({ original, mergeControls: false, gutter: true })],
-    [original],
+    () => [unifiedMergeView({ original, mergeControls: false, gutter: true }), EditorView.contentAttributes.of({ 'aria-label': ariaLabel, tabindex: '0' })],
+    [original, ariaLabel],
   )
   return (
     <div className="code-viewer prompt-diff" role="figure" aria-label={ariaLabel}>

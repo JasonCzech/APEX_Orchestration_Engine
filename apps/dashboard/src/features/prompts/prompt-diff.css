@@ -1,0 +1,29 @@
+/* Merge decorations paint on the code surface, which may be dark in a light
+   page theme. Keep text tied to that surface and distinguish deletion by a
+   strike-through as well as the gutter color. */
+.prompt-diff .cm-changedLine,
+.prompt-diff .cm-insertedLine,
+.prompt-diff .cm-changedText {
+  background: color-mix(in srgb, var(--code-text) 12%, var(--code-bg));
+  color: var(--code-text);
+  border-inline-start: 3px solid var(--code-text);
+}
+
+.prompt-diff ins.cm-insertedLine { text-decoration: none; }
+
+.prompt-diff .cm-deletedChunk,
+.prompt-diff .cm-deletedText {
+  background: color-mix(in srgb, var(--code-text) 8%, var(--code-bg));
+  color: var(--code-text);
+}
+
+.prompt-diff .cm-deletedChunk del {
+  color: var(--code-text);
+  text-decoration: line-through;
+}
+
+.prompt-diff .cm-changedText span,
+.prompt-diff .cm-deletedText span { color: inherit; }
+.prompt-diff .cm-changeGutter { width: 4px; }
+.prompt-diff .cm-changedLineGutter { background: var(--success); }
+.prompt-diff .cm-deletedLineGutter { background: var(--danger); }

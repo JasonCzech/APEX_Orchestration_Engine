@@ -36,7 +36,7 @@ export function CodeViewer({
           highlightActiveLine: false,
           highlightActiveLineGutter: false,
         }}
-        extensions={[...(language === 'json' ? JSON_EXTENSIONS : []), EditorView.contentAttributes.of({ 'aria-label': ariaLabel ?? 'Code preview' }), ...(preferences.wordWrap ? [EditorView.lineWrapping] : [])]}
+        extensions={[...(language === 'json' ? JSON_EXTENSIONS : []), EditorView.contentAttributes.of({ 'aria-label': ariaLabel ?? 'Code preview', tabindex: '0' }), ...(preferences.wordWrap ? [EditorView.lineWrapping] : [])]}
       />
     </div>
   )

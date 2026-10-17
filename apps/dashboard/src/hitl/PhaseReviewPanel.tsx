@@ -7,6 +7,7 @@ import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 
 import type { PhaseReviewPayload } from '@apex/pipeline-events'
 
+import { ReasoningTab } from '@/features/runs/PhaseWorkspace'
 import { CodeViewer } from '@/components/viewers/CodeViewer'
 import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 
@@ -90,6 +91,12 @@ export function PhaseReviewPanel({
       </div>
 
       <div className="phase-review-sidebar">
+        <section className="gate-info-card" aria-label="Evidence for this decision">
+          <h4>Agent evidence</h4>
+          {payload.evidence ? <ReasoningTab threadId={threadId} phase={payload.phase} entry={payload.evidence} state={{}} /> : <p>No agent evidence was supplied with this review. Reasoning, tool calls and prompt provenance are unavailable in this snapshot.</p>}
+          {payload.evidence?.provenance && <p>Output source: {payload.evidence.provenance === 'llm' ? 'AI-generated' : payload.evidence.provenance.replaceAll('_', ' ')}</p>}
+          {typeof payload.evidence?.model === 'string' && <p>Model: {payload.evidence.model}</p>}
+        </section>
         {previewEntries.length > 0 && !compact && (
           <details className="gate-info-card" data-testid="gate-result-preview">
             <summary>Technical output</summary>

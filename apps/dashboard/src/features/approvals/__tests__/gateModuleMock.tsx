@@ -30,6 +30,7 @@ export function MockGateModule({
   interrupt,
   compact,
   onOutcome,
+  onReopening,
   handleRef,
 }: GateModuleProps) {
   useImperativeHandle(
@@ -64,6 +65,8 @@ export function MockGateModule({
       <button type="button" onClick={() => onOutcome?.({ type: 'superseded' })}>
         mock-supersede
       </button>
+      <button type="button" onClick={() => onReopening?.(true)}>mock-revise</button>
+      <button type="button" onClick={() => onReopening?.(false)}>mock-reopened</button>
       <textarea aria-label="mock-note" />
     </div>
   )

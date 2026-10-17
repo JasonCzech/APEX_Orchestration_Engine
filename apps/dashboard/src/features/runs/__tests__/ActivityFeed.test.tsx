@@ -29,7 +29,7 @@ describe('ActivityFeed', () => {
 
     const dividers = screen.getAllByTestId('activity-divider')
     expect(dividers).toHaveLength(1)
-    expect(dividers[0]).toHaveTextContent('running')
+    expect(dividers[0]).toHaveTextContent('Executing')
 
     const cards = screen.getAllByTestId('activity-tool-card')
     expect(cards).toHaveLength(2)
@@ -52,7 +52,7 @@ describe('ActivityFeed', () => {
     )
     const after = screen.getAllByTestId('activity-divider')
     expect(after).toHaveLength(2)
-    expect(after[1]).toHaveTextContent('succeeded')
+    expect(after[1]).toHaveTextContent('Complete')
     expect(screen.getAllByTestId('activity-tool-card')).toHaveLength(2)
   })
 

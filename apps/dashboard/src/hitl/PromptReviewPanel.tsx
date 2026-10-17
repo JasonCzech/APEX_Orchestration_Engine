@@ -6,6 +6,7 @@
  * Edits dispatch EDIT patches into the machine draft; the dirty diff chip
  * reflects machine-computed prompt dirtiness.
  */
+import { promptSourceLabel, promptSourceTone } from '@/features/runs/promptProvenance'
 import type { PromptReviewPayload } from '@apex/pipeline-events'
 
 import { PromptTabsEditor, type PromptTabField } from '@/features/runs/PromptTabsEditor'
@@ -60,12 +61,11 @@ export function PromptReviewPanel({
         <div className="gate-chip-row">
           {source.origin && (
             <span
-              className="topbar-meta-chip accent"
+              className={`topbar-meta-chip prompt-provenance-chip ${promptSourceTone(source)}`}
               data-testid="gate-provenance"
-              title="Where the prompt text under review came from"
+              title={promptSourceLabel(source)}
             >
-              {source.origin}
-              {source.ref ? ` · ${source.ref}` : ''}
+              {promptSourceLabel(source)}
             </span>
           )}
           {!payload.editable && (
@@ -104,8 +104,7 @@ export function PromptReviewPanel({
             Review the resolved prompt, confirm the supporting context, then execute this phase.
           </p>
           <p className="gate-info-copy">
-            Prompt source: <strong>{source.origin ?? 'runtime'}</strong>
-            {source.ref ? ` · ${source.ref}` : ''}
+            Prompt source: <strong>{promptSourceLabel(source)}</strong>
           </p>
         </section>
 

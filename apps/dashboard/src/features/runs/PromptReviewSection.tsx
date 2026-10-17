@@ -16,7 +16,8 @@ import { promptPath } from '../prompts/promptPaths'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { roleAtLeast } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
-import { PHASE_LABELS } from './runDisplay'
+import { promptSourceLabel, promptSourceTone } from './promptProvenance'
+import { formatTimestamp, PHASE_LABELS } from './runDisplay'
 import { PromptTabsEditor, type PromptTabField, type PromptTabValues } from './PromptTabsEditor'
 
 /** Run-scoped, app-wide application prompt override content, if set for this run's app. */
@@ -97,11 +98,6 @@ function sameValues(left: PromptTabValues | null, right: PromptTabValues | null)
   )
 }
 
-function sourceLabel(source: Record<string, unknown>): string {
-  const origin = typeof source.origin === 'string' ? source.origin : 'runtime'
-  const ref = typeof source.ref === 'string' && source.ref ? ` · ${source.ref}` : ''
-  return `${origin}${ref}`
-}
 
 export function PromptReviewSection({
   threadId,
@@ -195,10 +191,11 @@ export function PromptReviewSection({
         </div>
         <div className="prompt-review-actions">
           {baseline?.source && (
-            <span className="topbar-meta-chip accent" data-testid="prompt-review-source">
-              {sourceLabel(baseline.source)}
+            <span className={`topbar-meta-chip prompt-provenance-chip ${promptSourceTone(baseline.source)}`} title={promptSourceLabel(baseline.source)} data-testid="prompt-review-source">
+              {promptSourceLabel(baseline.source)}
             </span>
           )}
+          {baseline?.updated_at && <span className="ux-context">Updated {formatTimestamp(baseline.updated_at)}{baseline.updated_by ? ` by ${baseline.updated_by}` : ''}</span>}
           {dirty && <span className="topbar-meta-chip warning">edited</span>}
           {saved && !dirty && <span className="topbar-meta-chip success">saved</span>}
           {catalogLink && (

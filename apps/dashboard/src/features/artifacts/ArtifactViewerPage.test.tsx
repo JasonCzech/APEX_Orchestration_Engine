@@ -160,3 +160,13 @@ it('renders Markdown safely with a source toggle', async () => {
   expect(screen.getByRole('button', { name: 'Rendered report' })).toBeInTheDocument()
   expect(screen.queryByRole('heading', { name: 'Release report' })).not.toBeInTheDocument()
 })
+
+it('renders legacy transcript prompts as readable blocks while preserving the full record', async () => {
+    const transcript = { id: 'legacy-transcript', name: 'transcript.txt', uri: 'apex-artifact:///transcripts/legacy.txt', media_type: 'text/plain', kind: 'transcript' }
+    server.use(pipelineDetailHandler({ ...PIPELINE_DETAIL, values: { ...PIPELINE_DETAIL.values, artifacts: [transcript] } }),
+      http.get('*/v1/artifacts/transcripts/legacy.txt', () => new HttpResponse(`APEX phase transcript\n${JSON.stringify({ resolved_prompt: { system: 'First line\nSecond line' }, reasoning_digest: 'Evidence based reasoning' })}`, { headers: { 'Content-Type': 'text/plain' } })))
+    renderRunRoutes([`/runs/${THREAD_ID}/artifacts/legacy-transcript`])
+    expect(await screen.findByRole('heading', { name: 'system prompt' })).toBeInTheDocument()
+    expect(screen.getAllByTestId('codemirror')[0]?.textContent).toBe('First line\nSecond line')
+    expect(screen.getByRole('figure', { name: 'Transcript record' })).toHaveTextContent('Evidence based reasoning')
+  })

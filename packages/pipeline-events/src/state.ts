@@ -67,7 +67,8 @@ export const ToolCallRecordSchema = z
     id: z.string(),
     tool: z.string().optional(),
     args_preview: z.record(z.unknown()).optional(),
-    status: z.enum(["ok", "error"]).optional(),
+    // Descriptive outcome only; preserve future statuses for a neutral UI instead of dropping evidence.
+    status: z.string().optional(),
     duration_ms: z.number().int().nullish(),
     error: z.string().nullish(),
     at: z.string().optional(),

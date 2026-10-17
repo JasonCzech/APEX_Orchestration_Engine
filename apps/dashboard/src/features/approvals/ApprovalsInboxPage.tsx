@@ -24,14 +24,16 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/api/queryKeys'
 
-import { useThreadState, type GateInterrupt } from '@/api/hooks/useThreadState'
+import { useThreadState, type GateInterrupt, type ThreadStateSnapshot } from '@/api/hooks/useThreadState'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { RunWorkspace, type RunWorkspaceSection } from '@/features/runs/RunDetailPage'
 import { runReviewPath, reviewInterruptId } from '@/features/runs/reviewPath'
-import { isPhaseName } from '@/features/runs/runDisplay'
+import { formatTimestamp, isPhaseName } from '@/features/runs/runDisplay'
 import { GateModule } from '@/hitl/GateModule'
 
 import { ApprovalsQueue, type QueueRow, type RowRemovalReason } from './ApprovalsQueue'
@@ -49,6 +51,21 @@ interface ActionedEntry {
   reason: RowRemovalReason
   /** Gate instance ids consumed by the action — a NEW id on the row revives it. */
   interruptIds: ReadonlySet<string | null>
+}
+
+interface ReopeningBaseline {
+  threadSnapshotAt: number
+  inboxSnapshotAt: number
+  serverUpdatedAt: string | null | undefined
+  gateId: string | null | undefined
+}
+
+function isReopenedGate(updatedAt: string | null | undefined, gateId: string | null | undefined, baseline: ReopeningBaseline, originalGateId: string | null | undefined): boolean {
+  const current = Date.parse(updatedAt ?? '')
+  const previous = Date.parse(baseline.serverUpdatedAt ?? '')
+  const newIdentity = Boolean(gateId && gateId !== baseline.gateId && gateId !== originalGateId)
+  if (Number.isFinite(current) && Number.isFinite(previous)) return current > previous || (current === previous && newIdentity)
+  return newIdentity
 }
 
 interface DecisionReceipt {
@@ -94,6 +111,7 @@ const SHORTCUTS: Array<[string, string]> = [
 ]
 
 export function ApprovalsInboxPage() {
+  const queryClient = useQueryClient()
   const params = useParams<{ threadId?: string; interruptId?: string }>()
   const navigate = useNavigate()
   const location = useLocation()
@@ -105,8 +123,11 @@ export function ApprovalsInboxPage() {
       : null,
     [params.interruptId, params.threadId],
   )
+  const requestedSelectionRef = useRef<Selection | null>(selection)
+  requestedSelectionRef.current = selection
   const setSelection = useCallback(
     (value: Selection | null, replace = false) => {
+      requestedSelectionRef.current = value
       void navigate(
         value
           ? runReviewPath(value.threadId, value.interruptId, { source: 'queue' })
@@ -118,6 +139,58 @@ export function ApprovalsInboxPage() {
   )
   const [actioned, setActioned] = useState<ReadonlyMap<string, ActionedEntry>>(new Map())
   const [decisionReceipt, setDecisionReceipt] = useState<DecisionReceipt | null>(null)
+  const [reopening, setReopening] = useState<ReadonlySet<string>>(new Set())
+  const reopeningRef = useRef(new Set<string>())
+  const reopeningRowsRef = useRef(new Map<string, QueueRow>())
+  const reopeningFinishedRef = useRef(new Map<string, number>())
+  const reopeningBaselinesRef = useRef(new Map<string, ReopeningBaseline>())
+  const inboxUpdatedAtRef = useRef(inbox.updatedAt)
+  inboxUpdatedAtRef.current = inbox.updatedAt
+  const { refetch: refetchInbox } = inbox
+  const markReopening = useCallback((threadId: string, pending: boolean) => {
+    if (pending) {
+      reopeningRef.current.add(threadId)
+      reopeningFinishedRef.current.delete(threadId)
+      const row = stateRef.current.items.find(item => item.thread_id === threadId)
+      if (row) {
+        reopeningRowsRef.current.set(threadId, row)
+        const cached = queryClient.getQueryState<ThreadStateSnapshot>(queryKeys.threads.state(threadId))
+        reopeningBaselinesRef.current.set(threadId, {
+          threadSnapshotAt: cached?.dataUpdatedAt ?? 0,
+          inboxSnapshotAt: inboxUpdatedAtRef.current,
+          serverUpdatedAt: cached?.data?.detail.updated_at ?? row.updated_at,
+          gateId: cached?.data?.detail.pending_gate?.interrupt_id ?? row.pending_gate.interrupt_id,
+        })
+      }
+      setReopening(new Set(reopeningRef.current))
+    } else if (reopeningRef.current.has(threadId)) {
+      // The thread snapshot commonly reopens before the independently polled
+      // inbox catches up. Keep the local working row until that list is healed.
+      reopeningFinishedRef.current.set(threadId, inboxUpdatedAtRef.current)
+      void refetchInbox()
+    }
+  }, [refetchInbox, queryClient])
+  useEffect(() => {
+    let changed = false
+    for (const [threadId, original] of reopeningRowsRef.current) {
+      const fresh = inbox.items.find(item => item.thread_id === threadId)
+      const baseline = reopeningBaselinesRef.current.get(threadId)
+      const refreshedGate = fresh && baseline && inbox.updatedAt > baseline.inboxSnapshotAt && isReopenedGate(fresh.updated_at, fresh.pending_gate.interrupt_id, baseline, original.pending_gate.interrupt_id)
+      const beforeRefresh = reopeningFinishedRef.current.get(threadId)
+      // A fresh gate also reconciles work completed after its preview unmounted.
+      // Failed refreshes retain the row; the normal poll can recover later.
+      if (!refreshedGate && (beforeRefresh === undefined || inbox.updatedAt <= beforeRefresh)) continue
+      if (!fresh) setActioned(previous => new Map(previous).set(threadId, {
+        reason: 'local', interruptIds: new Set([original.pending_gate.interrupt_id ?? null]),
+      }))
+      reopeningFinishedRef.current.delete(threadId)
+      reopeningBaselinesRef.current.delete(threadId)
+      reopeningRef.current.delete(threadId)
+      reopeningRowsRef.current.delete(threadId)
+      changed = true
+    }
+    if (changed) setReopening(new Set(reopeningRef.current))
+  }, [inbox.updatedAt, inbox.items])
   const [overlayOpen, setOverlayOpen] = useState(false)
 
   const gateHandleRef = useRef<GateModuleHandle | null>(null)
@@ -139,7 +212,7 @@ export function ApprovalsInboxPage() {
       .map(
         (gone): QueueRow => ({
           ...gone,
-          removed: actioned.get(gone.thread_id)?.reason ?? 'elsewhere',
+          ...(reopening.has(gone.thread_id) ? { reopening: true } : { removed: actioned.get(gone.thread_id)?.reason ?? 'elsewhere' }),
         }),
       ),
   ].sort((a, b) => {
@@ -148,6 +221,9 @@ export function ApprovalsInboxPage() {
     if (b.updated_at === null) return -1
     return a.updated_at.localeCompare(b.updated_at)
   })
+  for (const [threadId, row] of reopeningRowsRef.current) {
+    if (!rows.some(candidate => candidate.thread_id === threadId)) rows.push({ ...row, reopening: true })
+  }
   const actionable = rows.filter((row) => !row.removed)
 
   // Latest render state for the document-level keyboard listener + callbacks.
@@ -167,11 +243,15 @@ export function ApprovalsInboxPage() {
     setSelection(selection, true)
   }, [location.pathname, selection, setSelection])
 
+  const previousRows = useRef<QueueRow[]>(rows)
+  const precedingRows = previousRows.current
+  useEffect(() => { previousRows.current = rows })
+
   // A gate can disappear between polls without GateModule getting a terminal
   // callback. Advance the parent selection as soon as the selected instance is
   // no longer actionable; prefer a re-gate on the same thread.
   useEffect(() => {
-    if (inbox.isLoading || selection === null) return
+    if (inbox.isLoading || selection === null || reopening.has(selection.threadId)) return
     const selectedStillOpen = actionable.some(
       (row) =>
         row.thread_id === selection.threadId &&
@@ -180,15 +260,21 @@ export function ApprovalsInboxPage() {
     )
     if (selectedStillOpen) return
     const sameThread = actionable.find((row) => row.thread_id === selection.threadId)
-    const next = sameThread ?? actionable[0]
+    const priorIndex = precedingRows.findIndex(row => row.thread_id === selection.threadId)
+    const next = sameThread ?? precedingRows.slice(priorIndex + 1).map(row => actionable.find(open => open.thread_id === row.thread_id)).find(Boolean) ?? actionable.at(-1)
     setSelection(next ? toSelection(next as ApprovalItem) : null, true)
-  }, [actionable, inbox.isLoading, selection, setSelection])
+  }, [actionable, inbox.isLoading, selection, setSelection, precedingRows, reopening])
 
   // ── Terminal gate outcome (preview's onOutcome): gray the row, advance to
   // the next open gate.
   const handleResolved = useCallback((reason: RowRemovalReason, gateId: string | null, action?: GateAction) => {
     const { selection: current, actionable: list, items } = stateRef.current
     if (!current) return
+    reopeningRef.current.delete(current.threadId)
+    reopeningRowsRef.current.delete(current.threadId)
+    reopeningFinishedRef.current.delete(current.threadId)
+    reopeningBaselinesRef.current.delete(current.threadId)
+    setReopening(new Set(reopeningRef.current))
     const listRow = items.find((item) => item.thread_id === current.threadId)
     setDecisionReceipt({
       title: listRow?.title ?? current.threadId,
@@ -225,7 +311,8 @@ export function ApprovalsInboxPage() {
   // ── Keyboard layer (one document listener; latest state via stateRef).
   useEffect(() => {
     const moveSelection = (delta: 1 | -1) => {
-      const { actionable: list, selection: current } = stateRef.current
+      const { actionable: list } = stateRef.current
+      const current = requestedSelectionRef.current
       if (list.length === 0) return
       const index = current ? list.findIndex((row) => row.thread_id === current.threadId) : -1
       const next =
@@ -317,6 +404,9 @@ export function ApprovalsInboxPage() {
 
   return (
     <div className="approvals-page animate-enter">
+      {[...reopeningRowsRef.current.values()].filter(row => row.thread_id !== selection?.threadId).map(row => (
+        <ReopeningGateObserver key={row.thread_id} original={row} baseline={reopeningBaselinesRef.current.get(row.thread_id)} onSettled={markReopening} />
+      ))}
       <header className="approvals-toolbar glass-panel">
         <nav className="ux-actions approvals-view-switch" aria-label="Test operations views">
           <Link className="btn btn-secondary" to="/runs">All runs</Link>
@@ -338,7 +428,7 @@ export function ApprovalsInboxPage() {
         <div className="approvals-decision-receipt tonal-card success" role="status">
           <div>
             <strong>Decision receipt</strong>
-            <span>{decisionReceipt.action} for {decisionReceipt.title} · {decisionReceipt.at.toLocaleTimeString()}</span>
+            <span>{decisionReceipt.action} for {decisionReceipt.title} · {formatTimestamp(decisionReceipt.at.toISOString())}</span>
           </div>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDecisionReceipt(null)}>Dismiss</button>
         </div>
@@ -393,6 +483,7 @@ export function ApprovalsInboxPage() {
                 selection={selection}
                 handleRef={gateHandleRef}
                 onResolved={handleResolved}
+                onReopening={markReopening}
                 waitAge={rows.find((row) => row.thread_id === selection.threadId)?.age}
                 section={reviewSection}
                 phase={reviewPhase}
@@ -429,11 +520,28 @@ export function ApprovalsInboxPage() {
   )
 }
 
+/** Keep an in-flight local decision observable when its workspace is unmounted. */
+function ReopeningGateObserver({ original, baseline, onSettled }: {
+  original: QueueRow
+  baseline: ReopeningBaseline | undefined
+  onSettled: (threadId: string, pending: boolean) => void
+}) {
+  const query = useThreadState(original.thread_id)
+  const detail = query.data?.detail
+  const fresh = Boolean(baseline && query.dataUpdatedAt > baseline.threadSnapshotAt)
+  const terminal = fresh && (detail?.thread_status === 'idle' || detail?.thread_status === 'error')
+  const newGate = Boolean(fresh && detail?.pending_gate && baseline && isReopenedGate(detail.updated_at, detail.pending_gate.interrupt_id, baseline, original.pending_gate.interrupt_id))
+  useEffect(() => {
+    if (terminal || newGate) onSettled(original.thread_id, false)
+  }, [terminal, newGate, onSettled, original.thread_id])
+  return null
+}
+
 /**
  * Right pane: mount the shared RunWorkspace and GateModule for the selected
  * pending interrupt. Keyed by threadId from the parent so nothing leaks
- * across runs; changed interrupt ids remount, while refreshed same-id
- * re-reviews reopen inside the shared machine.
+ * across runs; refreshed gates reopen inside the shared machine, including
+ * changes to the interrupt id.
  *
  * Outcome mapping for the queue (see gateModuleContract.ts):
  *   resumed approve/skip_phase/abort        -> 'local' (gray 'actioned', advance)
@@ -444,6 +552,7 @@ function GatePreview({
   selection,
   handleRef,
   onResolved,
+  onReopening,
   section,
   phase,
   onSectionChange,
@@ -452,12 +561,14 @@ function GatePreview({
   selection: Selection
   handleRef: React.MutableRefObject<GateModuleHandle | null>
   onResolved: (reason: RowRemovalReason, gateId: string | null, action?: GateAction) => void
+  onReopening: (threadId: string, pending: boolean) => void
   section: RunWorkspaceSection
   phase: string | null
   onSectionChange: (section: RunWorkspaceSection, phase?: string) => void
   waitAge?: string
 }) {
   const query = useThreadState(selection.threadId)
+  const reportReopening = useCallback((pending: boolean) => onReopening(selection.threadId, pending), [onReopening, selection.threadId])
 
   if (query.isPending) {
     return (
@@ -505,34 +616,28 @@ function GatePreview({
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
-      {interrupt ? (
-        <RunWorkspace
-          key={`${detail.thread_id}:${interrupt.interrupt_id ?? 'gate'}`}
+      <RunWorkspace
+          key={detail.thread_id}
           threadId={detail.thread_id}
           embedded
           showEmbeddedControls={false}
           waitAge={waitAge}
           section={section}
-          phase={phase ?? (isPhaseName(interrupt.phase) ? interrupt.phase : null)}
+          phase={phase ?? (isPhaseName(interrupt?.phase) ? interrupt.phase : null)}
           onSectionChange={(nextSection, nextPhase) => onSectionChange(nextSection, nextPhase)}
           onPhaseChange={(nextPhase) => onSectionChange('workspace', nextPhase)}
           renderGate={(workspaceInterrupt, returnTo) => (
             <GateModule
-              key={workspaceInterrupt.interrupt_id ?? 'gate'}
+              key={detail.thread_id}
               threadId={detail.thread_id}
               interrupt={workspaceInterrupt}
               returnTo={returnTo}
               onOutcome={handleOutcome}
+              onReopening={reportReopening}
               handleRef={handleRef}
             />
           )}
         />
-      ) : (
-        <div className="dash-empty small" data-testid="approvals-gate-gone">
-          No open gate on this run — it was actioned elsewhere. The queue refreshes on the next
-          poll.
-        </div>
-      )}
     </div>
   )
 }

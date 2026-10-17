@@ -106,6 +106,7 @@ describe('GateModule phase_review', () => {
     await user.click(await screen.findByRole('button', { name: /Request changes/i }))
     const send = screen.getByRole('button', { name: /Re-run with Changes/i })
     expect(send).toBeDisabled()
+    expect(screen.getByPlaceholderText(/What should the agent change/)).toHaveFocus()
     fireEvent.change(screen.getByPlaceholderText(/What should the agent change/), {
       target: { value: 'Add the auth flows and rebalance the mix.' },
     })
@@ -123,4 +124,25 @@ describe('GateModule phase_review', () => {
       'Agent working on your revision instructions',
     )
   })
+  it('shows agent evidence before accepting output and never colors unknown tool outcomes as success', async () => {
+    const threadId = 'th-gate-evidence'
+    const interrupt = phaseInterrupt('int-evidence')
+    interrupt.payload = { ...(interrupt.payload as object), evidence: {
+      attempt: 2, provenance: 'llm', reasoning_digest: 'Checked the actual service contract.',
+      resolved_prompt: { system: 'Use governed tools.', user: 'Produce the workload.' },
+      resolved_prompt_source: { origin: 'run_override', ref: 'phase/test_planning@v2', editor: 'Operator Ada' },
+      tool_calls: [{ id: 'tool-timeout', tool: 'catalog.lookup', status: 'timeout' }, { id: 'tool-unknown', tool: 'catalog.future', status: 'new-state' }],
+      transcript_ref: { id: 'pending-transcript', name: 'Evidence transcript' },
+    } }
+    const { handler } = mutableDetailHandler(threadId, gatedDetail(threadId, [interrupt]))
+    server.use(handler)
+    renderHarness(threadId)
+    expect(await screen.findByText('Checked the actual service contract.')).toBeInTheDocument()
+    expect(screen.getByText(/Edited for this run by Operator Ada/)).toBeInTheDocument()
+    expect(screen.getByText('timeout')).toHaveClass('danger')
+    expect(screen.getByText('new-state')).toHaveClass('neutral')
+    expect(screen.getByRole('link', { name: 'Full agent transcript (attempt 2)' })).toHaveAttribute('href', `/runs/${threadId}/artifacts/pending-transcript`)
+    expect(screen.getByRole('button', { name: 'Accept phase output & continue' })).toBeEnabled()
+  })
+
 })

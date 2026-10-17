@@ -1,3 +1,4 @@
+import { formatPercentRate } from '@/utils/metrics'
 import { useId, type ReactNode } from 'react'
 import { TabList } from '@/components/ux/TabList'
 
@@ -23,7 +24,8 @@ import { ActivityFeed } from './ActivityFeed'
 import { EngineStrip } from './EngineStrip'
 import type { LiveStreamViewLike } from './liveTypes'
 import { PromptReviewSection } from './PromptReviewSection'
-import { formatDuration, formatTimestamp, PHASE_LABELS, pipelineStatusLabel } from './runDisplay'
+import { promptSourceLabel, promptSourceTone } from './promptProvenance'
+import { toolCallTone, formatDuration, formatTimestamp, PHASE_LABELS, pipelineStatusLabel } from './runDisplay'
 
 const TABS = ['details', 'log', 'reasoning'] as const
 type WorkspaceTab = (typeof TABS)[number]
@@ -55,6 +57,8 @@ export function PhaseWorkspace({
   appId,
   gate,
   gateState,
+  phaseStatus,
+  terminal = false,
 }: {
   threadId: string
   phase: PhaseName
@@ -68,11 +72,15 @@ export function PhaseWorkspace({
   appId?: string | null
   gate?: GateInstance | null
   gateState?: GateMachineState
+  phaseStatus?: string
+  terminal?: boolean
 }) {
   const tabsId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = activeTab(searchParams.get('tab'), threadBusy ? 'log' : 'details')
-  const entry = state.phase_results?.[phase]
+  const durableEntry = state.phase_results?.[phase]
+  const pendingEvidence = gate?.phase === phase && gate.payload?.kind === 'phase_review' ? gate.payload.evidence : undefined
+  const entry = pendingEvidence ? { ...durableEntry, ...pendingEvidence } : durableEntry
 
   const engineSamples = stream?.engineStats?.samples ?? []
   const liveStatus = stream?.phaseProgress?.[phase]?.status
@@ -97,10 +105,10 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
-      <PhaseOperatorSummary entry={entry} />
+      <PhaseOperatorSummary entry={entry} status={phaseStatus} />
       <TabList id={tabsId} label="Phase workspace tabs" items={TABS.map(id => ({id, label: TAB_LABELS[id]}))} value={tab} onChange={selectTab} />
       <div id={`${tabsId}-panel-${tab}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${tab}`} tabIndex={0}>
-      {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Accepted phase evidence appears below after approval.</p>}
+      {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Available agent evidence appears below before you decide.</p>}
       {showEngineStrip && (
         <EngineStrip samples={engineSamples} latest={stream?.engineStats?.latest ?? null} />
       )}
@@ -110,6 +118,7 @@ export function PhaseWorkspace({
           <ActivityFeed
             key={JSON.stringify([threadId, phase, runId ?? 'snapshot'])}
             phase={phase}
+            terminal={terminal}
             streamStatus={stream?.status}
             progress={stream?.phaseProgress?.[phase]}
             toolCalls={stream?.toolCalls}
@@ -119,7 +128,7 @@ export function PhaseWorkspace({
           />
         </div>
       )}
-      {tab === 'reasoning' && <ReasoningTab phase={phase} entry={entry} state={state} />}
+      {tab === 'reasoning' && <ReasoningTab threadId={threadId} phase={phase} entry={entry} state={state} />}
       </div>
       {!promptGateEditorActive && (
         <details className="prompt-configuration">
@@ -145,7 +154,7 @@ function KpiPills({ summary }: { summary: TestResultSummary }) {
     { label: 'p95', value: kpis['p95_ms'] !== undefined ? `${fmtKpi(kpis['p95_ms'])} ms` : '—' },
     {
       label: 'Error rate',
-      value: kpis['error_rate'] !== undefined ? `${(kpis['error_rate'] * 100).toFixed(2)}%` : '—',
+      value: formatPercentRate(kpis['error_rate']),
     },
     { label: 'VUsers peak', value: fmtKpi(kpis['vusers_peak']) },
   ]
@@ -185,15 +194,15 @@ function ApprovalsList({ approvals }: { approvals: ApprovalRecord[] }) {
 }
 
 /** D8 parity: durable per-phase tool calls from the snapshot (PhaseResult.tool_calls). */
-function ToolCallsList({ calls }: { calls: ToolCallRecord[] }) {
+export function ToolCallsList({ calls }: { calls: ToolCallRecord[] }) {
   return (
     <ul className="approvals-list" data-testid="output-tool-calls">
       {calls.map((call) => (
         <li key={call.id} className="approval-row">
           <span className="kind-chip">tool</span>
           <span className="approval-action">{call.tool ?? call.id}</span>
-          <span className={`status-badge ${call.status === 'error' ? 'danger' : 'success'}`}>
-            {call.status ?? 'ok'}
+          <span className={`status-badge ${toolCallTone(call.status)}`}>
+            {call.status ?? 'Not recorded'}
           </span>
           <span>{typeof call.duration_ms === 'number' ? `${call.duration_ms} ms` : '—'}</span>
           <span className="approval-at">{call.at ? formatTimestamp(call.at) : ''}</span>
@@ -260,8 +269,8 @@ function PhaseDetailsTab({
   if (!entry) {
     return (
       <div className="dash-empty small">
-        No result for this phase yet.
-        <span className="dash-empty-hint">It has not run on this thread.</span>
+        No result recorded for this phase.
+        <span className="dash-empty-hint">The snapshot contains no phase result.</span>
       </div>
     )
   }
@@ -272,7 +281,7 @@ function PhaseDetailsTab({
         Output source: {entry.provenance ? ({ stub: 'Stub — demonstration output', llm: 'AI-generated', simulator: 'Simulator — synthetic execution', live_provider: 'Live execution provider', imported: 'Imported evidence' }[entry.provenance]) : 'Not recorded'}
       </p>
       {entry.test_summary && <KpiPills summary={entry.test_summary} />}
-      {entry.reasoning_digest && <p className="workspace-caption">{entry.reasoning_digest}</p>}
+
       {(entry.approvals?.length ?? 0) > 0 && (
         <>
           <h3 className="workspace-section-title">Approvals</h3>
@@ -288,12 +297,12 @@ function PhaseDetailsTab({
   )
 }
 
-function PhaseOperatorSummary({ entry }: { entry: PhaseResultEntry | undefined }) {
+function PhaseOperatorSummary({ entry, status }: { entry: PhaseResultEntry | undefined; status?: string }) {
   if (!entry) {
     return (
       <section className="phase-operator-summary" aria-label="Phase snapshot">
         <h3>What happened</h3>
-        <p>No result for this phase yet.</p>
+        <p>No result recorded for this phase.</p>
       </section>
     )
   }
@@ -303,9 +312,9 @@ function PhaseOperatorSummary({ entry }: { entry: PhaseResultEntry | undefined }
   return (
     <section className="phase-operator-summary" aria-label="Phase snapshot">
       <dl className="phase-operator-metrics">
-        <div><dt>Status</dt><dd>{pipelineStatusLabel(entry.status)}</dd></div>
+        <div><dt>Status</dt><dd>{pipelineStatusLabel(status ?? entry.status)}</dd></div>
         <div><dt>Attempt</dt><dd>{entry.attempt ?? 'Not started'}</dd></div>
-        <div><dt>Duration</dt><dd>{formatDuration(entry.duration_s)}</dd></div>
+        <div><dt>Elapsed time (includes reviews)</dt><dd>{formatDuration(entry.duration_s)}</dd></div>
         <div><dt>Started</dt><dd>{formatTimestamp(entry.started_at)}</dd></div>
         <div><dt>Evidence</dt><dd>{artifactCount === 0 ? 'No phase artifacts' : `${artifactCount} phase artifact${artifactCount === 1 ? '' : 's'}`}</dd></div>
       </dl>
@@ -322,16 +331,19 @@ function PhaseOperatorSummary({ entry }: { entry: PhaseResultEntry | undefined }
         </div>
       )}
       <h3>What happened</h3>
-      {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>No operator-readable summary has been recorded for this phase yet.</p>}
+      <p className="workspace-caption">Output source: {entry.provenance === 'llm' ? 'AI-generated' : entry.provenance === 'stub' ? 'Stub — demonstration output' : entry.provenance?.replaceAll('_', ' ') ?? 'Not recorded'}</p>
+      {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>No operator-readable summary has been recorded for this phase.</p>}
     </section>
   )
 }
 
-function ReasoningTab({
+export function ReasoningTab({
+  threadId,
   phase,
   entry,
   state,
 }: {
+  threadId: string
   phase: PhaseName
   entry: PhaseResultEntry | undefined
   state: PipelineState
@@ -340,6 +352,7 @@ function ReasoningTab({
   const prompt = entry?.resolved_prompt
   const source = entry?.resolved_prompt_source
   const hasReasoning =
+    Boolean(entry?.transcript_ref) ||
     Boolean(entry?.reasoning_digest) ||
     (entry?.tool_calls?.length ?? 0) > 0 ||
     entries.length > 0 ||
@@ -350,13 +363,14 @@ function ReasoningTab({
   if (!hasReasoning) {
     return (
       <div className="dash-empty small">
-        No reasoning details recorded for this phase yet.
+        No reasoning details recorded for this phase.
       </div>
     )
   }
 
   return (
     <div aria-label="Agent reasoning">
+      {entry?.transcript_ref && <p><ArtifactLink to={artifactViewerPath(threadId, entry.transcript_ref.id)}>Full agent transcript{entry.attempt ? ` (attempt ${entry.attempt})` : ''}</ArtifactLink> — the durable record of this phase’s reasoning, prompts and tool calls.</p>}
       {entry?.reasoning_digest ? (
         <>
           <h3 className="workspace-section-title">Reasoning Digest</h3>
@@ -377,20 +391,19 @@ function ReasoningTab({
           {source?.origin && (
             <div className="kpi-row">
               <span
-                className="topbar-meta-chip accent"
+                className={`topbar-meta-chip prompt-provenance-chip ${promptSourceTone(source)}`}
                 data-testid="prompt-provenance"
-                title="Where the winning prompt text came from"
+                title={promptSourceLabel(source)}
               >
-                {source.origin}
-                {source.ref ? ` · ${source.ref}` : ''}
+                {promptSourceLabel(source)}
               </span>
             </div>
           )}
-          {prompt?.system && <CodeViewer value={prompt.system} ariaLabel="System prompt" />}
+          {prompt?.system && <><h4>System prompt</h4><CodeViewer value={prompt.system} ariaLabel="System prompt" /></>}
           {prompt?.application && (
-            <CodeViewer value={prompt.application} ariaLabel="Application prompt" />
+            <><h4>Application prompt</h4><CodeViewer value={prompt.application} ariaLabel="Application prompt" /></>
           )}
-          {prompt?.user && <CodeViewer value={prompt.user} ariaLabel="User prompt" />}
+          {prompt?.user && <><h4>User prompt</h4><CodeViewer value={prompt.user} ariaLabel="User prompt" /></>}
         </>
       )}
 

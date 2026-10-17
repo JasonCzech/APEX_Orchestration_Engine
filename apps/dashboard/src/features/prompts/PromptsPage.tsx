@@ -245,6 +245,7 @@ function CreatePromptPanel({
       closeOnEscape={!create.isPending}
     >
       <h2 className="prompt-modal-title">New prompt</h2>
+      <p>Creating this prompt also makes version 1 active immediately. Future runs that use this catalog key will resolve this content.</p>
         <div className="prompt-form-grid">
           <label className="prompt-field">
             <span className="prompt-field-label">Namespace</span>
@@ -320,7 +321,7 @@ function CreatePromptPanel({
             onClick={submit}
             disabled={!valid || create.isPending}
           >
-            {create.isPending ? 'Creating…' : 'Create prompt'}
+            {create.isPending ? 'Creating…' : 'Create and activate prompt'}
           </button>
         </div>
     </Dialog>

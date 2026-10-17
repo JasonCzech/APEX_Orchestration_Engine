@@ -50,6 +50,7 @@ import {
   GATE_MACHINE_INITIAL,
   isActionAllowedForGate,
   type GateAction,
+  type GateDraft,
   type GateDraftPatch,
   type GateInstance,
   type GateKind,
@@ -197,6 +198,7 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         settledGateIdRef.current = variables.interruptId
         settledGatePayloadRef.current = gatePayloadSignature(gateOf(stateRef.current))
       }
+      queryClient.removeQueries({ queryKey: ['gate-draft', threadId, variables.interruptId], exact: true })
       submittedReopeningBaselineRef.current = null
       setLastAccepted({ interruptId: variables.interruptId, action: variables.body.action, runId })
       dispatch({ type: 'RESUME_ACCEPTED' })
@@ -265,7 +267,9 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
         // LangGraph may reuse an interrupt id for a newer payload. Treat a
         // changed payload as a new gate even when no explicit re-gate action
         // originated in this tab; otherwise a second tab can approve stale UI.
-        dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: sameIdPayloadChanged })
+        const saved = queryClient.getQueryData<{ signature: string; draft: GateDraft }>(['gate-draft', threadId, snapshotGate.interrupt_id])
+        dispatch({ type: 'GATE_DISCOVERED', gate: snapshotGate, reopenSameId: sameIdPayloadChanged,
+          ...(saved?.signature === gatePayloadSignature(snapshotGate) ? { draft: saved.draft } : {}) })
         return
       }
     }
@@ -287,6 +291,8 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
     dispatch({ type: 'GATE_CLEARED', settled: reopeningSettled })
   }, [
     interrupts,
+    queryClient,
+    threadId,
     snapshotGate,
     state.tag,
     thread.data?.detail.thread_status,
@@ -314,7 +320,19 @@ export function useGate(threadId: string, options: UseGateOptions = {}): UseGate
     }
   }, [hint, state.tag, threadId, queryClient])
 
-  const edit = useCallback((patch: GateDraftPatch) => dispatch({ type: 'EDIT', patch }), [])
+  const edit = useCallback((patch: GateDraftPatch) => {
+    const next = gateReducer(stateRef.current, { type: 'EDIT', patch })
+    stateRef.current = next
+    if (next.tag === 'open' || next.tag === 'failed') {
+      // Keep drafts in this authenticated QueryClient only: never persist prompts
+      // to browser storage, and clear them with the session's query cache.
+      queryClient.setQueryDefaults(['gate-draft'], { gcTime: Infinity })
+      queryClient.setQueryData(['gate-draft', threadId, next.gate.interrupt_id], {
+        signature: gatePayloadSignature(next.gate), draft: next.draft,
+      })
+    }
+    dispatch({ type: 'EDIT', patch })
+  }, [queryClient, threadId])
 
   const submit = useCallback(
     (action: GateAction) => {

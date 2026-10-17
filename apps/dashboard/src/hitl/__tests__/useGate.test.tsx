@@ -89,6 +89,26 @@ describe('useGate discovery', () => {
     if (state.tag === 'open') expect(state.draft).toEqual({})
   })
 
+  it('restores a draft after leaving the gate, but never reuses it for changed evidence', async () => {
+    const threadId = 'th-retained-draft'
+    const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, [promptInterrupt('int-retained')]))
+    server.use(handler)
+    const { queryClient, wrapper } = harness()
+    const first = renderHook(() => useGate(threadId), { wrapper })
+    await waitFor(() => expect(first.result.current.state.tag).toBe('open'))
+    act(() => first.result.current.edit({ prompt: { system: 'Keep this operator instruction' }, note: 'Important context' }))
+    first.unmount()
+    const second = renderHook(() => useGate(threadId), { wrapper })
+    await waitFor(() => expect(second.result.current.state).toMatchObject({ tag: 'open', dirty: true, draft: { prompt: { system: 'Keep this operator instruction' }, note: 'Important context' } }))
+    second.unmount()
+    const next = promptInterrupt('int-retained')
+    ;(next.payload as { prompt: { system: string } }).prompt.system = 'New server prompt'
+    ref.current = gatedDetail(threadId, [next])
+    await queryClient.invalidateQueries({ queryKey: queryKeys.threads.state(threadId) })
+    const third = renderHook(() => useGate(threadId), { wrapper })
+    await waitFor(() => expect(third.result.current.state).toMatchObject({ tag: 'open', dirty: false, draft: { prompt: { system: 'New server prompt' } } }))
+  })
+
   it('hint with no hydrated detail triggers one snapshot refetch per hint identity', async () => {
     const threadId = 'th-hint'
     const { handler, ref } = mutableDetailHandler(threadId, gatedDetail(threadId, []))

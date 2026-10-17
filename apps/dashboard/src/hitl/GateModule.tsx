@@ -24,7 +24,7 @@
  *                 the still-editable panel — the draft survives visibly
  *   no_gate    -> nothing
  */
-import { useEffect, useImperativeHandle, useRef, type Ref } from 'react'
+import { useCallback, useEffect, useImperativeHandle, useRef, type Ref } from 'react'
 
 import { Link } from 'react-router'
 
@@ -34,6 +34,7 @@ import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
 import { runReviewPath } from '@/features/runs/reviewPath'
 
+import { GateDraftGuard } from './GateDraftGuard'
 import { GateActionBar } from './GateActionBar'
 import {
   isActionAllowedForGate,
@@ -151,6 +152,7 @@ export function GateModuleView({
   return (
     <section className={frameClass} data-testid="gate-module" aria-label={`${kindLabel} gate`}>
       {header}
+      <GateDraftGuard dirty={!submitting && (dirty || Boolean(draft.message?.trim() || draft.instructions?.trim()))} />
 
       {machineState.tag === 'failed' && (
         <div className="tonal-card danger gate-failed" data-testid="gate-failed">
@@ -256,6 +258,8 @@ export interface GateModuleProps {
   returnTo?: string
   /** Fires exactly once per gate instance on a terminal state. */
   onOutcome?: (outcome: GateOutcome) => void
+  /** Local revise/discuss/modify is still awaiting the next review, not actioned elsewhere. */
+  onReopening?: (pending: boolean) => void
   handleRef?: Ref<GateModuleHandle | null>
 }
 
@@ -265,6 +269,7 @@ export function GateModule({
   compact = false,
   returnTo,
   onOutcome,
+  onReopening,
   handleRef,
 }: GateModuleProps) {
   // Own machine over the SAME thread-state cache entry the inbox already
@@ -285,6 +290,7 @@ export function GateModule({
   // sniffing the transient 'submitting' commit, which React can batch away.
   const expectedId = interrupt.interrupt_id ?? null
   const firedRef = useRef(false)
+  useEffect(() => { firedRef.current = false }, [expectedId])
   const accepted = hitl.lastAccepted
   const supersededGateId = hitl.state.tag === 'superseded' ? hitl.state.gate.interrupt_id : null
   useEffect(() => {
@@ -307,6 +313,15 @@ export function GateModule({
     }
   }, [accepted, supersededGateId, onOutcome, expectedId])
 
+  useEffect(() => {
+    if (hitl.state.tag === 'open' || hitl.state.tag === 'failed' || hitl.state.tag === 'superseded' || hitl.state.tag === 'no_gate') onReopening?.(false)
+  }, [hitl.state.tag, onReopening])
+
+  const submit = useCallback((action: GateAction) => {
+    if (['modify', 'discuss', 'revise', 'retry'].includes(action)) onReopening?.(true)
+    hitl.submit(action)
+  }, [hitl, onReopening])
+
   const focusIn = (selector: string): void => {
     rootRef.current?.querySelector<HTMLElement>(selector)?.focus()
   }
@@ -328,9 +343,11 @@ export function GateModule({
         if (!advertised.includes(action)) return false
         switch (action) {
           case 'approve':
-          case 'skip_phase':
           case 'retry':
-            hitl.submit(action)
+            submit(action)
+            return true
+          case 'skip_phase':
+            rootRef.current?.querySelector<HTMLButtonElement>('[data-gate-action="skip_phase"]')?.click()
             return true
           case 'abort':
             // Keyboard access must use the same typed confirmation as the
@@ -343,8 +360,11 @@ export function GateModule({
             return true
           case 'modify':
             // Edit state: focus the system prompt editor ("modify-focus").
-            focusIn('[data-testid="gate-editor-system"] .cm-content') // real CodeMirror
-            focusIn('[data-testid="gate-editor-system"] textarea') // mocked editor in tests
+            rootRef.current?.querySelector<HTMLButtonElement>('[role="tab"]')?.click()
+            requestAnimationFrame(() => {
+              focusIn('[data-testid="prompt-tab-editor-system"] .cm-content') // real CodeMirror
+              focusIn('[data-testid="prompt-tab-editor-system"] textarea') // mocked editor in tests
+            })
             return true
           case 'discuss':
             focusIn('.gate-composer-input')
@@ -363,7 +383,7 @@ export function GateModule({
         rootRef.current?.focus()
       },
     }),
-    [canAct, hitl],
+    [canAct, submit],
   )
 
   if (!hitl.gate) return null
@@ -375,7 +395,7 @@ export function GateModule({
         gate={hitl.gate}
         machineState={hitl.state}
         onEdit={hitl.edit}
-        onSubmit={hitl.submit}
+        onSubmit={submit}
         onViewCurrent={hitl.viewCurrent}
         compact={compact}
         returnTo={returnTo}
