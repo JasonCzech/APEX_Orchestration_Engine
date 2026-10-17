@@ -1,4 +1,4 @@
-import { useId } from 'react'
+import { useId, type ReactNode } from 'react'
 
 /** Shared APEX tabs: automatic activation, roving focus, and linked panels. */
 export function TabList<T extends string>({
@@ -56,4 +56,14 @@ export function TabList<T extends string>({
       ))}
     </div>
   )
+}
+
+/** Every tab owns a real panel; only the selected content remains mounted. */
+export function TabPanels<T extends string>({ id, items, value, children, focusable = false }: {
+  id: string; items: readonly T[]; value: T; children: ReactNode; focusable?: boolean
+}) {
+  return <>{items.map(item => <div key={item} id={`${id}-panel-${item}`} role="tabpanel"
+    aria-labelledby={`${id}-tab-${item}`} hidden={value !== item} tabIndex={focusable && value === item ? 0 : undefined}>
+    {value === item ? children : null}
+  </div>)}</>
 }

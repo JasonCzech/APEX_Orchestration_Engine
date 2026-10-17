@@ -214,21 +214,6 @@
   justify-content: center;
 }
 
-.home-skeleton {
-  display: grid;
-  gap: 12px;
-}
-
-.home-skeleton-block {
-  min-height: 120px;
-  border-radius: var(--radius);
-  animation: pulse 1.8s ease-in-out infinite;
-}
-
-.home-skeleton-block.tall {
-  min-height: 260px;
-}
-
 @media (max-width: 980px) {
   .home-signal-grid {
     grid-template-columns: 1fr;

@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { TabList, TabPanels } from '@/components/ux/TabList'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { StateCard } from '@/components/ux/StateCard'
+import { useId, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { RequireGlobalAdmin } from '@/auth/RequireRole'
 import { executionLink } from './executionLink'
@@ -168,6 +171,7 @@ function JsonPanel({
 }
 
 export function ApexLoadWorkspacePage() {
+  const tabsId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const requestedConnection = searchParams.get('connection')
   const requestedProject = searchParams.get('project')
@@ -475,7 +479,7 @@ export function ApexLoadWorkspacePage() {
     [connectionId, connections.data],
   )
 
-  if (connections.isPending) return <div className="dash-empty">Loading APEX Load connections…</div>
+  if (connections.isPending) return <Skeleton label="Loading APEX Load connections" />
   if (connections.isError) {
     return (
       <ProblemCard
@@ -487,23 +491,13 @@ export function ApexLoadWorkspacePage() {
   }
   if (!connections.data?.items.length) {
     return (
-      <section className="glass-panel ux-card">
-        <h2>Connect APEX Load</h2>
+      <StateCard kind="unconfigured" title="Connect APEX Load" action={<>
+        <RequireGlobalAdmin><Link className="btn btn-primary" to="/admin/connections">Manage connections</Link></RequireGlobalAdmin>
+        <button className="btn btn-secondary" onClick={() => void connections.refetch()}>Refresh connections</button>
+      </>}>
         <p>No enabled, project-scoped APEX Load connection is available to your account.</p>
-        <p>
-          An administrator can enable a connection and map your project and application to APEX Load. Use Manage connections if it is available below; otherwise ask your administrator.
-        </p>
-        <div className="ux-actions">
-          <RequireGlobalAdmin>
-            <Link className="btn btn-primary" to="/admin/connections">
-              Manage connections
-            </Link>
-          </RequireGlobalAdmin>
-          <button className="btn btn-secondary" onClick={() => void connections.refetch()}>
-            Refresh connections
-          </button>
-        </div>
-      </section>
+        <p>An administrator can enable a connection and map your project and application to APEX Load. Use Manage connections if it is available below; otherwise ask your administrator.</p>
+      </StateCard>
     )
   }
 
@@ -511,7 +505,6 @@ export function ApexLoadWorkspacePage() {
     <div className="adm-page" data-testid="apex-load-workspace">
       <header className="adm-toolbar glass-panel">
         <div>
-          <h2 className="adm-page-title">APEX Load workspace</h2>
           <span className="adm-card-time">
             A connection workspace for scenarios, schedules, executions, and evidence. Connection setup remains in Connections.
           </span>
@@ -563,27 +556,9 @@ export function ApexLoadWorkspacePage() {
 
       {activeConnection && (
         <>
-          <div className="adm-tabs" role="tablist" aria-label="Load integration sections">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workspaceView === 'executions'}
-              className={workspaceView === 'executions' ? 'adm-tab active' : 'adm-tab'}
-              onClick={() => setWorkspaceView('executions')}
-            >
-              Executions & analysis
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workspaceView === 'authoring'}
-              className={workspaceView === 'authoring' ? 'adm-tab active' : 'adm-tab'}
-              onClick={() => setWorkspaceView('authoring')}
-            >
-              Scenarios & schedules
-            </button>
-          </div>
-
+          <TabList id={tabsId} label="Load integration sections" value={workspaceView} onChange={setWorkspaceView}
+            items={[{ id: 'executions', label: 'Executions & analysis' }, { id: 'authoring', label: 'Scenarios & schedules' }]} />
+          <TabPanels id={tabsId} items={['executions', 'authoring']} value={workspaceView}>
           {workspaceView === 'authoring' && <>
           {activeConnection && (
             <JsonPanel
@@ -602,7 +577,7 @@ export function ApexLoadWorkspacePage() {
             onRetry={() => void scheduleHealth.refetch()}
           />
           <JsonPanel
-            title="Native schedule calendar"
+            title="Schedule calendar"
             value={calendar.data ?? {}}
             error={calendar.error}
             pending={calendar.isPending}
@@ -719,7 +694,7 @@ export function ApexLoadWorkspacePage() {
                 disabled={!scenarioId || createSchedule.isPending}
                 onClick={() => createSchedule.mutate()}
               >
-                Create native schedule
+                Create schedule
               </button>
             </div>
             {(createSchedule.data || createSchedule.error) && (
@@ -816,7 +791,7 @@ export function ApexLoadWorkspacePage() {
             <p className="adm-field-help">Each execution keeps its provider status and Orchestration analysis together.</p>
             {nativeRuns.isError && (
               <ProblemCard
-                title="Native runs unavailable"
+                title="APEX Load runs unavailable"
                 message={nativeRuns.error.message}
                 onRetry={() => void nativeRuns.refetch()}
               />
@@ -871,11 +846,11 @@ export function ApexLoadWorkspacePage() {
             </div>
             {nativeRuns.data?.truncated && (
               <p className="adm-field-help" role="status">
-                Native run history is truncated; use mirrored history or refine the provider view.
+                APEX Load run history is truncated; use analysis history or refine the APEX Load view.
               </p>
             )}
             <div className="adm-inline-status" aria-live="polite">
-              <span>Completed Load runs are collected automatically.</span>
+              <span>Completed APEX Load runs are collected automatically.</span>
               <button
                 className="btn btn-secondary btn-sm"
                 onClick={() => void mirroredRuns.refetch()}
@@ -919,6 +894,7 @@ export function ApexLoadWorkspacePage() {
               />
             )}
           </section>}
+          </TabPanels>
         </>
       )}
     </div>

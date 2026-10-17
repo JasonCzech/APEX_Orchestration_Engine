@@ -1,3 +1,7 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { TableToolbar } from '@/components/ux/TableToolbar'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /admin/consumers — API consumer management (plan Part 2 route table + UX
  * 2.f, D7). Admin-gated.
@@ -31,7 +35,7 @@ import { isGlobalAdmin } from '@/auth/RequireRole'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
-import { OverflowMenu } from '@/features/runs/PreflightModal'
+import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { formatRelative } from '@/utils/time'
 
 import { scopesSummary } from './adminLogic'
@@ -536,6 +540,8 @@ function ConsumersContent() {
   const principal = useCurrentPrincipal()
   const [searchParams, setSearchParams] = useSearchParams()
   const [creating, setCreating] = useState(false)
+  const [search, setSearch] = useState('')
+  const visibleConsumers = (consumers.data ?? []).filter(consumer => `${consumer.name} ${consumer.consumer_type} ${consumer.role} ${consumer.scopes.map(scope => `${scope.project_id} ${scope.app_id ?? ''}`).join(' ')}`.toLowerCase().includes(search.trim().toLowerCase()))
   const [editing, setEditing] = useState<Consumer | null>(null)
   const [rotating, setRotating] = useState<Consumer | null>(null)
   const [deleting, setDeleting] = useState<Consumer | null>(null)
@@ -558,7 +564,6 @@ function ConsumersContent() {
   return (
     <section className="adm-page animate-enter">
       <header className="adm-toolbar glass-panel">
-        <h2 className="adm-page-title">API consumers</h2>
         {!creating && (
           <button
             type="button"
@@ -571,17 +576,16 @@ function ConsumersContent() {
       </header>
 
       {creating && <CreateConsumerPanel onClose={() => setCreating(false)} />}
+      <TableToolbar label="Consumer filters" filterCount={Number(Boolean(search.trim()))} onClear={() => setSearch('')}>
+        <label className="ux-field">Search consumers<input className="field-input" type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Name, role, type or scope" /></label>
+      </TableToolbar>
 
       {consumers.isError && consumers.data && (
         <CachedDataWarning error={consumers.error} onRetry={() => void consumers.refetch()} />
       )}
 
       {consumers.isPending ? (
-        <div className="adm-skeleton" role="status" aria-busy="true" aria-label="Loading consumers">
-          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-            <div key={i} className="glass-panel adm-skeleton-row" />
-          ))}
-        </div>
+        <Skeleton label="Loading consumers" rows={SKELETON_ROWS} />
       ) : consumers.isError && !consumers.data ? (
         <ProblemCard
           title="Consumers unavailable"
@@ -589,13 +593,11 @@ function ConsumersContent() {
           onRetry={() => void consumers.refetch()}
         />
       ) : consumers.data.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No consumers yet</h2>
-          <p className="dash-empty-hint">
-            Consumers are the API identities (dashboards, CI bots, internal services) that hold
-            keys.
-          </p>
-        </div>
+        <StateCard kind="empty" title="No consumers yet" action={creating ? null : <button className="btn btn-primary" onClick={() => setCreating(true)}>Create consumer</button>}>
+          Consumers are the API identities (dashboards, CI bots, internal services) that hold keys.
+        </StateCard>
+      ) : visibleConsumers.length === 0 ? (
+        <StateCard kind="filtered" title="No matching consumers" action={<button className="btn btn-secondary" onClick={() => setSearch('')}>Show all consumers</button>}>No consumers match this search.</StateCard>
       ) : (
         <div className="data-table-wrap">
           <table className="data-table striped adm-consumers-table" aria-label="Consumers">
@@ -614,7 +616,7 @@ function ConsumersContent() {
               </tr>
             </thead>
             <tbody>
-              {consumers.data.map((consumer) => (
+              {visibleConsumers.map((consumer) => (
                 <ConsumerRow
                   key={consumer.id}
                   consumer={consumer}
@@ -649,6 +651,7 @@ function ConsumersContent() {
 }
 
 export function ConsumersPage() {
+  useTimestampPreference()
   return (
     <AdminGate>
       <ConsumersContent />

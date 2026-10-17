@@ -394,11 +394,6 @@ a.gate-artifact-chip:hover {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .gate-spinner {
-    animation: none;
-  }
-}
 
 /* ── Slim banner (gate on another phase) ─────────────────────────────────── */
 

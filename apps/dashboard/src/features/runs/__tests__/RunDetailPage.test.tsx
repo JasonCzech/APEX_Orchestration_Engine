@@ -100,7 +100,7 @@ describe('RunDetailPage', () => {
   it('preserves legacy activity deep links to the pipeline log', async () => {
     server.use(pipelineDetailHandler())
     const { router } = renderRunRoutes([`/runs/${THREAD_ID}?tab=activity`])
-    expect(await screen.findByRole('tab', { name: 'Pipeline Log' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('tab', { name: 'Agent log' })).toHaveAttribute('aria-selected', 'true')
     expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}/phases/reporting`)
   })
 
@@ -136,7 +136,7 @@ describe('RunDetailPage', () => {
     // Deep link lands on the reasoning tab.
     expect(await screen.findByText('Tighten the ramp to 5 minutes.')).toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: 'Phase Details' }))
+    await user.click(screen.getByRole('tab', { name: 'Phase details' }))
     expect(await screen.findByText('Planned 4 scenarios against the staging cluster.')).toBeInTheDocument()
     expect(router.state.location.search).toContain('tab=details')
   })
@@ -170,7 +170,7 @@ describe('RunDetailPage', () => {
 
   it('renders execution KPI pills and the passed badge from test_summary', async () => {
     server.use(pipelineDetailHandler())
-    // Busy threads default to Pipeline Log, so pin ?tab=details here.
+    // Busy threads default to Agent log, so pin ?tab=details here.
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const row = await screen.findByTestId('kpi-row')
@@ -198,7 +198,7 @@ describe('RunDetailPage', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const banner = await screen.findByTestId('gate-slim-banner')
-    expect(banner).toHaveTextContent('Review phase results gate open on Reporting')
+    expect(banner).toHaveTextContent('Review phase results open on Reporting')
     expect(banner).toHaveTextContent('Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',

@@ -88,6 +88,27 @@ function mount(data = cycle, role: 'admin' | 'viewer' = 'admin') {
 }
 
 describe('Cycle workspace', () => {
+  it('keeps cycle page sizes local and resets paging when size changes', async () => {
+    const requests: URLSearchParams[] = []
+    server.use(
+      http.get('*/v1/cycles', ({ request }) => { requests.push(new URL(request.url).searchParams); return HttpResponse.json([cycle]) }),
+      http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
+      http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
+    )
+    localStorage.setItem('apex.preferences.v1', JSON.stringify({ rows: 100 }))
+    const state = authenticatedState('admin', 'Dash Ops', [])
+    if (state.status === 'authenticated') state.systemInfo.features = { cycles: true }
+    renderApp({ initialEntries: ['/cycles'], authState: state })
+    const rows = await screen.findByRole('combobox', { name: 'Cycles rows per page' })
+    await waitFor(() => expect(rows).toBeEnabled())
+    expect(rows).toHaveValue('20')
+    const user = userEvent.setup()
+    await user.selectOptions(rows, '50')
+    await waitFor(() => expect(requests.at(-1)?.get('limit')).toBe('50'))
+    expect(requests.at(-1)?.get('offset')).toBe('0')
+    expect(JSON.parse(localStorage.getItem('apex.preferences.v1')!).rows).toBe(100)
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+  })
   it('shows target names, simulation and exact-version approval', async () => {
     const user = userEvent.setup()
     let submitted: unknown

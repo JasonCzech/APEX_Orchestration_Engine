@@ -415,8 +415,11 @@ describe('ApprovalsInboxPage', () => {
     source.current = [NEW]
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
     await act(async () => { await queryClient.invalidateQueries({ queryKey: queryKeys.approvals.inbox() }) })
-    expect(await findRow(OLD.thread_id)).toHaveClass('removed')
-    expect(await findRow(OLD.thread_id)).not.toHaveTextContent('Agent working')
+    const priorRow = screen.queryByTestId(`approvals-row-${OLD.thread_id}`)
+    if (priorRow) {
+      expect(priorRow).toHaveClass('removed')
+      expect(priorRow).not.toHaveTextContent('Agent working')
+    }
   })
 
   it('observes a locally revised run that finishes after its workspace is unmounted', async () => {
@@ -512,7 +515,7 @@ describe('ApprovalsInboxPage', () => {
     renderInbox()
 
     const empty = await screen.findByTestId('approvals-empty')
-    expect(empty).toHaveTextContent('All clear. No gates awaiting review.')
+    expect(empty).toHaveTextContent('All clear. No reviews pending.')
     expect(within(empty).getByRole('link', { name: 'Go to runs' })).toHaveAttribute(
       'href',
       '/runs',

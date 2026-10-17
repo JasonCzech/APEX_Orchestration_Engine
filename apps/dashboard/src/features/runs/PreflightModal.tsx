@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * Pre-flight modal for phase-subset re-runs (plan Part 2 §4) — the single
  * checkpoint every entry point funnels through (runs-grid row menu,
@@ -7,7 +9,7 @@
  * the server will reject at plan resolution, but Start stays enabled — the
  * backend plan_resolver is the authority.
  */
-import { useId, useMemo, useState } from 'react'
+import { useId, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
@@ -42,6 +44,7 @@ export function PreflightModal({
   onClose,
   isCurrent = () => true,
 }: PreflightModalProps) {
+  useTimestampPreference()
   const navigate = useNavigate()
   const query = useThreadState(threadId)
   const rerun = useRerun()
@@ -54,10 +57,7 @@ export function PreflightModal({
 
   const state = query.data?.state
   const selection = touched ?? lastPlanSelection(state?.phases_plan)
-  const assessment = useMemo(
-    () => assessPlan(selection, state?.phase_results),
-    [selection, state],
-  )
+  const assessment = assessPlan(selection, state?.phase_results)
 
   function toggle(phase: PhaseName) {
     // Keep the selection in canonical order on every edit.
@@ -108,9 +108,7 @@ export function PreflightModal({
       </p>
 
       {query.isPending && !query.data ? (
-        <div className="preflight-loading" role="status" aria-label="Loading thread state">
-          Loading thread state…
-        </div>
+        <Skeleton label="Loading run snapshot" rows={2} />
       ) : query.isError && !query.data ? (
         <div className="tonal-card danger" role="alert">
           Thread state failed to load:{' '}

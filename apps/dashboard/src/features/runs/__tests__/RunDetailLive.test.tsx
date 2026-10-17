@@ -57,7 +57,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     expect(chip).toHaveClass('live')
   })
 
-  it('defaults to the Pipeline Log tab while the thread is busy and renders the scripted feed', async () => {
+  it('defaults to the Agent log tab while the thread is busy and renders the scripted feed', async () => {
     liveness.current = {
       runId: 'run-1',
       stream: streamView({
@@ -69,20 +69,20 @@ describe('RunDetailPage live surfaces (D2)', () => {
     server.use(pipelineDetailHandler()) // thread_status: busy
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`]) // no ?tab=
 
-    const activityTab = await screen.findByRole('tab', { name: 'Pipeline Log' })
+    const activityTab = await screen.findByRole('tab', { name: 'Agent log' })
     expect(activityTab).toHaveAttribute('aria-selected', 'true')
 
-    expect(await screen.findByTestId('activity-divider')).toHaveTextContent('running')
+    expect(await screen.findByTestId('activity-divider')).toHaveTextContent('Executing')
     const card = screen.getByTestId('activity-tool-card')
     expect(card).toHaveTextContent('engine.start')
   })
 
-  it('keeps Phase Details as the default tab when the thread is not busy', async () => {
+  it('keeps Phase details as the default tab when the thread is not busy', async () => {
     liveness.current = { runId: null, stream: idleStreamView() }
     server.use(pipelineDetailHandler({ ...PIPELINE_DETAIL, thread_status: 'idle' }))
     renderRunRoutes([`/runs/${THREAD_ID}/phases/test_planning`])
 
-    const outputTab = await screen.findByRole('tab', { name: 'Phase Details' })
+    const outputTab = await screen.findByRole('tab', { name: 'Phase details' })
     expect(outputTab).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -132,7 +132,7 @@ describe('RunDetailPage live surfaces (D2)', () => {
     renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
 
     const banner = await screen.findByTestId('gate-slim-banner')
-    expect(banner).toHaveTextContent('Review phase results gate open on Reporting')
+    expect(banner).toHaveTextContent('Review phase results open on Reporting')
     expect(screen.queryByTestId('gate-hint')).not.toBeInTheDocument()
   })
 })

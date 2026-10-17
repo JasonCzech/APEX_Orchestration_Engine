@@ -112,7 +112,7 @@ export function GateModuleView({
 
   if (machineState.tag === 'awaiting_agent') {
     return (
-      <section className={frameClass} data-testid="gate-module" aria-label={`${kindLabel} gate`}>
+      <section className={frameClass} data-testid="gate-module" aria-label={kindLabel}>
         {header}
         <div className="gate-awaiting" data-testid="gate-awaiting">
           <span className="gate-spinner" aria-hidden="true" />
@@ -134,7 +134,7 @@ export function GateModuleView({
 
   if (machineState.tag === 'superseded') {
     return (
-      <section className={frameClass} data-testid="gate-module" aria-label={`${kindLabel} gate`}>
+      <section className={frameClass} data-testid="gate-module" aria-label={kindLabel}>
         {header}
         <SupersededBanner by={machineState.by} onViewCurrent={onViewCurrent} />
       </section>
@@ -150,7 +150,7 @@ export function GateModuleView({
   const payload = gate.payload
 
   return (
-    <section className={frameClass} data-testid="gate-module" aria-label={`${kindLabel} gate`}>
+    <section className={frameClass} data-testid="gate-module" aria-label={kindLabel}>
       {header}
       <GateDraftGuard dirty={!submitting && (dirty || Boolean(draft.message?.trim() || draft.instructions?.trim()))} />
 
@@ -414,7 +414,7 @@ export function GateSlimBanner({ threadId, gate, onReview }: { threadId: string;
   return (
     <div className="gate-slim-banner" data-testid="gate-slim-banner">
       <span>
-        {gateKindLabel(gate.kind)} gate open on{' '}
+        {gateKindLabel(gate.kind)} open on{' '}
         <strong>{phaseLabel(gate.phase)}</strong>
       </span>
       {onReview ? (

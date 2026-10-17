@@ -230,9 +230,10 @@ export function useProviderScripts(
   remoteId: string,
   offset: number,
   enabled: boolean,
+  limit = 20,
 ) {
   return useQuery({
-    queryKey: ['cycles', id, 'provider-scripts', connection, remoteId, offset],
+    queryKey: ['cycles', id, 'provider-scripts', connection, remoteId, offset, limit],
     enabled,
     queryFn: async ({ signal }) =>
       unwrap(
@@ -243,7 +244,7 @@ export function useProviderScripts(
               connection_id: connection || undefined,
               remote_script_id: remoteId || undefined,
               offset,
-              limit: 20,
+              limit,
             },
           },
           signal,

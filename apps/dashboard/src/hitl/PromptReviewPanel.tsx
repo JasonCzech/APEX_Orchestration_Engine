@@ -110,7 +110,7 @@ export function PromptReviewPanel({
 
         {payload.context_packets.length > 0 && (
           <section className="gate-info-card" data-testid="gate-context-packets">
-            <h4 className="gate-field-label">Additional Context</h4>
+            <h4 className="gate-field-label">Additional context</h4>
             <ul className="gate-packet-list">
               {payload.context_packets.map((packet, index) => (
                 <li key={packet.id ?? index} className="gate-packet">
@@ -140,7 +140,7 @@ export function PromptReviewPanel({
           <section className="gate-info-card">
             <h4 className="gate-field-label">Post-Result Notes</h4>
             <p className="gate-info-copy">
-              Result notes will appear after execution completes and the next review gate opens.
+              Result notes will appear after execution completes and the next review opens.
             </p>
           </section>
         )}

@@ -1,3 +1,6 @@
+import { formatBytes } from '@/utils/formatBytes'
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { formatTimestamp } from '@/utils/time'
 import { useState } from 'react'
 import {
@@ -17,6 +20,7 @@ export function ScriptStorage({
   version: Version
   canEdit: boolean
 }) {
+  useTimestampPreference()
   const query = useScriptLibrary(cycle.id)
   const store = useStoreScript(cycle.id, version.id)
   const [connection, setConnection] = useState('')
@@ -42,7 +46,7 @@ export function ScriptStorage({
         checksum. This does not validate the script with an execution provider
         or launch a test.
       </p>
-      {query.isPending && <p role="status">Loading script storage…</p>}
+      {query.isPending && <Skeleton label="Loading script storage" rows={2} />}
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}
@@ -59,7 +63,7 @@ export function ScriptStorage({
             </strong>
           </p>
           <p>
-            {artifact.size_bytes.toLocaleString()} bytes · source SHA-256{' '}
+            {formatBytes(artifact.size_bytes)} · source SHA-256{' '}
             <code>{artifact.source_checksum}</code>
           </p>
           <p>

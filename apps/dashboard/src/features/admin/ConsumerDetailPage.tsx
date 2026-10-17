@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /admin/consumers/:id — read view for one consumer (plan Part 2 route table,
  * D7). Admin-gated. Mutations (edit / rotate / delete) live on the list's row
@@ -22,14 +24,7 @@ function ConsumerDetailContent() {
 
   if (consumer.isPending) {
     return (
-      <div
-        className="adm-skeleton animate-enter"
-        role="status"
-        aria-busy="true"
-        aria-label="Loading consumer"
-      >
-        <div className="glass-panel adm-skeleton-card" />
-      </div>
+      <Skeleton label="Loading consumer" rows={1} height={120} />
     )
   }
 
@@ -109,6 +104,7 @@ function ConsumerDetailContent() {
 }
 
 export function ConsumerDetailPage() {
+  useTimestampPreference()
   return (
     <AdminGate>
       <ConsumerDetailContent />

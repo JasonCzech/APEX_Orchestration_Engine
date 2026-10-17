@@ -150,24 +150,6 @@
   }
 }
 
-/* ── Loading skeleton (pulse on glass-panel shapes) ──────────────────────── */
-
-.run-detail-skeleton {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
-}
-
-.skeleton-block {
-  border-radius: var(--radius);
-  min-height: 320px;
-  animation: pulse 2s infinite;
-}
-
-.skeleton-block.short {
-  min-height: 120px;
-}
-
 /* ── Phase workspace (center) ────────────────────────────────────────────── */
 
 .phase-workspace {

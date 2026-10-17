@@ -239,7 +239,7 @@ describe('RunsListPage', () => {
     expect(within(workspace).getByText('Execution is still streaming results.')).toBeInTheDocument()
     expect(within(workspace).getByText('Generator pool is approaching capacity.')).toBeInTheDocument()
     expect(within(workspace).getByRole('button', { name: /execution — executing/i })).toHaveAttribute('aria-pressed', 'true')
-    await user.click(within(workspace).getByRole('tab', { name: 'Phase Details' }))
+    await user.click(within(workspace).getByRole('tab', { name: 'Phase details' }))
     await user.click(within(workspace).getByText('Technical phase output'))
     expect(within(workspace).getByLabelText('Phase output JSON')).toHaveTextContent(
       '"status": "running"',

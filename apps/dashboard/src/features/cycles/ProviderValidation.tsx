@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { formatTimestamp } from '@/utils/time'
 import { useRef } from 'react'
 import { useScriptValidations, useValidateScript } from './api'
@@ -17,6 +19,7 @@ export function ProviderValidation({
   preparationId: string
   canEdit: boolean
 }) {
+  useTimestampPreference()
   const query = useScriptValidations(cycleId, preparationId)
   const validate = useValidateScript(cycleId, preparationId)
   const requestKey = useRef<string | null>(null)
@@ -30,7 +33,7 @@ export function ProviderValidation({
         Workload, capacity, target readiness and launch authorization require
         separate checks.
       </p>
-      {query.isPending && <p role="status">Loading validation history…</p>}
+      {query.isPending && <Skeleton label="Loading validation history" rows={2} />}
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}

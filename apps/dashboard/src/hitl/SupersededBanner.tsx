@@ -18,7 +18,7 @@ export function SupersededBanner({
       <span className="gate-superseded-title">
         {by === 'conflict'
           ? 'Another operator resumed this gate'
-          : 'Gate actioned elsewhere or replaced'}
+          : 'Review actioned elsewhere or replaced'}
       </span>
       <span className="gate-superseded-detail">
         This review is no longer pending — your draft was not applied.

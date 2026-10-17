@@ -1,4 +1,5 @@
 """Regressions for the dashboard contrast check's token alias resolution."""
+
 import importlib.util
 from pathlib import Path
 
@@ -23,3 +24,30 @@ def test_color_alias_cycle_is_not_silently_accepted():
 
 def test_all_shipped_theme_pairs_meet_text_contrast():
     module.main()
+
+
+def test_calendar_mix_uses_premultiplied_alpha():
+    tokens = {
+        "--a": "rgba(255, 0, 0, 0.5)",
+        "--b": "#0000ff",
+        "--mix": "color-mix(in srgb, var(--a) 50%, var(--b))",
+    }
+    assert module.token_color(tokens, "--mix") == pytest.approx([85, 0, 170, 0.75])
+
+
+def test_calendar_mix_rejects_cycles():
+    with pytest.raises(ValueError, match="Circular"):
+        module.token_color(
+            {"--a": "color-mix(in srgb, var(--a) 50%, var(--b))", "--b": "#ffffff"}, "--a"
+        )
+
+
+def test_transparent_calendar_mix_has_no_visible_color():
+    assert module.token_color(
+        {
+            "--a": "rgba(255, 0, 0, 0)",
+            "--b": "rgba(0, 0, 255, 0)",
+            "--mix": "color-mix(in srgb, var(--a) 50%, var(--b))",
+        },
+        "--mix",
+    ) == [0, 0, 0, 0]

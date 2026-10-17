@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { CycleSources } from './CycleSources'
 import { CycleHandoff } from './CycleHandoff'
 import { FrozenEvidenceDiff } from './FrozenEvidenceDiff'
@@ -14,7 +17,6 @@ import { Dialog } from '@/components/Dialog'
 import { ProjectField } from '@/components/ux/ProjectField'
 import { CopyableId } from '@/components/ux/CopyableId'
 import { Pagination } from '@/components/ux/Pagination'
-import { usePreferences } from '@/theme/preferences'
 import { ApiError } from '@/api/errors'
 import { formatTimestamp } from '@/utils/time'
 import { PromptDiff } from '@/features/prompts/PromptDiff'
@@ -55,11 +57,9 @@ function useEnabled() {
 }
 function Disabled() {
   return (
-    <section className="glass-panel cycle-panel">
-      <h2>Test cycles</h2>
-      <p>The cycle workspace is not enabled on this server.</p>
-      <Link to="/runs">Open Tests</Link>
-    </section>
+    <StateCard kind="unconfigured" title="Test cycles" action={<Link className="btn btn-secondary" to="/runs">Open tests</Link>}>
+      The cycle workspace is not enabled on this server.
+    </StateCard>
   )
 }
 
@@ -167,11 +167,11 @@ function NewCycle({ onCreated }: { onCreated: (id: string) => void }) {
 }
 
 export function CyclesPage() {
+  useTimestampPreference()
   const enabled = useEnabled()
   const consumer = useConsumer()
   const [offset, setOffset] = useState(0)
-  const { preferences, setPreferences } = usePreferences()
-  const limit = preferences.rows
+  const [limit, setLimit] = useState(20)
   const [newOpen, setNewOpen] = useState(false)
   const [created, setCreated] = useState('')
   const query = useCycles(offset, enabled, limit)
@@ -212,7 +212,7 @@ export function CyclesPage() {
           <Link to={`/cycles/${created}`}>Open cycle workspace</Link>
         </p>
       )}
-      {query.isPending && <p role="status">Loading cycles…</p>}
+      {query.isPending && <Skeleton label="Loading cycles" rows={2} />}
       {query.error && (
         <ProblemCard
           title="Could not load cycles"
@@ -239,12 +239,12 @@ export function CyclesPage() {
         ))}
       </div>
       {query.data?.length === 0 && (
-        <p>
-          No cycles on this page. {canLaunchPipelines(consumer) ? 'Create a cycle to assemble your first deliverables.' : 'Ask an administrator for access to a project’s cycles.'}
-        </p>
+        <StateCard kind="empty" title="No cycles on this page." action={!newOpen && canLaunchPipelines(consumer) ? <button className="btn btn-primary" onClick={() => setNewOpen(true)}>Create cycle</button> : null}>
+          {canLaunchPipelines(consumer) ? 'Create a cycle to assemble your first deliverables.' : 'Ask an administrator for access to a project’s cycles.'}
+        </StateCard>
       )}
-      <Pagination label="Cycles" offset={offset} limit={limit} pending={query.isFetching} hasNext={query.data?.length === limit}
-        onChange={(page) => { setOffset(page.offset); setPreferences({ rows: page.limit as typeof limit }) }} />
+      <Pagination label="Cycles" options={[10, 20, 50, 100]} offset={offset} limit={limit} pending={query.isFetching} hasNext={query.data?.length === limit && offset + limit <= 10000}
+        onChange={(page) => { setOffset(page.offset); setLimit(page.limit) }} />
     </div>
   )
 }
@@ -479,6 +479,7 @@ function VersionDetails({
 }
 
 export function CyclePage() {
+  useTimestampPreference()
   const { cycleId = '' } = useParams()
   return <CycleWorkspace key={cycleId} cycleId={cycleId} />
 }
@@ -505,13 +506,13 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
   if (!enabled) return <Disabled />
   if (!cycle)
     return query.error ? (
-      query.error instanceof ApiError && [403, 404].includes(query.error.status) ? <section className="cycle-panel glass-panel"><h2>Cycle unavailable</h2><p>This cycle does not exist or is outside your authorized scope.</p><Link to="/cycles">Back to all cycles</Link></section> : <ProblemCard
+      query.error instanceof ApiError && [403, 404].includes(query.error.status) ? <StateCard kind={query.error.status === 403 ? 'unauthorized' : 'not-found'} title="Cycle unavailable" action={<Link className="btn btn-secondary" to="/cycles">Back to all cycles</Link>}>This cycle does not exist or is outside your authorized scope.</StateCard> : <ProblemCard
         title="Could not load cycle"
         message={query.error.message}
         onRetry={() => void query.refetch()}
       />
     ) : (
-      <p role="status">Loading cycle…</p>
+      <Skeleton label="Loading cycle" rows={2} />
     )
   const versions = cycle.versions.filter((v) => v.kind === tab)
   const version =
@@ -715,7 +716,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
               )}
             </>
           ) : (
-            <p>No deliverable version yet.</p>
+            <StateCard kind="empty" compact title="No deliverable version yet." action={null}>Create a draft using the controls above.</StateCard>
           )}
         </>
       )}

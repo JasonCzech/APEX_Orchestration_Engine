@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * Keyboard-first cross-run gate queue and full Review Workspace. /approvals
  * selects the oldest gate; /runs/:threadId/reviews/:interruptId is canonical.
@@ -111,6 +114,7 @@ const SHORTCUTS: Array<[string, string]> = [
 ]
 
 export function ApprovalsInboxPage() {
+  useTimestampPreference()
   const queryClient = useQueryClient()
   const params = useParams<{ threadId?: string; interruptId?: string }>()
   const navigate = useNavigate()
@@ -445,26 +449,14 @@ export function ApprovalsInboxPage() {
           onRetry={inbox.refetch}
         />
       ) : allClear ? (
-        <div className="dash-empty approvals-empty" data-testid="approvals-empty">
-          <h3>All clear. No gates awaiting review.</h3>
-          <p className="dash-empty-hint">New gates appear here the moment a run interrupts.</p>
-          <Link className="btn btn-ghost btn-sm" to="/runs">
-            Go to runs
-          </Link>
-        </div>
+        <StateCard kind="empty" title="All clear. No reviews pending." data-testid="approvals-empty" action={<Link className="btn btn-secondary btn-sm" to="/runs">Go to runs</Link>}>
+          New reviews appear here when a run needs your decision.
+        </StateCard>
       ) : inbox.isLoading ? (
-        <div
-          className="approvals-skeleton"
-          role="status"
-          aria-busy="true"
-          aria-label="Loading reviews"
-        >
-          <div className="glass-panel approvals-skeleton-block" />
-          <div className="glass-panel approvals-skeleton-block" />
-        </div>
+        <Skeleton label="Loading reviews" rows={2} height={120} />
       ) : (
         <div className="approvals-layout">
-          <section className="approvals-queue-pane glass-panel" aria-label="Pending gates">
+          <section className="approvals-queue-pane glass-panel" aria-label="Pending reviews">
             <ApprovalsQueue
               rows={rows}
               selectedThreadId={selection?.threadId ?? null}
@@ -490,7 +482,7 @@ export function ApprovalsInboxPage() {
                 onSectionChange={setReviewSection}
               />
             ) : (
-              <div className="dash-empty small">Select a gate from the queue (j / k).</div>
+              <StateCard kind="empty" compact title="Select a review" action={null}>Choose a review from the queue, or use j / k.</StateCard>
             )}
           </section>
         </div>
@@ -572,18 +564,13 @@ function GatePreview({
 
   if (query.isPending) {
     return (
-      <div
-        className="glass-panel approvals-skeleton-block"
-        role="status"
-        aria-busy="true"
-        aria-label="Loading gate"
-      />
+      <Skeleton label="Loading review" rows={2} height={120} />
     )
   }
   if (query.isError && !query.data) {
     return (
       <ProblemCard
-        title="Gate failed to load"
+        title="Review failed to load"
         message={query.error instanceof Error ? query.error.message : 'Unknown error'}
         onRetry={() => void query.refetch()}
       />

@@ -44,8 +44,13 @@ function ShellContent() {
       // the scroll offset from the page just left.
       nextMain.scrollTop =
         navigationType === 'POP' ? (scrollPositions.current.get(location.key) ?? 0) : 0
-      // Review queue navigation owns focus on its selected option.
-      if (!document.activeElement?.matches('[data-route-focus="true"]')) nextMain.focus()
+      // Destination controls and portals may have received focus before this
+      // deferred callback runs. Never steal it from an opened menu or dialog.
+      const active = document.activeElement
+      const destinationOwnsFocus = active instanceof HTMLElement && (
+        (nextMain.contains(active) && !active.closest('.main-topbar')) || Boolean(active.closest('[role="dialog"], [role="menu"]'))
+      )
+      if (!destinationOwnsFocus) nextMain.focus()
     })
     return () => cancelAnimationFrame(frame)
   }, [location.key, location.pathname, navigationType])

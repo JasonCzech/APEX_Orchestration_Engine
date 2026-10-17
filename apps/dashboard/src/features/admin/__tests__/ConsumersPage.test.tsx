@@ -48,6 +48,25 @@ function delayedCreated(name: string, apiKey: string): ConsumerCreated {
 }
 
 describe('ConsumersPage', () => {
+  it('filters consumers by operational identity and clears the active filter', async () => {
+    server.use(...consumersReadHandlers())
+    const user = userEvent.setup()
+    renderList()
+    await screen.findByTestId(`consumer-row-${CONSUMER_CI.id}`)
+    await user.type(screen.getByRole('searchbox', { name: 'Search consumers' }), CONSUMER_CI.name)
+    expect(screen.getByTestId(`consumer-row-${CONSUMER_CI.id}`)).toBeInTheDocument()
+    expect(screen.queryByTestId(`consumer-row-${CONSUMER_OPS.id}`)).not.toBeInTheDocument()
+    expect(screen.getByText('1 active filter')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.getByTestId(`consumer-row-${CONSUMER_OPS.id}`)).toBeInTheDocument()
+    await user.type(screen.getByRole('searchbox', { name: 'Search consumers' }), 'headless')
+    expect(screen.getByTestId(`consumer-row-${CONSUMER_CI.id}`)).toBeInTheDocument()
+    expect(screen.queryByTestId(`consumer-row-${CONSUMER_OPS.id}`)).not.toBeInTheDocument()
+    await user.clear(screen.getByRole('searchbox', { name: 'Search consumers' }))
+    await user.type(screen.getByRole('searchbox', { name: 'Search consumers' }), 'no-such-consumer')
+    expect(screen.getByRole('heading', { name: 'No matching consumers' })).toBeInTheDocument()
+  })
+
   it('renders the table with type/role chips, scope summaries and fingerprints', async () => {
     server.use(...consumersReadHandlers())
     renderList()

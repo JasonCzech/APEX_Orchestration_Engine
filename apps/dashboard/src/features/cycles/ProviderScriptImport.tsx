@@ -1,3 +1,7 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Pagination } from '@/components/ux/Pagination'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { StateCard } from '@/components/ux/StateCard'
 import { formatTimestamp } from '@/utils/time'
 import { useRef, useState } from 'react'
 import { Link, useBeforeUnload } from 'react-router'
@@ -17,15 +21,17 @@ export function ProviderScriptImport({
   cycle: Cycle
   canEdit: boolean
 }) {
+  useTimestampPreference()
   const [open, setOpen] = useState(false)
   const [connection, setConnection] = useState('')
   const [remoteId, setRemoteId] = useState('')
   const [offset, setOffset] = useState(0)
+  const [limit, setLimit] = useState(20)
   const [plan, setPlan] = useState('')
   const [title, setTitle] = useState('')
   const [parameters, setParameters] = useState('')
   const [coverage, setCoverage] = useState('')
-  const catalog = useProviderScripts(cycle.id, connection, '', offset, open)
+  const catalog = useProviderScripts(cycle.id, connection, '', offset, open, limit)
   const preview = useProviderScripts(
     cycle.id,
     connection,
@@ -53,7 +59,7 @@ export function ProviderScriptImport({
           executable provider content. Review, storage and validation remain
           required; this does not bind or launch a test.
         </p>
-        {catalog.isFetching && <p role="status">Reading provider library…</p>}
+        {catalog.isFetching && <Skeleton label="Reading provider library" rows={2} />}
         {catalog.error && (
           <p role="alert">
             {catalog.error.message}{' '}
@@ -67,7 +73,7 @@ export function ProviderScriptImport({
             {catalog.data.blockers.map((b) => (
               <p key={b}>{b}</p>
             ))}
-            {catalog.data.connections.length === 0 && <p className="tonal-card info">No APEX Load connection is available for this project. Ask an administrator to configure an enabled provider connection.</p>}
+            {catalog.data.connections.length === 0 && <StateCard kind="unconfigured" title="No APEX Load connection available" action={null}>Ask an administrator to configure an enabled provider connection for this project.</StateCard>}
             <fieldset
               disabled={importer.isPending}
               className="cycle-execution-fields"
@@ -117,37 +123,15 @@ export function ProviderScriptImport({
                       ))}
                     </select>
                   </label>
-                  <div className="cycle-actions">
-                    <button
-                      disabled={offset === 0 || catalog.isFetching}
-                      onClick={() => {
-                        setOffset(Math.max(0, offset - 20))
-                        setRemoteId('')
-                      }}
-                    >
-                      Previous scripts
-                    </button>
-                    <span>
-                      {catalog.data.total} scripts · page{' '}
-                      {Math.floor(offset / 20) + 1}
-                    </span>
-                    <button
-                      disabled={
-                        offset + 20 >= catalog.data.total || catalog.isFetching
-                      }
-                      onClick={() => {
-                        setOffset(offset + 20)
-                        setRemoteId('')
-                      }}
-                    >
-                      Next scripts
-                    </button>
-                  </div>
+                  <Pagination label="Provider scripts" offset={offset} limit={limit} options={[10, 20, 50, 100]}
+                    pending={catalog.isFetching} hasNext={offset + limit < catalog.data.total && offset + limit <= 5000}
+                    onChange={page => { setOffset(page.offset); setLimit(page.limit); setRemoteId('') }} />
+                  <p>{catalog.data.total} scripts</p>
                 </>
               )}
             </fieldset>
             {preview.isFetching && remoteId && (
-              <p role="status">Reading source preview…</p>
+              <Skeleton label="Reading source preview" rows={2} />
             )}
             {preview.error && (
               <p role="alert">

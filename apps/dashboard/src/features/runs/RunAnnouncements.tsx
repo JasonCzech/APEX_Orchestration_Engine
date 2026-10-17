@@ -11,7 +11,7 @@ export function RunAnnouncements({ title, phases, gate, streamStatus, terminal }
   terminal: boolean
 }) {
   const phaseChanges = phases.filter(phase => phase.status !== 'none').map(phase => `${isPhaseName(phase.phase) ? PHASE_LABELS[phase.phase] : phase.phase}: ${statusLabel(phase.status)}`).join('. ')
-  const gateText = gate ? `${gateLabel(gate.kind)} gate open on ${isPhaseName(gate.phase) ? PHASE_LABELS[gate.phase] : gate.phase}.` : 'No open review gate.'
+  const gateText = gate ? `${gateLabel(gate.kind)} open on ${isPhaseName(gate.phase) ? PHASE_LABELS[gate.phase] : gate.phase}.` : 'No open review.'
   const text = `${title}. ${gateText} ${phaseChanges}. ${terminal ? 'Recorded snapshot.' : liveStatusLabel(streamStatus)}`
   const [announcement, setAnnouncement] = useState('')
   useEffect(() => setAnnouncement(text), [text])

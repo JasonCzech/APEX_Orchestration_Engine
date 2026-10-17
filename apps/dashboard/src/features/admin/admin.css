@@ -164,7 +164,9 @@
 }
 
 .adm-toggle:disabled {
-  opacity: 0.6;
+  opacity: 1;
+  color: var(--control-disabled-text);
+  background: var(--control-disabled-bg);
   cursor: default;
 }
 
@@ -555,26 +557,6 @@
 .adm-link-list a {
   font-size: var(--font-size-sm);
   color: var(--accent-text);
-}
-
-/* Loading skeleton */
-
-.adm-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.adm-skeleton-row {
-  height: 44px;
-  border-radius: 8px;
-  animation: pulse 1.8s ease-in-out infinite;
-}
-
-.adm-skeleton-card {
-  height: 120px;
-  border-radius: var(--radius);
-  animation: pulse 1.8s ease-in-out infinite;
 }
 
 .adm-key-lifecycle-status {

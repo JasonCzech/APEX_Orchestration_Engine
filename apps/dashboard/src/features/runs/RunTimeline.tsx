@@ -1,9 +1,12 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
 import type { PipelineState } from '@apex/pipeline-events'
 
 import { formatTimestamp, TONE_COLOR_VAR } from './runDisplay'
 import { deriveTimeline } from './timelineModel'
 
 export function RunTimeline({ state }: { state: PipelineState }) {
+  useTimestampPreference()
   const events = deriveTimeline(state)
 
   return (
@@ -19,10 +22,7 @@ export function RunTimeline({ state }: { state: PipelineState }) {
         </span>
       </header>
       {events.length === 0 ? (
-        <div className="dash-empty">
-          No timeline events yet.
-          <span className="dash-empty-hint">Events appear once a phase has run.</span>
-        </div>
+        <StateCard kind="empty" title="No timeline events recorded." action={null}>The snapshot contains no phase events.</StateCard>
       ) : (
         <ol className="timeline-list">
           {events.map((event, index) => (

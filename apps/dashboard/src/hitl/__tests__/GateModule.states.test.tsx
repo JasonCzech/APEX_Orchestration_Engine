@@ -169,7 +169,7 @@ describe('GateModuleView machine states', () => {
   it('superseded(cleared) says actioned elsewhere or replaced', () => {
     renderState({ tag: 'superseded', gate: promptGate, by: 'cleared' })
     expect(screen.getByTestId('gate-superseded')).toHaveTextContent(
-      'Gate actioned elsewhere or replaced',
+      'Review actioned elsewhere or replaced',
     )
   })
 
@@ -186,7 +186,7 @@ describe('GateModuleView machine states', () => {
     expect(card).toHaveTextContent('Resume failed: resume exploded')
     // Draft intact proof: the editors render the preserved draft text.
     const panel = screen.getByTestId('prompt-review-panel')
-    const system = within(panel).getByRole('textbox', { name: 'System Prompt' })
+    const system = within(panel).getByRole('textbox', { name: 'System prompt' })
     expect(system).toHaveValue('EDITED SYSTEM')
     // And the dirty chip reflects the preserved diff.
     expect(screen.getByTestId('gate-dirty-chip')).toBeInTheDocument()

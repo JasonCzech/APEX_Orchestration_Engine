@@ -57,11 +57,6 @@
 
 /* idle / ended stay muted (default). */
 
-@media (prefers-reduced-motion: reduce) {
-  .live-status-chip .live-status-dot {
-    animation: none;
-  }
-}
 
 /* ── Activity feed ───────────────────────────────────────────────────────── */
 

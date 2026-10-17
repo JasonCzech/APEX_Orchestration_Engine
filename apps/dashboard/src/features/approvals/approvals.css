@@ -188,24 +188,6 @@
   color: var(--text-primary);
 }
 
-.approvals-skeleton {
-  display: grid;
-  grid-template-columns: 360px minmax(0, 1fr);
-  gap: 14px;
-}
-
-@media (max-width: 1320px) {
-  .approvals-skeleton {
-    grid-template-columns: 1fr;
-  }
-}
-
-.approvals-skeleton-block {
-  height: 220px;
-  border-radius: var(--radius);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
 /* ── Shortcuts overlay */
 .approvals-overlay-backdrop {
   position: fixed;

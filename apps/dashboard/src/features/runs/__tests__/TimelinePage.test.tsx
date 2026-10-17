@@ -37,7 +37,7 @@ describe('TimelinePage', () => {
       labels.indexOf('Story Analysis started'),
     )
     expect(labels.indexOf('Gate prompt_review: approve')).toBeLessThan(
-      labels.indexOf('Story Analysis succeeded'),
+      labels.indexOf('Story Analysis Complete'),
     )
     // Engine lifecycle markers from the execution entry.
     expect(labels.indexOf('Engine started (sim)')).toBeLessThan(

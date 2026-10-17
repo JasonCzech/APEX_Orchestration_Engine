@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { PhaseName } from '@apex/pipeline-events'
@@ -135,6 +137,7 @@ export function ActivityFeed({
   /** Engine poll ring buffer; only meaningful for the execution phase. */
   engineSamples?: readonly LiveEngineSample[] | null
 }) {
+  useTimestampPreference()
   const [feed, setFeed] = useState<FeedState>({ entries: [], dropped: 0 })
 
   // Per-phase bookkeeping (component is keyed by phase, so refs reset with it).
@@ -309,19 +312,18 @@ export function ActivityFeed({
 
   if (feed.entries.length === 0) {
     return (
-      <div className="dash-empty small" role="tabpanel" aria-label="Activity">
-        {terminal ? 'No live activity was captured in this session.' : 'No live activity for this phase yet.'}
-        <span className="dash-empty-hint">
+      <div role="region" aria-label="Activity">
+        <StateCard kind="empty" compact title={terminal ? 'No live activity was captured in this session.' : 'No live activity for this phase yet.'} action={null}>
           {terminal ? 'Open Agent reasoning for the durable evidence and full transcript.' : streamStatus === 'live' || streamStatus === 'connecting'
             ? 'Events appear here as the run streams.'
             : 'Activity streams in while the run is executing; the other tabs show the durable snapshot.'}
-        </span>
+        </StateCard>
       </div>
     )
   }
 
   return (
-    <div className="activity-feed-wrap" role="tabpanel" aria-label="Activity">
+    <div className="activity-feed-wrap" role="region" aria-label="Activity">
       {feed.dropped > 0 && (
         <div className="activity-truncated-notice" data-testid="activity-truncated">
           {feed.dropped} older {feed.dropped === 1 ? 'entry' : 'entries'} truncated — the timeline

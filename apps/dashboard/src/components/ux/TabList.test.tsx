@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { TabList } from './TabList'
+import { TabList, TabPanels } from './TabList'
 function Example() {
   const [value, setValue] = useState('one')
   return (
@@ -18,9 +18,9 @@ function Example() {
           { id: 'three', label: 'Activity' },
         ]}
       />
-      <div role="tabpanel" id={`test-panel-${value}`} aria-labelledby={`test-tab-${value}`}>
+      <TabPanels id="test" items={["one", "two", "three"]} value={value}>
         {value}
-      </div>
+      </TabPanels>
     </>
   )
 }
@@ -28,6 +28,11 @@ describe('APEX tabs', () => {
   it('supports wrapping arrows, Home, End and one focus stop with a named panel', async () => {
     const user = userEvent.setup()
     render(<Example />)
+    for (const tab of screen.getAllByRole('tab')) {
+      expect(document.getElementById(tab.getAttribute('aria-controls')!)).toHaveAttribute('aria-labelledby', tab.id)
+    }
+    expect(screen.getAllByRole('tabpanel', { hidden: true })).toHaveLength(3)
+    expect(screen.getByRole('tabpanel', { name: 'Summary' })).toHaveTextContent('one')
     await user.tab()
     expect(screen.getByRole('tab', { name: 'Summary' })).toHaveFocus()
     await user.keyboard('{ArrowLeft}')

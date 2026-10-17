@@ -7,6 +7,8 @@
  */
 
 :root {
+  --control-disabled-bg: var(--bg-secondary);
+  --control-disabled-text: var(--text-muted);
   /* Premium Dark Theme (OLED / Deep Space) */
   --bg-primary: #050508;
   --bg-secondary: #0b0c10;
@@ -118,10 +120,10 @@
 
   --run-calendar-cron-bg: color-mix(in srgb, var(--success) 11%, var(--bg-secondary));
   --run-calendar-cron-border: color-mix(in srgb, var(--success) 42%, var(--border));
-  --run-calendar-cron-text: var(--success);
+  --run-calendar-cron-text: var(--success-text);
   --run-calendar-ad-hoc-bg: color-mix(in srgb, var(--chart-3) 14%, var(--bg-secondary));
   --run-calendar-ad-hoc-border: color-mix(in srgb, var(--chart-3) 48%, var(--border));
-  --run-calendar-ad-hoc-text: var(--chart-3);
+  --run-calendar-ad-hoc-text: var(--text-primary);
 
   --radius: 16px;
   --transition-fast: 0.15s cubic-bezier(0.4, 0, 0.2, 1);

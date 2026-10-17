@@ -48,6 +48,22 @@ describe('ConnectionsPage', () => {
     expect(screen.getByRole('searchbox', { name: 'Filter connections' })).toBeInTheDocument()
   })
 
+  it('links registry panels and supports one-tab-stop arrow navigation', async () => {
+    server.use(...connectionsReadHandlers())
+    const user = userEvent.setup()
+    renderList()
+    const all = await screen.findByRole('tab', { name: 'All connections' })
+    all.focus()
+    await user.keyboard('{ArrowRight}')
+    const load = screen.getByRole('tab', { name: 'APEX Load' })
+    expect(load).toHaveFocus()
+    expect(all).toHaveAttribute('tabindex', '-1')
+    expect(screen.getByRole('tabpanel', { name: 'APEX Load' })).toHaveAttribute('id', load.getAttribute('aria-controls'))
+    await user.keyboard('{Home}')
+    expect(all).toHaveFocus()
+    expect(screen.getByRole('tabpanel', { name: 'All connections' })).toBeVisible()
+  })
+
   it('filters the registry by name, kind, provider, or project', async () => {
     server.use(...connectionsReadHandlers())
     const user = userEvent.setup()

@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link, Navigate, useLocation, useNavigate, useParams } from 'react-router'
 
@@ -22,7 +24,8 @@ import { RunTimeline } from './RunTimeline'
 import { LiveStatusChip } from './LiveStatusChip'
 import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
-import { OverflowMenu, PreflightModal } from './PreflightModal'
+import { OverflowMenu } from '@/components/ux/OverflowMenu'
+import { PreflightModal } from './PreflightModal'
 import { runReviewPath } from './reviewPath'
 import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
@@ -31,11 +34,7 @@ import './live.css'
 
 function RunDetailSkeleton() {
   return (
-    <div className="run-detail-skeleton" data-testid="run-detail-skeleton" aria-busy="true">
-      <div className="glass-panel skeleton-block" />
-      <div className="glass-panel skeleton-block" />
-      <div className="glass-panel skeleton-block short" />
-    </div>
+    <Skeleton label="Loading run" rows={3} height={100} data-testid="run-detail-skeleton" />
   )
 }
 
@@ -47,6 +46,7 @@ function RunDetailSkeleton() {
  * - /runs/:threadId/phases/:phase?tab= -> shared phase flow + phase workspace
  */
 export function RunDetailPage() {
+  useTimestampPreference()
   const { threadId = '', phase = null } = useParams()
   return (
     <RunWorkspace
@@ -83,6 +83,7 @@ export function RunWorkspace({
   showEmbeddedControls?: boolean
   waitAge?: string
 }) {
+  useTimestampPreference()
   const compact = useCompactLayout()
   const { pathname, search } = useLocation()
   const navigate = useNavigate()
@@ -300,14 +301,14 @@ export function RunWorkspace({
       <nav className="ux-actions run-sections" aria-label="Run sections">
         {embedded ? (
           <>
-            {hitl.gate && <button type="button" className="btn btn-secondary" aria-current={decision ? 'page' : undefined} onClick={() => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase)}>Decision</button>}
+            {hitl.gate && <button type="button" className="btn btn-secondary" aria-current={decision ? 'page' : undefined} onClick={() => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase)}>Review</button>}
             <button type="button" className="btn btn-secondary" aria-current={overview ? 'page' : undefined} onClick={() => onSectionChange?.('overview')}>Overview</button>
             <button type="button" className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>
             <button type="button" className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} onClick={() => onSectionChange?.('timeline')}>Timeline</button>
           </>
         ) : (
           <>
-            {hitl.gate && <Link className="btn btn-secondary" aria-current={decision ? 'page' : undefined} to={runReviewPath(threadId, hitl.gate.interrupt_id, { source: 'overview', phase: isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase })}>Decision</Link>}
+            {hitl.gate && <Link className="btn btn-secondary" aria-current={decision ? 'page' : undefined} to={runReviewPath(threadId, hitl.gate.interrupt_id, { source: 'overview', phase: isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase })}>Review</Link>}
             <Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link>
             <Link className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} to={workspacePath}>Workspace</Link>
             <Link className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
@@ -326,10 +327,10 @@ export function RunWorkspace({
       ) : timeline ? (
         <RunTimeline state={state} />
       ) : <>
-      <section className="run-pipeline-hero glass-panel" aria-label="Pipeline progress">
+      <section className="run-pipeline-hero glass-panel" aria-label="Test progress">
         <div className="run-pipeline-hero-head">
           <div>
-            <div className="run-pipeline-hero-kicker">Pipeline Progress</div>
+            <div className="run-pipeline-hero-kicker">Test progress</div>
             <h3 className="run-pipeline-hero-title">Selected phases</h3>
           </div>
           <div className="run-pipeline-counter-group">

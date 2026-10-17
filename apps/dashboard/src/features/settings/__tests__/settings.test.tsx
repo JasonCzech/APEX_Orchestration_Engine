@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { API_KEY_STORAGE_KEY, setApiKey } from '@/auth/keyStorage'
 import { authenticatedState, renderApp } from '@/test/render'
 import { server, SYSTEM_INFO } from '@/test/server'
+import { PREFERENCE_KEY } from '@/theme/preferences'
 import { THEME_STORAGE_KEY } from '@/theme/useTheme'
 
 function renderSettings() {
@@ -18,11 +19,25 @@ function renderSettings() {
 }
 
 describe('SettingsPage', () => {
+  it('persists the selected timestamp zone and restores it in Settings', async () => {
+    const user = userEvent.setup()
+    const first = renderSettings()
+    const selector = await screen.findByRole('combobox', { name: 'Timestamp time zone' })
+    expect(selector).toHaveValue('local')
+    await user.selectOptions(selector, 'UTC')
+    expect(JSON.parse(localStorage.getItem(PREFERENCE_KEY)!)).toMatchObject({ timeZone: 'UTC' })
+    first.unmount()
+    renderSettings()
+    expect(await screen.findByRole('combobox', { name: 'Timestamp time zone' })).toHaveValue('UTC')
+  })
+
   it('theme swatch selection applies data-theme and persists', async () => {
     const user = userEvent.setup()
     renderSettings()
 
     const picker = await screen.findByRole('radiogroup', { name: 'Theme picker' })
+    expect(screen.getByRole('heading', { name: 'Appearance', level: 2 })).toBeVisible()
+    for (const tab of screen.getAllByRole('tab')) expect(document.getElementById(tab.getAttribute('aria-controls')!)).toHaveAttribute('role', 'tabpanel')
     expect(within(picker).getByRole('radio', { name: /Light \(CTx\)/ })).toBeChecked()
 
     await user.click(within(picker).getByRole('radio', { name: 'Solarized Light' }))

@@ -1,3 +1,5 @@
+import { Link } from 'react-router'
+import { StateCard } from '@/components/ux/StateCard'
 /**
  * Shared admin bits (D7): the page-level role gate and small presentational
  * pieces (kind/provider chips, enabled toggle pill) reused across screens.
@@ -9,18 +11,15 @@ import type { ReactNode } from 'react'
 
 import { RequireRole } from '@/auth/RequireRole'
 
-/** dash-empty fallback for non-admin consumers (RequireRole pattern). */
+/** Explicit access state for non-admin consumers (RequireRole pattern). */
 export function AdminGate({ children }: { children: ReactNode }) {
   return (
     <RequireRole
       role="admin"
       fallback={
-        <div className="dash-empty">
-          <h2>Requires admin role</h2>
-          <p className="dash-empty-hint">
-            Your consumer does not have the admin role. Ask an administrator for access.
-          </p>
-        </div>
+        <StateCard kind="unauthorized" title="Requires admin role" action={<Link className="btn btn-secondary" to="/">Return home</Link>}>
+          Your account does not have the admin role. Ask an administrator for access.
+        </StateCard>
       }
     >
       {children}

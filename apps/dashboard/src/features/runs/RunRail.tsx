@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 
@@ -71,6 +73,7 @@ export function RunRail({
   /** gate_opened stream accelerator — shown until the snapshot poll delivers the interrupt (D2). */
   pendingGateHint?: LiveGateHint | string | null
 }) {
+  useTimestampPreference()
   const [collapsed, setCollapsed] = useState(false)
   const groups = useMemo(() => groupArtifacts(state), [state])
   const approvals = useMemo(() => approvalHistory(state), [state])
@@ -108,7 +111,7 @@ export function RunRail({
       {gate && (
         <div className="gate-banner" role="status">
           <span>
-            Gate open: <strong>{gate.kind ?? 'review'}</strong> on{' '}
+            Review needed: <strong>{gate.kind ?? 'review'}</strong> on{' '}
             <strong>{isPhaseName(gate.phase) ? PHASE_LABELS[gate.phase] : (gate.phase ?? '?')}</strong>
           </span>
           {/* D3: links to the gate's phase, where the GateModule is pinned
@@ -121,7 +124,7 @@ export function RunRail({
                 : `/runs/${detail.thread_id}`
             }
           >
-            Review gate
+            Review
           </Link>
         </div>
       )}
@@ -129,7 +132,7 @@ export function RunRail({
       {hint && (
         <div className="gate-banner" role="status" data-testid="gate-hint">
           <span>
-            Gate opening: <strong>{hint.gate ?? 'review'}</strong>
+            Review opening: <strong>{hint.gate ?? 'review'}</strong>
             {isPhaseName(hint.phase) ? (
               <>
                 {' '}
@@ -144,9 +147,9 @@ export function RunRail({
           </span>
           <span
             className="topbar-meta-chip warning gate-hint-chip"
-            title="Heard on the live stream — fetching the full gate payload; the review opens here as soon as it lands"
+            title="Heard on the live stream — fetching the full review details; the review opens here as soon as it lands"
           >
-            loading gate…
+            loading review…
           </span>
         </div>
       )}
@@ -154,7 +157,7 @@ export function RunRail({
       <section>
         <h3 className="run-rail-section-title">Run</h3>
         <dl className="run-meta">
-          <dt>Thread</dt>
+          <dt>Run ID</dt>
           <dd>
             <span className="mono" title={detail.thread_id}>
               {detail.thread_id}
@@ -204,7 +207,7 @@ export function RunRail({
       <section aria-label="Artifacts index">
         <h3 className="run-rail-section-title">Artifacts</h3>
         {groups.length === 0 ? (
-          <div className="dash-empty small">No artifacts yet.</div>
+          <StateCard kind="empty" compact title="No artifacts recorded." action={null} />
         ) : (
           groups.map((group) => (
             <div key={group.label} className="rail-artifact-group">
@@ -224,10 +227,10 @@ export function RunRail({
         )}
       </section>
 
-      <section aria-label="Approvals history">
-        <h3 className="run-rail-section-title">Approvals</h3>
+      <section aria-label="Review history">
+        <h3 className="run-rail-section-title">Reviews</h3>
         {approvals.length === 0 ? (
-          <div className="dash-empty small">No approvals yet.</div>
+          <StateCard kind="empty" compact title="No reviews recorded." action={null} />
         ) : (
           <ul className="rail-approvals">
             {approvals.map((approval) => (

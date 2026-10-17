@@ -9,12 +9,7 @@ export function isContextTab(value: string | null): value is ContextTab {
   return value !== null && (CONTEXT_TABS as readonly string[]).includes(value)
 }
 
-/** Human-readable size for the documents table (ContextStep's format). */
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
+export { formatBytes } from '@/utils/formatBytes'
 
 export interface EvidenceGroup {
   source: string

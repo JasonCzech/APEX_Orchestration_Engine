@@ -1,3 +1,8 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { TableToolbar } from '@/components/ux/TableToolbar'
+import { TabList, TabPanels } from '@/components/ux/TabList'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { StateCard } from '@/components/ux/StateCard'
 /**
  * /admin/connections — the adapter connection registry, searchable by its
  * operational identity and scope. Admin-gated.
@@ -6,7 +11,7 @@
  * ("unknown provider 'x' for kind 'y'; registered providers: a, b") — the
  * panel surfaces that message verbatim as an inline error, never a toast.
  */
-import { useState, type FormEvent } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 
 import {
@@ -291,6 +296,7 @@ function CreateConnectionPanel({ onClose }: { onClose: () => void }) {
 }
 
 function ConnectionsContent() {
+  const tabsId = useId()
   const connections = useConnectionsIndex()
   const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState('')
@@ -314,9 +320,7 @@ function ConnectionsContent() {
   return (
     <section className="adm-page animate-enter">
       <header className="adm-toolbar glass-panel">
-        {/* The topbar already renders the route-handle h1; this is a section label. */}
         <div>
-          <h2 className="adm-page-title">Connection registry</h2>
           <p className="adm-field-help">Enabled controls whether Orchestration may use a connection; it is not a health check.</p>
         </div>
         {!creating && (
@@ -330,31 +334,14 @@ function ConnectionsContent() {
         )}
       </header>
 
-      <div className="adm-tabs" role="tablist" aria-label="Connection views">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === 'connections'}
-          className={`adm-tab${view === 'connections' ? ' active' : ''}`}
-          onClick={() => selectView('connections')}
-        >
-          All connections
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={view === 'apex-load'}
-          className={`adm-tab${view === 'apex-load' ? ' active' : ''}`}
-          onClick={() => selectView('apex-load')}
-        >
-          APEX Load
-        </button>
-      </div>
+      <TabList id={tabsId} label="Connection views" value={view} onChange={selectView}
+        items={[{ id: 'connections', label: 'All connections' }, { id: 'apex-load', label: 'APEX Load' }]} />
 
       {creating && <CreateConnectionPanel onClose={() => setCreating(false)} />}
 
+      <TabPanels id={tabsId} items={['connections', 'apex-load']} value={view}>
       {view === 'connections' && !connections.isPending && !!connections.data?.length && (
-        <label className="adm-registry-search">
+        <TableToolbar label="Connection filters" filterCount={Number(Boolean(query.trim()))} onClear={() => setQuery('')}><label className="adm-registry-search">
           <span className="sr-only">Filter connections</span>
           <input
             type="search"
@@ -363,7 +350,7 @@ function ConnectionsContent() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-        </label>
+        </label></TableToolbar>
       )}
 
       {connections.isError && connections.data && (
@@ -371,16 +358,7 @@ function ConnectionsContent() {
       )}
 
       {connections.isPending ? (
-        <div
-          className="adm-skeleton"
-          role="status"
-          aria-busy="true"
-          aria-label="Loading connections"
-        >
-          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-            <div key={i} className="glass-panel adm-skeleton-row" />
-          ))}
-        </div>
+        <Skeleton label="Loading connections" rows={SKELETON_ROWS} />
       ) : connections.isError && !connections.data ? (
         <ProblemCard
           title="Connections unavailable"
@@ -388,24 +366,17 @@ function ConnectionsContent() {
           onRetry={() => void connections.refetch()}
         />
       ) : connections.data.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No connections yet</h2>
-          <p className="dash-empty-hint">
-            Connections bind port kinds (work tracking, logs, engines…) to provider adapters.
-          </p>
-        </div>
+        <StateCard kind="empty" title="No connections yet" action={creating ? null : <button className="btn btn-primary" onClick={() => setCreating(true)}>Create connection</button>}>
+          Connections bind work tracking, logs, and execution engines to provider adapters.
+        </StateCard>
       ) : view === 'apex-load' && apexLoadConnections.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No APEX Load connections yet</h2>
-          <p className="dash-empty-hint">
-            Create an enabled APEX Load execution-engine connection to configure a project workspace.
-          </p>
-        </div>
+        <StateCard kind="unconfigured" title="No APEX Load connections yet" action={creating ? null : <button className="btn btn-primary" onClick={() => setCreating(true)}>Create connection</button>}>
+          Create an enabled APEX Load execution-engine connection to configure a project workspace.
+        </StateCard>
       ) : view === 'connections' && filteredConnections.length === 0 ? (
-        <div className="dash-empty">
-          <h2>No matching connections</h2>
-          <p className="dash-empty-hint">Try a different name, provider, kind, or project.</p>
-        </div>
+        <StateCard kind="filtered" title="No matching connections" action={<button className="btn btn-secondary" onClick={() => setQuery('')}>Clear filter</button>}>
+          Try a different name, provider, kind, or project.
+        </StateCard>
       ) : view === 'apex-load' ? (
         <section className="glass-panel adm-card-panel" aria-label="APEX Load workspaces">
           <h2 className="adm-panel-title">APEX Load workspaces</h2>
@@ -469,11 +440,13 @@ function ConnectionsContent() {
           </table>
         </div>
       )}
+      </TabPanels>
     </section>
   )
 }
 
 export function ConnectionsPage() {
+  useTimestampPreference()
   return (
     <AdminGate>
       <ConnectionsContent />

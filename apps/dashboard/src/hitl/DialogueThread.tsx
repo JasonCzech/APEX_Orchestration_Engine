@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 /**
  * Gate dialogue: the phase_review payload's dialogue_tail (last <=3 entries)
  * as operator/agent bubbles, plus the discuss composer. The composer writes
@@ -24,6 +25,7 @@ export function DialogueThread({
   disabled: boolean
   onMessageChange: (message: string) => void
 }) {
+  useTimestampPreference()
   return (
     <div className="gate-dialogue" data-testid="gate-dialogue">
       {entries.length > 0 && (

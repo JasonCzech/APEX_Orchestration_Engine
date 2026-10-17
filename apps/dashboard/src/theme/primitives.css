@@ -470,7 +470,9 @@
 .field-select:disabled,
 .field-input:disabled {
   cursor: not-allowed;
-  opacity: 0.65;
+  opacity: 1;
+  color: var(--control-disabled-text);
+  background: var(--control-disabled-bg);
 }
 
 /* ============================================================

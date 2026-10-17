@@ -8,7 +8,7 @@ describe('Run announcements', () => {
     const { rerender } = render(<RunAnnouncements {...props} />)
     expect(screen.getByRole('status')).toHaveTextContent('Test Planning: Executing')
     rerender(<RunAnnouncements {...props} gate={{ phase: 'test_planning', kind: 'phase_review' }} phases={[{ phase: 'test_planning', status: 'awaiting_output_review' }]} streamStatus="reconnecting" />)
-    expect(screen.getByRole('status')).toHaveTextContent('Review phase results gate open on Test Planning')
+    expect(screen.getByRole('status')).toHaveTextContent('Review phase results open on Test Planning')
     expect(screen.getByRole('status')).toHaveTextContent('Reconnecting live updates')
     rerender(<RunAnnouncements {...props} terminal />)
     expect(screen.getByRole('status')).toHaveTextContent('Recorded snapshot')

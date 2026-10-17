@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { useState } from 'react'
 import { Link } from 'react-router'
 import { CopyableId } from '@/components/ux/CopyableId'
@@ -10,6 +13,7 @@ const number = (value: number) =>
     value,
   )
 export function CycleResults({ cycleId, projectId }: { cycleId: string; projectId?: string }) {
+  useTimestampPreference()
   const names = useRunNames(projectId)
   const [baseline, setBaseline] = useState('')
   const query = useCycleResults(cycleId, baseline)
@@ -34,7 +38,7 @@ export function CycleResults({ cycleId, projectId }: { cycleId: string; projectI
         </button>
         <Link to="?tab=executions">Link an existing attempt</Link>
       </div>
-      {query.isPending && <p role="status">Loading linked results…</p>}
+      {query.isPending && <Skeleton label="Loading linked results" rows={2} />}
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}
@@ -50,7 +54,7 @@ export function CycleResults({ cycleId, projectId }: { cycleId: string; projectI
             This is the retrieval time, not provider update freshness.
           </p>
           {query.data.results.length === 0 ? (
-            <p>No linked execution evidence yet.</p>
+            <StateCard kind="empty" title="No linked execution evidence yet" action={<Link className="btn btn-secondary" to="?tab=executions">Link an existing attempt</Link>} />
           ) : (
             <>
               <label className="cycle-field">

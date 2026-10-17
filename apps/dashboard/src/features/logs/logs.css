@@ -90,6 +90,8 @@
 }
 
 .level-chip {
+  min-height: 28px;
+  min-width: 28px;
   appearance: none;
   background: var(--control-bg);
   border: 1px solid var(--border);
@@ -111,7 +113,7 @@
 .level-chip[aria-pressed='true'] {
   background: var(--accent-soft);
   border-color: var(--accent-border);
-  color: var(--accent-hover);
+  color: var(--accent-text);
 }
 
 /* ── Results table ──────────────────────────────────────────────────────── */
@@ -193,25 +195,4 @@
   margin: 0;
   color: var(--warning-text);
   font-size: var(--font-size-sm);
-}
-
-@keyframes logs-pulse {
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-
-.logs-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.logs-skeleton-row {
-  height: 38px;
-  animation: logs-pulse 1.4s ease-in-out infinite;
 }

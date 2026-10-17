@@ -1,9 +1,11 @@
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /work-items/:provider/:itemId — one tracker item (plan Part 2 route table).
  * The :provider segment is display context only; the fetch keys on the
  * decoded :itemId (= item key). Enrich (operator+) POSTs fields JSON + an
  * optional comment and swaps in the refreshed item the server returns.
- * A 404 renders the dash-empty 'Item not found' state, not a problem card.
+ * A 404 renders the explicit 'Item not found' state, not a problem card.
  */
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
@@ -276,10 +278,7 @@ export function WorkItemDetailPage() {
   if (itemQuery.isPending || (itemQuery.data && !connectionId)) {
     return (
       <section className="wi-page animate-enter">
-        <div className="wi-skeleton" role="status" aria-busy="true" aria-label="Loading work item">
-          <div className="glass-panel wi-skeleton-row" />
-          <div className="glass-panel wi-skeleton-row" />
-        </div>
+        <Skeleton label="Loading ticket" rows={2} />
       </section>
     )
   }
@@ -289,20 +288,13 @@ export function WorkItemDetailPage() {
     return (
       <section className="wi-page animate-enter">
         {notFound ? (
-          <div className="dash-empty">
-            <h2>Item not found</h2>
-            <p className="dash-empty-hint">
-              {key ?? 'This item'} does not exist in the connected tracker — it may have been
-              deleted or the key mistyped.
-            </p>
-            <Link className="btn btn-secondary" to="/work-items">
-              Back to the console
-            </Link>
-          </div>
+          <StateCard kind="not-found" title="Item not found" action={<Link className="btn btn-secondary" to="/work-items">Back to the console</Link>}>
+            {key ?? 'This item'} does not exist in the connected tracker — it may have been deleted or the key mistyped.
+          </StateCard>
         ) : (
           <ProblemCard
-            title="Work item unavailable"
-            message={itemQuery.error?.message ?? 'The work item could not be loaded.'}
+            title="Ticket unavailable"
+            message={itemQuery.error?.message ?? 'The ticket could not be loaded.'}
             onRetry={() => void itemQuery.refetch()}
           />
         )}
@@ -324,7 +316,7 @@ export function WorkItemDetailPage() {
       <header className="wi-detail-header glass-panel">
         <div className="wi-detail-heading">
           <nav className="wi-breadcrumb" aria-label="Breadcrumb">
-            <Link to="/work-items">Work items</Link>
+            <Link to="/work-items">Tickets</Link>
             <span aria-hidden="true">/</span>
             <span>{item.provider}</span>
             <span aria-hidden="true">/</span>

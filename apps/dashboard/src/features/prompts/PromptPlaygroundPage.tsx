@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { StateCard } from '@/components/ux/StateCard'
 /**
  * /prompts/:ns/:name/playground (plan UX 2.e) — stateless prompt test runs.
  * Left: catalog-version selector (default active) OR ad-hoc content editor
@@ -53,6 +56,7 @@ function parseSampleInput(raw: string): { ok: true; value: Record<string, unknow
 }
 
 export function PromptPlaygroundPage() {
+  useTimestampPreference()
   const { ns, name } = usePromptRouteParams()
   return (
     <PromptPlaygroundContent
@@ -191,9 +195,7 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
   if (detailQuery.isPending) {
     return (
       <section className="prompts-page animate-enter">
-        <div role="status" aria-busy="true" aria-label="Loading prompt" className="prompts-muted">
-          Loading prompt…
-        </div>
+        <Skeleton label="Loading prompt" rows={2} />
       </section>
     )
   }
@@ -374,13 +376,9 @@ function PromptPlaygroundContent({ ns, name }: { ns: string; name: string }) {
               )}
             </div>
           ) : (
-            <div className="dash-empty compact">
-              <h2>No checks yet</h2>
-              <p className="dash-empty-hint">
-                Check a catalog version or draft to verify that its template can be accepted. This
-                does not evaluate model behavior or execute tools.
-              </p>
-            </div>
+            <StateCard kind="empty" compact title="No checks yet" action={null}>
+              Check a catalog version or draft to verify that its template can be accepted. This does not evaluate model behavior or execute tools.
+            </StateCard>
           )}
 
           {history.length > 0 && (

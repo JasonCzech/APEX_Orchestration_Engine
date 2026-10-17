@@ -106,7 +106,7 @@ export interface ApprovalItem {
 }
 
 export interface ApprovalsInboxResult {
-  /** Pending gates, oldest-updated first. */
+  /** Pending reviews, oldest-updated first. */
   items: ApprovalItem[]
   /**
    * Rows seen in the previous poll that disappeared in the latest one —

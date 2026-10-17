@@ -1,3 +1,5 @@
+import { Skeleton } from '@/components/ux/Skeleton'
+import { TabList, TabPanels } from '@/components/ux/TabList'
 /**
  * /admin/connections/:id?tab=config|host-mappings (plan Part 2 route table +
  * UX 2.f, D7). Admin-gated.
@@ -8,7 +10,7 @@
  * Config tab PATCHes the mutable fields (kind shown immutable); host-mappings
  * tab PUTs the FULL mapping list on save.
  */
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useId, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import { useMutationState } from '@tanstack/react-query'
@@ -467,9 +469,7 @@ function HostMappingsTab({ connectionId }: { connectionId: string }) {
 
   if (mappings.isPending) {
     return (
-      <div role="status" aria-busy="true" aria-label="Loading host mappings" className="adm-muted">
-        Loading host mappings…
-      </div>
+      <Skeleton label="Loading host mappings" rows={2} />
     )
   }
   if (!mappings.data) {
@@ -572,6 +572,7 @@ function DeleteConnectionModal({
 }
 
 function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
+  const tabsId = useId()
   const id = connectionId
   const [searchParams, setSearchParams] = useSearchParams()
   const connection = useConnection(id)
@@ -621,15 +622,7 @@ function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
 
   if (connection.isPending) {
     return (
-      <div
-        className="adm-skeleton animate-enter"
-        role="status"
-        aria-busy="true"
-        aria-label="Loading connection"
-      >
-        <div className="glass-panel adm-skeleton-card" />
-        <div className="glass-panel adm-skeleton-card" />
-      </div>
+      <Skeleton label="Loading connection" rows={2} height={120} />
     )
   }
 
@@ -700,27 +693,17 @@ function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
 
       {probeIsCurrent && <ProbePanel probe={probe} />}
 
-      <div className="adm-tabs" role="tablist" aria-label="Connection sections">
-        {TABS.map((entry) => (
-          <button
-            key={entry}
-            type="button"
-            role="tab"
-            aria-selected={tab === entry}
-            className={`adm-tab${tab === entry ? ' active' : ''}`}
-            onClick={() => selectTab(entry)}
-          >
-            {TAB_LABELS[entry]}
-          </button>
-        ))}
-      </div>
-
+      <TabList id={tabsId} label="Connection sections" value={tab} onChange={selectTab}
+        items={TABS.map(id => ({ id, label: TAB_LABELS[id] }))} />
+      <TabPanels id={tabsId} items={TABS} value={tab}>
       {tab === 'config' ? (
         // ConfigTab preserves dirty edits while lifecycle mutations refetch.
         <ConfigTab key={`config:${conn.id}`} connection={conn} />
       ) : (
         <HostMappingsTab key={`mappings:${conn.id}`} connectionId={conn.id} />
       )}
+
+      </TabPanels>
 
       {deleting && (
         <DeleteConnectionModal

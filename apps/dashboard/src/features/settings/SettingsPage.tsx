@@ -25,7 +25,7 @@ import { useDevDataMode } from '@/dev-data'
 import { useConnectivity } from '@/health/ConnectivityProvider'
 import { THEME_LABELS, useTheme, type ThemeName } from '@/theme/useTheme'
 
-import { TabList } from '@/components/ux/TabList'
+import { TabList, TabPanels } from '@/components/ux/TabList'
 import { usePreferences } from '@/theme/preferences'
 import './settings.css'
 
@@ -48,7 +48,7 @@ function ThemeSection() {
   const { theme, preference, themes, setTheme } = useTheme()
   return (
     <section className="glass-panel settings-section" aria-label="Theme">
-      <h3 className="settings-section-title">Appearance</h3>
+      <h2 className="settings-section-title">Appearance</h2>
       <p className="settings-hint">Preferences apply immediately in this browser.</p>
       <div className="settings-theme-grid" role="radiogroup" aria-label="Theme picker">
         {(['system', ...themes] as const).map((name) => {
@@ -110,14 +110,14 @@ function ApiKeySection() {
   if (isDemoDataMode()) {
     return (
       <section className="glass-panel settings-section" aria-label="Demo session">
-        <h3 className="settings-section-title">Offline demo session</h3>
+        <h2 className="settings-section-title">Offline demo session</h2>
         <p className="settings-hint">
           ACC add-a-line demo dataset v2.0 (PERFHYPER2) is running entirely in this browser. No API key, backend,
           integration, execution engine, or LLM is contacted.
         </p>
         <div className="settings-signout-row">
           <button type="button" className="btn btn-secondary btn-sm" onClick={reset}>
-            Reset Demo
+            Reset demo
           </button>
           <span className="settings-hint">Restores the canonical dataset and clears presenter changes.</span>
         </div>
@@ -190,7 +190,7 @@ function ApiKeySection() {
 
   return (
     <section className="glass-panel settings-section" aria-label="API key">
-      <h3 className="settings-section-title">API key</h3>
+      <h2 className="settings-section-title">API key</h2>
       <dl className="settings-kv">
         <div className="settings-kv-row">
           <dt>Stored key (this browser)</dt>
@@ -228,10 +228,10 @@ function ApiKeySection() {
         </p>
       )}
       <div className="settings-signout-row">
-        <button type="button" className="btn btn-danger btn-sm" onClick={handleSignOut}>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={handleSignOut}>
           Sign out
         </button>
-        <span className="settings-hint">Clears the stored key and returns to the key gate.</span>
+        <span className="settings-hint">Clears the stored key and returns to sign-in.</span>
       </div>
     </section>
   )
@@ -249,7 +249,7 @@ function ConnectionSection() {
   const runtime = getRuntimeConfig()
   return (
     <section className="glass-panel settings-section" aria-label="Connection">
-      <h3 className="settings-section-title">Connection</h3>
+      <h2 className="settings-section-title">Connection</h2>
       <dl className="settings-kv">
         <div className="settings-kv-row">
           <dt>Data mode</dt>
@@ -286,7 +286,7 @@ function AboutSection() {
   const info = state.status === 'authenticated' ? state.systemInfo : null
   return (
     <section className="glass-panel settings-section" aria-label="About">
-      <h3 className="settings-section-title">About</h3>
+      <h2 className="settings-section-title">About</h2>
       {info ? (
         <dl className="settings-kv">
           <div className="settings-kv-row">
@@ -320,13 +320,14 @@ function PersonalPreferences() {
   return <>
     <ThemeSection />
     <section className="glass-panel settings-section" aria-label="Tables and editor preferences">
-      <h3 className="settings-section-title">Tables & editor</h3><div className="ux-fields">
+      <h2 className="settings-section-title">Display, tables & editor</h2><div className="ux-fields">
+        <label className="ux-field">Timestamp time zone<select aria-label="Timestamp time zone" aria-describedby="timestamp-zone-help" value={preferences.timeZone} onChange={event => setPreferences({ timeZone: event.target.value === 'UTC' ? 'UTC' : 'local' })}><option value="local">Local time</option><option value="UTC">UTC</option></select><small id="timestamp-zone-help">Absolute timestamps include the selected zone. Relative ages stay unchanged; analytics date buckets remain UTC.</small></label>
         <label className="ux-field">Motion<select className="field-select" value={String(preferences.reduceMotion)} onChange={event => setPreferences({reduceMotion: event.target.value === 'true'})}><option value="false">Follow device preference</option><option value="true">Reduce motion</option></select><small>Reduce interface animations and smooth scrolling.</small></label>
-        <label className="ux-field">Default rows in Test History<select className="field-select" value={preferences.rows} onChange={event => setPreferences({rows: Number(event.target.value) as 10 | 25 | 50 | 100})}><option value="10">10 rows</option><option value="25">25 rows</option><option value="50">50 rows</option><option value="100">100 rows</option></select><small>Applies to Test History unless its Rows control overrides this value. Specialized tables retain their own limits.</small></label>
+        <label className="ux-field">Default rows in Tests<select className="field-select" value={preferences.rows} onChange={event => setPreferences({rows: Number(event.target.value) as 10 | 25 | 50 | 100})}><option value="10">10 rows</option><option value="25">25 rows</option><option value="50">50 rows</option><option value="100">100 rows</option></select><small>Applies to Tests unless its Rows control overrides this value. Specialized tables retain their own limits.</small></label>
         <label className="ux-field">Editor word wrap<select className="field-select" value={String(preferences.wordWrap)} onChange={event => setPreferences({wordWrap:event.target.value === 'true'})}><option value="true">Wrap long lines</option><option value="false">Scroll horizontally</option></select><small>Applies to read-only code and evidence previews; does not modify saved content.</small></label>
       </div>
     </section>
-    <section className="glass-panel settings-section"><h3 className="settings-section-title">Notifications</h3><p className="settings-hint">Follow pending decisions in <Link to="/approvals">Tests · Needs review</Link> and run progress in <Link to="/runs">Tests · All runs</Link>. Browser notifications are not enabled for Orchestration; team alert routes are managed by your administrator.</p></section>
+    <section className="glass-panel settings-section"><h2 className="settings-section-title">Notifications</h2><p className="settings-hint">Follow pending decisions in <Link to="/approvals">Tests · Needs review</Link> and run progress in <Link to="/runs">Tests · All runs</Link>. Browser notifications are not enabled for Orchestration; team alert routes are managed by your administrator.</p></section>
     <AboutSection />
   </>
 }
@@ -335,8 +336,8 @@ export function SettingsPage() {
   const [section, setSection] = useState('personal')
   return <div className="settings-page animate-enter">
     <TabList id="settings" label="Settings sections" items={[{id:'personal',label:'Personal preferences'},{id:'connection',label:'Connection & session'}]} value={section} onChange={setSection} />
-    <div role="tabpanel" id={`settings-panel-${section}`} aria-labelledby={`settings-tab-${section}`} tabIndex={0}>
+    <TabPanels id="settings" items={["personal", "connection"]} value={section} focusable>
       {section === 'personal' ? <PersonalPreferences /> : <><ApiKeySection /><ConnectionSection /></>}
-    </div>
+    </TabPanels>
   </div>
 }

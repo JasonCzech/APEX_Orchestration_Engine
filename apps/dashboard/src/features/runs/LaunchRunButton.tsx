@@ -42,7 +42,7 @@ function scopedAudiences(
  * Minimal D2 launch entry point: btn-primary + a small modal (title, request,
  * project). Gates run ALL-AUTO in D2 (see launchRun.ts); the gate-policy
  * matrix, phase subsets, and drafts arrive with the D4 wizard at /runs/new.
- * On success navigates straight into the live run's Pipeline Log tab.
+ * On success navigates straight into the live run's Agent log tab.
  */
 export function LaunchRunButton() {
   const consumer = useOptionalConsumer()

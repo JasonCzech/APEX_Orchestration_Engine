@@ -27,6 +27,19 @@ function renderDetail(entry = '/admin/connections/conn-jira') {
 }
 
 describe('ConnectionDetailPage', () => {
+  it('connects keyboard-activated sections to their panels', async () => {
+    server.use(...connectionsReadHandlers())
+    const user = userEvent.setup()
+    renderDetail()
+    const tabs = await screen.findByRole('tablist', { name: 'Connection sections' })
+    const buttons = within(tabs).getAllByRole('tab')
+    for (const button of buttons) expect(document.getElementById(button.getAttribute('aria-controls')!)).toHaveAttribute('role', 'tabpanel')
+    buttons[0]?.focus()
+    await user.keyboard('{End}')
+    expect(buttons.at(-1)).toHaveFocus()
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', buttons.at(-1)?.id)
+  })
+
   it('renders a green inline panel with latency when the probe passes', async () => {
     const probe = probeHandler({ ok: true, latency_ms: 41.6, detail: 'GET /rest/api/2/myself 200' })
     server.use(...connectionsReadHandlers(), probe.handler)

@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { formatTimestamp } from '@/utils/time'
 import { ScopeContext } from '@/components/ux/ScopeContext'
 import {
   useCallback,
@@ -89,7 +91,7 @@ function WizardSection({
       <div className="wizard-section-head">
         <div>
           <span className="wizard-section-kicker">{STEP_LABELS[id]}</span>
-          <h3 className="wizard-section-title">{title}</h3>
+          <h2 className="wizard-section-title">{title}</h2>
         </div>
         <p className="wizard-section-description">{description}</p>
       </div>
@@ -100,34 +102,34 @@ function WizardSection({
 
 const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: string }> = {
   scope: {
-    title: 'Test Scope',
+    title: 'Test scope',
     description:
       'Name the test, describe the request, and choose the project, application, and target environment.',
   },
   'work-items': {
-    title: 'Work Items',
+    title: 'Tickets',
     description:
       'Attach tickets or stories that should anchor the test context and downstream reporting.',
   },
   context: {
-    title: 'Context',
+    title: 'Knowledge',
     description:
       'Add documents so the phases have the evidence they need before execution starts.',
   },
   config: {
-    title: 'Execution Configuration',
+    title: 'Execution configuration',
     description:
       'Choose the engine, phase coverage, and review policy. Enable full manual step-through by keeping every phase gated.',
   },
   prompts: {
-    title: 'Prompt Selection',
+    title: 'Prompt selection',
     description:
-      'Review the focused phase system prompt and the selected application requirements prompt.',
+      'Review the focused phase system and user prompts, plus the selected application requirements prompt.',
   },
   review: {
-    title: 'Launch Preview',
+    title: 'Launch preview',
     description:
-      'Review the launch plan. Selected work items and documents are resolved into agent context when the test starts.',
+      'Review the launch plan. Selected tickets and documents are resolved into agent context when the test starts.',
   },
 }
 
@@ -184,6 +186,7 @@ function WizardStepContent({
 }
 
 export function NewRunWizardPage() {
+  useTimestampPreference()
   const [searchParams, setSearchParams] = useSearchParams()
   const urlDraftId = searchParams.get('draft')
   return (
@@ -576,7 +579,7 @@ function NewRunWizardContent({
                 <option value="">Start fresh or pick a saved draft…</option>
                 {(draftsList.data ?? []).map((entry) => (
                   <option key={entry.id} value={entry.id}>
-                    {entry.title || 'Untitled draft'} · {entry.project_id || 'No project'} · {entry.updated_at ? new Date(entry.updated_at).toLocaleString() : entry.id.slice(0, 8)}
+                    {entry.title || 'Untitled draft'} · {entry.project_id || 'No project'} · {entry.updated_at ? formatTimestamp(entry.updated_at) : entry.id}
                   </option>
                 ))}
               </select>
@@ -630,7 +633,7 @@ function NewRunWizardContent({
               disabled={loading || finalizing || !canSaveDraft}
               onClick={() => void saveNow()}
             >
-              Save Draft
+              Save draft
             </button>
             <span className="wizard-caption">Saving does not launch a test.</span>
             {WIZARD_STEPS.indexOf(activeStep) > 0 && <button type="button" className="btn btn-secondary" disabled={loading || finalizing || pendingStepCount > 0} onClick={() => jumpToTab(WIZARD_STEPS[WIZARD_STEPS.indexOf(activeStep) - 1]!)}>Back</button>}
@@ -650,7 +653,7 @@ function NewRunWizardContent({
                 ? 'Launching…'
                 : pendingStepCount > 0
                   ? 'Finishing context…'
-                  : activeStep === 'review' ? 'Launch Test' : activeStep === 'prompts' ? 'Review Test' : 'Next'}
+                  : activeStep === 'review' ? 'Launch test' : activeStep === 'prompts' ? 'Review test' : 'Next'}
             </button>
           </RequireRole>
         </div>

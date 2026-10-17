@@ -260,12 +260,6 @@ button.phase-seg:hover {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .phase-seg {
-    animation: none !important;
-    transition: none;
-  }
-}
 
 .phase-step--unknown .phase-step-circle { border-style: dashed; color: var(--text-muted); }
 .phase-seg--unknown { border: 1px dashed var(--text-muted); }

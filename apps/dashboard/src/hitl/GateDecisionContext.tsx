@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 import type { PipelineState } from '@apex/pipeline-events'
 import { formatTimestamp, isPhaseName, PHASE_LABELS } from '@/features/runs/runDisplay'
 
@@ -5,6 +6,7 @@ import { formatTimestamp, isPhaseName, PHASE_LABELS } from '@/features/runs/runD
 export function GateDecisionContext({ state, phase, kind, updatedAt }: {
   state: PipelineState; phase?: string | null; kind?: string | null; updatedAt?: string | null
 }) {
+  useTimestampPreference()
   const plan = state.phases_plan
   const index = plan?.findIndex(item => item === phase) ?? -1
   const next = index >= 0 ? plan?.[index + 1] : undefined

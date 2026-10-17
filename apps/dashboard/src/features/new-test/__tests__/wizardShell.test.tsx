@@ -24,6 +24,7 @@ describe('NewRunWizard shell', () => {
     const user = userEvent.setup()
     const rendered = renderWizard('/runs/new?draft=draft-scope')
     const project = await screen.findByLabelText('Project')
+    expect(screen.getAllByRole('heading', { level: 2 }).length).toBeGreaterThan(0)
     await waitFor(() => expect(project).toHaveValue('demo'))
     await user.clear(project)
     await user.type(project, 'new-project')
@@ -63,21 +64,21 @@ describe('NewRunWizard shell', () => {
     expect(within(tablist).getAllByRole('tab').map((tab) => tab.getAttribute('aria-label'))).toEqual([
       'Scope',
       'Config',
-      'Work Items',
-      'Context',
+      'Tickets',
+      'Knowledge',
       'Prompts',
       'Review',
     ])
     expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('tabpanel', { name: 'Scope' })).toHaveTextContent('Test Scope')
-    expect(screen.queryByRole('tabpanel', { name: 'Work Items' })).not.toBeInTheDocument()
+    expect(screen.getByRole('tabpanel', { name: 'Scope' })).toHaveTextContent('Test scope')
+    expect(screen.queryByRole('tabpanel', { name: 'Tickets' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('tab', { name: 'Work Items' }))
-    expect(screen.getByRole('tab', { name: 'Work Items' })).toHaveAttribute(
+    await user.click(screen.getByRole('tab', { name: 'Tickets' }))
+    expect(screen.getByRole('tab', { name: 'Tickets' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
-    expect(screen.getByRole('tabpanel', { name: 'Work Items' })).toHaveTextContent('Work Items')
+    expect(screen.getByRole('tabpanel', { name: 'Tickets' })).toHaveTextContent('Tickets')
     expect(screen.queryByRole('tabpanel', { name: 'Scope' })).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
@@ -89,12 +90,12 @@ describe('NewRunWizard shell', () => {
     await user.click(screen.getByRole('button', { name: 'Back' }))
     expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAttribute('aria-selected', 'true')
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
     await fillScope(user, screen)
     for (let step = 0; step < 4; step++) await user.click(screen.getByRole('button', { name: 'Next' }))
-    await user.click(screen.getByRole('button', { name: 'Review Test' }))
-    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: 'Review test' }))
+    expect(screen.getByRole('button', { name: 'Launch test' })).toBeEnabled()
     await flushAndUnmountWizard(rendered)
   })
 

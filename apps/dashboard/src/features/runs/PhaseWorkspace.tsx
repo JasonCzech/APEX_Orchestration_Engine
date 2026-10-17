@@ -1,6 +1,8 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
 import { formatPercentRate } from '@/utils/metrics'
 import { useId, type ReactNode } from 'react'
-import { TabList } from '@/components/ux/TabList'
+import { TabList, TabPanels } from '@/components/ux/TabList'
 
 import { useSearchParams } from 'react-router'
 
@@ -31,9 +33,9 @@ const TABS = ['details', 'log', 'reasoning'] as const
 type WorkspaceTab = (typeof TABS)[number]
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
-  details: 'Phase Details',
-  log: 'Pipeline Log',
-  reasoning: 'Agent Reasoning',
+  details: 'Phase details',
+  log: 'Agent log',
+  reasoning: 'Agent reasoning',
 }
 
 function activeTab(value: string | null, fallback: WorkspaceTab): WorkspaceTab {
@@ -42,9 +44,9 @@ function activeTab(value: string | null, fallback: WorkspaceTab): WorkspaceTab {
 }
 
 /**
- * Center workspace: [Phase Details, Pipeline Log, Agent Reasoning] tab bar
- * driven by ?tab= (deep-linkable). Default tab is Pipeline Log while the
- * thread is busy, Phase Details otherwise.
+ * Center workspace: [Phase details, Agent log, Agent reasoning] tab bar
+ * driven by ?tab= (deep-linkable). Default tab is Agent log while the
+ * thread is busy, Phase details otherwise.
  */
 export function PhaseWorkspace({
   threadId,
@@ -75,6 +77,7 @@ export function PhaseWorkspace({
   phaseStatus?: string
   terminal?: boolean
 }) {
+  useTimestampPreference()
   const tabsId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = activeTab(searchParams.get('tab'), threadBusy ? 'log' : 'details')
@@ -107,14 +110,14 @@ export function PhaseWorkspace({
       {gateSlot}
       <PhaseOperatorSummary entry={entry} status={phaseStatus} />
       <TabList id={tabsId} label="Phase workspace tabs" items={TABS.map(id => ({id, label: TAB_LABELS[id]}))} value={tab} onChange={selectTab} />
-      <div id={`${tabsId}-panel-${tab}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${tab}`} tabIndex={0}>
+      <TabPanels id={tabsId} items={TABS} value={tab} focusable>
       {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Available agent evidence appears below before you decide.</p>}
       {showEngineStrip && (
         <EngineStrip samples={engineSamples} latest={stream?.engineStats?.latest ?? null} />
       )}
       {tab === 'details' && <PhaseDetailsTab threadId={threadId} entry={entry} state={state} />}
       {tab === 'log' && (
-        <div className="pipeline-log-panel" aria-label="Pipeline log">
+        <div className="pipeline-log-panel" aria-label="Agent log">
           <ActivityFeed
             key={JSON.stringify([threadId, phase, runId ?? 'snapshot'])}
             phase={phase}
@@ -129,7 +132,7 @@ export function PhaseWorkspace({
         </div>
       )}
       {tab === 'reasoning' && <ReasoningTab threadId={threadId} phase={phase} entry={entry} state={state} />}
-      </div>
+      </TabPanels>
       {!promptGateEditorActive && (
         <details className="prompt-configuration">
           <summary>Prompt configuration</summary>
@@ -195,6 +198,7 @@ function ApprovalsList({ approvals }: { approvals: ApprovalRecord[] }) {
 
 /** D8 parity: durable per-phase tool calls from the snapshot (PhaseResult.tool_calls). */
 export function ToolCallsList({ calls }: { calls: ToolCallRecord[] }) {
+  useTimestampPreference()
   return (
     <ul className="approvals-list" data-testid="output-tool-calls">
       {calls.map((call) => (
@@ -268,10 +272,7 @@ function PhaseDetailsTab({
 }) {
   if (!entry) {
     return (
-      <div className="dash-empty small">
-        No result recorded for this phase.
-        <span className="dash-empty-hint">The snapshot contains no phase result.</span>
-      </div>
+      <StateCard kind="empty" compact title="No result recorded for this phase." action={null}>The snapshot contains no phase result.</StateCard>
     )
   }
 
@@ -284,7 +285,7 @@ function PhaseDetailsTab({
 
       {(entry.approvals?.length ?? 0) > 0 && (
         <>
-          <h3 className="workspace-section-title">Approvals</h3>
+          <h3 className="workspace-section-title">Reviews</h3>
           <ApprovalsList approvals={entry.approvals ?? []} />
         </>
       )}
@@ -348,6 +349,7 @@ export function ReasoningTab({
   entry: PhaseResultEntry | undefined
   state: PipelineState
 }) {
+  useTimestampPreference()
   const entries = (state.dialogue ?? []).filter((item) => item.phase === phase)
   const prompt = entry?.resolved_prompt
   const source = entry?.resolved_prompt_source
@@ -362,9 +364,7 @@ export function ReasoningTab({
 
   if (!hasReasoning) {
     return (
-      <div className="dash-empty small">
-        No reasoning details recorded for this phase.
-      </div>
+      <StateCard kind="empty" compact title="No reasoning details recorded for this phase." action={null} />
     )
   }
 

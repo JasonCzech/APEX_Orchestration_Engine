@@ -189,10 +189,10 @@
 
   --run-calendar-cron-bg: rgba(42, 161, 152, 0.18);
   --run-calendar-cron-border: rgba(42, 161, 152, 0.46);
-  --run-calendar-cron-text: #2aa198;
+  --run-calendar-cron-text: #87d8d0;
   --run-calendar-ad-hoc-bg: rgba(211, 54, 130, 0.18);
   --run-calendar-ad-hoc-border: rgba(211, 54, 130, 0.46);
-  --run-calendar-ad-hoc-text: #d33682;
+  --run-calendar-ad-hoc-text: #f5a4ce;
   color-scheme: dark;
 }
 

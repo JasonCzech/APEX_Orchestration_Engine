@@ -295,17 +295,6 @@
   color: var(--text-muted);
 }
 
-.prompts-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.prompts-skeleton-row {
-  height: 44px;
-  opacity: 0.5;
-}
-
 /* ── Modals (create panel + rollback confirm) ────────────────────────────── */
 
 .prompt-modal-overlay {

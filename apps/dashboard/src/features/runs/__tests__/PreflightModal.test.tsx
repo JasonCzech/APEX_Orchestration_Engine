@@ -117,7 +117,7 @@ describe('PreflightModal', () => {
 
     const dialog = screen.getByRole('dialog', { name: 'Re-run phases' })
     // Loading state inside the modal while the snapshot fetch is in flight.
-    expect(within(dialog).getByRole('status', { name: 'Loading thread state' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('status', { name: 'Loading run snapshot' })).toBeInTheDocument()
 
     // Defaults to the last resolved plan: all 7 pressed, every row OK.
     const strip = await screen.findByRole('group', { name: 'Phases to run' })

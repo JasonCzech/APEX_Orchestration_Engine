@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /prompts — catalog browser (plan UX 2.e). Left namespace tree (distinct
  * namespaces with counts, 'phase' pinned first), main .data-table with key /
@@ -142,7 +145,7 @@ function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
   if (detailQuery.isPending) {
     return (
       <aside className="prompts-preview glass-panel" aria-label="Prompt preview" aria-busy="true">
-        <p role="status">Loading active prompt…</p>
+        <Skeleton label="Loading active prompt" rows={2} />
       </aside>
     )
   }
@@ -178,9 +181,7 @@ function PromptPreview({ prompt }: { prompt: PromptSummary | undefined }) {
       {detail.content ? (
         <CodeViewer value={detail.content} ariaLabel={`Active prompt content for ${detail.key}`} />
       ) : (
-        <div className="dash-empty prompts-preview-empty">
-          <p>No active prompt content.</p>
-        </div>
+        <StateCard kind="empty" compact title="No active prompt content." action={null} />
       )}
       <div className="prompts-preview-footer">
         {detail.note ? <span className="prompts-muted">{detail.note}</span> : <span />}
@@ -329,6 +330,7 @@ function CreatePromptPanel({
 }
 
 export function PromptsPage() {
+  useTimestampPreference()
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedNs = searchParams.get('ns') ?? ''
   const selectedId = searchParams.get('prompt') ?? ''
@@ -462,25 +464,13 @@ export function PromptsPage() {
               onRetry={() => refetch()}
             />
           ) : isPending || isPlaceholderData ? (
-            <div
-              className="prompts-skeleton"
-              role="status"
-              aria-busy="true"
-              aria-label="Loading prompts"
-            >
-              {Array.from({ length: 5 }, (_, i) => (
-                <div key={i} className="glass-panel prompts-skeleton-row" />
-              ))}
-            </div>
+            <Skeleton label="Loading prompts" rows={5} />
           ) : rows.length === 0 ? (
-            <div className="dash-empty">
-              <h2>No prompts found</h2>
-              <p className="dash-empty-hint">
-                {committedQ || selectedNs
-                  ? 'No prompts match the current filters.'
-                  : 'Create the first prompt to seed the catalog.'}
-              </p>
-            </div>
+            <StateCard kind={committedQ || selectedNs ? 'filtered' : 'empty'} title="No prompts found" action={committedQ || selectedNs
+              ? <button className="btn btn-secondary" onClick={() => { setSearch(''); setSearchParams({}) }}>Clear filters</button>
+              : <RequireGlobalAdmin><button className="btn btn-primary" onClick={() => setCreating(true)}>Create prompt</button></RequireGlobalAdmin>}>
+              {committedQ || selectedNs ? 'No prompts match the current filters.' : 'Create the first prompt to seed the catalog.'}
+            </StateCard>
           ) : (
             <>
               {isError && (

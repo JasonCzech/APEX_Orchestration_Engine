@@ -1,4 +1,6 @@
-import { TabList } from '@/components/ux/TabList'
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { TabList, TabPanels } from '@/components/ux/TabList'
 import { Dialog } from '@/components/Dialog'
 /**
  * /prompts/:ns/:name (?tab=content|versions) — prompt detail (plan UX 2.e).
@@ -161,9 +163,7 @@ function VersionsTimeline({
 
   if (versionsQuery.isPending) {
     return (
-      <div role="status" aria-busy="true" aria-label="Loading versions" className="prompts-muted">
-        Loading versions…
-      </div>
+      <Skeleton label="Loading versions" rows={2} />
     )
   }
   if (versionsQuery.isError && !versionsQuery.data) {
@@ -245,6 +245,7 @@ function VersionsTimeline({
 }
 
 export function PromptDetailPage() {
+  useTimestampPreference()
   const { ns, name } = usePromptRouteParams()
   return <PromptDetailContent key={JSON.stringify([ns, name])} ns={ns} name={name} />
 }
@@ -281,9 +282,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
   if (detailQuery.isPending) {
     return (
       <section className="prompts-page animate-enter">
-        <div role="status" aria-busy="true" aria-label="Loading prompt" className="prompts-muted">
-          Loading prompt…
-        </div>
+        <Skeleton label="Loading prompt" rows={2} />
       </section>
     )
   }
@@ -363,7 +362,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
         <div className="ux-actions"><button type="button" className="btn btn-secondary" onClick={() => setArchiveConfirm(false)}>Cancel</button><button type="button" className="btn btn-danger" disabled={writePending} onClick={() => { setArchiveConfirm(false); setArchived.mutate(true) }}>Confirm archive</button></div>
       </Dialog>}
       <TabList disabled={writePending} id={tabsId} label="Prompt sections" value={tab} items={[{ id: 'content', label: 'Content' }, { id: 'versions', label: 'Versions' }]} onChange={selectTab} />
-      <div id={`${tabsId}-panel-${tab}`} role="tabpanel" aria-labelledby={`${tabsId}-tab-${tab}`}>
+      <TabPanels id={tabsId} items={['content', 'versions']} value={tab}>
       {tab === 'content' ? (
         editing ? (
           <NewVersionEditor
@@ -406,7 +405,7 @@ function PromptDetailContent({ ns, name }: { ns: string; name: string }) {
       ) : (
         <VersionsTimeline key={detail.id} ns={ns} name={name} detail={detail} />
       )}
-      </div>
+      </TabPanels>
     </section>
   )
 }

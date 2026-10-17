@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Link } from 'react-router'
@@ -110,6 +113,7 @@ export function PromptReviewSection({
   state: PipelineState
   appId: string | null
 }) {
+  useTimestampPreference()
   const snapshotReview = useMemo(() => reviewFromState(state, phase, appId), [state, phase, appId])
   const query = usePromptReview(threadId, phase)
   const update = useUpdatePromptReview(threadId)
@@ -260,9 +264,8 @@ export function PromptReviewSection({
           }}
         />
       ) : (
-        <div className="dash-empty small" aria-busy={query.isPending}>
-          {query.isPending ? 'Loading prompt review…' : 'No prompt review available.'}
-        </div>
+        query.isPending ? <Skeleton label="Loading prompt review" rows={2} /> :
+          <StateCard kind="empty" compact title="No prompt review available." action={null} />
       )}
     </section>
   )

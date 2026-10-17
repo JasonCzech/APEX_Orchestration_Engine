@@ -40,17 +40,31 @@ def contrast(a: list[float], b: list[float]) -> float:
     return (high + 0.05) / (low + 0.05)
 
 
-def token_color(tokens: dict[str, str], key: str) -> list[float]:
-    """Resolve token aliases without hiding missing or circular declarations."""
-    visited: set[str] = set()
-    while key not in visited:
-        visited.add(key)
-        value = tokens[key].strip()
-        alias = re.fullmatch(r"var\((--[\w-]+)\)", value)
-        if not alias:
-            return color(value)
-        key = alias[1]
-    raise ValueError(f"Circular color token: {key}")
+def token_color(
+    tokens: dict[str, str], key: str, seen: frozenset[str] = frozenset()
+) -> list[float]:
+    """Resolve aliases and the two-token sRGB calendar mixes, rejecting cycles."""
+    if key in seen:
+        raise ValueError(f"Circular color token: {key}")
+    value = tokens[key].strip()
+    alias = re.fullmatch(r"var\((--[\w-]+)\)", value)
+    if alias:
+        return token_color(tokens, alias[1], seen | {key})
+    mix = re.fullmatch(
+        r"color-mix\(in srgb, var\((--[\w-]+)\) ([\d.]+)%, var\((--[\w-]+)\)\)", value
+    )
+    if mix:
+        first = token_color(tokens, mix[1], seen | {key})
+        second = token_color(tokens, mix[3], seen | {key})
+        weight = float(mix[2]) / 100
+        alpha = first[3] * weight + second[3] * (1 - weight)
+        if alpha == 0:
+            return [0.0, 0.0, 0.0, 0.0]
+        return [
+            (first[i] * first[3] * weight + second[i] * second[3] * (1 - weight)) / alpha
+            for i in range(3)
+        ] + [alpha]
+    return color(value)
 
 
 def main() -> None:
@@ -109,11 +123,29 @@ def main() -> None:
                 check(tone, color(tokens[f"--{tone}-text"]), fill)
         for fill in ["--accent", "--accent-hover"]:
             check("primary button", color(tokens["--accent-contrast"]), color(tokens[fill]))
-        check("danger button", token_color(tokens, "--danger-fill-text"), token_color(tokens, "--danger-fill"))
-        check("warning fill", token_color(tokens, "--warning-fill-text"), token_color(tokens, "--warning"))
+        check(
+            "danger button",
+            token_color(tokens, "--danger-fill-text"),
+            token_color(tokens, "--danger-fill"),
+        )
+        check(
+            "warning fill",
+            token_color(tokens, "--warning-fill-text"),
+            token_color(tokens, "--warning"),
+        )
         for background in backgrounds:
-            check("tag", token_color(tokens, "--tag-text"), composite(token_color(tokens, "--tag-bg"), background))
+            check(
+                "tag",
+                token_color(tokens, "--tag-text"),
+                composite(token_color(tokens, "--tag-bg"), background),
+            )
         check("code text", token_color(tokens, "--code-text"), token_color(tokens, "--code-bg"))
+        for background in backgrounds:
+            disabled_bg = composite(token_color(tokens, "--control-disabled-bg"), background)
+            check("disabled control", token_color(tokens, "--control-disabled-text"), disabled_bg)
+            for kind in ["cron", "ad-hoc"]:
+                fill = composite(token_color(tokens, f"--run-calendar-{kind}-bg"), background)
+                check(f"calendar {kind}", token_color(tokens, f"--run-calendar-{kind}-text"), fill)
         print(f"{name}: minimum {min(ratios):.2f}:1 across {len(ratios)} shared token pairs")
     if failures:
         raise SystemExit("\n".join(failures))

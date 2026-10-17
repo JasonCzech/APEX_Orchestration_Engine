@@ -72,12 +72,16 @@
 }
 
 .runs-run-button {
+  min-height: 28px;
+  min-width: 28px;
   padding: 0;
   background: transparent;
   text-align: left;
 }
 
 .runs-gate-action {
+  min-height: 28px;
+  min-width: 28px;
   padding: 0;
   background: transparent;
   color: var(--accent-text);
@@ -292,7 +296,9 @@
 }
 
 .runs-pagination-buttons .btn:disabled {
-  opacity: 0.4;
+  opacity: 1;
+  color: var(--control-disabled-text);
+  background: var(--control-disabled-bg);
   cursor: not-allowed;
 }
 
@@ -309,20 +315,6 @@
   background: var(--danger-bg);
   color: var(--danger-text);
   font-size: var(--font-size-sm);
-}
-
-/* Loading skeleton — pulsing glass-panel shapes in the table's silhouette */
-
-.runs-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.runs-skeleton-row {
-  height: 44px;
-  border-radius: 8px;
-  animation: pulse 1.8s ease-in-out infinite;
 }
 
 .runs-empty-cta {

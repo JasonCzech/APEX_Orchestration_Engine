@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /prompts/:ns/:name/versions/:v (?diff=<other_version_id>) — one immutable
  * version (plan UX 2.e). Plain CodeViewer + meta by default; picking another
@@ -36,6 +38,7 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 export function PromptVersionPage() {
+  useTimestampPreference()
   const { ns, name } = usePromptRouteParams()
   const { v: versionId = '' } = useParams<{ v: string }>()
   return (
@@ -87,9 +90,7 @@ function PromptVersionContent({
   if (detailQuery.isPending || (detail && versionQuery.isPending)) {
     return (
       <section className="prompts-page animate-enter">
-        <div role="status" aria-busy="true" aria-label="Loading version" className="prompts-muted">
-          Loading version…
-        </div>
+        <Skeleton label="Loading version" rows={2} />
       </section>
     )
   }
@@ -201,9 +202,7 @@ function PromptVersionContent({
 
         {diffVersion ? (
           diffQuery.isPending ? (
-            <div role="status" aria-busy="true" aria-label="Loading comparison" className="prompts-muted">
-              Loading comparison…
-            </div>
+            <Skeleton label="Loading comparison" rows={2} />
           ) : !diffQuery.data ? (
             <ProblemCard
               title="Comparison unavailable"

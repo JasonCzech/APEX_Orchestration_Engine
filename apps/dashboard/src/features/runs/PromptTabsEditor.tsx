@@ -1,7 +1,8 @@
+import { StateCard } from '@/components/ux/StateCard'
 import '@/components/viewers/viewers.css'
 import { useEffect, useId, useState } from 'react'
 import { EditorView } from '@codemirror/view'
-import { TabList } from '@/components/ux/TabList'
+import { TabList, TabPanels } from '@/components/ux/TabList'
 
 import CodeMirror from '@uiw/react-codemirror'
 import { PLATFORM_SYSTEM_POLICY } from '../prompts/platformPolicy'
@@ -18,10 +19,10 @@ export interface PromptTabValues {
 export type PromptTabField = keyof PromptTabValues
 
 const TABS: Array<{ field: PromptTabField; label: string }> = [
-  { field: 'system', label: 'System Prompt' },
-  { field: 'phase_prompt', label: 'Phase Prompt' },
-  { field: 'application', label: 'Application Prompt' },
-  { field: 'additional_context', label: 'Additional Context' },
+  { field: 'system', label: 'System prompt' },
+  { field: 'phase_prompt', label: 'Phase prompt' },
+  { field: 'application', label: 'Application prompt' },
+  { field: 'additional_context', label: 'Additional context' },
 ]
 
 export function PromptTabsEditor({
@@ -68,9 +69,10 @@ export function PromptTabsEditor({
       <TabList id={tabsId} label="Prompt review tabs"
         items={TABS.filter(tab => tab.field !== 'application' || appAvailable).map(tab => ({ id: tab.field, label: tab.label }))}
         value={active} onChange={setActive} />
+      <TabPanels id={tabsId} items={TABS.filter(tab => tab.field !== 'application' || appAvailable).map(tab => tab.field)} value={active}>
       {activeDisabled ? (
-        <div className="dash-empty small" role="tabpanel" id={`${tabsId}-panel-${active}`} aria-labelledby={`${tabsId}-tab-${active}`}>
-          No application prompt for this run.
+        <div>
+          <StateCard kind="empty" compact title="No application prompt for this run." action={null} />
         </div>
       ) : (
         <>
@@ -82,7 +84,6 @@ export function PromptTabsEditor({
           )}
           <div
             className={`code-viewer prompt-review-editor${editable ? ' editable' : ''}`}
-            role="tabpanel" id={`${tabsId}-panel-${active}`} aria-labelledby={`${tabsId}-tab-${active}`}
             data-testid={`prompt-tab-editor-${active}`}
           >
             <CodeMirror
@@ -103,6 +104,7 @@ export function PromptTabsEditor({
           </div>
         </>
       )}
+      </TabPanels>
     </div>
   )
 }

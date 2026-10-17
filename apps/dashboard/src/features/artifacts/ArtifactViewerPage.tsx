@@ -1,3 +1,6 @@
+import { formatBytes } from '@/utils/formatBytes'
+import { Skeleton } from '@/components/ux/Skeleton'
+import { StateCard } from '@/components/ux/StateCard'
 import { useState } from 'react'
 import Markdown from 'react-markdown'
 import { artifactReturnPath } from './ArtifactLink'
@@ -60,12 +63,6 @@ interface LoadedArtifact {
   size: number
   /** Decoded body for json/text kinds; undefined for binary. */
   text?: string
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -132,11 +129,7 @@ export function ArtifactViewerPage() {
 
   if (threadQuery.isPending) {
     return (
-      <div
-        className="glass-panel artifact-viewer-skeleton"
-        data-testid="artifact-skeleton"
-        aria-busy="true"
-      />
+      <Skeleton label="Loading artifact" rows={2} height={120} data-testid="artifact-skeleton" />
     )
   }
   if (threadQuery.isError && !threadQuery.data) {
@@ -151,13 +144,9 @@ export function ArtifactViewerPage() {
 
   if (!ref) {
     return (
-      <div className="dash-empty">
-        <h2>Artifact not found</h2>
-        <p>No artifact with id “{name}” exists in this run’s state.</p>
-        <Link className="btn btn-secondary btn-sm" to={returnPath}>
-          {returnLabel}
-        </Link>
-      </div>
+      <StateCard kind="not-found" title="Artifact not found" action={<Link className="btn btn-secondary btn-sm" to={returnPath}>{returnLabel}</Link>}>
+        No artifact with id “{name}” exists in this run’s state.
+      </StateCard>
     )
   }
 
@@ -200,18 +189,14 @@ export function ArtifactViewerPage() {
       )}
 
       {url === null ? (
-        <div className="dash-empty artifact-download-card">
+        <div className="glass-panel ux-card artifact-download-card">
           <h2>Not proxyable</h2>
           <p>
             This artifact’s uri ({ref.uri ?? 'absent'}) is not served by the /v1/artifacts proxy.
           </p>
         </div>
       ) : artifactQuery.isPending ? (
-        <div
-          className="glass-panel artifact-viewer-skeleton"
-          data-testid="artifact-skeleton"
-          aria-busy="true"
-        />
+        <Skeleton label="Loading artifact" rows={2} height={120} data-testid="artifact-skeleton" />
       ) : artifactQuery.isError && !loaded ? (
         <ProblemCard
           title="Artifact bytes failed to load"
@@ -242,7 +227,7 @@ export function ArtifactViewerPage() {
         </div>
       ) : (
         <div
-          className="dash-empty artifact-download-card"
+          className="glass-panel ux-card artifact-download-card"
           data-testid={loaded?.kind === 'download' ? 'large-artifact-download-card' : 'binary-download-card'}
         >
           <h2>{loaded?.kind === 'download' ? 'Preview unavailable' : 'Binary artifact'}</h2>

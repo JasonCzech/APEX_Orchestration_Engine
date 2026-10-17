@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 /**
  * Needs review queue pane (left, 360px): one row per pending gate, oldest first.
  * Pure presentation — selection/keyboard state lives in ApprovalsInboxPage.
@@ -35,6 +36,7 @@ export function ApprovalsQueue({
   selectedThreadId: string | null
   onSelect: (row: QueueRow) => void
 }) {
+  useTimestampPreference()
   useEffect(() => {
     const selected = selectedThreadId ? document.getElementById(rowDomId(selectedThreadId)) : null
     selected?.focus({ preventScroll: true })

@@ -70,13 +70,14 @@ const exported = {
   content_scope: 'provider_export',
   executable_content_verified: false,
 }
-function mount(role: 'admin' | 'viewer' = 'admin') {
+function mount(role: 'admin' | 'viewer' = 'admin', pageRequests: string[] = []) {
   server.use(
     http.get('*/v1/cycles/cycle', () => HttpResponse.json(cycle)),
     http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
     http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
     http.get('*/v1/cycles/cycle/provider-scripts', ({ request }) => {
       const query = new URL(request.url).searchParams
+      if (query.has('connection_id') && !query.has('remote_script_id')) pageRequests.push(query.toString())
       return HttpResponse.json({
         revision: 4,
         connections: [
@@ -90,7 +91,7 @@ function mount(role: 'admin' | 'viewer' = 'admin') {
         scripts: query.has('connection_id') ? [exported] : [],
         preview: query.has('remote_script_id') ? exported : null,
         connection_version: generation,
-        total: 1,
+        total: 21,
         imports: [],
         blockers: [],
       })
@@ -114,6 +115,26 @@ async function preview() {
   return user
 }
 describe('Provider script import', () => {
+  it('pages the provider library by total and resets offset when rows change', async () => {
+    const requests: string[] = []
+    mount('admin', requests)
+    const user = userEvent.setup()
+    await user.click(await screen.findByText('Import from the APEX Load library'))
+    await user.selectOptions(await screen.findByLabelText('APEX Load connection'), 'connection')
+    const next = await screen.findByRole('button', { name: 'Next' })
+    await waitFor(() => expect(next).toBeEnabled())
+    await user.click(next)
+    await waitFor(() => expect(new URLSearchParams(requests.at(-1)).get('offset')).toBe('20'))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled())
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Provider scripts rows per page' }), '50')
+    await waitFor(() => {
+      const params = new URLSearchParams(requests.at(-1))
+      expect(params.get('offset')).toBe('0')
+      expect(params.get('limit')).toBe('50')
+    })
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled()
+  })
   it('binds the preview and preserves details and operation identity after conflict', async () => {
     const submissions: Record<string, unknown>[] = []
     server.use(

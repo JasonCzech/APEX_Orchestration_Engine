@@ -57,13 +57,13 @@ const cycle: Cycle = {
     },
   ],
 }
-function mount(role: 'admin' | 'viewer' = 'admin') {
+function mount(role: 'admin' | 'viewer' = 'admin', storedSize?: number) {
   server.use(
     http.get('*/v1/cycles/cycle', () => HttpResponse.json(cycle)),
     http.get('*/v1/cycles/cycle/scripts', () =>
       HttpResponse.json({
         revision: 4,
-        artifacts: [],
+        artifacts: storedSize === undefined ? [] : [{ id: 'artifact', version_id: 'script', source_checksum: 'checksum', size_bytes: storedSize, stored_at: '2026-09-07T12:00:00Z', connection_id: 'store' }],
         connections: [
           {
             id: 'store',
@@ -84,6 +84,10 @@ function mount(role: 'admin' | 'viewer' = 'admin') {
 }
 
 describe('Script source storage', () => {
+  it('uses shared readable units for retained source size', async () => {
+    mount('viewer', 2048)
+    expect(await screen.findByText(/2.0 KB · source SHA-256/)).toBeVisible()
+  })
   it('binds storage to the selected approved version and connection', async () => {
     const user = userEvent.setup()
     let submitted: unknown
