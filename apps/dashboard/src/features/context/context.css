@@ -147,7 +147,7 @@
   padding: 2px 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
 }
 
@@ -175,7 +175,7 @@
 }
 
 .ctx-run-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
 }
 

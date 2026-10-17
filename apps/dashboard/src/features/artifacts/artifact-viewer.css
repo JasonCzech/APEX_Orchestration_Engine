@@ -21,7 +21,7 @@
 }
 
 .artifact-viewer-header .meta {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }

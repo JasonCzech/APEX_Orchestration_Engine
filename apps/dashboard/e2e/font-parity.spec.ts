@@ -35,6 +35,15 @@ for (const theme of ['dark', 'light', 'apex-light', 'solarized-dark', 'solarized
       expect(new URL(url).origin).toBe(new URL(page.url()).origin)
       expect(new URL(url).pathname).toMatch(/^\/fonts\/att\/ATTAleckSans_W_(Rg|Md|Bd|Blk)\.woff2$/)
     }
+    await page.goto('/prompts/application/app-digital-device')
+    const editor = page.locator('.code-viewer .cm-scroller').first()
+    await expect(editor).toBeVisible()
+    expect(fontFamilies(await editor.evaluate(element => getComputedStyle(element).fontFamily))).toEqual(fontFamilies(mono))
+    await page.goto('/runs/run-prompt-review/reviews/int-prompt')
+    const editable = page.getByRole('textbox', { name: 'System prompt', exact: true })
+    await expect(editable).toBeVisible()
+    await expect(editable).toHaveAttribute('contenteditable', 'true')
+    expect(fontFamilies(await editable.evaluate(element => getComputedStyle(element).fontFamily))).toEqual(fontFamilies(mono))
   })
 }
 

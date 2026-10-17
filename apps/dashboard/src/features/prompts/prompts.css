@@ -146,7 +146,7 @@
   color: var(--accent-text);
   cursor: pointer;
   text-align: left;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-sm);
 }
 
@@ -562,7 +562,7 @@
 }
 
 .prompt-sample-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-sm);
   resize: vertical;
 }
@@ -575,7 +575,7 @@
 }
 
 .prompt-run-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
   word-break: break-all;

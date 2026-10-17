@@ -72,7 +72,7 @@
 }
 
 .wi-mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
 }
 
@@ -114,7 +114,7 @@
 /* Results table cells */
 
 .wi-key-link {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   white-space: nowrap;
 }
@@ -126,7 +126,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }
@@ -229,7 +229,7 @@
 }
 
 .wi-json-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   resize: vertical;
 }

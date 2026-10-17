@@ -41,7 +41,7 @@
 
 .logs-query {
   width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-sm);
 }
 
@@ -51,7 +51,7 @@
 
 .logs-thread {
   width: 200px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-sm);
 }
 
@@ -119,7 +119,7 @@
 /* ── Results table ──────────────────────────────────────────────────────── */
 
 .logs-table .log-time {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
   white-space: nowrap;
@@ -144,7 +144,7 @@
 .log-fields-json {
   margin: 0;
   padding: 8px 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--code-text);
   white-space: pre-wrap;
@@ -168,7 +168,7 @@
 .logs-query-error p {
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   overflow-wrap: anywhere;
 }
 

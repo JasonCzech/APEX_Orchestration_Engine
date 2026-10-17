@@ -20,7 +20,7 @@
 }
 
 .code-viewer .cm-scroller {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   line-height: 1.55;
   max-height: 480px;
 }

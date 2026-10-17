@@ -87,7 +87,7 @@
 .env-group-project {
   font-size: var(--font-size-xs);
   color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 /* Table cells */
@@ -112,7 +112,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
 }
@@ -190,7 +190,7 @@
 }
 
 .env-options-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   resize: vertical;
 }

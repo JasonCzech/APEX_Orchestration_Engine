@@ -244,5 +244,5 @@
   background: var(--bg-secondary);
   color: var(--text-primary);
   font-size: var(--font-size-xs);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
