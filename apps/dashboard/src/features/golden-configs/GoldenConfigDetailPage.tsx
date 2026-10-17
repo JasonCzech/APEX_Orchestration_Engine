@@ -1,3 +1,5 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /golden-configs/:assistantId — structured READ view of the assistant's
  * pinned config.configurable (scope defaults, engine, gate policy matrix,
@@ -8,7 +10,7 @@
  * mode — parse-validated textarea, saved via useUpdateGoldenConfig; the server
  * bumps the assistant version on every update.
  *
- * [Start run with this config] deep-links the wizard's Config step with
+ * [New test from this preset] deep-links the wizard's Config step with
  * ?golden=<assistant_id>; the wizard preselects the matching golden config.
  */
 import { useState } from 'react'
@@ -266,10 +268,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
 
   if (query.isPending) {
     return (
-      <div className="gc-skeleton" role="status" aria-busy="true" aria-label="Loading test preset">
-        <div className="glass-panel gc-skeleton-card" />
-        <div className="glass-panel gc-skeleton-card" />
-      </div>
+      <Skeleton label="Loading test preset" rows={2} />
     )
   }
 
@@ -287,7 +286,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
 
   return (
     <section className="gc-page animate-enter">
-      <Link to="/golden-configs">All test presets</Link>
+      <Link to="/test-presets">All test presets</Link>
       {query.isError && (
         <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
       )}
@@ -331,7 +330,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
                 void navigate(`/runs/new?step=config&golden=${encodeURIComponent(entry.assistantId)}`)
               }
             >
-              Start run with this config
+              New test from this preset
             </button>
           )}
         </div>
@@ -350,6 +349,7 @@ function GoldenConfigDetail({ assistantId }: { assistantId: string }) {
 }
 
 export function GoldenConfigDetailPage() {
+  useTimestampPreference()
   const { assistantId = '' } = useParams()
   // Reset edit state and resource-bound hooks whenever the route identity changes.
   return <GoldenConfigDetail key={assistantId} assistantId={assistantId} />

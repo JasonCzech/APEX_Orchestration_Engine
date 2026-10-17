@@ -171,7 +171,7 @@ export function renderWizard(initialEntry = '/runs/new', authState?: AuthState) 
 export async function flushAndUnmountWizard(result: ReturnType<typeof render>): Promise<void> {
   const saveState = result.queryByTestId('draft-save-state')?.textContent ?? ''
   if (/Unsaved changes|Saving|Draft save failed/.test(saveState)) {
-    const save = result.queryByRole('button', { name: 'Save Draft' })
+    const save = result.queryByRole('button', { name: 'Save draft' })
     if (save) {
       fireEvent.click(save)
       await waitFor(() => {

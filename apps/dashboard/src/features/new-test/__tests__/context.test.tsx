@@ -84,7 +84,7 @@ describe('ContextStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Context/i }))
+    await user.click(screen.getByRole('tab', { name: /Knowledge/i }))
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['spec body'], 'spec.txt', { type: 'text/plain' }))
@@ -140,7 +140,7 @@ describe('ContextStep', () => {
     const rendered = renderWizard()
 
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: 'Context' }))
+    await user.click(screen.getByRole('tab', { name: 'Knowledge' }))
     await user.upload(
       await screen.findByLabelText('Upload documents'),
       new File(['spec body'], 'deferred.txt', { type: 'text/plain' }),
@@ -169,7 +169,7 @@ describe('ContextStep', () => {
     )
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Context/i }))
+    await user.click(screen.getByRole('tab', { name: /Knowledge/i }))
 
     const dropzone = await screen.findByTestId('document-dropzone')
     fireEvent.drop(dropzone, {
@@ -237,7 +237,7 @@ describe('ContextStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Context/i }))
+    await user.click(screen.getByRole('tab', { name: /Knowledge/i }))
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['# Story'], 'story.md', { type: 'text/markdown' }))
@@ -277,7 +277,7 @@ describe('ContextStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Context/i }))
+    await user.click(screen.getByRole('tab', { name: /Knowledge/i }))
 
     const input = await screen.findByLabelText('Upload documents')
     await user.upload(input, new File(['%PDF'], 'broken.pdf', { type: 'application/pdf' }))
@@ -316,7 +316,7 @@ describe('ContextStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Context/i }))
+    await user.click(screen.getByRole('tab', { name: /Knowledge/i }))
 
     await user.upload(await screen.findByLabelText('Upload documents'), [
       new File(['first'], 'first.txt', { type: 'text/plain' }),
@@ -366,7 +366,7 @@ describe('ContextStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Context/i }))
+    await user.click(screen.getByRole('tab', { name: /Knowledge/i }))
 
     await user.upload(await screen.findByLabelText('Upload documents'), [
       new File(['first'], 'first.txt', { type: 'text/plain' }),

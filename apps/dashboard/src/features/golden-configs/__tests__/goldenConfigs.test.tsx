@@ -238,7 +238,7 @@ describe('GoldenConfigDetailPage', () => {
       authState: authenticatedState(),
     })
 
-    await user.click(await screen.findByRole('button', { name: 'Start run with this config' }))
+    await user.click(await screen.findByRole('button', { name: 'New test from this preset' }))
 
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/new'))
     expect(router.state.location.search).toContain('step=config')
@@ -248,7 +248,7 @@ describe('GoldenConfigDetailPage', () => {
     expect(screen.getByRole('radio', { name: /LoadRunner/ })).toHaveAttribute('aria-checked', 'true')
     // …and the one-shot param is stripped so Clear sticks.
     await waitFor(() => expect(router.state.location.search).not.toContain('golden='))
-    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
     await screen.findByText('Draft saved')
     unmount()
   })
@@ -263,7 +263,7 @@ describe('GoldenConfigDetailPage', () => {
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit preset' })).toBeDisabled()
     expect(screen.getByText('Editing presets requires an unscoped admin key.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Start run with this config' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New test from this preset' })).not.toBeInTheDocument()
   })
 
   it('lets operators start runs but reserves assistant edits for admins', async () => {
@@ -276,7 +276,7 @@ describe('GoldenConfigDetailPage', () => {
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit preset' })).toBeDisabled()
     expect(screen.getByText('Editing presets requires an unscoped admin key.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'New test from this preset' })).toBeInTheDocument()
   })
 
   it('Edit JSON validates the parse and saves a new version via assistants.update', async () => {
@@ -364,7 +364,7 @@ describe('GoldenConfigDetailPage', () => {
 
     expect(await screen.findByText('saving…')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit preset' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'New test from this preset' })).toBeDisabled()
     expect(assistantsUpdate).toHaveBeenCalledTimes(1)
 
     await act(async () => {
@@ -375,7 +375,7 @@ describe('GoldenConfigDetailPage', () => {
     await waitFor(() => expect(screen.getByText('v4')).toBeInTheDocument())
     expect(screen.queryByText('saving…')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Edit preset' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: 'Start run with this config' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'New test from this preset' })).toBeEnabled()
   })
 
   it('drops the JSON draft when a cached assistant route replaces the editor', async () => {

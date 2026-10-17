@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /environments — environment references grouped by application (plan Part 2
  * route table). Read path is two cached catalog indexes joined client-side;
@@ -26,6 +29,7 @@ import { canLaunchPipelines, canMutateAudience, isGlobalAdmin } from '@/auth/Req
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
 import { ProblemCard } from '@/components/ProblemCard'
+import { TableToolbar } from '@/components/ux/TableToolbar'
 import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { formatRelative } from '@/utils/time'
 
@@ -425,6 +429,7 @@ function DeleteEnvironmentModal({
 }
 
 export function EnvironmentsPage() {
+  useTimestampPreference()
   const applications = useApplicationsIndex()
   const environments = useEnvironmentsIndex()
   const consumer = useConsumer()
@@ -438,7 +443,7 @@ export function EnvironmentsPage() {
   const canCreateApplication = canMutate && (isGlobalAdmin(consumer) || projectWideScopes.length > 0)
   const applicationProjectOptions = (consumer?.scopes.length ?? 0) > 0 ? projectWideScopes : null
 
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const applicationFilter = searchParams.get('application')
   const [search, setSearch] = useState('')
   const [projectFilter, setProjectFilter] = useState('')
@@ -462,9 +467,7 @@ export function EnvironmentsPage() {
   return (
     <section className="env-page animate-enter">
       <header className="env-toolbar glass-panel">
-        {/* The topbar already renders the route-handle h1; this is a section label. */}
         <div>
-          <h2 className="env-page-title">Applications &amp; environments</h2>
           <p className="env-toolbar-caption">Define applications first, then add their test environments.</p>
         </div>
         <div className="env-toolbar-actions">
@@ -477,7 +480,7 @@ export function EnvironmentsPage() {
       </header>
 
       {applicationFilter && <Link className="btn btn-ghost" to="/environments">All applications</Link>}
-      <details className="ux-filters" open><summary>Filters</summary><div><label className="ux-field">Search applications and environments<input className="field-input" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label className="ux-field">Project<select className="field-select" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">All projects</option>{[...new Set((applications.data ?? []).map((app) => app.project_id))].sort().map((project) => <option key={project}>{project}</option>)}</select></label></div></details>
+      <details className="ux-filters" open><summary>Filters</summary><TableToolbar label="Application filters" filterCount={Number(Boolean(search.trim())) + Number(Boolean(projectFilter))} onClear={() => { setSearch(''); setProjectFilter('') }}><label className="ux-field">Search applications and environments<input className="field-input" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label className="ux-field">Project<select className="field-select" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">All projects</option>{[...new Set((applications.data ?? []).map((app) => app.project_id))].sort().map((project) => <option key={project}>{project}</option>)}</select></label></TableToolbar></details>
       {creatingApplication && (
         <CreateApplicationPanel
           projectOptions={applicationProjectOptions}
@@ -509,16 +512,7 @@ export function EnvironmentsPage() {
       )}
 
       {isPending ? (
-        <div
-          className="env-skeleton"
-          role="status"
-          aria-busy="true"
-          aria-label="Loading environments"
-        >
-          {Array.from({ length: SKELETON_ROWS }, (_, i) => (
-            <div key={i} className="glass-panel env-skeleton-row" />
-          ))}
-        </div>
+        <Skeleton label="Loading environments" rows={SKELETON_ROWS} />
       ) : queryError && !hasCachedData ? (
         <ProblemCard
           title="Environments unavailable"
@@ -529,21 +523,16 @@ export function EnvironmentsPage() {
           }}
         />
       ) : groups.length === 0 ? (
-        <div className="dash-empty">
-          <h2>{search || projectFilter || applicationFilter ? 'No matching applications' : 'No applications yet'}</h2>
-          <p className="dash-empty-hint">
-            {canCreateApplication
+        <StateCard kind={search || projectFilter || applicationFilter ? 'filtered' : 'empty'}
+          title={search || projectFilter || applicationFilter ? 'No matching applications' : 'No applications yet'}
+          action={search || projectFilter || applicationFilter
+            ? <button type="button" className="btn btn-secondary" onClick={() => { setSearch(''); setProjectFilter(''); const next = new URLSearchParams(searchParams); next.delete('application'); setSearchParams(next) }}>Show all applications</button>
+            : canCreateApplication ? <button type="button" className="btn btn-primary" onClick={() => setCreatingApplication(true)}>New application</button> : null}>
+          <p>{search || projectFilter || applicationFilter ? 'No applications match this search and scope.' : canCreateApplication
               ? 'Create an application first, then add the environments used by tests.'
-              : consumer?.role !== 'viewer'
-                ? 'Application creation requires project-wide access.'
-                : 'Your role has read-only access. Ask a project operator to create an application.'}
-          </p>
-          {canCreateApplication && (
-            <button type="button" className="btn btn-primary" onClick={() => setCreatingApplication(true)}>
-              Create application
-            </button>
-          )}
-        </div>
+              : consumer?.role !== 'viewer' ? 'Application creation requires project-wide access.'
+                : 'Your role has read-only access. Ask a project operator to create an application.'}</p>
+        </StateCard>
       ) : (
         groups.map((group) => (
           <section key={group.key} className="env-group" aria-label={`Application ${group.label}`}>

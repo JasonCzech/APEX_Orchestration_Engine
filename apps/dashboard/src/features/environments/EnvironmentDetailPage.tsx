@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /environments/:id — reference card + live k8s inventory (plan Part 2 route
  * table, D5).
@@ -306,9 +309,7 @@ function InventoryPanel({
       )}
 
       {inventory.isPending ? (
-        <div role="status" aria-label="Loading inventory" className="env-muted">
-          Loading inventory…
-        </div>
+        <Skeleton label="Loading inventory" rows={2} />
       ) : inventory.isError && !inventory.data ? (
         <div className="env-inline-error" role="alert">
           <span>{inventory.error.message}</span>
@@ -321,22 +322,17 @@ function InventoryPanel({
           </button>
         </div>
       ) : !inventory.data.snapshot ? (
-        <div className="dash-empty small" data-testid="env-inventory-empty">
-          <h3>Never scanned</h3>
-          <p className="dash-empty-hint">
-            Run a scan to capture the services deployed in this environment.
-          </p>
-          {canMutate && (
-            <button
+        <StateCard kind="unconfigured" title="Never scanned" compact data-testid="env-inventory-empty"
+          action={canMutate ? <button
               type="button"
               className="btn btn-secondary"
               onClick={() => rescan.mutate()}
               disabled={writePending}
             >
               {rescan.isPending ? 'Scanning…' : 'Rescan'}
-            </button>
-          )}
-        </div>
+            </button> : null}>
+          <p>{canMutate ? 'Run a scan to capture the services deployed in this environment.' : 'Ask a project operator to scan the services deployed in this environment.'}</p>
+        </StateCard>
       ) : (
         <ServicesTable snapshot={inventory.data.snapshot} />
       )}
@@ -345,6 +341,7 @@ function InventoryPanel({
 }
 
 export function EnvironmentDetailPage() {
+  useTimestampPreference()
   const { id = '' } = useParams<{ id: string }>()
   const [searchParams] = useSearchParams()
   const environment = useEnvironment(id)
@@ -369,15 +366,7 @@ export function EnvironmentDetailPage() {
 
   if (environment.isPending) {
     return (
-      <div
-        className="env-skeleton animate-enter"
-        role="status"
-        aria-busy="true"
-        aria-label="Loading environment"
-      >
-        <div className="glass-panel env-skeleton-row" />
-        <div className="glass-panel env-skeleton-card" />
-      </div>
+      <Skeleton label="Loading environment" rows={2} />
     )
   }
 

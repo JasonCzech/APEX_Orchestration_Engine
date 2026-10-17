@@ -60,6 +60,9 @@ describe('EnvironmentsPage', () => {
     expect(screen.queryByRole('button', { name: 'New environment' })).not.toBeInTheDocument()
     await user.type(screen.getByRole('textbox', { name: 'Search applications and environments' }), 'does not exist')
     expect(screen.getByRole('heading', { name: 'No matching applications' })).toBeInTheDocument()
+    expect(screen.getByText('1 active filter')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }))
+    expect(screen.queryByText('1 active filter')).not.toBeInTheDocument()
     await user.clear(screen.getByRole('textbox', { name: 'Search applications and environments' }))
     await user.click(screen.getByRole('link', { name: 'All applications' }))
     expect(screen.getByRole('region', { name: 'Application Search' })).toBeInTheDocument()
@@ -78,6 +81,22 @@ describe('EnvironmentsPage', () => {
     expect(within(panel).getByRole('combobox', { name: 'Application' })).toHaveValue('app-search')
   })
 
+  it('clears a missing application scope from the filtered empty state while retaining other query parameters', async () => {
+    server.use(...catalogReadHandlers())
+    const user = userEvent.setup()
+    const { router } = renderApp({
+      initialEntries: ['/environments?application=missing&source=bookmark'],
+      authState: authenticatedState('operator'),
+    })
+
+    expect(await screen.findByRole('heading', { name: 'No matching applications' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Show all applications' }))
+
+    expect(router.state.location.search).toBe('?source=bookmark')
+    expect(await screen.findByRole('region', { name: 'Application Checkout' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Application Search' })).toBeInTheDocument()
+  })
+
   it('turns the empty state into an application creation path', async () => {
     server.use(...catalogReadHandlers([], []))
     const user = userEvent.setup()
@@ -85,7 +104,7 @@ describe('EnvironmentsPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'No applications yet' })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New environment' })).not.toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Create application' }))
+    await user.click(screen.getAllByRole('button', { name: 'New application' }).at(-1)!)
     expect(screen.getByRole('form', { name: 'New application' })).toBeInTheDocument()
   })
 

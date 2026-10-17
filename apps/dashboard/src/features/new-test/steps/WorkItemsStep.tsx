@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 /**
- * Step 3 — Work items (all optional): NL -> translate -> editable provider
+ * Step 3 — Tickets (all optional): NL -> translate -> editable provider
  * query (+ confidence chip) -> execute -> selectable results; direct key add
  * with validate-on-add; saved-query quick picks that execute on pick.
  *
@@ -100,7 +100,7 @@ export function WorkItemsStep({
         Boolean(item.connection_id),
     )
     if (bound.some((item) => item.connection_id !== ref.connection_id)) {
-      return 'Selected work items must use one work-tracking connection.'
+      return 'Selected tickets must use one work-tracking connection.'
     }
     if (
       bound.some(
@@ -164,7 +164,7 @@ export function WorkItemsStep({
     if (selectedConnectionIds.length > 1) {
       setAddState({
         busy: false,
-        error: 'Remove work items from conflicting connections before running another query.',
+        error: 'Remove tickets from conflicting connections before running another query.',
       })
       return
     }
@@ -217,7 +217,7 @@ export function WorkItemsStep({
     if (selectedConnectionIds.length > 1) {
       setAddState({
         busy: false,
-        error: 'Remove work items from conflicting connections before translating a query.',
+        error: 'Remove tickets from conflicting connections before translating a query.',
       })
       return
     }
@@ -284,7 +284,7 @@ export function WorkItemsStep({
     if (selectedConnectionIds.length > 1 && !existing?.connection_id) {
       setAddState({
         busy: false,
-        error: 'Remove work items from conflicting connections before revalidating another key.',
+        error: 'Remove tickets from conflicting connections before revalidating another key.',
       })
       return false
     }
@@ -352,9 +352,9 @@ export function WorkItemsStep({
   const anyOperationPending = queryOperationPending || addState.busy
 
   return (
-    <section className="wizard-step" aria-label="Work items">
+    <section className="wizard-step" aria-label="Tickets">
       <p className="wizard-step-hint">
-        Link the stories, defects, or portfolio items this run covers — or skip; work items are
+        Link the stories, defects, or portfolio items this run covers — or skip; tickets are
         optional.
       </p>
 
@@ -377,7 +377,7 @@ export function WorkItemsStep({
             disabled={text.trim().length === 0 || anyOperationPending}
             onClick={() => void translateNow()}
           >
-            {translate.isPending ? 'Preparing query…' : 'Preview work item query'}
+            {translate.isPending ? 'Preparing query…' : 'Preview ticket query'}
           </button>
         </div>
         {translateError && (
@@ -446,7 +446,7 @@ export function WorkItemsStep({
         </div>
       )}
 
-      <p className="wizard-caption">{Boolean(savedQueries.data?.length) && <>Saved query needs a connection update? <Link to="/work-items/saved">Open saved queries</Link>. </>}You can also add a work item directly or continue without work items.</p>
+      <p className="wizard-caption">{Boolean(savedQueries.data?.length) && <>Saved query needs a connection update? <Link to="/work-items/saved">Open saved queries</Link>. </>}You can also add a ticket directly or continue without tickets.</p>
 
       {translated && (
         <div className="wizard-field" data-testid="translated-query">
@@ -496,7 +496,7 @@ export function WorkItemsStep({
         <div className="wizard-field">
           <span className="wizard-label">Results ({resultItems.length})</span>
           {resultItems.length === 0 ? (
-            <p className="wizard-caption">No work items matched.</p>
+            <p className="wizard-caption">No tickets matched.</p>
           ) : (
             <div className="data-table-wrap">
               <table className="data-table">

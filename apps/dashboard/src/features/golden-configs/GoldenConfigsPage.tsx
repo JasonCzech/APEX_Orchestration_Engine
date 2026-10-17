@@ -1,3 +1,6 @@
+import { useTimestampPreference } from '@/theme/preferences'
+import { StateCard } from '@/components/ux/StateCard'
+import { Skeleton } from '@/components/ux/Skeleton'
 /**
  * /golden-configs — golden configurations = LangGraph assistants on the
  * `pipeline` graph pinning a config.configurable bundle (plan Part 2 route
@@ -21,7 +24,7 @@ function GoldenConfigCard({ entry }: { entry: GoldenConfigEntry }) {
   const summary = summarizeConfigurable(entry.configurable)
   return (
     <Link
-      to={`/golden-configs/${entry.assistantId}`}
+      to={`/test-presets/${entry.assistantId}`}
       className="glass-panel gc-card"
       data-testid={`gc-card-${entry.assistantId}`}
     >
@@ -53,16 +56,15 @@ function GoldenConfigCard({ entry }: { entry: GoldenConfigEntry }) {
 }
 
 export function GoldenConfigsPage() {
+  useTimestampPreference()
   const configs = useGoldenConfigsIndex()
 
   return (
     <section className="gc-page animate-enter">
       <header className="gc-toolbar glass-panel">
-        {/* The topbar renders the route-handle h1; this is a section label. */}
-        <h2 className="gc-page-title">Test presets</h2>
         <p className="gc-page-hint">
-          Reusable test settings that pin an engine, approvals, phases and prompt versions. Choose
-          one in the run wizard to inherit its bundle.
+          Reusable test settings that pin an engine, reviews, phases and prompt versions. Choose
+          one in the test wizard to inherit its bundle.
         </p>
       </header>
 
@@ -71,16 +73,7 @@ export function GoldenConfigsPage() {
       )}
 
       {configs.isPending ? (
-        <div
-          className="gc-skeleton"
-          role="status"
-          aria-busy="true"
-          aria-label="Loading test presets"
-        >
-          {Array.from({ length: SKELETON_CARDS }, (_, i) => (
-            <div key={i} className="glass-panel gc-skeleton-card" />
-          ))}
-        </div>
+        <Skeleton label="Loading test presets" rows={SKELETON_CARDS} />
       ) : configs.isError && !configs.data ? (
         <ProblemCard
           title="Test presets unavailable"
@@ -88,12 +81,9 @@ export function GoldenConfigsPage() {
           onRetry={() => void configs.refetch()}
         />
       ) : (configs.data ?? []).length === 0 ? (
-        <div className="dash-empty">
-          <h2>No test presets yet</h2>
-          <p className="dash-empty-hint">
-            Create a test preset to reuse an approved test bundle across runs.
-          </p>
-        </div>
+        <StateCard kind="empty" title="No test presets yet" action={<Link className="btn btn-secondary" to="/runs">Open tests</Link>}>
+          <p>Ask an administrator to publish a preset for reusable test settings. Tests can also be authored without a preset.</p>
+        </StateCard>
       ) : (
         <div className="gc-grid">
           {(configs.data ?? []).map((entry) => (

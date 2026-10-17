@@ -82,13 +82,13 @@ const TESTING_NAV_ITEMS: NavItem[] = [
 const RESOURCE_NAV_ITEMS: NavItem[] = [
   {
     to: '/environments',
-    label: 'Applications',
+    label: 'Applications & environments',
     icon: <Icon d="M4 4h16v6H4zM4 14h16v6H4zM8 7h.01M8 17h.01" />,
   },
-  { to: '/context', label: 'Knowledge & Documents', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
+  { to: '/context', label: 'Knowledge & documents', icon: <Icon d="m12 2 10 6-10 6L2 8zM2 16l10 6 10-6" /> },
   {
-    to: '/golden-configs',
-    label: 'Test Presets',
+    to: '/test-presets',
+    label: 'Test presets',
     icon: <Icon d="m12 3 2.7 5.6 6.3.9-4.5 4.4 1 6.1-5.5-2.9L6.5 20l1-6.1L3 9.5l6.3-.9z" />,
   },
   {
@@ -100,7 +100,7 @@ const RESOURCE_NAV_ITEMS: NavItem[] = [
 
 const INVESTIGATION_NAV_ITEMS: NavItem[] = [
   { to: '/evidence', label: 'Evidence', icon: <Icon d="M5 3h14v18H5zM8 7h8M8 11h8M8 15h5" /> },
-  { to: '/analytics', label: 'Agent Analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
+  { to: '/analytics', label: 'Agent analytics', icon: <Icon d="M3 3v18h18M8 17V9m5 8V5m5 12v-6" /> },
   { to: '/logs', label: 'Logs', icon: <Icon d="M7 3h12v18H7zM3 7h4M3 12h4M3 17h4M11 8h4M11 12h4" /> },
 ]
 
@@ -109,7 +109,7 @@ const ADMIN_NAV_SECTION: NavSection = {
   requiresRole: 'admin',
   items: [
     { to: '/admin/connections', label: 'Connections', icon: <Icon d="M9 7V2M15 7V2M6 7h12v4a6 6 0 0 1-12 0zM12 17v5" /> },
-    { to: '/admin/consumers', label: 'Consumers', icon: <Icon d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /> },
+    { to: '/admin/consumers', label: 'API consumers', icon: <Icon d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /> },
     { to: '/admin/system', label: 'System status', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> },
   ],
 }
@@ -231,7 +231,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
   const testingItems = [
     ...TESTING_NAV_ITEMS,
     ...(authState.status === 'authenticated' && authState.systemInfo.features.cycles
-      ? [{ to: '/cycles', label: 'Test Cycles', icon: <Icon d="M4 4h16v16H4zM4 10h16M10 10v10" /> }]
+      ? [{ to: '/cycles', label: 'Test cycles', icon: <Icon d="M4 4h16v16H4zM4 10h16M10 10v10" /> }]
       : []),
   ]
 
@@ -265,7 +265,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
 
       <nav className="sidebar-nav" aria-label="Primary">
         <SidebarLink
-          item={{ to: '/runs/new', label: 'New Test', icon: <Icon d="M12 5v14M5 12h14" /> }}
+          item={{ to: '/runs/new', label: 'New test', icon: <Icon d="M12 5v14M5 12h14" /> }}
           pathname={location.pathname}
           onNavigate={onNavigate}
         />
@@ -318,7 +318,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
                     if (next === 'system' || isThemeName(next)) setTheme(next)
                   }}
                 >
-                  <option value="system">System (Auto)</option>
+                  <option value="system">System (auto)</option>
                   {themes.map((name) => (
                     <option key={name} value={name}>
                       {THEME_LABELS[name]}
@@ -328,7 +328,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
               </label>
               <button
                 type="button"
-                className="sidebar-identity-action sidebar-identity-action-button"
+                className="btn btn-secondary btn-sm sidebar-identity-action-button"
                 onClick={signOut}
               >
                 Sign out

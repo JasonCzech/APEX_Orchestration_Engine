@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 /**
  * /admin/system — read-only operational summary (plan Part 2 route table + UX
  * 2.f, D7). Admin-gated.
@@ -130,7 +131,7 @@ function AdminSystemContent() {
           <h2 className="adm-panel-title">Quick links</h2>
           <ul className="adm-link-list">
             <li>
-              <Link to="/admin/connections">Connection registry</Link>
+              <Link to="/admin/connections">Connections</Link>
             </li>
             <li>
               <Link to="/admin/consumers">API consumers</Link>
@@ -144,6 +145,7 @@ function AdminSystemContent() {
 }
 
 export function AdminSystemPage() {
+  useTimestampPreference()
   return (
     <AdminGate>
       <AdminSystemContent />

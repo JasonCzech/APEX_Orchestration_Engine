@@ -52,7 +52,7 @@ describe('wizard launch', () => {
 
     // Scope -> save the draft explicitly (footer ghost button, no debounce wait).
     await fillScope(user, screen)
-    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
     await waitFor(() => expect(router.state.location.search).toContain('draft=draft-1'))
 
     // The review JSON is the exact payload the launch sends.
@@ -61,7 +61,7 @@ describe('wizard launch', () => {
       screen.getByTestId('launch-payload-json').textContent ?? '{}',
     ) as Record<string, unknown>
 
-    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
+    await user.click(screen.getByRole('button', { name: 'Launch test' }))
 
     await waitFor(() => expect(launchBodies).toHaveLength(1))
     expect(launchBodies[0]).toEqual({
@@ -131,7 +131,7 @@ describe('wizard launch', () => {
     expect(screen.getByTestId('run-page')).toBeInTheDocument()
   })
 
-  it('resolves work items and sends document ids with the selected assistant and full config', async () => {
+  it('resolves tickets and sends document ids with the selected assistant and full config', async () => {
     const bodies: Record<string, unknown>[] = []
     server.use(
       http.get('*/v1/work-tracking/items/PHX-241', () =>
@@ -274,13 +274,13 @@ describe('wizard launch', () => {
 
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
+    await user.click(screen.getByRole('button', { name: 'Launch test' }))
 
     expect(await screen.findByText('Launch failed: multitask reject')).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs/new')
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Launch Test' })).toBeEnabled() // retryable
-    await user.click(screen.getByRole('button', { name: 'Save Draft' }))
+    expect(screen.getByRole('button', { name: 'Launch test' })).toBeEnabled() // retryable
+    await user.click(screen.getByRole('button', { name: 'Save draft' }))
     await screen.findByText('Draft saved')
     unmount()
   })
@@ -310,7 +310,7 @@ describe('wizard launch', () => {
 
     await fillScope(user, screen)
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
+    await user.click(screen.getByRole('button', { name: 'Launch test' }))
     await screen.findByText('Launch failed: ambiguous outage')
 
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
@@ -319,7 +319,7 @@ describe('wizard launch', () => {
     await user.clear(request)
     await user.type(request, 'Soak the checkout flow for 1h')
     await user.click(screen.getByRole('tab', { name: 'Review' }))
-    await user.click(screen.getByRole('button', { name: 'Launch Test' }))
+    await user.click(screen.getByRole('button', { name: 'Launch test' }))
 
     await waitFor(() => expect(keys).toHaveLength(2))
     expect(keys[1]).toBe(keys[0])

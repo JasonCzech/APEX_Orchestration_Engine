@@ -1,4 +1,4 @@
-# Legacy-Parity Sign-off (D8 exit criterion)
+# Dashboard capability coverage (updated 2026-10-17)
 
 Audit of the shipped dashboard against the plan's legacy-capability inventory
 (plan Part 2, "the legacy-capability coverage table is the D8 sign-off
@@ -7,8 +7,11 @@ load-bearing wire-up verified (hook → endpoint, action → payload). Paths are
 relative to `apps/dashboard/src` unless noted; backend paths relative to
 `src/apex`.
 
-Verified at: 63 test files / 371 tests green, `tsc -b` clean, eslint 0 errors,
-production build clean.
+The original D8 baseline recorded 63 files / 371 tests. Those counts are historical,
+not a current certification. The holistic review and remediation evidence are in
+[`docs/qa/ux-holistic-2026-10-17`](../../docs/qa/ux-holistic-2026-10-17).
+“Complete” below means the capability is wired; it does not certify provider
+integrations, live transport under production conditions, or WCAG conformance.
 
 ## Parity table
 
@@ -16,10 +19,10 @@ production build clean.
 |---|---|---|---|---|
 | 1 | Home overview | `features/home/HomePage.tsx` (attention rail, active-run cards w/ `PhaseStrip`, recent runs, snapshot panel) | `GET /v1/pipelines`, `GET /v1/analytics/usage`, `GET /v1/drafts`, `threads.search(status=interrupted)` | complete |
 | 2a | New test — draft prep | `features/new-test/useDraft.ts`, `NewRunWizard.tsx` (`?step=&draft=`, autosave, resume) | `/v1/drafts` CRUD | complete |
-| 2b | New test — launch shaping | `features/new-test/steps/{ScopeStep,ConfigStep}.tsx` (catalog cascade, engine cards, golden-config picker, 7-phase toggles, gate matrix), `useWizardLaunch.ts` | `GET /v1/catalog/*`; SDK `threads.create` + `runs.create(pipeline, configurable)` w/ `durability:'sync'`, `streamResumable`, `multitaskStrategy:'reject'` | complete |
+| 2b | New test — launch shaping | `features/new-test/steps/{ScopeStep,ConfigStep}.tsx` (catalog cascade, engine cards, golden-config picker, 7-phase toggles, gate matrix), `useWizardLaunch.ts` | `GET /v1/catalog/*`; `POST /v1/pipelines` with validated capability, document references and configurable; server-owned durable launch | complete |
 | 2c | New test — doc upload | `features/new-test/steps/ContextStep.tsx`, `api/hooks/useDocuments.ts` | `POST /v1/documents` (multipart), `GET /v1/documents` | complete |
 | 2d | New test — prompt review | `features/new-test/steps/PromptsStep.tsx` (active catalog content + provenance chip; inline edit → `prompt_overrides`) | `GET /v1/prompts?namespace=phase` → run `configurable.prompt_overrides` | complete |
-| 3a | Test history — run list | `features/runs/RunsListPage.tsx` + `runsFilters.ts` (URL-canonical filters, pagination, phase-strip micro-viz, compare checkboxes) | `GET /v1/pipelines?status&q&project&limit&offset` | partial — plan's `engine=`/`from=`/`to=` filters unsupported by the façade (see follow-up F3) |
+| 3a | Test history — run list | `features/runs/RunsListPage.tsx` + `runsFilters.ts` (URL-canonical filters, pagination, normalized phase-progress indicator, compare checkboxes) | `GET /v1/pipelines?status&q&project&limit&offset` | partial — plan's `engine=`/`from=`/`to=` filters unsupported by the façade (see follow-up F3) |
 | 3b | Test history — per-phase inspection | `features/runs/PhaseWorkspace.tsx` (Output/Artifacts/Prompt/Dialogue tabs: status, timestamps, KPIs, summaries, reasoning digest, warnings, errors, approvals, **tool calls — fixed in this audit**, resolved-prompt provenance), top `PhaseStrip` phase flow | `GET /v1/pipelines/{thread_id}` snapshot (`PhaseResult` incl. `tool_calls`, `transcript_ref`) | complete |
 | 4a | Real-time — live status | `streaming/usePipelineStream.ts` (canonical custom-only stream, reconnect/`joinStream(last_event_id)`, healing `/v1` snapshot refetch w/ monotonicity guard), `LiveStatusChip`, top phase flow status | bounded custom SSE events + scoped `/v1` snapshots | complete |
 | 4b | Real-time — streaming activity | `features/runs/ActivityFeed.tsx` (phase_status dividers, tool-call cards, engine tick rows, jump-to-live), `EngineStrip.tsx` (4 pills + AreaChart, 300-pt buffer) | `phase_status`/`tool_call`/`engine_poll` custom events | partial — reasoning-token rendering is deliberately deferred; durable reasoning remains available through the `transcript_ref` artifact |
@@ -40,11 +43,20 @@ production build clean.
 | 13 | Phase-subset / single-phase runs | `features/runs/{PreflightModal,useRerun}.ts(x)` (readiness list from `phase_results`, prereq misses, gates mode) + grid row / header entry points + wizard phase toggles | `POST /v1/pipelines/{thread_id}/rerun`; the server reloads the trusted durable config and accepts only phase/gate overrides | complete |
 | 14 | Run abort | gate-state: `hitl` machine `abort` action via CAS resume; busy-run: header `AbortConfirm` → `features/runs/useAbortRun.ts` (**wired in this audit**) | CAS resume route; `POST /v1/pipelines/{thread_id}/abort` (cancels active runs; backend cleanup calls engine abort/teardown) | complete |
 | 15 | Log search | `features/logs/LogsPage.tsx` + `logsFilters.ts` (URL-carried `?q&from&to&thread&service&level`; run header now deep-links `?thread=` — **fixed in this audit**) | `POST /v1/logs/search` | complete |
-| 16 | Golden configs | `features/golden-configs/{GoldenConfigsPage,GoldenConfigDetailPage}.tsx` (structured config viewer/editor, prompt pins, gate matrix, save-new-version, "Start run with this config" → wizard `?golden=`) | SDK `assistants.search/get/update` (graph `pipeline`) | complete — creation of NEW assistants is server-side by design (plan: "managed via /v1 admin") |
+| 16 | Test presets | `features/golden-configs/{GoldenConfigsPage,GoldenConfigDetailPage}.tsx` (structured config viewer/editor, gate matrix, prompt pins and engine controls, Advanced JSON, save-new-version, "New test from this preset" → wizard `?golden=`) | SDK `assistants.search/get/update` (graph `pipeline`) | wired — bounded public assistant search and individual config hydration; historical connected-mode 500 needs environment retest; new assistant creation remains server-side |
 | 17 | Artifact viewing | `features/artifacts/{ArtifactViewerPage,artifactUrl}.ts(x)` (CodeMirror text/JSON, iframe HTML, binary download; memory:// and s3:// key extraction) | `GET /v1/artifacts/{key:path}` same-origin proxy w/ `x-api-key` | complete |
 | 18 | Run comparison | `features/compare/{ComparePage,CompareSelectBar,compareModel}.ts(x)` (`/runs/compare?ids=`, 2–4 columns, per-phase duration divergence, KPI best/worst) | `GET /v1/pipelines` + per-thread `GET /v1/pipelines/{thread_id}` (client-composed) | complete |
+| 19 | Test cycles | `features/cycles/*` (deliverable versions, guarded edits, review confirmations, conflict recovery, preflight checks, execution linking, comparison, report evidence and publication setup) | `/v1/cycles/*`, `/v1/engines/runs*`, scoped provider connections | available with explicit capability limits — dispatch, retrieval and publication require configured backend support; no implied production certification |
 
-## Fixes applied during this audit (all < ~30 lines each, suite green)
+## 2026-10-17 correctness and safety updates
+
+- Review decisions retain authenticated actors, including revise and discuss. Prompt edits survive navigation per interrupt, skip is confirmed, and keyboard Tab leaves editors without changing their content.
+- Run summaries and phase views use one canonical lifecycle normalization. Pending execution does not publish a failed test verdict. Comparisons exclude uncollected results and never rank missing measurements as zero.
+- Wizard launch capability distinguishes insufficient role from absent scope; presets cannot silently substitute simulation for an unknown engine. Attached documents must be verified before launch. Project/application changes and preset replacement confirm discarded state.
+- Shared theme, form, state, tab, table and dialog primitives cover cold routes and keyboard use. Browser and unit-test evidence is recorded with the remediation, not inferred from source alone.
+- Real provider integrations, externally created tickets, production auth expiry, and production live-stream transport were outside the original available environment. Do not turn source-level coverage into a claim that these paths were exercised.
+
+## Historical D8 fixes
 
 1. **Settings reachable** — `/settings` was routed (real `SettingsPage`) but no
    UI element linked to it. Added a Settings link to the sidebar identity card
@@ -79,7 +91,7 @@ production build clean.
   is the catch-all 404 (`features/not-found/pages.tsx`) — intentional.
 - **Broken inter-screen links:** every `Link`/`navigate` target greps clean
   against the route table (`/runs*`, `/approvals*`, `/prompts*`,
-  `/golden-configs*`, `/work-items*`, `/environments*`, `/context`,
+  `/test-presets*` (legacy `/golden-configs*` redirects), `/work-items*`, `/environments*`, `/context`,
   `/analytics`, `/logs`, `/admin/*`, `/settings`, `/runs/compare?ids=`,
   `/runs/new?step=&draft=&golden=`). The two missing-link findings
   (Settings, Logs deep link) were fixed above.

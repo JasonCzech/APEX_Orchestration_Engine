@@ -32,8 +32,8 @@ export type WizardStepId = (typeof WIZARD_STEPS)[number]
 
 export const STEP_LABELS: Record<WizardStepId, string> = {
   scope: 'Scope',
-  'work-items': 'Work Items',
-  context: 'Context',
+  'work-items': 'Tickets',
+  context: 'Knowledge',
   config: 'Config',
   prompts: 'Prompts',
   review: 'Review',
@@ -469,7 +469,9 @@ export function assessWizardReadiness(
   const executionIssues: StepIssue[] = []
   const executionNotes: string[] = []
 
-  if (!phases.includes('execution')) {
+  if (draft.config.unsupported_engine) {
+    executionNotes.push('Choose a supported engine before execution readiness can be determined.')
+  } else if (!phases.includes('execution')) {
     executionNotes.push(
       'This plan stops before Execution. Select a target and verify the engine before adding execution.',
     )

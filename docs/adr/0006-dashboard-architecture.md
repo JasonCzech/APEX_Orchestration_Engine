@@ -7,8 +7,10 @@ The dashboard (`apps/dashboard`) is a fully decoupled SPA in the same monorepo
 (npm workspaces), never served by the backend. Stack: **mirror APEX Load
 (Project_Stormrunner reference), diverge only with cause** — React 18 +
 TypeScript strict + Vite, CodeMirror 6, Recharts, and APEX Load's CSS
-custom-property token system ported verbatim (5 themes, tokens-only component
-CSS). Each deliberate divergence fixes a named legacy-frontend weakness:
+custom-property token system initially ported verbatim. The 2026-10-17 UX
+remediation aligns shared tokens, typography and form surfaces with Load while
+retaining six themes, including the default Light (CTx) compatibility palette
+(see `docs/design/APEX_UX_CONTRACT.md` version 2). Each deliberate divergence fixes a named legacy-frontend weakness:
 
 | Divergence from APEX Load | Legacy weakness it fixes |
 |---|---|

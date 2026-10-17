@@ -18,7 +18,7 @@ describe('compact operator navigation', () => {
     expect(within(dialog).getByText('Resources')).toBeInTheDocument()
     expect(within(dialog).getByText('Investigation')).toBeInTheDocument()
     expect(within(dialog).getByRole('link', { name: 'Logs' })).toBeInTheDocument()
-    expect(within(dialog).getByRole('link', { name: 'Agent Analytics' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: 'Agent analytics' })).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: /Account options/ })).toBeInTheDocument()
     expect(within(dialog).queryByRole('link', { name: 'Consumers' })).not.toBeInTheDocument()
     for (let index = 0; index < 30; index++) {

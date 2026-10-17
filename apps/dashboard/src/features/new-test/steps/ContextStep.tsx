@@ -1,3 +1,5 @@
+import { Link } from 'react-router'
+import { formatBytes } from '@/features/context/contextLogic'
 /**
  * Step 4 — Context (all optional): multipart document upload (file input +
  * drag-drop onto the dashed glass panel) and an existing-documents picker
@@ -18,11 +20,7 @@ import {
 } from '../contextFiles'
 import type { StepProps } from '../NewRunWizard'
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-}
+
 
 function StatusBadge({ status }: { status: string | null | undefined }) {
   const badge = parseStatusBadge(status)
@@ -168,7 +166,8 @@ export function ContextStep({
   const pickerDocs = (documents.data ?? []).filter((doc) => !draft.document_ids.includes(doc.id))
 
   return (
-    <section className="wizard-step" aria-label="Context">
+    <section className="wizard-step" aria-label="Knowledge">
+      <p className="wizard-caption">Attach source material from <Link to="/context">Knowledge &amp; documents</Link> to inform this test. Execution evidence is available in <Link to="/evidence">Evidence</Link>.</p>
       <p className="wizard-step-hint">
         Attach specs, runbooks or prior reports as context — or skip; documents are optional.
       </p>

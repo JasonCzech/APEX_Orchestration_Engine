@@ -51,13 +51,13 @@ describe('WorkItemsStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Work items/i }))
+    await user.click(screen.getByRole('tab', { name: /Tickets/i }))
 
     await user.type(
       await screen.findByLabelText('Find by description'),
       'open phoenix stories',
     )
-    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
+    await user.click(screen.getByRole('button', { name: 'Preview ticket query' }))
 
     // Provider + confidence chips and the editable provider query.
     const translated = await screen.findByTestId('translated-query')
@@ -104,10 +104,10 @@ describe('WorkItemsStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Work items/i }))
+    await user.click(screen.getByRole('tab', { name: /Tickets/i }))
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
-    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
+    await user.click(screen.getByRole('button', { name: 'Preview ticket query' }))
     await user.click(await screen.findByRole('button', { name: 'Run query' }))
     expect(await screen.findByText('Slow checkout')).toBeInTheDocument()
 
@@ -143,10 +143,10 @@ describe('WorkItemsStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Work items/i }))
+    await user.click(screen.getByRole('tab', { name: /Tickets/i }))
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
-    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
+    await user.click(screen.getByRole('button', { name: 'Preview ticket query' }))
     await user.click(await screen.findByRole('button', { name: 'Run query' }))
     await executeStarted
 
@@ -193,14 +193,14 @@ describe('WorkItemsStep', () => {
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Work items/i }))
+    await user.click(screen.getByRole('tab', { name: /Tickets/i }))
 
     await user.type(await screen.findByLabelText('Find by description'), 'open stories')
-    await user.click(screen.getByRole('button', { name: 'Preview work item query' }))
+    await user.click(screen.getByRole('button', { name: 'Preview ticket query' }))
     await user.click(await screen.findByRole('button', { name: 'Run query' }))
     await executeStarted
 
-    const translateButton = screen.getByRole('button', { name: 'Preview work item query' })
+    const translateButton = screen.getByRole('button', { name: 'Preview ticket query' })
     expect(translateButton).toBeDisabled()
     expect(screen.getByLabelText('Find by description')).toBeDisabled()
     await user.click(translateButton)
@@ -227,13 +227,13 @@ describe('WorkItemsStep', () => {
               connection_id: 'conn-jira',
               provider: 'jira',
             })
-          : HttpResponse.json({ detail: 'unknown work item' }, { status: 404 })
+          : HttpResponse.json({ detail: 'unknown ticket' }, { status: 404 })
       }),
     )
     const user = userEvent.setup()
     const rendered = renderWizard()
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: /Work items/i }))
+    await user.click(screen.getByRole('tab', { name: /Tickets/i }))
 
     const keyInput = await screen.findByLabelText('Add by key')
     await user.type(keyInput, 'PHX-241')
@@ -244,7 +244,7 @@ describe('WorkItemsStep', () => {
 
     await user.type(keyInput, 'PHX-999')
     await user.click(screen.getByRole('button', { name: 'Add' }))
-    await waitFor(() => expect(screen.getByText('unknown work item')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('unknown ticket')).toBeInTheDocument())
     expect(within(chips).queryByText('PHX-999')).not.toBeInTheDocument()
     expect(projects).toEqual(['demo', 'demo'])
     await flushAndUnmountWizard(rendered)
@@ -279,7 +279,7 @@ describe('WorkItemsStep', () => {
     const rendered = renderWizard()
 
     await fillScope(user, screen)
-    await user.click(screen.getByRole('tab', { name: 'Work Items' }))
+    await user.click(screen.getByRole('tab', { name: 'Tickets' }))
     await user.type(await screen.findByLabelText('Add by key'), 'PHX-241')
     await user.click(screen.getByRole('button', { name: 'Add' }))
     await lookupStarted

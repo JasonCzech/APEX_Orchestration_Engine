@@ -4,6 +4,7 @@ import { AppShell } from '@/components/layout/AppShell'
 
 import type { RouteHandle } from './handle'
 import { RouteErrorBoundary } from './RouteErrorBoundary'
+import { LegacyPresetRedirect } from './LegacyPresetRedirect'
 
 type PageModule<K extends string> = Record<K, React.ComponentType>
 
@@ -31,11 +32,7 @@ const goldenConfigs = () => import('@/features/golden-configs/pages')
 const admin = () => import('@/features/admin/pages')
 const apexLoad = () => import('@/features/apex-load/pages')
 
-/**
- * The plan's reconciled route table (Part 2 — Information architecture).
- * Every screen lazy-loads a D0 placeholder; real screens land in D1+.
- * Exported so tests can mount the same tree on a memory router.
- */
+/** Shared route tree for the browser and integration tests. */
 export const appRoutes: RouteObject[] = [
   {
     path: '/',
@@ -50,7 +47,7 @@ export const appRoutes: RouteObject[] = [
         children: [
           {
             index: true,
-            handle: handle('Test Operations Dashboard'),
+            handle: handle('Test operations dashboard'),
             lazy: lazyPage(() => import('@/features/home/pages'), 'HomePage'),
           },
           {
@@ -60,45 +57,45 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'approvals/:threadId/:interruptId',
-            handle: handle('Approval'),
+            handle: handle('Review'),
             lazy: lazyPage(approvals, 'ApprovalDetailPage'),
           },
-          { path: 'cycles', handle: handle('Test Cycles'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclesPage') },
-          { path: 'cycles/:cycleId', handle: handle('Cycle Workspace'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclePage') },
+          { path: 'cycles', handle: handle('Test cycles'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclesPage') },
+          { path: 'cycles/:cycleId', handle: handle('Cycle workspace'), lazy: lazyPage(() => import('@/features/cycles/pages'), 'CyclePage') },
           { path: 'runs', handle: handle('Tests'), lazy: lazyPage(runs, 'RunsListPage') },
           {
             path: 'runs/new',
-            handle: handle('New Test'),
+            handle: handle('New test'),
             lazy: lazyPage(runs, 'NewRunWizardPage'),
           },
           {
             path: 'runs/compare',
-            handle: handle('Compare Runs'),
+            handle: handle('Compare runs'),
             lazy: lazyPage(runs, 'RunsComparePage'),
           },
           {
             path: 'runs/:threadId',
-            handle: handle('Run Detail'),
+            handle: handle('Run detail'),
             lazy: lazyPage(runs, 'RunDetailPage'),
           },
           {
             path: 'runs/:threadId/reviews/:interruptId',
-            handle: handle('Review Run'),
+            handle: handle('Review'),
             lazy: lazyPage(approvals, 'ApprovalDetailPage'),
           },
           {
             path: 'runs/:threadId/phases/:phase',
-            handle: handle('Phase Detail'),
+            handle: handle('Phase detail'),
             lazy: lazyPage(runs, 'PhaseDetailPage'),
           },
           {
             path: 'runs/:threadId/timeline',
-            handle: handle('Run Timeline'),
+            handle: handle('Run timeline'),
             lazy: lazyPage(runs, 'RunTimelinePage'),
           },
           {
             path: 'runs/:threadId/artifacts/:name',
-            handle: handle('Artifact Viewer'),
+            handle: handle('Artifact viewer'),
             lazy: lazyPage(runs, 'ArtifactViewerPage'),
           },
           { path: 'prompts', handle: handle('Prompts'), lazy: lazyPage(prompts, 'PromptsPage') },
@@ -109,22 +106,23 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'prompts/:ns/:name/versions/:v',
-            handle: handle('Prompt Version'),
+            handle: handle('Prompt version'),
             lazy: lazyPage(prompts, 'PromptVersionPage'),
           },
           {
             path: 'prompts/:ns/:name/playground',
-            handle: handle('Template Preview'),
+            handle: handle('Template preview'),
             lazy: lazyPage(prompts, 'PromptPlaygroundPage'),
           },
+          { path: 'golden-configs/*', element: <LegacyPresetRedirect /> },
           {
-            path: 'golden-configs',
-            handle: handle('Test Presets'),
+            path: 'test-presets',
+            handle: handle('Test presets'),
             lazy: lazyPage(goldenConfigs, 'GoldenConfigsPage'),
           },
           {
-            path: 'golden-configs/:assistantId',
-            handle: handle('Test Preset'),
+            path: 'test-presets/:assistantId',
+            handle: handle('Test preset'),
             lazy: lazyPage(goldenConfigs, 'GoldenConfigDetailPage'),
           },
           {
@@ -134,17 +132,17 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'work-items/saved',
-            handle: handle('Saved Queries'),
+            handle: handle('Saved queries'),
             lazy: lazyPage(workItems, 'SavedQueriesPage'),
           },
           {
             path: 'work-items/:provider/:itemId',
-            handle: handle('Work Item'),
+            handle: handle('Ticket'),
             lazy: lazyPage(workItems, 'WorkItemDetailPage'),
           },
           {
             path: 'environments',
-            handle: handle('Applications'),
+            handle: handle('Applications & environments'),
             lazy: lazyPage(environments, 'EnvironmentsPage'),
           },
           {
@@ -154,7 +152,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'context',
-            handle: handle('Knowledge & Documents'),
+            handle: handle('Knowledge & documents'),
             lazy: lazyPage(() => import('@/features/context/pages'), 'ContextPage'),
           },
           {
@@ -164,7 +162,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'analytics',
-            handle: handle('Agent Analytics'),
+            handle: handle('Agent analytics'),
             lazy: lazyPage(() => import('@/features/analytics/pages'), 'AnalyticsPage'),
           },
           {
@@ -189,7 +187,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'admin/consumers',
-            handle: handle('Consumers'),
+            handle: handle('API consumers'),
             lazy: lazyPage(admin, 'ConsumersPage'),
           },
           {
@@ -209,7 +207,7 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: '*',
-            handle: handle('Not Found'),
+            handle: handle('Not found'),
             lazy: lazyPage(() => import('@/features/not-found/pages'), 'NotFoundPage'),
           },
         ],

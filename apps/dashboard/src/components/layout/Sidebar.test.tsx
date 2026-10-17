@@ -44,7 +44,7 @@ describe('Sidebar', () => {
     expect(await screen.findByRole('link', { name: 'Home' })).toBeInTheDocument()
     expect(screen.getByText('Admin')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Connections' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Consumers' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'API consumers' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'System status' })).toBeInTheDocument()
   })
 
@@ -57,7 +57,7 @@ describe('Sidebar', () => {
 
     await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
     expect(sidebar).toHaveClass('collapsed')
-    expect(within(sidebar).getByRole('link', { name: 'Agent Analytics' })).toBeInTheDocument()
+    expect(within(sidebar).getByRole('link', { name: 'Agent analytics' })).toBeInTheDocument()
     expect(within(sidebar).getByRole('link', { name: 'Logs' })).toBeInTheDocument()
     expect(within(sidebar).getByRole('link', { name: 'Connections' })).toBeInTheDocument()
 
@@ -65,14 +65,14 @@ describe('Sidebar', () => {
     expect(sidebar).not.toHaveClass('collapsed')
   })
 
-  it('keeps Tests selected throughout a run while New Test remains distinct', async () => {
+  it('keeps Tests selected throughout a run while New test remains distinct', async () => {
     renderApp({
       initialEntries: ['/runs/thread-1/phases/execution'],
       authState: authenticatedState('operator'),
     })
 
     expect(await screen.findByRole('link', { name: /^Tests/ })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('link', { name: 'New Test' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('link', { name: 'New test' })).not.toHaveAttribute('aria-current')
   })
 
   it('uses Tests as the single sidebar destination for the review queue', async () => {

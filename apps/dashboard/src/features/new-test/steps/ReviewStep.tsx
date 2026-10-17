@@ -4,7 +4,8 @@ import { reviewPolicySummary } from '../reviewPolicySummary'
  * planning and execution readiness, plus the collapsible launch plan. Work-item
  * keys and document ids are resolved into context packets at launch time.
  */
-import { useState, type ReactNode } from 'react'
+import type { ReactNode } from 'react'
+import { CopyableId } from '@/components/ux/CopyableId'
 
 import { useDocumentsList } from '@/api/hooks/useDocuments'
 
@@ -24,24 +25,10 @@ import {
 } from '../wizardState'
 
 function ReferenceName({ name, id }: { name?: string; id: string | null | undefined }) {
-  const [copyStatus, setCopyStatus] = useState('')
-  const copy = async () => {
-    try {
-      if (!id || !navigator.clipboard) throw new Error('Clipboard unavailable')
-      await navigator.clipboard.writeText(id)
-      setCopyStatus('Copied')
-    } catch {
-      setCopyStatus('Copy unavailable; select the ID to copy it')
-    }
-  }
   return (
     <span>
       {name ?? (id ? 'Name unavailable' : 'None')}
-      {id && <small className="review-reference-id">
-        {id}
-        <button type="button" className="btn btn-ghost btn-sm" aria-label={`Copy ${id}`} onClick={() => void copy()}>Copy ID</button>
-        <span role="status">{copyStatus}</span>
-      </small>}
+      {id && <small className="review-reference-id"><CopyableId value={id} label="Reference ID" /></small>}
     </span>
   )
 }
@@ -49,7 +36,7 @@ function ReferenceName({ name, id }: { name?: string; id: string | null | undefi
 function WorkItemReview({ item, project }: { item: import('../wizardState').WizardWorkItemRef; project: string }) {
   const canLoad = Boolean(item.connection_id && item.provider)
   const query = useWorkItem(canLoad ? item.key : undefined, project, item.connection_id ?? undefined, item.provider ?? undefined)
-  return <li>{query.data?.title ?? (canLoad && query.isPending ? 'Loading work item…' : 'Title unavailable')} · <code>{item.key}</code>{!canLoad ? ' · Revalidation required' : ''}</li>
+  return <li>{query.data?.title ?? (canLoad && query.isPending ? 'Loading ticket…' : 'Title unavailable')} · <code>{item.key}</code>{!canLoad ? ' · Revalidation required' : ''}</li>
 }
 
 function ReviewCard({
@@ -169,7 +156,7 @@ export function ReviewStep({
           </dl>
         </ReviewCard>
 
-        <ReviewCard title="Work items" step="work-items" onEdit={onEditStep}>
+        <ReviewCard title="Tickets" step="work-items" onEdit={onEditStep}>
           {draft.work_items.length === 0 ? (
             <p className="wizard-caption">None linked (optional)</p>
           ) : (
@@ -177,7 +164,7 @@ export function ReviewStep({
           )}
         </ReviewCard>
 
-        <ReviewCard title="Context" step="context" onEdit={onEditStep}>
+        <ReviewCard title="Knowledge" step="context" onEdit={onEditStep}>
           <p className="wizard-caption">
             {draft.document_ids.length} document{draft.document_ids.length === 1 ? '' : 's'}{' '}
             attached
@@ -204,7 +191,7 @@ export function ReviewStep({
         <ReviewCard title="Config" step="config" onEdit={onEditStep}>
           <dl className="wizard-review-dl">
             <dt>Engine</dt>
-            <dd>{{sim:'Simulated',apex_load:'APEX Load',loadrunner:'LoadRunner'}[draft.config.engine]}</dd>
+            <dd>{draft.config.unsupported_engine ? `${draft.config.unsupported_engine} (unsupported)` : {sim:'Simulated',apex_load:'APEX Load',loadrunner:'LoadRunner'}[draft.config.engine]}</dd>
             {draft.config.engine === 'apex_load' && releaseConfig?.release_id && <>
               <dt>Load release</dt><dd>{releaseConfig.release_id} · mapping {releaseConfig.mapping_revision ?? 'Not recorded'}</dd>
             </>}

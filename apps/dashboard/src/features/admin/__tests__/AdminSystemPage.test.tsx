@@ -40,7 +40,7 @@ describe('AdminSystemPage', () => {
     // Quick links card carries the runbooks note; everything is read-only.
     const links = screen.getByLabelText('Quick links')
     expect(links).toHaveTextContent('see docs/runbooks in the repo')
-    expect(within(links).getByRole('link', { name: 'Connection registry' })).toHaveAttribute(
+    expect(within(links).getByRole('link', { name: 'Connections' })).toHaveAttribute(
       'href',
       '/admin/connections',
     )
