@@ -1,10 +1,34 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Dialog } from './Dialog'
 
 describe('Dialog', () => {
+  it('preserves restored focus after a complete backdrop click without delaying the next Tab', async () => {
+    function Example() {
+      const [open, setOpen] = useState(false)
+      return <>
+        <button type="button" onClick={() => setOpen(true)}>Open dialog</button>
+        <button type="button">Next page control</button>
+        {open && <Dialog overlayClassName="test-overlay" className="test-panel" ariaLabel="Example dialog" onClose={() => setOpen(false)}>
+          <button type="button">First</button>
+        </Dialog>}
+      </>
+    }
+    const user = userEvent.setup()
+    render(<Example />)
+    const opener = screen.getByRole('button', { name: 'Open dialog' })
+    await user.click(opener)
+    const overlay = screen.getByRole('dialog', { name: 'Example dialog' }).parentElement!
+    await user.click(overlay)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(opener).toHaveFocus()
+    await user.tab()
+    expect(screen.getByRole('button', { name: 'Next page control' })).toHaveFocus()
+  })
+
   it('focuses on open, traps tab navigation, closes on Escape, and restores focus', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()

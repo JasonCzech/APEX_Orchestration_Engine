@@ -53,7 +53,7 @@ test('theme and motion preferences apply while config is still pending', async (
   await expect(page.locator('html')).toHaveAttribute('data-reduce-motion', 'true')
   await expect.poll(() => Boolean(finishConfig)).toBe(true)
   finishConfig?.()
-  await expect(page.getByText('Demo Presenter')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Account options for Demo Presenter' })).toBeVisible()
 })
 
 for (const width of [390, 768, 1440]) {

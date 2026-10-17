@@ -1,9 +1,10 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { Link, useLocation } from 'react-router'
 
 import type { Role } from '@/api/apexClient'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
 import { RequireRole } from '@/auth/RequireRole'
+import { Dialog } from '@/components/Dialog'
 import { useDevDataMode } from '@/dev-data'
 import { isDemoDataMode } from '@/config/runtimeConfig'
 import { useApprovalsInbox } from '@/features/approvals/useApprovalsInbox'
@@ -14,6 +15,7 @@ import type { ConnectivityStatus } from '@/health/useSystemHealth'
 import './Sidebar.css'
 
 const COLLAPSED_STORAGE_KEY = 'apex.sidebarCollapsed'
+const RAIL_CONTROL_SELECTOR = 'a, button, input, select, textarea, label, summary, [role="button"], [role="link"], [tabindex]'
 
 interface NavItem {
   to: string
@@ -40,7 +42,7 @@ function PendingReviewBadge() {
     <span
       className={hasStale ? 'dash-badge nav-badge pulse' : 'dash-badge nav-badge'}
       data-testid="tests-review-nav-badge"
-      aria-label={`${count} test${count === 1 ? '' : 's'} need review`}
+      aria-label={`${count} ${count === 1 ? 'test needs' : 'tests need'} review`}
     >
       {count}
     </span>
@@ -169,9 +171,9 @@ function DevDataSwitch() {
 
 function readStoredCollapsed(): boolean {
   try {
-    return window.localStorage.getItem(COLLAPSED_STORAGE_KEY) === 'true'
+    return window.localStorage.getItem(COLLAPSED_STORAGE_KEY) !== 'false'
   } catch {
-    return false
+    return true
   }
 }
 
@@ -196,7 +198,7 @@ function SidebarLink({ item, pathname, onNavigate }: { item: NavItem; pathname: 
     >
       <span className="nav-icon">{item.icon}</span>
       <span className="nav-label">{item.label}</span>
-      {item.to === '/runs' && <PendingReviewBadge />}
+      {item.to === '/runs' && <>{' '}<PendingReviewBadge /></>}
     </Link>
   )
 }
@@ -222,7 +224,64 @@ function NavSection({
 
 export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNavigate?: () => void }) {
   const [collapsed, setCollapsed] = useState(readStoredCollapsed)
-  const [accountOpen, setAccountOpen] = useState(false)
+  const [openAccount, setOpenAccount] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const openerRef = useRef<HTMLElement | null>(null)
+  const restoreFallbackFocus = useRef(false)
+  useEffect(() => {
+    if (!collapsed || !restoreFallbackFocus.current) return
+    restoreFallbackFocus.current = false
+    // Dialog restores its opener synchronously. A stored-expanded first load
+    // has no opener, so repair only that lost-focus case; never schedule a
+    // second restoration that can undo the user's next Tab or click.
+    if (document.activeElement === document.body) (openerRef.current ?? triggerRef.current)?.focus()
+  }, [collapsed])
+
+  const setPreference = (next: boolean) => {
+    setCollapsed(next)
+    try {
+      window.localStorage.setItem(COLLAPSED_STORAGE_KEY, String(next))
+    } catch {
+      // Persistence is best-effort.
+    }
+  }
+  const expand = (account = false) => {
+    const active = document.activeElement
+    openerRef.current = active instanceof HTMLElement && active.closest('.sidebar') ? active : triggerRef.current
+    setOpenAccount(account)
+    setPreference(false)
+  }
+  const close = (restoreFocus = true) => {
+    restoreFallbackFocus.current = restoreFocus
+    setPreference(true)
+  }
+  if (drawer) return <SidebarContent drawer onNavigate={onNavigate} />
+
+  return (
+    <div className={collapsed ? 'sidebar-shell' : 'sidebar-shell overlay-open'}>
+      <SidebarContent collapsed onExpand={expand} onToggle={() => { triggerRef.current?.focus(); expand() }} toggleRef={triggerRef} />
+      {!collapsed && (
+        <Dialog className="sidebar-expanded-panel" overlayClassName="sidebar-overlay" ariaLabel="Navigation" onClose={() => close()}>
+          <SidebarContent initialAccountOpen={openAccount} onToggle={() => close()} expanded
+            onNavigate={() => { close(false); onNavigate?.() }} />
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+function SidebarContent({ drawer = false, collapsed = false, expanded = false, initialAccountOpen = false, onNavigate, onExpand, onToggle, toggleRef }: {
+  drawer?: boolean
+  collapsed?: boolean
+  expanded?: boolean
+  initialAccountOpen?: boolean
+  onNavigate?: () => void
+  onExpand?: (account?: boolean) => void
+  onToggle?: () => void
+  toggleRef?: RefObject<HTMLButtonElement>
+}) {
+  const [accountOpen, setAccountOpen] = useState(initialAccountOpen)
+  const brandGradientId = useId()
   const location = useLocation()
   const consumer = useConsumer()
   const { signOut, state: authState } = useAuth()
@@ -235,29 +294,22 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
       : []),
   ]
 
-  const toggleCollapsed = () => {
-    setCollapsed((prev) => {
-      const next = !prev
-      try {
-        window.localStorage.setItem(COLLAPSED_STORAGE_KEY, String(next))
-      } catch {
-        // Persistence is best-effort.
-      }
-      return next
-    })
-  }
-
   return (
-    <aside className={drawer ? 'sidebar sidebar-drawer' : collapsed ? 'sidebar collapsed' : 'sidebar'} data-testid="sidebar">
+    <aside className={drawer ? 'sidebar sidebar-drawer' : collapsed ? 'sidebar collapsed' : 'sidebar'} data-testid={expanded ? 'sidebar-expanded' : 'sidebar'}
+      onClick={event => {
+        if (!collapsed || event.button !== 0 || !(event.target instanceof Element) || event.target.closest(RAIL_CONTROL_SELECTOR)) return
+        toggleRef?.current?.focus()
+        onExpand?.()
+      }}>
       <div className="sidebar-brand">
         <svg className="brand-icon" width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
           <defs>
-            <linearGradient id="apexBrandGradient" x1="0" y1="0" x2="1" y2="1">
+            <linearGradient id={brandGradientId} x1="0" y1="0" x2="1" y2="1">
               <stop offset="0%" stopColor="var(--accent)" />
               <stop offset="100%" stopColor="var(--info)" />
             </linearGradient>
           </defs>
-          <path d="M12 2 22 12 12 22 2 12Z" fill="url(#apexBrandGradient)" opacity="0.9" />
+          <path d="M12 2 22 12 12 22 2 12Z" fill={`url(#${brandGradientId})`} opacity="0.9" />
           <path d="M12 6.5 17.5 12 12 17.5 6.5 12Z" fill="var(--bg-secondary)" />
         </svg>
         <span className="brand-name">APEX Orchestration</span>
@@ -290,10 +342,15 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
             <button
               type="button"
               className="sidebar-identity"
-              data-testid="sidebar-identity"
+              data-testid={expanded ? 'sidebar-expanded-identity' : 'sidebar-identity'}
               aria-label={`Account options for ${consumer.name}`}
               aria-expanded={accountOpen}
-              onClick={() => setAccountOpen((open) => !open)}
+              onClick={event => {
+                if (collapsed) {
+                  event.currentTarget.focus()
+                  onExpand?.(true)
+                } else setAccountOpen((open) => !open)
+              }}
             >
               <div className="sidebar-identity-avatar" aria-hidden="true">
                 {initials(consumer.name)}
@@ -336,7 +393,7 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
             </div>
           )}
           <div className="sidebar-footer-row">
-            <div className={`sidebar-status ${STATUS_CLASS[status]}`} title={STATUS_LABEL[status]}>
+            <div className={`sidebar-status ${STATUS_CLASS[status]}`} title={isDemoDataMode() ? 'Offline simulation' : STATUS_LABEL[status]}>
               <span
                 className="status-dot"
                 data-state={status}
@@ -345,12 +402,14 @@ export function Sidebar({ drawer = false, onNavigate }: { drawer?: boolean; onNa
               <span className="status-text">{isDemoDataMode() ? 'Offline simulation' : STATUS_LABEL[status]}</span>
             </div>
             <button
+              ref={toggleRef}
               hidden={drawer}
               type="button"
               className="collapse-btn"
               aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-pressed={collapsed}
-              onClick={toggleCollapsed}
+              aria-expanded={!collapsed}
+              aria-haspopup="dialog"
+              onClick={onToggle}
             >
               <Icon d={collapsed ? 'm9 18 6-6-6-6' : 'm15 18-6-6 6-6'} />
             </button>

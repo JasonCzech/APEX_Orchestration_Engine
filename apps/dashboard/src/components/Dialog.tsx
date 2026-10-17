@@ -111,6 +111,9 @@ export function Dialog({
       onMouseDown={(event) => {
         if (!isTopDialog(dialogTokenRef.current)) return
         if (event.target !== event.currentTarget) return
+        // Closing restores focus during this handler. Suppress the backdrop's
+        // subsequent default focus action so it cannot undo that restoration.
+        event.preventDefault()
         if (closeOnBackdrop) {
           onClose()
           return

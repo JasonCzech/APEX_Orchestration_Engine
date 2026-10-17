@@ -1,8 +1,9 @@
-import { screen, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DEV_DATA_STORAGE_KEY } from '@/dev-data'
+import * as runtimeConfig from '@/config/runtimeConfig'
 import { authenticatedState, renderApp } from '@/test/render'
 
 vi.mock('@/features/approvals/useApprovalsInbox', () => ({
@@ -48,21 +49,107 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'System status' })).toBeInTheDocument()
   })
 
-  it('toggles the collapsed class via the collapse button', async () => {
+  it('starts with the rail and opens an accessible overlay without replacing it', async () => {
     const user = userEvent.setup()
     renderApp({ authState: authenticatedState() })
 
     const sidebar = await screen.findByTestId('sidebar')
-    expect(sidebar).not.toHaveClass('collapsed')
-
-    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
     expect(sidebar).toHaveClass('collapsed')
-    expect(within(sidebar).getByRole('link', { name: 'Agent analytics' })).toBeInTheDocument()
-    expect(within(sidebar).getByRole('link', { name: 'Logs' })).toBeInTheDocument()
-    expect(within(sidebar).getByRole('link', { name: 'Connections' })).toBeInTheDocument()
+    const expand = screen.getByRole('button', { name: 'Expand sidebar' })
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
 
-    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
-    expect(sidebar).not.toHaveClass('collapsed')
+    await user.click(expand)
+    const dialog = screen.getByRole('dialog', { name: 'Navigation' })
+    expect(sidebar).toHaveClass('collapsed')
+    expect(within(dialog).getByRole('link', { name: 'Agent analytics' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: 'Logs' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('link', { name: 'Connections' })).toBeInTheDocument()
+    expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('false')
+
+    await user.click(within(dialog).getByRole('button', { name: 'Collapse sidebar' }))
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+    await waitFor(() => expect(expand).toHaveFocus())
+    expect(window.localStorage.getItem('apex.sidebarCollapsed')).toBe('true')
+  })
+
+  it.each(['true', 'false'])('honors the stored collapsed preference %s', async stored => {
+    window.localStorage.setItem('apex.sidebarCollapsed', stored)
+    const user = userEvent.setup()
+    renderApp({ authState: authenticatedState() })
+    await screen.findByTestId('sidebar')
+    if (stored === 'false') {
+      expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+      await user.keyboard('{Escape}')
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Expand sidebar' })).toHaveFocus())
+    } else {
+      expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+    }
+  })
+
+  it('traps Tab only in the expanded overlay and restores focus after Escape', async () => {
+    const user = userEvent.setup()
+    renderApp({ authState: authenticatedState() })
+    const expand = await screen.findByRole('button', { name: 'Expand sidebar' })
+    await user.click(expand)
+    const dialog = screen.getByRole('dialog', { name: 'Navigation' })
+    const first = within(dialog).getByRole('link', { name: 'New test' })
+    const last = within(dialog).getByRole('button', { name: 'Collapse sidebar' })
+    expect(first).toHaveFocus()
+    await user.tab({ shift: true })
+    expect(last).toHaveFocus()
+    await user.tab()
+    expect(first).toHaveFocus()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(expand).toHaveFocus())
+    await user.tab()
+    expect(screen.getByTestId('sidebar')).not.toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('does not pull focus back after the user tabs away from a dismissed overlay', async () => {
+    const frames: FrameRequestCallback[] = []
+    const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+      return frames.length
+    })
+    try {
+      const user = userEvent.setup()
+      renderApp({ authState: authenticatedState() })
+      const expand = await screen.findByRole('button', { name: 'Expand sidebar' })
+      await user.click(expand)
+      await user.keyboard('{Escape}')
+      expect(expand).toHaveFocus()
+      await user.tab()
+      const nextControl = document.activeElement
+      expect(screen.getByTestId('sidebar')).not.toContainElement(nextControl as HTMLElement)
+      act(() => { for (const frame of frames) frame(performance.now()) })
+      expect(document.activeElement).toBe(nextControl)
+    } finally {
+      request.mockRestore()
+    }
+  })
+
+  it('dismisses an outside press and returns focus to its opener', async () => {
+    const user = userEvent.setup()
+    renderApp({ authState: authenticatedState() })
+    const expand = await screen.findByRole('button', { name: 'Expand sidebar' })
+    await user.click(expand)
+    const overlay = screen.getByRole('dialog', { name: 'Navigation' }).parentElement!
+    await user.click(overlay)
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
+    await waitFor(() => expect(expand).toHaveFocus())
+  })
+
+  it('opens from empty rail space while destination clicks remain direct', async () => {
+    const user = userEvent.setup()
+    const { router } = renderApp({ authState: authenticatedState() })
+    const sidebar = await screen.findByTestId('sidebar')
+    await user.click(sidebar)
+    expect(screen.getByRole('dialog', { name: 'Navigation' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Expand sidebar' })).toHaveFocus())
+    await user.click(within(sidebar).getByRole('link', { name: 'Settings' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+    expect(screen.queryByRole('dialog', { name: 'Navigation' })).not.toBeInTheDocument()
   })
 
   it('keeps Tests selected throughout a run while New test remains distinct', async () => {
@@ -83,13 +170,13 @@ describe('Sidebar', () => {
   })
 
   it('keeps the pending-review count visible in the collapsed rail', async () => {
-    const user = userEvent.setup()
     renderApp({ authState: authenticatedState('operator') })
 
     const sidebar = await screen.findByTestId('sidebar')
-    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(sidebar).toHaveClass('collapsed')
     const tests = within(sidebar).getByRole('link', { name: /^Tests/ })
     expect(within(tests).getByTestId('tests-review-nav-badge')).toBeInTheDocument()
+    expect(tests).toHaveAccessibleName('Tests 2 tests need review')
   })
 
   it('opens account options from the identity control', async () => {
@@ -98,9 +185,12 @@ describe('Sidebar', () => {
 
     const account = await screen.findByRole('button', { name: 'Account options for Dash Ops' })
     await user.click(account)
-    expect(account).toHaveAttribute('aria-expanded', 'true')
+    const dialog = screen.getByRole('dialog', { name: 'Navigation' })
+    expect(within(dialog).getByRole('button', { name: 'Account options for Dash Ops' })).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByRole('combobox', { name: 'Theme' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(account).toHaveFocus())
   })
 
   it('hides the dummy-data switch outside explicit dev auth', async () => {
@@ -108,6 +198,18 @@ describe('Sidebar', () => {
 
     expect(await screen.findByTestId('sidebar-identity')).toBeInTheDocument()
     expect(screen.queryByRole('switch', { name: 'Dummy data' })).not.toBeInTheDocument()
+  })
+
+  it('describes the collapsed demo status as a simulation', async () => {
+    const demo = vi.spyOn(runtimeConfig, 'isDemoDataMode').mockReturnValue(true)
+    try {
+      renderApp({ authState: authenticatedState() })
+      const sidebar = await screen.findByTestId('sidebar')
+      expect(within(sidebar).getByTitle('Offline simulation')).toBeInTheDocument()
+      expect(within(sidebar).queryByTitle('Connected')).not.toBeInTheDocument()
+    } finally {
+      demo.mockRestore()
+    }
   })
 
   it('toggles and persists dummy-data mode from the dev account card', async () => {

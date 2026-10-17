@@ -6,8 +6,12 @@ test.use({ actionTimeout: 10_000 })
 async function resetDemo(page: Page) {
   const account = page.getByRole('button', { name: 'Account options for Demo Presenter' })
   await account.click()
-  await page.getByRole('button', { name: 'Reset demo', exact: true }).click()
-  await account.click()
+  const navigation = page.getByRole('dialog', { name: 'Navigation', exact: true })
+  await expect(navigation.getByText('Demo Presenter', { exact: true })).toBeVisible()
+  await expect(navigation.getByText('Offline simulation', { exact: true })).toBeVisible()
+  await navigation.getByRole('button', { name: 'Reset demo', exact: true }).click()
+  await navigation.getByRole('button', { name: 'Collapse sidebar', exact: true }).click()
+  await expect(account).toBeFocused()
 }
 
 test('production demo completes the offline Jira Align to Jira Cloud journey', async ({ page }) => {
@@ -20,9 +24,8 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   })
 
   await page.goto('/')
-  await expect(page.getByText('Demo Presenter')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Account options for Demo Presenter' })).toBeVisible()
   await expect(page.getByText('DEMO · OFFLINE')).toBeVisible()
-  await expect(page.getByText('Offline simulation')).toBeVisible()
   await resetDemo(page)
 
   await page.goto('/runs/new?draft=draft-esim')
