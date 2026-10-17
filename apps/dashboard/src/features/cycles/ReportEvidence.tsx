@@ -1,5 +1,8 @@
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { formatTimestamp } from '@/utils/time'
+import { actorLabel } from './cycleDisplay'
 import { useRef } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import {
   useCycleResults,
   useFreezeReportEvidence,
@@ -16,7 +19,9 @@ export function ReportEvidence({
   version: Version
   canEdit: boolean
 }) {
+  const consumer = useOptionalConsumer()
   const results = useCycleResults(cycle.id, '')
+  const [, setParams] = useSearchParams()
   const capture = useFreezeReportEvidence(cycle.id, version.id)
   const operation = useRef<{ signature: string; key: string } | null>(null)
   const frozen = version.content._execution_evidence
@@ -40,8 +45,8 @@ export function ReportEvidence({
       {snapshot ? (
         <>
           <p>
-            Captured {String(snapshot.captured_at)} by{' '}
-            {String(snapshot.captured_by)}. This snapshot is part of this report
+            Captured {formatTimestamp(typeof snapshot.captured_at === 'string' ? snapshot.captured_at : null)} by{' '}
+            {actorLabel(typeof snapshot.captured_by === 'string' ? snapshot.captured_by : undefined, consumer)}. This snapshot is part of this report
             version's checksum and review.
           </p>
           <ul>
@@ -125,7 +130,10 @@ export function ReportEvidence({
                 expected_revision: cycle.revision,
                 idempotency_key: operation.current.key,
                 expected_results,
-              })
+              }, { onSuccess: (updated) => {
+                const captured = updated.versions.find((candidate) => candidate.replaces === version.id && candidate.id !== version.id)
+                if (captured) setParams({ tab: 'report', version: captured.id })
+              } })
             }}
           >
             {capture.isPending

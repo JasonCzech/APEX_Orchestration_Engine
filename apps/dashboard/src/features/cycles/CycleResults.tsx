@@ -1,12 +1,16 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
+import { CopyableId } from '@/components/ux/CopyableId'
+import { formatTimestamp } from '@/utils/time'
+import { useRunNames } from './useRunNames'
 import { useCycleResults } from './api'
 
 const number = (value: number) =>
   new Intl.NumberFormat(undefined, { maximumSignificantDigits: 6 }).format(
     value,
   )
-export function CycleResults({ cycleId }: { cycleId: string }) {
+export function CycleResults({ cycleId, projectId }: { cycleId: string; projectId?: string }) {
+  const names = useRunNames(projectId)
   const [baseline, setBaseline] = useState('')
   const query = useCycleResults(cycleId, baseline)
   return (
@@ -42,7 +46,7 @@ export function CycleResults({ cycleId }: { cycleId: string }) {
       {query.data && (
         <>
           <p>
-            History read at {new Date(query.data.read_at).toLocaleString()}.
+            History read at {formatTimestamp(query.data.read_at)}.
             This is the retrieval time, not provider update freshness.
           </p>
           {query.data.results.length === 0 ? (
@@ -58,7 +62,7 @@ export function CycleResults({ cycleId }: { cycleId: string }) {
                   <option value="">No comparison</option>
                   {query.data.results.map((r) => (
                     <option key={r.id} value={r.id}>
-                      {r.engine} · attempt {r.attempt} · {r.thread_id}
+                      {names.get(r.thread_id) || 'Title unavailable'} · {r.engine} attempt {r.attempt} · {formatTimestamp(r.started_at)} · {r.thread_id}
                     </option>
                   ))}
                 </select>
@@ -75,9 +79,10 @@ export function CycleResults({ cycleId }: { cycleId: string }) {
                   aria-label={`${r.engine} attempt ${r.attempt} ${r.id}`}
                 >
                   <h4>
-                    {r.engine} · attempt {r.attempt}
+                    {names.get(r.thread_id) || 'Title unavailable'} · {r.engine} attempt {r.attempt}
                     {baseline === r.id ? ' · Selected baseline' : ''}
                   </h4>
+                  <CopyableId value={r.thread_id} label="Run ID" />
                   <p>
                     Execution status: <strong>{r.execution_status}</strong> ·
                     Test outcome:{' '}
@@ -91,9 +96,9 @@ export function CycleResults({ cycleId }: { cycleId: string }) {
                   </p>
                   <p>
                     Summary evidence: {r.evidence_status} · Started{' '}
-                    {new Date(r.started_at).toLocaleString()}
+                    {formatTimestamp(r.started_at)}
                     {r.ended_at
-                      ? ` · Ended ${new Date(r.ended_at).toLocaleString()}`
+                      ? ` · Ended ${formatTimestamp(r.ended_at)}`
                       : ''}
                   </p>
                   <dl>

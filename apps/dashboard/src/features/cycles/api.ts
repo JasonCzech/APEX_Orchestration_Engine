@@ -21,19 +21,19 @@ function unwrap<T>({
   if (!response.ok || !data)
     throw new ApiError(
       response.status,
-      errorMessageOf(error, `Cycle request failed (${response.status})`),
+      errorMessageOf(error, response.status === 409 ? 'The cycle changed. Refresh its latest state before retrying this action.' : `Cycle request failed (${response.status})`),
       error,
     )
   return data
 }
-export function useCycles(offset: number, enabled: boolean) {
+export function useCycles(offset: number, enabled: boolean, limit = 20) {
   return useQuery({
-    queryKey: ['cycles', 'list', offset],
+    queryKey: ['cycles', 'list', offset, limit],
     enabled,
     queryFn: async ({ signal }) =>
       unwrap(
         await getApexClient().GET('/v1/cycles', {
-          params: { query: { offset, limit: 20 } },
+          params: { query: { offset, limit } },
           signal,
         }),
       ),
@@ -99,9 +99,10 @@ export function useReview(id: string) {
 }
 
 export type Preparation = components['schemas']['PrepareExecution']
-export function useExecutions(id: string) {
+export function useExecutions(id: string, enabled = true) {
   return useQuery({
     queryKey: ['cycles', id, 'executions'],
+    enabled,
     queryFn: async ({ signal }) =>
       unwrap(
         await getApexClient().GET('/v1/cycles/{cycle_id}/executions', {

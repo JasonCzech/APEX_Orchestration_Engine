@@ -1,3 +1,4 @@
+import { formatTimestamp } from '@/utils/time'
 import { useRef } from 'react'
 import { useScriptValidations, useValidateScript } from './api'
 
@@ -92,8 +93,8 @@ export function ProviderValidation({
                 )}
                 <p>
                   {v.finished_at
-                    ? `Finished ${new Date(v.finished_at).toLocaleString()}`
-                    : `Started ${new Date(v.created_at).toLocaleString()}`}{' '}
+                    ? `Finished ${formatTimestamp(v.finished_at)}`
+                    : `Started ${formatTimestamp(v.created_at)}`}{' '}
                   · {v.created_by}
                 </p>
                 {v.issues.map((issue, i) => (

@@ -1,0 +1,4 @@
+.ux-copyable-id { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem; max-width: 100%; vertical-align: middle; }
+.ux-copyable-id code { user-select: text; overflow-wrap: anywhere; }
+.ux-id-truncated { display: inline-block; max-width: 15ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ux-copy-error { flex-basis: 100%; font-size: var(--font-size-sm); }

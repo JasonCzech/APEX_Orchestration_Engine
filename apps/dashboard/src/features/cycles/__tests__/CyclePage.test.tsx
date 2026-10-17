@@ -27,6 +27,7 @@ const cycle: Cycle = {
         label: 'Objectives',
         help: '',
         options: [],
+        integer: false,
         control: 'multiline',
         required: true,
       },
@@ -35,6 +36,7 @@ const cycle: Cycle = {
         label: 'Concurrent users',
         help: '',
         options: [],
+        integer: false,
         control: 'number',
         minimum: 1,
         maximum: 1000,
@@ -76,7 +78,7 @@ function mount(data = cycle, role: 'admin' | 'viewer' = 'admin') {
       ]),
     ),
   )
-  const state = authenticatedState(role)
+  const state = authenticatedState(role, 'Dash Ops', [])
   if (state.status === 'authenticated')
     state.systemInfo.features = { cycles: true }
   return renderApp({
@@ -118,6 +120,8 @@ describe('Cycle workspace', () => {
     await user.click(
       screen.getByRole('button', { name: 'Approve this version' }),
     )
+    expect(submitted).toBeUndefined()
+    await user.click(screen.getByRole('button', { name: 'Confirm approve this version' }))
     await waitFor(() =>
       expect(submitted).toEqual({
         action: 'approve',
@@ -126,9 +130,7 @@ describe('Cycle workspace', () => {
         note: '',
       }),
     )
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Review action recorded',
-    )
+    expect(await screen.findByText('Version approved: Checkout plan.')).toHaveAttribute('role', 'status')
   })
   it('retains edited content after a stale-revision rejection', async () => {
     const user = userEvent.setup()
@@ -244,7 +246,8 @@ it('saves a revised version and exits editing without a leave warning', async ()
     ).not.toBeInTheDocument(),
   )
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  expect(screen.getByRole('status')).toHaveTextContent('Saved draft version v2')
+  expect(screen.getByText('Saved draft version.')).toHaveAttribute('role', 'status')
+  expect(screen.getByRole('button', { name: 'Copy Saved version ID' })).toBeInTheDocument()
 })
 
 it.each(['scope', 'report'] as const)(
@@ -284,7 +287,7 @@ it.each(['scope', 'report'] as const)(
     mount(data)
     await user.click(
       await screen.findByRole('button', {
-        name: kind === 'scope' ? 'Scope' : 'Results & Reports',
+        name: kind === 'scope' ? 'Scope' : 'Results & reports',
       }),
     )
     await user.click(
@@ -316,3 +319,105 @@ it.each(['scope', 'report'] as const)(
     )
   },
 )
+
+it('guards Cancel editing and preserves text when the author keeps editing', async () => {
+  const user = userEvent.setup()
+  mount()
+  await user.click(await screen.findByRole('button', { name: 'Revise as new draft' }))
+  await user.type(screen.getByLabelText('Objectives *'), ' unsaved')
+  await user.click(screen.getByRole('button', { name: 'Cancel editing' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Unsaved deliverable changes' })
+  await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+  expect(screen.getByLabelText('Objectives *')).toHaveValue('Measure checkout unsaved')
+  await user.click(screen.getByRole('button', { name: 'Cancel editing' }))
+  await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Discard and leave' }))
+  expect(screen.queryByLabelText('Objectives *')).not.toBeInTheDocument()
+})
+
+it('reloads a conflicting revision without losing the authored buffer', async () => {
+  const user = userEvent.setup()
+  let current = cycle
+  const writes: unknown[] = []
+  server.use(
+    http.get('*/v1/cycles/c1', () => HttpResponse.json(current)),
+    http.post('*/v1/cycles/c1/versions', async ({ request }) => {
+      writes.push(await request.json())
+      if (writes.length === 1) { current = { ...cycle, revision: 4 }; return HttpResponse.json({ detail: 'Cycle changed' }, { status: 409 }) }
+      return HttpResponse.json({ ...current, revision: 5 })
+    }),
+  )
+  mount()
+  // mount's default handler is overridden with the live fixture for conflict recovery.
+  server.use(http.get('*/v1/cycles/c1', () => HttpResponse.json(current)))
+  await user.click(await screen.findByRole('button', { name: 'Revise as new draft' }))
+  await user.type(screen.getByLabelText('Objectives *'), ' retained')
+  await user.type(screen.getByLabelText('Change summary and affected requirements'), 'Revision note')
+  await user.click(screen.getByRole('button', { name: 'Save draft version' }))
+  await user.click(await screen.findByRole('button', { name: 'Keep my text and load the latest revision' }))
+  expect(screen.getByLabelText('Objectives *')).toHaveValue('Measure checkout retained')
+  await waitFor(() => expect(screen.queryByText('Cycle changed')).not.toBeInTheDocument())
+  await user.click(screen.getByRole('button', { name: 'Save draft version' }))
+  await waitFor(() => expect(writes).toHaveLength(2))
+  expect(writes[0]).toMatchObject({ expected_revision: 3 })
+  expect(writes[1]).toMatchObject({ expected_revision: 4, content: { objectives: 'Measure checkout retained' } })
+})
+
+it('withholds mutations when the authenticated operator is outside the cycle scope', async () => {
+  const state = authenticatedState('operator', 'Scoped operator', [{ project_id: 'another-project' }])
+  if (state.status === 'authenticated') state.systemInfo.features = { cycles: true }
+  server.use(http.get('*/v1/cycles/c1', () => HttpResponse.json({ ...cycle, versions: [{ ...cycle.versions[0], available_actions: [] }] })))
+  renderApp({ initialEntries: ['/cycles/c1?tab=test_plan'], authState: state })
+  await screen.findByText('Checkout plan')
+  expect(screen.queryByRole('button', { name: 'Revise as new draft' })).not.toBeInTheDocument()
+})
+
+it('distinguishes an inaccessible cycle from a retryable loading failure', async () => {
+  const state = authenticatedState('operator', 'Scoped operator', [{ project_id: 'another-project' }])
+  if (state.status === 'authenticated') state.systemInfo.features = { cycles: true }
+  server.use(http.get('*/v1/cycles/c1', () => HttpResponse.json({ detail: 'Cycle not found' }, { status: 404 })))
+  renderApp({ initialEntries: ['/cycles/c1'], authState: state })
+  await screen.findByRole('heading', { name: 'Cycle unavailable' })
+  expect(screen.getByRole('link', { name: 'Back to all cycles' })).toHaveAttribute('href', '/cycles')
+  expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
+})
+
+it('requires an explicit replacement-base choice when another author revised the same deliverable', async () => {
+  const user = userEvent.setup()
+  const replacement = { ...cycle.versions[0]!, id: 'v2', title: 'Plan revised by another author', replaces: 'v1', status: 'draft' }
+  let current = cycle
+  const writes: unknown[] = []
+  mount()
+  server.use(
+    http.get('*/v1/cycles/c1', () => HttpResponse.json(current)),
+    http.post('*/v1/cycles/c1/versions', async ({ request }) => {
+      writes.push(await request.json())
+      if (writes.length === 1) { current = { ...cycle, revision: 4, versions: [...cycle.versions, replacement] }; return HttpResponse.json({ detail: 'Version already superseded' }, { status: 409 }) }
+      return HttpResponse.json({ ...current, revision: 5 })
+    }),
+  )
+  await user.click(await screen.findByRole('button', { name: 'Revise as new draft' }))
+  await user.type(screen.getByLabelText('Objectives *'), ' mine')
+  await user.type(screen.getByLabelText('Change summary and affected requirements'), 'Preserve my edits')
+  await user.click(screen.getByRole('button', { name: 'Save draft version' }))
+  await user.click(await screen.findByRole('button', { name: 'Keep my text and load the latest revision' }))
+  expect(await screen.findByRole('button', { name: 'Keep my text and revise the latest version' })).toBeInTheDocument()
+  expect(screen.getByLabelText('Objectives *')).toHaveValue('Measure checkout mine')
+  expect(writes).toHaveLength(1)
+  await user.click(screen.getByRole('button', { name: 'Keep my text and revise the latest version' }))
+  await user.click(screen.getByRole('button', { name: 'Save draft version' }))
+  await waitFor(() => expect(writes).toHaveLength(2))
+  expect(writes[1]).toMatchObject({ expected_revision: 4, replaces: 'v2', content: { objectives: 'Measure checkout mine' } })
+})
+
+it('lets an author switch steps through the same unsaved-change guard', async () => {
+  const user = userEvent.setup()
+  const { router } = mount()
+  await user.click(await screen.findByRole('button', { name: 'Revise as new draft' }))
+  await user.type(screen.getByLabelText('Objectives *'), ' unsaved')
+  await user.click(screen.getByRole('button', { name: 'Scope' }))
+  const dialog = await screen.findByRole('dialog', { name: 'Unsaved deliverable changes' })
+  expect(router.state.location.search).toContain('test_plan')
+  await user.click(within(dialog).getByRole('button', { name: 'Discard and leave' }))
+  await waitFor(() => expect(router.state.location.search).toBe('?tab=scope'))
+  expect(screen.queryByLabelText('Objectives *')).not.toBeInTheDocument()
+})

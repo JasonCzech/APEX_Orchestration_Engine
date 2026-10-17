@@ -87,7 +87,7 @@ function mount(role: 'admin' | 'viewer' = 'admin') {
     http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
     http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
   )
-  const state = authenticatedState(role)
+  const state = authenticatedState(role, 'Dash Ops', [])
   if (state.status === 'authenticated')
     state.systemInfo.features = { cycles: true }
   return renderApp({
@@ -142,7 +142,7 @@ describe('Execution preparation', () => {
   it('keeps historical links unverified and gives viewers no mutation controls', async () => {
     mount('viewer')
     const link = await screen.findByRole('link', {
-      name: 'apex-load · attempt 1',
+      name: /Title unavailable · apex-load attempt 1/,
     })
     expect(link).toHaveAttribute('href', '/runs/thread/phases/execution')
     expect(link.parentElement).toHaveTextContent('bindings unverified')

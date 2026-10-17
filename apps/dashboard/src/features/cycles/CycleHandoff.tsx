@@ -278,8 +278,11 @@ export function CycleHandoff({
           onClose={() => guard.reset()}
         >
           <h2>Leave unsaved follow-up inputs?</h2>
-          <button onClick={() => guard.reset()}>Keep editing</button>
-          <button onClick={() => guard.proceed()}>Discard and leave</button>
+          <p>The follow-up inputs have not been saved to a cycle.</p>
+          <div className="ux-dialog-actions">
+            <button className="btn btn-primary" onClick={() => guard.reset()}>Keep editing</button>
+            <button className="btn btn-secondary" onClick={() => guard.proceed()}>Discard and leave</button>
+          </div>
         </Dialog>
       )}
     </section>

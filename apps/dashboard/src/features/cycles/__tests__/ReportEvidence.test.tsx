@@ -29,6 +29,7 @@ const cycle: Cycle = {
         help: '',
         options: [],
         label: 'Script source',
+        integer: false,
         control: 'multiline',
         required: true,
       },

@@ -1,7 +1,10 @@
 import { useState, type FormEvent } from 'react'
-import { useBeforeUnload } from 'react-router'
+import { Link, useBeforeUnload } from 'react-router'
 import { useNavigationBlocker } from '@/components/useNavigationBlocker'
 import { Dialog } from '@/components/Dialog'
+import { ApiError } from '@/api/errors'
+import { useCycle } from './api'
+import { useEnvironmentInventory } from '@/api/hooks/useInventory'
 import {
   useVersionWrite,
   type Cycle,
@@ -23,6 +26,7 @@ function FieldInput({
   const helpId = `${id}-help`
   const shared = {
     id,
+    'aria-required': field.required,
     'aria-describedby': field.help ? helpId : undefined,
     value: typeof value === 'string' || typeof value === 'number' ? value : '',
     onChange: (
@@ -47,7 +51,7 @@ function FieldInput({
           <option value="">Select…</option>
           {field.options?.map((option) => (
             <option key={option} value={option}>
-              {option.replaceAll('_', ' ')}
+              {({ 'apex-load': 'APEX Load', loadrunner: 'LoadRunner', apex_native_json: 'APEX native JSON', web_http_html: 'Web HTTP/HTML', other_import: 'Other import' } as Record<string, string>)[option] ?? option.replaceAll('_', ' ')}
             </option>
           ))}
         </select>
@@ -57,8 +61,10 @@ function FieldInput({
           type="number"
           min={field.minimum ?? undefined}
           max={field.maximum ?? undefined}
-          step="any"
+          step={('integer' in field && field.integer) || ['vusers', 'target_version'].includes(field.key) ? 1 : 'any'}
         />
+      ) : field.control === 'text' ? (
+        <input {...shared} type="text" maxLength={50000} />
       ) : (
         <textarea
           {...shared}
@@ -96,8 +102,13 @@ export function CycleEditor({
   const [fileLoading, setFileLoading] = useState(false)
   const [fileName, setFileName] = useState('')
   const [change, setChange] = useState('')
+  const [cancelRequested, setCancelRequested] = useState(false)
+  const freshCycle = useCycle(cycle.id, false)
+  const inventory = useEnvironmentInventory(kind === 'readiness' ? cycle.environment_id : undefined)
   // Pin the revision at editor creation: background reads must never silently rebase a draft.
-  const [revision] = useState(cycle.revision)
+  const [revision, setRevision] = useState(cycle.revision)
+  const [replaces, setReplaces] = useState(base?.id)
+  const [pendingRebase, setPendingRebase] = useState<{ revision: number; version: Version } | null>(null)
   const save = useVersionWrite(cycle.id)
   const dirty =
     title !== (base?.title ?? '') ||
@@ -120,7 +131,7 @@ export function CycleEditor({
         title,
         content,
         dependencies,
-        replaces: base?.id,
+        replaces,
         change_summary: change,
       },
       { onSuccess: (data) => onSaved(data.versions.at(-1)?.id ?? '') },
@@ -230,6 +241,16 @@ export function CycleEditor({
               }
             />
           ))}
+          {kind === 'readiness' && (
+            <div className="tonal-card info">
+              <Link to={`/environments/${encodeURIComponent(cycle.environment_id)}`}>Review environment inventory</Link>
+              {inventory.data?.snapshot?.id && <button className="btn btn-secondary" type="button" onClick={() =>
+                setContent((previous) => ({ ...previous, inventory_snapshot_id: inventory.data!.snapshot!.id }))
+              }>Use latest inventory snapshot</button>}
+              {inventory.error && <p>Inventory could not be loaded. You can retain an existing snapshot reference.</p>}
+            </div>
+          )}
+          {kind === 'test_plan' && <p className="tonal-card warning">Arrival-rate scheduling is not supported by pipeline execution. A plan with an arrival rate will be blocked at preflight.</p>}
           {unsupported.length > 0 && (
             <details>
               <summary>Unsupported fields from the previous version</summary>
@@ -282,7 +303,7 @@ export function CycleEditor({
                     )
                   }
                 />{' '}
-                {v.title} · {v.kind.replaceAll('_', ' ')} · {v.id.slice(0, 8)}
+                {v.title} · {v.kind.replaceAll('_', ' ')} · {v.id}
               </label>
             ))}
             {!currentDependencies.length && (
@@ -322,7 +343,7 @@ export function CycleEditor({
             <button
               className="btn btn-secondary"
               type="button"
-              onClick={onCancel}
+              onClick={() => dirty ? setCancelRequested(true) : onCancel()}
             >
               Cancel editing
             </button>
@@ -332,28 +353,47 @@ export function CycleEditor({
           <div role="alert" className="tonal-card warning">
             <p>{save.error.message}</p>
             <p>
-              Your text is retained. If the cycle changed, copy your changes
-              before cancelling and reopening the latest version.
+              Your text is retained. Review the latest cycle revision before saving again.
             </p>
+            {save.error instanceof ApiError && save.error.status === 409 && (
+              <button className="btn btn-secondary" type="button" disabled={freshCycle.isFetching}
+                onClick={async () => {
+                  const result = await freshCycle.refetch()
+                  if (result.data && !result.error) {
+                    let latest = result.data.versions.find(version => version.id === replaces)
+                    const visited = new Set<string>()
+                    while (latest && !visited.has(latest.id)) {
+                      visited.add(latest.id)
+                      const next = result.data.versions.find(version => version.replaces === latest?.id)
+                      if (!next) break
+                      latest = next
+                    }
+                    if (latest && (latest.id !== replaces || latest.archived)) setPendingRebase({ revision: result.data.revision, version: latest })
+                    else { setRevision(result.data.revision); save.reset() }
+                  }
+                }}>Keep my text and load the latest revision</button>
+            )}
+            {pendingRebase && <div className="tonal-card warning"><p>A newer version is available: <strong>{pendingRebase.version.title}</strong> ({pendingRebase.version.id}). Your text remains unchanged. Review it against the newer evidence before saving.</p><button type="button" className="btn btn-secondary" onClick={() => { setRevision(pendingRebase.revision); setReplaces(pendingRebase.version.archived ? undefined : pendingRebase.version.id); setPendingRebase(null); save.reset() }}>{pendingRebase.version.archived ? 'Keep my text as an independent draft' : 'Keep my text and revise the latest version'}</button></div>}
+            {freshCycle.error && <p>Could not refresh the revision: {freshCycle.error.message}</p>}
           </div>
         )}
       </form>
-      {blocker.state === 'blocked' && (
+      {(blocker.state === 'blocked' || cancelRequested) && (
         <Dialog
           ariaLabel="Unsaved deliverable changes"
           className="cycle-leave-dialog"
           overlayClassName="cycle-dialog-overlay"
-          onClose={() => blocker.reset()}
+          onClose={() => { setCancelRequested(false); if (blocker.state === 'blocked') blocker.reset() }}
         >
           <h2>Leave unsaved changes?</h2>
           <p>Your current edits have not been saved as a version.</p>
           <div className="cycle-actions">
-            <button className="btn btn-primary" onClick={() => blocker.reset()}>
+            <button className="btn btn-primary" onClick={() => { setCancelRequested(false); if (blocker.state === 'blocked') blocker.reset() }}>
               Keep editing
             </button>
             <button
               className="btn btn-secondary"
-              onClick={() => blocker.proceed()}
+              onClick={() => { if (cancelRequested) onCancel(); else if (blocker.state === 'blocked') blocker.proceed() }}
             >
               Discard and leave
             </button>

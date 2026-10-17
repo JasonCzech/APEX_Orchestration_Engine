@@ -70,8 +70,9 @@
   flex-wrap: wrap;
 }
 .cycle-nav button[aria-current='page'] {
-  outline: 2px solid currentColor;
-  outline-offset: 2px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
   font-weight: 700;
 }
 .cycle-next {
@@ -130,8 +131,8 @@
 .cycle-dialog-overlay {
   position: fixed;
   inset: 0;
-  z-index: 2000;
-  background: #0008;
+  z-index: auto;
+  background: var(--modal-backdrop);
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -167,3 +168,5 @@
 .cycle-panel li {
   margin-block: 0.5rem;
 }
+
+.cycle-diff .prompt-diff { grid-column: 1 / -1; }

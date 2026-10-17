@@ -1,3 +1,4 @@
+import { formatTimestamp } from '@/utils/time'
 import { useRef, useState } from 'react'
 import { Link, useBeforeUnload } from 'react-router'
 import { Dialog } from '@/components/Dialog'
@@ -34,7 +35,7 @@ export function ProviderScriptImport({
   )
   const importer = useProviderImport(cycle.id)
   const key = useRef<{ signature: string; value: string } | null>(null)
-  const dirty = Boolean(parameters || coverage) && !importer.isSuccess
+  const dirty = Boolean(parameters || coverage || title || plan) && !importer.isSuccess
   const blocker = useNavigationBlocker(dirty && !importer.isPending)
   useBeforeUnload((event) => {
     if (dirty) event.preventDefault()
@@ -66,6 +67,7 @@ export function ProviderScriptImport({
             {catalog.data.blockers.map((b) => (
               <p key={b}>{b}</p>
             ))}
+            {catalog.data.connections.length === 0 && <p className="tonal-card info">No APEX Load connection is available for this project. Ask an administrator to configure an enabled provider connection.</p>}
             <fieldset
               disabled={importer.isPending}
               className="cycle-execution-fields"
@@ -224,7 +226,7 @@ export function ProviderScriptImport({
                             )
                             .map((v) => (
                               <option key={v.id} value={v.id}>
-                                {v.title} · {v.id.slice(0, 8)}
+                                {v.title} · {v.id}
                               </option>
                             ))}
                         </select>
@@ -308,7 +310,7 @@ export function ProviderScriptImport({
                         {i.remote_version || 'not supplied'}
                       </Link>
                       <p>
-                        Captured {new Date(i.imported_at).toLocaleString()} by{' '}
+                        Captured {formatTimestamp(i.imported_at)} by{' '}
                         {i.imported_by}. Executable content unverified.
                       </p>
                       <details>
@@ -335,8 +337,11 @@ export function ProviderScriptImport({
           onClose={() => blocker.reset()}
         >
           <h2>Leave unsaved import details?</h2>
-          <button onClick={() => blocker.reset()}>Keep editing</button>
-          <button onClick={() => blocker.proceed()}>Discard and leave</button>
+          <p>The import title, plan and supporting details have not been saved.</p>
+          <div className="ux-dialog-actions">
+            <button className="btn btn-primary" onClick={() => blocker.reset()}>Keep editing</button>
+            <button className="btn btn-secondary" onClick={() => blocker.proceed()}>Discard and leave</button>
+          </div>
         </Dialog>
       )}
     </>

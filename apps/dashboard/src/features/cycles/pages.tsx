@@ -3,18 +3,29 @@ import { CycleHandoff } from './CycleHandoff'
 import { FrozenEvidenceDiff } from './FrozenEvidenceDiff'
 import { ReportEvidence } from './ReportEvidence'
 import { CycleResults } from './CycleResults'
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { useAuth, useConsumer } from '@/auth/AuthProvider'
-import { roleAtLeast } from '@/auth/RequireRole'
+import { canLaunchPipelines, canMutateAudience, pipelineLaunchRefusal } from '@/auth/RequireRole'
+import { useApplicationsIndex, useEnvironmentsIndex } from '@/api/hooks/useEnvironments'
 import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
 import { ProblemCard } from '@/components/ProblemCard'
+import { Dialog } from '@/components/Dialog'
+import { ProjectField } from '@/components/ux/ProjectField'
+import { CopyableId } from '@/components/ux/CopyableId'
+import { Pagination } from '@/components/ux/Pagination'
+import { usePreferences } from '@/theme/preferences'
+import { ApiError } from '@/api/errors'
+import { formatTimestamp } from '@/utils/time'
+import { PromptDiff } from '@/features/prompts/PromptDiff'
+import { actorLabel, cycleNextAction, fieldValue, REVIEW_LABELS, REVIEW_EFFECTS, REVIEW_RESULTS } from './cycleDisplay'
 import { ProviderScriptImport } from './ProviderScriptImport'
 import { ScriptStorage } from './ScriptStorage'
 import { ExecutionWorkspace } from './ExecutionWorkspace'
 import { CycleEditor } from './CycleEditor'
 import {
   useCycle,
+  useExecutions,
   useCycles,
   useCreateCycle,
   useReview,
@@ -28,20 +39,13 @@ import './cycles.css'
 const steps = [
   ['overview', 'Overview'],
   ['scope', 'Scope'],
-  ['test_plan', 'Test Plan'],
+  ['test_plan', 'Test plan'],
   ['readiness', 'Readiness'],
   ['script', 'Scripts'],
   ['executions', 'Executions'],
-  ['report', 'Results & Reports'],
+  ['report', 'Results & reports'],
   ['postmortem', 'Postmortem'],
 ] as const
-const actions: Record<string, string> = {
-  submit: 'Submit for review',
-  approve: 'Approve this version',
-  request_revision: 'Request revision',
-  archive: 'Archive in APEX',
-  restore: 'Restore in APEX',
-}
 function useEnabled() {
   const { state } = useAuth()
   return (
@@ -52,9 +56,9 @@ function useEnabled() {
 function Disabled() {
   return (
     <section className="glass-panel cycle-panel">
-      <h1>Test Cycles</h1>
+      <h2>Test cycles</h2>
       <p>The cycle workspace is not enabled on this server.</p>
-      <Link to="/runs">Open Test History</Link>
+      <Link to="/runs">Open Tests</Link>
     </section>
   )
 }
@@ -71,7 +75,7 @@ function NewCycle({ onCreated }: { onCreated: (id: string) => void }) {
   const create = useCreateCycle()
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    if (!create.isPending)
+    if (!create.isPending && canMutateAudience(consumer, project, app))
       create.mutate(
         {
           name,
@@ -100,18 +104,7 @@ function NewCycle({ onCreated }: { onCreated: (id: string) => void }) {
             onChange={(e) => setName(e.target.value)}
           />
         </label>
-        <label className="cycle-field">
-          Project
-          <input
-            required
-            value={project}
-            onChange={(e) => {
-              setProject(e.target.value)
-              setApp('')
-              setEnvironment('')
-            }}
-          />
-        </label>
+        <ProjectField required value={project} onChange={(value) => { setProject(value); setApp(''); setEnvironment('') }} />
         <label className="cycle-field">
           Application
           <select
@@ -157,12 +150,13 @@ function NewCycle({ onCreated }: { onCreated: (id: string) => void }) {
         </label>
         <button
           className="btn btn-primary"
-          disabled={applications.isFetching || environments.isFetching}
+          disabled={applications.isFetching || environments.isFetching || !canMutateAudience(consumer, project, app)}
           type="submit"
         >
           {create.isPending ? 'Creating…' : 'Create cycle'}
         </button>
       </fieldset>
+      {project && app && !canMutateAudience(consumer, project, app) && <p className="tonal-card warning">This application is outside your authorized scope.</p>}
       {(create.error || applications.error || environments.error) && (
         <p role="alert">
           {(create.error || applications.error || environments.error)?.message}
@@ -176,21 +170,25 @@ export function CyclesPage() {
   const enabled = useEnabled()
   const consumer = useConsumer()
   const [offset, setOffset] = useState(0)
+  const { preferences, setPreferences } = usePreferences()
+  const limit = preferences.rows
   const [newOpen, setNewOpen] = useState(false)
   const [created, setCreated] = useState('')
-  const query = useCycles(offset, enabled)
+  const query = useCycles(offset, enabled, limit)
+  const applications = useApplicationsIndex()
+  const environments = useEnvironmentsIndex()
   if (!enabled) return <Disabled />
   return (
     <div className="cycle-workspace">
       <header className="cycle-heading">
         <div>
-          <h1>Test Cycles</h1>
+          <h2>Test cycles</h2>
           <p>
             Plan, review and maintain engineering deliverables across test
             attempts.
           </p>
         </div>
-        {roleAtLeast(consumer?.role ?? 'viewer', 'operator') && (
+        {canLaunchPipelines(consumer) && (
           <button
             className="btn btn-primary"
             onClick={() => setNewOpen(!newOpen)}
@@ -199,6 +197,7 @@ export function CyclesPage() {
           </button>
         )}
       </header>
+      {!canLaunchPipelines(consumer) && <p className="tonal-card info">{pipelineLaunchRefusal(consumer)} You can view cycles in your authorized scope.</p>}
       {newOpen && (
         <NewCycle
           onCreated={(id) => {
@@ -228,12 +227,12 @@ export function CyclesPage() {
               <Link to={`/cycles/${cycle.id}`}>{cycle.name}</Link>
             </h2>
             <p>
-              {cycle.project_id} ·{' '}
+              {cycle.project_id} · {applications.data?.find(item => item.id === cycle.app_id)?.name ?? cycle.app_id} · {environments.data?.find(item => item.id === cycle.environment_id)?.name ?? cycle.environment_id} ·{' '}
               {cycle.mode === 'simulation' ? 'Simulation' : 'Live providers'}
             </p>
-            <p>Owner: {cycle.owner}</p>
+            <p>Owner: {actorLabel(cycle.owner, consumer)}</p>
             <small>
-              Updated {new Date(cycle.updated_at).toLocaleString()} · revision{' '}
+              Updated {formatTimestamp(cycle.updated_at)} · revision{' '}
               {cycle.revision}
             </small>
           </article>
@@ -241,27 +240,11 @@ export function CyclesPage() {
       </div>
       {query.data?.length === 0 && (
         <p>
-          No cycles on this page. Create a cycle to assemble your first
-          deliverables.
+          No cycles on this page. {canLaunchPipelines(consumer) ? 'Create a cycle to assemble your first deliverables.' : 'Ask an administrator for access to a project’s cycles.'}
         </p>
       )}
-      <div className="cycle-actions">
-        <button
-          className="btn btn-secondary"
-          disabled={offset === 0 || query.isFetching}
-          onClick={() => setOffset(Math.max(0, offset - 20))}
-        >
-          Previous
-        </button>
-        <span>Page {offset / 20 + 1}</span>
-        <button
-          className="btn btn-secondary"
-          disabled={query.data?.length !== 20 || query.isFetching}
-          onClick={() => setOffset(offset + 20)}
-        >
-          Next
-        </button>
-      </div>
+      <Pagination label="Cycles" offset={offset} limit={limit} pending={query.isFetching} hasNext={query.data?.length === limit}
+        onChange={(page) => { setOffset(page.offset); setPreferences({ rows: page.limit as typeof limit }) }} />
     </div>
   )
 }
@@ -269,17 +252,25 @@ export function CyclesPage() {
 function VersionDetails({
   cycle,
   version,
+  onReviewed,
 }: {
   cycle: Cycle
   version: Version
+  onReviewed: () => void
 }) {
+  const consumer = useConsumer()
   const review = useReview(cycle.id)
   const [note, setNote] = useState('')
   const [compare, setCompare] = useState('')
   const [reportView, setReportView] = useState('technical')
+  const [showUnchanged, setShowUnchanged] = useState(false)
+  const [confirmation, setConfirmation] = useState<Review | null>(null)
+  const [applied, setApplied] = useState<Review['action'] | null>(null)
   const baseline = cycle.versions.find((v) => v.id === compare)
   const fields = cycle.fields?.[version.kind] ?? []
   const reviewed = version.status === 'approved'
+  const latestReview = version.reviews.at(-1)
+  const unchanged = fields.filter((field) => baseline && JSON.stringify(baseline.content[field.key]) === JSON.stringify(version.content[field.key])).length
   return (
     <section
       className="cycle-panel glass-panel"
@@ -291,9 +282,10 @@ function VersionDetails({
           {version.archived ? 'Archived' : version.status.replaceAll('_', ' ')}
         </strong>
         {reviewed && !version.approval_current ? ' · Approval is stale' : ''} ·
-        version {version.id.slice(0, 8)}
+        version <CopyableId value={version.id} label="Version ID" />
       </p>
       <p>{version.change_summary}</p>
+      {latestReview?.action === 'request_revision' && <div className="tonal-card warning"><strong>Revision requested</strong><p>{latestReview.note || 'No review note was provided.'}</p></div>}
       {version.origin && (
         <p>
           Reused from{' '}
@@ -306,8 +298,8 @@ function VersionDetails({
         </p>
       )}
       <p>
-        Created by {version.created_by} ·{' '}
-        {new Date(version.created_at).toLocaleString()}
+        Created by {actorLabel(version.created_by, consumer)} ·{' '}
+        {formatTimestamp(version.created_at)}
       </p>
       {version.kind === 'report' && (
         <>
@@ -335,11 +327,12 @@ function VersionDetails({
             .filter((v) => v.kind === version.kind && v.id !== version.id)
             .map((v) => (
               <option value={v.id} key={v.id}>
-                {v.title} · {v.id.slice(0, 8)} · {v.status}
+                {v.title} · {v.id} · {v.status}
               </option>
             ))}
         </select>
       </label>
+      {baseline && unchanged > 0 && <label><input type="checkbox" checked={showUnchanged} onChange={(event) => setShowUnchanged(event.target.checked)} /> Show unchanged ({unchanged})</label>}
       {version.kind === 'report' && baseline && (
         <FrozenEvidenceDiff
           selected={version.content._execution_evidence}
@@ -348,6 +341,7 @@ function VersionDetails({
       )}
       <div className={baseline ? 'cycle-diff' : ''}>
         {fields
+          .filter((field) => !baseline || showUnchanged || JSON.stringify(baseline.content[field.key]) !== JSON.stringify(version.content[field.key]))
           .filter(
             (f) =>
               version.kind !== 'report' ||
@@ -369,16 +363,18 @@ function VersionDetails({
                   ? ' · Changed'
                   : ''}
               </h3>
+              {baseline && field.control === 'multiline' ? <PromptDiff original={fieldValue(baseline.content[field.key])} value={fieldValue(version.content[field.key])} ariaLabel={`${field.label} changes`} /> : <>
               {baseline && (
                 <div>
                   <strong>Comparison version</strong>
-                  <p>{String(baseline.content[field.key] ?? 'Not provided')}</p>
+                  <p>{fieldValue(baseline.content[field.key])}</p>
                 </div>
               )}
               <div>
                 {baseline && <strong>Selected version</strong>}
-                <p>{String(version.content[field.key] ?? 'Not provided')}</p>
+                <p>{fieldValue(version.content[field.key])}</p>
               </div>
+              </>}
             </section>
           ))}
       </div>
@@ -398,7 +394,7 @@ function VersionDetails({
           const upstream = cycle.versions.find((v) => v.id === id)
           return (
             <li key={id}>
-              {upstream?.title ?? 'Missing upstream version'} · {id.slice(0, 8)}{' '}
+              {upstream?.title ?? 'Missing upstream version'} · <CopyableId value={id} label="Upstream version ID" />{' '}
               ·{' '}
               {upstream?.approval_current
                 ? 'Approval current'
@@ -410,12 +406,12 @@ function VersionDetails({
       {!version.dependencies.length && <p>No upstream versions selected.</p>}
       <details>
         <summary>Version identity and review history</summary>
-        <p>Version ID: {version.id}</p>
+        <p>Version ID: <CopyableId value={version.id} label="Version ID" /></p>
         <p>Content SHA-256: {version.checksum}</p>
         <ul>
           {version.reviews.map((r, i) => (
             <li key={i}>
-              {r.action} · {r.actor} · {r.at}
+              {REVIEW_RESULTS[r.action as Review['action']] ?? r.action} · {actorLabel(r.actor, consumer)} · {formatTimestamp(r.at)}
               <p>{r.note}</p>
             </li>
           ))}
@@ -432,16 +428,16 @@ function VersionDetails({
             />
           </label>
           <div className="cycle-actions">
-            {version.available_actions.map((action) => (
+            {[...version.available_actions].sort((a, b) => Number(a === 'archive') - Number(b === 'archive')).map((action) => (
               <button
                 type="button"
                 className={
-                  action === 'approve' ? 'btn btn-primary' : 'btn btn-secondary'
+                  action === 'approve' ? 'btn btn-primary' : action === 'archive' ? 'btn btn-danger' : 'btn btn-secondary'
                 }
                 disabled={review.isPending}
                 key={action}
                 onClick={() =>
-                  review.mutate({
+                  setConfirmation({
                     action: action as Review['action'],
                     version_id: version.id,
                     expected_revision: cycle.revision,
@@ -449,21 +445,33 @@ function VersionDetails({
                   })
                 }
               >
-                {actions[action] ?? action}
+                {REVIEW_LABELS[action as Review['action']] ?? action}
               </button>
             ))}
           </div>
         </>
       )}
-      {review.error && (
+      {confirmation && <Dialog ariaLabel={REVIEW_LABELS[confirmation.action]} className="cycle-leave-dialog" overlayClassName="cycle-dialog-overlay" onClose={() => { if (!review.isPending) setConfirmation(null) }} closeOnEscape={!review.isPending} closeOnBackdrop={!review.isPending}>
+        <h2>{REVIEW_LABELS[confirmation.action]}</h2>
+        <p><strong>{version.title}</strong></p>
+        <p>{REVIEW_EFFECTS[confirmation.action]}</p>
+        <p>Version {confirmation.version_id} · cycle revision {confirmation.expected_revision}</p>
+        {confirmation.note && <p>Review note: {confirmation.note}</p>}
+        {review.error && <p role="alert" className="tonal-card danger">{review.error.message}</p>}
+        <div className="ux-dialog-actions">
+          <button className="btn btn-secondary" disabled={review.isPending} onClick={() => setConfirmation(null)}>Cancel</button>
+          <button className={confirmation.action === 'archive' ? 'btn btn-danger' : 'btn btn-primary'} disabled={review.isPending} onClick={() => review.mutate(confirmation, { onSuccess: () => { setApplied(confirmation.action); setNote(''); setConfirmation(null); onReviewed() } })}>{review.isPending ? 'Saving…' : `Confirm ${REVIEW_LABELS[confirmation.action].toLowerCase()}`}</button>
+        </div>
+      </Dialog>}
+      {review.error && !confirmation && (
         <p role="alert">
           {review.error.message} Refresh the cycle and review the latest version
           before retrying.
         </p>
       )}
-      {review.isSuccess && (
+      {applied && (
         <p role="status">
-          Review action recorded for version {version.id.slice(0, 8)}.
+          {REVIEW_RESULTS[applied]}: {version.title}.
         </p>
       )}
     </section>
@@ -488,13 +496,16 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
     kind: VersionWrite['kind']
     base?: Version
   } | null>(null)
+  const selectedVersionId = params.get('version')
+  useEffect(() => { setEditing(null) }, [tab, selectedVersionId])
+  const executions = useExecutions(cycleId, enabled && tab === 'overview')
   const cycle = query.data
   const applications = useApplications(cycle?.project_id)
   const environments = useEnvironments(cycle?.app_id)
   if (!enabled) return <Disabled />
   if (!cycle)
     return query.error ? (
-      <ProblemCard
+      query.error instanceof ApiError && [403, 404].includes(query.error.status) ? <section className="cycle-panel glass-panel"><h2>Cycle unavailable</h2><p>This cycle does not exist or is outside your authorized scope.</p><Link to="/cycles">Back to all cycles</Link></section> : <ProblemCard
         title="Could not load cycle"
         message={query.error.message}
         onRetry={() => void query.refetch()}
@@ -513,7 +524,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
     'report',
     'postmortem',
   ].includes(tab)
-  const canEdit = roleAtLeast(consumer?.role ?? 'viewer', 'operator')
+  const canEdit = canMutateAudience(consumer, cycle.project_id, cycle.app_id)
   const application =
     applications.data?.find((a) => a.id === cycle.app_id)?.name ?? cycle.app_id
   const environment =
@@ -524,7 +535,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
       <header className="cycle-heading">
         <div>
           <Link to="/cycles">All cycles</Link>
-          <h1>{cycle.name}</h1>
+          <h2>{cycle.name}</h2>
           {cycle.origin_cycle_id && (
             <p>
               Continues{' '}
@@ -538,7 +549,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
             {cycle.project_id} · {application} · {environment}
           </p>
           <p>
-            Owner: {cycle.owner} ·{' '}
+            Owner: {actorLabel(cycle.owner, consumer)} ·{' '}
             <strong>
               {cycle.mode === 'simulation'
                 ? 'Simulation — synthetic evidence'
@@ -548,14 +559,14 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
         </div>
         <button
           className="btn btn-secondary"
-          disabled={query.isFetching || Boolean(editing)}
+          disabled={query.isFetching}
           onClick={() => void query.refetch()}
         >
           Refresh cycle
         </button>
       </header>
       <p className="cycle-next">
-        Next action: {cycle.blockers[0] ?? 'Review deliverables'}
+        Next action: {cycleNextAction(cycle)}
       </p>
       <nav className="cycle-nav" aria-label="Cycle workspace">
         {steps.map(([key, label]) => (
@@ -563,14 +574,13 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
             key={key}
             className="btn btn-secondary"
             aria-current={tab === key ? 'page' : undefined}
-            disabled={Boolean(editing)}
             onClick={() => setParams({ tab: key })}
           >
             {label}
           </button>
         ))}
       </nav>
-      {saved && <p role="status">Saved draft version {saved.slice(0, 8)}.</p>}
+      {saved && <div><p role="status">Saved draft version.</p><CopyableId value={saved} label="Saved version ID" /></div>}
       {query.error && (
         <p role="alert">
           Refresh failed. Displaying the last loaded cycle:{' '}
@@ -586,13 +596,13 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
               : 'An operator must explicitly approve each deliverable version.'}
           </p>
           <ul>
-            {cycle.blockers.map((b) => (
+            {cycle.blockers.filter((b) => b !== cycleNextAction(cycle)).map((b) => (
               <li key={b}>{b}</li>
             ))}
           </ul>
           <div className="cycle-card-grid">
             {steps
-              .filter(([key]) => !['overview', 'executions'].includes(key))
+              .filter(([key]) => key !== 'overview')
               .map(([key, label]) => {
                 const current = cycle.versions
                   .filter((v) => v.kind === key)
@@ -601,7 +611,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
                   <div key={key}>
                     <h3>{label}</h3>
                     <p>
-                      {current
+                      {key === 'executions' ? executions.data ? `${executions.data.preparations.length} prepared executions · ${executions.data.linked_runs.length} linked runs` : 'Open executions to review preparations and preflight checks' : current
                         ? `${current.title} · ${current.archived ? 'Archived' : current.status.replaceAll('_', ' ')}${current.status === 'approved' && !current.approval_current ? ' · Approval stale' : ''}`
                         : 'Not started'}
                     </p>
@@ -648,7 +658,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
               </div>
             )}
           </div>
-          {tab === 'report' && <CycleResults cycleId={cycle.id} />}
+          {tab === 'report' && <CycleResults cycleId={cycle.id} projectId={cycle.project_id} />}
           {tab === 'postmortem' && (
             <CycleHandoff cycle={cycle} canEdit={canEdit} />
           )}
@@ -665,7 +675,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
                 >
                   {versions.map((v) => (
                     <option key={v.id} value={v.id}>
-                      {v.title} · {v.id.slice(0, 8)} ·{' '}
+                      {v.title} · {v.id} ·{' '}
                       {v.archived ? 'archived' : v.status}
                     </option>
                   ))}
@@ -700,6 +710,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
                   key={`details-${version.id}`}
                   cycle={cycle}
                   version={version}
+                  onReviewed={() => setSaved('')}
                 />
               )}
             </>

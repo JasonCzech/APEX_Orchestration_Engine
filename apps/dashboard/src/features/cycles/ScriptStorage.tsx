@@ -1,3 +1,4 @@
+import { formatTimestamp } from '@/utils/time'
 import { useState } from 'react'
 import {
   downloadScript,
@@ -68,7 +69,7 @@ export function ScriptStorage({
             )?.name ?? artifact.connection_id}
             .{' '}
             {artifact.stored_at &&
-              `Verified ${new Date(artifact.stored_at).toLocaleString()}.`}
+              `Verified ${formatTimestamp(artifact.stored_at)}.`}
           </p>
           <details>
             <summary>Storage identity</summary>

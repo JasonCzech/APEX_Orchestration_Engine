@@ -27,6 +27,7 @@ const cycle: Cycle = {
         help: '',
         options: [],
         label: 'Script source',
+        integer: false,
         control: 'multiline',
         required: true,
       },
@@ -76,7 +77,7 @@ function mount(role: 'admin' | 'viewer' = 'admin') {
     http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
     http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
   )
-  const state = authenticatedState(role)
+  const state = authenticatedState(role, 'Dash Ops', [])
   if (state.status === 'authenticated')
     state.systemInfo.features = { cycles: true }
   renderApp({ initialEntries: ['/cycles/cycle?tab=script'], authState: state })

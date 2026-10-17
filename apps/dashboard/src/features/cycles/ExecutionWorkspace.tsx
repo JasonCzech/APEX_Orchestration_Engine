@@ -1,4 +1,10 @@
 import { useRef, useState } from 'react'
+import { useEnvironments } from '@/api/hooks/useCatalog'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { formatTimestamp } from '@/utils/time'
+import { useRunNames } from './useRunNames'
+import { CopyableId } from '@/components/ux/CopyableId'
+import { actorLabel } from './cycleDisplay'
 import { ProviderValidation } from './ProviderValidation'
 import { Link } from 'react-router'
 import {
@@ -16,6 +22,10 @@ export function ExecutionWorkspace({
   cycle: Cycle
   canEdit: boolean
 }) {
+  const names = useRunNames(cycle.project_id)
+  const consumer = useOptionalConsumer()
+  const environments = useEnvironments(cycle.app_id)
+  const environmentName = environments.data?.find(item => item.id === cycle.environment_id)?.name ?? cycle.environment_id
   const query = useExecutions(cycle.id)
   const prepare = usePrepareExecution(cycle.id)
   const link = useLinkRun(cycle.id)
@@ -47,6 +57,7 @@ export function ExecutionWorkspace({
   const script = scripts.find((v) => v.id === scriptId)
   const data = query.data
   const busy = prepare.isPending || link.isPending
+  const matchingConnections = data?.connections.filter(connection => connection.provider === String(script?.content.engine).replaceAll('-', '_')) ?? []
   return (
     <section className="cycle-panel glass-panel">
       <h2>Executions</h2>
@@ -66,7 +77,7 @@ export function ExecutionWorkspace({
       {query.error && (
         <p role="alert">
           {query.error.message}{' '}
-          <button onClick={() => void query.refetch()}>Retry</button>
+          <button className="btn btn-secondary" onClick={() => void query.refetch()}>Retry</button>
         </p>
       )}
       {data && (
@@ -83,7 +94,7 @@ export function ExecutionWorkspace({
             <code>{data.inventory_snapshot_id ?? 'Not available'}</code>, target
             version {data.target_version ?? 'Not available'}.{' '}
             {data.inventory_scanned_at &&
-              `Scanned ${new Date(data.inventory_scanned_at).toLocaleString()}.`}
+              `Scanned ${formatTimestamp(data.inventory_scanned_at)}.`}
           </p>
           {canEdit && (
             <form
@@ -133,7 +144,7 @@ export function ExecutionWorkspace({
                     <option value="">Select a plan</option>
                     {plans.map((v) => (
                       <option key={v.id} value={v.id}>
-                        {v.title} · {v.id.slice(0, 8)}
+                        {v.title} · {v.id}
                       </option>
                     ))}
                   </select>
@@ -154,7 +165,7 @@ export function ExecutionWorkspace({
                     {scripts.map((v) => (
                       <option key={v.id} value={v.id}>
                         {v.title} · {String(v.content.engine)} ·{' '}
-                        {v.id.slice(0, 8)}
+                        {v.id}
                       </option>
                     ))}
                   </select>
@@ -173,7 +184,7 @@ export function ExecutionWorkspace({
                     </option>
                     {readiness.map((v) => (
                       <option key={v.id} value={v.id}>
-                        {v.title} · {v.id.slice(0, 8)}
+                        {v.title} · {v.id}
                       </option>
                     ))}
                   </select>
@@ -191,13 +202,7 @@ export function ExecutionWorkspace({
                       <option value="">
                         Not selected — preflight will be blocked
                       </option>
-                      {data.connections
-                        .filter(
-                          (c) =>
-                            c.provider ===
-                            String(script?.content.engine).replaceAll('-', '_'),
-                        )
-                        .map((c) => (
+                      {matchingConnections.map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name} · {c.provider}
                           </option>
@@ -205,7 +210,8 @@ export function ExecutionWorkspace({
                     </select>
                   </label>
                 )}
-                <label className="cycle-field">
+                {cycle.mode === 'live' && script && matchingConnections.length === 0 && <p className="tonal-card warning">No authorized connection matches this script’s engine. Ask an administrator to configure a connection for this project and application before preflight can pass.</p>}
+                {script?.content.engine === 'apex-load' && <label className="cycle-field">
                   Launch owner
                   <select
                     value={authority}
@@ -221,13 +227,13 @@ export function ExecutionWorkspace({
                       </option>
                     )}
                   </select>
-                </label>
+                </label>}
                 {plan && (
                   <p>
-                    Workload: {String(plan.content.vusers)} concurrent users ·{' '}
+                    Workload: {String(plan.content.vusers)} VUsers ·{' '}
                     {String(plan.content.ramp_s)}s ramp ·{' '}
                     {String(plan.content.duration_s)}s duration. Target:{' '}
-                    <code>{cycle.environment_id}</code>.
+                    <span>{environmentName}</span>.
                   </p>
                 )}
                 {script && (
@@ -288,31 +294,17 @@ export function ExecutionWorkspace({
                 .
               </p>
               <p>
-                {String(p.snapshot.workload.vusers)} users ·{' '}
+                {String(p.snapshot.workload.vusers)} VUsers ·{' '}
                 {String(p.snapshot.workload.ramp_s)}s ramp ·{' '}
                 {String(p.snapshot.workload.duration_s)}s duration
               </p>
-              <ul>
-                {[...p.checks]
-                  .sort(
-                    (a, b) =>
-                      ({ blocked: 0, not_checked: 1, ready: 2 })[a.status] -
-                      { blocked: 0, not_checked: 1, ready: 2 }[b.status],
-                  )
-                  .map((c) => (
-                    <li key={c.key}>
-                      <strong>
-                        {c.label}:{' '}
-                        {c.status === 'ready'
-                          ? 'Ready'
-                          : c.status === 'blocked'
-                            ? 'Blocked'
-                            : 'Not checked'}
-                      </strong>{' '}
-                      — {c.detail}
-                    </li>
-                  ))}
-              </ul>
+              {(['blocked', 'not_checked', 'ready'] as const).map(status => {
+                const checks = p.checks.filter(check => check.status === status)
+                return checks.length > 0 && <section key={status} aria-label={`${status.replaceAll('_', ' ')} checks`}>
+                  <h5><span className={`status-badge ${status === 'blocked' ? 'danger' : status === 'ready' ? 'success' : 'neutral'}`}>{status === 'blocked' ? 'Blocked' : status === 'ready' ? 'Ready' : 'Not checked'} · {checks.length}</span></h5>
+                  <ul>{checks.map(check => <li key={check.key}><strong>{check.label}</strong> — {check.detail}</li>)}</ul>
+                </section>
+              })}
               <ProviderValidation
                 cycleId={cycle.id}
                 preparationId={p.id}
@@ -322,13 +314,13 @@ export function ExecutionWorkspace({
                 <summary>Binding and audit details</summary>
                 <dl>
                   <dt>Preparation</dt>
-                  <dd>{p.id}</dd>
+                  <dd><CopyableId value={p.id} label="Preparation ID" /></dd>
                   <dt>Prepared by</dt>
-                  <dd>{p.created_by}</dd>
+                  <dd>{actorLabel(p.created_by, consumer)}</dd>
                   <dt>Prepared at</dt>
-                  <dd>{new Date(p.created_at).toLocaleString()}</dd>
+                  <dd>{formatTimestamp(p.created_at)}</dd>
                   <dt>Preflight checked</dt>
-                  <dd>{new Date(p.checked_at).toLocaleString()}</dd>
+                  <dd>{formatTimestamp(p.checked_at)}</dd>
                   <dt>Script source SHA-256</dt>
                   <dd>
                     <code>{p.snapshot.script_source_checksum}</code>
@@ -373,8 +365,8 @@ export function ExecutionWorkspace({
                     .filter((r) => !data.linked_runs.some((l) => l.id === r.id))
                     .map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.engine} · attempt {r.attempt} · {r.status} ·{' '}
-                        {new Date(r.started_at).toLocaleString()} ·{' '}
+                        {names.get(r.thread_id) || 'Title unavailable'} · {r.engine} attempt {r.attempt} · {r.status} ·{' '}
+                        {formatTimestamp(r.started_at)} ·{' '}
                         {r.thread_id}
                       </option>
                     ))}
@@ -398,13 +390,13 @@ export function ExecutionWorkspace({
                 <Link
                   to={`/runs/${encodeURIComponent(r.thread_id)}/phases/execution`}
                 >
-                  {r.engine} · attempt {r.attempt}
-                </Link>{' '}
+                  {names.get(r.thread_id) || 'Title unavailable'} · {r.engine} attempt {r.attempt} · {formatTimestamp(r.started_at)}
+                </Link>{' '}<CopyableId value={r.thread_id} label="Run ID" />{' '}
                 · engine status {r.status} · bindings unverified
               </li>
             ))}
           </ul>
-          <Link to="/runs">Inspect Test History</Link>
+          <Link to="/runs">Inspect test history</Link>
         </>
       )}
     </section>
