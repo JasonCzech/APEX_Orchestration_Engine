@@ -267,12 +267,12 @@ describe('ConnectionDetailPage', () => {
     await saveStarted
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Delete…' })).toBeDisabled()
       expect(screen.getByRole('button', { name: 'Toggle jira-prod' })).toBeDisabled()
     })
 
     releaseSave()
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete' })).toBeEnabled())
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete…' })).toBeEnabled())
   })
 
   it('keeps the list toggle locked until a detail PATCH finishes', async () => {
@@ -467,7 +467,7 @@ describe('ConnectionDetailPage', () => {
     await user.type(firstName, 'stale-jira-name')
     queryClient.setQueryData(queryKeys.admin.connection(CONN_ENGINE.id), CONN_ENGINE)
 
-    await user.click(screen.getByRole('button', { name: 'Delete' }))
+    await user.click(screen.getByRole('button', { name: 'Delete…' }))
     const dialog = await screen.findByRole('dialog', { name: 'Delete connection jira-prod' })
     await user.type(
       within(dialog).getByRole('textbox', { name: 'Type the connection name to confirm' }),
@@ -501,7 +501,7 @@ describe('ConnectionDetailPage', () => {
     const user = userEvent.setup()
     const { router } = renderDetail()
 
-    await user.click(await screen.findByRole('button', { name: 'Delete' }))
+    await user.click(await screen.findByRole('button', { name: 'Delete…' }))
     const dialog = await screen.findByRole('dialog', { name: 'Delete connection jira-prod' })
     const confirm = within(dialog).getByRole('button', { name: 'Delete connection' })
     expect(confirm).toBeDisabled()

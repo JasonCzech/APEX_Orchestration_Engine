@@ -7,7 +7,6 @@ export function EvidencePage() {
     <section className="ctx-page animate-enter">
       <header className="ctx-toolbar glass-panel">
         <div className="ctx-heading">
-          <h2 className="ctx-page-title">Evidence</h2>
           <p className="ctx-toolbar-caption">
             Investigate findings from test runs, organized by project, application, and test.
           </p>

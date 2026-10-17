@@ -368,7 +368,7 @@ export function stepIssues(
     }
     case 'work-items': {
       if (draft.work_items.some((item) => !item.connection_id || !item.provider)) {
-        issues.push('Revalidate legacy work items before launch')
+        issues.push('Revalidate legacy tickets before launch')
       }
       const connections = new Set(
         draft.work_items
@@ -376,7 +376,7 @@ export function stepIssues(
           .filter((connectionId): connectionId is string => Boolean(connectionId)),
       )
       if (connections.size > 1) {
-        issues.push('Selected work items must use one work-tracking connection')
+        issues.push('Selected tickets must use one work-tracking connection')
       }
       break
     }
@@ -384,7 +384,7 @@ export function stepIssues(
       const count = contextPacketCount(draft)
       if (count > maxContextPackets) {
         issues.push(
-          `Context has ${count} packets; this deployment allows ${maxContextPackets}`,
+          `Knowledge has ${count} packets; this deployment allows ${maxContextPackets}`,
         )
       }
       break

@@ -64,7 +64,7 @@ describe('router', () => {
     renderApp({ initialEntries: ['/no-such-screen'], authState: authenticatedState() })
 
     expect(
-      await screen.findByRole('heading', { level: 2, name: 'Not Found' }),
+      await screen.findByRole('heading', { level: 2, name: 'Page unavailable' }),
     ).toBeInTheDocument()
   })
 })

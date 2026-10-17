@@ -390,6 +390,30 @@ describe('ConsumersPage', () => {
     await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Edit' })).toBeEnabled())
   })
 
+  it('requires the exact consumer name before deleting its access', async () => {
+    const del = deleteConsumerHandler()
+    server.use(...consumersReadHandlers(), del.handler)
+    const user = userEvent.setup()
+    renderList()
+    const row = await screen.findByTestId('consumer-row-cons-ci')
+    await user.click(within(row).getByRole('button', { name: 'Consumer actions: ci-bot' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Delete…' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete consumer ci-bot' })
+    const confirm = within(dialog).getByRole('button', { name: 'Delete consumer' })
+    const input = within(dialog).getByRole('textbox', { name: 'Type ci-bot to confirm' })
+    expect(confirm).toBeDisabled()
+    await user.click(confirm)
+    expect(del.captured).toHaveLength(0)
+    await user.type(input, 'CI-BOT')
+    expect(confirm).toBeDisabled()
+    await user.clear(input)
+    await user.type(input, 'ci-bot')
+    expect(confirm).toBeEnabled()
+    await user.click(confirm)
+    await waitFor(() => expect(del.captured).toEqual([CONSUMER_CI.id]))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Delete consumer ci-bot' })).not.toBeInTheDocument())
+  })
+
   it("maps the self-delete 409 to an inline 'your own consumer' message", async () => {
     const del = deleteConsumerHandler(CONSUMER_OPS.id)
     server.use(...consumersReadHandlers(), del.handler)
@@ -401,6 +425,7 @@ describe('ConsumersPage', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Delete…' }))
 
     const dialog = await screen.findByRole('dialog', { name: 'Delete consumer Dash Ops' })
+    await user.type(within(dialog).getByRole('textbox', { name: 'Type Dash Ops to confirm' }), 'Dash Ops')
     await user.click(within(dialog).getByRole('button', { name: 'Delete consumer' }))
 
     const alert = await within(dialog).findByRole('alert')

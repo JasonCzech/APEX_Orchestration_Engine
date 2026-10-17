@@ -381,21 +381,21 @@ export function ReasoningTab({
       {entry?.transcript_ref && <p><ArtifactLink to={artifactViewerPath(threadId, entry.transcript_ref.id)}>Full agent transcript{entry.attempt ? ` (attempt ${entry.attempt})` : ''}</ArtifactLink> — the durable record of this phase’s reasoning, prompts and tool calls.</p>}
       {entry?.reasoning_digest ? (
         <>
-          <h3 className="workspace-section-title">Reasoning Digest</h3>
+          <h3 className="workspace-section-title">Reasoning digest</h3>
           <p className="workspace-caption reasoning-digest">{entry.reasoning_digest}</p>
         </>
       ) : null}
 
       {(entry?.tool_calls?.length ?? 0) > 0 && (
         <>
-          <h3 className="workspace-section-title">Tool Calls</h3>
+          <h3 className="workspace-section-title">Tool calls</h3>
           <ToolCallsList calls={entry?.tool_calls ?? []} />
         </>
       )}
 
       {(prompt?.system || prompt?.user || prompt?.application) && (
         <>
-          <h3 className="workspace-section-title">Resolved Prompt</h3>
+          <h3 className="workspace-section-title">Resolved prompt</h3>
           {source?.origin && (
             <div className="kpi-row">
               <span
@@ -417,7 +417,7 @@ export function ReasoningTab({
 
       {entries.length > 0 && (
         <>
-          <h3 className="workspace-section-title">Operator Dialogue</h3>
+          <h3 className="workspace-section-title">Operator dialogue</h3>
           <div className="dialogue-thread">
             {entries.map((item) => (
               <div key={item.id} className={`dialogue-bubble ${item.role}`}>

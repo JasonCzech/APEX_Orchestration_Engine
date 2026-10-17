@@ -31,6 +31,10 @@ describe('dev-data store', () => {
         expect(phase.status).toBe(state.phases_plan && !state.phases_plan.includes(phase.phase as import('@apex/pipeline-events').PhaseName)
           ? 'none' : state.phase_results?.[phase.phase as import('@apex/pipeline-events').PhaseName]?.status ?? 'pending')
       }
+      for (const message of state.dialogue ?? []) {
+        expect(Date.parse(message.at ?? '')).toBeGreaterThanOrEqual(Date.parse(detail.created_at ?? ''))
+        expect(Date.parse(message.at ?? '')).toBeLessThanOrEqual(Date.parse(detail.updated_at ?? ''))
+      }
       const execution = state.phase_results?.execution
       const passed = execution?.status === 'succeeded' ? execution.test_summary?.passed : undefined
       expect(summary.execution_result).toBe(passed === true ? 'passed' : passed === false ? 'failed' : null)
@@ -461,7 +465,9 @@ describe('dev-data store', () => {
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(JSON.stringify(detail)).toContain('PERFHYPER2 rescan is green')
     run = { ...run, ...(await resume(detail.pending_gate.interrupt_id, { action: 'approve' })) }
-    await consume(run.run_id)
+    const executionEvents = await consume(run.run_id)
+    const progress = executionEvents.map(event => (event as { data: { type: string; progress_pct?: number } }).data).filter(event => event.type === 'engine_poll').map(event => event.progress_pct)
+    expect(progress).toEqual([8, 24, 45, 62, 76, 91, 100])
     detail = await jsonOf(await store.handleApexRequest(new Request(`http://localhost/v1/pipelines/${thread.thread_id}`)))
     expect(detail.pending_gate.phase).toBe('execution')
     expect(detail.execution_result).toBeNull()

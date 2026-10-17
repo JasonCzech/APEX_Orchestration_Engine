@@ -686,7 +686,7 @@ function ConnectionDetailContent({ connectionId }: { connectionId: string }) {
             onClick={() => setDeleting(true)}
             disabled={writeCount > 0}
           >
-            Delete
+            Delete…
           </button>
         </div>
       </header>

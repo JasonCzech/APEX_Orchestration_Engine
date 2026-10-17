@@ -172,7 +172,7 @@ describe('buildLaunchPreview', () => {
     ]
     expect(allIssues(draft)).toContainEqual({
       step: 'work-items',
-      message: 'Revalidate legacy work items before launch',
+      message: 'Revalidate legacy tickets before launch',
     })
 
     draft.work_items = [
@@ -181,7 +181,7 @@ describe('buildLaunchPreview', () => {
     ]
     expect(allIssues(draft)).toContainEqual({
       step: 'work-items',
-      message: 'Selected work items must use one work-tracking connection',
+      message: 'Selected tickets must use one work-tracking connection',
     })
   })
 

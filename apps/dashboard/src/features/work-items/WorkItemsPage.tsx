@@ -792,9 +792,7 @@ export function WorkItemsPage() {
   return (
     <section className="wi-page animate-enter">
       <header className="wi-toolbar glass-panel">
-        {/* The topbar already renders the route-handle h1; this is a section label. */}
         <div>
-          <h2 className="wi-page-title">Tickets</h2>
           <nav className="wi-local-tabs" aria-label="Ticket sections">
             <Link className="wi-tab active" to="/work-items">Search</Link>
             <Link className="wi-tab" to="/work-items/saved">Saved queries</Link>

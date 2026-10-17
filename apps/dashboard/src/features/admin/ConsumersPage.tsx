@@ -426,6 +426,7 @@ function RotateConsumerModal({
 
 /** Delete confirm — a 409 means self-delete and renders the friendly line inline. */
 function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClose: () => void }) {
+  const [confirmation, setConfirmation] = useState('')
   const remove = useDeleteConsumer(consumer.id)
   const writeCount = usePendingMutationCount(consumerWriteMutationKey(consumer.id))
   const selfDelete = remove.isError && isApiError(remove.error) && remove.error.status === 409
@@ -446,6 +447,11 @@ function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClos
       <p className="adm-modal-caption">
         This permanently removes <strong>{consumer.name}</strong> and revokes its key.
       </p>
+      <label className="adm-field">
+        <span>Type {consumer.name} to confirm</span>
+        <input value={confirmation} onChange={event => setConfirmation(event.target.value)}
+          autoComplete="off" disabled={writeCount > 0} />
+      </label>
       {remove.isError && (
         <div className="adm-inline-error" role="alert">
           <span>{selfDelete ? 'You cannot delete your own consumer' : remove.error.message}</span>
@@ -463,7 +469,7 @@ function DeleteConsumerModal({ consumer, onClose }: { consumer: Consumer; onClos
         <button
           type="button"
           className="btn btn-danger btn-sm"
-          disabled={writeCount > 0 || selfDelete}
+          disabled={writeCount > 0 || selfDelete || confirmation !== consumer.name}
           onClick={() => remove.mutate(consumer.id, { onSuccess: onClose })}
         >
           {remove.isPending ? 'Deleting…' : 'Delete consumer'}
