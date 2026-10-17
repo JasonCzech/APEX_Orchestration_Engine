@@ -4,10 +4,6 @@ import { createRoot } from 'react-dom/client'
 import App from './App'
 import { AppErrorBoundary } from './AppErrorBoundary'
 import { loadRuntimeConfig } from './config/runtimeConfig'
-import '@fontsource-variable/inter/wght.css'
-import '@fontsource-variable/nunito/wght.css'
-import '@fontsource/ibm-plex-mono/400.css'
-import '@fontsource/ibm-plex-mono/600.css'
 import './theme/index.css'
 
 /**

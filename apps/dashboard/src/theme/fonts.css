@@ -1,0 +1,32 @@
+/* ATT Aleck Sans: shared APEX Load brand assets, bundled with project-owner approval. */
+@font-face {
+  font-family: 'ATT Aleck Sans';
+  src: url('/fonts/att/ATTAleckSans_W_Rg.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ATT Aleck Sans';
+  src: url('/fonts/att/ATTAleckSans_W_Md.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ATT Aleck Sans';
+  src: url('/fonts/att/ATTAleckSans_W_Bd.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ATT Aleck Sans';
+  src: url('/fonts/att/ATTAleckSans_W_Blk.woff2') format('woff2');
+  font-weight: 900;
+  font-style: normal;
+  font-display: swap;
+}

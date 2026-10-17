@@ -90,8 +90,6 @@
   --run-calendar-ad-hoc-text: #6f42c1;
 
   --radius: 16px;
-  --font-sans: 'Nunito Variable', 'Inter Variable', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
 }
 
 [data-theme='apex-light'] .glass-panel {

@@ -67,8 +67,9 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-primary);
-  font-size: 24px;
-  font-weight: 800;
+  /* Shared shell title: APEX Load dashboard/src/App.css. */
+  font-size: 19px;
+  font-weight: 850;
   line-height: 1.12;
   text-overflow: ellipsis;
   white-space: nowrap;
