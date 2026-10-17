@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { orchestrationTone, formatTimestamp, executionResultLabel } from '@/features/runs/runDisplay'
@@ -127,6 +128,7 @@ function HomeSkeleton() {
 }
 
 export function HomePage() {
+  useTimestampPreference()
   const topbarActions = useMemo(
     () => (
       <Link to="/runs/new" className="btn btn-primary">

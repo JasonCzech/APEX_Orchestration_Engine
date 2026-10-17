@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { TableToolbar } from '@/components/ux/TableToolbar'
@@ -644,6 +645,7 @@ function renderKeyCell(
 }
 
 export function AnalyticsPage() {
+  useTimestampPreference()
   const [searchParams, setSearchParams] = useSearchParams()
   const filters = useMemo(() => parseAnalyticsFilters(searchParams), [searchParams])
   const group = filters.group ?? DEFAULT_GROUP

@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { TableToolbar } from '@/components/ux/TableToolbar'
@@ -91,6 +92,7 @@ function LogsSkeleton() {
  * Pagination re-runs the *submitted* search at a new offset.
  */
 export function LogsPage() {
+  useTimestampPreference()
   const [searchParams, setSearchParams] = useSearchParams()
   const committed = useMemo(() => parseLogsFilters(searchParams), [searchParams])
   const committedKey = serializeLogsFilters(committed).toString()

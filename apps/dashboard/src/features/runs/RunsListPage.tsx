@@ -14,7 +14,7 @@ import { CopyableId } from '@/components/ux/CopyableId'
 import { Pagination } from '@/components/ux/Pagination'
 import { TableToolbar } from '@/components/ux/TableToolbar'
 import { SortableHeader } from '@/components/ux/SortableHeader'
-import { usePreferences } from '@/theme/preferences'
+import { usePreferences, useTimestampPreference } from '@/theme/preferences'
 import type { PhaseName } from '@apex/pipeline-events'
 
 import { CompareSelectBar } from '../compare/CompareSelectBar'
@@ -266,6 +266,7 @@ function RunsSkeleton() {
  * keeps the previous page rendered during transitions.
  */
 export function RunsListPage() {
+  useTimestampPreference()
   const { preferences } = usePreferences()
   const compact = useCompactLayout()
   const masterDetail = useMasterDetailLayout()

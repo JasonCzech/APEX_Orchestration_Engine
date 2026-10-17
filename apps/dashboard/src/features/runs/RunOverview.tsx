@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 import { executionLink } from '@/features/apex-load/executionLink'
 import { Link } from 'react-router'
 import type { PhaseName, PipelineState } from '@apex/pipeline-events'
@@ -26,6 +27,7 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
   onReviewGate?: () => void
   returnTo?: string
 }) {
+  useTimestampPreference()
   const execution = state.phase_results?.execution
   const summary = execution?.status === 'succeeded' ? execution.test_summary : undefined
   const executionOmitted = executionWasOmitted(state)

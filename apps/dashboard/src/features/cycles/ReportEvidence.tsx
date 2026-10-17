@@ -1,3 +1,4 @@
+import { useTimestampPreference } from '@/theme/preferences'
 import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { formatTimestamp } from '@/utils/time'
 import { actorLabel } from './cycleDisplay'
@@ -19,6 +20,7 @@ export function ReportEvidence({
   version: Version
   canEdit: boolean
 }) {
+  useTimestampPreference()
   const consumer = useOptionalConsumer()
   const results = useCycleResults(cycle.id, '')
   const [, setParams] = useSearchParams()
