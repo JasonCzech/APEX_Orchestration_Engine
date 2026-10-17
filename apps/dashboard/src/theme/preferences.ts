@@ -5,8 +5,9 @@ export interface Preferences {
   reduceMotion: boolean
   rows: 10 | 25 | 50 | 100
   wordWrap: boolean
+  timeZone: 'local' | 'UTC'
 }
-const defaults: Preferences = { reduceMotion: false, rows: 10, wordWrap: true }
+const defaults: Preferences = { reduceMotion: false, rows: 10, wordWrap: true, timeZone: 'local' }
 const listeners = new Set<() => void>()
 let cachedRaw: string | null | undefined
 let cached = defaults
@@ -27,6 +28,7 @@ function read(): Preferences {
       reduceMotion: value?.reduceMotion === true,
       rows: value?.rows === 25 || value?.rows === 50 || value?.rows === 100 ? value.rows : 10,
       wordWrap: value?.wordWrap !== false,
+      timeZone: value?.timeZone === 'UTC' ? 'UTC' : 'local',
     }
   } catch {
     cached = defaults
@@ -62,3 +64,8 @@ export function usePreferences() {
   }
 }
 export const readPreferences = read
+
+/** Refresh timestamp consumers without remounting their forms or route. */
+export function useTimestampPreference() {
+  return useSyncExternalStore(subscribe, () => read().timeZone, () => defaults.timeZone)
+}

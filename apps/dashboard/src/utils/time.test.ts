@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { formatRelative, formatTimestamp } from './time'
+import { PREFERENCE_KEY } from '@/theme/preferences'
 
 const NOW = Date.parse('2026-06-12T12:00:00Z')
 
@@ -33,6 +34,17 @@ describe('formatTimestamp', () => {
       .formatToParts(new Date(iso)).find(part => part.type === 'timeZoneName')?.value
     expect(formatTimestamp(iso)).toContain('2026')
     expect(formatTimestamp(iso)).toContain(timeZone)
+  })
+
+  it('uses UTC for absolute instants and older relative-date fallbacks when selected', () => {
+    localStorage.setItem(PREFERENCE_KEY, JSON.stringify({ timeZone: 'UTC' }))
+    const iso = '2026-01-01T00:30:00Z'
+    expect(formatTimestamp(iso)).toContain('UTC')
+    expect(formatTimestamp(iso)).toContain('2026')
+    expect(formatRelative(iso, Date.parse('2026-01-10T01:00:00Z'))).toBe(
+      new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }),
+    )
+    expect(formatRelative('2026-06-12T11:55:00Z', NOW)).toBe('5m ago')
   })
 
   it('does not render an invalid or missing date as a recorded time', () => {

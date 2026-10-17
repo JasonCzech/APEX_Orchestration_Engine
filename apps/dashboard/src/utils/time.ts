@@ -1,5 +1,7 @@
 /** Tiny relative-time formatter for grid timestamps (no dependency). */
 
+import { readPreferences } from '@/theme/preferences'
+
 const EM_DASH = '—'
 
 /**
@@ -26,20 +28,25 @@ export function formatRelative(iso: string | null | undefined, now: number = Dat
   if (days < 7) return `${days}d ago`
 
   const date = new Date(timestamp)
-  const sameYear = date.getFullYear() === new Date(now).getFullYear()
+  const utc = readPreferences().timeZone === 'UTC'
+  const sameYear = utc
+    ? date.getUTCFullYear() === new Date(now).getUTCFullYear()
+    : date.getFullYear() === new Date(now).getFullYear()
   return date.toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
+    ...(utc ? { timeZone: 'UTC' } : {}),
     ...(sameYear ? {} : { year: 'numeric' }),
   })
 }
 
-/** Absolute instants always identify their year and the viewer's time zone. */
+/** Absolute instants identify their year and selected local/UTC time zone. */
 export function formatTimestamp(iso: string | null | undefined): string {
   if (!iso) return EM_DASH
   const date = new Date(iso)
   if (!Number.isFinite(date.getTime())) return EM_DASH
   return date.toLocaleString(undefined, {
+    ...(readPreferences().timeZone === 'UTC' ? { timeZone: 'UTC' } : {}),
     year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit', timeZoneName: 'short',
   })

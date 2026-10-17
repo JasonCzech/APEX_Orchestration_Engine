@@ -22,6 +22,7 @@ describe('personal preferences', () => {
       rows: 25,
       wordWrap: false,
       reduceMotion: true,
+      timeZone: 'local',
     })
     expect(document.documentElement.dataset.reduceMotion).toBe('true')
     first.unmount()
