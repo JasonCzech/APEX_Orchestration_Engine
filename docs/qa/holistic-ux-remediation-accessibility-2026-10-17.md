@@ -1,6 +1,6 @@
 # Accessibility, review safety and shared UI remediation
 
-2026-10-17. Implemented in **APEX Orchestration**, on `codex/holistic-ux-remediation-2026-10-17`. APEX Load was a design reference; its repository was not modified. The original findings and independent corrections remain in the source checkout’s `docs/qa/ux-holistic-2026-10-17/`.
+2026-10-17. Implemented in **APEX Orchestration**, on `codex/holistic-ux-remediation-2026-10-17`. APEX Load was a design reference; its repository was not modified. The original findings and independent corrections remain in `docs/qa/ux-holistic-2026-10-17/` within the original `APEX_Orchestration_Engine` checkout beside this remediation worktree.
 
 ## Accessibility disposition
 
