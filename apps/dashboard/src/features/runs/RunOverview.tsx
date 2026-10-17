@@ -6,6 +6,7 @@ import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
 import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
+import { CopyableId } from '@/components/ux/CopyableId'
 import {
   executionResultLabel,
   formatDuration,
@@ -171,7 +172,8 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
       </article>
       <details className="glass-panel ux-card">
         <summary>Technical identifiers</summary>
-        <p>{detail.thread_id}</p>
+        <p>Run <CopyableId value={detail.thread_id} label="run ID" /></p>
+        {detail.app_id && <p>Application <CopyableId value={detail.app_id} label="application ID" /></p>}
       </details>
     </section>
   )

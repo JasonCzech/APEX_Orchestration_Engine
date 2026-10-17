@@ -1,11 +1,16 @@
 import { expect, test } from '@playwright/test'
 
-test('demo activity offers saved reasoning and resolves the application consistently', async ({ page }) => {
+test('demo activity offers saved reasoning and resolves the application consistently', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
   await page.goto('/runs/run-active')
   const overview = page.getByRole('region', { name: 'Run overview', exact: true })
   const scope = page.getByRole('navigation', { name: 'Current run scope' })
   await expect(overview.getByText('ACC', { exact: true })).toHaveAttribute('title', 'app-digital-device')
   await expect(scope.getByText('ACC', { exact: true })).toHaveAttribute('title', 'app-digital-device')
+  await expect(overview.getByRole('button', { name: 'Copy application ID' })).toBeHidden()
+  await overview.getByText('Technical identifiers', { exact: true }).click()
+  await overview.getByRole('button', { name: 'Copy application ID' }).click()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('app-digital-device')
   await page.goto('/runs/run-active/phases/execution?tab=log')
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
   await expect(activity).toContainText('No demo activity was captured for this phase.')

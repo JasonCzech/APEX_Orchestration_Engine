@@ -73,8 +73,23 @@ describe('RunDetailPage', () => {
     const overview = await screen.findByRole('region', { name: 'Run overview' })
     const scope = screen.getByRole('navigation', { name: 'Current run scope' })
     const expected = catalog === 'resolved' ? 'ACC' : detail.app_id
-    expect(await within(overview).findByText(expected, { exact: true })).toHaveAttribute('title', detail.app_id)
+    const context = within(overview).getByRole('heading', { name: 'Run context' }).parentElement
+    if (!context) throw new Error('Run context must be inside its panel')
+    expect(await within(context).findByText(expected, { exact: true })).toHaveAttribute('title', detail.app_id)
     expect(await within(scope).findByText(expected, { exact: true })).toHaveAttribute('title', detail.app_id)
+  })
+
+  it('keeps the full application identity available to copy behind technical details', async () => {
+    const user = userEvent.setup()
+    const detail = { ...structuredClone(PIPELINE_DETAIL), app_id: 'application-uuid-with-full-identity' }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByRole('button', { name: 'Copy application ID' })).not.toBeVisible()
+    await user.click(within(overview).getByText('Technical identifiers'))
+    await user.click(within(overview).getByRole('button', { name: 'Copy application ID' }))
+    expect(await navigator.clipboard.readText()).toBe(detail.app_id)
+    expect(within(overview).getByText('application ID copied')).toBeInTheDocument()
   })
 
   it('uses the matching interrupt when gate summary metadata is absent', async () => {
