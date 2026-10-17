@@ -71,15 +71,15 @@ The final review rounds were clear after correcting stale canonical-review navig
 
 Run the normal database migration step before starting this version. Migration `0039` adds nullable archive time and actor fields to execution preparations; existing bindings and validation records are retained. The new archive operation is covered by the authorization matrix and schema-readiness checks.
 
-The work remains on the local remediation branch; no deployment or production data migration was performed.
+The initial remediation and first cross-cutting follow-up were pushed to main at `822b412`. No production deployment or production data migration was performed.
 
 Task-owned browser sessions and servers were closed. Cleanup removed 41 Python/Vite/TypeScript cache paths (32.73 MiB) and 32 disposable browser files, preserving dependencies, deliverable bundles and the five verification captures. No Go or Docker builds were used. The temporary audit copy was verified byte-for-byte before removal; the original audit and captures remain unchanged in `docs/qa/ux-holistic-2026-10-17/` within the sibling `APEX_Orchestration_Engine` checkout.
 
 ## Boundaries
 
-Historical audit actors cannot be reconstructed; the new path attributes future decisions to the authenticated consumer. Historical agent latency that included review waits cannot be reconstructed either. Missing metrics and titles remain unavailable rather than being synthesized.
+Historical audit actors cannot be reconstructed. The independent re-review of `822b412` showed that the original attribution implementation did not reach gate resumes through the HTTP facade; the earlier claim that it attributed new decisions was incorrect. The correction and native-runtime verification are recorded below. Historical agent latency that included review waits cannot be reconstructed either. Missing metrics and titles remain unavailable rather than being synthesized.
 
-A configured external provider, live production stream, external ticket creation, publication, retrieval connectors and cross-product APEX Load handoff still require their actual services and credentials. The historical `/assistants/search` deployment 500 was not reproduced on the integrated main: current contract violations were corrected and covered, without claiming an unseen runtime cause was solved. These are verification limits and explicit product capability states, not simulated evidence of successful integration.
+A configured external provider, live production stream, external ticket creation, publication, retrieval connectors and cross-product APEX Load handoff still require their actual services and credentials. The independent re-review reproduced the `/assistants/search` 500 on `822b412`: native task groups wrapped request-guard exceptions before the middleware could map them. Earlier checks covered the corrected dashboard request shape but missed the rejected native request path. The server correction is recorded below. These are verification limits and explicit product capability states, not simulated evidence of successful integration.
 
 ## Follow-up cross-cutting review
 
@@ -108,3 +108,33 @@ Each correction received regression coverage and independent review. Further fin
 The branch was integrated with current `origin/main` before final builds and full backend validation. The code corrections were committed in five logical changes: `22b4003`, `517d794`, `224e297`, `1ae8053` and `7b6c80d`. Each commit followed a clear review round. No APEX Load source was changed.
 
 Follow-up cleanup removed 40 Python/Vite/TypeScript cache paths (16.50 MiB) and one disposable browser result file. Removal was verified; dependencies, production bundles and all tracked captures were preserved. No task-owned Playwright/browser or test-server process remains. No Go or Docker builds were used. The rollout requirements and external-service verification boundaries above remain unchanged.
+
+## Independent re-review corrections
+
+The independent live review of `822b412` exposed two gaps in the earlier verification and four remaining presentation issues. The earlier attribution and native-search claims above have been corrected rather than treated as historical-data limitations.
+
+| Finding | Correction and evidence |
+| --- | --- |
+| L-01 approval attribution | The resume route now forwards the authenticated consumer to the service. A server-owned runtime actor field survives native request validation and LangGraph's configurable-to-context copy; the auth hook accepts a supplied actor only from the trusted facade and only when it matches the authenticated consumer, then stamps both captured mappings. The runtime actor field is excluded from durable application configuration and public state; approval records retain the attributed consumer. Two separately authenticated project-scoped operators exercised approve, discuss, revise, approve and skip through the actual local native HTTP runtime. All five persisted actors matched the deciding consumer; a stale competing resume returned 409. |
+| ARE-07 native request failures | The body middleware unwraps guard-only exception groups, preserving 422 for invalid input, 413 for oversized bodies and 408 for timeouts. Mixed server failures, cancellations and errors after response start still propagate. Actual `/assistants/search` requests with `{}` and a limit of 20 returned 422; the valid five-item summary request returned 200. Real AnyIO task-group regressions cover nested guards, error disclosure and response ownership. |
+| S-01 demo empty activity | Empty demo feeds state that no demo activity was captured for the phase, with an actionable link to Agent reasoning and available transcripts. Populated simulated feeds retain their existing streaming behavior. The production browser test verifies the empty active-run view, keyboard focus on the destination tab and its transcript link. |
+| Application identity | Run context and the scope row share the same project catalog resolver. Both display the available application name and retain its ID as the title; unavailable catalog entries retain the recorded ID. Production checks cover demo and connected viewer/operator sessions. |
+| Chart contrast | The two failing apex-light series were darkened. The checker now enforces 3:1 for all eight series against the composited chart panel in every theme, in addition to the existing 750 text/surface checks. Production browser tests measure the rendered panel for all six themes and confirm that patterns and dash variations remain present. |
+| Queue announcement length | Selecting a run announces its title, gate/current phase and queue position. Later updates announce changed facts; full phase details remain accessible in the workspace. The live region retains its identity while real updates replace its text child, including consecutive updates with identical spoken words. |
+
+[Native verification receipts](holistic-ux-native-rereview-2026-10-17.json) record the response statuses, persisted actors and consumer revocations without credentials. Verification used an isolated local LangGraph runtime, the stub phase engine and two temporary persisted operator consumers with project scopes. Both consumers were revoked after the checks. It did not use the dashboard's development authentication bypass. The real-runtime probe caught and prevented an initially proposed fix that sent a reserved auth key through the credential guard; the final transport preserves that guard. Existing reviewer servers and their data were left running.
+
+| Re-review verification | Result |
+| --- | --- |
+| Full backend suite | 5,941 passed, 23 skipped; one upstream Starlette deprecation warning. |
+| Full dashboard suite | 1,107 passed across 135 files. |
+| Shared event contracts | 48 passed. |
+| Final production browser suite | 47 passed, including all six chart palettes, demo evidence navigation, connected viewer/operator context and queue announcements, and the existing role and workflow coverage. |
+| Build, types and lint | Production build, TypeScript, Pyright and Ruff passed. Dashboard lint has no errors and 23 existing Fast Refresh export warnings. |
+| Contrast | 750 text/surface pairs passed at 4.5:1 or above; 48 series/panel pairs passed at 3:1 or above. Eight checker regressions passed in the backend suite. |
+
+Reviews found and corrected nullable gate-summary typing, identical live-region messages that produced no DOM mutation, and same-ID interrupt generations that needed canonical timestamp/payload tracking. Repeated unchanged snapshots remain silent. Browser verification also replaced a stale-current-text assertion with an observer of actual gate announcement mutations, allowing legitimate later transport updates. The final independent cross-cutting review and subsequent test review found no remaining issues in these changes.
+
+The four code changes were committed after clear review rounds as `53b9d98`, `4e2c8d5`, `065bc30` and `129a292`. Main was fetched and integrated before the final production builds and backend suite. No new migration is required beyond the previously documented `0039` requirement. No APEX Load source was changed.
+
+Cleanup removed and verified 39 Python/Vite/TypeScript cache paths (16.59 MiB), one disposable browser result file and the task's isolated native-runtime directory. Task-owned test servers and browser processes are closed; pre-existing reviewer servers remain running. Temporary operator consumers were revoked, while their administrative audit records remain in the local development database. Dependencies, production bundles and tracked captures were preserved. No Go or Docker builds were used.

@@ -1,0 +1,91 @@
+{
+  "native_requests": [
+    {
+      "body": {},
+      "status": 422
+    },
+    {
+      "body": {
+        "graph_id": "pipeline",
+        "limit": 20
+      },
+      "status": 422
+    },
+    {
+      "body": {
+        "graph_id": "pipeline",
+        "limit": 5,
+        "select": [
+          "assistant_id",
+          "name",
+          "graph_id"
+        ]
+      },
+      "status": 200
+    }
+  ],
+  "actors": [
+    [
+      "approve",
+      "3bbeb1522c53491a9246ee6df66314ba"
+    ],
+    [
+      "discuss",
+      "54c15faeda2c42a3a5a5e8c5ca3e316f"
+    ],
+    [
+      "revise",
+      "3bbeb1522c53491a9246ee6df66314ba"
+    ],
+    [
+      "approve",
+      "54c15faeda2c42a3a5a5e8c5ca3e316f"
+    ]
+  ],
+  "consumers_deleted": [
+    {
+      "id": "3bbeb1522c53491a9246ee6df66314ba",
+      "status": 204
+    },
+    {
+      "id": "54c15faeda2c42a3a5a5e8c5ca3e316f",
+      "status": 204
+    }
+  ],
+  "thread_id": "01a14beb-0bf5-72a0-9200-892f646153b3",
+  "stale_decision_status": 409,
+  "skip_actors": [
+    [
+      "skip_phase",
+      "54c15faeda2c42a3a5a5e8c5ca3e316f"
+    ]
+  ],
+  "skip_thread_id": "01a14beb-20b4-7a72-927e-02cc8f186b6d",
+  "passed": true,
+  "environment": {
+    "verification_date": "2026-10-17",
+    "runtime": "langgraph-api 0.10.0 / in-memory runtime 0.30.0",
+    "engine": "stub",
+    "authentication": "two persisted project-scoped operator consumers",
+    "actor_fix_commit": "065bc30",
+    "guard_fix_commit": "53b9d98"
+  },
+  "expected_actors": [
+    [
+      "approve",
+      "3bbeb1522c53491a9246ee6df66314ba"
+    ],
+    [
+      "discuss",
+      "54c15faeda2c42a3a5a5e8c5ca3e316f"
+    ],
+    [
+      "revise",
+      "3bbeb1522c53491a9246ee6df66314ba"
+    ],
+    [
+      "approve",
+      "54c15faeda2c42a3a5a5e8c5ca3e316f"
+    ]
+  ]
+}
