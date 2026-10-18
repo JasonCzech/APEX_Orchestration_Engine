@@ -85,6 +85,48 @@ for (const role of ['viewer', 'operator', 'admin'] as const) {
   })
 }
 
+for (const height of [800, 900, 1000]) {
+  test(`Settings and the account footer never overlap at ${height}px`, async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height })
+    await connectedShell(page, 'admin')
+    await page.goto('/settings')
+    const rail = page.getByTestId('sidebar')
+    const settings = rail.getByRole('link', { name: 'Settings', exact: true })
+    await expect(settings).toBeVisible()
+    const assertClearFooter = async (container: ReturnType<Page['locator']>) => {
+      const link = container.getByRole('link', { name: 'Settings', exact: true })
+      const bounds = await link.boundingBox()
+      const footer = await container.locator('.sidebar-footer').boundingBox()
+      expect(bounds).not.toBeNull()
+      expect(footer).not.toBeNull()
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(footer!.y)
+      // Rect checks alone miss overlaid siblings: sample the actual hit target.
+      for (const fraction of [0.1, 0.5, 0.9]) {
+        expect(await link.evaluate((element, part) => {
+          const rect = element.getBoundingClientRect()
+          const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height * part)
+          return hit === element || element.contains(hit)
+        }, fraction)).toBe(true)
+      }
+      const status = container.getByRole('link', { name: 'System status', exact: true })
+      await status.focus()
+      await expect(status).toBeInViewport()
+      expect(await status.locator('path').getAttribute('d')).not.toBe(await link.locator('path').getAttribute('d'))
+    }
+    await assertClearFooter(rail)
+    await settings.click()
+    await expect(page.getByRole('dialog', { name: 'Navigation', exact: true })).toHaveCount(0)
+
+    // Empty rail padding exposes the labelled overlay, not just the brand area.
+    await rail.locator('.sidebar-nav-items').click({ position: { x: 2, y: 2 } })
+    const overlay = page.getByRole('dialog', { name: 'Navigation', exact: true })
+    await expect(overlay).toBeVisible()
+    await assertClearFooter(overlay)
+    await page.keyboard.press('Escape')
+    await expect(rail.getByRole('button', { name: 'Expand sidebar' })).toBeFocused()
+  })
+}
+
 for (const preference of ['true', 'false']) {
   test(`desktop sidebar honors stored collapsed preference ${preference}`, async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 1000 })

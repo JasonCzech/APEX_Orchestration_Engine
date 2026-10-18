@@ -47,6 +47,10 @@ describe('Sidebar', () => {
     expect(screen.getByRole('link', { name: 'Connections' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'API consumers' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'System status' })).toBeInTheDocument()
+    const statusIcon = screen.getByRole('link', { name: 'System status' }).querySelector('path')?.getAttribute('d')
+    const settingsIcon = screen.getByRole('link', { name: 'Settings' }).querySelector('path')?.getAttribute('d')
+    expect(statusIcon).toBeTruthy()
+    expect(statusIcon).not.toBe(settingsIcon)
   })
 
   it('starts with the rail and opens an accessible overlay without replacing it', async () => {

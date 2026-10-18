@@ -38,7 +38,7 @@ describe('SettingsPage', () => {
     const picker = await screen.findByRole('radiogroup', { name: 'Theme picker' })
     expect(screen.getByRole('heading', { name: 'Appearance', level: 2 })).toBeVisible()
     for (const tab of screen.getAllByRole('tab')) expect(document.getElementById(tab.getAttribute('aria-controls')!)).toHaveAttribute('role', 'tabpanel')
-    expect(within(picker).getByRole('radio', { name: /Light \(CTx\)/ })).toBeChecked()
+    expect(within(picker).getByRole('radio', { name: /^Light$/ })).toBeChecked()
 
     await user.click(within(picker).getByRole('radio', { name: 'Solarized Light' }))
 

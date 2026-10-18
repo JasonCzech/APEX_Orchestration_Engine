@@ -31,7 +31,7 @@ def test_all_shipped_theme_pairs_meet_text_contrast():
 def test_diff_background_cannot_reduce_readable_code_text_below_threshold(
     tmp_path, monkeypatch, kind, old_mix
 ):
-    for filename in ("tokens.css", "themes.css", "apex-light.css", "accessibility.css"):
+    for filename in ("tokens.css", "themes.css", "accessibility.css"):
         css = (module.THEME_DIR / filename).read_text()
         if filename == "tokens.css":
             css = re.sub(
@@ -49,13 +49,13 @@ def test_diff_background_cannot_reduce_readable_code_text_below_threshold(
 def test_chart_series_below_three_to_one_fail_even_when_text_passes(
     tmp_path, monkeypatch, token, value
 ):
-    for filename in ("tokens.css", "themes.css", "apex-light.css", "accessibility.css"):
+    for filename in ("tokens.css", "themes.css", "accessibility.css"):
         css = (module.THEME_DIR / filename).read_text()
-        if filename == "apex-light.css":
+        if filename == "themes.css":
             css = re.sub(rf"{token}: #[0-9a-f]+;", f"{token}: {value};", css)
         (tmp_path / filename).write_text(css)
     monkeypatch.setattr(module, "THEME_DIR", tmp_path)
-    with pytest.raises(SystemExit, match=f"apex-light: {token} 2\\."):
+    with pytest.raises(SystemExit, match=f"light: {token} 2\\."):
         module.main()
 
 

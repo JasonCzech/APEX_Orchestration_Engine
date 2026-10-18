@@ -212,14 +212,13 @@ Conventions:
 
 ## Theming
 
-Six themes, switched via `data-theme` on `<html>` (`src/theme/useTheme.ts`,
+Five themes, matching APEX Load, switched via `data-theme` on `<html>` (`src/theme/useTheme.ts`,
 persisted in localStorage):
 
 | `data-theme` | Name |
 |---|---|
-| `apex-light` *(default)* | Light (CTx), the Orchestration compatibility palette |
 | `dark` | Dark (OLED / Deep Space) |
-| `light` | Light (cobalt palette) |
+| `light` *(default)* | Light (cobalt palette) |
 | `solarized-dark` | Premium Solarized Dark |
 | `solarized-light` | Premium Solarized Light |
 | `monokai-dimmed` | Premium Monokai Dimmed |
@@ -233,6 +232,7 @@ token set per theme, and `primitives.css` carries the shared `.btn` /
 `.glass-panel` / badge / chip / metric-pill / table primitives. A new theme is
 a new token block — zero component changes. The `system` preference resolves to Dark or Light.
 `public/theme-init.js` applies theme and motion preferences before runtime configuration loads.
+Persisted `apex-light` preferences migrate to `light` before rendering and in the runtime provider; the retired palette is no longer shipped.
 Fonts are bundled locally; `theme/typography.css` defines the shared six-step type scale.
 
 ## Deployment

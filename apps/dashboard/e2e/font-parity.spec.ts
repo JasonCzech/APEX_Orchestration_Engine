@@ -7,7 +7,7 @@ const mono = "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation
 
 const fontFamilies = (stack: string) => stack.split(',').map(name => name.trim().replace(/^['"]|['"]$/g, ''))
 
-for (const theme of ['dark', 'light', 'apex-light', 'solarized-dark', 'solarized-light', 'monokai-dimmed']) {
+for (const theme of ['dark', 'light', 'solarized-dark', 'solarized-light', 'monokai-dimmed']) {
   test(`shared brand face loads locally with system mono in ${theme}`, async ({ page }) => {
     const fontRequests: string[] = []
     page.on('request', request => { if (request.resourceType() === 'font') fontRequests.push(request.url()) })

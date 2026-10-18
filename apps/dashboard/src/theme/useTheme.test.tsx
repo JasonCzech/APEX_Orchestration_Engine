@@ -1,17 +1,32 @@
 import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { authenticatedState, renderApp } from '@/test/render'
 
-import { THEME_STORAGE_KEY } from './useTheme'
+import { getStoredTheme, THEMES, THEME_STORAGE_KEY } from './useTheme'
 
 describe('theme switcher', () => {
-  it('applies the apex-light default on mount', async () => {
+  it('applies the Load light default on mount', async () => {
     renderApp({ authState: authenticatedState() })
 
     await screen.findByTestId('sidebar')
-    expect(document.documentElement.getAttribute('data-theme')).toBe('apex-light')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+  })
+
+  it('migrates a retired palette when the provider mounts without the early script', async () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'apex-light')
+    renderApp({ authState: authenticatedState() })
+    await screen.findByTestId('sidebar')
+    expect(document.documentElement.getAttribute('data-theme')).toBe('light')
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('light')
+    expect(THEMES).not.toContain('apex-light')
+  })
+
+  it('uses the migrated palette when storage is readable but writes are denied', () => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, 'apex-light')
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Denied') })
+    try { expect(getStoredTheme()).toBe('light') } finally { setItem.mockRestore() }
   })
 
   it('sets data-theme and persists the selection', async () => {

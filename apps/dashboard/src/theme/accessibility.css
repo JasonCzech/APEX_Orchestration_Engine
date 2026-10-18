@@ -54,21 +54,6 @@
   --danger-contrast: #000000;
   --focus-ring: #ff97b0;
 }
-:root[data-theme='apex-light'] {
-  --accent: #00769d;
-  --text-muted: #666e79;
-  --accent-text: #00769d;
-  --accent-hover: #0075a5;
-  --success: #0b7c4f;
-  --warning: #976007;
-  --danger: #ca313f;
-  --info: #00769d;
-  --warning-text: #9b6008;
-  --info-text: #0075a5;
-  --accent-contrast: #ffffff;
-  --danger-contrast: #ffffff;
-  --focus-ring: #00769d;
-}
 
 .btn-primary,
 a.btn-primary,

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-for (const theme of ['dark', 'light', 'apex-light', 'solarized-dark', 'solarized-light', 'monokai-dimmed']) {
+for (const theme of ['dark', 'light', 'solarized-dark', 'solarized-light', 'monokai-dimmed']) {
   test(`actual added and deleted prompt text retains contrast in ${theme}`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' })
     await page.addInitScript(name => localStorage.setItem('apex.theme', name), theme)

@@ -17,7 +17,6 @@ import { usePreferences } from './preferences'
  * Note: the reference defines `monokai-dimmed` (not `monokai`).
  */
 export const THEMES = [
-  'apex-light',
   'dark',
   'light',
   'solarized-dark',
@@ -28,11 +27,10 @@ export const THEMES = [
 export type ThemeName = (typeof THEMES)[number]
 export type ThemePreference = ThemeName | 'system'
 
-export const DEFAULT_THEME: ThemeName = 'apex-light'
+export const DEFAULT_THEME: ThemeName = 'light'
 export const THEME_STORAGE_KEY = 'apex.theme'
 
 export const THEME_LABELS: Record<ThemeName, string> = {
-  'apex-light': 'Light (CTx)',
   dark: 'Dark',
   light: 'Light',
   'solarized-dark': 'Solarized Dark',
@@ -47,6 +45,11 @@ export function isThemeName(value: unknown): value is ThemeName {
 export function getStoredTheme(): ThemePreference {
   try {
     const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
+    if (stored === 'apex-light') {
+      // Retired compatibility palette: match the early bootstrap migration.
+      try { window.localStorage.setItem(THEME_STORAGE_KEY, 'light') } catch { /* Best effort. */ }
+      return 'light'
+    }
     return stored === 'system' || isThemeName(stored) ? stored : DEFAULT_THEME
   } catch {
     return DEFAULT_THEME

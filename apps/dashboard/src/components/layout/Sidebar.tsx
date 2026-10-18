@@ -112,7 +112,7 @@ const ADMIN_NAV_SECTION: NavSection = {
   items: [
     { to: '/admin/connections', label: 'Connections', icon: <Icon d="M9 7V2M15 7V2M6 7h12v4a6 6 0 0 1-12 0zM12 17v5" /> },
     { to: '/admin/consumers', label: 'API consumers', icon: <Icon d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /> },
-    { to: '/admin/system', label: 'System status', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> },
+    { to: '/admin/system', label: 'System status', icon: <Icon d="M3 3h18v14H3zM8 21h8M12 17v4M5 10h3l2-4 4 8 2-4h3" /> },
   ],
 }
 
@@ -316,17 +316,19 @@ function SidebarContent({ drawer = false, collapsed = false, expanded = false, i
       </div>
 
       <nav className="sidebar-nav" aria-label="Primary">
-        <SidebarLink
-          item={{ to: '/runs/new', label: 'New test', icon: <Icon d="M12 5v14M5 12h14" /> }}
-          pathname={location.pathname}
-          onNavigate={onNavigate}
-        />
-        <NavSection section={{ label: 'Testing', items: testingItems }} pathname={location.pathname} onNavigate={onNavigate} />
-        <NavSection section={{ label: 'Resources', items: RESOURCE_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
-        <NavSection section={{ label: 'Investigation', items: INVESTIGATION_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
-        <RequireRole role={ADMIN_NAV_SECTION.requiresRole as Role}>
-          <NavSection section={ADMIN_NAV_SECTION} pathname={location.pathname} onNavigate={onNavigate} />
-        </RequireRole>
+        <div className="sidebar-nav-items">
+          <SidebarLink
+            item={{ to: '/runs/new', label: 'New test', icon: <Icon d="M12 5v14M5 12h14" /> }}
+            pathname={location.pathname}
+            onNavigate={onNavigate}
+          />
+          <NavSection section={{ label: 'Testing', items: testingItems }} pathname={location.pathname} onNavigate={onNavigate} />
+          <NavSection section={{ label: 'Resources', items: RESOURCE_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
+          <NavSection section={{ label: 'Investigation', items: INVESTIGATION_NAV_ITEMS }} pathname={location.pathname} onNavigate={onNavigate} />
+          <RequireRole role={ADMIN_NAV_SECTION.requiresRole as Role}>
+            <NavSection section={ADMIN_NAV_SECTION} pathname={location.pathname} onNavigate={onNavigate} />
+          </RequireRole>
+        </div>
         <div className="nav-section nav-section--settings">
           <SidebarLink
             item={{ to: '/settings', label: 'Settings', icon: <Icon d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /> }}

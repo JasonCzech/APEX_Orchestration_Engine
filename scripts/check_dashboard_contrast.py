@@ -1,6 +1,6 @@
 """Check shared dashboard text/control and chart tokens against contrast formulas.
 
-Covers the six shipped palettes and alpha-composited shared surfaces. This is
+Covers the five shipped palettes and alpha-composited shared surfaces. This is
 not a substitute for testing rendered focus, overlays, chart encodings, and typography.
 """
 
@@ -74,13 +74,12 @@ def main() -> None:
         for name in [
             "dark",
             "light",
-            "apex-light",
             "solarized-dark",
             "solarized-light",
             "monokai-dimmed",
         ]
     }
-    for filename in ["tokens.css", "themes.css", "apex-light.css", "accessibility.css"]:
+    for filename in ["tokens.css", "themes.css", "accessibility.css"]:
         for selector, body in re.findall(
             r"(:root(?:\[data-theme='[^']+'\])?)\s*\{([^}]+)\}", (THEME_DIR / filename).read_text()
         ):
