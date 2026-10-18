@@ -1,4 +1,5 @@
 import { useTimestampPreference } from '@/theme/preferences'
+import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { orchestrationTone, formatTimestamp, executionResultLabel } from '@/features/runs/runDisplay'
@@ -108,7 +109,7 @@ function RecentRunRow({ run }: { run: PipelineSummary }) {
           <span className="strong">{run.title || 'Untitled run'}</span>
         </Link>
       </td>
-      <td>{run.app_id ?? '—'}</td>
+      <td><ApplicationLabel project={run.project_id} application={run.app_id} empty="Not recorded" /></td>
       <td>{isPhaseName(run.current_phase) ? PHASE_LABELS[run.current_phase] : '—'}</td>
       <td>
         <span className={`status-badge ${orchestrationTone(run.thread_status, run.phase_strip)}`}>

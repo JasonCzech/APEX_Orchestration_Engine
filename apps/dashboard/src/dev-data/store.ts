@@ -1260,6 +1260,14 @@ export class DevDataStore {
   }
 
   private handlePipelines(method: string, path: string, request: Request, params: URLSearchParams): Promise<Response> | Response {
+    if (method === 'POST' && path === '/v1/pipelines/execution-readiness') {
+      return request.json().then((body: { phases?: string[] }) => jsonResponse({
+        execution_selected: body.phases?.includes('execution') ?? false,
+        configuration_valid: true,
+        requires_application: false,
+        detail: 'Demo uses bundled execution fixtures; no external engine is contacted.',
+      }))
+    }
     if (method === 'POST' && path === '/v1/pipelines') {
       return request.json().then((raw) => {
         const body = raw as StartPipelineRequest
@@ -1350,6 +1358,14 @@ export class DevDataStore {
     }
     const parts = path.split('/')
     const threadId = decodePart(parts[3])
+    if (method === 'GET' && parts[4] === 'actors' && parts.length === 5) {
+      const detail = this.pipelineDetails.get(threadId)
+      if (!detail) return problemResponse(404, 'not_found', `Run ${threadId} was not found.`)
+      const values = detail.values as PipelineState
+      const actors = new Set(Object.values(values.phase_results ?? {}).flatMap(phase => (phase.approvals ?? []).map(approval => approval.actor)))
+      const names = Object.fromEntries(this.consumers.filter(consumer => actors.has(consumer.id)).map(consumer => [consumer.id, consumer.name]))
+      return jsonResponse({ names, truncated: false })
+    }
     if (parts[4] === 'phases' && parts[6] === 'prompt-review') {
       const detail = this.pipelineDetails.get(threadId)
       if (!detail) return problemResponse(404, 'not_found', `Run ${threadId} was not found.`)

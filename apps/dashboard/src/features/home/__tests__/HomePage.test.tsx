@@ -66,6 +66,13 @@ function pipelinesWithControlledApprovals(
 }
 
 describe('HomePage', () => {
+  it('resolves application names in Recent runs using the scoped catalog', async () => {
+    useHomeHandlers()
+    server.use(http.get('*/v1/catalog/applications', () => HttpResponse.json([{ id: 'app-storefront', name: 'Storefront' }])))
+    renderHome()
+    expect(await screen.findByText('Storefront', { selector: '.home-recent-row td span' })).toHaveAttribute('title', 'app-storefront')
+  })
+
   it('renders the metric cards and release signal from the available fleet proxy data', async () => {
     useHomeHandlers()
     renderHome()

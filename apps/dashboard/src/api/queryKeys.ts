@@ -16,6 +16,7 @@ export const queryKeys = {
     /** Prefix matching every list(filters) entry — SSE patches fan out here. */
     lists: () => [...queryKeys.pipelines.all, 'list'] as const,
     detail: (threadId: string) => [...queryKeys.pipelines.all, 'detail', threadId] as const,
+    executionReadiness: (request: object) => [...queryKeys.pipelines.all, 'execution-readiness', request] as const,
   },
   threads: {
     all: ['threads'] as const,

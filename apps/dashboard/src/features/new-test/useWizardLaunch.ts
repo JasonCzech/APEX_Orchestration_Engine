@@ -136,6 +136,11 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
   const keyRevision = getApiKeyRevision()
   const sessionRevision = getSessionRevision()
   const preview = buildLaunchPreview(draft)
+  const intentConfigurable = { ...preview.configurable }
+  // Prior bundles omitted the default phase plan. Keep that browser-intent
+  // identity so an unresolved pre-update launch remains quarantined after a
+  // reload; the actual request still includes the explicit reviewed plan.
+  if (draft.config.phases === null) delete intentConfigurable.phases
   const launchIntent = {
     assistant_id: preview.assistant_id,
     title: preview.input.title,
@@ -145,7 +150,7 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
       app_id: draft.scope.app_id,
       environment_id: draft.scope.environment_id,
     },
-    configurable: preview.configurable,
+    configurable: intentConfigurable,
     document_ids: preview.document_ids,
     work_items: draft.work_items.map((item) => ({ ...item })),
     context_summary_ids: [...draft.context_summary_ids],
@@ -190,7 +195,7 @@ export async function launchWizardRun(draft: WizardDraft): Promise<LaunchedRun> 
   if (!response.ok || !data) {
     throw new ApiError(
       response.status,
-      errorMessageOf(error, `Pipeline launch failed (${response.status})`),
+      errorMessageOf(error, 'The launch could not be completed. Retry or review the launch inputs.'),
       error,
     )
   }

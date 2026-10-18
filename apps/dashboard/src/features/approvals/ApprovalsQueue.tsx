@@ -31,17 +31,20 @@ export function ApprovalsQueue({
   rows,
   selectedThreadId,
   onSelect,
+  focusSelection = true,
 }: {
   rows: QueueRow[]
+  focusSelection?: boolean
   selectedThreadId: string | null
   onSelect: (row: QueueRow) => void
 }) {
   useTimestampPreference()
   useEffect(() => {
+    if (!focusSelection) return
     const selected = selectedThreadId ? document.getElementById(rowDomId(selectedThreadId)) : null
     selected?.focus({ preventScroll: true })
     selected?.scrollIntoView?.({ block: 'nearest' })
-  }, [selectedThreadId])
+  }, [selectedThreadId, focusSelection])
   return (
     <ul
       className="approvals-queue"
@@ -67,7 +70,7 @@ export function ApprovalsQueue({
             aria-label={`${row.title}. ${gateLabel(row.pending_gate.kind)}. ${isPhaseName(row.pending_gate.phase) ? PHASE_LABELS[row.pending_gate.phase] : 'Phase not recorded'}. Project ${row.project_id ?? 'not recorded'}. Run ${row.thread_id}. Updated ${row.age}.` }
             aria-posinset={index + 1}
             aria-setsize={rows.length}
-            data-route-focus={selected ? true : undefined}
+            data-route-focus={selected && focusSelection ? true : undefined}
             aria-selected={selected}
             tabIndex={selected ? 0 : -1}
             onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); if (!row.removed) onSelect(row) } }}

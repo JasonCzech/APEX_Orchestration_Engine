@@ -720,3 +720,14 @@
 
 .wizard-confirm-overlay { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: var(--modal-backdrop); padding: 1rem; }
 .wizard-confirm { width: min(34rem, 100%); padding: 1.5rem; background: var(--bg-elevated); }
+
+/* Keep authoring fields readable without adding empty filler panels. */
+.wizard-scope { max-width: 640px; width: 100%; }
+.wizard-workload { display: flex; flex-direction: column; gap: 12px; }
+.wizard-workload h3 { margin: 0; }
+.wizard-workload-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.wizard-review-pair { display: contents; }
+.wizard-inline-issues { margin: 6px 0 0; padding-left: 20px; }
+@media (max-width: 680px) {
+  .wizard-workload-grid { grid-template-columns: 1fr; }
+}

@@ -34,6 +34,7 @@ describe('compact operator navigation', () => {
     server.use(mutableListHandler([run]).handler, detailsHandler({ [run.thread_id]: gatedDetail(run) }))
     const user = userEvent.setup()
     const { router } = renderApp({ initialEntries: ['/approvals'], authState: authenticatedState('operator') })
+    await user.click(await screen.findByRole('button', { name: /Show pending reviews \(1\)/ }))
     await screen.findByRole('option', { name: /Drawer review/ })
     await waitFor(() => expect(router.state.location.pathname).toBe('/runs/drawer-review/reviews/drawer-gate'))
     const reviewPath = router.state.location.pathname

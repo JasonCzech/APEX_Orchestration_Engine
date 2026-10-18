@@ -5,5 +5,6 @@ export function reviewPolicySummary(config: WizardConfig): string {
   const matrix = config.gates_custom ?? allGatedMatrix()
   const prompt = phases.filter(phase => config.gates_mode === 'all_gated' || matrix[phase].prompt_review === 'gated').length
   const output = phases.filter(phase => config.gates_mode === 'all_gated' || matrix[phase].output_review === 'gated').length
-  return `${prompt + output} planned review pauses: ${prompt} prompt and ${output} output reviews. Revisions may require additional reviews.`
+  const total = prompt + output
+  return `${total} planned review ${total === 1 ? 'pause' : 'pauses'}: ${prompt} prompt and ${output} output ${total === 1 ? 'review' : 'reviews'}. Revisions may require additional reviews.`
 }

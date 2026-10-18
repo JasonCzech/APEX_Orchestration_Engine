@@ -133,7 +133,11 @@ for (const role of ['viewer', 'operator'] as const) {
     await expect(review).toContainText('Some output or discussion was omitted from this review preview')
     await expect(review).toContainText('Some agent evidence was omitted from this review preview')
     await expect(review.getByText('Reasoning details are unavailable in this preview.', { exact: true })).toBeVisible()
-    await expect(phase).toContainText('The phase summary is unavailable in this preview.')
+    // Truncation of the optional evidence does not erase the retained root
+    // summary. It remains explicitly pending and must not imply acceptance.
+    await expect(phase).toContainText('Review the retained plan summary.')
+    await expect(phase).toContainText('Pending review evidence; this output has not been accepted.')
+    await expect(phase).not.toContainText('The phase summary is unavailable in this preview.')
     await expect(phase).toContainText('Output source: Unavailable in this preview')
     await expect(phase).not.toContainText('No phase artifacts')
     await expect(phase).not.toContainText('No operator-readable summary has been recorded')

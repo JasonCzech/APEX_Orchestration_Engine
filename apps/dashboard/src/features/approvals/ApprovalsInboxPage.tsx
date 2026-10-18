@@ -33,6 +33,7 @@ import { queryKeys } from '@/api/queryKeys'
 import { useThreadState, type GateInterrupt, type ThreadStateSnapshot } from '@/api/hooks/useThreadState'
 import { CachedDataWarning } from '@/components/CachedDataWarning'
 import { Dialog } from '@/components/Dialog'
+import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 import { ProblemCard } from '@/components/ProblemCard'
 import { RunWorkspace, type RunWorkspaceSection } from '@/features/runs/RunDetailPage'
 import { runReviewPath, reviewInterruptId } from '@/features/runs/reviewPath'
@@ -116,6 +117,9 @@ const SHORTCUTS: Array<[string, string]> = [
 
 export function ApprovalsInboxPage() {
   useTimestampPreference()
+  const compact = useCompactLayout()
+  const [queueExpanded, setQueueExpanded] = useState(false)
+  const queueVisible = !compact || queueExpanded
   const queryClient = useQueryClient()
   const params = useParams<{ threadId?: string; interruptId?: string }>()
   const navigate = useNavigate()
@@ -346,7 +350,10 @@ export function ApprovalsInboxPage() {
         index === -1
           ? list[delta === 1 ? 0 : list.length - 1]
           : list[Math.min(Math.max(index + delta, 0), list.length - 1)]
-      if (next) setSelection(toSelection(next))
+      if (next) {
+        setQueueExpanded(true)
+        setSelection(toSelection(next))
+      }
     }
     const invokeGate = (action: GateAction) => {
       const handle = gateHandleRef.current
@@ -482,16 +489,23 @@ export function ApprovalsInboxPage() {
       ) : (
         <div className="approvals-layout">
           <section className="approvals-queue-pane glass-panel" aria-label="Pending reviews">
+            {compact && <button type="button" className="approvals-queue-summary btn btn-secondary" aria-expanded={queueVisible} aria-controls="pending-review-queue" onClick={() => setQueueExpanded(value => !value)}>
+              {queueVisible ? 'Hide' : 'Show'} pending reviews ({inbox.isLoading ? 'loading' : inbox.error ? 'unavailable' : actionable.length})
+              {selection && <span>{rows.find(row => row.thread_id === selection.threadId)?.title ?? 'Selected review'}</span>}
+            </button>}
+            <div id="pending-review-queue" hidden={!queueVisible}>
             {inbox.isLoading ? <Skeleton label="Loading reviews" rows={2} /> : inbox.error ? <ProblemCard title="Reviews failed to load" message={inbox.error.message} onRetry={inbox.refetch} /> : <>
             {!selectionInQueue && <StateCard kind="stale" compact title="Selected review is outside the current queue snapshot" action={<button className="btn btn-secondary" onClick={() => void inbox.refetch()}>Refresh queue</button>}>
               The selected run is shown from its own latest snapshot.
             </StateCard>}
             <ApprovalsQueue
               rows={rows}
+              focusSelection={queueVisible}
               selectedThreadId={selection?.threadId ?? null}
               onSelect={(row) => setSelection(toSelection(row))}
             />
             </>}
+            </div>
           </section>
           <section
             className="approvals-preview-pane"

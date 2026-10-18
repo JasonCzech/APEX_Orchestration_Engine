@@ -37,6 +37,7 @@ import { JsonViewer } from '@/components/viewers/JsonViewer'
 import { formatRelative } from '@/utils/time'
 
 import { HostsEditor, KindChip } from './environmentsForm'
+import { EnvironmentTarget } from './EnvironmentTarget'
 import {
   KIND_OPTIONS,
   hostsToDrafts,
@@ -116,10 +117,12 @@ function EditEnvironmentForm({
   )
 
   const optionsParse = parseOptionsJson(optionsText)
+  const optionsChanged = optionsText !== JSON.stringify(environment.options, null, 2)
   const hasReservedOptions =
-    optionsParse.ok && Object.keys(optionsParse.value).some((key) => key.startsWith('_apex_'))
+    optionsParse.ok && [...Object.keys(optionsParse.value), ...Object.keys(environment.options)]
+      .some((key) => key.startsWith('_apex_'))
   const canSave =
-    optionsParse.ok && (canApproveTarget || !hasReservedOptions) && writeCount === 0
+    optionsParse.ok && (canApproveTarget || !optionsChanged || !hasReservedOptions) && writeCount === 0
 
   function submit(event: FormEvent) {
     event.preventDefault()
@@ -148,6 +151,7 @@ function EditEnvironmentForm({
       <div className="env-form-grid">
         {canApproveTarget && <label className="env-field">
           <span className="env-field-label">Base URL</span>
+          <small>Saving a changed target URL validates and approves a new target version.</small>
           <input
             type="text"
             className="field-input"
@@ -197,7 +201,7 @@ function EditEnvironmentForm({
           {optionsParse.message}
         </p>
       )}
-      {!canApproveTarget && hasReservedOptions && (
+      {!canApproveTarget && optionsChanged && hasReservedOptions && (
         <p className="env-form-error" role="alert">
           Options beginning with _apex_ require a global administrator.
         </p>
@@ -425,6 +429,7 @@ export function EnvironmentDetailPage() {
       </header>
 
       <div className="env-detail-panels">
+        <EnvironmentTarget key={`target:${env.id}`} environment={env} canApprove={canApproveTarget} onEdit={() => setEditing(true)} />
         {editing && canMutate ? (
           <EditEnvironmentForm
             key={env.id}

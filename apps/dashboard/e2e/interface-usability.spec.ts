@@ -73,6 +73,8 @@ test('retained tool statuses and reasoning provenance stay distinct and explicit
   }
   await expect(reasoning.getByRole('link', { name: 'Full agent transcript (attempt 1)' })).toHaveAttribute('href', '/runs/tool-status-fixture/artifacts/full-transcript')
   await expect(reasoning.getByTestId('prompt-provenance')).toContainText('reviewer-one')
+  await expect(reasoning.getByRole('textbox', { name: 'System prompt', exact: true })).toBeHidden()
+  await reasoning.getByText('System prompt provenance', { exact: true }).click()
   await expect(reasoning.getByRole('textbox', { name: 'System prompt', exact: true })).toBeVisible()
   await expect(reasoning.getByRole('textbox', { name: 'User prompt', exact: true })).toBeVisible()
 })

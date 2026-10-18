@@ -7,7 +7,9 @@ import { reviewPolicySummary } from '../reviewPolicySummary'
 import type { ReactNode } from 'react'
 import { CopyableId } from '@/components/ux/CopyableId'
 
-import { useDocumentsList } from '@/api/hooks/useDocuments'
+import { useWizardReadiness } from '../useWizardReadiness'
+import { WorkloadPreview } from './WorkloadFields'
+import { Link } from 'react-router'
 
 import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
 import { useAssistants } from '@/api/hooks/useAssistants'
@@ -16,7 +18,7 @@ import { PHASE_LABELS } from '@/features/runs/runDisplay'
 import { parseStatusBadge, summarizeContext } from '../contextFiles'
 import type { StepProps } from '../NewRunWizard'
 import {
-  assessWizardReadiness,
+  issueFieldId,
   buildLaunchPreview,
   isRecord,
   selectedPhases,
@@ -80,11 +82,7 @@ export function ReviewStep({
   const environments = useEnvironments(draft.scope.app_id)
   const configurations = useAssistants()
   const releaseConfig = draft.config.golden_configurable?.load_test as { release_id?: string; mapping_revision?: string } | undefined
-  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined, undefined, draft.scope.app_id)
-  const readiness = assessWizardReadiness(draft, maxContextPackets, {
-    ids: documents.isError ? undefined : documents.data?.map((doc) => doc.id),
-    failed: documents.isError,
-  })
+  const { documents, readiness, environment: targetEnvironment, execution, executionVerificationEnabled } = useWizardReadiness(draft, maxContextPackets)
   const issues = [...readiness.planningIssues, ...readiness.executionIssues]
   const preview = buildLaunchPreview(draft)
   const phases = selectedPhases(draft.config)
@@ -112,7 +110,7 @@ export function ReviewStep({
                 <button
                   type="button"
                   className="wizard-issue-link"
-                  onClick={() => onEditStep(issue.step, issue.message === 'Title is required' ? 'wizard-title' : issue.message === 'Request is required' ? 'wizard-request' : undefined)}
+                  onClick={() => onEditStep(issue.step, issueFieldId(issue.message))}
                 >
                   {STEP_LABELS[issue.step]}: {issue.message}
                 </button>
@@ -130,17 +128,19 @@ export function ReviewStep({
             <p className="wizard-caption wizard-caption--warning">Complete the outstanding planning items before launch.</p>
           )}
           {readiness.executionIssues.length === 0 ? (
-            <p className="wizard-caption">Execution readiness: {readiness.executionNotes[0] ?? 'Target and engine setup are ready.'}</p>
+            <p className="wizard-caption">Execution configuration: {readiness.executionNotes[0] ?? 'Selected target is approved; the server rechecks target and engine configuration at launch.'}</p>
           ) : (
             <div>
-              <p className="wizard-caption wizard-caption--danger">Execution readiness needs attention:</p>
+              <p className="wizard-caption wizard-caption--danger">Execution configuration needs attention:</p>
               <ul>{readiness.executionIssues.map((issue) => <li key={issue.message}>{issue.message}</li>)}</ul>
             </div>
           )}
           {readiness.executionNotes.slice(readiness.executionIssues.length === 0 ? 1 : 0).map((note) => (
             <p key={note} className="wizard-caption">{note}</p>
           ))}
+          {executionVerificationEnabled && (execution.isError || execution.data?.configuration_valid === false) && <button type="button" className="btn btn-secondary btn-sm" disabled={execution.isFetching} onClick={() => void execution.refetch()}>Retry execution verification</button>}
         </ReviewCard>
+        {draft.scope.environment_id && readiness.executionIssues.length > 0 && <p className="wizard-caption"><Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>{targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}</p>}
         <ReviewCard title="Scope" step="scope" onEdit={onEditStep}>
           <dl className="wizard-review-dl">
             <dt>Title</dt>
@@ -206,6 +206,10 @@ export function ReviewStep({
           </dl>
         </ReviewCard>
 
+        <ReviewCard title="Workload and acceptance" step="config" onEdit={onEditStep}>
+          <WorkloadPreview draft={draft} />
+          <p className="wizard-caption">Requested inputs, not measured results. Thresholds are evaluated after collection; they do not automatically stop a running test.</p>
+        </ReviewCard>
         <ReviewCard title="Prompts" step="prompts" onEdit={onEditStep}>
           {overrides.length === 0 ? (
             <p className="wizard-caption">Catalog prompts (no run overrides)</p>

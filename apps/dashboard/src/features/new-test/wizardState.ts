@@ -17,6 +17,8 @@
 import { PHASE_NAMES, type PhaseName } from '@apex/pipeline-events'
 
 import { ALL_AUTO_GATES } from '@/features/runs/launchRun'
+import { SLA_FIELDS, WORKLOAD_FIELDS, workloadIssues } from './workload'
+import type { ExecutionConfigurationReadiness } from '@/api/hooks/useExecutionReadiness'
 
 // ── Steps ────────────────────────────────────────────────────────────────────
 
@@ -41,6 +43,17 @@ export const STEP_LABELS: Record<WizardStepId, string> = {
 
 export function isWizardStep(value: string | null): value is WizardStepId {
   return value !== null && (WIZARD_STEPS as readonly string[]).includes(value)
+}
+
+/** Canonical public URLs use the visible labels; old bookmarks still resolve. */
+export function wizardStepFromUrl(value: string | null): WizardStepId {
+  if (value === 'tickets') return 'work-items'
+  if (value === 'knowledge') return 'context'
+  return isWizardStep(value) ? value : 'scope'
+}
+
+export function wizardStepUrl(step: WizardStepId): string {
+  return step === 'work-items' ? 'tickets' : step === 'context' ? 'knowledge' : step
 }
 
 // ── Draft shape ──────────────────────────────────────────────────────────────
@@ -390,6 +403,12 @@ export function stepIssues(
       break
     }
     case 'config': {
+      issues.push(...workloadIssues(draft.config.golden_configurable?.load_test))
+      const connections = draft.config.golden_configurable?.connections
+      if (connections !== undefined && (!isRecord(connections) ||
+        [connections.execution_engine, connections.artifact_store].some(value => value !== undefined && (typeof value !== 'string' || !value.trim())))) {
+        issues.push('Execution connection selection is invalid; choose a valid preset or clear it')
+      }
       if (draft.config.unsupported_engine) issues.push(`Engine ${draft.config.unsupported_engine} is not supported by this deployment; choose a supported engine`)
       if (draft.config.phases !== null && draft.config.phases.length === 0) {
         issues.push('Select at least one phase')
@@ -421,6 +440,18 @@ export interface StepIssue {
   message: string
 }
 
+export function issueFieldId(message: string): string | undefined {
+  for (const field of [...WORKLOAD_FIELDS, ...SLA_FIELDS]) {
+    if (message.startsWith(field.label)) return `workload-${field.key}`
+  }
+  if (message === 'Title is required') return 'wizard-title'
+  if (message === 'Request is required') return 'wizard-request'
+  if (message === 'Project is required') return 'wizard-project'
+  if (/environment/i.test(message)) return 'wizard-environment'
+  if (/application/i.test(message)) return 'wizard-application'
+  return undefined
+}
+
 /** Everything outstanding across steps — the review step's issue list. */
 export function allIssues(
   draft: WizardDraft,
@@ -440,6 +471,17 @@ export interface WizardReadiness {
   executionNotes: string[]
 }
 
+export interface TargetReadiness {
+  environment?: { id: string; application_id: string; name: string; base_url: string | null; target_approved: boolean; target_version: number }
+  failed?: boolean
+}
+
+export interface ExecutionReadiness {
+  configuration?: ExecutionConfigurationReadiness
+  failed?: boolean
+  error?: string
+}
+
 /**
  * Keep "the form is valid" separate from "this is safe to execute". A test
  * can deliberately stop after planning, but an external execution phase needs
@@ -449,6 +491,8 @@ export function assessWizardReadiness(
   draft: WizardDraft,
   maxContextPackets = DEFAULT_MAX_CONTEXT_PACKETS,
   documents?: { ids?: readonly string[]; failed?: boolean },
+  target?: TargetReadiness,
+  execution?: ExecutionReadiness,
 ): WizardReadiness {
   const planningIssues = allIssues(draft, maxContextPackets)
   if (draft.document_ids.length > 0 && documents) {
@@ -468,6 +512,36 @@ export function assessWizardReadiness(
     phases.includes('execution') && draft.config.engine !== 'sim'
   const executionIssues: StepIssue[] = []
   const executionNotes: string[] = []
+  if (phases.includes('execution') && execution) {
+    if (!execution.configuration) {
+      executionIssues.push({ step: 'config', message: execution.failed
+        ? `Execution configuration could not be verified${execution.error ? `: ${execution.error}` : '; retry verification'}`
+        : 'Verifying execution connection configuration before launch' })
+    } else if (!execution.configuration.configuration_valid || (execution.configuration.requires_application && !draft.scope.app_id)) {
+      const needsApplication = execution.configuration.requires_application && !draft.scope.app_id
+      executionIssues.push({ step: needsApplication ? 'scope' : 'config', message: execution.configuration.detail ??
+        (needsApplication ? 'Select an application for the configured execution connection' : 'The execution connection configuration needs attention') })
+    } else {
+      executionNotes.push('Execution connection metadata is valid. Provider connectivity, credentials and workload/release eligibility are checked later; the server rechecks configuration at launch.')
+      if (execution.configuration.detail) executionNotes.push(execution.configuration.detail)
+    }
+  }
+  if (phases.includes('execution') && draft.config.golden_configurable?.agent_backend === 'anthropic') {
+    executionIssues.push({ step: 'config', message: 'Model-generated scripts require an approved provider or Cycle handoff before execution. Select planning phases only to author the script first.' })
+  }
+
+  if (draft.scope.environment_id && target) {
+    const environment = target.environment
+    if (!environment || environment.id !== draft.scope.environment_id) {
+      executionIssues.push({ step: 'scope', message: target.failed
+        ? 'Selected environment could not be verified; retry or choose another environment'
+        : 'Verifying selected environment before launch' })
+    } else if (environment.application_id !== draft.scope.app_id) {
+      executionIssues.push({ step: 'scope', message: 'Selected environment does not belong to this application' })
+    } else if (draft.config.engine !== 'sim' && (!environment.target_approved || !environment.base_url || environment.target_version < 1)) {
+      executionIssues.push({ step: 'scope', message: `Environment ${environment.name} needs an approved target before launch` })
+    }
+  }
 
   if (draft.config.unsupported_engine) {
     executionNotes.push('Choose a supported engine before execution readiness can be determined.')
@@ -476,7 +550,7 @@ export function assessWizardReadiness(
       'This plan stops before Execution. Select a target and verify the engine before adding execution.',
     )
   } else if (draft.config.engine === 'sim') {
-    executionNotes.push('Simulated execution does not require an external application or environment.')
+    executionNotes.push('Simulation does not use a live environment target. Select an application when the chosen connection requires it; otherwise an application is optional.')
   } else if (executesAgainstTarget) {
     if (!draft.scope.app_id) {
       executionIssues.push({
@@ -574,8 +648,9 @@ export function buildConfigurable(draft: WizardDraft): Record<string, unknown> {
   delete configurable['environment_target_version']
   delete configurable['start_phase']
   delete configurable['stop_after']
-  if (config.phases !== null) configurable['phases'] = config.phases
-  else delete configurable['phases']
+  // The wizard's visible plan is authoritative, including all seven phases.
+  // Sparse assistant-inherited API requests outside the wizard remain distinct.
+  configurable['phases'] = selectedPhases(config)
   // This field was never consumed by the graph. Context is now resolved into
   // input.context_packets by the domain launch endpoint.
   delete configurable['pre_execution_context']

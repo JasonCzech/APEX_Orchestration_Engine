@@ -419,3 +419,7 @@
     flex-wrap: wrap;
   }
 }
+
+.env-target-overlay { background: var(--modal-backdrop); backdrop-filter: blur(4px); }
+.env-target-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; padding: 24px; }
+.env-target-dialog p { overflow-wrap: anywhere; }

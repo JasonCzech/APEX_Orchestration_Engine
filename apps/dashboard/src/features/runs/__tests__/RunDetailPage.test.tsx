@@ -55,6 +55,59 @@ vi.mock('@/streaming/usePipelineStream', () => ({
 }))
 
 describe('RunDetailPage', () => {
+  it('uses pending output throughout the phase workspace without claiming acceptance or timing', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
+    detail.current_phase = 'execution'
+    detail.pending_gate = { interrupt_id: 'int-execution', kind: 'phase_review', phase: 'execution' }
+    detail.values = { ...detail.values, phase_results: { execution: { status: 'pending' } } }
+    detail.interrupts = [{ interrupt_id: 'int-execution', kind: 'phase_review', phase: 'execution', payload: {
+      schema_version: 1, kind: 'phase_review', phase: 'execution', summary: 'Current engine evidence is ready for review.',
+      result_preview: { summary: 'Current engine evidence is ready for review.' }, evidence: { attempt: 1, provenance: 'simulator', resolved_prompt: { system: 'Execution is deterministic.', user: 'Collect evidence.' } },
+      artifacts: [{ id: 'pending-results', name: 'pending-results.json', kind: 'engine_results' }], warnings: [], dialogue_tail: [], actions: ['approve', 'revise', 'discuss', 'abort'],
+    } }]
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
+    const snapshot = await screen.findByRole('region', { name: 'Phase snapshot' })
+    await waitFor(() => expect(snapshot).toHaveTextContent('Current engine evidence is ready for review.'))
+    expect(snapshot).toHaveTextContent('1 phase artifact')
+    expect(snapshot).toHaveTextContent('Not recorded while awaiting the decision')
+    expect(snapshot).toHaveTextContent('Not recorded in this review')
+    expect(snapshot).toHaveTextContent('this output has not been accepted')
+    expect(snapshot).not.toHaveTextContent('No phase artifacts')
+    const details = screen.getByRole('tabpanel', { name: 'Phase details' })
+    expect(within(details).getByRole('link', { name: /pending-results.json/ })).toHaveAttribute('href', `/runs/${THREAD_ID}/artifacts/pending-results`)
+    const prompt = screen.getByText('System prompt provenance').closest('details')
+    expect(prompt).not.toHaveAttribute('open')
+  })
+
+  it('shows scoped actor names while preserving the recorded principal identity', async () => {
+    const user = userEvent.setup()
+    server.use(pipelineDetailHandler(), http.get('*/v1/pipelines/:threadId/actors', () => HttpResponse.json({ names: { 'ops@apex': 'Operations reviewer' }, truncated: false })))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=details`])
+    expect(await screen.findByText('Operations reviewer')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy Actor ID' }))
+    expect(await navigator.clipboard.readText()).toBe('ops@apex')
+  })
+
+  it.each([200, 403, 503])('retains the recorded actor ID when a scoped name cannot be resolved (%s)', async status => {
+    server.use(pipelineDetailHandler(), http.get('*/v1/pipelines/:threadId/actors', () => HttpResponse.json(status === 200 ? { names: {}, truncated: false } : { detail: 'Unavailable' }, { status })))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/story_analysis?tab=details`])
+    expect(await screen.findByText('ops@apex', { selector: 'code' })).toBeInTheDocument()
+    expect(screen.getByText('Name unavailable')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Copy Actor ID' })).toBeInTheDocument()
+  })
+
+  it('collapses unrecorded run context while retaining recorded fields', async () => {
+    const user = userEvent.setup()
+    server.use(pipelineDetailHandler())
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    const context = within(overview).getByRole('heading', { name: 'Run context' }).parentElement!
+    expect(within(context).getByText('Load release')).not.toBeVisible()
+    await user.click(within(context).getByText('Unrecorded context (4)'))
+    expect(within(context).getByText('Load release')).toBeVisible()
+  })
+
   it('opens the outcome overview without redirecting', async () => {
     server.use(pipelineDetailHandler())
     const { router } = renderRunRoutes([`/runs/${THREAD_ID}`])

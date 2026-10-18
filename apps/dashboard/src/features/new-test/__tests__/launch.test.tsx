@@ -9,9 +9,10 @@ import { http, HttpResponse } from 'msw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { server } from '@/test/server'
+import { idempotencyPayloadSignature, SAFE_RETRY_RECOVERY_ERROR } from '@/utils/durableIdempotency'
 
 import { launchWizardRun } from '../useWizardLaunch'
-import { emptyDraft } from '../wizardState'
+import { buildLaunchPreview, emptyDraft } from '../wizardState'
 import { fillScope, installWizardHandlers, renderWizard } from './wizardTestUtils'
 
 const { assistantsSearch } = vi.hoisted(() => ({
@@ -28,6 +29,57 @@ vi.mock('@/api/langgraphClient', () => ({
 describe('wizard launch', () => {
   beforeEach(() => {
     window.sessionStorage.clear()
+  })
+
+  it.each(['attempt', 'blocked'] as const)('keeps an unresolved default-plan %s quarantined across the explicit-phase upgrade', async (recordKind) => {
+    const draft = emptyDraft()
+    draft.title = 'Unresolved prior launch'
+    draft.request = 'Run the default workflow'
+    const preview = buildLaunchPreview(draft)
+    const oldConfigurable = { ...preview.configurable }
+    delete oldConfigurable.phases
+    const priorIntent = {
+      assistant_id: preview.assistant_id,
+      title: preview.input.title,
+      request: preview.input.request,
+      scope: {
+        project_id: draft.scope.project_id.trim(),
+        app_id: draft.scope.app_id,
+        environment_id: draft.scope.environment_id,
+      },
+      configurable: oldConfigurable,
+      document_ids: preview.document_ids,
+      work_items: [],
+      context_summary_ids: [],
+    }
+    const signature = await idempotencyPayloadSignature(priorIntent)
+    window.sessionStorage.setItem('apex.idempotency.wizard-pipeline-launch.v1', JSON.stringify({
+      version: 3,
+      attemptsByPayload: recordKind === 'attempt' ? {
+        [signature]: {
+          idempotencyKey: 'unresolved-before-upgrade',
+          requestPayload: { configurable: oldConfigurable },
+          runtimeId: 'previous-page-runtime',
+          keyRevision: 0,
+          sessionRevision: 0,
+        },
+      } : {},
+      blockedPayloads: recordKind === 'blocked' ? {
+        [signature]: {
+          runtimeId: 'previous-page-runtime',
+          keyRevision: 0,
+          sessionRevision: 0,
+        },
+      } : {},
+    }))
+    const requests: unknown[] = []
+    server.use(http.post('*/v1/pipelines', async ({ request }) => {
+      requests.push(await request.json())
+      return HttpResponse.json({}, { status: 500 })
+    }))
+
+    await expect(launchWizardRun(draft)).rejects.toThrow(SAFE_RETRY_RECOVERY_ERROR)
+    expect(requests).toEqual([])
   })
 
   it('launches with the exact configurable, deletes the draft, and navigates', async () => {
@@ -109,6 +161,15 @@ describe('wizard launch', () => {
               "prompt_review": "gated",
             },
           },
+          "phases": [
+            "story_analysis",
+            "test_planning",
+            "env_triage",
+            "script_scenario",
+            "execution",
+            "reporting",
+            "postmortem",
+          ],
           "project_id": "demo",
         },
         "document_ids": [],
@@ -279,7 +340,7 @@ describe('wizard launch', () => {
     expect(await screen.findByText('Launch failed: multitask reject')).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/runs/new')
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('button', { name: 'Launch test' })).toBeEnabled() // retryable
+    expect(screen.getByRole('button', { name: 'Retry launch' })).toBeEnabled() // retryable
     await user.click(screen.getByRole('button', { name: 'Save draft' }))
     await screen.findByText('Draft saved')
     unmount()

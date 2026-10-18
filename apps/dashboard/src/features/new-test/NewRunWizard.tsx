@@ -9,9 +9,9 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react'
-import { useNavigate, useSearchParams } from 'react-router'
+import { Link, useNavigate, useSearchParams } from 'react-router'
 
-import { useDocumentsList } from '@/api/hooks/useDocuments'
+import { isApiError } from '@/api/errors'
 import { useDraftsList } from '@/api/hooks/useDrafts'
 import { useOptionalAuth } from '@/auth/AuthProvider'
 import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
@@ -31,9 +31,11 @@ import { ScopeStep } from './steps/ScopeStep'
 import { WorkItemsStep } from './steps/WorkItemsStep'
 import { canPersistWizardDraft, useDraft, type DraftUpdater } from './useDraft'
 import { useWizardLaunch } from './useWizardLaunch'
+import { useWizardReadiness } from './useWizardReadiness'
 import {
-  assessWizardReadiness,
-  isWizardStep,
+  issueFieldId,
+  wizardStepFromUrl,
+  wizardStepUrl,
   STEP_LABELS,
   WIZARD_STEPS,
   type WizardStepId,
@@ -211,7 +213,11 @@ function NewRunWizardContent({
   const authState = auth?.state
   const navigate = useNavigate()
   const rawStep = searchParams.get('step')
-  const activeStep: WizardStepId = isWizardStep(rawStep) ? rawStep : 'scope'
+  const activeStep = wizardStepFromUrl(rawStep)
+  useEffect(() => {
+    if (rawStep !== 'work-items' && rawStep !== 'context') return
+    setSearchParams(previous => { const next = new URLSearchParams(previous); next.set('step', wizardStepUrl(activeStep)); return next }, { replace: true })
+  }, [rawStep, activeStep, setSearchParams])
   const pendingFocusRef = useRef<{ step: WizardStepId; id: string; previous: Element | null } | null>(null)
   useEffect(() => {
     const target = pendingFocusRef.current
@@ -286,11 +292,7 @@ function NewRunWizardContent({
   const scopeAuthorized =
     consumer === undefined ||
     canMutateAudience(consumer, draft.scope.project_id.trim(), draft.scope.app_id)
-  const documents = useDocumentsList(draft.scope.project_id.trim() || undefined, undefined, draft.scope.app_id)
-  const readiness = assessWizardReadiness(draft, maxContextPackets, {
-    ids: documents.isError ? undefined : documents.data?.map((doc) => doc.id),
-    failed: documents.isError,
-  })
+  const { readiness, environment: targetEnvironment, execution, executionVerificationEnabled } = useWizardReadiness(draft, maxContextPackets)
   const launchRefusal = consumer === undefined ? null : pipelineLaunchRefusal(consumer)
   const issues = [
     ...readiness.planningIssues,
@@ -385,7 +387,7 @@ function NewRunWizardContent({
   }, [])
 
   async function handleLaunch() {
-    if (finalizing || pendingOperationsRef.current.size > 0) return
+    if (finalizing || issues.length > 0 || !canOperate || pendingOperationsRef.current.size > 0) return
     setFinalizing(true)
     const keyRevision = getApiKeyRevision()
     const sessionRevision = getSessionRevision()
@@ -435,7 +437,7 @@ function NewRunWizardContent({
     setSearchParams(
       (previous) => {
         const next = new URLSearchParams(previous)
-        next.set('step', step)
+        next.set('step', wizardStepUrl(step))
         return next
       },
       { replace: true },
@@ -497,7 +499,7 @@ function NewRunWizardContent({
     return (
       <div id="wizard-tabs" className="glass-panel wizard-tabs-shell">
         <div
-          className="wizard-tabs"
+          className="wizard-tabs workspace-tabs ux-underline-tabs"
           role="tablist"
           aria-label="New test groups"
           aria-orientation="horizontal"
@@ -509,7 +511,7 @@ function NewRunWizardContent({
               type="button"
               role="tab"
               aria-label={STEP_LABELS[step]}
-              className="wizard-tab"
+              className="wizard-tab workspace-tab"
               aria-selected={activeStep === step}
               aria-controls={`wizard-panel-${step}`}
               tabIndex={activeStep === step ? 0 : -1}
@@ -605,7 +607,12 @@ function NewRunWizardContent({
         </fieldset>
       )}
 
-      {launch.isError && <p role="alert">Launch failed: {launch.error.message}</p>}
+      {launch.isError && <div className="tonal-card danger" role="alert">
+        <strong>Launch failed: {launch.error.message}</strong>
+        {/environment|target/i.test(launch.error.message) && draft.scope.environment_id && <p>Environment: {targetEnvironment.data?.name ?? draft.scope.environment_id}. <Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>.</p>}
+        <p>Retrying unchanged inputs on this page reuses the same launch request. Recovery may be blocked after a reload or credential change; check Tests before starting another request. Editing the inputs creates a different launch request.</p>
+        {isApiError(launch.error) && <details><summary>Technical details</summary><p>HTTP status: {launch.error.status}</p></details>}
+      </div>}
       <footer className="glass-panel wizard-footer">
         <div className="wizard-footer-copy">
           <strong>{activeStep === 'review' ? 'Review before launch' : `Step ${WIZARD_STEPS.indexOf(activeStep) + 1} of ${WIZARD_STEPS.length} · ${STEP_LABELS[activeStep]}`}</strong>
@@ -618,6 +625,11 @@ function NewRunWizardContent({
                 ? 'The test plan is ready; execution setup still needs attention.'
                 : `${issues.length} item${issues.length === 1 ? '' : 's'} still ${issues.length === 1 ? 'needs' : 'need'} attention.`}
           </span>
+          {issues.length > 0 && activeStep !== 'review' && <ul className="wizard-inline-issues" aria-label="Items needing attention">
+            {issues.map(issue => <li key={`${issue.step}:${issue.message}`}><button type="button" className="wizard-issue-link" onClick={() => jumpToTab(issue.step, issueFieldId(issue.message))}>{STEP_LABELS[issue.step]}: {issue.message}</button></li>)}
+          </ul>}
+          {targetEnvironment.isError && draft.scope.environment_id && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}
+          {executionVerificationEnabled && (execution.isError || execution.data?.configuration_valid === false) && activeStep !== 'review' && <button type="button" className="btn btn-secondary btn-sm" disabled={execution.isFetching} onClick={() => void execution.refetch()}>Retry execution verification</button>}
         </div>
 
         <div className="wizard-footer-actions">
@@ -653,7 +665,7 @@ function NewRunWizardContent({
                 ? 'Launching…'
                 : pendingStepCount > 0
                   ? 'Finishing context…'
-                  : activeStep === 'review' ? 'Launch test' : activeStep === 'prompts' ? 'Review test' : 'Next'}
+                  : activeStep === 'review' ? launch.isError ? 'Retry launch' : 'Launch test' : activeStep === 'prompts' ? 'Review test' : 'Next'}
             </button>
           </RequireRole>
         </div>

@@ -95,6 +95,28 @@ beforeEach(() => {
 })
 
 describe('ApprovalsInboxPage', () => {
+  it('collapses the narrow queue without hiding the decision workspace or trapping keyboard triage', async () => {
+    vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
+    try {
+      const user = userEvent.setup()
+      useInboxHandlers()
+      renderInbox()
+      const summary = await screen.findByRole('button', { name: /Show pending reviews \(2\)/ })
+      expect(summary).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByRole('listbox', { name: 'Needs review queue' })).not.toBeInTheDocument()
+      expect(await screen.findByRole('region', { name: 'Review workspace' })).toBeVisible()
+      await user.click(summary)
+      expect(screen.getByRole('listbox', { name: 'Needs review queue' })).toBeVisible()
+      await user.click(screen.getByRole('button', { name: /Hide pending reviews/ }))
+      await user.keyboard('j')
+      await waitFor(() => expect(screen.getByRole('listbox', { name: 'Needs review queue' })).toBeVisible())
+      await waitForSelected(NEW.thread_id)
+      expect(await findRow(NEW.thread_id)).toHaveFocus()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('lists only pending gates, oldest-updated first, with kind/phase/project metadata', async () => {
     useInboxHandlers()
     renderInbox()

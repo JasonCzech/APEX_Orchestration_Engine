@@ -84,7 +84,7 @@ describe('NewRunWizard shell', () => {
     await user.click(screen.getByRole('tab', { name: 'Scope' }))
 
     expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled()
-    expect(screen.queryByText('Scope: Title is required')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Scope: Title is required' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Next' }))
     expect(screen.getByRole('tab', { name: 'Config' })).toHaveAttribute('aria-selected', 'true')
     await user.click(screen.getByRole('button', { name: 'Back' }))

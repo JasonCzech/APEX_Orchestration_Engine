@@ -1,13 +1,15 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
+import type { GateInstance } from '@/hitl/gateMachine'
 import type { PipelineState } from '@apex/pipeline-events'
 
 import { formatTimestamp, TONE_COLOR_VAR } from './runDisplay'
 import { deriveTimeline } from './timelineModel'
+import { RunActorIdentity } from './RunActorIdentity'
 
-export function RunTimeline({ state }: { state: PipelineState }) {
+export function RunTimeline({ state, gate }: { state: PipelineState; gate?: GateInstance | null }) {
   useTimestampPreference()
-  const events = deriveTimeline(state)
+  const events = deriveTimeline(state, gate)
 
   return (
     <section className="timeline-panel glass-panel" aria-label="Run timeline">
@@ -15,7 +17,7 @@ export function RunTimeline({ state }: { state: PipelineState }) {
         <div>
           <span className="run-pipeline-hero-kicker">Run audit trail</span>
           <h3>Timeline</h3>
-          <p>Phase activity, review decisions, and execution milestones in chronological order.</p>
+          <p>Recorded phase activity, review decisions, and execution milestones, followed by any current review without a recorded timestamp.</p>
         </div>
         <span className="status-badge neutral">
           {events.length} event{events.length === 1 ? '' : 's'}
@@ -32,15 +34,18 @@ export function RunTimeline({ state }: { state: PipelineState }) {
                 style={{ color: TONE_COLOR_VAR[event.tone] }}
                 aria-hidden="true"
               />
-              <span className="timeline-at">{formatTimestamp(event.at)}</span>
+              <span className="timeline-at">{event.at ? formatTimestamp(event.at) : 'Review time not recorded'}</span>
               <span className="timeline-label">{event.label}</span>
-              {event.detail && <span className="timeline-detail">{event.detail}</span>}
+              {(event.detail || event.actor !== undefined) && <span className="timeline-detail">
+                {event.actor !== undefined && <><RunActorIdentity id={event.actor} />{event.detail && ' · '}</>}
+                {event.detail}
+              </span>}
             </li>
           ))}
         </ol>
       )}
       <p className="timeline-caption">
-        Derived from the latest durable run snapshot. Refreshing the run updates this ledger.
+        Derived from the latest durable run snapshot. A current pending review is shown separately from accepted results and has no invented timestamp. Refreshing the run updates this ledger.
       </p>
     </section>
   )

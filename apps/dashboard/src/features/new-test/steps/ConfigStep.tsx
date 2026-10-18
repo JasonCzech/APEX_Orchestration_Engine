@@ -1,4 +1,5 @@
 import { ReleaseMappingPicker } from '../ReleaseMappingPicker'
+import { WorkloadFields } from './WorkloadFields'
 import { RadioChoices } from '@/components/ux/RadioChoices'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
 import { reviewPolicySummary } from '../reviewPolicySummary'
@@ -73,7 +74,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
     if (Object.keys(draft.prompt_overrides).length > 0 || draft.document_ids.length > 0 ||
       draft.work_items.length > 0 || draft.scope.environment_id || draft.config.golden_config_id ||
       draft.config.engine !== 'sim' || draft.config.unsupported_engine || draft.config.phases !== null ||
-      draft.config.gates_mode !== 'all_gated') {
+      draft.config.gates_mode !== 'all_gated' || draft.config.golden_configurable?.load_test) {
       setPendingPreset(golden)
     } else commitGoldenConfig(golden)
   }
@@ -232,7 +233,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
     <section className="wizard-step" aria-label="Config">
       {pendingPreset && <Dialog ariaLabel="Apply test preset" className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" onClose={() => setPendingPreset(null)}>
         <h2>Apply {pendingPreset.name}?</h2>
-        <p>This replaces the engine, phase selection, review policy and all prompt overrides. If its project or application differs, attached documents are removed; a different project also removes work items and context summaries.</p>
+        <p>This replaces the engine, phase selection, review policy, workload and all prompt overrides. If its project or application differs, attached documents are removed; a different project also removes work items and context summaries.</p>
         <div className="wizard-row"><button type="button" className="btn btn-secondary" onClick={() => setPendingPreset(null)}>Cancel</button><button type="button" className="btn btn-primary" onClick={() => { commitGoldenConfig(pendingPreset); setPendingPreset(null) }}>Apply preset</button></div>
       </Dialog>}
       {config.unsupported_engine && <p className="tonal-card danger" role="alert">This preset pins engine “{config.unsupported_engine}”, which this deployment does not support. Choose a supported engine before launch.</p>}
@@ -316,6 +317,7 @@ export function ConfigStep({ draft, onChange }: StepProps) {
         )}
       </div>
 
+      <WorkloadFields draft={draft} onChange={onChange} />
       <div className="wizard-field">
         <span className="wizard-label">Phases</span>
         <p className="wizard-caption">Choose which phases this test includes. Prompt selection is managed separately in Prompts.</p>

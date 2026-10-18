@@ -126,6 +126,7 @@ describe('buildLaunchPreview', () => {
         project_id: 'demo',
         engine: 'sim',
         gates: allGatedMatrix(),
+        phases: [...PHASE_NAMES],
       },
       document_ids: [],
       work_item_keys: [],

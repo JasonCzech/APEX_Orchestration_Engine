@@ -19,6 +19,7 @@ import { useGate } from '@/hitl/useGate'
 import { useRunLiveness } from '@/streaming/usePipelineStream'
 
 import { RunAnnouncements } from './RunAnnouncements'
+import { RunActorNames } from './RunActorIdentity'
 import { RunOverview } from './RunOverview'
 import { RunTimeline } from './RunTimeline'
 import { LiveStatusChip } from './LiveStatusChip'
@@ -224,6 +225,7 @@ export function RunWorkspace({
       : workspacePath
 
   return (
+    <RunActorNames threadId={threadId} revision={detail.updated_at} enabled={Object.values(state.phase_results ?? {}).some(entry => (entry.approvals?.length ?? 0) > 0)}>
     <section className={`run-workspace${embedded ? ' run-workspace--embedded' : ''}`} aria-label="Run workspace">
       <RunAnnouncements threadId={threadId} title={detail.title ?? threadId} phases={phaseStrip} currentPhase={detail.current_phase ?? state.current_phase}
         gate={announcementGate} gateGeneration={gateGeneration} streamStatus={live.stream.status} terminal={['idle', 'error'].includes(detail.thread_status ?? '')}
@@ -324,20 +326,20 @@ export function RunWorkspace({
         />
       )}
       <ScopeContext project={detail.project_id} application={detail.app_id} />
-      <nav className="ux-actions run-sections" aria-label="Run sections">
+      <nav className="run-sections ux-section-navigation" aria-label="Run sections">
         {embedded ? (
           <>
-            {hitl.gate && <button type="button" className="btn btn-secondary" aria-current={decision ? 'page' : undefined} onClick={() => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase)}>Review</button>}
-            <button type="button" className="btn btn-secondary" aria-current={overview ? 'page' : undefined} onClick={() => onSectionChange?.('overview')}>Overview</button>
-            <button type="button" className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>
-            <button type="button" className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} onClick={() => onSectionChange?.('timeline')}>Timeline</button>
+            {hitl.gate && <button type="button" className="ux-section-link" aria-current={decision ? 'page' : undefined} onClick={() => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase)}>Review</button>}
+            <button type="button" className="ux-section-link" aria-current={overview ? 'page' : undefined} onClick={() => onSectionChange?.('overview')}>Overview</button>
+            <button type="button" className="ux-section-link" aria-current={section === 'workspace' ? 'page' : undefined} onClick={() => onSectionChange?.('workspace', selectedPhase)}>Workspace</button>
+            <button type="button" className="ux-section-link" aria-current={timeline ? 'page' : undefined} onClick={() => onSectionChange?.('timeline')}>Timeline</button>
           </>
         ) : (
           <>
-            {hitl.gate && <Link className="btn btn-secondary" aria-current={decision ? 'page' : undefined} to={runReviewPath(threadId, hitl.gate.interrupt_id, { source: 'overview', phase: isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase })}>Review</Link>}
-            <Link className="btn btn-secondary" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link>
-            <Link className="btn btn-secondary" aria-current={section === 'workspace' ? 'page' : undefined} to={workspacePath}>Workspace</Link>
-            <Link className="btn btn-secondary" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
+            {hitl.gate && <Link className="ux-section-link" aria-current={decision ? 'page' : undefined} to={runReviewPath(threadId, hitl.gate.interrupt_id, { source: 'overview', phase: isPhaseName(hitl.gate.phase) ? hitl.gate.phase : selectedPhase })}>Review</Link>}
+            <Link className="ux-section-link" aria-current={overview ? 'page' : undefined} to={`/runs/${threadId}`}>Overview</Link>
+            <Link className="ux-section-link" aria-current={section === 'workspace' ? 'page' : undefined} to={workspacePath}>Workspace</Link>
+            <Link className="ux-section-link" aria-current={timeline ? 'page' : undefined} to={timelinePath}>Timeline</Link>
           </>
         )}
       </nav>
@@ -351,7 +353,7 @@ export function RunWorkspace({
           onReviewGate={embedded && hitl.gate ? () => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase) : undefined}
         />
       ) : timeline ? (
-        <RunTimeline state={state} />
+        <RunTimeline state={state} gate={pendingGate} />
       ) : <>
       <section className="run-pipeline-hero glass-panel" aria-label="Test progress">
         <div className="run-pipeline-hero-head">
@@ -394,11 +396,12 @@ export function RunWorkspace({
           threadBusy={detail.thread_status === 'busy'}
           gateSlot={gateSlot}
           appId={detail.app_id ?? null}
-          gate={hitl.gate}
+          gate={pendingGate}
           gateState={hitl.state}
         />
       </div>
       </>}
     </section>
+    </RunActorNames>
   )
 }

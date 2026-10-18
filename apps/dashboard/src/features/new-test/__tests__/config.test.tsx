@@ -117,7 +117,7 @@ describe('ConfigStep', () => {
     await user.click(screen.getByRole('radio', { name: /APEX Load/ }))
     await user.click(screen.getByRole('tab', { name: 'Review' }))
 
-    expect(screen.getByText('Execution readiness needs attention:')).toBeInTheDocument()
+    expect(screen.getByText('Execution configuration needs attention:')).toBeInTheDocument()
     expect(screen.getByText('Select an application before external execution')).toBeInTheDocument()
     expect(screen.getByText('Select a target environment before external execution')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Launch test' })).toBeDisabled()

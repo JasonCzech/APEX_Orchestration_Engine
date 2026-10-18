@@ -88,12 +88,17 @@ export const handlers = [
   // shell-level tests stay quiet. Tests that need rows register their own
   // handler via server.use(...), which takes precedence.
   http.get('*/v1/pipelines', () => HttpResponse.json({ items: [], limit: 100, offset: 0 })),
+  http.post('*/v1/pipelines/execution-readiness', async ({ request }) => {
+    const body = await request.json() as { phases: string[] }
+    return HttpResponse.json({ execution_selected: body.phases.includes('execution'), configuration_valid: true, requires_application: false, detail: null })
+  }),
   http.get('*/v1/pipelines/:threadId', ({ params }) =>
     HttpResponse.json(
       { detail: `pipeline ${String(params['threadId'])} is not configured in this test` },
       { status: 404 },
     ),
   ),
+  http.get('*/v1/pipelines/:threadId/actors', () => HttpResponse.json({ names: {}, truncated: false })),
   http.get('*/v1/pipelines/:threadId/phases/:phase/prompt-review', ({ params }) =>
     HttpResponse.json({
       system: `Test system prompt for ${String(params['phase'])}.`,

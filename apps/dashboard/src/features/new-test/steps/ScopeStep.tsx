@@ -119,7 +119,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
   }
 
   return (
-    <section className="wizard-step" aria-label="Scope">
+    <section className="wizard-step wizard-scope" aria-label="Scope">
       {scopeChange && <Dialog ariaLabel="Change test scope" className="glass-panel wizard-confirm" overlayClassName="wizard-confirm-overlay" onClose={cancelScopeChange}>
         <h2>Change {scopeChange.kind}?</h2>
         <p>This clears {draft.document_ids.length} attached documents, the selected environment and {scopeChange.kind === 'project' ? 'all prompt overrides, work items and preset selections' : 'application prompt overrides'}. Saved documents remain available to attach again.</p>
@@ -175,6 +175,8 @@ export function ScopeStep({ draft, onChange }: StepProps) {
         {scoped ? (
           <select
             id="wizard-project"
+            required
+            aria-required="true"
             className="field-select"
             value={scopedProjects.includes(draft.scope.project_id) ? draft.scope.project_id : ''}
             onChange={(event) => requestScopeChange('project', event.target.value)}
@@ -191,6 +193,8 @@ export function ScopeStep({ draft, onChange }: StepProps) {
         ) : (
           <input
             id="wizard-project"
+            required
+            aria-required="true"
             list="known-projects"
             className="field-input"
             value={projectInput}
@@ -262,11 +266,11 @@ export function ScopeStep({ draft, onChange }: StepProps) {
           <option value="">— none —</option>
           {(environments.data ?? []).map((env) => (
             <option key={env.id} value={env.id}>
-              {env.name}
+              {env.name} · {env.target_approved ? `Target approved (v${env.target_version})` : 'Target not approved'}
             </option>
           ))}
         </select>
-        <p id="environment-hint" className="wizard-caption">{!draft.scope.app_id ? 'Choose an application to see its environments.' : 'Select the target environment for this application.'}</p>
+        <p id="environment-hint" className="wizard-caption">{!draft.scope.app_id ? 'Choose an application to see its environments.' : draft.config.engine === 'sim' ? 'Optional context for a simulated run. Simulation does not use or require approval of this environment’s live target.' : 'Choose an approved target for this application. A global administrator can review target approval on the environment page.'}</p>
         <p className="wizard-caption">
           Missing a choice? <Link to="/environments">Manage applications and environments</Link>.
         </p>
@@ -277,6 +281,7 @@ export function ScopeStep({ draft, onChange }: StepProps) {
           <p className="wizard-caption">
             {selectedEnv.kind ?? 'environment'}
             {selectedEnv.base_url ? ` · ${selectedEnv.base_url}` : ''}
+            {' · '}<Link to={`/environments/${encodeURIComponent(selectedEnv.id)}`}>Review target approval</Link>
           </p>
         )}
       </div>

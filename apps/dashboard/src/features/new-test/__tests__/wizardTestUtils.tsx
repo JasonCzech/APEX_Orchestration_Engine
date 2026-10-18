@@ -41,6 +41,8 @@ export const ENVIRONMENTS = [
     name: 'staging',
     kind: 'staging',
     base_url: 'https://staging.checkout.example',
+    target_approved: true,
+    target_version: 1,
     hosts: [],
     options: {},
     created_at: '2026-06-01T00:00:00Z',
@@ -128,10 +130,18 @@ export function draftHandlers(existing: DraftRead[] = []) {
 /** Every wizard-touched read surface, quiet by default. */
 export function defaultWizardHandlers() {
   return [
+    http.post('*/v1/pipelines/execution-readiness', async ({ request }) => {
+      const body = await request.json() as { phases: string[] }
+      return HttpResponse.json({ execution_selected: body.phases.includes('execution'), configuration_valid: true, requires_application: false, detail: null })
+    }),
     http.get('*/v1/apex-load/connections', () => HttpResponse.json({ items: [], truncated: false })),
     http.post('*/assistants/search', () => HttpResponse.json([])),
     http.get('*/v1/catalog/applications', () => HttpResponse.json(APPLICATIONS)),
     http.get('*/v1/catalog/environments', () => HttpResponse.json(ENVIRONMENTS)),
+    http.get('*/v1/catalog/environments/:id', ({ params }) => {
+      const environment = ENVIRONMENTS.find(item => item.id === params.id)
+      return environment ? HttpResponse.json(environment) : HttpResponse.json({ title: 'Environment not found' }, { status: 404 })
+    }),
     http.get('*/v1/documents', () =>
       HttpResponse.json({ items: [], limit: 50, offset: 0 }),
     ),

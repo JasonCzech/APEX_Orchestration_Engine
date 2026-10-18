@@ -4,6 +4,8 @@
  * prompt_overrides["phase/<p>"] key; application overrides use
  * prompt_overrides["application/<app_id>"].
  */
+import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
+import { CopyableId } from '@/components/ux/CopyableId'
 import { useQuery } from '@tanstack/react-query'
 import CodeMirror from '@uiw/react-codemirror'
 import { EditorView } from '@codemirror/view'
@@ -321,7 +323,7 @@ export function PromptsStep({ draft, onChange }: StepProps) {
             </span>
             {appId && (
               <span className="topbar-meta-chip" data-testid="prompt-selected-application">
-                {appId}
+                <ApplicationLabel project={draft.scope.project_id} application={appId} /> <CopyableId value={appId} label="Application ID" />
               </span>
             )}
           </div>

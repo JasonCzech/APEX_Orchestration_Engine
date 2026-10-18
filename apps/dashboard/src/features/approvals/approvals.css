@@ -246,3 +246,7 @@
   font-size: var(--font-size-xs);
   font-family: var(--font-mono);
 }
+
+.approvals-queue-summary { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 4px; }
+.approvals-queue-summary span { max-width: 100%; overflow-wrap: anywhere; color: var(--text-secondary); }
+@media (max-width: 768px) { .approvals-queue { max-height: 40vh; } }

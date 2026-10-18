@@ -1,4 +1,6 @@
 import { PHASE_NAMES, type PipelineState } from '@apex/pipeline-events'
+import type { GateInstance } from '@/hitl/gateMachine'
+import { pendingPhaseReview } from './pendingPhaseReview'
 
 import {
   formatDuration,
@@ -9,14 +11,15 @@ import {
 } from './runDisplay'
 
 export interface TimelineEvent {
-  at: string
+  at: string | null
   tone: StatusTone
   label: string
   detail?: string
+  actor?: string | null
 }
 
 /** Derive the chronological audit ledger from timestamps in the latest snapshot. */
-export function deriveTimeline(state: PipelineState): TimelineEvent[] {
+export function deriveTimeline(state: PipelineState, gate?: GateInstance | null): TimelineEvent[] {
   const events: Array<TimelineEvent & { seq: number }> = []
   let seq = 0
   const push = (event: TimelineEvent) => events.push({ ...event, seq: seq++ })
@@ -49,7 +52,8 @@ export function deriveTimeline(state: PipelineState): TimelineEvent[] {
         at: approval.at,
         tone: approval.action === 'approve' ? 'success' : 'warning',
         label: `Gate ${approval.gate ?? 'review'}: ${approval.action ?? '—'}`,
-        detail: `by ${approval.actor ?? 'unknown'} · ${label}`,
+        actor: approval.actor ?? null,
+        detail: label,
       })
     }
     if (entry.test_summary && entry.ended_at) {
@@ -78,7 +82,29 @@ export function deriveTimeline(state: PipelineState): TimelineEvent[] {
     }
   }
 
+  if (gate?.payload?.kind === 'phase_review') {
+    const phase = gate.payload.phase
+    const { entry, pending } = pendingPhaseReview(phase, state, gate)
+    if (pending) push({
+      // Interrupts have no event timestamp. Do not borrow run updated_at or
+      // fabricate an execution start/completion or an approval event.
+      at: null,
+      tone: 'warning',
+      label: `${PHASE_LABELS[phase]} output awaiting review`,
+      detail: [
+        'Current pending review; output has not been accepted.',
+        entry?.summary,
+        `${pending.artifacts.length} artifact reference${pending.artifacts.length === 1 ? '' : 's'} in this review.`,
+        pending.projection_truncated || pending.evidence?.projection_truncated ? 'Some evidence is unavailable in this preview.' : '',
+      ].filter(Boolean).join(' '),
+    })
+  }
+
   return events
-    .sort((a, b) => a.at.localeCompare(b.at) || a.seq - b.seq)
-    .map(({ at, tone, label, detail }) => ({ at, tone, label, detail }))
+    .sort((a, b) => {
+      const left = a.at ? Date.parse(a.at) : NaN
+      const right = b.at ? Date.parse(b.at) : NaN
+      return (Number.isFinite(left) ? left : Infinity) - (Number.isFinite(right) ? right : Infinity) || a.seq - b.seq
+    })
+    .map(({ at, tone, label, detail, actor }) => ({ at, tone, label, detail, ...(actor !== undefined ? { actor } : {}) }))
 }

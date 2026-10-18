@@ -24,6 +24,8 @@ import { artifactViewerPath } from '@/features/artifacts/artifactPaths'
 import type { GateInstance, GateMachineState } from '@/hitl/gateMachine'
 
 import { ActivityFeed } from './ActivityFeed'
+import { pendingPhaseReview } from './pendingPhaseReview'
+import { RunActorIdentity } from './RunActorIdentity'
 import { EngineStrip } from './EngineStrip'
 import type { LiveStreamViewLike } from './liveTypes'
 import { PromptReviewSection } from './PromptReviewSection'
@@ -82,9 +84,8 @@ export function PhaseWorkspace({
   const tabsId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const tab = activeTab(searchParams.get('tab'), threadBusy ? 'log' : 'details')
-  const durableEntry = state.phase_results?.[phase]
-  const pendingEvidence = gate?.phase === phase && gate.payload?.kind === 'phase_review' ? gate.payload.evidence : undefined
-  const entry = pendingEvidence ? { ...durableEntry, ...pendingEvidence } : durableEntry
+  const { entry, artifacts, pending } = pendingPhaseReview(phase, state, gate)
+  const evidenceState = pending ? { ...state, artifacts } : state
 
   const engineSamples = stream?.engineStats?.samples ?? []
   const liveStatus = stream?.phaseProgress?.[phase]?.status
@@ -109,14 +110,14 @@ export function PhaseWorkspace({
   return (
     <section className="phase-workspace glass-panel" aria-label={`${PHASE_LABELS[phase]} workspace`}>
       {gateSlot}
-      <PhaseOperatorSummary entry={entry} status={phaseStatus} incomplete={state.projection_truncated === true || entry?.projection_truncated === true} />
+      <PhaseOperatorSummary entry={entry} pending={Boolean(pending)} pendingArtifactCount={pending?.artifacts.length} status={phaseStatus} incomplete={state.projection_truncated === true || entry?.projection_truncated === true} />
       <TabList id={tabsId} label="Phase workspace tabs" items={TABS.map(id => ({id, label: TAB_LABELS[id]}))} value={tab} onChange={selectTab} />
       <TabPanels id={tabsId} items={TABS} value={tab} focusable>
-      {gate?.phase === phase && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Available agent evidence appears below before you decide.</p>}
+      {pending && tab === 'details' && <p className="ux-context">The pending output is shown in the review above. Available agent evidence appears below before you decide.</p>}
       {showEngineStrip && (
         <EngineStrip samples={engineSamples} latest={stream?.engineStats?.latest ?? null} />
       )}
-      {tab === 'details' && <PhaseDetailsTab threadId={threadId} entry={entry} state={state} />}
+      {tab === 'details' && <PhaseDetailsTab threadId={threadId} entry={entry} state={evidenceState} />}
       {tab === 'log' && (
         <div className="pipeline-log-panel" aria-label="Agent log">
           <ActivityFeed
@@ -194,7 +195,7 @@ function ApprovalsList({ approvals }: { approvals: ApprovalRecord[] }) {
         <li key={approval.id} className="approval-row">
           <span className="kind-chip">{approval.gate ?? 'gate'}</span>
           <span className="approval-action">{approval.action ?? '—'}</span>
-          <span>{approval.actor ?? 'unknown actor'}</span>
+          <RunActorIdentity id={approval.actor} />
           <span className="approval-at">{formatTimestamp(approval.at)}</span>
         </li>
       ))}
@@ -305,7 +306,7 @@ function PhaseDetailsTab({
   )
 }
 
-function PhaseOperatorSummary({ entry, status, incomplete = false }: { entry: PhaseResultEntry | undefined; status?: string; incomplete?: boolean }) {
+function PhaseOperatorSummary({ entry, status, pending = false, pendingArtifactCount, incomplete = false }: { entry: PhaseResultEntry | undefined; status?: string; pending?: boolean; pendingArtifactCount?: number; incomplete?: boolean }) {
   if (!entry) {
     return (
       <section className="phase-operator-summary" aria-label="Phase snapshot">
@@ -316,15 +317,15 @@ function PhaseOperatorSummary({ entry, status, incomplete = false }: { entry: Ph
   }
 
   const paragraphs = entry.summary?.split(/\n{2,}/).filter((p) => p.trim().length > 0) ?? []
-  const artifactCount = entry.artifact_ids?.length ?? 0
+  const artifactCount = pendingArtifactCount ?? entry.artifact_ids?.length ?? 0
   return (
     <section className="phase-operator-summary" aria-label="Phase snapshot">
       <dl className="phase-operator-metrics">
         <div><dt>Status</dt><dd>{pipelineStatusLabel(status ?? entry.status)}</dd></div>
-        <div><dt>Attempt</dt><dd>{entry.attempt ?? 'Not started'}</dd></div>
-        <div><dt>Elapsed time (includes reviews)</dt><dd>{formatDuration(entry.duration_s)}</dd></div>
-        <div><dt>Started</dt><dd>{formatTimestamp(entry.started_at)}</dd></div>
-        <div><dt>Evidence</dt><dd>{artifactCount === 0 ? incomplete ? 'Unavailable in this preview' : 'No phase artifacts' : `${artifactCount} phase artifact${artifactCount === 1 ? '' : 's'}`}</dd></div>
+        <div><dt>Attempt</dt><dd>{entry.attempt ?? (pending ? 'Not recorded in this review' : 'Not started')}</dd></div>
+        <div><dt>Elapsed time (includes reviews)</dt><dd>{pending && entry.duration_s == null ? 'Not recorded while awaiting the decision' : formatDuration(entry.duration_s)}</dd></div>
+        <div><dt>Started</dt><dd>{pending && !entry.started_at ? 'Not recorded in this review' : formatTimestamp(entry.started_at)}</dd></div>
+        <div><dt>Evidence</dt><dd>{artifactCount === 0 ? incomplete ? 'Unavailable in this preview' : pending ? 'No artifacts included in this review' : 'No phase artifacts' : `${artifactCount} phase artifact${artifactCount === 1 ? '' : 's'}`}</dd></div>
       </dl>
       {(entry.warnings?.length ?? 0) > 0 && (
         <div className="phase-operator-attention">
@@ -339,6 +340,7 @@ function PhaseOperatorSummary({ entry, status, incomplete = false }: { entry: Ph
         </div>
       )}
       <h3>What happened</h3>
+      {pending && <p className="workspace-caption">Pending review evidence; this output has not been accepted.</p>}
       <p className="workspace-caption">Output source: {entry.provenance === 'llm' ? 'AI-generated' : entry.provenance === 'stub' ? 'Stub — demonstration output' : entry.provenance?.replaceAll('_', ' ') ?? (incomplete ? 'Unavailable in this preview' : 'Not recorded')}</p>
       {paragraphs.length > 0 ? paragraphs.map((paragraph, index) => <p key={index}>{paragraph}</p>) : <p>{incomplete ? 'The phase summary is unavailable in this preview.' : 'No operator-readable summary has been recorded for this phase.'}</p>}
     </section>
@@ -407,7 +409,7 @@ export function ReasoningTab({
               </span>
             </div>
           )}
-          {prompt?.system && <><h4>System prompt</h4><CodeViewer value={prompt.system} ariaLabel="System prompt" /></>}
+          {prompt?.system && (phase === 'execution' ? <details className="execution-prompt-provenance"><summary>System prompt provenance</summary><CodeViewer value={prompt.system} ariaLabel="System prompt" /></details> : <><h4>System prompt</h4><CodeViewer value={prompt.system} ariaLabel="System prompt" /></>)}
           {prompt?.application && (
             <><h4>Application prompt</h4><CodeViewer value={prompt.application} ariaLabel="Application prompt" /></>
           )}

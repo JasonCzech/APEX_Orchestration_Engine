@@ -1,6 +1,7 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { executionLink } from '@/features/apex-load/executionLink'
 import { Link } from 'react-router'
+import { Fragment } from 'react'
 import type { PhaseName, PipelineState } from '@apex/pipeline-events'
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import { ArtifactLink } from '@/features/artifacts/ArtifactLink'
@@ -51,6 +52,13 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
     handle?.console_url ?? handle?.extras?.console_url ?? execution?.source_uri ?? external.uri,
     returnTo ?? `/runs/${detail.thread_id}`,
   )
+  const optionalContext = [
+    ['Load application', summary?.outcome?.scope?.application_id ?? handle?.application_id ?? handle?.extras?.application_id],
+    ['Load release', summary?.outcome?.scope?.release_id ?? handle?.release_id ?? handle?.extras?.release_id],
+    ['Mapping revision', handle?.mapping_revision ?? handle?.extras?.mapping_revision],
+    ['Source', execution?.provenance],
+  ] as const
+  const absentContext = optionalContext.filter(([, value]) => value == null || value === '')
   const phase = targetPhaseFor(detail, state)
   const outcome = orchestrationStatusLabel(detail.thread_status, normalizedPhases(state, detail.phase_strip, true, detail))
   return (
@@ -120,12 +128,9 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
             <dd>{detail.project_id ?? 'Not recorded'}</dd>
             <dt>Application</dt>
             <dd><ApplicationLabel project={detail.project_id} application={detail.app_id} /></dd>
-            <dt>Load application</dt><dd>{summary?.outcome?.scope?.application_id ?? handle?.application_id ?? handle?.extras?.application_id ?? missingEvidence}</dd>
-            <dt>Load release</dt><dd>{summary?.outcome?.scope?.release_id ?? handle?.release_id ?? handle?.extras?.release_id ?? missingEvidence}</dd>
-            <dt>Mapping revision</dt><dd>{handle?.mapping_revision ?? handle?.extras?.mapping_revision ?? missingEvidence}</dd>
-            <dt>Source</dt>
-            <dd>{execution?.provenance ?? missingEvidence}</dd>
+            {optionalContext.filter(([, value]) => value != null && value !== '').map(([label, value]) => <Fragment key={label}><dt>{label}</dt><dd>{value}</dd></Fragment>)}
           </dl>
+          {absentContext.length > 0 && <details className="run-context-unrecorded"><summary>Unrecorded context ({absentContext.length})</summary><dl>{absentContext.map(([label]) => <Fragment key={label}><dt>{label}</dt><dd>{missingEvidence}</dd></Fragment>)}</dl></details>}
           {loadUrl && (
             <a
               className="btn btn-secondary"

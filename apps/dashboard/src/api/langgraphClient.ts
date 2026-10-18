@@ -12,6 +12,7 @@ import { resolveLanggraphBaseUrl } from '@/config/runtimeConfig'
 import { createDevLangGraphClient, subscribeDevDataMode } from '@/dev-data'
 
 import { fetchWithoutRedirects } from './fetchPolicy'
+import { canonicalNativeLangGraphRequest } from './langgraphQuery'
 
 let clientPromise: Promise<Client> | null = null
 
@@ -38,6 +39,7 @@ export function getLangGraphClient(): Promise<Client> {
 }
 
 async function buildClient(): Promise<Client> {
+  const apiUrl = resolveLanggraphBaseUrl()
   const requestKey = getApiKey()
   const requestRevision = getApiKeyRevision()
   const requestSessionRevision = getSessionRevision()
@@ -61,7 +63,7 @@ async function buildClient(): Promise<Client> {
       init?.headers ??
         (input instanceof Request ? input.headers : undefined),
     ).get('x-api-key')
-    const response = await fetchWithoutRedirects(input, init)
+    const response = await fetchWithoutRedirects(canonicalNativeLangGraphRequest(input, init, apiUrl), init)
     const belongsToCurrentSession =
       requestRevision === getApiKeyRevision() &&
       requestSessionRevision === getSessionRevision() &&
@@ -82,7 +84,7 @@ async function buildClient(): Promise<Client> {
     return response
   }
   return new Client({
-    apiUrl: resolveLanggraphBaseUrl(),
+    apiUrl,
     apiKey: requestKey ?? undefined,
     callerOptions: { fetch: authFetch, maxRetries: 0 },
   })
