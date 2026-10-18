@@ -30,7 +30,7 @@ import { PreflightModal } from './PreflightModal'
 import { rerunRestriction } from './rerunCapability'
 import { RerunGuidance } from './RerunGuidance'
 import { runReviewPath } from './reviewPath'
-import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
+import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, withLiveRunningPhase, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
 import './run-detail.css'
 import './live.css'
@@ -144,7 +144,8 @@ export function RunWorkspace({
 
   const { detail, state, stateParseFailed } = query.data
   const rerunBlocked = rerunRestriction(detail.rerun_blocked_reason)
-  const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed, detail)
+  const phaseStrip = withLiveRunningPhase(normalizedPhases(state, detail.phase_strip, stateParseFailed, detail),
+    { ...detail, pending_gate: detail.pending_gate ?? query.data.interrupts[0] ?? null }, live)
   const pendingGate = query.data.interrupts.some(interrupt => interrupt.interrupt_id === hitl.gate?.interrupt_id) ? hitl.gate : null
   const summaryGate = detail.pending_gate
   const announcementGate = summaryGate && typeof summaryGate.kind === 'string' && isPhaseName(summaryGate.phase)

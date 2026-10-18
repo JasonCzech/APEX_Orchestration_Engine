@@ -11,6 +11,7 @@ import {
 
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
 import type { PipelineSummary } from '@/api/hooks/usePipelines'
+import type { LiveStreamViewLike } from './liveTypes'
 
 export const PHASE_LABELS: Record<PhaseName, string> = {
   story_analysis: 'Story Analysis',
@@ -197,6 +198,29 @@ export function normalizedPhases(
       attempt: previous?.attempt ?? undefined,
     }
   })
+}
+
+/** A running child subgraph may not have committed to its parent checkpoint yet.
+ * Preserve that same-run observation for display only; accepted outcomes, review
+ * gates, attempts and the canonical query cache remain snapshot-owned. */
+export function withLiveRunningPhase(
+  strip: ReturnType<typeof normalizedPhases>,
+  context: Pick<PipelineSummary, 'thread_status' | 'current_phase' | 'pending_gate'>,
+  live: { runId: string | null; stream: Pick<LiveStreamViewLike, 'status' | 'phaseProgress'> },
+) {
+  if (context.thread_status !== 'busy' || context.pending_gate || !live.runId ||
+    !['live', 'reconnecting'].includes(live.stream.status)) return strip
+  if (strip.some(item => ['running', 'awaiting_prompt_review', 'awaiting_output_review'].includes(item.status))) return strip
+  const observations = Object.entries(live.stream.phaseProgress ?? {})
+  if (observations.some(([, progress]) => progress && ['awaiting_prompt_review', 'awaiting_output_review'].includes(progress.status ?? ''))) return strip
+  const running = observations.filter(([, progress]) => progress?.status === 'running')
+  if (running.length !== 1) return strip
+  const [phase, observation] = running[0]!
+  if (!isPhaseName(phase) || !observation || !Number.isInteger(observation.attempt) || (observation.attempt ?? 0) < 1) return strip
+  if (isPhaseName(context.current_phase) && PHASE_NAMES.indexOf(context.current_phase) > PHASE_NAMES.indexOf(phase)) return strip
+  return strip.map(item => item.phase === phase && item.status === 'pending' && item.attempt === observation.attempt
+    ? { ...item, status: 'running' }
+    : item)
 }
 
 export function phaseProgress(strip: PipelineSummary['phase_strip']) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { executionResultLabel, formatDuration, normalizedPhases, phaseProgress, phaseProgressLabel, pipelineStatusLabel, orchestrationStatusLabel } from './runDisplay'
+import { executionResultLabel, formatDuration, normalizedPhases, withLiveRunningPhase, phaseProgress, phaseProgressLabel, pipelineStatusLabel, orchestrationStatusLabel } from './runDisplay'
 
 describe('operator results and phase consistency', () => {
   it('requires recorded outcomes, including a failed SLA after successful orchestration', () => {
@@ -53,6 +53,44 @@ describe('honest lifecycle projections', () => {
   })
   it('uses one missing-result label even when execution is omitted', () => {
     expect(executionResultLabel({}, { phases_plan: ['reporting'] })).toBe('Not available')
+  })
+})
+
+describe('live running display over a parent checkpoint', () => {
+  const pending = () => normalizedPhases({ phases_plan: ['execution', 'reporting'], phase_results: { execution: { status: 'pending', attempt: 1 }, reporting: { status: 'pending', attempt: 1 } } })
+  const context = { thread_status: 'busy', current_phase: 'script_scenario', pending_gate: null }
+  const live = { runId: 'active-run', stream: { status: 'live', phaseProgress: { execution: { status: 'running', attempt: 1 } } } }
+
+  it('projects only the observed running phase and keeps the source snapshot unchanged', () => {
+    const strip = pending()
+    expect(withLiveRunningPhase(strip, context, live).find(item => item.phase === 'execution')?.status).toBe('running')
+    expect(withLiveRunningPhase(strip, context, live).find(item => item.phase === 'reporting')?.status).toBe('pending')
+    expect(strip.find(item => item.phase === 'execution')?.status).toBe('pending')
+  })
+  it.each(['idle', 'error', 'interrupted', undefined])('keeps canonical phases when thread is %s', thread_status => {
+    const strip = pending()
+    expect(withLiveRunningPhase(strip, { ...context, thread_status }, live)).toBe(strip)
+  })
+  it.each(['idle', 'connecting', 'ended', 'error'])('rejects live overlays from %s transport', status => {
+    const strip = pending()
+    expect(withLiveRunningPhase(strip, context, { ...live, stream: { ...live.stream, status } })).toBe(strip)
+  })
+  it.each([undefined, 0, 2])('requires an exact recorded attempt, rejecting %s', attempt => {
+    expect(withLiveRunningPhase(pending(), context, { ...live, stream: { ...live.stream, phaseProgress: { execution: { status: 'running', attempt } } } }).find(item => item.phase === 'execution')?.status).toBe('pending')
+  })
+  it.each(['succeeded', 'failed', 'aborted', 'skipped', 'awaiting_prompt_review', 'awaiting_output_review', 'unknown', 'none'])('preserves canonical %s', status => {
+    const strip = pending().map(item => item.phase === 'execution' ? { ...item, status } : item)
+    expect(withLiveRunningPhase(strip, context, live).find(item => item.phase === 'execution')?.status).toBe(status)
+  })
+  it('does not resurrect an old phase, cross a gate, or combine ambiguous live runs', () => {
+    const strip = pending()
+    expect(withLiveRunningPhase(strip, { ...context, current_phase: 'reporting' }, live)).toBe(strip)
+    expect(withLiveRunningPhase(strip, { ...context, pending_gate: { interrupt_id: 'gate', phase: 'reporting', kind: 'prompt_review' } }, live)).toBe(strip)
+    expect(withLiveRunningPhase(strip, context, { ...live, runId: null })).toBe(strip)
+    expect(withLiveRunningPhase(strip, context, { ...live, stream: { ...live.stream, phaseProgress: { ...live.stream.phaseProgress, reporting: { status: 'running', attempt: 1 } } } })).toBe(strip)
+    expect(withLiveRunningPhase(strip, context, { ...live, stream: { ...live.stream, phaseProgress: { ...live.stream.phaseProgress, reporting: { status: 'awaiting_output_review', attempt: 1 } } } })).toBe(strip)
+    const gated = strip.map(item => item.phase === 'reporting' ? { ...item, status: 'awaiting_prompt_review' } : item)
+    expect(withLiveRunningPhase(gated, context, live)).toBe(gated)
   })
 })
 

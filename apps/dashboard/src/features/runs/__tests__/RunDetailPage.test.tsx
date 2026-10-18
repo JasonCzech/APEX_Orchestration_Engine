@@ -41,8 +41,9 @@ vi.mock('recharts', async (importOriginal) => {
 // D2: RunDetailPage mounts useRunLiveness. These D1 snapshot tests pin the
 // stream to idle via the integration contract (never the module's internals)
 // so no SSE/run-discovery requests fire against the msw server.
+const liveOverride = vi.hoisted(() => vi.fn())
 vi.mock('@/streaming/usePipelineStream', () => ({
-  useRunLiveness: () => ({
+  useRunLiveness: () => liveOverride() ?? ({
     runId: null,
     stream: {
       status: 'idle',
@@ -55,6 +56,38 @@ vi.mock('@/streaming/usePipelineStream', () => ({
 }))
 
 describe('RunDetailPage', () => {
+  it('keeps a same-run running observation visible when polling returns the older parent checkpoint', async () => {
+    const detail = structuredClone(PIPELINE_DETAIL)
+    detail.thread_status = 'busy'
+    detail.current_phase = 'script_scenario'
+    detail.pending_gate = null
+    detail.interrupts = []
+    const execution = { status: 'running', attempt: 1 }
+    detail.values = { phases_plan: ['execution', 'reporting'], phase_results: { execution, reporting: { status: 'pending', attempt: 1 } } }
+    liveOverride.mockReturnValue({ runId: 'active-run', stream: {
+      status: 'live', phaseProgress: { execution: { status: 'running', attempt: 1 } },
+      toolCalls: [], engineStats: { samples: [], latest: null }, pendingGateHint: null,
+    } })
+    try {
+      server.use(pipelineDetailHandler(detail))
+      const { queryClient } = renderRunRoutes([`/runs/${THREAD_ID}/phases/execution?tab=details`])
+      const snapshot = await screen.findByRole('region', { name: 'Phase snapshot' })
+      expect(snapshot).toHaveTextContent('Executing')
+      execution.status = 'pending'
+      await act(async () => { await queryClient.refetchQueries({ queryKey: queryKeys.threads.state(THREAD_ID) }) })
+      expect(queryClient.getQueryData<ThreadStateSnapshot>(queryKeys.threads.state(THREAD_ID))?.state.phase_results?.execution?.status).toBe('pending')
+      expect(snapshot).toHaveTextContent('Executing')
+      // A compact summary can lag the hydrated interrupt list; any recorded
+      // gate must still take precedence over a retained live observation.
+      detail.interrupts = [{ interrupt_id: 'reporting-gate', kind: 'phase_review', phase: 'reporting', payload: {} }]
+      await act(async () => { await queryClient.refetchQueries({ queryKey: queryKeys.threads.state(THREAD_ID) }) })
+      expect(queryClient.getQueryData<ThreadStateSnapshot>(queryKeys.threads.state(THREAD_ID))?.interrupts).toHaveLength(1)
+      await waitFor(() => expect(snapshot).toHaveTextContent('Pending'))
+    } finally {
+      liveOverride.mockReset()
+    }
+  })
+
   it('uses pending output throughout the phase workspace without claiming acceptance or timing', async () => {
     const detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
     detail.current_phase = 'execution'
