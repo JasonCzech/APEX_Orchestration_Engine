@@ -3,6 +3,7 @@
 import asyncio
 import json
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 import pytest
@@ -16,7 +17,10 @@ from langgraph_sdk.errors import ConflictError
 from apex.adapters.stubs import MemoryArtifactStore
 from apex.app.dependencies import get_current_identity
 from apex.app.errors import register_exception_handlers
-from apex.app.security import _direct_langgraph_body_limit_error
+from apex.app.security import (
+    _direct_langgraph_body_limit_error,
+    _direct_langgraph_query_limit_error,
+)
 from apex.auth.identity import RUNTIME_ACTOR_ID_KEY, ConsumerIdentity, ConsumerType, Role
 from apex.domain.pipeline import (
     ENGINE_CONNECTION_AFFINITY_RECOVERY_DETAIL,
@@ -331,6 +335,46 @@ async def test_rerun_ambiguous_retry_adopts_hashed_claim_without_raw_key_metadat
     assert set(metadata) == {RERUN_CLAIM_METADATA_KEY, RERUN_FINGERPRINT_METADATA_KEY}
     assert canary not in repr(metadata)
     assert "consumer-a" not in repr(metadata)
+
+
+async def test_rerun_reconciliation_queries_satisfy_native_guard_before_and_after_retry() -> None:
+    from apex.services import langgraph_client
+
+    class GuardedRuns(DurableRerunRuns):
+        async def list(self, thread_id: str, **kwargs: Any) -> list[JsonDict]:
+            error = _direct_langgraph_query_limit_error(
+                {
+                    "type": "http",
+                    "method": "GET",
+                    "path": f"/threads/{thread_id}/runs",
+                    "headers": [
+                        (
+                            langgraph_client._TRUSTED_LOOPBACK_HEADER.encode(),
+                            langgraph_client._TRUSTED_LOOPBACK_TOKEN.encode(),
+                        ),
+                    ],
+                    "query_string": urlencode(kwargs, doseq=True).encode(),
+                }
+            )
+            assert error is None
+            return await super().list(thread_id, **kwargs)
+
+    threads = FakeThreads(
+        {"t-1": rerun_state(trusted_rerun_snapshot())},
+        {"t-1": {"project_id": "project-a", "app_id": "app-a"}},
+    )
+    runs = GuardedRuns(lose_first_response=True)
+    service = PipelineReadService(FakeClient(threads, runs))
+    arguments = {
+        "phases": ["execution"],
+        "gates_mode": "auto",
+        "idempotency_key": "guarded-rerun",
+        "principal_id": "consumer-a",
+    }
+    with pytest.raises(httpx.ReadTimeout, match="response lost"):
+        await service.rerun_pipeline("t-1", **arguments)
+    assert await service.rerun_pipeline("t-1", **arguments) == "rerun-1"
+    assert len(runs.create_calls) == 1
 
 
 async def test_rerun_rejects_credential_shaped_native_run_id() -> None:

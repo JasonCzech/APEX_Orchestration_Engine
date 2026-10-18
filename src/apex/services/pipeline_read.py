@@ -1770,7 +1770,7 @@ class PipelineReadService:
                     thread_id,
                     limit=limit,
                     offset=offset,
-                    select=["run_id", "metadata", "created_at"],
+                    select=["run_id", "status", "metadata", "created_at"],
                 ),
                 requested_limit=limit,
                 label="pipeline rerun search",
