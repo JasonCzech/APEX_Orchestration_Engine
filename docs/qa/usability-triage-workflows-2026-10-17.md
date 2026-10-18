@@ -6,6 +6,8 @@ This is the WS4 inventory for **APEX Orchestration**, based on `main` at `253d13
 
 The review re-read the current components, API contracts, and assertions. Earlier remediation prose was used as an index, not proof. This exposed an actual remaining ARE-25 defect: new prompt versions still activated silently. The editor now states the consequence beside an explicit **Save and activate vN** action. Template-preview and context-summary receipts now label both the native execution ID and dashboard run ID, and retain links to the dashboard run. The same pass found the overview still printed “Not applicable” for omitted execution despite a passing helper-level test; the rendered overview is now corrected and covered directly. Independent review also found remaining composed diff contrast failures; its final verification is recorded with ARE-24.
 
+The later [Cycle follow-ups](cycle-followups-2026-10-17.md) implement F1/F3 and the supported live APEX Load native HTTP portion of F2, with separate backend, browser, migration and real-provider evidence. The disposition table below preserves the original triage baseline; its four partial rows are superseded only to the extent described in that follow-up. Broader execution integrations remain explicit boundaries.
+
 ## Evidence and validation
 
 All UI paths below are relative to `apps/dashboard/`. Browser cases run against the production bundle; the connected-mode cases intercept HTTP with contract-shaped fixtures. They verify rendered UI, actions, request identities, and recovery behavior, **not a real provider round trip**.

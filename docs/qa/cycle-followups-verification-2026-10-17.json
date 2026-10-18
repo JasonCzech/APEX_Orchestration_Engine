@@ -1,0 +1,690 @@
+{
+  "recorded_at": "2026-10-18T00:31:27.967603+00:00",
+  "repository": "APEX_Orchestration_Engine",
+  "baseline_commit": "10c7eee257c944f2b0f0dfe202dfd318e97a79dd",
+  "approved_source_adapter_commit": "6f045be",
+  "real_provider": {
+    "isolation": "Task-owned SQLite controller18082 and HTTP target18083; existing provider database untouched",
+    "controller_binary_sha256": "e4d591f975a8f492d497189155351938bb91783debffd5cb7b55c84393888c88",
+    "source_validation": {
+      "ok": true,
+      "issues": [],
+      "warnings": [
+        "Provider capacity will be checked after the approved script is materialized"
+      ]
+    },
+    "handle": {
+      "engine": "apex_load",
+      "connection_id": "isolated-local-provider",
+      "external_run_id": "814fe97a-7fab-4bda-a2ec-bc6451c55d24",
+      "idempotency_key": "cycle-followups-probe-3",
+      "extras": {
+        "test_name": "apex-orch:cycle-followups-probe-3",
+        "project_id": "unassigned",
+        "console_url": "http://127.0.0.1:18082/#/test/814fe97a-7fab-4bda-a2ec-bc6451c55d24",
+        "approved_script_id": "30ce3921-d44e-477a-b61d-c6832820f378",
+        "approved_artifact_sha256": "8c5122b0bd40445818e5196eee60e080bd87edaf304629e98adaf2a95bc11666",
+        "approved_workload_digest": "deb2ebf1234bef2ae62c3acac12d468f440d59770cb6c3931b09e496f979cf28",
+        "approved_application_id": "legacy",
+        "approved_release_id": "legacy-imported",
+        "approved_source_digest": "f622a0f0f789c66ce317cc88dc0d50a65556c66652e3656ed77c820af3833108",
+        "approved_workload": "{\"duration_s\":5.0,\"goal_config\":{\"max_error_pct\":10.0,\"p95_latency_ms\":1000.0},\"ramp_s\":0.0,\"vusers\":1}"
+      }
+    },
+    "observed_phases": [
+      "running",
+      "completed"
+    ],
+    "summary": {
+      "engine": "apex_load",
+      "passed": null,
+      "outcome": {
+        "scope": {
+          "project_id": "unassigned",
+          "application_id": "legacy",
+          "release_id": "legacy-imported"
+        },
+        "schema_version": 1,
+        "execution_id": "814fe97a-7fab-4bda-a2ec-bc6451c55d24",
+        "observed_at": "2026-10-18T00:07:21.812354Z",
+        "assessment": {
+          "status": "inconclusive",
+          "reason_code": "assessment_inconclusive",
+          "explanation": "Acceptance requires review: telemetry was degraded for 1 interval(s); data completeness was 85% (needs_review).",
+          "criteria_revision": null
+        },
+        "execution": {
+          "termination_reason": "workload_completed",
+          "planned_duration_seconds": 5.0,
+          "observed_duration_seconds": 5.023084
+        },
+        "evidence": {
+          "status": "partial",
+          "coverage_percent": 85.0
+        }
+      },
+      "kpis": {
+        "tps_avg": 3666.4,
+        "p95_ms": 0.3,
+        "error_rate": 5.3265153936294876e-05,
+        "vusers_peak": 1.0
+      },
+      "sla_breaches": [],
+      "notes": "APEX Load test 814fe97a-7fab-4bda-a2ec-bc6451c55d24 status COMPLETE; KPIs from archive report; threshold assessment not available"
+    },
+    "scope": "Real adapter\u2192Load HTTP API\u2192local HTTP target. Full facade/compiled-graph regression separately uses provider HTTP fixtures."
+  },
+  "postgres_migration": {
+    "migration_from": "0039",
+    "migration_to": "0041",
+    "new_tables": [
+      "cycle_execution_dispatches",
+      "project_labels"
+    ],
+    "verified_columns": [
+      "canceled_by",
+      "progress"
+    ],
+    "database": "disposable local PostgreSQL",
+    "removed_after_verification": true
+  },
+  "tested_code_commit": "7172473c68985c2c6b097f3a7ce3dea3778d5b1c",
+  "checks": {
+    "backend": {
+      "command": "uv run pytest -q -rs",
+      "passed": 6142,
+      "skipped": 23,
+      "warnings": 1,
+      "warning_note": "Existing Starlette/httpx deprecation"
+    },
+    "postgres_supplement": {
+      "passed": 37,
+      "default_skips_exercised": 19,
+      "database": "Disposable local PostgreSQL upgraded to0041, removed afterward"
+    },
+    "remaining_default_skips": [
+      "2 MinIO integration cases: service unavailable",
+      "1 Linux memfd case: macOS host",
+      "1 simulator abort case: simulator abort is a documented no-op"
+    ],
+    "dashboard": {
+      "command": "npm run test:dashboard",
+      "passed": 1146,
+      "files": 139
+    },
+    "contracts": {
+      "command": "npm run check:contracts",
+      "passed": 48
+    },
+    "static": {
+      "python_ruff": "passed",
+      "pyright": "0 errors,0 warnings",
+      "dashboard_typecheck": "passed in production build",
+      "dashboard_lint": "0 errors,23 existing Fast Refresh warnings",
+      "git_diff_check": "passed"
+    },
+    "production_build": {
+      "command": "npm run build:dashboard",
+      "result": "passed",
+      "index_sha256": "5df9b5716465ad43cb632c5d5ae3b25b0dede97d254e08edee7a6ab789dacf84",
+      "note": "Built from the exact worktree content subsequently committed as tested_code_commit; build metadata predates that commit."
+    }
+  },
+  "browser": {
+    "command": "APEX_DASHBOARD_TEST_PORT=4196 npx playwright test --config apps/dashboard/playwright.config.ts --workers=4",
+    "stats": {
+      "startTime": "2026-10-18T00:29:39.557Z",
+      "duration": 46379.776999999995,
+      "expected": 93,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "cases": [
+      {
+        "file": "analytics-measurements.spec.ts",
+        "name": "analytics keeps missing measurements distinct from zero and preserves chart gaps",
+        "passed": true
+      },
+      {
+        "file": "analytics-measurements.spec.ts",
+        "name": "chart winners stay independent of table sorting across a bounded population",
+        "passed": true
+      },
+      {
+        "file": "bounded-evidence.spec.ts",
+        "name": "bounded and drifted evidence stays truthful and readable for viewer",
+        "passed": true
+      },
+      {
+        "file": "bounded-evidence.spec.ts",
+        "name": "bounded and drifted evidence stays truthful and readable for operator",
+        "passed": true
+      },
+      {
+        "file": "bounded-evidence.spec.ts",
+        "name": "large Unicode prompt bodies stay complete and keyboard escapable for an operator",
+        "passed": true
+      },
+      {
+        "file": "chart-contrast.spec.ts",
+        "name": "chart strokes contrast with the rendered panel and retain non-color encodings: dark",
+        "passed": true
+      },
+      {
+        "file": "chart-contrast.spec.ts",
+        "name": "chart strokes contrast with the rendered panel and retain non-color encodings: light",
+        "passed": true
+      },
+      {
+        "file": "chart-contrast.spec.ts",
+        "name": "chart strokes contrast with the rendered panel and retain non-color encodings: apex-light",
+        "passed": true
+      },
+      {
+        "file": "chart-contrast.spec.ts",
+        "name": "chart strokes contrast with the rendered panel and retain non-color encodings: solarized-dark",
+        "passed": true
+      },
+      {
+        "file": "chart-contrast.spec.ts",
+        "name": "chart strokes contrast with the rendered panel and retain non-color encodings: solarized-light",
+        "passed": true
+      },
+      {
+        "file": "chart-contrast.spec.ts",
+        "name": "chart strokes contrast with the rendered panel and retain non-color encodings: monokai-dimmed",
+        "passed": true
+      },
+      {
+        "file": "cycle-dispatch.spec.ts",
+        "name": "dispatch confirmation and durable recover for viewer",
+        "passed": true
+      },
+      {
+        "file": "cycle-dispatch.spec.ts",
+        "name": "dispatch confirmation and durable recover for operator-unscoped",
+        "passed": true
+      },
+      {
+        "file": "cycle-dispatch.spec.ts",
+        "name": "dispatch confirmation and durable recover for operator-scoped",
+        "passed": true
+      },
+      {
+        "file": "cycle-dispatch.spec.ts",
+        "name": "dispatch confirmation and durable recover for admin",
+        "passed": true
+      },
+      {
+        "file": "cycle-dispatch.spec.ts",
+        "name": "dispatch confirmation and durable cancel for operator-scoped",
+        "passed": true
+      },
+      {
+        "file": "cycle-dispatch.spec.ts",
+        "name": "dispatch confirmation and durable cancel for admin",
+        "passed": true
+      },
+      {
+        "file": "cycle-names-progress.spec.ts",
+        "name": "scoped names, copyable identities and bounded cycle progress for viewer",
+        "passed": true
+      },
+      {
+        "file": "cycle-names-progress.spec.ts",
+        "name": "scoped names, copyable identities and bounded cycle progress for app-admin",
+        "passed": true
+      },
+      {
+        "file": "cycle-names-progress.spec.ts",
+        "name": "scoped names, copyable identities and bounded cycle progress for project-admin",
+        "passed": true
+      },
+      {
+        "file": "cycle-names-progress.spec.ts",
+        "name": "scoped names, copyable identities and bounded cycle progress for global-admin",
+        "passed": true
+      },
+      {
+        "file": "cycle-rerun-capability.spec.ts",
+        "name": "cycle execution rerun guidance stays authoritative for operator at 390px",
+        "passed": true
+      },
+      {
+        "file": "cycle-rerun-capability.spec.ts",
+        "name": "cycle execution rerun guidance stays authoritative for operator at 1024px",
+        "passed": true
+      },
+      {
+        "file": "cycle-rerun-capability.spec.ts",
+        "name": "cycle execution rerun guidance stays authoritative for admin at 390px",
+        "passed": true
+      },
+      {
+        "file": "cycle-rerun-capability.spec.ts",
+        "name": "cycle execution rerun guidance stays authoritative for admin at 1024px",
+        "passed": true
+      },
+      {
+        "file": "cycles-ux.spec.ts",
+        "name": "cycle review and editing honor viewer capability",
+        "passed": true
+      },
+      {
+        "file": "cycles-ux.spec.ts",
+        "name": "cycle review and editing honor operator-unscoped capability",
+        "passed": true
+      },
+      {
+        "file": "cycles-ux.spec.ts",
+        "name": "cycle review and editing honor operator-scoped capability",
+        "passed": true
+      },
+      {
+        "file": "cycles-ux.spec.ts",
+        "name": "cycle review and editing honor admin capability",
+        "passed": true
+      },
+      {
+        "file": "cycles-ux.spec.ts",
+        "name": "execution preparation retries and new intents stay distinct for operator-scoped",
+        "passed": true
+      },
+      {
+        "file": "cycles-ux.spec.ts",
+        "name": "execution preparation retries and new intents stay distinct for admin",
+        "passed": true
+      },
+      {
+        "file": "demo-mode.spec.ts",
+        "name": "production demo completes the offline Jira Align to Jira Cloud journey",
+        "passed": true
+      },
+      {
+        "file": "demo-mode.spec.ts",
+        "name": "APEX Load mutations persist across refresh and reset to canonical fixtures",
+        "passed": true
+      },
+      {
+        "file": "demo-mode.spec.ts",
+        "name": "engine selection supports one keyboard tab stop and wrapping arrows",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "shared brand face loads locally with system mono in dark",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "shared brand face loads locally with system mono in light",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "shared brand face loads locally with system mono in apex-light",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "shared brand face loads locally with system mono in solarized-dark",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "shared brand face loads locally with system mono in solarized-light",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "shared brand face loads locally with system mono in monokai-dimmed",
+        "passed": true
+      },
+      {
+        "file": "font-parity.spec.ts",
+        "name": "production bundle contains only the four approved brand font files",
+        "passed": true
+      },
+      {
+        "file": "hitl-review-safety.spec.ts",
+        "name": "gate keyboard editing preserves prompts, drafts and queue focus",
+        "passed": true
+      },
+      {
+        "file": "hitl-review-safety.spec.ts",
+        "name": "a local output revision remains selected through its new interrupt",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared surfaces on a cold page load: dark",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared surfaces on a cold page load: light",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared surfaces on a cold page load: apex-light",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared surfaces on a cold page load: solarized-dark",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared surfaces on a cold page load: solarized-light",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared surfaces on a cold page load: monokai-dimmed",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "theme and motion preferences apply while config is still pending",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared typography reflows at 390px",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared typography reflows at 768px",
+        "passed": true
+      },
+      {
+        "file": "holistic-ux.spec.ts",
+        "name": "shared typography reflows at 1440px",
+        "passed": true
+      },
+      {
+        "file": "interface-usability.spec.ts",
+        "name": "compact grid phase progress is one labelled graphic and detail phases remain keyboard actions",
+        "passed": true
+      },
+      {
+        "file": "interface-usability.spec.ts",
+        "name": "retained tool statuses and reasoning provenance stay distinct and explicitly labelled",
+        "passed": true
+      },
+      {
+        "file": "interface-usability.spec.ts",
+        "name": "consumer deletion requires its exact name before the irreversible request",
+        "passed": true
+      },
+      {
+        "file": "prompt-diff-contrast.spec.ts",
+        "name": "actual added and deleted prompt text retains contrast in dark",
+        "passed": true
+      },
+      {
+        "file": "prompt-diff-contrast.spec.ts",
+        "name": "actual added and deleted prompt text retains contrast in light",
+        "passed": true
+      },
+      {
+        "file": "prompt-diff-contrast.spec.ts",
+        "name": "actual added and deleted prompt text retains contrast in apex-light",
+        "passed": true
+      },
+      {
+        "file": "prompt-diff-contrast.spec.ts",
+        "name": "actual added and deleted prompt text retains contrast in solarized-dark",
+        "passed": true
+      },
+      {
+        "file": "prompt-diff-contrast.spec.ts",
+        "name": "actual added and deleted prompt text retains contrast in solarized-light",
+        "passed": true
+      },
+      {
+        "file": "prompt-diff-contrast.spec.ts",
+        "name": "actual added and deleted prompt text retains contrast in monokai-dimmed",
+        "passed": true
+      },
+      {
+        "file": "resources-ux.spec.ts",
+        "name": "document and evidence workflows support viewer with keyboard and mobile layout",
+        "passed": true
+      },
+      {
+        "file": "resources-ux.spec.ts",
+        "name": "document and evidence workflows support operator with keyboard and mobile layout",
+        "passed": true
+      },
+      {
+        "file": "resources-ux.spec.ts",
+        "name": "document and evidence workflows support admin with keyboard and mobile layout",
+        "passed": true
+      },
+      {
+        "file": "route-census.spec.ts",
+        "name": "all declared routes expose heading, tab-panel and compact-target contracts in the production bundle",
+        "passed": true
+      },
+      {
+        "file": "run-context-clarity.spec.ts",
+        "name": "demo activity offers saved reasoning and resolves the application consistently",
+        "passed": true
+      },
+      {
+        "file": "run-context-clarity.spec.ts",
+        "name": "omitted execution has one unavailable verdict with a separate explanation",
+        "passed": true
+      },
+      {
+        "file": "run-context-clarity.spec.ts",
+        "name": "queue selection announces concise context and keeps full details accessible for viewer",
+        "passed": true
+      },
+      {
+        "file": "run-context-clarity.spec.ts",
+        "name": "queue selection announces concise context and keeps full details accessible for operator",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "wizard catalog prompts and overrides are keyboard reachable without changing content",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "cold route tabs retain real panel targets: /settings",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "cold route tabs retain real panel targets: /admin/connections",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "cold route tabs retain real panel targets: /admin/connections/conn-apex-load",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "cold route tabs retain real panel targets: /apex-load",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "cold route tabs retain real panel targets: /prompts/phase/story_analysis%2Fsystem",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "small interactive controls have direct targets and disabled actions remain readable",
+        "passed": true
+      },
+      {
+        "file": "shared-state-accessibility.spec.ts",
+        "name": "not-found and filtered states offer clear recovery without live-region noise",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "desktop rail keeps navigation accessible and expansion stable for viewer",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "desktop rail keeps navigation accessible and expansion stable for operator",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "desktop rail keeps navigation accessible and expansion stable for admin",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "desktop sidebar honors stored collapsed preference true",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "desktop sidebar honors stored collapsed preference false",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "mobile navigation remains a drawer and does not change the desktop preference",
+        "passed": true
+      },
+      {
+        "file": "shell-parity-sidebar.spec.ts",
+        "name": "desktop navigation preserves a dirty gate through its navigation guard",
+        "passed": true
+      },
+      {
+        "file": "timestamp-preference.spec.ts",
+        "name": "UTC preference updates another open route without losing its draft or expansion",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "every cycle review action confirms exact identity and clears its note, with visible revision history",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "cycle conflict recovery preserves text and explicitly selects the newer replacement base",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "cycle authoring exposes real field contracts, inventory identity and unconfigured provider guidance",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "report capture preserves binding verification (true) and selects the exact new version",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "report capture preserves binding verification (false) and selects the exact new version",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "report capture preserves binding verification (undefined) and selects the exact new version",
+        "passed": true
+      },
+      {
+        "file": "workflow-triage.spec.ts",
+        "name": "prompt version activation is explicit and accepted resource jobs distinguish execution and run identities",
+        "passed": true
+      }
+    ]
+  },
+  "reviews": {
+    "final_outcome": "No remaining findings after independent cross-cutting review and fix cycles",
+    "closed_findings": [
+      "Exact prior durable snapshot compatibility",
+      "Truthful frozen binding evidence copy",
+      "List progress cache invalidation for capture mutations",
+      "Cycle rerun capability and explicit refusal"
+    ],
+    "scope": [
+      "Native/public auth and replay",
+      "Exact source and provider retry adoption",
+      "Dispatch reservations,cancellation,recovery and cleanup",
+      "Result and report binding evidence",
+      "Scoped identity names and bounded deliverable projections",
+      "CLI and desktop/mobile launch/recovery flows",
+      "Ordinary and Cycle rerun entry points"
+    ]
+  },
+  "captures": [
+    {
+      "path": "output/playwright/cycle-dispatch-mobile.png",
+      "sha256": "985b02b89dcaf26af7d3d9417867f71ebab0ee9b361baa483a143355a173d0f7",
+      "visual_review": "390px layout inspected; no horizontal overflow"
+    },
+    {
+      "path": "output/playwright/cycle-names-progress-mobile.png",
+      "sha256": "c1173a574b69eccf49a5fe141b42a151e2d3c3fd94e4a36d99248ac1d5d0f527",
+      "visual_review": "390px layout inspected; no horizontal overflow"
+    }
+  ],
+  "cleanup": {
+    "removed_cache_paths": [
+      ".pytest_cache",
+      ".ruff_cache",
+      "apps/dashboard/node_modules/.vite",
+      "apps/dashboard/node_modules/.vite-temp",
+      "apps/dashboard/node_modules/.tmp/tsconfig.app.tsbuildinfo",
+      "apps/dashboard/node_modules/.tmp/tsconfig.node.tsbuildinfo",
+      "src/apex/__pycache__",
+      "src/apex/routers/__pycache__",
+      "src/apex/bootstrap/__pycache__",
+      "src/apex/app/__pycache__",
+      "src/apex/auth/__pycache__",
+      "src/apex/adapters/__pycache__",
+      "src/apex/persistence/__pycache__",
+      "src/apex/graphs/__pycache__",
+      "src/apex/ports/__pycache__",
+      "src/apex/domain/__pycache__",
+      "src/apex/services/__pycache__",
+      "src/apex/graphs/pipeline/__pycache__",
+      "src/apex/graphs/context/__pycache__",
+      "src/apex/graphs/playground/__pycache__",
+      "src/apex/persistence/migrations/__pycache__",
+      "src/apex/persistence/repositories/__pycache__",
+      "src/apex/persistence/migrations/versions/__pycache__",
+      "src/apex/adapters/ado/__pycache__",
+      "src/apex/adapters/stubs/__pycache__",
+      "src/apex/adapters/jira_align/__pycache__",
+      "src/apex/adapters/s3/__pycache__",
+      "src/apex/adapters/apex_load/__pycache__",
+      "src/apex/adapters/k8s/__pycache__",
+      "src/apex/adapters/elk/__pycache__",
+      "src/apex/adapters/jira/__pycache__",
+      "src/apex/adapters/confluence/__pycache__",
+      "src/apex/adapters/loadrunner/__pycache__",
+      "src/apex/adapters/sim_engine/__pycache__",
+      "tests/__pycache__",
+      "tests/unit/__pycache__",
+      "tests/integration/__pycache__",
+      "tests/conformance/__pycache__",
+      "scripts/__pycache__"
+    ],
+    "reclaimed_bytes": 17879253,
+    "owned_provider_and_http_target": "stopped",
+    "task_browser_processes": "closed; none remain",
+    "stray_capture_copies": "removed; repository deliverables retained",
+    "go_docker_caches": "No Go or Docker builds in this work; shared caches left intact",
+    "dependencies_and_build_outputs": "preserved"
+  }
+}

@@ -34,6 +34,8 @@ Use **Test** for the authored test, **Run** for an execution attempt, **Review**
 
 Use `Skeleton` for pending content and `StateCard` with an explicit kind for empty, filtered, loading, not-found, unauthorized, unconfigured, or stale states. Route failures use `ProblemCard`; form failures stay inline with `role="alert"`; stale usable results use `CachedDataWarning`. These shared components own their styles so cold routes render correctly. Do not use toasts. One run live region announces meaningful phase/review/transport changes; the review queue gives focus to its selected option. CodeMirror editing must allow Tab to leave without changing content.
 
+Project names come from the permission-filtered project label catalog; they never grant access or replace the full copyable project ID. Duplicate and missing names remain distinguishable. Cycle actor names resolve only identities already recorded on that authorized cycle, with explicit unknown fallbacks. List progress describes the six current deliverables, including stale and archived states, separately from execution and acceptance. Cycle launch, recovery and cancellation use explicit confirmations and durable operation receipts; refresh never launches an execution.
+
 Authorization is a capability, not merely a role label: scope controls launch and catalog mutations. Explain role refusal separately from missing scope, before a user authors an unlaunchable test. Global-only operations such as preset editing explain their narrower requirement.
 
 ## Handoff contract

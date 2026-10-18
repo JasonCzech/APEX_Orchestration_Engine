@@ -2,6 +2,8 @@
 
 Implemented in **APEX Orchestration**, starting from integrated main `253d137`. APEX Load supplied the reference fonts and shell measurements; its source was not modified. This pass follows the re-scoped five-workstream plan rather than repeating changes already verified on the earlier branch.
 
+The subsequently authorized F1/F2/F3 implementation and its narrower live-execution boundary are recorded in [Cycle follow-ups](cycle-followups-2026-10-17.md). The counts and checks below describe the original presentation pass.
+
 ## Delivered behavior
 
 | Workstream | Result |
