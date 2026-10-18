@@ -69,6 +69,14 @@ interface PendingWizardOperation {
   draftGeneration: number
 }
 
+function focusWizardTarget(id: string) {
+  const target = document.getElementById(id)
+  target?.focus({ preventScroll: true })
+  // The sticky footer can cover a field that is only scrolled to the nearest
+  // viewport edge. Center both same-step and cross-step issue destinations.
+  target?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
+}
+
 function WizardSection({
   id,
   title,
@@ -224,8 +232,7 @@ function NewRunWizardContent({
     if (target?.step !== activeStep) return
     pendingFocusRef.current = null
     if (document.activeElement !== target.previous && document.activeElement !== document.body) return
-    document.getElementById(target.id)?.focus()
-    document.getElementById(target.id)?.scrollIntoView?.({ block: 'nearest' })
+    focusWizardTarget(target.id)
   }, [activeStep])
   const pendingOperationsRef = useRef(new Map<number, PendingWizardOperation>())
   const nextPendingOperationIdRef = useRef(0)
@@ -446,7 +453,7 @@ function NewRunWizardContent({
 
   function jumpToTab(step: WizardStepId, field?: string) {
     const id = field ?? `wizard-tab-${step}`
-    if (step === activeStep) document.getElementById(id)?.focus()
+    if (step === activeStep) focusWizardTarget(id)
     else pendingFocusRef.current = { step, id, previous: document.activeElement }
     selectStep(step)
   }

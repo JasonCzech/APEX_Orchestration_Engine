@@ -58,7 +58,27 @@ for (const profile of ['admin', 'operator'] as const) {
     }
     expect(readinessRequests.at(-1)).toMatchObject({ project_id: 'workflow', engine: 'sim' })
     expect(readinessRequests.at(-1)?.app_id).toBeUndefined()
-    await page.getByRole('tab', { name: 'Scope', exact: true }).click()
+    if (profile === 'operator') {
+      const application = page.getByLabel('Application', { exact: true })
+      const expectVisibleApplicationFocus = async () => {
+        await expect(application).toBeFocused()
+        await expect.poll(() => application.evaluate(element => {
+          const field = element.getBoundingClientRect()
+          const footer = document.querySelector('.wizard-footer')!.getBoundingClientRect()
+          return field.top >= 0 && field.bottom + 4 <= footer.top &&
+            document.elementFromPoint(field.left + field.width / 2, field.top + field.height / 2) === element
+        })).toBe(true)
+      }
+      await page.getByTestId('review-issues').getByRole('button', { name: /Select an application/ }).click()
+      await expectVisibleApplicationFocus()
+      // Same-step issue links must reveal the target too, including a narrow
+      // viewport where the sticky footer wraps to multiple lines.
+      await page.setViewportSize({ width: 390, height: 800 })
+      await page.locator('#main-content').evaluate(element => { element.scrollTop = 0 })
+      await page.getByRole('list', { name: 'Items needing attention' }).getByRole('button', { name: /Select an application/ }).click()
+      await expectVisibleApplicationFocus()
+      await page.setViewportSize({ width: 1440, height: 900 })
+    } else await page.getByRole('tab', { name: 'Scope', exact: true }).click()
     await page.getByLabel('Application', { exact: true }).selectOption('app')
     await page.getByLabel('Environment', { exact: true }).selectOption('env')
     await expect(page.getByLabel('Environment', { exact: true }).locator('option:checked')).toHaveText('Unapproved staging · Target not approved')
