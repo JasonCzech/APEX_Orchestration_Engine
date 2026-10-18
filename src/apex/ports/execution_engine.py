@@ -106,3 +106,14 @@ class ScriptSourceValidationPort(Protocol):
     async def validate_script_source(self, source: str) -> ValidationReport:
         """Validate exact source without substituting defaults, creating scripts or launching."""
         ...
+
+
+@runtime_checkable
+class ApprovedScriptExecutionPort(Protocol):
+    async def validate_approved_source(self, spec: LoadTestSpec, source: str) -> ValidationReport:
+        """Validate approved source and plan without generating or substituting script content."""
+        ...
+
+    async def provision_approved_source(self, spec: LoadTestSpec, source: str) -> EngineHandle:
+        """Materialize and verify exact approved executable content with replay-safe identity."""
+        ...

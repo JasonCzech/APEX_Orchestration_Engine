@@ -321,6 +321,315 @@ def _content_bound_script(script: dict[str, Any], project_id: str | None) -> dic
     return canonical
 
 
+_SCRIPT_STORAGE_FIELDS = frozenset(
+    {"id", "project_id", "ref_key", "name", "created_at", "updated_at"}
+)
+
+
+def _script_executable(script: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in script.items() if key not in _SCRIPT_STORAGE_FIELDS}
+
+
+def _empty_serialized_field(value: Any, path: tuple = ()) -> bool:
+    """Only empty Go-struct padding is harmless; false/zero may be authored overrides."""
+    return (
+        value is None
+        or (type(value) is str and value == "")
+        or (type(value) is list and not value)
+        or (
+            type(value) is dict
+            and all(_empty_serialized_field(v, (*path, k)) for k, v in value.items())
+        )
+        # ThinkTimeConfig.MeanMs is a non-omitempty value field in the native
+        # Go schema. Its zero serialization denotes no authored think time.
+        or (path[-2:] == ("think_time", "mean_ms") and type(value) in (int, float) and value == 0)
+    )
+
+
+def _approved_content_matches(expected: Any, actual: Any, path: tuple = ()) -> bool:
+    if type(expected) is dict and type(actual) is dict:
+        return all(
+            key in actual and _approved_content_matches(value, actual[key], (*path, key))
+            for key, value in expected.items()
+        ) and all(
+            key in expected or _empty_serialized_field(value, (*path, key))
+            for key, value in actual.items()
+        )
+    if type(expected) is list and type(actual) is list:
+        return len(expected) == len(actual) and all(
+            _approved_content_matches(left, right, (*path, index))
+            for index, (left, right) in enumerate(zip(expected, actual, strict=True))
+        )
+    if type(expected) in (int, float) and type(actual) in (int, float):
+        return expected == actual
+    return type(expected) is type(actual) and expected == actual
+
+
+def _without_empty_containers(value: Any) -> Any:
+    """Empty native auth structs contain no credential; preserve every actual value."""
+    if type(value) is dict:
+        return {
+            key: _without_empty_containers(child)
+            for key, child in value.items()
+            if child != {} and child != []
+        }
+    if type(value) is list:
+        return [_without_empty_containers(child) for child in value]
+    return value
+
+
+def _require_approved_http_target(script: dict[str, Any], target: str) -> None:
+    parsed = urlsplit(target)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.port == 0
+        or parsed.username
+        or parsed.password
+        or "{{" in target
+        or "\\" in target
+    ):
+        raise ValueError("Approved HTTP execution requires a literal HTTP(S) environment target")
+    if script.get("protocol") != "http":
+        raise ValueError("Approved execution currently supports HTTP source only")
+    config = script["config"]
+    allowed_config = {
+        "base_url",
+        "http",
+        "think_time",
+        "pacing",
+        "run_logic",
+        "error_handling",
+        "log",
+        "results",
+    }
+    if any(
+        key not in allowed_config and not _empty_serialized_field(value, ("config", key))
+        for key, value in config.items()
+    ):
+        raise ValueError(
+            "Approved HTTP execution does not support native protocol or URI overrides"
+        )
+    http = config.get("http", {})
+    if type(http) is not dict or any(
+        key != "max_redirects" and not _empty_serialized_field(value, ("http", key))
+        for key, value in http.items()
+    ):
+        raise ValueError("Approved HTTP execution does not support HTTP runtime overrides")
+    metadata = script.get("metadata")
+    policy = metadata.get("runtime_policy") if type(metadata) is dict else None
+    if type(policy) is not dict or policy.get("allowed_target_hosts") != [parsed.hostname]:
+        raise ValueError(
+            "Approved HTTP source must restrict runtime_policy.allowed_target_hosts "
+            "to the environment hostname"
+        )
+    if script.get("data_sources") or script.get("parameters"):
+        raise ValueError(
+            "Approved HTTP execution does not yet support external data or parameter sources"
+        )
+    origin = (
+        parsed.scheme,
+        parsed.hostname,
+        parsed.port or (443 if parsed.scheme == "https" else 80),
+    )
+    for phase in ("init", "actions", "teardown"):
+        actions = script.get(phase, [])
+        if type(actions) is not list or (phase == "actions" and not actions):
+            raise ValueError("Approved HTTP source requires a nonempty native action list")
+        for action in actions:
+            if type(action) is not dict or action.get("type") != "http":
+                raise ValueError(
+                    "Approved HTTP execution requires HTTP-only init, actions and teardown"
+                )
+            allowed_action = {
+                "id",
+                "name",
+                "type",
+                "method",
+                "target",
+                "headers",
+                "body",
+                "body_encoding",
+                "assertions",
+                "extractors",
+                "think_time",
+                "think_time_after",
+                "timeout_ms",
+                "max_redirects",
+                "attribution",
+            }
+            if any(
+                key not in allowed_action and not _empty_serialized_field(value, ("action", key))
+                for key, value in action.items()
+            ):
+                raise ValueError(
+                    "Approved HTTP execution does not support action URI overrides, "
+                    "resource fetches or external assets"
+                )
+            path = action.get("target")
+            if (
+                type(path) is not str
+                or not path
+                or "{{" in path
+                or "\\" in path
+                or path.startswith("//")
+            ):
+                raise ValueError("Approved HTTP action targets must be literal same-origin URLs")
+            url = urlsplit(path)
+            if (
+                url.username
+                or url.password
+                or url.port == 0
+                or (url.scheme or url.netloc)
+                and (url.scheme, url.hostname, url.port or (443 if url.scheme == "https" else 80))
+                != origin
+            ):
+                raise ValueError("Approved HTTP action target is outside the environment origin")
+            if any(key in action for key in ("url", "config", "actions", "steps", "protocol")):
+                raise ValueError("Approved HTTP action contains unsupported runtime URI overrides")
+            redirects = action.get("max_redirects", http.get("max_redirects"))
+            if type(redirects) is not int or redirects != -1:
+                raise ValueError(
+                    "Approved HTTP source must disable redirects with max_redirects: -1"
+                )
+            if action.get("header_list"):
+                raise ValueError("Approved HTTP execution does not support header-list overrides")
+            headers = action.get("headers", {})
+            if type(headers) is not dict or any(
+                key.casefold() in {"host", ":authority"} for key in headers
+            ):
+                raise ValueError("Approved HTTP actions cannot override target host headers")
+
+
+def qualify_approved_http_source(
+    spec: LoadTestSpec, source: str
+) -> tuple[LoadTestSpec, dict[str, Any]]:
+    """Pure qualification shared by dispatch readiness and the execution boundary."""
+    spec = _revalidate_spec(spec)
+    if spec.script_refs:
+        raise ValueError("Approved execution accepts source separately; script refs must be empty")
+    if spec.release_id or spec.mapping_revision:
+        raise ValueError(
+            "Approved execution requires a reviewed release binding before using a release mapping"
+        )
+    if set(spec.slas) - {"p95_ms", "error_rate", "tps_avg"}:
+        raise ValueError("Approved execution includes unsupported plan thresholds")
+    if type(source) is not str or not source or len(source.encode("utf-8")) > 150_000:
+        raise ValueError("Approved source must contain 1–150,000 UTF-8 bytes")
+    try:
+        script = parse_json_bytes(source, context="approved execution source")
+    except RuntimeError:
+        raise ValueError("Approved source must be valid native JSON") from None
+    if type(script) is not dict or not script:
+        raise ValueError("Approved source must be a native script object")
+    validate_json_object(script, label="approved source", max_bytes=150_000, max_nodes=4000)
+    if (
+        contains_credential_material(_without_empty_containers(script))
+        or "[REDACTED]" in source.upper()
+    ):
+        raise ValueError("Approved source must not contain credentials or redacted content")
+    config = script.get("config")
+    if type(script.get("protocol")) is not str or not script["protocol"].strip():
+        raise ValueError("Approved source must explicitly declare its native protocol")
+    if (
+        type(config) is not dict
+        or not spec.target_environment
+        or config.get("base_url") != spec.target_environment
+    ):
+        raise ValueError("Approved source base URL must match the approved environment target")
+    _require_approved_http_target(script, spec.target_environment)
+    run_logic = config.get("run_logic", {})
+    if type(run_logic) is not dict:
+        raise ValueError("Approved source run logic must be an object")
+    if (
+        run_logic.get("workload_model") not in (None, "", "closed")
+        or run_logic.get("termination_mode") not in (None, "", "duration")
+        or any(
+            run_logic.get(key) not in (None, 0)
+            for key in ("iterations", "global_iterations", "max_transactions", "max_in_flight")
+        )
+        or config.get("jmeter")
+        or config.get("sampler_schedules")
+    ):
+        raise ValueError(
+            "Approved source workload conflicts with the duration-based concurrent-user plan"
+        )
+    if script.get("goal_config") and script["goal_config"] != _goal_config_from_slas(spec.slas):
+        raise ValueError("Approved source goals conflict with the approved plan thresholds")
+    if script.get("archived_at"):
+        raise ValueError(
+            "Archived provider source must be reviewed as an active script before execution"
+        )
+    return spec, script
+
+
+def _content_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+
+
+def _approved_workload(spec: LoadTestSpec) -> dict[str, Any]:
+    return {
+        "vusers": spec.vusers,
+        "ramp_s": spec.ramp_s,
+        "duration_s": spec.duration_s,
+        "goal_config": _goal_config_from_slas(spec.slas),
+    }
+
+
+def approved_workload_digest(spec: LoadTestSpec) -> str:
+    """Canonical reviewed workload receipt shared with Cycles result attribution."""
+    return _content_digest(_approved_workload(_revalidate_spec(spec)))
+
+
+def _require_approved_test(test: dict[str, Any], script_id: str, workload: dict[str, Any]) -> None:
+    """Reject reused or edited provider tests that no longer represent the approved plan."""
+    groups = test.get("groups")
+    if type(groups) is not list or len(groups) != 1 or type(groups[0]) is not dict:
+        raise RuntimeError("Approved execution requires exactly one verified script group")
+    group = groups[0]
+    if (
+        group.get("script_id") != script_id
+        or type(group.get("vusers")) is not int
+        or group["vusers"] != workload["vusers"]
+        or parse_go_duration_s(test.get("duration")) != workload["duration_s"]
+        or parse_go_duration_s(group.get("ramp_up") or "0s") != workload["ramp_s"]
+        or not _approved_content_matches(workload["goal_config"], test.get("goal_config") or {})
+        or test.get("termination_mode") not in (None, "", "duration")
+        or test.get("scenario_mode") not in (None, "", "vuser_driven")
+    ):
+        raise RuntimeError("Provider execution no longer matches its approved workload")
+    for value in (test, group):
+        if any(
+            not _empty_serialized_field(value.get(key))
+            for key in (
+                "runtime_settings",
+                "stages",
+                "iterations",
+                "traffic_profile",
+                "data_pools",
+                "assignment",
+                "scheduled_start_at",
+                "timeslot_id",
+            )
+        ):
+            raise RuntimeError("Provider execution contains unapproved runtime overrides")
+    if (
+        parse_go_duration_s(test.get("start_delay") or "0s") != 0
+        or test.get("script_shakeout") not in (None, False)
+        or test.get("resource_baseline") not in (None, False)
+    ):
+        raise RuntimeError("Provider execution contains unapproved launch settings")
+    if any(
+        parse_go_duration_s(group.get(key) or "0s") != 0 for key in ("start_offset", "ramp_down")
+    ) or (
+        group.get("target_duration")
+        and parse_go_duration_s(group["target_duration"]) != workload["duration_s"]
+    ):
+        raise RuntimeError("Provider execution timing differs from its approved workload")
+
+
 def _split_vusers(total: int, group_count: int) -> list[int]:
     """Even split without ever exceeding the caller's requested total."""
     if group_count < 1:
@@ -2095,6 +2404,111 @@ class ApexLoadExecutionEngine:
             issues = ["APEX Load rejected the script without diagnostic details"]
         return ValidationReport(ok=accepted and not issues, issues=issues, warnings=warnings)
 
+    def _approved_source(self, spec: LoadTestSpec, source: str) -> tuple[LoadTestSpec, dict]:
+        self._configured_native_project_id()
+        if self._release_mapping:
+            raise ValueError("Approved execution does not yet support release mappings")
+        return qualify_approved_http_source(spec, source)
+
+    async def _read_approved_script(self, script_id: str) -> dict[str, Any]:
+        """Read the authenticated export; never reconstruct redacted executable fields."""
+        script_id = _provider_identifier(script_id, "approved script identity")
+        response = await self._request(
+            "GET", f"/api/v1/scripts/{script_id}", not_found="Approved provider script not found"
+        )
+        data = _json_object(response, "approved script export")
+        summary = self._export_summary(data)
+        source = data.get("script")
+        if (
+            summary.id != script_id
+            or type(source) is not dict
+            or source.get("id") != script_id
+            or source.get("project_id") != self._project_id
+            or any(source.get(key) != data.get(key) for key in ("name", "version", "protocol"))
+        ):
+            raise RuntimeError("Approved provider script export identity is invalid")
+        validate_json_object(source, label="approved export", max_bytes=150_000, max_nodes=4000)
+        if (
+            contains_credential_material(_without_empty_containers(source))
+            or "[REDACTED]" in json.dumps(source).upper()
+        ):
+            raise RuntimeError("Approved provider export contains credentials or redacted source")
+        return source
+
+    async def validate_approved_source(self, spec: LoadTestSpec, source: str) -> ValidationReport:
+        try:
+            self._approved_source(spec, source)
+        except (ValueError, RuntimeError) as error:
+            return ValidationReport(ok=False, issues=[bounded_diagnostic(error)])
+        report = await self.validate_script_source(source)
+        if report.ok and len(report.warnings) < 128:
+            report.warnings.append(
+                "Provider capacity will be checked after the approved script is materialized"
+            )
+        return report
+
+    async def provision_approved_source(self, spec: LoadTestSpec, source: str) -> EngineHandle:
+        spec, script = self._approved_source(spec, source)
+        guard_key = ":".join(
+            ("approved-source", self._base_url, self._project_id or "", spec.idempotency_key)
+        )
+        async with remote_create_guard(guard_key):
+            return await self._provision_approved_source(spec, source, script)
+
+    async def _provision_approved_source(
+        self, spec: LoadTestSpec, source: str, script: dict[str, Any]
+    ) -> EngineHandle:
+        # No generated/default script path is reachable. Provider storage identity
+        # may change; all executable fields must survive an export verification.
+        upload = {key: value for key, value in script.items() if key not in _SCRIPT_STORAGE_FIELDS}
+        upload["name"] = f"{test_name_for(spec.idempotency_key)} approved source"
+        bound = _content_bound_script(upload, self._project_id)
+        existing = await self._find_test_by_name(test_name_for(spec.idempotency_key))
+        if existing is not None:
+            groups = existing.get("groups")
+            if type(groups) is not list or len(groups) != 1 or type(groups[0]) is not dict:
+                raise RuntimeError("Existing approved execution has an invalid script binding")
+            script_id = _provider_identifier(groups[0].get("script_id"), "existing approved script")
+        else:
+            stored = await self._find_script_by_name(str(bound["name"]))
+            script_id = (
+                _provider_identifier(stored.get("id"), "existing approved source")
+                if stored is not None
+                else await self._upload_script(
+                    upload, idempotency_key=f"{spec.idempotency_key}:approved-script"
+                )
+            )
+        exported = await self._read_approved_script(script_id)
+        self._require_script_identity(exported, name=str(bound["name"]), context="approved source")
+        if not _approved_content_matches(_script_executable(script), _script_executable(exported)):
+            raise RuntimeError("Stored provider script differs from the approved executable source")
+        handle = await self._provision(
+            spec.model_copy(update={"script_refs": [script_id]}, deep=True),
+            approved_source=True,
+        )
+        test = await self._get_native_test(
+            self._run_id(handle), context="approved provisioned execution"
+        )
+        workload = _approved_workload(spec)
+        _require_approved_test(test, script_id, workload)
+        return EngineHandle.model_validate(
+            {
+                **handle.model_dump(),
+                "extras": {
+                    **handle.extras,
+                    "approved_script_id": script_id,
+                    "approved_artifact_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+                    "approved_workload_digest": approved_workload_digest(spec),
+                    "approved_application_id": test.get("application_id") or "",
+                    "approved_release_id": test.get("release_id") or "",
+                    "approved_source_digest": _content_digest(_script_executable(exported)),
+                    "approved_workload": json.dumps(
+                        workload, sort_keys=True, separators=(",", ":")
+                    ),
+                },
+            }
+        )
+
     async def validate(self, spec: LoadTestSpec) -> ValidationReport:
         """Local structural checks, then APEX Load's server-side script validation
         (POST /api/v1/scripts/validate for drafts; POST /scripts/{id}/validate
@@ -2210,6 +2624,11 @@ class ApexLoadExecutionEngine:
         return ValidationReport(ok=not issues, issues=issues, warnings=warnings)
 
     async def provision(self, spec: LoadTestSpec) -> EngineHandle:
+        return await self._provision(spec)
+
+    async def _provision(
+        self, spec: LoadTestSpec, *, approved_source: bool = False
+    ) -> EngineHandle:
         """Get-or-create by spec.idempotency_key via the remote test NAME
         "apex-orch:<key>".
 
@@ -2274,7 +2693,9 @@ class ApexLoadExecutionEngine:
         self._require_test_identity(test, name=name, context="provisioning")
         extras = {"test_name": name}
         if not self._release_mapping and (test.get("application_id") or test.get("release_id")):
-            raise ValueError("Existing execution has a release mapping; use a new run identity")
+            if not approved_source:
+                raise ValueError("Existing execution has a release mapping; use a new run identity")
+            await self._require_implicit_release(test)
         if self._release_mapping:
             if (
                 test.get("application_id") != self._release_mapping["application_id"]
@@ -2308,6 +2729,29 @@ class ApexLoadExecutionEngine:
             run_id=run_id,
             context="start preflight response",
         )
+        if any(key.startswith("approved_") for key in handle.extras):
+            script_id = handle.extras.get("approved_script_id")
+            digest = handle.extras.get("approved_source_digest")
+            raw_workload = handle.extras.get("approved_workload")
+            if not script_id or not digest or not raw_workload:
+                raise ValueError("Approved execution handle is missing its source or plan binding")
+            source = await self._read_approved_script(script_id)
+            if _content_digest(_script_executable(source)) != digest:
+                raise RuntimeError("Approved provider source changed before execution")
+            test = await self._get_native_test(run_id, context="approved start preflight")
+            workload = parse_json_bytes(raw_workload, context="approved workload receipt")
+            if (
+                type(workload) is not dict
+                or set(workload) != {"vusers", "ramp_s", "duration_s", "goal_config"}
+                or _content_digest(workload) != handle.extras.get("approved_workload_digest")
+                or not handle.extras.get("approved_artifact_sha256")
+                or (test.get("application_id") or "")
+                != handle.extras.get("approved_application_id")
+                or (test.get("release_id") or "") != handle.extras.get("approved_release_id")
+            ):
+                raise ValueError("Approved execution handle has an invalid plan or release binding")
+            await self._require_implicit_release(test)
+            _require_approved_test(test, script_id, workload)
         start_error: ValueError | None = None
         response: httpx.Response | None = None
         try:
@@ -2883,6 +3327,42 @@ class ApexLoadExecutionEngine:
         if script_id is None:  # pragma: no cover - identifier contract invariant
             raise RuntimeError("apex load script response returned no script id")
         return script_id
+
+    async def _require_implicit_release(self, test: dict[str, Any]) -> None:
+        """Verify Load's project-local default filing without accepting an explicit mapping."""
+        if not test.get("application_id") and not test.get("release_id"):
+            return  # Older native servers may leave unbound tests unfiled.
+        project = self._configured_native_project_id()
+        suffix = (
+            "" if project == "unassigned" else "-" + hashlib.sha1(project.encode()).hexdigest()[:12]
+        )
+        application_id, release_id = "legacy" + suffix, "legacy-imported" + suffix
+        if test.get("application_id") != application_id or test.get("release_id") != release_id:
+            raise ValueError("Approved execution has an unreviewed application or release binding")
+        application = _json_object(
+            await self._request(
+                "GET", f"/api/v1/applications/{application_id}", params=self._native_params()
+            ),
+            "implicit application",
+        )
+        release = _json_object(
+            await self._request(
+                "GET", f"/api/v1/releases/{release_id}", params=self._native_params()
+            ),
+            "implicit release",
+        )
+        if (
+            application.get("id") != application_id
+            or application.get("project_id") != project
+            or application.get("archived_at")
+            or release.get("id") != release_id
+            or release.get("application_id") != application_id
+            or release.get("project_id") != project
+            or release.get("archived_at")
+        ):
+            raise ValueError(
+                "Provider default release must be active and belong to the bound project"
+            )
 
     async def _validate_release(self, release_id: str) -> None:
         mapping = self._release_mapping
