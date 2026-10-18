@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableSeque
 from ipaddress import IPv4Network, IPv6Network, ip_address, ip_network
 from threading import Lock
 from typing import Any
-from urllib.parse import parse_qs, unquote
+from urllib.parse import parse_qs, parse_qsl, unquote, urlencode
 
 from apex.app.distributed_limits import (
     DistributedLimitBackend,
@@ -522,8 +522,29 @@ class RequestBodyLimitMiddleware:
                 return
             await send(message)
 
+        upstream_scope = scope
+        if public_custom_stream and method == "GET" and _is_run_item_stream_path(request_path):
+            # Native join filtering matches "custom" literally and drops nested
+            # "custom|phase:uuid" events. The public query has already been
+            # validated as custom-only; let the upstream join include namespaces
+            # and enforce the contract through tracked_send's bounded, redacted
+            # custom-event projection. Other event modes never reach the caller.
+            upstream_scope = {
+                **scope,
+                "query_string": urlencode(
+                    [
+                        (key, value)
+                        for key, value in parse_qsl(
+                            scope.get("query_string", b"").decode("latin-1"),
+                            keep_blank_values=True,
+                        )
+                        if key != "stream_mode"
+                    ]
+                ).encode("ascii"),
+            }
+
         try:
-            await self._app(scope, capped_receive, tracked_send)
+            await self._app(upstream_scope, capped_receive, tracked_send)
         except (
             _RequestBodyTooLarge,
             _RequestBodyTimedOut,

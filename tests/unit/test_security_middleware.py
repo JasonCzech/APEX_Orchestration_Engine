@@ -2086,6 +2086,61 @@ async def test_body_middleware_allows_non_cancelling_run_stream_query(
     assert messages[0]["status"] == 200
 
 
+@pytest.mark.parametrize("path", ["/threads/thread-1/runs/run-1/stream", "/runs/run-1/stream"])
+async def test_native_join_preserves_nested_custom_events_without_exposing_other_modes(path):
+    original_scope = {
+        "type": "http",
+        "method": "GET",
+        "path": path,
+        "query_string": b"stream_mode=custom&cancel_on_disconnect=false",
+        "headers": [(b"last-event-id", b"1700000000000-1")],
+    }
+    messages = []
+
+    async def inner(scope, receive, send):
+        assert scope is not original_scope
+        assert scope["query_string"] == b"cancel_on_disconnect=false"
+        assert scope["headers"] == original_scope["headers"]
+        assert await receive() == {"type": "http.disconnect"}
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send(
+            {
+                "type": "http.response.body",
+                "body": (
+                    b'event: custom\ndata: {"type":"plan_resolved"}\n\n'
+                    b"event: custom|execution:run-1\nid: 1700000000000-2\n"
+                    b'data: {"type":"phase_status","phase":"execution","status":"running",'
+                    b'"api_key":"never-publish"}\n\n'
+                    b'event: custom|execution:run-1\n'
+                    b'data: {"type":"engine_poll","progress_pct":25}\n\n'
+                    b'event: values\ndata: {"private":"values-secret"}\n\n'
+                    b'event: debug\ndata: {"private":"debug-secret"}\n\n'
+                    b'event: messages\ndata: {"private":"message-secret"}\n\n'
+                ),
+                "more_body": False,
+            }
+        )
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    await RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))(
+        original_scope, receive, send
+    )
+    assert original_scope["query_string"] == b"stream_mode=custom&cancel_on_disconnect=false"
+    body = b"".join(message.get("body", b"") for message in messages)
+    assert b'"type":"plan_resolved"' in body
+    assert b'"status":"running"' in body and b'"type":"engine_poll"' in body
+    assert b"event: custom|execution:run-1" in body
+    assert b"id: 1700000000000-2" in body
+    assert b"never-publish" not in body and b"-secret" not in body
+    assert b"event: values" not in body and b"event: debug" not in body
+    assert b"event: messages" not in body
+
+
 @pytest.mark.parametrize(
     "headers",
     [
