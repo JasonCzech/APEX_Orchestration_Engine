@@ -1200,6 +1200,21 @@ async def _load_run_environment_target(
     return target.base_url, target.version, target.app_id
 
 
+async def _load_run_environment_context(
+    environment_id: str, project_id: str | None, app_id: str | None
+) -> str:
+    """Resolve simulation context ownership without authorizing a network target."""
+    from apex.persistence.db import get_sessionmaker
+    from apex.persistence.repositories.catalog import CatalogRepository
+    from apex.services.environments import resolve_environment_context
+
+    async with get_sessionmaker()() as session:
+        environment = await resolve_environment_context(
+            CatalogRepository(session), environment_id, project_id=project_id, app_id=app_id
+        )
+    return environment.application_id
+
+
 async def ensure_run_environment(
     identity: ConsumerIdentity,
     value: Auth.types.RunsCreate,
@@ -1242,10 +1257,20 @@ async def ensure_run_environment(
         project_id = _project_id(configurable.get("project_id"))
         app_id = _project_id(configurable.get("app_id"))
         environment_lookup_failed = False
+        environment_not_approved = False
+        from apex.services.environments import EnvironmentTargetNotApprovedError
+
         try:
-            target, version, target_app_id = await _load_run_environment_target(
-                environment_id, project_id, app_id
-            )
+            if configurable.get("engine") == "sim":
+                target_app_id = await _load_run_environment_context(
+                    environment_id, project_id, app_id
+                )
+            else:
+                target, version, target_app_id = await _load_run_environment_target(
+                    environment_id, project_id, app_id
+                )
+                configurable["environment_target"] = target
+                configurable["environment_target_version"] = version
             authoritative_app_id = _project_id(target_app_id)
             if project_id is None:
                 # The catalog resolver already rejects this case. Keep the
@@ -1262,8 +1287,6 @@ async def ensure_run_environment(
                 app_id=authoritative_app_id,
                 action=action,
             )
-            configurable["environment_target"] = target
-            configurable["environment_target_version"] = version
             # Environment ownership is authoritative. A project-wide caller
             # may omit app_id, but persisting that run as project-level would
             # let sibling-app identities read its state and artifacts. Stamp
@@ -1280,8 +1303,15 @@ async def ensure_run_environment(
                 project_id=project_id,
                 app_id=authoritative_app_id,
             )
+        except EnvironmentTargetNotApprovedError:
+            environment_not_approved = True
         except LookupError:
             environment_lookup_failed = True
+        if environment_not_approved:
+            raise Auth.exceptions.HTTPException(
+                status_code=422,
+                detail="Selected environment has no approved execution target",
+            )
         if environment_lookup_failed:
             raise Auth.exceptions.HTTPException(
                 status_code=404,

@@ -1044,3 +1044,12 @@ def test_discussions_preserve_each_authenticated_actor_before_final_approval():
         ("discuss", "operator-two"),
     ]
     assert len({item["id"] for item in approvals}) == 2
+
+
+@pytest.mark.parametrize("slas", [{}, {"p95_ms": 150, "error_rate": 0, "tps_avg": 85}])
+def test_script_scenario_review_spec_keeps_explicit_acceptance_thresholds(slas: dict) -> None:
+    cfg = config("reviewed-thresholds", load_test={"slas": slas})
+    spec = phase_subgraph._script_scenario_load_test_spec(
+        cast(PipelineState, {"title": "Reviewed workload"}), cfg, 1
+    )
+    assert spec["slas"] == slas

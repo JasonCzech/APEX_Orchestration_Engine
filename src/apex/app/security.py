@@ -2598,6 +2598,10 @@ def _direct_langgraph_query_limit_error(scope: Mapping[str, Any]) -> str | None:
             "run_ended_at",
             "webhook_sent_at",
         }
+        if _scope_is_trusted_loopback(scope):
+            # Facade reconciliation needs the durable root fingerprint; public
+            # native callers remain limited to capability-free summary fields.
+            allowed_select.add("metadata")
         if (
             select is None
             or not {"run_id", "status"}.issubset(select)

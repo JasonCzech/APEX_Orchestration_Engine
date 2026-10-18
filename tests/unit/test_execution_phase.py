@@ -420,7 +420,9 @@ def test_e2e_all_auto_full_pipeline_runs_engine_and_reports(
     summary = entry["test_summary"]
     assert summary["passed"] is True
     assert set(summary["kpis"]) == {"tps_avg", "p95_ms", "error_rate", "vusers_peak"}
-    assert summary["kpis"]["vusers_peak"] == 4.0
+    # The requested 0.2-second run reaches 20% of its default 1-second ramp.
+    assert summary["kpis"]["vusers_peak"] == 0.8
+    assert summary["kpis"]["tps_avg"] == 1.0
     assert "Engine run" in entry["summary"] and "KPIs" in entry["summary"]
 
     engine_artifacts = [a for a in result["artifacts"] if a["kind"] == "engine_results"]
@@ -5217,3 +5219,8 @@ def test_absent_live_metrics_are_not_emitted_as_measured_zero():
     )
     assert zero["live_stats"]["tps"] == 0
     assert zero["live_stats"]["p95_ms"] is None
+
+
+async def test_simulated_environment_does_not_require_approved_network_target() -> None:
+    cfg = PipelineConfigurable(engine="sim", environment_id="env-a", project_id="p", app_id="a")
+    assert await execution_phase._resolve_catalog_target(cfg) is None

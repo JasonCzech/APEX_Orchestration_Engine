@@ -721,6 +721,26 @@ export interface paths {
         patch: operations["updateEnvironment"];
         trace?: never;
     };
+    "/v1/catalog/environments/{environment_id}/target-approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Environment Target
+         * @description Approve the current target under a row lock without replaying a stale URL.
+         */
+        post: operations["approveEnvironmentTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/catalog/projects": {
         parameters: {
             query?: never;
@@ -1393,6 +1413,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/pipelines/execution-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get Pipeline Execution Readiness
+         * @description Check scoped connection metadata, without testing provider connectivity.
+         */
+        post: operations["getPipelineExecutionReadiness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/pipelines/{thread_id}": {
         parameters: {
             query?: never;
@@ -1428,6 +1468,23 @@ export interface paths {
          *     reports success while production load is still running.
          */
         post: operations["abortPipeline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/pipelines/{thread_id}/actors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pipeline Actors */
+        get: operations["getPipelineActors"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3455,6 +3512,11 @@ export interface components {
              */
             updated_at: string;
         };
+        /** EnvironmentTargetApproval */
+        EnvironmentTargetApproval: {
+            /** Expected Target Version */
+            expected_target_version: number;
+        };
         /** EnvironmentUpdate */
         EnvironmentUpdate: {
             /** Base Url */
@@ -3543,6 +3605,35 @@ export interface components {
             planned_duration_seconds?: number | null;
             /** Termination Reason */
             termination_reason: string;
+        };
+        /** ExecutionReadiness */
+        ExecutionReadiness: {
+            /** Configuration Valid */
+            configuration_valid: boolean;
+            /** Detail */
+            detail?: string | null;
+            /** Execution Selected */
+            execution_selected: boolean;
+            /** Requires Application */
+            requires_application: boolean;
+        };
+        /**
+         * ExecutionReadinessRequest
+         * @description The caller's selected contract, with preset values already resolved.
+         */
+        ExecutionReadinessRequest: {
+            /** App Id */
+            app_id?: string | null;
+            /** Artifact Connection Id */
+            artifact_connection_id?: string | null;
+            /** Connection Id */
+            connection_id?: string | null;
+            /** Engine */
+            engine: string;
+            /** Phases */
+            phases: string[];
+            /** Project Id */
+            project_id?: string | null;
         };
         /** ExecutionScope */
         ExecutionScope: {
@@ -4118,6 +4209,18 @@ export interface components {
             phase: string;
             /** Status */
             status: string;
+        };
+        /** PipelineActors */
+        PipelineActors: {
+            /** Names */
+            names: {
+                [key: string]: string;
+            };
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
         };
         /** PipelineDetail */
         PipelineDetail: {
@@ -7117,6 +7220,42 @@ export interface operations {
             };
         };
     };
+    approveEnvironmentTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Environment id */
+                environment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnvironmentTargetApproval"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnvironmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listProjectLabels: {
         parameters: {
             query?: {
@@ -8766,6 +8905,39 @@ export interface operations {
             };
         };
     };
+    getPipelineExecutionReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecutionReadinessRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionReadiness"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getPipeline: {
         parameters: {
             query?: never;
@@ -8817,6 +8989,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AbortPipelineResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getPipelineActors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Pipeline thread id */
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineActors"];
                 };
             };
             /** @description Validation Error */

@@ -1204,7 +1204,9 @@ async def _resolve_artifact_store(
 async def _resolve_catalog_target(cfg: PipelineConfigurable) -> str | None:
     """Revalidate the stamped target without allowing gated-run target drift."""
 
-    if not cfg.environment_id:
+    if cfg.engine == "sim" or not cfg.environment_id:
+        # Simulation records the selected environment as context, without any
+        # authority to send traffic to its target or needing target approval.
         return None
     from apex.persistence.db import get_sessionmaker
     from apex.persistence.repositories.catalog import CatalogRepository

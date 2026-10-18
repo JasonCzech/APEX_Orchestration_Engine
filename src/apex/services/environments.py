@@ -16,7 +16,11 @@ class EnvironmentRepository(Protocol):
 
 
 class EnvironmentTargetNotFoundError(LookupError):
-    """The environment is missing, out of scope, or has no executable target."""
+    """The environment is missing or outside the selected scope."""
+
+
+class EnvironmentTargetNotApprovedError(EnvironmentTargetNotFoundError):
+    """An accessible environment has no currently approved executable target."""
 
 
 @dataclass(frozen=True)
@@ -28,14 +32,14 @@ class EnvironmentTarget:
     version: int
 
 
-async def resolve_environment_target(
+async def resolve_environment_context(
     repository: EnvironmentRepository,
     environment_id: str,
     *,
     project_id: str | None,
     app_id: str | None,
-) -> EnvironmentTarget:
-    """Return an approved target only when catalog ownership exactly matches the run."""
+) -> Environment:
+    """Resolve catalog context without requiring permission to send traffic to it."""
 
     env = await repository.get_environment(environment_id)
     application = env.application if env is not None else None
@@ -49,15 +53,30 @@ async def resolve_environment_target(
     ):
         raise EnvironmentTargetNotFoundError("environment not found")
 
+    return env
+
+
+async def resolve_environment_target(
+    repository: EnvironmentRepository,
+    environment_id: str,
+    *,
+    project_id: str | None,
+    app_id: str | None,
+) -> EnvironmentTarget:
+    """Return an approved target only when catalog ownership exactly matches the run."""
+    env = await resolve_environment_context(
+        repository, environment_id, project_id=project_id, app_id=app_id
+    )
+    application = env.application
     # Environment rows predate the secret-free connection contract and can be
     # written outside the API. Treat the URL/options pair atomically: no approval
     # bit may make legacy credentials or malformed metadata executable.
     if environment_target_requires_repair(env.base_url, env.options):
-        raise EnvironmentTargetNotFoundError("environment has no approved HTTP target")
+        raise EnvironmentTargetNotApprovedError("environment has no approved HTTP target")
 
     base_url = str(env.base_url or "").strip()
-    if not env.target_approved or not base_url:
-        raise EnvironmentTargetNotFoundError("environment has no approved HTTP target")
+    if not env.target_approved or not base_url or env.target_version < 1:
+        raise EnvironmentTargetNotApprovedError("environment has no approved HTTP target")
     invalid_target = False
     try:
         validate_adapter_base_url(
@@ -68,7 +87,7 @@ async def resolve_environment_target(
     except ValueError:
         invalid_target = True
     if invalid_target:
-        raise EnvironmentTargetNotFoundError("environment has no approved HTTP target")
+        raise EnvironmentTargetNotApprovedError("environment has no approved HTTP target")
     return EnvironmentTarget(
         environment_id=env.id,
         project_id=application.project_id,

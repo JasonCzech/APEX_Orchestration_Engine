@@ -1224,6 +1224,7 @@ async def test_create_pipeline_stamps_approved_target_and_version() -> None:
     await pipelines.create_pipeline_run(
         pipelines.StartPipelineRequest(
             title="Approved target",
+            phases=["story_analysis"],
             configurable={"environment_id": environment.id, "engine": "apex_load"},
         ),
         identity,
@@ -1251,6 +1252,7 @@ async def test_create_pipeline_environment_derives_authoritative_app_scope() -> 
     await pipelines.create_pipeline_run(
         pipelines.StartPipelineRequest(
             title="Environment-owned run",
+            phases=["story_analysis"],
             project_id="proj-1",
             configurable={"environment_id": environment.id, "engine": "apex_load"},
         ),
@@ -1366,3 +1368,249 @@ async def test_cycle_reconcile_malformed_existing_thread_never_falls_back_to_cre
         )
     client.threads.create.assert_not_awaited()
     assert client.runs.successful_creates == 0
+
+
+@pytest.mark.parametrize("engine, expected_status", [("sim", None), ("apex_load", 422)])
+async def test_unapproved_environment_is_context_only_for_simulation(
+    engine: str, expected_status: int | None
+) -> None:
+    identity = _identity(["proj-1"])
+    client = FakeClient()
+    service = PipelineReadService(client)
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: service}
+        )
+    )
+    env = _environment()
+    env.target_approved = False
+    env.base_url = None
+    body = pipelines.StartPipelineRequest(
+        title="Selected environment",
+        project_id="proj-1",
+        configurable={
+            "engine": engine,
+            "environment_id": env.id,
+            "environment_target": "http://untrusted",
+            "environment_target_version": 99,
+        },
+    )
+
+    async def launch() -> Any:
+        return await pipelines.create_pipeline_run(
+            body,
+            identity,
+            cast(DocumentsRepository, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo({env.id: env})),
+            cast(Any, request),
+        )
+
+    if expected_status:
+        with pytest.raises(HTTPException) as caught:
+            await launch()
+        assert caught.value.status_code == expected_status
+        assert "approve" in caught.value.detail
+        assert client.threads.metadata is None
+    else:
+        await launch()
+        config = client.runs.args[3]["configurable"]
+        assert config["environment_id"] == env.id
+        assert config["app_id"] == env.application_id
+        assert "environment_target" not in config
+        assert "environment_target_version" not in config
+
+
+@pytest.mark.parametrize("status_code", [400, 422])
+async def test_definitively_invalid_launch_preserves_422_class_and_detaches_provider_body(
+    status_code: int,
+) -> None:
+    client: Any = DefinitivelyRejectedClient()
+    client.runs = RetryableClientErrorRuns(status_code)
+    with pytest.raises(pipeline_read.LaunchValidationError) as caught:
+        await PipelineReadService(client).start_run(title="Invalid configuration")
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+    assert client.threads.deleted == ["thr-1"]
+
+
+async def test_create_pipeline_maps_native_validation_to_422_without_provider_input() -> None:
+    class FailingService:
+        async def start_run(self, **_kwargs: Any) -> Any:
+            raise pipeline_read.LaunchValidationError("unsafe-provider-detail")
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={pipelines.get_pipeline_read_service: lambda: FailingService()}
+        )
+    )
+    with pytest.raises(HTTPException) as caught:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(title="Invalid configuration"),
+            _identity(["proj-1"]),
+            cast(DocumentsRepository, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo()),
+            cast(Any, request),
+        )
+    assert caught.value.status_code == 422
+    assert "unsafe-provider-detail" not in caught.value.detail
+    assert caught.value.__context__ is None
+
+
+async def test_launch_readiness_rejection_cleans_only_unclaimed_thread() -> None:
+    from apex.services.execution_readiness import LaunchReadinessError
+
+    client = FakeClient()
+    client.threads = AmbiguousThreads()
+
+    async def unavailable(_thread_id: str) -> None:
+        raise LaunchReadinessError("Select an application")
+
+    with pytest.raises(LaunchReadinessError):
+        await PipelineReadService(client).start_run(
+            title="Missing app", before_run_start=unavailable
+        )
+    assert client.threads.deleted == ["thr-1"]
+    assert client.runs.args == ()
+
+
+async def test_existing_root_replay_ignores_changed_execution_readiness() -> None:
+    from apex.services.execution_readiness import LaunchReadinessError
+
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    kwargs: dict[str, Any] = {
+        "title": "Replay",
+        "idempotency_key": "stable-intent",
+        "project_id": "p1",
+    }
+    first = await service.start_run(**kwargs)
+
+    async def changed(_thread_id: str) -> None:
+        raise LaunchReadinessError("Connection changed after original launch")
+
+    assert await service.start_run(**kwargs, before_run_start=changed) == first
+    assert client.runs.successful_creates == 1
+
+
+async def test_explicit_empty_phase_plan_overrides_inherited_execution() -> None:
+    client = FakeClient()
+    await PipelineReadService(client).start_run(
+        title="No execution", phases=[], configurable={"phases": ["execution"]}
+    )
+    config = client.runs.args[3]["configurable"]
+    assert config["phases"] == []
+    assert config["gates"] == {}
+
+
+async def test_explicit_empty_gate_map_overrides_inherited_policy() -> None:
+    client = FakeClient()
+    await PipelineReadService(client).start_run(
+        title="Default gate policy",
+        gates={},
+        configurable={"gates": {"execution": {"prompt_review": "auto"}}},
+    )
+    assert client.runs.args[3]["configurable"]["gates"] == {}
+
+
+async def test_explicit_empty_model_map_overrides_inherited_models() -> None:
+    client = FakeClient()
+    await PipelineReadService(client).start_run(
+        title="Default models",
+        model_by_phase={},
+        configurable={"model_by_phase": {"story_analysis": "claude-sonnet-4-5"}},
+    )
+    assert client.runs.args[3]["configurable"]["model_by_phase"] == {}
+
+
+async def test_readiness_uses_effective_launch_overrides_not_replaced_inherited_values() -> None:
+    client = FakeClient()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    await pipelines.create_pipeline_run(
+        pipelines.StartPipelineRequest(
+            title="Cleared inherited values",
+            phases=[],
+            gates={},
+            model_by_phase={},
+            agent_backend="stub",
+            configurable={
+                "engine": "sim",
+                "gates": {"invalid-phase": {}},
+                "model_by_phase": {"invalid-phase": "legacy-model"},
+                "agent_backend": "legacy-invalid",
+                "phases": ["execution"],
+            },
+        ),
+        _identity(["proj-1"]),
+        cast(Any, FakeDocsRepo({})),
+        cast(Any, FakeCatalogRepo()),
+        cast(Any, request),
+    )
+    actual = client.runs.args[3]["configurable"]
+    assert actual["phases"] == []
+    assert actual["gates"] == actual["model_by_phase"] == {}
+    assert actual["agent_backend"] == "stub"
+
+
+@pytest.mark.parametrize("load_test", [{"vusers": 0}, {"duration_s": -1}])
+async def test_explicit_launch_invalid_configuration_remains_safe_422(load_test) -> None:
+    client = FakeClient()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+    with pytest.raises(HTTPException) as caught:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(
+                title="Invalid", configurable={"engine": "sim", "load_test": load_test}
+            ),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo()),
+            cast(Any, request),
+        )
+    assert caught.value.status_code == 422
+    assert caught.value.detail == "invalid pipeline configuration"
+    assert caught.value.__context__ is None
+    assert client.threads.metadata is None
+
+
+async def test_explicit_launch_maps_readiness_rejection_to_actionable_422(monkeypatch) -> None:
+    from apex.services.execution_readiness import LaunchReadinessError
+
+    client = FakeClient()
+    client.threads = AmbiguousThreads()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            dependency_overrides={
+                pipelines.get_pipeline_read_service: lambda: PipelineReadService(client)
+            }
+        )
+    )
+
+    async def missing_app(config):
+        assert config.project_id == "proj-1"
+        assert "execution" in config.selected_phases()
+        raise LaunchReadinessError("Select a project and application before execution.")
+
+    monkeypatch.setattr(pipelines, "require_execution_readiness", missing_app)
+    with pytest.raises(HTTPException) as caught:
+        await pipelines.create_pipeline_run(
+            pipelines.StartPipelineRequest(title="Missing app", configurable={"engine": "sim"}),
+            _identity(["proj-1"]),
+            cast(Any, FakeDocsRepo({})),
+            cast(Any, FakeCatalogRepo()),
+            cast(Any, request),
+        )
+    assert caught.value.status_code == 422
+    assert "Select a project and application" in caught.value.detail
+    assert caught.value.__context__ is None
+    assert client.runs.args == ()

@@ -4571,3 +4571,51 @@ async def test_body_limit_allows_document_upload_override() -> None:
 
     assert reached is True
     assert messages[0]["status"] == 200
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+async def test_reconciliation_metadata_projection_is_exclusive_to_trusted_loopback(
+    trusted: bool,
+) -> None:
+    from apex.services import langgraph_client
+
+    reached = False
+
+    async def inner(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        nonlocal reached
+        reached = True
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"[]"})
+
+    app = RequestBodyLimitMiddleware(inner, RequestBodySettings(max_bytes=1024))
+    messages: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    headers = []
+    if trusted:
+        headers = [
+            (
+                langgraph_client._TRUSTED_LOOPBACK_HEADER.encode(),
+                langgraph_client._TRUSTED_LOOPBACK_TOKEN.encode(),
+            )
+        ]
+    await app(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/threads/thread-1/runs",
+            "headers": headers,
+            "query_string": (
+                b"limit=100&offset=0&select=run_id&select=status&select=metadata&select=created_at"
+            ),
+        },
+        receive,
+        send,
+    )
+    assert reached is trusted
+    assert messages[0]["status"] == (200 if trusted else 422)

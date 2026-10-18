@@ -4200,6 +4200,21 @@
         "title": "EnvironmentOut",
         "type": "object"
       },
+      "EnvironmentTargetApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_target_version": {
+            "minimum": 0.0,
+            "title": "Expected Target Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_target_version"
+        ],
+        "title": "EnvironmentTargetApproval",
+        "type": "object"
+      },
       "EnvironmentUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -4518,6 +4533,126 @@
           "termination_reason"
         ],
         "title": "ExecutionOutcome",
+        "type": "object"
+      },
+      "ExecutionReadiness": {
+        "properties": {
+          "configuration_valid": {
+            "title": "Configuration Valid",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "execution_selected": {
+            "title": "Execution Selected",
+            "type": "boolean"
+          },
+          "requires_application": {
+            "title": "Requires Application",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "execution_selected",
+          "configuration_valid",
+          "requires_application"
+        ],
+        "title": "ExecutionReadiness",
+        "type": "object"
+      },
+      "ExecutionReadinessRequest": {
+        "additionalProperties": false,
+        "description": "The caller's selected contract, with preset values already resolved.",
+        "properties": {
+          "app_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
+          "artifact_connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Artifact Connection Id"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "engine": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Engine",
+            "type": "string"
+          },
+          "phases": {
+            "items": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "maxItems": 7,
+            "title": "Phases",
+            "type": "array"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          }
+        },
+        "required": [
+          "engine",
+          "phases"
+        ],
+        "title": "ExecutionReadinessRequest",
         "type": "object"
       },
       "ExecutionScope": {
@@ -6276,6 +6411,27 @@
           "status"
         ],
         "title": "PhaseStripEntry",
+        "type": "object"
+      },
+      "PipelineActors": {
+        "properties": {
+          "names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "object"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "PipelineActors",
         "type": "object"
       },
       "PipelineDetail": {
@@ -13153,6 +13309,64 @@
         ]
       }
     },
+    "/v1/catalog/environments/{environment_id}/target-approval": {
+      "post": {
+        "description": "Approve the current target under a row lock without replaying a stale URL.",
+        "operationId": "approveEnvironmentTarget",
+        "parameters": [
+          {
+            "description": "Environment id",
+            "in": "path",
+            "name": "environment_id",
+            "required": true,
+            "schema": {
+              "description": "Environment id",
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Environment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentTargetApproval"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnvironmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Environment Target",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
     "/v1/catalog/projects": {
       "delete": {
         "operationId": "deleteProjectLabel",
@@ -16135,6 +16349,48 @@
         ]
       }
     },
+    "/v1/pipelines/execution-readiness": {
+      "post": {
+        "description": "Check scoped connection metadata, without testing provider connectivity.",
+        "operationId": "getPipelineExecutionReadiness",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionReadinessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionReadiness"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Execution Readiness",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
     "/v1/pipelines/{thread_id}": {
       "get": {
         "operationId": "getPipeline",
@@ -16225,6 +16481,53 @@
           }
         },
         "summary": "Abort Pipeline",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
+    "/v1/pipelines/{thread_id}/actors": {
+      "get": {
+        "operationId": "getPipelineActors",
+        "parameters": [
+          {
+            "description": "Pipeline thread id",
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "description": "Pipeline thread id",
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineActors"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Actors",
         "tags": [
           "pipelines"
         ]

@@ -139,3 +139,13 @@ async def test_missing_environment_does_not_reflect_lookup_identifier() -> None:
         )
 
     assert canary not in str(raised.value)
+
+
+async def test_approved_target_requires_a_positive_recorded_version() -> None:
+    with pytest.raises(EnvironmentTargetNotFoundError, match="no approved HTTP target"):
+        await resolve_environment_target(
+            FakeEnvironmentRepository(environment(version=0)),
+            "env-1",
+            project_id="proj-a",
+            app_id="app-a",
+        )

@@ -139,8 +139,9 @@ async def test_fetch_summary_passes_slas() -> None:
     assert summary.engine == "sim"
     assert summary.passed is True
     assert summary.sla_breaches == []
-    assert summary.kpis["vusers_peak"] == 20.0
-    assert summary.kpis["tps_avg"] == pytest.approx(20 * 2.4)
+    # The default 5-second ramp does not reach all 20 VUsers in a 2-second run.
+    assert summary.kpis["vusers_peak"] == 8.0
+    assert summary.kpis["tps_avg"] == pytest.approx(4 * 2.4)
 
     again = await engine.fetch_summary(handle)
     assert again.kpis == summary.kpis  # deterministic
@@ -287,3 +288,47 @@ async def test_validate_and_provision_reject_nonfinite_bypassed_spec() -> None:
     assert len(report.issues) == 3
     with pytest.raises(ValueError, match="invalid sim load-test spec"):
         await _engine().provision(spec)
+
+
+@pytest.mark.parametrize(
+    "slas, passed",
+    [
+        ({}, True),
+        ({"p95_ms": 212, "error_rate": 0.004, "tps_avg": 48}, True),
+        ({"p95_ms": 200}, False),
+        ({"error_rate": 0}, False),
+        ({"tps_avg": 85}, False),
+    ],
+)
+async def test_simulator_evaluates_durable_acceptance_thresholds(slas: dict, passed: bool) -> None:
+    handle = await _engine().provision(_spec().model_copy(update={"slas": slas, "ramp_s": 0}))
+    restored = EngineHandle.model_validate(handle.model_dump(mode="json"))
+    summary = await _engine().fetch_summary(restored)
+    assert summary.passed is passed
+    assert bool(summary.sla_breaches) is not passed
+
+
+async def test_simulator_rejects_unsupported_acceptance_threshold() -> None:
+    with pytest.raises(ValueError, match="acceptance"):
+        await _engine().provision(_spec().model_copy(update={"slas": {"unmeasured": 1}}))
+
+
+@pytest.mark.parametrize("ramp_s, expected_vusers", [(0, 20), (10, 10), (20, 5)])
+async def test_simulator_preserves_reviewed_ramp_on_compressed_clock(
+    monkeypatch: pytest.MonkeyPatch,
+    ramp_s: float,
+    expected_vusers: float,
+) -> None:
+    monkeypatch.setattr("apex.adapters.sim_engine.engine.time.time", lambda: 100.0)
+    engine = _engine(duration_s=2)
+    spec = _spec().model_copy(update={"duration_s": 10, "ramp_s": ramp_s})
+    handle = await engine.provision(spec)
+    monkeypatch.setattr("apex.adapters.sim_engine.engine.time.time", lambda: 101.0)
+    restored = EngineHandle.model_validate(handle.model_dump(mode="json"))
+    status = await _engine().get_status(restored)
+    assert status.live_stats and status.live_stats.vusers == expected_vusers
+    summary = await _engine().fetch_summary(restored)
+    expected_peak = min(20, expected_vusers * 2)
+    expected_average = 20 if ramp_s == 0 else expected_vusers
+    assert summary.kpis["vusers_peak"] == expected_peak
+    assert summary.kpis["tps_avg"] == expected_average * 2.4

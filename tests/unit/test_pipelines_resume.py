@@ -1682,3 +1682,18 @@ def test_cycle_bound_rerun_http_explains_required_new_preparation() -> None:
     assert response.json()["title"] == "rerun_configuration_conflict"
     assert "new approved cycle binding" in response.json()["detail"]
     assert runs.create_calls == []
+
+
+@pytest.mark.parametrize("engine", ["sim", "apex_load", "loadrunner"])
+def test_environment_context_without_target_can_replay_only_for_simulation(engine: str) -> None:
+    config = PipelineConfigurable(
+        engine=engine, project_id="project", app_id="app", environment_id="environment"
+    )
+    thread = {"metadata": {"project_id": "project", "app_id": "app"}}
+    if engine == "sim":
+        _ensure_durable_config_ownership(config, thread)
+        with pytest.raises(RerunConfigurationConflictError):
+            _ensure_durable_config_ownership(config, {"metadata": {"project_id": "project"}})
+    else:
+        with pytest.raises(RerunConfigurationConflictError):
+            _ensure_durable_config_ownership(config, thread)

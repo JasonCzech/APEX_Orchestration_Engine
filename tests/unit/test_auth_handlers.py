@@ -3077,3 +3077,31 @@ async def test_claimed_loopback_flag_does_not_authorize_public_cycle_binding():
         )
     assert error.value.status_code == 422
     assert "server-owned" in str(error.value.detail)
+
+
+async def test_simulated_environment_retains_authoritative_scope_without_target_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def context(environment_id: str, project_id: str | None, app_id: str | None) -> str:
+        assert (environment_id, project_id, app_id) == ("env-1", "p1", None)
+        return "app-a"
+
+    async def target(*_args: Any) -> Any:
+        raise AssertionError("Simulation must not resolve an execution target")
+
+    monkeypatch.setattr("apex.auth.handlers._load_run_environment_context", context)
+    monkeypatch.setattr("apex.auth.handlers._load_run_environment_target", target)
+    identity = make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")])
+    value: Any = {
+        "assistant_id": "pipeline",
+        "kwargs": {"config": {"configurable": {"engine": "sim", "environment_id": "env-1"}}},
+    }
+    result = await on_threads_create_run(
+        ctx=make_ctx(identity, action="create_run", trusted_loopback=True),
+        value=value,
+    )
+    configurable = value["kwargs"]["config"]["configurable"]
+    assert configurable["app_id"] == "app-a"
+    assert configurable.get("environment_target") is None
+    assert configurable.get("environment_target_version") is None
+    assert result == {"project_id": {"$eq": "p1"}, "app_id": {"$eq": "app-a"}}

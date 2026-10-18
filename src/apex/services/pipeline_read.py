@@ -44,6 +44,7 @@ from apex.graphs.pipeline.configurable import (
     normalize_durable_pipeline_snapshot,
 )
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
+from apex.services.execution_readiness import LaunchReadinessError
 from apex.services.langgraph_client import (
     LAUNCH_ROOT_FINGERPRINT_METADATA_KEY,
     RERUN_CLAIM_METADATA_KEY,
@@ -186,6 +187,10 @@ class LaunchIdempotencyConflictError(Exception):
 
 class LaunchProviderError(Exception):
     """The native runtime failed or returned malformed launch data."""
+
+
+class LaunchValidationError(ValueError):
+    """The native runtime definitively rejected the caller's launch configuration."""
 
 
 class PromptReviewConflictError(Exception):
@@ -647,7 +652,7 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
 
 def _auto_gates(phases: list[str] | None) -> JsonDict:
     """Auto (un-gated) policy for the selected phases — the default for headless runs."""
-    targets = phases or [phase.value for phase in PHASE_ORDER]
+    targets = phases if phases is not None else [phase.value for phase in PHASE_ORDER]
     return {name: {"prompt_review": "auto", "output_review": "auto"} for name in targets}
 
 
@@ -778,11 +783,11 @@ class PipelineReadService:
             run_configurable["project_id"] = project_id
         if app_id:
             run_configurable["app_id"] = app_id
-        if phases:
+        if phases is not None:
             run_configurable["phases"] = phases
         if agent_backend:
             run_configurable["agent_backend"] = agent_backend
-        if model_by_phase:
+        if model_by_phase is not None:
             run_configurable["model_by_phase"] = model_by_phase
         inherited_gates = run_configurable.get("gates")
         resolved_gates = (
@@ -792,7 +797,7 @@ class PipelineReadService:
             if type(inherited_gates) is dict
             else _auto_gates(requested_phases)
         )
-        if resolved_gates:
+        if resolved_gates is not None:
             run_configurable["gates"] = resolved_gates
 
         # Validate the sparse layer without replacing it with model defaults: the
@@ -973,7 +978,21 @@ class PipelineReadService:
                 }
 
         if before_run_start is not None:
-            generated_context_packets = await before_run_start(thread_id)
+            try:
+                generated_context_packets = await before_run_start(thread_id)
+            except LaunchReadinessError:
+                # No run has been submitted. Preserve deterministic claims, but
+                # remove a fresh random thread rejected by this metadata check.
+                if deterministic_thread_id is None:
+                    try:
+                        await delete_native_thread_definitively(self._client, thread_id)
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            "pipeline.rejected_launch_thread_cleanup_failed",
+                            thread_id=thread_id,
+                            error_type=safe_type_name(cleanup_exc),
+                        )
+                raise
             if generated_context_packets:
                 existing_context_packets = run_input.get("context_packets", [])
                 run_input["context_packets"] = validate_context_packets(
@@ -1065,6 +1084,15 @@ class PipelineReadService:
                         status_code=provider_status_code,
                         error_type=safe_type_name(cleanup_exc),
                     )
+            elif provider_failure_definitive:
+                # A deterministic thread remains as its durable idempotency
+                # claim, but a definitive rejection is not an unknown outcome.
+                logger.warning(
+                    "pipeline.run_create_rejected",
+                    thread_id=thread_id,
+                    status_code=provider_status_code,
+                    error_type=provider_error_type,
+                )
             else:
                 # A 5xx can be returned after the server committed the run.
                 logger.warning(
@@ -1073,6 +1101,10 @@ class PipelineReadService:
                     status_code=provider_status_code,
                     error_type=provider_error_type,
                 )
+            if provider_status_code in {400, 422}:
+                # Do not reflect provider response bodies: they may contain
+                # configuration or credentials. Preserve only the error class.
+                raise LaunchValidationError("pipeline launch configuration was rejected")
             raise LaunchProviderError("pipeline runtime run creation failed")
         if run_id is None:  # pragma: no cover - client contract invariant
             raise LaunchProviderError("pipeline runtime run creation failed")
@@ -2024,7 +2056,7 @@ def _ensure_durable_config_ownership(
             and (
                 validated.project_id is None
                 or validated.app_id is None
-                or validated.environment_target is None
+                or (validated.engine != "sim" and validated.environment_target is None)
             )
         )
     ):

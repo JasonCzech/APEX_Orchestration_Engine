@@ -51,6 +51,9 @@ MIN_ROLE: dict[str, str] = {
     "createPipelineRun": "operator",
     "listPipelines": "viewer",
     "getPipeline": "viewer",
+    "getPipelineActors": "viewer",
+    # Metadata-only POST; does not launch or contact a provider.
+    "getPipelineExecutionReadiness": "viewer",
     "getPhasePromptReview": "viewer",
     "patchPhasePromptReview": "operator",
     "rerunPipeline": "operator",
@@ -81,6 +84,8 @@ MIN_ROLE: dict[str, str] = {
     "createEnvironment": "operator",
     "getEnvironment": "viewer",
     "updateEnvironment": "operator",
+    # Network target approval requires an unscoped platform administrator.
+    "approveEnvironmentTarget": "admin",
     "deleteEnvironment": "operator",
     # ── documents / artifacts ───────────────────────────────────────────────
     "uploadDocument": "operator",
@@ -214,6 +219,8 @@ SCOPE: dict[str, str] = {
     "createPipelineRun": "project_app",
     "listPipelines": "project",
     "getPipeline": "project",
+    "getPipelineActors": "project_app",
+    "getPipelineExecutionReadiness": "project_app",
     "getPhasePromptReview": "project",
     "patchPhasePromptReview": "project",
     "rerunPipeline": "project",
@@ -242,6 +249,7 @@ SCOPE: dict[str, str] = {
     "createEnvironment": "project_app",
     "getEnvironment": "project_app",
     "updateEnvironment": "project_app",
+    "approveEnvironmentTarget": "admin_scope",
     "deleteEnvironment": "project_app",
     # ── documents / artifacts ───────────────────────────────────────────────
     "uploadDocument": "project_app",
@@ -347,6 +355,8 @@ PATH_PARAM_OVERRIDES: dict[str, dict[str, str]] = {
 # authz decision is perfectly fine evidence; these overrides exist only where {}
 # would not even be the right JSON *shape*).
 BODY_OVERRIDES: dict[str, Any] = {
+    "getPipelineExecutionReadiness": {"engine": "sim", "phases": ["execution"]},
+    "approveEnvironmentTarget": {"expected_target_version": 0},
     "dispatchCycleExecution": {"expected_revision": 1, "idempotency_key": "matrix-dispatch"},
     "cancelCycleExecutionDispatch": {"dispatch_id": "x" * 32},
     "setProjectLabel": {"project_id": "proj-matrix", "name": "Matrix project"},

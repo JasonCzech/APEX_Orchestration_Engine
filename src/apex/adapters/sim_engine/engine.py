@@ -157,10 +157,35 @@ def _parse_extras(handle: EngineHandle) -> tuple[float, float, int, float | None
     return started_at, duration_s, vusers, fail_at_pct
 
 
-def _live_stats(progress_pct: float, vusers_peak: int) -> LiveStats:
-    """Fake-but-plausible curve: linear ramp to peak, then steady state."""
-    ramp = min(1.0, progress_pct / (_RAMP_FRACTION * 100.0)) if progress_pct > 0 else 0.0
-    active = vusers_peak * ramp
+def _validated_slas(value: Any) -> dict[str, float]:
+    validated = LoadTestSpec(title="sim acceptance", slas=value).slas
+    if set(validated) - {"p95_ms", "error_rate", "tps_avg"}:
+        raise ValueError("sim acceptance supports only p95_ms, error_rate and tps_avg")
+    return validated
+
+
+def _ramp_ratio(handle: EngineHandle, progress_pct: float) -> float:
+    if "ramp_s" not in handle.extras and "workload_duration_s" not in handle.extras:
+        # Older durable handles used a synthetic fixed ramp.
+        return min(1.0, progress_pct / (_RAMP_FRACTION * 100.0))
+    ramp_s = _bounded_float(
+        handle.extras.get("ramp_s"), label="handle ramp_s", minimum=0, maximum=_MAX_DURATION_S
+    )
+    requested_duration = _bounded_float(
+        handle.extras.get("workload_duration_s"),
+        label="handle workload_duration_s",
+        minimum=0,
+        maximum=_MAX_DURATION_S,
+        minimum_inclusive=False,
+    )
+    # Apply the reviewed profile on the simulator's compressed clock, including
+    # any dev connection duration override, without changing the requested ratio.
+    return min(1.0, (progress_pct / 100 * requested_duration) / ramp_s) if ramp_s else 1.0
+
+
+def _live_stats(progress_pct: float, vusers_peak: int, ramp_ratio: float) -> LiveStats:
+    """Synthetic metrics with the reviewed linear ramp, then steady state."""
+    active = vusers_peak * ramp_ratio
     return LiveStats(
         vusers=round(active, 1),
         tps=round(active * _TPS_PER_VUSER, 1),
@@ -225,6 +250,12 @@ class SimExecutionEngine:
             )
         except ValueError:
             issues.append("ramp_s must be >= 0")
+        try:
+            _validated_slas(spec.slas)
+        except ValueError:
+            issues.append(
+                "sim acceptance supports only valid p95_ms, error_rate and tps_avg thresholds"
+            )
         return ValidationReport(ok=not issues, issues=issues)
 
     async def provision(self, spec: LoadTestSpec) -> EngineHandle:
@@ -246,6 +277,9 @@ class SimExecutionEngine:
             "started_at": f"{time.time():.6f}",
             "duration_s": f"{duration:.6f}",
             "vusers": str(spec.vusers),
+            "slas": json.dumps(_validated_slas(spec.slas), sort_keys=True, allow_nan=False),
+            "ramp_s": str(spec.ramp_s),
+            "workload_duration_s": str(spec.duration_s),
         }
         if self._fail_at_pct is not None:
             extras["fail_at_pct"] = f"{self._fail_at_pct:.6f}"
@@ -292,7 +326,7 @@ class SimExecutionEngine:
         return EngineRunStatus(
             phase=EngineRunPhase.RUNNING,
             progress_pct=round(pct, 1),
-            live_stats=_live_stats(pct, vusers),
+            live_stats=_live_stats(pct, vusers, _ramp_ratio(handle, pct)),
             message=f"simulated load at {pct:.0f}%",
         )
 
@@ -338,11 +372,23 @@ class SimExecutionEngine:
 
     async def fetch_summary(self, handle: EngineHandle) -> TestResultSummary:
         _, _, vusers, fail_at_pct = _parse_extras(handle)
+        peak_vusers = vusers * _ramp_ratio(handle, 100)
+        average_vusers = peak_vusers
+        if "ramp_s" in handle.extras:
+            # _ramp_ratio validated both fields. Integrate the linear ramp so
+            # the synthetic average does not claim peak throughput throughout.
+            ramp_s = float(handle.extras["ramp_s"])
+            requested_duration = float(handle.extras["workload_duration_s"])
+            average_vusers = (
+                vusers * (1 - ramp_s / requested_duration / 2)
+                if ramp_s <= requested_duration
+                else peak_vusers / 2
+            )
         kpis = {
-            "tps_avg": round(vusers * _TPS_PER_VUSER, 1),
+            "tps_avg": round(average_vusers * _TPS_PER_VUSER, 1),
             "p95_ms": 212.0,
             "error_rate": _BASE_ERROR_RATE,
-            "vusers_peak": float(vusers),
+            "vusers_peak": float(peak_vusers),
         }
         if fail_at_pct is not None:
             return TestResultSummary(
@@ -352,11 +398,23 @@ class SimExecutionEngine:
                 sla_breaches=["run failed before completion (injected failure)"],
                 notes=f"failure injected at {fail_at_pct:g}%",
             )
+        # Thresholds travel with the durable handle so an adapter restart or
+        # connection edit cannot change the acceptance contract after launch.
+        # Legacy handles did not record thresholds; retain their historical
+        # unqualified pass behavior rather than inventing missing criteria.
+        raw_slas = handle.extras.get("slas")
+        slas = _validated_slas(json.loads(raw_slas)) if raw_slas is not None else {}
+        breaches = [
+            f"{metric} {kpis[metric]:g} did not meet "
+            f"{'minimum' if metric == 'tps_avg' else 'maximum'} {threshold:g}"
+            for metric, threshold in slas.items()
+            if (kpis[metric] < threshold if metric == "tps_avg" else kpis[metric] > threshold)
+        ]
         return TestResultSummary(
             engine="sim",
-            passed=True,
+            passed=not breaches,
             kpis=kpis,
-            sla_breaches=[],
+            sla_breaches=breaches,
             notes="simulated run; KPIs are synthetic",
         )
 

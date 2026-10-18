@@ -8,7 +8,7 @@ execution engine through the same lifecycle. Each harness:
 - advances its remote one lifecycle step per `advance()` call, letting the
   suite observe a non-terminal poll before the terminal one;
 - exposes capability flags for the documented provider limitations the suite
-  must tolerate (sim's no-op abort, LoadRunner's empty v1 KPIs);
+  must tolerate (LoadRunner's empty v1 KPIs);
 - counts remote side effects (`remote_create_count` / `remote_start_count`)
   so get-or-create and start idempotency are provable, not just non-raising.
 
@@ -62,7 +62,9 @@ def conformance_spec(idempotency_key: str) -> LoadTestSpec:
         idempotency_key=idempotency_key,
         title="Conformance checkout load test",
         script_refs=[],
-        vusers=20,
+        # The synthetic engine yields ~95 TPS including this ramp, making the
+        # shared 80 TPS minimum a feasible happy-path acceptance criterion.
+        vusers=40,
         ramp_s=5.0,
         duration_s=240.0,
         slas={"tps_avg": 80.0, "p95_ms": 500.0, "error_rate": 0.01},
@@ -123,12 +125,6 @@ _SIM_DURATION_S = 0.3
 
 class SimHarness(EngineHarness):
     provider = "sim"
-    remote_abort_supported = False
-    abort_limitation = (
-        "sim abort is a documented logged no-op (M1 limitation in the module "
-        "docstring): there is no server-side run to kill — the execution spine "
-        "stops polling instead, so the run never reports an 'aborted' phase"
-    )
 
     def __init__(self) -> None:
         self._sla_breach = False
@@ -147,8 +143,8 @@ class SimHarness(EngineHarness):
         return SimExecutionEngine(conn)
 
     def enable_sla_breach(self) -> None:
-        # Sim has no server-side SLA evaluation; the documented failure-injection
-        # option is its SLA-breach analogue (summary: passed=False + breach note).
+        # Injected execution failure exercises the normalized failed-summary
+        # shape independently of the simulator's configured threshold evaluation.
         self._sla_breach = True
 
     def advance(self) -> None:

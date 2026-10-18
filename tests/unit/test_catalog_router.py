@@ -871,3 +871,82 @@ def test_environment_scoping_inherits_application_project(
         ).status_code
         == 403
     )  # role gate fires before scoping
+
+
+def test_target_approval_uses_current_locked_target_and_rejects_stale_version(
+    repo: FakeCatalogRepository,
+) -> None:
+    client = make_client(repo, ADMIN)
+    app_id = client.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    env_id = client.post(
+        "/catalog/environments", json={"application_id": app_id, "name": "staging"}
+    ).json()["id"]
+    url = f"/catalog/environments/{env_id}/target-approval"
+    assert client.post(url, json={"expected_target_version": 0}).status_code == 422
+    env = repo.environments[env_id]
+    env.base_url = "https://8.8.8.8/load"
+    approved = client.post(url, json={"expected_target_version": 0})
+    assert approved.status_code == 200
+    assert approved.json()["target_approved"] is True
+    assert approved.json()["target_version"] == 1
+    assert env_id in repo.environment_for_update_calls
+    env.base_url = "https://1.1.1.1/new-target"
+    stale = client.post(url, json={"expected_target_version": 0})
+    assert stale.status_code == 409
+    assert env.target_version == 1
+    assert env.base_url == "https://1.1.1.1/new-target"
+
+
+@pytest.mark.parametrize("who", [VIEWER_DEMO, OPERATOR_DEMO, identity(Role.ADMIN, "demo")])
+def test_target_approval_requires_unscoped_platform_admin(
+    repo: FakeCatalogRepository, who: ConsumerIdentity
+) -> None:
+    response = make_client(repo, who).post(
+        "/catalog/environments/env/target-approval", json={"expected_target_version": 0}
+    )
+    assert response.status_code == 403
+    assert repo.environment_for_update_calls == []
+
+
+@pytest.mark.parametrize("version", [-1, True, "0", 1.5, None])
+def test_target_approval_rejects_invalid_versions(
+    repo: FakeCatalogRepository, version: object
+) -> None:
+    response = make_client(repo, ADMIN).post(
+        "/catalog/environments/env/target-approval", json={"expected_target_version": version}
+    )
+    assert response.status_code == 422
+    assert repo.environment_for_update_calls == []
+
+
+def test_scoped_metadata_edit_preserves_platform_owned_environment_options(
+    repo: FakeCatalogRepository,
+) -> None:
+    admin = make_client(repo, ADMIN)
+    app_id = admin.post(
+        "/catalog/applications", json={"project_id": "demo", "name": "Checkout"}
+    ).json()["id"]
+    env_id = admin.post(
+        "/catalog/environments",
+        json={
+            "application_id": app_id,
+            "name": "staging",
+            "base_url": "http://127.0.0.1:12345",
+            "options": {"_apex_trusted_private_host": True},
+        },
+    ).json()["id"]
+    operator = make_client(repo, OPERATOR_DEMO)
+    url = f"/catalog/environments/{env_id}"
+    edited = operator.patch(url, json={"kind": "test", "hosts": [{"hostname": "host-a"}]})
+    assert edited.status_code == 200
+    assert edited.json()["options"] == {"_apex_trusted_private_host": True}
+    assert edited.json()["target_version"] == 1
+    assert operator.patch(url, json={"options": {}}).status_code == 403
+    assert operator.patch(url, json={"options": None}).status_code == 403
+    assert (
+        operator.patch(url, json={"options": {"_apex_trusted_private_host": False}}).status_code
+        == 403
+    )
+    assert repo.environments[env_id].options == {"_apex_trusted_private_host": True}

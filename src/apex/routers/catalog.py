@@ -237,6 +237,12 @@ class EnvironmentUpdate(BaseModel):
         return validate_json_object(options, label="environment options")
 
 
+class EnvironmentTargetApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_target_version: int = Field(ge=0, strict=True)
+
+
 class EnvironmentOut(BaseModel):
     # Environment rows predate the secret-free connection contract. Treat
     # persisted values as untrusted when projecting them: an old/direct-SQL row
@@ -612,13 +618,26 @@ async def update_environment(
     changes = body.model_dump(exclude_unset=True)
     hosts = changes.pop("hosts", None)
     next_options = changes.get("options", env.options) or {}
-    _validate_environment_options(identity, next_options)
+    if "options" in changes:
+        _validate_environment_options(identity, next_options)
+        previous_reserved = {
+            key: value for key, value in (env.options or {}).items() if key.startswith("_apex_")
+        }
+        next_reserved = {
+            key: value for key, value in next_options.items() if key.startswith("_apex_")
+        }
+        if not _is_platform_admin(identity) and previous_reserved != next_reserved:
+            raise HTTPException(
+                status_code=403,
+                detail="Reserved _apex_ environment options require an unscoped platform admin",
+            )
     target_fields_changed = "base_url" in changes or (
         "options" in changes
         and next_options.get(TRUSTED_PRIVATE_HOST_OPTION)
         != (env.options or {}).get(TRUSTED_PRIVATE_HOST_OPTION)
     )
     if target_fields_changed:
+        _validate_environment_options(identity, next_options)
         next_base_url = changes.get("base_url", env.base_url)
         changes["target_approved"] = _approve_environment_target(
             identity, next_base_url, next_options
@@ -634,6 +653,42 @@ async def update_environment(
         )
     if write_error is not None:
         raise write_error
+    return _environment_out(env)
+
+
+@router.post(
+    "/environments/{environment_id}/target-approval",
+    operation_id="approveEnvironmentTarget",
+)
+async def approve_environment_target(
+    environment_id: EnvironmentId,
+    body: EnvironmentTargetApproval,
+    identity: AdminIdentity,
+    repo: CatalogRepo,
+) -> EnvironmentOut:
+    """Approve the current target under a row lock without replaying a stale URL."""
+    if not _is_platform_admin(identity):
+        raise HTTPException(
+            status_code=403,
+            detail="Execution targets require approval by an unscoped platform admin",
+        )
+    env = await repo.get_environment_for_update(environment_id)
+    if env is None or not _can_access_environment(identity, env):
+        raise _not_found("environment", environment_id)
+    if env.target_version != body.expected_target_version:
+        raise HTTPException(
+            status_code=409,
+            detail="Environment target changed. Reload the environment before approving it.",
+        )
+    options = env.options or {}
+    _validate_environment_options(identity, options)
+    approved = _approve_environment_target(identity, env.base_url, options)
+    if not approved:
+        raise HTTPException(status_code=422, detail="Set an execution target URL before approval")
+    env = await repo.update_environment(
+        env,
+        {"target_approved": True, "target_version": int(env.target_version) + 1},
+    )
     return _environment_out(env)
 
 

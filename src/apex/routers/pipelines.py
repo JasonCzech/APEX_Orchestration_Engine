@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from langgraph_sdk import Auth
 from langgraph_sdk.errors import NotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from apex.app.dependencies import CurrentIdentity, ensure_scope, require_role
 from apex.app.errors import problem
@@ -32,7 +33,8 @@ from apex.domain.pipeline import (
     EngineConnectionAffinityMissingError,
     ExternalResults,
 )
-from apex.persistence.db import release_read_transactions
+from apex.graphs.pipeline.configurable import PipelineConfigurable
+from apex.persistence.db import get_session, release_read_transactions
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.persistence.repositories.documents import DocumentsRepository
 from apex.routers.catalog import get_catalog_repository
@@ -51,10 +53,19 @@ from apex.services.engine_abort import (
     EngineRunNotFoundError,
 )
 from apex.services.environments import (
+    EnvironmentTargetNotApprovedError,
     EnvironmentTargetNotFoundError,
+    resolve_environment_context,
     resolve_environment_target,
 )
+from apex.services.execution_readiness import (
+    ExecutionReadiness,
+    LaunchReadinessError,
+    execution_readiness,
+    require_execution_readiness,
+)
 from apex.services.langgraph_client import loopback_client
+from apex.services.pipeline_actors import PipelineActors, pipeline_actor_names
 from apex.services.pipeline_read import (
     MAX_PIPELINE_QUERY_CHARS,
     ActiveRunSnapshotUnstableError,
@@ -63,6 +74,7 @@ from apex.services.pipeline_read import (
     InvalidGateActionError,
     LaunchIdempotencyConflictError,
     LaunchProviderError,
+    LaunchValidationError,
     NoActiveRunError,
     PipelineReadService,
     PromptReviewConflictError,
@@ -321,6 +333,23 @@ class StartPipelineResponse(BaseModel):
     )
 
 
+class ExecutionReadinessRequest(BaseModel):
+    """The caller's selected contract, with preset values already resolved."""
+
+    model_config = ConfigDict(extra="forbid")
+    project_id: ScopeId | None = None
+    app_id: ScopeId | None = None
+    engine: NoNulStr = Field(min_length=1, max_length=64)
+    connection_id: NoNulStr | None = Field(default=None, min_length=1, max_length=256)
+    artifact_connection_id: NoNulStr | None = Field(default=None, min_length=1, max_length=256)
+    phases: list[PhaseInput] = Field(max_length=len(PHASE_ORDER))
+
+    @field_validator("phases")
+    @classmethod
+    def validate_phases(cls, value: list[str]) -> list[str]:
+        return StartPipelineRequest.validate_phases(value) or []
+
+
 class GateInterrupt(BaseModel):
     interrupt_id: str | None = None
     kind: str | None = None
@@ -403,6 +432,44 @@ class PhasePromptReviewUpdate(BaseModel):
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
+
+
+@router.post(
+    "/execution-readiness",
+    operation_id="getPipelineExecutionReadiness",
+    response_model=ExecutionReadiness,
+)
+async def get_pipeline_execution_readiness(
+    body: ExecutionReadinessRequest, identity: CurrentIdentity, catalog: CatalogRepo
+) -> ExecutionReadiness:
+    """Check scoped connection metadata, without testing provider connectivity."""
+    project_id, app_id = await _resolve_pipeline_scope(
+        identity, project_id=body.project_id, app_id=body.app_id, catalog=catalog
+    )
+    await release_read_transactions(catalog)
+    config = None
+    try:
+        config = PipelineConfigurable.model_validate(
+            {
+                "project_id": project_id,
+                "app_id": app_id,
+                "engine": body.engine,
+                "phases": body.phases,
+                "connections": {
+                    **({"execution_engine": body.connection_id} if body.connection_id else {}),
+                    **(
+                        {"artifact_store": body.artifact_connection_id}
+                        if body.artifact_connection_id
+                        else {}
+                    ),
+                },
+            }
+        )
+    except ValueError:
+        pass
+    if config is None:
+        raise HTTPException(status_code=422, detail="invalid execution readiness configuration")
+    return await execution_readiness(config)
 
 
 @router.post(
@@ -493,34 +560,79 @@ async def create_pipeline_run(
                 detail=("configurable.environment_id must be a non-empty catalog identifier"),
             )
         target = None
+        environment = None
+        simulated = run_configurable.get("engine") == "sim"
         environment_not_found = False
+        environment_not_approved = False
         try:
-            target = await resolve_environment_target(
-                catalog,
-                normalized_environment_id,
-                project_id=project_id,
-                app_id=app_id,
+            environment = await resolve_environment_context(
+                catalog, normalized_environment_id, project_id=project_id, app_id=app_id
             )
+            if not simulated:
+                target = await resolve_environment_target(
+                    catalog,
+                    normalized_environment_id,
+                    project_id=project_id,
+                    app_id=app_id,
+                )
+        except EnvironmentTargetNotApprovedError:
+            environment_not_approved = True
         except EnvironmentTargetNotFoundError:
             environment_not_found = True
-        if environment_not_found or target is None:
+        if environment_not_approved:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Selected environment has no approved execution target. "
+                    "Ask a platform administrator to approve its target on the environment page."
+                ),
+            )
+        if environment_not_found or environment is None:
             raise HTTPException(status_code=404, detail="environment target not found")
-        if app_id is not None and target.app_id != app_id:
+        if app_id is not None and environment.application_id != app_id:
             # The resolver already enforces this; retain the invariant at the
             # stamping boundary for injected/internal repository implementations.
             raise HTTPException(status_code=404, detail="environment target not found")
-        project_id = target.project_id
-        app_id = target.app_id
-        run_configurable["project_id"] = target.project_id
-        run_configurable["app_id"] = target.app_id
+        project_id = environment.application.project_id
+        app_id = environment.application_id
+        run_configurable["project_id"] = project_id
+        run_configurable["app_id"] = app_id
         run_configurable["environment_id"] = normalized_environment_id
-        run_configurable["environment_target"] = target.base_url
-        run_configurable["environment_target_version"] = target.version
+        if target is not None:
+            run_configurable["environment_target"] = target.base_url
+            run_configurable["environment_target_version"] = target.version
     service = _pipeline_read_service_after_scope(request)
     context_packets = [packet.model_dump(mode="json") for packet in (body.context_packets or [])]
     if body.document_ids:
         context_packets += await _documents_to_packets(documents, identity, body.document_ids)
     await release_read_transactions(catalog, documents)
+    # A canonical graph defaults to all phases; sparse custom assistants retain
+    # their inheritance. The wizard sends its explicit reviewed engine and plan.
+    # Check only after root reconciliation so later edits cannot block a replay.
+    readiness_config = None
+    if "engine" in run_configurable and (
+        body.phases is not None
+        or "phases" in run_configurable
+        or body.assistant_id in (None, "pipeline")
+    ):
+        readiness_config = {
+            # The service validates the effective sparse launch contract first.
+            # Only execution-selection fields belong in this metadata check;
+            # unrelated top-level overrides may have cleared inherited values.
+            **{
+                key: run_configurable[key]
+                for key in ("engine", "connections", "phases", "start_phase", "stop_after")
+                if key in run_configurable
+            },
+            "project_id": project_id,
+            "app_id": app_id,
+            **({"phases": body.phases} if body.phases is not None else {}),
+        }
+
+    async def check_execution_before_start(_thread_id: str) -> None:
+        if readiness_config is not None:
+            await require_execution_readiness(PipelineConfigurable.model_validate(readiness_config))
+
     result = None
     launch_error: HTTPException | None = None
     try:
@@ -541,11 +653,24 @@ async def create_pipeline_run(
             ),
             context_packets=context_packets or None,
             principal_id=identity.consumer_id,
+            before_run_start=(
+                check_execution_before_start if readiness_config is not None else None
+            ),
         )
     except LaunchIdempotencyConflictError:
         launch_error = HTTPException(status_code=409, detail="pipeline launch conflict")
+    except LaunchValidationError:
+        launch_error = HTTPException(
+            status_code=422,
+            detail=(
+                "Pipeline launch configuration was rejected. "
+                "Review the selected preset and configuration."
+            ),
+        )
     except LaunchProviderError:
         launch_error = _pipeline_runtime_unavailable()
+    except LaunchReadinessError as exc:
+        launch_error = HTTPException(status_code=422, detail=str(exc))
     except ValueError:
         launch_error = HTTPException(status_code=422, detail="invalid pipeline configuration")
     except Exception:
@@ -610,6 +735,17 @@ async def get_pipeline(
     if not_found or result is None:
         raise HTTPException(status_code=404, detail="pipeline thread not found")
     return result
+
+
+@router.get("/{thread_id}/actors", operation_id="getPipelineActors", response_model=PipelineActors)
+async def get_pipeline_actors(
+    thread_id: ThreadId,
+    identity: CurrentIdentity,
+    service: PipelineService,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> PipelineActors:
+    snapshot = await get_pipeline(thread_id, identity, service)
+    return await pipeline_actor_names(snapshot, session, identity)
 
 
 @router.get(

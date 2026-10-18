@@ -941,8 +941,9 @@ def _script_scenario_load_test_spec(
     Deterministic for (thread, attempt) — including the idempotency key — so node
     re-execution emits an identical spec. engine_reserve re-derives the key from the
     execution phase's own attempt before any engine call; that copy is authoritative,
-    this one seeds it for spec review/UX. Per-run sizing knobs ride the (unvalidated)
-    "load_test" configurable dict so demos and tests can shrink vusers/duration.
+    this one seeds it for spec review/UX. Per-run workload and acceptance controls
+    come from the validated durable "load_test" contract so the reviewed spec agrees
+    with execution.
     """
     thread_id = _thread_id(config)
     overrides = PipelineConfigurable.from_state_for_phase(
@@ -962,7 +963,7 @@ def _script_scenario_load_test_spec(
         vusers=overrides.get("vusers", 10),
         ramp_s=overrides.get("ramp_s", 1.0),
         duration_s=overrides.get("duration_s", 2.0),
-        slas={"p95_ms": 500.0, "error_rate": 0.05},
+        slas=overrides.get("slas", {"p95_ms": 500.0, "error_rate": 0.05}),
         # Preview only. The execution reserve node re-resolves environment_id
         # after assistant config merging and checkpoints the approved target.
         target_environment=None,
