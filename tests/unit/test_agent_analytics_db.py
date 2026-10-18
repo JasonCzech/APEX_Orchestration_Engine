@@ -36,6 +36,10 @@ def test_agent_event_capture_and_aggregation_round_trip(
 ) -> None:
     test_uri = os.environ["APEX_TEST_DATABASE_URI"]
     monkeypatch.setenv("APEX_DATABASE__URI", test_uri)
+    # These event labels deliberately exercise priced and unpriced models.
+    # Authorize them in this isolated fixture without weakening production policy.
+    monkeypatch.setenv("APEX_LLM__DEFAULT_MODEL", "claude-sonnet-4-20250514")
+    monkeypatch.setenv("APEX_LLM__ALLOWED_MODELS", '["claude-sonnet-4-20250514", "unknown-model"]')
     get_settings.cache_clear()
 
     marker = f"proj-agent-{uuid4().hex[:8]}"

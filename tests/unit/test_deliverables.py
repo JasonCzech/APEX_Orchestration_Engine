@@ -86,3 +86,13 @@ def test_readiness_fields_explain_evidence_and_arrival_rate_limit():
         field for field in DELIVERABLE_FIELDS["test_plan"] if field.key == "arrival_rate"
     )
     assert "not supported" in arrival.help
+
+
+def test_scope_source_help_identifies_available_retrieval_and_its_limits():
+    source = next(field for field in DELIVERABLE_FIELDS["scope"] if field.key == "source_manifest")
+    assert "live cycles" in source.help
+    assert "Captured source revisions on a saved scope version" in source.help
+    assert "exact page revisions" in source.help
+    assert "configured Confluence Cloud connection" in source.help
+    assert "other sources manually" in source.help
+    assert "not available" not in source.help

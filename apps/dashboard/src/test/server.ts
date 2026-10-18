@@ -111,6 +111,8 @@ export const handlers = [
   // exercising catalog data or failures override these empty scoped responses.
   http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
   http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
+  http.get('*/v1/catalog/projects', () => HttpResponse.json([])),
+  http.get('*/v1/cycles/:cycleId/actors', () => HttpResponse.json({ names: {}, truncated: false })),
   http.get('*/v1/drafts', () => HttpResponse.json([])),
   http.get('*/v1/analytics/usage', () => HttpResponse.json(EMPTY_USAGE)),
   http.get('*/v1/analytics/agents', () => HttpResponse.json(EMPTY_AGENT_ANALYTICS)),

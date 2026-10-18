@@ -1,6 +1,8 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
+import { useProjectLabels } from '@/api/hooks/useProjectLabels'
+import { ProjectIdentity } from '@/components/ux/ProjectIdentity'
 /**
  * /environments — environment references grouped by application (plan Part 2
  * route table). Read path is two cached catalog indexes joined client-side;
@@ -56,6 +58,8 @@ function CreateApplicationPanel({
   onCreated: (application: Application) => void
 }) {
   const create = useCreateApplication()
+  const labels = useProjectLabels()
+  const projectCaption = (id: string) => `${(!labels.isError && labels.data?.find(row => row.project_id === id)?.name) || 'Project name unavailable'} (${id})`
   const [projectId, setProjectId] = useState(projectOptions?.length === 1 ? projectOptions[0]! : '')
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -91,7 +95,7 @@ function CreateApplicationPanel({
               onChange={(event) => setProjectId(event.target.value)}
             >
               <option value="">Select a project…</option>
-              {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+              {projectOptions.map((project) => <option key={project} value={project}>{projectCaption(project)}</option>)}
             </select>
           ) : (
             <input
@@ -431,6 +435,8 @@ function DeleteEnvironmentModal({
 export function EnvironmentsPage() {
   useTimestampPreference()
   const applications = useApplicationsIndex()
+  const labels = useProjectLabels()
+  const projectCaption = (id: string) => `${(!labels.isError && labels.data?.find(row => row.project_id === id)?.name) || 'Project name unavailable'} (${id})`
   const environments = useEnvironmentsIndex()
   const consumer = useConsumer()
   const canMutate = canLaunchPipelines(consumer)
@@ -480,7 +486,7 @@ export function EnvironmentsPage() {
       </header>
 
       {applicationFilter && <Link className="btn btn-ghost" to="/environments">All applications</Link>}
-      <details className="ux-filters" open><summary>Filters</summary><TableToolbar label="Application filters" filterCount={Number(Boolean(search.trim())) + Number(Boolean(projectFilter))} onClear={() => { setSearch(''); setProjectFilter('') }}><label className="ux-field">Search applications and environments<input className="field-input" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label className="ux-field">Project<select className="field-select" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">All projects</option>{[...new Set((applications.data ?? []).map((app) => app.project_id))].sort().map((project) => <option key={project}>{project}</option>)}</select></label></TableToolbar></details>
+      <details className="ux-filters" open><summary>Filters</summary><TableToolbar label="Application filters" filterCount={Number(Boolean(search.trim())) + Number(Boolean(projectFilter))} onClear={() => { setSearch(''); setProjectFilter('') }}><label className="ux-field">Search applications and environments<input className="field-input" value={search} onChange={(event) => setSearch(event.target.value)} /></label><label className="ux-field">Project<select className="field-select" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">All projects</option>{[...new Set((applications.data ?? []).map((app) => app.project_id))].sort().map((project) => <option key={project} value={project}>{projectCaption(project)}</option>)}</select></label></TableToolbar></details>
       {creatingApplication && (
         <CreateApplicationPanel
           projectOptions={applicationProjectOptions}
@@ -539,7 +545,7 @@ export function EnvironmentsPage() {
             <header className="env-group-header">
               <div className="env-group-heading">
                 <h2 className="env-group-title"><Link to={`/environments?application=${encodeURIComponent(group.key)}`}>{group.label}</Link></h2>
-                {group.project && <span className="env-group-project">{group.project}</span>}
+                {group.project && <span className="env-group-project"><ProjectIdentity projectId={group.project} editable /></span>}
               </div>
               {canMutateAudience(consumer, group.project, group.key) && !creatingApplication && creatingEnvironmentFor === null && (
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreatingEnvironmentFor(group.key)}>

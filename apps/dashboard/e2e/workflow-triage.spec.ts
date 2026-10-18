@@ -156,10 +156,11 @@ test('cycle authoring exposes real field contracts, inventory identity and uncon
   await expect(page.getByLabel('Execution platform *').getByRole('option', { name: 'APEX Load', exact: true })).toHaveAttribute('value', 'apex-load')
 })
 
-test('report comparison hides unchanged fields and evidence capture selects the exact new version', async ({ page }) => {
+for (const verified of [true, false, undefined]) {
+test(`report capture preserves binding verification (${String(verified)}) and selects the exact new version`, async ({ page }) => {
   const report = { ...original, id: 'report-2', kind: 'report', title: 'Release report', content: { executive_summary: 'Current summary', recommendation: 'Review the evidence' } }
   let cycle: Cycle = { ...structuredClone(initial), versions: [{ ...report, id: 'report-1', content: { ...report.content, executive_summary: 'Earlier summary' } }, report] }
-  const result = { id: 'engine-run-1', thread_id: 'run-1', engine: 'apex-load', attempt: 1, execution_status: 'completed', test_outcome: null, evidence_status: 'recorded', started_at: at, ended_at: at, metrics: [{ key: 'tps', label: 'Throughput', unit: 'tps', value: 0, preference: 'higher', difference: null, percent_difference: null }], sla_breaches: [], warnings: [], evidence_checksum: 'a'.repeat(64) }
+  const result = { id: 'engine-run-1', thread_id: 'run-1', engine: 'apex-load', attempt: 1, execution_status: 'completed', test_outcome: null, evidence_status: 'recorded', started_at: at, ended_at: at, metrics: [{ key: 'tps', label: 'Throughput', unit: 'tps', value: 0, preference: 'higher', difference: null, percent_difference: null }], sla_breaches: [], warnings: [], evidence_checksum: 'a'.repeat(64), ...(verified === undefined ? {} : { bindings_verified: verified }) }
   await install(page, () => cycle, async (route, path) => {
     if (path.endsWith('/results')) { await route.fulfill({ json: { results: [result], read_at: at, baseline_id: null } }); return true }
     if (path.endsWith('/reports/report-2/evidence')) {
@@ -181,7 +182,12 @@ test('report comparison hides unchanged fields and evidence capture selects the 
   await expect(page.getByLabel('Selected version')).toHaveValue('captured-report-3')
   await expect(page.getByRole('region', { name: 'Frozen report evidence' })).toContainText('test outcome Not available')
   await expect(page.getByRole('region', { name: 'Frozen report evidence' }).getByRole('definition')).toHaveText('0')
+  const evidence = page.getByRole('region', { name: 'Frozen report evidence' })
+  await expect(evidence).toContainText(verified ? 'Approved bindings verified.' : 'Bindings remain unverified.')
+  await expect(evidence).not.toContainText(verified ? 'Bindings remain unverified.' : 'Approved bindings verified.')
+  await expect(evidence).toContainText('This captures history summaries, not raw provider artifacts.')
 })
+}
 
 test('prompt version activation is explicit and accepted resource jobs distinguish execution and run identities', async ({ page }) => {
   let active = { id: 'version-1', version: 1 }

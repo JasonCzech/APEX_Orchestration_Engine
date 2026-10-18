@@ -12,7 +12,7 @@ from sqlalchemy import or_, select, update
 from apex.adapters.registry import PortKind
 from apex.app.dependencies import CurrentIdentity
 from apex.domain.cycle_executions import _approved
-from apex.domain.cycles import VersionCreate, add_version, version_digest
+from apex.domain.cycles import VersionCreate, add_version, cycle_progress, version_digest
 from apex.domain.input_limits import NoNulStr, RecordId
 from apex.domain.provider_scripts import (
     ImportProviderScript,
@@ -277,7 +277,11 @@ async def import_script(
     changed = await session.scalar(
         update(TestCycle)
         .where(TestCycle.id == cycle.id, TestCycle.revision == body.expected_revision)
-        .values(versions=versions, revision=body.expected_revision + 1)
+        .values(
+            versions=versions,
+            progress=cycle_progress(versions).model_dump(),
+            revision=body.expected_revision + 1,
+        )
         .returning(TestCycle.id)
         .execution_options(synchronize_session=False)
     )

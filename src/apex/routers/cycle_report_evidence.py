@@ -10,9 +10,10 @@ from sqlalchemy import select
 from apex.domain.cycles import VersionCreate, add_version, version_digest
 from apex.domain.input_limits import RecordId
 from apex.domain.report_evidence import FreezeReportEvidence
-from apex.persistence.models import CycleRunLink, EngineRun
-from apex.routers.cycle_executions import run_scope
+from apex.persistence.models import EngineRun
+from apex.routers.cycle_executions import linked_run_scope, run_scope
 from apex.routers.cycles import CycleRead, Operator, Session, enabled, find, save_versions, view
+from apex.services.cycle_dispatch import verified_dispatch_runs
 from apex.services.cycle_results import result_view
 
 router = APIRouter(prefix="/cycles", tags=["cycles"], dependencies=[Depends(enabled)])
@@ -51,16 +52,17 @@ async def freeze_evidence(
         raise HTTPException(409, "Report content no longer matches its version checksum")
     rows = (
         await session.scalars(
-            select(EngineRun)
-            .join(CycleRunLink, CycleRunLink.engine_run_id == EngineRun.id)
-            .where(
-                CycleRunLink.cycle_id == cycle.id,
+            select(EngineRun).where(
+                linked_run_scope(cycle),
                 EngineRun.id.in_(body.expected_results),
                 *run_scope(cycle),
             )
         )
     ).all()
-    results = sorted((result_view(row) for row in rows), key=lambda r: r.id)
+    verified = await verified_dispatch_runs(session, cycle, list(rows))
+    results = sorted(
+        (result_view(row, bindings_verified=row.id in verified) for row in rows), key=lambda r: r.id
+    )
     if {r.id: r.evidence_checksum for r in results} != body.expected_results:
         raise HTTPException(
             409, "Execution evidence changed or became inaccessible; inspect fresh results"

@@ -7,6 +7,7 @@ import { http, HttpResponse } from 'msw'
 import { QueryClientProvider } from '@tanstack/react-query'
 
 import type { PipelineDetail } from '@/api/hooks/useThreadState'
+import { queryKeys } from '@/api/queryKeys'
 import { createTestQueryClient } from '@/test/render'
 import { server } from '@/test/server'
 
@@ -70,7 +71,7 @@ const DETAIL_IDLE: PipelineDetail = {
   },
 }
 
-function renderModal(initialSelection?: Parameters<typeof PreflightModal>[0]['initialSelection']) {
+function renderModal(initialSelection?: Parameters<typeof PreflightModal>[0]['initialSelection'], client = createTestQueryClient()) {
   const onClose = vi.fn()
   const router = createMemoryRouter(
     [
@@ -89,7 +90,7 @@ function renderModal(initialSelection?: Parameters<typeof PreflightModal>[0]['in
     { initialEntries: ['/'] },
   )
   const view = render(
-    <QueryClientProvider client={createTestQueryClient()}>
+    <QueryClientProvider client={client}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
@@ -109,6 +110,44 @@ describe('PreflightModal', () => {
         return HttpResponse.json({ run_id: 'run-9' }, { status: 202 })
       }),
     )
+  })
+
+  it('blocks a cycle-bound run even when opened from a stale list action', async () => {
+    server.use(pipelineDetailHandler({ ...DETAIL_IDLE, rerun_blocked_reason: 'cycle_preparation_required' }))
+    const user = userEvent.setup()
+    renderModal(['execution'])
+    const guidance = await screen.findByRole('link', { name: 'Review test cycles' })
+    expect(guidance).toHaveAttribute('href', '/cycles')
+    expect(screen.queryByRole('group', { name: 'Phases to run' })).not.toBeInTheDocument()
+    const start = screen.getByRole('button', { name: 'Start phases' })
+    expect(start).toBeDisabled()
+    await user.click(start)
+    expect(rerunBodies).toEqual([])
+  })
+
+  it('does not permit rerun while the authoritative snapshot failed to load', async () => {
+    server.use(http.get(`*/v1/pipelines/${THREAD_ID}`, () => HttpResponse.json({ detail: 'Unavailable' }, { status: 503 })))
+    renderModal(['execution'])
+    await screen.findByRole('alert')
+    expect(screen.getByRole('button', { name: 'Start phases' })).toBeDisabled()
+    expect(rerunBodies).toEqual([])
+  })
+
+  it('waits for capability refresh when an older allowed snapshot is cached', async () => {
+    const client = createTestQueryClient()
+    client.setQueryData(queryKeys.threads.state(THREAD_ID), { detail: DETAIL_IDLE, state: DETAIL_IDLE.values, interrupts: [], stateParseFailed: false })
+    let release!: () => void
+    const responseReady = new Promise<void>(resolve => { release = resolve })
+    server.use(http.get(`*/v1/pipelines/${THREAD_ID}`, async () => {
+      await responseReady
+      return HttpResponse.json({ ...DETAIL_IDLE, rerun_blocked_reason: 'cycle_preparation_required' })
+    }))
+    renderModal(['execution'], client)
+    expect(screen.getByRole('button', { name: 'Start phases' })).toBeDisabled()
+    release()
+    await screen.findByRole('link', { name: 'Review test cycles' })
+    expect(screen.getByRole('button', { name: 'Start phases' })).toBeDisabled()
+    expect(rerunBodies).toEqual([])
   })
 
   it('loads thread state, pre-checks the last plan, and recomputes readiness as toggles change', async () => {

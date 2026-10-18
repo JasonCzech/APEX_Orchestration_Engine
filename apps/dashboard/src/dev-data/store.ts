@@ -13,6 +13,7 @@ import {
 } from './telecomFixtures'
 
 type Application = components['schemas']['ApplicationOut']
+type ProjectLabel = components['schemas']['ProjectLabelOut']
 type Connection = components['schemas']['ConnectionOut']
 type ConnectionCreate = components['schemas']['ConnectionCreate']
 type ConnectionUpdate = components['schemas']['ConnectionUpdate']
@@ -132,6 +133,7 @@ interface MapDelta<T> {
 }
 
 interface DemoBaseline {
+  projectLabels: ProjectLabel[]
   applications: Application[]
   environments: Environment[]
   inventories: Map<string, InventoryView>
@@ -544,6 +546,7 @@ function makePipelineState(
 
 export class DevDataStore {
   private nextId = 100
+  private projectLabels: ProjectLabel[]
   private applications: Application[]
   private environments: Environment[]
   private inventories = new Map<string, InventoryView>()
@@ -601,6 +604,7 @@ export class DevDataStore {
     this.activationTime = this.persistedActivationTime()
     const created = isoMinutesAgo(8_000, this.activationTime)
     const updated = isoMinutesAgo(20, this.activationTime)
+    this.projectLabels = [{ project_id: TELECOM_PROJECT_ID, name: 'Telecom modernization', updated_at: updated }]
     this.applications = []
     this.environments = []
     this.connections = []
@@ -634,6 +638,7 @@ export class DevDataStore {
 
   private captureBaseline(): DemoBaseline {
     return {
+      projectLabels: clone(this.projectLabels),
       applications: clone(this.applications),
       environments: clone(this.environments),
       inventories: new Map(clone([...this.inventories])),
@@ -808,6 +813,7 @@ export class DevDataStore {
     else if (method === 'GET' && path === '/v1/analytics/usage') response = jsonResponse(this.usage(url.searchParams))
     else if (method === 'POST' && path === '/v1/logs/search') response = jsonResponse(await this.searchLogs(request))
     else if (path.startsWith('/v1/pipelines')) response = await this.handlePipelines(method, path, request, url.searchParams)
+    else if (path === '/v1/catalog/projects') response = await this.handleProjectLabels(method, request, url.searchParams)
     else if (path.startsWith('/v1/catalog/applications')) response = await this.handleApplications(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/catalog/environments')) response = await this.handleEnvironments(method, path, request, url.searchParams)
     else if (path.startsWith('/v1/inventory/environments')) response = this.handleInventory(method, path)
@@ -837,6 +843,24 @@ export class DevDataStore {
     if (!artifact) return null
     const blob = new Blob([artifact.body as BlobPart], { type: artifact.mediaType })
     return { blob, mediaType: artifact.mediaType, size: blob.size }
+  }
+
+  private async handleProjectLabels(method: string, request: Request, params: URLSearchParams): Promise<Response> {
+    if (method === 'GET') {
+      const rows = this.projectLabels.filter(row => !params.get('project') || row.project_id === params.get('project'))
+      const offset = Number(params.get('offset') ?? 0), limit = Number(params.get('limit') ?? 100)
+      return jsonResponse(rows.slice(offset, offset + limit))
+    }
+    const body = method === 'PUT' ? await request.json() as { project_id?: string; name?: string } : null
+    const projectId = body?.project_id ?? params.get('project')
+    if (projectId !== TELECOM_PROJECT_ID) return problemResponse(403, 'Forbidden', 'Project naming requires project-wide administrator access')
+    if (method === 'DELETE') { this.projectLabels = this.projectLabels.filter(row => row.project_id !== projectId); return new Response(null, { status: 204 }) }
+    if (method === 'PUT' && typeof body?.name === 'string' && body.name.trim() && body.name.length <= 255) {
+      const row = { project_id: projectId, name: body.name, updated_at: nowIso() }
+      this.projectLabels = [...this.projectLabels.filter(item => item.project_id !== projectId), row]
+      return jsonResponse(row)
+    }
+    return problemResponse(422, 'Invalid project name', 'Provide a project name of 1–255 characters')
   }
 
   getFixtureStats(): Record<string, number> {
@@ -2806,6 +2830,7 @@ export class DevDataStore {
           activationTime: this.activationTime,
           nextId: this.nextId,
           mutations: {
+            projectLabels: arrayDelta(this.projectLabels, this.baseline.projectLabels, item => item.project_id),
             applications: arrayDelta(this.applications, this.baseline.applications, (item) => item.id),
             environments: arrayDelta(this.environments, this.baseline.environments, (item) => item.id),
             inventories: mapDelta(this.inventories, this.baseline.inventories),
@@ -2875,6 +2900,7 @@ export class DevDataStore {
 
       this.activationTime = state['activationTime']
       this.nextId = Number(state['nextId'])
+      this.projectLabels = applyArrayDelta(this.baseline.projectLabels, readArray<ProjectLabel>('projectLabels', item => item.project_id), item => item.project_id)
       this.applications = applyArrayDelta(this.baseline.applications, readArray<Application>('applications', (item) => item.id), (item) => item.id)
       this.environments = applyArrayDelta(this.baseline.environments, readArray<Environment>('environments', (item) => item.id), (item) => item.id)
       this.inventories = applyMapDelta(this.baseline.inventories, readMap<InventoryView>('inventories'))

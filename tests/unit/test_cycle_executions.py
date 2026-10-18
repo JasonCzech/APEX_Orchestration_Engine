@@ -97,7 +97,7 @@ def test_preparation_freezes_workload_and_content_without_claiming_launch_ready(
     result = checks(prepared, versions)
     assert result["workload"] == result["readiness_evidence"] == "ready"
     assert result["provider_access"] == "not_checked"
-    assert result["script_binding"] == result["launch_authority"] == "blocked"
+    assert result["script_binding"] == result["launch_authority"] == "not_checked"
     versions[0]["content"]["vusers"] = 20
     assert prepared.workload["vusers"] == 10
     assert checks(prepared, versions)["plan"] == "blocked"

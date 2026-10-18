@@ -37,6 +37,7 @@ for (const profile of ['viewer', 'operator-unscoped', 'operator-scoped', 'admin'
         json = { id: preparation.id, revision: cycle.revision }
       }
       else if (path === `/v1/cycles/c1/executions/${preparation.id}/script-validations`) json = { revision: cycle.revision, blockers: archivedAt ? ['Preparation archived; prepare a new execution for further validation.'] : [], validations: [{ id: 'retained-validation', preparation_id: preparation.id, request_key: 'prior-validation', status: 'accepted', issues: [], warnings: [], created_by: 'original-validator', created_at: version.created_at, finished_at: version.created_at, current: !archivedAt }], validation_scope: 'Source only' }
+      else if (path.endsWith('/dispatch')) json = { revision: cycle.revision, checks: [], can_dispatch: false, can_resume: false, attempt: null }
       else if (path === '/v1/cycles/c1/executions') json = { revision: cycle.revision, preparations: [{ ...preparation, archived_at: archivedAt, archived_by: archivedAt ? 'reviewer' : null }], connections: [], linked_runs: [], recent_runs: [], inventory_snapshot_id: null, inventory_scanned_at: null, target_version: 1 }
       else if (path === '/v1/cycles') json = [cycle]
       else if (path === '/v1/engine-runs') json = { items: [], total: 0 }
@@ -131,6 +132,7 @@ for (const profile of ['operator-scoped', 'admin'] as const) {
         json = { id, revision: cycle.revision }
       }
       else if (path.endsWith('/script-validations')) json = { revision: cycle.revision, blockers: [], validations: [] }
+      else if (path.endsWith('/dispatch')) json = { revision: cycle.revision, checks: [], can_dispatch: false, can_resume: false, attempt: null }
       else if (path === '/v1/cycles/c1/executions' && route.request().method() === 'POST') {
         const body = route.request().postDataJSON()
         requests.push(body)

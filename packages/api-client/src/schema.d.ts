@@ -721,6 +721,25 @@ export interface paths {
         patch: operations["updateEnvironment"];
         trace?: never;
     };
+    "/v1/catalog/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Project Labels */
+        get: operations["listProjectLabels"];
+        /** Set Project Label */
+        put: operations["setProjectLabel"];
+        post?: never;
+        /** Delete Project Label */
+        delete: operations["deleteProjectLabel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/context/evidence": {
         parameters: {
             query?: never;
@@ -807,6 +826,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cycles/{cycle_id}/actors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Cycle Actors */
+        get: operations["getCycleActors"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cycles/{cycle_id}/executions": {
         parameters: {
             query?: never;
@@ -839,6 +875,41 @@ export interface paths {
          * @description Retain bindings and validation history; prevent new work on this preparation.
          */
         post: operations["archiveCycleExecutionPreparation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/dispatch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Dispatch */
+        get: operations["getCycleExecutionDispatch"];
+        put?: never;
+        /** Dispatch */
+        post: operations["dispatchCycleExecution"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/dispatch/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Dispatch */
+        post: operations["cancelCycleExecutionDispatch"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2016,6 +2087,11 @@ export interface components {
             /** Preserved Anchor Id */
             preserved_anchor_id?: string | null;
         };
+        /** CancelCycleDispatch */
+        CancelCycleDispatch: {
+            /** Dispatch Id */
+            dispatch_id: string;
+        };
         /** CaptureSource */
         CaptureSource: {
             /** Connection Id */
@@ -2351,6 +2427,18 @@ export interface components {
             /** Version Id */
             version_id: string;
         };
+        /** CycleActors */
+        CycleActors: {
+            /** Names */
+            names: {
+                [key: string]: string;
+            };
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** CycleCreate */
         CycleCreate: {
             /** App Id */
@@ -2367,6 +2455,58 @@ export interface components {
             name: string;
             /** Project Id */
             project_id: string;
+        };
+        /** CycleDispatchRead */
+        CycleDispatchRead: {
+            /** Canceled By */
+            canceled_by?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Detail */
+            detail: string;
+            /** Engine Run Id */
+            engine_run_id: string | null;
+            /** External Run Id */
+            external_run_id: string | null;
+            /** Id */
+            id: string;
+            /** Preparation Id */
+            preparation_id: string;
+            /** Request Key */
+            request_key: string;
+            /** Run Id */
+            run_id: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "reserved" | "submitted" | "uncertain" | "running" | "cleanup_pending" | "completed" | "failed" | "aborted";
+            /** Thread Id */
+            thread_id: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** CycleDispatchWorkspace */
+        CycleDispatchWorkspace: {
+            attempt: components["schemas"]["CycleDispatchRead"] | null;
+            /** Can Cancel */
+            can_cancel: boolean;
+            /** Can Dispatch */
+            can_dispatch: boolean;
+            /** Can Resume */
+            can_resume: boolean;
+            /** Checks */
+            checks: components["schemas"]["PreflightCheck"][];
+            /** Revision */
+            revision: number;
         };
         /** CycleMetric */
         CycleMetric: {
@@ -2389,6 +2529,23 @@ export interface components {
             unit: string;
             /** Value */
             value: number | null;
+        };
+        /** CycleProgress */
+        CycleProgress: {
+            /** Approved */
+            approved: number;
+            /** Deliverables */
+            deliverables: components["schemas"]["DeliverableProgress"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_started" | "draft" | "in_review" | "approved" | "stale" | "archived";
+            /**
+             * Total
+             * @default 6
+             */
+            total: number;
         };
         /** CycleRead */
         CycleRead: {
@@ -2593,7 +2750,7 @@ export interface components {
              *         },
              *         {
              *           "control": "multiline",
-             *           "help": "Record each source title, provider, revision, retrieval time and readability. Retrieval connectors are not available in this editor yet.",
+             *           "help": "Record each source title, provider, revision, retrieval time and readability. For live cycles, use Captured source revisions on a saved scope version to retrieve exact page revisions from a configured Confluence Cloud connection. Record other sources manually.",
              *           "integer": false,
              *           "key": "source_manifest",
              *           "label": "Frozen source references",
@@ -2846,6 +3003,9 @@ export interface components {
             origin_cycle_id?: string | null;
             /** Owner */
             owner: string;
+            /** Owner Name */
+            owner_name?: string | null;
+            progress?: components["schemas"]["CycleProgress"] | null;
             /** Project Id */
             project_id: string;
             /** Revision */
@@ -2865,9 +3025,8 @@ export interface components {
             /**
              * Bindings Verified
              * @default false
-             * @constant
              */
-            bindings_verified: false;
+            bindings_verified: boolean;
             /**
              * Comparison Available
              * @default false
@@ -2948,6 +3107,9 @@ export interface components {
             name: string;
             /** Owner */
             owner: string;
+            /** Owner Name */
+            owner_name?: string | null;
+            progress?: components["schemas"]["CycleProgress"] | null;
             /** Project Id */
             project_id: string;
             /** Revision */
@@ -3037,6 +3199,28 @@ export interface components {
              * @default true
              */
             required: boolean;
+        };
+        /** DeliverableProgress */
+        DeliverableProgress: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "scope" | "test_plan" | "readiness" | "script" | "report" | "postmortem";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_started" | "draft" | "in_review" | "approved" | "stale" | "archived";
+            /** Version Id */
+            version_id?: string | null;
+        };
+        /** DispatchCycleExecution */
+        DispatchCycleExecution: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Idempotency Key */
+            idempotency_key: string;
         };
         /** DocHit */
         DocHit: {
@@ -3953,6 +4137,8 @@ export interface components {
             phase_strip: components["schemas"]["PhaseStripEntry"][];
             /** Project Id */
             project_id?: string | null;
+            /** Rerun Blocked Reason */
+            rerun_blocked_reason?: "cycle_preparation_required" | null;
             /** Thread Id */
             thread_id: string;
             /** Thread Status */
@@ -4005,6 +4191,8 @@ export interface components {
             phase_strip: components["schemas"]["PhaseStripEntry"][];
             /** Project Id */
             project_id?: string | null;
+            /** Rerun Blocked Reason */
+            rerun_blocked_reason?: "cycle_preparation_required" | null;
             /** Thread Id */
             thread_id: string;
             /** Thread Status */
@@ -4055,12 +4243,8 @@ export interface components {
             created_by: string;
             /** Id */
             id: string;
-            /**
-             * Launch Available
-             * @default false
-             * @constant
-             */
-            launch_available: false;
+            /** Launch Available */
+            launch_available?: boolean | null;
             snapshot: components["schemas"]["ExecutionSnapshot"];
         };
         /** PrepareExecution */
@@ -4092,6 +4276,25 @@ export interface components {
             latency_ms: number;
             /** Ok */
             ok: boolean;
+        };
+        /** ProjectLabelOut */
+        ProjectLabelOut: {
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** ProjectLabelWrite */
+        ProjectLabelWrite: {
+            /** Name */
+            name: string;
+            /** Project Id */
+            project_id: string;
         };
         /** PromptDetail */
         PromptDetail: {
@@ -4401,9 +4604,8 @@ export interface components {
             /**
              * Bindings Verified
              * @default false
-             * @constant
              */
-            bindings_verified: false;
+            bindings_verified: boolean;
             /** Engine */
             engine: string;
             /** Id */
@@ -6915,6 +7117,101 @@ export interface operations {
             };
         };
     };
+    listProjectLabels: {
+        parameters: {
+            query?: {
+                project?: string | null;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectLabelOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    setProjectLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectLabelWrite"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectLabelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deleteProjectLabel: {
+        parameters: {
+            query: {
+                project: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listContextEvidence: {
         parameters: {
             query?: {
@@ -7115,6 +7412,37 @@ export interface operations {
             };
         };
     };
+    getCycleActors: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleActors"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     getCycleExecutions: {
         parameters: {
             query?: never;
@@ -7204,6 +7532,110 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutionMutationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getCycleExecutionDispatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleDispatchWorkspace"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dispatchCycleExecution: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DispatchCycleExecution"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleDispatchWorkspace"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancelCycleExecutionDispatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cycle_id: string;
+                preparation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelCycleDispatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CycleDispatchWorkspace"];
                 };
             };
             /** @description Validation Error */

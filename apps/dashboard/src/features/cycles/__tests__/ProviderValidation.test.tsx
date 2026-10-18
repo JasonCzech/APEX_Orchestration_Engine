@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { server } from '@/test/server'
+import { CycleActorNames } from '../CycleActorIdentity'
 import { ProviderValidation } from '../ProviderValidation'
 
 const record = {
@@ -25,12 +26,12 @@ function mount(canEdit = true, archived = false) {
         new QueryClient({ defaultOptions: { queries: { retry: false } } })
       }
     >
-      <ProviderValidation
+      <CycleActorNames cycleId="cycle" revision={8}><ProviderValidation
         cycleId="cycle"
         preparationId="prep"
         canEdit={canEdit}
         archived={archived}
-      />
+      /></CycleActorNames>
     </QueryClientProvider>,
   )
 }
@@ -92,6 +93,15 @@ describe('Provider source validation', () => {
       screen.getByText('LoadRunner source validation is unavailable'),
     ).toBeInTheDocument()
   })
+  it('labels validation actors from the authorized cycle lookup and retains their recorded ID', async () => {
+    server.use(http.get('*/v1/cycles/cycle/actors', () => HttpResponse.json({ names: { operator: 'Validation reviewer' }, truncated: false })), http.get('*/v1/cycles/cycle/executions/prep/script-validations', () => HttpResponse.json({ revision: 8, blockers: [], validations: [{ ...record, status: 'accepted' }] })))
+    mount(false)
+    expect(await screen.findByText('Validation reviewer')).toBeVisible()
+    expect(screen.getByText('operator', { selector: 'code' })).toHaveAttribute('title', 'operator')
+    expect(screen.getByRole('button', { name: 'Copy Actor ID' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Validate with APEX Load' })).not.toBeInTheDocument()
+  })
+
   it('gives viewers history without validation controls', async () => {
     server.use(
       http.get('*/v1/cycles/cycle/executions/prep/script-validations', () =>

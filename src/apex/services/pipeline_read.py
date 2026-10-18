@@ -41,6 +41,7 @@ from apex.domain.pipeline import (
 from apex.graphs.pipeline.configurable import (
     MAX_RECOMMENDED_RECURSION_LIMIT,
     PipelineConfigurable,
+    normalize_durable_pipeline_snapshot,
 )
 from apex.graphs.pipeline.execution_phase import recommended_recursion_limit
 from apex.services.langgraph_client import (
@@ -110,6 +111,7 @@ PIPELINE_SUMMARY_EXTRACT = {
     "phases_plan": "values.phases_plan",
     "phase_results": "values.phase_results",
     "engine_handle": "values.engine_handle",
+    "cycle_dispatch_id": "values.run_config.cycle_dispatch_id",
 }
 _AMBIGUOUS_RUN_CREATE_CLIENT_STATUSES = frozenset({408, 409, 425, 429})
 _RUN_LIST_PAGE_SIZE = 100
@@ -192,6 +194,10 @@ class PromptReviewConflictError(Exception):
 
 class RerunConfigurationConflictError(Exception):
     """The durable rerun snapshot is missing, malformed, or ownership-drifted."""
+
+
+class CycleRerunConflictError(RerunConfigurationConflictError):
+    """A Cycle-bound execution requires a new reviewed preparation to run again."""
 
 
 class RerunIdempotencyConflictError(Exception):
@@ -594,6 +600,19 @@ def execution_result_from_values(values: JsonDict) -> str | None:
     return "passed" if passed is True else "failed" if passed is False else None
 
 
+def _rerun_blocked_reason(values: Any) -> str | None:
+    """Expose the capability without disclosing the private dispatch binding."""
+    if type(values) is not dict:
+        return None
+    run_config = values.get("run_config")
+    binding = (
+        run_config.get("cycle_dispatch_id")
+        if type(run_config) is dict
+        else values.get("cycle_dispatch_id")
+    )
+    return "cycle_preparation_required" if type(binding) is str and binding else None
+
+
 def map_thread_summary(thread: JsonDict) -> JsonDict:
     """Thread dict (search/get shape) -> dashboard pipeline summary."""
     raw_values = thread.get("values")
@@ -622,6 +641,7 @@ def map_thread_summary(thread: JsonDict) -> JsonDict:
         "created_at": public_text(thread.get("created_at"), 64),
         "updated_at": public_text(thread.get("updated_at"), 64),
         "pending_gate": _public_gate(gates[0] if gates else None),
+        "rerun_blocked_reason": _rerun_blocked_reason(values),
     }
 
 
@@ -661,6 +681,7 @@ class PipelineReadService:
         context_packets: list[JsonDict] | None = None,
         principal_id: str | None = None,
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None = None,
+        reuse_existing_thread: bool = False,
     ) -> JsonDict:
         """Create a thread and start a pipeline run; returns {thread_id, run_id, stream_url}.
 
@@ -846,6 +867,7 @@ class PipelineReadService:
                     run_configurable=run_configurable,
                     recursion_limit=recursion_limit,
                     before_run_start=before_run_start,
+                    reuse_existing_thread=reuse_existing_thread,
                 )
         return await self._create_or_get_run(
             metadata=metadata,
@@ -857,6 +879,7 @@ class PipelineReadService:
             run_configurable=run_configurable,
             recursion_limit=recursion_limit,
             before_run_start=before_run_start,
+            reuse_existing_thread=reuse_existing_thread,
         )
 
     async def _create_or_get_run(
@@ -871,6 +894,7 @@ class PipelineReadService:
         run_configurable: JsonDict,
         recursion_limit: int,
         before_run_start: Callable[[str], Awaitable[list[JsonDict] | None]] | None,
+        reuse_existing_thread: bool,
     ) -> JsonDict:
         """Create/adopt the run while the idempotency scope lock is held."""
         thread: JsonDict | None = None
@@ -878,14 +902,27 @@ class PipelineReadService:
         thread_metadata: JsonDict | None = None
         thread_error_type: str | None = None
         try:
-            thread_response = await self._client.threads.create(
-                metadata=metadata,
-                **(
-                    {"thread_id": deterministic_thread_id, "if_exists": "do_nothing"}
-                    if deterministic_thread_id is not None
-                    else {}
-                ),
-            )
+            thread_response = None
+            create_thread = True
+            if reuse_existing_thread and deterministic_thread_id is not None:
+                create_thread = False
+                try:
+                    # Reconciliation must not recreate/admit an existing Cycle
+                    # thread through today's app catalog. Its immutable original
+                    # fingerprint is verified below; the graph checks current
+                    # authority before provider work and records any refusal.
+                    thread_response = await self._client.threads.get(deterministic_thread_id)
+                except NotFoundError:
+                    create_thread = True
+            if create_thread:
+                thread_response = await self._client.threads.create(
+                    metadata=metadata,
+                    **(
+                        {"thread_id": deterministic_thread_id, "if_exists": "do_nothing"}
+                        if deterministic_thread_id is not None
+                        else {}
+                    ),
+                )
             thread_id, thread_metadata = _validated_thread_create_fields(
                 thread_response,
                 label="pipeline thread creation",
@@ -1207,6 +1244,7 @@ class PipelineReadService:
         )
         summary = map_thread_summary({**thread, "values": values, "interrupts": {}})
         summary["pending_gate"] = _public_gate(gates[0] if gates else None)
+        summary["rerun_blocked_reason"] = _rerun_blocked_reason(state.get("values"))
         return {
             **summary,
             "values": values,
@@ -1602,6 +1640,10 @@ class PipelineReadService:
             run_config = _run_config_from_state(state)
             validated = _validated_durable_replay_config(run_config)
             _ensure_durable_config_ownership(validated, thread)
+            if validated.cycle_dispatch_id:
+                raise CycleRerunConflictError(
+                    "Cycle executions cannot be rerun; prepare a new approved cycle binding"
+                )
 
             run_config = validated.snapshot()
             run_config["phases"] = list(phases)
@@ -2016,6 +2058,7 @@ def _validated_durable_replay_config(snapshot: JsonDict) -> PipelineConfigurable
         invalid = True
     if invalid:
         raise RerunConfigurationConflictError("durable pipeline configuration is invalid")
+    snapshot = normalize_durable_pipeline_snapshot(snapshot)
     if set(snapshot) != set(PipelineConfigurable.model_fields):
         raise RerunConfigurationConflictError(
             "durable pipeline configuration snapshot is incomplete"

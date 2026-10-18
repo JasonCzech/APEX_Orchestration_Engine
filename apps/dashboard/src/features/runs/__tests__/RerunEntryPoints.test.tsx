@@ -109,9 +109,26 @@ describe('RunsListPage row overflow menu (entry point 1)', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Re-run…' })).toBeInTheDocument()
     expect(within(row).getByRole('button', { name: 'Copy run ID' })).toBeInTheDocument()
   })
+
+  it('replaces a cycle run row rerun action with its preparation guidance', async () => {
+    server.use(pipelinesHandler([{ ...RUN_BUSY, rerun_blocked_reason: 'cycle_preparation_required' }]).handler)
+    renderRunsPage()
+    const row = await screen.findByTestId(`runs-row-${RUN_BUSY.thread_id}`)
+    expect(within(row).queryByRole('button', { name: /^Run actions:/ })).not.toBeInTheDocument()
+    expect(row).toHaveTextContent('Cycle executions require a new approved preparation before another launch.')
+    expect(within(row).getByRole('link', { name: 'Review test cycles' })).toHaveAttribute('href', '/cycles')
+  })
 })
 
 describe('RunDetailPage header split button (entry point 2)', () => {
+  it('offers cycle preparation guidance on a direct execution phase URL', async () => {
+    server.use(pipelineDetailHandler({ ...PIPELINE_DETAIL, rerun_blocked_reason: 'cycle_preparation_required' }))
+    renderRunRoutes([`/runs/${THREAD_ID}/phases/execution`])
+    await screen.findByRole('group', { name: 'Phase progress' })
+    expect(screen.queryByRole('button', { name: 'Re-run selected plan' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Re-run options' })).not.toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Review test cycles' })).toHaveAttribute('href', '/cycles')
+  })
   it('Re-run ▾ menu offers All phases / Choose phases… and preselects accordingly', async () => {
     server.use(pipelineDetailHandler())
     const user = userEvent.setup()

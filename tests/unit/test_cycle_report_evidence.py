@@ -41,6 +41,7 @@ async def test_capture_freezes_exact_evidence_and_replay_does_not_read_history(
     save = AsyncMock()
     monkeypatch.setattr(api, "save_versions", save)
     session = AsyncMock()
+    session.execute.return_value = Mock(all=Mock(return_value=[]))
     session.scalars.return_value = Mock(all=Mock(return_value=[execution]))
     body = FreezeReportEvidence(
         expected_revision=2,
@@ -78,6 +79,7 @@ async def test_changed_or_inaccessible_evidence_is_not_saved(monkeypatch):
     save = AsyncMock()
     monkeypatch.setattr(api, "save_versions", save)
     session = AsyncMock()
+    session.execute.return_value = Mock(all=Mock(return_value=[]))
     session.scalars.return_value = Mock(all=Mock(return_value=[run(passed=False)]))
     body = FreezeReportEvidence(
         expected_revision=2, idempotency_key="capture", expected_results={"run": "a" * 64}

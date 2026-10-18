@@ -280,10 +280,10 @@ def execution_checks(
         PreflightCheck(
             key="script_binding",
             label="Immutable provider script binding",
-            status="blocked",
+            status="not_checked",
             detail=(
-                "Approved content is frozen in APEX. Artifact-backed provider "
-                "import and checksum verification are required before launch."
+                "Approved content is frozen in APEX. Dispatch checks re-read the stored source "
+                "and verify the exact provider copy before launching."
             ),
         )
     )
@@ -291,15 +291,15 @@ def execution_checks(
         PreflightCheck(
             key="launch_authority",
             label="Launch ownership",
-            status="blocked",
+            status="blocked" if snapshot.launch_authority == "native_schedule" else "not_checked",
             detail=(
                 "The native APEX Load schedule owns launching. Reconcile its "
                 "runs; do not launch a duplicate pipeline execution."
             )
             if snapshot.launch_authority == "native_schedule"
             else (
-                "Cycle dispatch is not enabled. Preparation does not launch a "
-                "pipeline or generate substitute scripts."
+                "Use this preparation's Dispatch checks to launch its exact approved source. "
+                "Creating a preparation alone does not launch a pipeline."
             ),
         )
     )

@@ -412,13 +412,25 @@ async def _persist_agent_deliverable(
             )
 
 
-def _prerequisite_error(state: PipelineState, phase: Phase) -> str | None:
+def _prerequisite_error(
+    state: PipelineState, phase: Phase, cfg: PipelineConfigurable | None = None
+) -> str | None:
     results = state.get("phase_results")
     if results is None:
         results = {}
     if type(results) is not dict:
         raise ValueError("checkpointed phase results are invalid")
     for prereq in PHASE_PREREQUISITES[phase]:
+        # An approved Cycle dispatch supplies its script through the immutable
+        # artifact binding, not a fabricated script-generation phase. The engine
+        # reservation revalidates that binding before any provider side effects.
+        if (
+            cfg
+            and cfg.cycle_dispatch_id
+            and phase is Phase.EXECUTION
+            and prereq is Phase.SCRIPT_SCENARIO
+        ):
+            continue
         prereq_entry = results.get(prereq.value)
         if prereq_entry is None:
             prereq_entry = {}
@@ -687,7 +699,7 @@ def _make_prepare(phase: Phase):
     def prepare(state: PipelineState, config: RunnableConfig) -> JsonDict:
         cfg = PipelineConfigurable.from_state_for_phase(state, config, phase)
         attempt = _attempt(_entry(state, phase))
-        prereq_error = _prerequisite_error(state, phase)
+        prereq_error = _prerequisite_error(state, phase, cfg)
         if prereq_error is not None:
             return _phase_update(
                 phase,

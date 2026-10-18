@@ -826,6 +826,36 @@ def test_map_thread_summary_falls_back_to_metadata_title() -> None:
     assert summary["pending_gate"] is None
 
 
+@pytest.mark.parametrize("projected", [False, True])
+@pytest.mark.parametrize("binding", [None, "", "private-dispatch-id"])
+def test_summary_projects_cycle_rerun_capability_without_binding_id(
+    projected: bool, binding: str | None
+) -> None:
+    values = (
+        {"cycle_dispatch_id": binding}
+        if projected
+        else {"run_config": {"cycle_dispatch_id": binding}}
+    )
+    summary = map_thread_summary(
+        {"thread_id": "t-1", "extracted" if projected else "values": values}
+    )
+    assert summary["rerun_blocked_reason"] == ("cycle_preparation_required" if binding else None)
+    assert "private-dispatch-id" not in json.dumps(summary)
+
+
+@pytest.mark.parametrize("binding", [None, "private-dispatch-id"])
+def test_detail_projects_cycle_rerun_capability_from_private_snapshot(binding: str | None) -> None:
+    state = {"values": {"run_config": {"cycle_dispatch_id": binding}}, "tasks": []}
+    fake = FakeThreads([THREAD_INTERRUPTED], states={"t-1": state})
+    with TestClient(make_app(FakeClient(fake), operator_identity())) as client:
+        response = client.get("/v1/pipelines/t-1")
+    assert response.status_code == 200
+    assert response.json()["rerun_blocked_reason"] == (
+        "cycle_preparation_required" if binding else None
+    )
+    assert "private-dispatch-id" not in response.text
+
+
 def test_map_thread_summary_supports_projected_extracted_values() -> None:
     projected = {
         "thread_id": "t-3",

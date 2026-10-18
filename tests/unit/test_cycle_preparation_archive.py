@@ -87,6 +87,7 @@ def archive_app() -> Iterator[tuple[FastAPI, Engine]]:
             "engine_runs",
             "test_cycles",
             "cycle_execution_preparations",
+            "cycle_execution_dispatches",
             "cycle_run_links",
             "cycle_script_validations",
             "cycle_script_artifacts",

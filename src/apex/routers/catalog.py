@@ -81,6 +81,32 @@ class ApplicationCreate(BaseModel):
         return value
 
 
+class ProjectLabelWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    project_id: ScopeId
+    name: NoNulStr = Field(min_length=1, max_length=255)
+
+    @field_validator("*")
+    @classmethod
+    def safe_label(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Project fields must not be blank")
+        reject_credential_text(value, label="project metadata")
+        return value
+
+
+class ProjectLabelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    project_id: str
+    name: str
+    updated_at: datetime
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def safe_name(cls, value: Any) -> str:
+        return sanitize_credential_text_for_output(value) or "Name unavailable"
+
+
 class ApplicationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -345,6 +371,51 @@ def _approve_environment_target(
 
 
 # ── applications ─────────────────────────────────────────────────────────────
+
+
+@router.get("/projects", operation_id="listProjectLabels")
+async def list_project_labels(
+    identity: CurrentIdentity,
+    repo: CatalogRepo,
+    project: Annotated[ScopeId | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0, le=MAX_DB_LIST_OFFSET)] = 0,
+) -> list[ProjectLabelOut]:
+    ensure_scope(identity, project_id=project)
+    return [
+        ProjectLabelOut.model_validate(row)
+        for row in await repo.list_project_labels(
+            project=project,
+            visible_projects=_visible_projects(identity),
+            limit=limit,
+            offset=offset,
+        )
+    ]
+
+
+def _can_name_project(identity: ConsumerIdentity, project_id: str) -> None:
+    if not identity.contains_scope(ScopeRef(project_id=project_id)):
+        raise HTTPException(403, "Project naming requires project-wide administrator access")
+
+
+@router.put("/projects", operation_id="setProjectLabel")
+async def set_project_label(
+    body: ProjectLabelWrite, identity: AdminIdentity, repo: CatalogRepo
+) -> ProjectLabelOut:
+    _can_name_project(identity, body.project_id)
+    try:
+        row = await repo.put_project_label(body.project_id, body.name)
+    except DuplicateNameError:
+        raise HTTPException(409, "Project metadata changed; refresh and retry") from None
+    return ProjectLabelOut.model_validate(row)
+
+
+@router.delete("/projects", operation_id="deleteProjectLabel", status_code=204)
+async def delete_project_label(
+    identity: AdminIdentity, repo: CatalogRepo, project: Annotated[ScopeId, Query()]
+) -> None:
+    _can_name_project(identity, project)
+    await repo.delete_project_label(project)
 
 
 @router.get("/applications", operation_id="listApplications")

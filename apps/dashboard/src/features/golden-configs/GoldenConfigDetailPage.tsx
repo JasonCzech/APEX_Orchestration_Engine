@@ -1,5 +1,6 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
+import { ProjectIdentity } from '@/components/ux/ProjectIdentity'
 /**
  * /golden-configs/:assistantId — structured READ view of the assistant's
  * pinned config.configurable (scope defaults, engine, gate policy matrix,
@@ -106,7 +107,7 @@ function ReadSections({ entry }: { entry: GoldenConfigEntry }) {
         <h3 className="gc-section-title">Scope defaults</h3>
         <dl className="gc-kv">
           <dt>Project</dt>
-          <dd>{scope.project ?? EM_DASH}</dd>
+          <dd>{scope.project ? <ProjectIdentity projectId={scope.project} /> : EM_DASH}</dd>
           <dt>Application</dt>
           <dd>{application?.name ?? (scope.app ? 'Name unavailable' : EM_DASH)}{scope.app && <small> · <code>{scope.app}</code></small>}</dd>
           <dt>Environment</dt>

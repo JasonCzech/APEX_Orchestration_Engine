@@ -86,7 +86,6 @@ if mode == "run":
     inputs = {
         "title": "restart survival",
         "request": "survive a SIGKILL mid-poll",
-        "phase_results": {"script_scenario": seeded},
     }
 else:
     inputs = None  # resume from the latest committed checkpoint
@@ -94,6 +93,12 @@ else:
 with PostgresSaver.from_conn_string(uri) as saver:
     saver.setup()  # idempotent; creates the checkpointer's own tables
     graph = builder.compile(checkpointer=saver)
+    if mode == "run":
+        # Prerequisite evidence is durable internal state, never public run
+        # input. Seed the completed upstream fixture at the trusted checkpoint.
+        graph.update_state(
+            config, {"phase_results": {"script_scenario": seeded}}, as_node="plan_resolver"
+        )
     for _ns, event in graph.stream(
         inputs, config, stream_mode="custom", subgraphs=True, durability="sync"
     ):

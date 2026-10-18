@@ -34,7 +34,7 @@ class CycleResult(BaseModel):
     metrics: list[CycleMetric]
     sla_breaches: list[str]
     warnings: list[str]
-    bindings_verified: Literal[False] = False
+    bindings_verified: bool = False
     comparison_available: bool = False
     evidence_checksum: str = ""
 
@@ -47,12 +47,15 @@ METRICS: tuple[tuple[str, str, str, Literal["higher", "lower", "context"]], ...]
 )
 
 
-def result_view(run: Any) -> CycleResult:
+def result_view(run: Any, *, bindings_verified: bool = False) -> CycleResult:
     summary = public_test_result_summary(run.summary)
     warnings = [
         "History projection; inspect execution evidence before approving a report.",
-        "Script, workload and environment bindings to this cycle remain unverified.",
     ]
+    if not bindings_verified:
+        warnings.append(
+            "Script, workload and environment bindings to this cycle remain unverified."
+        )
     if summary and summary["engine"] != run.engine:
         warnings.append("Summary engine conflicts with the linked attempt; evidence withheld.")
         summary = None
@@ -104,6 +107,7 @@ def result_view(run: Any) -> CycleResult:
         metrics=metrics,
         sla_breaches=summary["sla_breaches"] if summary else [],
         warnings=warnings,
+        bindings_verified=bindings_verified,
     )
     result.evidence_checksum = version_digest(
         result.model_dump(mode="json", exclude={"evidence_checksum"})

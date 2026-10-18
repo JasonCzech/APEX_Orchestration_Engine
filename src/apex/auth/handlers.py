@@ -1579,6 +1579,8 @@ def ensure_run_controls(
                 "use the validated /v1 pipeline APIs for lifecycle transitions"
             )
         if not trusted_loopback:
+            if "cycle_dispatch_id" in configurable:
+                raise ValueError("Cycle dispatch bindings are server-owned")
             if (
                 "kwargs" in payload
                 and "thread_id" in payload
@@ -1996,10 +1998,17 @@ async def on_threads_create_run(
         trusted_loopback=trusted_loopback,
     )
     result = ensure_run_scope(identity, value, action=action)
-    await _ensure_catalog_app_scope(identity, value)
-    environment_filter = await ensure_run_environment(identity, value, action=action)
-    if environment_filter is not None:
-        result = environment_filter
+    run_configurable = _mapping(_mapping(_run_arguments(payload).get("config")).get("configurable"))
+    bound_cycle = trusted_loopback and bool(run_configurable.get("cycle_dispatch_id"))
+    if not bound_cycle:
+        await _ensure_catalog_app_scope(identity, value)
+        environment_filter = await ensure_run_environment(identity, value, action=action)
+        if environment_filter is not None:
+            result = environment_filter
+    # A server-owned Cycle binding must keep its frozen target, even when the
+    # current catalog has changed. The graph validates current durable authority
+    # before every provider effect and records a terminal refusal on mismatch.
+    # Rejecting it here would strand a thread-bound intent with no graph to abort.
     # Environment resolution stamps deployment-owned target fields; validate
     # the final effective configurable before the runtime persists the run.
     ensure_run_controls(

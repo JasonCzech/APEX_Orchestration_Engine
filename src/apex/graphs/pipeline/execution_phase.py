@@ -1602,6 +1602,12 @@ def _build_spec(
 ) -> tuple[LoadTestSpec, JsonDict]:
     """Spec for this run: script_scenario output (or a default for standalone
     execution runs) + per-run "load_test" overrides + the authoritative key."""
+    bound_cfg = PipelineConfigurable.from_state_for_phase(state, config, _PHASE)
+    if bound_cfg.cycle_dispatch_id:
+        from apex.services.cycle_dispatch import load_dispatch_binding
+
+        spec, _ = asyncio.run(load_dispatch_binding(bound_cfg, _thread_id(config), attempt))
+        return spec, {}
     results = state.get("phase_results")
     if results is None:
         results = {}
@@ -1956,7 +1962,34 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
                 return [], handle, True
             # Provider methods receive isolated models. Validation/provisioning may
             # inspect but never rewrite the checkpointed target or idempotency key.
-            report = _validated_engine_report(await adapter.validate(spec.model_copy(deep=True)))
+            approved_source = None
+            generic_adapter = adapter
+            exact_adapter = None
+            if cfg.cycle_dispatch_id:
+                from apex.ports.execution_engine import ApprovedScriptExecutionPort
+                from apex.services.cycle_dispatch import load_dispatch_binding
+
+                exact_spec, approved_source = await load_dispatch_binding(
+                    cfg, thread_id, attempt, read_source=True
+                )
+                if (
+                    exact_spec != spec
+                    or not isinstance(adapter, ApprovedScriptExecutionPort)
+                    or approved_source is None
+                ):
+                    raise _DefinitiveProvisionError(
+                        "Cycle source execution contract is unavailable or changed"
+                    )
+                exact_adapter = adapter
+                report = _validated_engine_report(
+                    await exact_adapter.validate_approved_source(
+                        spec.model_copy(deep=True), approved_source
+                    )
+                )
+            else:
+                report = _validated_engine_report(
+                    await adapter.validate(spec.model_copy(deep=True))
+                )
             if report.warnings:
                 logger.info(
                     "engine.preflight_warnings",
@@ -1965,7 +1998,13 @@ def engine_provision(state: PipelineState, config: RunnableConfig) -> Command[st
                 )
             if not report.ok:
                 return list(report.issues), None, False
-            raw_provisioned = await adapter.provision(spec.model_copy(deep=True))
+            raw_provisioned = (
+                await exact_adapter.provision_approved_source(
+                    spec.model_copy(deep=True), approved_source
+                )
+                if exact_adapter is not None and approved_source is not None
+                else await generic_adapter.provision(spec.model_copy(deep=True))
+            )
             provisioned = _validated_engine_handle(
                 raw_provisioned,
                 allow_credential_material=True,
@@ -2177,6 +2216,10 @@ def engine_start(state: PipelineState, config: RunnableConfig) -> Command[str]:
         try:
             start_error: str | None = None
             try:
+                if cfg.cycle_dispatch_id:
+                    from apex.services.cycle_dispatch import load_dispatch_binding
+
+                    await load_dispatch_binding(cfg, _thread_id(config), attempt, read_source=True)
                 await adapter.start(provider_handle)
             except Exception as exc:  # noqa: BLE001
                 start_error = bounded_diagnostic(exc)

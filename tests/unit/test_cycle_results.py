@@ -113,12 +113,15 @@ async def test_results_query_scopes_links_and_does_not_resolve_external_baseline
     )
     session = AsyncMock()
     session.scalars.return_value = Mock(all=Mock(return_value=[run()]))
+    session.execute.return_value = Mock(all=Mock(return_value=[]))
     with pytest.raises(HTTPException) as error:
         await api.read_results("cycle", session, Mock(), "unlinked-baseline")
     assert error.value.status_code == 404
     statement = session.scalars.await_args.args[0]
     assert statement.compile().params == {
         "cycle_id_1": "cycle",
+        "cycle_id_2": "cycle",
+        "attempt_1": 1,
         "project_id_1": "project",
         "app_id_1": "app",
     }

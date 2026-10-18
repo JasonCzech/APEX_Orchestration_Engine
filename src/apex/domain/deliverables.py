@@ -36,7 +36,9 @@ DELIVERABLE_FIELDS: dict[str, list[DeliverableField]] = {
             "Frozen source references",
             help=(
                 "Record each source title, provider, revision, retrieval time and "
-                "readability. Retrieval connectors are not available in this editor yet."
+                "readability. For live cycles, use Captured source revisions on a saved "
+                "scope version to retrieve exact page revisions from a configured "
+                "Confluence Cloud connection. Record other sources manually."
             ),
         ),
         field("included", "Included journeys"),

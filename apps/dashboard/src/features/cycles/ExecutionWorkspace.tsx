@@ -3,12 +3,12 @@ import { Dialog } from '@/components/Dialog'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { useRef, useState } from 'react'
 import { useEnvironments } from '@/api/hooks/useCatalog'
-import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { formatTimestamp } from '@/utils/time'
 import { useRunNames } from './useRunNames'
 import { CopyableId } from '@/components/ux/CopyableId'
-import { actorLabel } from './cycleDisplay'
+import { CycleActorIdentity } from './CycleActorIdentity'
 import { ProviderValidation } from './ProviderValidation'
+import { ExecutionDispatch } from './ExecutionDispatch'
 import { Link } from 'react-router'
 import {
   useArchivePreparation,
@@ -28,7 +28,6 @@ export function ExecutionWorkspace({
 }) {
   useTimestampPreference()
   const names = useRunNames(cycle.project_id)
-  const consumer = useOptionalConsumer()
   const environments = useEnvironments(cycle.app_id)
   const environmentName = environments.data?.find(item => item.id === cycle.environment_id)?.name ?? cycle.environment_id
   const query = useExecutions(cycle.id)
@@ -73,8 +72,8 @@ export function ExecutionWorkspace({
     <section className="cycle-panel glass-panel">
       <h2>Executions</h2>
       <p>
-        Freeze an approved script and workload for preflight review. Cycle
-        dispatch is not enabled; preparing an execution does not launch a test.
+        Freeze an approved script and workload for preflight review, then review
+        its dispatch prerequisites. Preparing an execution does not launch a test.
       </p>
       <p>
         <strong>
@@ -294,7 +293,7 @@ export function ExecutionWorkspace({
                 {p.snapshot.script_title} · {p.snapshot.engine}
               </h4>
               <p>
-                <strong>{p.archived_at ? 'Archived' : 'Launch blocked'}</strong> · {p.snapshot.mode} ·{' '}
+                <strong>{p.archived_at ? 'Archived' : 'Prepared'}</strong> · {p.snapshot.mode} ·{' '}
                 {p.snapshot.launch_authority === 'native_schedule'
                   ? 'Native schedule owns launch'
                   : 'Pipeline owns launch'}{' '}
@@ -333,14 +332,15 @@ export function ExecutionWorkspace({
                 archived={Boolean(p.archived_at)}
                 canEdit={canEdit && !p.archived_at && !busy}
               />
-              {p.archived_at ? <p>Archived {formatTimestamp(p.archived_at)} by {actorLabel(p.archived_by ?? '', consumer)}. Bindings and validation history are retained.</p> : canEdit && <button className="btn btn-danger" disabled={busy} onClick={() => { archive.reset(); setArchiveNotice(''); setArchiveTarget({ id: p.id, title: p.snapshot.script_title, revision: data.revision }) }}>Archive preparation</button>}
+              <ExecutionDispatch cycleId={cycle.id} preparation={p} environmentName={environmentName} canEdit={canEdit && !busy} />
+              {p.archived_at ? <p>Archived {formatTimestamp(p.archived_at)} by <CycleActorIdentity id={p.archived_by} />. Bindings and validation history are retained.</p> : canEdit && <button className="btn btn-danger" disabled={busy} onClick={() => { archive.reset(); setArchiveNotice(''); setArchiveTarget({ id: p.id, title: p.snapshot.script_title, revision: data.revision }) }}>Archive preparation</button>}
               <details>
                 <summary>Binding and audit details</summary>
                 <dl>
                   <dt>Preparation</dt>
                   <dd><CopyableId value={p.id} label="Preparation ID" /></dd>
                   <dt>Prepared by</dt>
-                  <dd>{actorLabel(p.created_by, consumer)}</dd>
+                  <dd><CycleActorIdentity id={p.created_by} /></dd>
                   <dt>Prepared at</dt>
                   <dd>{formatTimestamp(p.created_at)}</dd>
                   <dt>Preflight checked</dt>
@@ -360,10 +360,10 @@ export function ExecutionWorkspace({
               </details>
             </article>
           ))}
-          <h3>Related existing runs</h3>
+          <h3>Execution history</h3>
           <p>
-            Links preserve existing run history. Their approved script and
-            workload bindings are not verified.
+            Dispatched executions retain their approved bindings. Manually linked
+            runs preserve existing history without verifying script or workload equivalence.
           </p>
           {canEdit && (
             <form
@@ -416,7 +416,7 @@ export function ExecutionWorkspace({
                 >
                   {names.get(r.thread_id) || 'Title unavailable'} · {r.engine} attempt {r.attempt} · {formatTimestamp(r.started_at)}
                 </Link>{' '}<CopyableId value={r.thread_id} label="Run ID" />{' '}
-                · engine status {r.status} · bindings unverified
+                · engine status {r.status} · {r.bindings_verified ? 'approved bindings verified' : 'bindings unverified'}
               </li>
             ))}
           </ul>

@@ -32,7 +32,7 @@ describe('EnvironmentsPage', () => {
     renderList()
 
     const checkout = await screen.findByRole('region', { name: 'Application Checkout' })
-    expect(within(checkout).getByText('proj-alpha')).toHaveClass('env-group-project')
+    expect(within(checkout).getByText('proj-alpha').closest('.env-group-project')).not.toBeNull()
 
     const staging = within(checkout).getByTestId(`env-row-${ENV_STAGING.id}`)
     expect(within(staging).getByText('staging')).toBeInTheDocument()

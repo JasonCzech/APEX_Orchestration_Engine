@@ -187,6 +187,7 @@ describe('GoldenConfigsPage', () => {
 
 describe('GoldenConfigDetailPage', () => {
   it('renders the structured read view: scope, gate matrix, pins, limits, raw JSON', async () => {
+    server.use(http.get('*/v1/catalog/projects', () => HttpResponse.json([{ project_id: 'proj-alpha', name: 'Payments project' }])))
     assistantsGet.mockResolvedValue(GOLDEN)
     renderApp({
       initialEntries: ['/golden-configs/asst-gold'],
@@ -196,6 +197,8 @@ describe('GoldenConfigDetailPage', () => {
     expect(await screen.findByRole('heading', { name: 'Nightly checkout soak' })).toBeInTheDocument()
 
     const scope = screen.getByRole('region', { name: 'Scope defaults' })
+    expect(await within(scope).findByText('Payments project')).toBeVisible()
+    expect(within(scope).getByRole('button', { name: 'Copy Project ID' })).toBeVisible()
     expect(within(scope).getByText('proj-alpha')).toBeInTheDocument()
     expect(within(scope).getByText('app-checkout')).toBeInTheDocument()
     expect(within(scope).getByText('—')).toBeInTheDocument() // environment not pinned

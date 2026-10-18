@@ -26,6 +26,8 @@ import { PhaseWorkspace } from './PhaseWorkspace'
 import { lastPlanSelection } from './preflight'
 import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { PreflightModal } from './PreflightModal'
+import { rerunRestriction } from './rerunCapability'
+import { RerunGuidance } from './RerunGuidance'
 import { runReviewPath } from './reviewPath'
 import { PHASE_LABELS, executionResultLabel, formatTimestamp, isPhaseName, normalizedPhases, phaseProgress, phaseProgressLabel, orchestrationStatusLabel, orchestrationTone, targetPhaseFor } from './runDisplay'
 import { useAbortRun } from './useAbortRun'
@@ -140,6 +142,7 @@ export function RunWorkspace({
   }
 
   const { detail, state, stateParseFailed } = query.data
+  const rerunBlocked = rerunRestriction(detail.rerun_blocked_reason)
   const phaseStrip = normalizedPhases(state, detail.phase_strip, stateParseFailed, detail)
   const pendingGate = query.data.interrupts.some(interrupt => interrupt.interrupt_id === hitl.gate?.interrupt_id) ? hitl.gate : null
   const summaryGate = detail.pending_gate
@@ -262,7 +265,7 @@ export function RunWorkspace({
               onConfirm={() => abortRun.mutate()}
             />
           ) : null}
-          <span className="split-button">
+          {rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <span className="split-button">
             <button
               type="button"
               className="btn btn-secondary btn-sm split-button-main"
@@ -285,7 +288,7 @@ export function RunWorkspace({
                 },
               ]}
             />
-          </span>
+          </span>}
         </RequireRole>}
         <Link
           className="btn btn-ghost btn-sm"

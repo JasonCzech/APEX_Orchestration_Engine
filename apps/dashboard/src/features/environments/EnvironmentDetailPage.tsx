@@ -1,6 +1,7 @@
 import { useTimestampPreference } from '@/theme/preferences'
 import { StateCard } from '@/components/ux/StateCard'
 import { Skeleton } from '@/components/ux/Skeleton'
+import { ProjectIdentity } from '@/components/ux/ProjectIdentity'
 /**
  * /environments/:id — reference card + live k8s inventory (plan Part 2 route
  * table, D5).
@@ -395,7 +396,7 @@ export function EnvironmentDetailPage() {
             {app && (
               <>
                 <span className="env-breadcrumb-sep">/</span>
-                <span>{app.project_id}</span>
+                <ProjectIdentity projectId={app.project_id} editable />
                 <span className="env-breadcrumb-sep">/</span>
                 <span>{app.name}</span>
               </>

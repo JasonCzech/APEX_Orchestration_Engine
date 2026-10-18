@@ -2999,3 +2999,81 @@ async def test_runtime_actor_is_only_accepted_from_matching_trusted_facade(
         with pytest.raises(Auth.exceptions.HTTPException) as error:
             await on_threads_create_run(ctx=ctx, value=value)
         assert error.value.status_code == 422
+
+
+async def test_native_run_cannot_forge_server_owned_cycle_dispatch_binding() -> None:
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {"title": "Forged cycle", "request": "run it"},
+            "config": {"configurable": {"project_id": "p1", "cycle_dispatch_id": "forged"}},
+        },
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as error:
+        await on_threads_create_run(
+            ctx=make_ctx(
+                make_identity(Role.OPERATOR, [ScopeRef(project_id="p1")]), action="create_run"
+            ),
+            value=value,
+        )
+    assert error.value.status_code == 422
+    assert "server-owned" in str(error.value.detail)
+
+
+@pytest.mark.parametrize("cycle_bound", [False, True])
+async def test_trusted_cycle_reconciliation_preserves_target_and_defers_current_checks(
+    monkeypatch, cycle_bound
+):
+    from unittest.mock import AsyncMock
+
+    catalog = AsyncMock(side_effect=LookupError("catalog removed"))
+    monkeypatch.setattr(auth_handlers, "_ensure_catalog_app_scope", catalog)
+    configurable = {
+        "project_id": "p1",
+        "app_id": "app-1",
+        "environment_id": "env",
+        "environment_target": "https://original.example",
+        "environment_target_version": 2,
+    }
+    if cycle_bound:
+        configurable["cycle_dispatch_id"] = "dispatch"
+    value: Any = {
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {"title": "Cycle execution", "request": "Execute exact source"},
+            "config": {"configurable": configurable},
+        },
+    }
+    ctx = make_ctx(make_identity(Role.ADMIN), action="create_run", trusted_loopback=True)
+    if cycle_bound:
+        await on_threads_create_run(ctx=ctx, value=value)
+        catalog.assert_not_awaited()
+        assert (
+            value["kwargs"]["config"]["configurable"]["environment_target"]
+            == "https://original.example"
+        )
+        assert value["kwargs"]["config"]["configurable"]["environment_target_version"] == 2
+    else:
+        with pytest.raises(LookupError, match="catalog removed"):
+            await on_threads_create_run(ctx=ctx, value=value)
+        catalog.assert_awaited_once()
+
+
+async def test_claimed_loopback_flag_does_not_authorize_public_cycle_binding():
+    value: Any = {
+        "trusted_loopback": True,
+        "assistant_id": "pipeline",
+        "thread_id": "thread-1",
+        "kwargs": {
+            "input": {"title": "Forged cycle"},
+            "config": {"configurable": {"project_id": "p1", "cycle_dispatch_id": "forged"}},
+        },
+    }
+    with pytest.raises(Auth.exceptions.HTTPException) as error:
+        await on_threads_create_run(
+            ctx=make_ctx(make_identity(Role.ADMIN), action="create_run"), value=value
+        )
+    assert error.value.status_code == 422
+    assert "server-owned" in str(error.value.detail)

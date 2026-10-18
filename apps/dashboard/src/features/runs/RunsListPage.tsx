@@ -21,6 +21,8 @@ import { CompareSelectBar } from '../compare/CompareSelectBar'
 import { MAX_COMPARE_RUNS } from '../compare/compareModel'
 import { OverflowMenu } from '@/components/ux/OverflowMenu'
 import { PreflightModal } from './PreflightModal'
+import { rerunRestriction } from './rerunCapability'
+import { RerunGuidance } from './RerunGuidance'
 import {
   hasActiveFilters,
   parseRunsFilters,
@@ -117,6 +119,7 @@ function RunRow({
   canRerun: boolean
 }) {
   const displayPhase = run.pending_gate?.phase ?? run.current_phase
+  const rerunBlocked = rerunRestriction(run.rerun_blocked_reason)
   const compact = useCompactLayout()
   if (compact) return (
     <article className={`glass-panel run-card${selected ? ' is-selected' : ''}`} data-testid={`runs-row-${run.thread_id}`}>
@@ -130,7 +133,7 @@ function RunRow({
       {run.pending_gate && <button type="button" className="runs-gate-action" aria-label={`${gateLabel(run.pending_gate.kind)} for ${run.title || run.thread_id}${isPhaseName(run.pending_gate.phase) ? `, ${PHASE_LABELS[run.pending_gate.phase]}` : ''}`} onClick={() => onReview(run)}>{gateLabel(run.pending_gate.kind)}</button>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
       <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Creation to last update</dt><dd>{durationLabel(run)}</dd></dl></details>
-      <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>}</div>
+      <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && (rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>)}</div>
     </article>
   )
 
@@ -207,12 +210,12 @@ function RunRow({
           >
             Open run
           </button>
-          {canRerun && <OverflowMenu
+          {canRerun && (rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <OverflowMenu
             label={`Run actions: ${run.title || run.thread_id}`}
             items={[
               { label: 'Re-run…', onSelect: () => onRerun(run.thread_id) },
             ]}
-          />}
+          />)}
         </div>
       </td>
     </tr>

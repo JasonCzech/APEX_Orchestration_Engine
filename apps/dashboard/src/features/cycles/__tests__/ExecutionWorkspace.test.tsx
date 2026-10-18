@@ -98,6 +98,7 @@ function mount(role: 'admin' | 'viewer' = 'admin', preparations: () => component
       }),
     ),
     http.get('*/v1/cycles/c1/executions/:id/script-validations', () => HttpResponse.json({ revision: revision(), blockers: [], validations: [] })),
+    http.get('*/v1/cycles/c1/executions/:id/dispatch', () => HttpResponse.json({ revision: revision(), checks: [], can_dispatch: false, can_resume: false, can_cancel: false, attempt: null })),
     http.get('*/v1/catalog/applications', () => HttpResponse.json([])),
     http.get('*/v1/catalog/environments', () => HttpResponse.json([])),
   )

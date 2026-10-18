@@ -55,6 +55,24 @@ def parser() -> argparse.ArgumentParser:
     )
     history.add_argument("cycle_id")
     history.add_argument("preparation_id")
+    dispatch_status = commands.add_parser(
+        "execution-dispatch", help="Inspect dispatch prerequisites and the original launch receipt"
+    )
+    dispatch_status.add_argument("cycle_id")
+    dispatch_status.add_argument("preparation_id")
+    dispatch = commands.add_parser(
+        "dispatch-execution", help="Launch or recover one approved execution using a stable key"
+    )
+    dispatch.add_argument("cycle_id")
+    dispatch.add_argument("preparation_id")
+    dispatch.add_argument("--revision", required=True, type=int)
+    dispatch.add_argument("--idempotency-key", required=True)
+    cancel_dispatch = commands.add_parser(
+        "cancel-dispatch", help="Cancel an unsubmitted launch intent by its exact dispatch ID"
+    )
+    cancel_dispatch.add_argument("cycle_id")
+    cancel_dispatch.add_argument("preparation_id")
+    cancel_dispatch.add_argument("--dispatch-id", required=True)
     provider = commands.add_parser(
         "provider-scripts", help="Browse or preview a provider script export"
     )
@@ -215,6 +233,15 @@ def main() -> int:
             if args.command == "validate-script":
                 method = "POST"
                 body = {"expected_revision": args.revision, "idempotency_key": args.idempotency_key}
+        elif args.command in {"dispatch-execution", "execution-dispatch", "cancel-dispatch"}:
+            path += "/executions/" + quote(args.preparation_id, safe="") + "/dispatch"
+            if args.command == "dispatch-execution":
+                method = "POST"
+                body = {"expected_revision": args.revision, "idempotency_key": args.idempotency_key}
+            elif args.command == "cancel-dispatch":
+                path += "/cancel"
+                method = "POST"
+                body = {"dispatch_id": args.dispatch_id}
         elif args.command == "store-script":
             path += "/scripts/" + quote(args.version_id, safe="") + "/artifact"
             method = "POST"
@@ -302,6 +329,20 @@ def main() -> int:
             print(f"  Blocked: {blocker}")
     elif args.command in {"prepare-execution", "link-run"}:
         print(f"Saved {data['id']} · cycle revision {data['revision']} · no test launched")
+    elif args.command in {"dispatch-execution", "execution-dispatch", "cancel-dispatch"}:
+        print(f"Cycle revision {data['revision']}")
+        attempt = data.get("attempt")
+        if attempt:
+            print(f"Dispatch {attempt['id']} · {attempt['status']} · {attempt['detail']}")
+            print(f"  Operation key: {attempt['request_key']}")
+            for key in ("thread_id", "run_id", "engine_run_id", "external_run_id"):
+                if attempt.get(key):
+                    print(f"  {key}: {attempt[key]}")
+        else:
+            print("No execution dispatched")
+        for check in data["checks"]:
+            if check["status"] != "ready":
+                print(f"  {check['status']}: {check['label']} — {check['detail']}")
     elif args.command in {"validate-script", "script-validations"}:
         for record in (
             data.get("validations", []) if args.command == "script-validations" else [data]
@@ -326,7 +367,9 @@ def main() -> int:
             state = "verified" if artifact["stored_at"] else "pending; retry required"
             print(f"  {artifact['version_id']} · {artifact['source_checksum']} · {state}")
     elif args.command == "executions":
-        print(f"Cycle revision {data['revision']} · launch unavailable")
+        print(
+            f"Cycle revision {data['revision']} · inspect dispatch prerequisites before launching"
+        )
         for preparation in data["preparations"]:
             print(f"  {preparation['id']} · {preparation['snapshot']['script_title']}")
             for check in preparation["checks"]:

@@ -15,12 +15,15 @@ import { useApplications, useEnvironments } from '@/api/hooks/useCatalog'
 import { ProblemCard } from '@/components/ProblemCard'
 import { Dialog } from '@/components/Dialog'
 import { ProjectField } from '@/components/ux/ProjectField'
+import { ProjectIdentity } from '@/components/ux/ProjectIdentity'
+import { CycleActorIdentity, CycleActorNames } from './CycleActorIdentity'
+import { CycleProgress } from './CycleProgress'
 import { CopyableId } from '@/components/ux/CopyableId'
 import { Pagination } from '@/components/ux/Pagination'
 import { ApiError } from '@/api/errors'
 import { formatTimestamp } from '@/utils/time'
 import { PromptDiff } from '@/features/prompts/PromptDiff'
-import { actorLabel, cycleNextAction, fieldValue, REVIEW_LABELS, REVIEW_EFFECTS, REVIEW_RESULTS } from './cycleDisplay'
+import { cycleNextAction, fieldValue, REVIEW_LABELS, REVIEW_EFFECTS, REVIEW_RESULTS } from './cycleDisplay'
 import { ProviderScriptImport } from './ProviderScriptImport'
 import { ScriptStorage } from './ScriptStorage'
 import { ExecutionWorkspace } from './ExecutionWorkspace'
@@ -227,10 +230,11 @@ export function CyclesPage() {
               <Link to={`/cycles/${cycle.id}`}>{cycle.name}</Link>
             </h2>
             <p>
-              {cycle.project_id} · {applications.data?.find(item => item.id === cycle.app_id)?.name ?? cycle.app_id} · {environments.data?.find(item => item.id === cycle.environment_id)?.name ?? cycle.environment_id} ·{' '}
+              <ProjectIdentity projectId={cycle.project_id} /> · {applications.data?.find(item => item.id === cycle.app_id)?.name ?? cycle.app_id} · {environments.data?.find(item => item.id === cycle.environment_id)?.name ?? cycle.environment_id} ·{' '}
               {cycle.mode === 'simulation' ? 'Simulation' : 'Live providers'}
             </p>
-            <p>Owner: {actorLabel(cycle.owner, consumer)}</p>
+            <p>Owner: <CycleActorIdentity id={cycle.owner} name={cycle.owner_name} /></p>
+            <CycleProgress progress={cycle.progress} />
             <small>
               Updated {formatTimestamp(cycle.updated_at)} · revision{' '}
               {cycle.revision}
@@ -258,7 +262,6 @@ function VersionDetails({
   version: Version
   onReviewed: () => void
 }) {
-  const consumer = useConsumer()
   const review = useReview(cycle.id)
   const [note, setNote] = useState('')
   const [compare, setCompare] = useState('')
@@ -298,7 +301,7 @@ function VersionDetails({
         </p>
       )}
       <p>
-        Created by {actorLabel(version.created_by, consumer)} ·{' '}
+        Created by <CycleActorIdentity id={version.created_by} /> ·{' '}
         {formatTimestamp(version.created_at)}
       </p>
       {version.kind === 'report' && (
@@ -411,7 +414,7 @@ function VersionDetails({
         <ul>
           {version.reviews.map((r, i) => (
             <li key={i}>
-              {REVIEW_RESULTS[r.action as Review['action']] ?? r.action} · {actorLabel(r.actor, consumer)} · {formatTimestamp(r.at)}
+              {REVIEW_RESULTS[r.action as Review['action']] ?? r.action} · <CycleActorIdentity id={r.actor} /> · {formatTimestamp(r.at)}
               <p>{r.note}</p>
             </li>
           ))}
@@ -532,6 +535,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
     environments.data?.find((e) => e.id === cycle.environment_id)?.name ??
     cycle.environment_id
   return (
+    <CycleActorNames cycleId={cycle.id} revision={cycle.revision}>
     <div className="cycle-workspace">
       <header className="cycle-heading">
         <div>
@@ -547,10 +551,10 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
             </p>
           )}
           <p>
-            {cycle.project_id} · {application} · {environment}
+            <ProjectIdentity projectId={cycle.project_id} editable /> · {application} · {environment}
           </p>
           <p>
-            Owner: {actorLabel(cycle.owner, consumer)} ·{' '}
+            Owner: <CycleActorIdentity id={cycle.owner} name={cycle.owner_name} /> ·{' '}
             <strong>
               {cycle.mode === 'simulation'
                 ? 'Simulation — synthetic evidence'
@@ -591,6 +595,7 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
       {tab === 'overview' && (
         <section className="cycle-panel glass-panel">
           <h2>Engineering deliverables</h2>
+          <CycleProgress progress={cycle.progress} />
           <p>
             {cycle.independent_review
               ? 'Approval requires a distinct authenticated reviewer.'
@@ -734,5 +739,6 @@ function CycleWorkspace({ cycleId }: { cycleId: string }) {
         />
       )}
     </div>
+    </CycleActorNames>
   )
 }

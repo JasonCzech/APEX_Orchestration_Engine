@@ -14,17 +14,28 @@ from apex.auth.identity import ConsumerIdentity, Role
 from apex.domain.cycles import (
     CycleAction,
     CycleCreate,
+    CycleProgress,
     VersionCreate,
     add_version,
     approval_current,
     content_integrity,
     cycle_blockers,
+    cycle_progress,
     transition,
 )
 from apex.domain.deliverables import DELIVERABLE_FIELDS, DeliverableField, content_issues
 from apex.domain.input_limits import RecordId
 from apex.persistence.db import get_session
-from apex.persistence.models import Application, Environment, TestCycle
+from apex.persistence.models import (
+    ApiConsumer,
+    Application,
+    CycleExecutionDispatch,
+    CycleExecutionPreparation,
+    CycleScriptValidation,
+    Environment,
+    TestCycle,
+)
+from apex.services.connection_credentials import sanitize_credential_text_for_output
 from apex.settings import get_settings
 
 
@@ -50,6 +61,13 @@ class CycleSummary(BaseModel):
     independent_review: bool
     created_at: datetime
     updated_at: datetime
+    owner_name: str | None = None
+    progress: CycleProgress | None = None
+
+
+class CycleActors(BaseModel):
+    names: dict[str, str]
+    truncated: bool = False
 
 
 class CycleVersionRead(BaseModel):
@@ -128,8 +146,19 @@ def view(row: TestCycle, actor: ConsumerIdentity | None = None) -> CycleRead:
         **{
             name: getattr(row, name)
             for name in CycleRead.model_fields
-            if name not in {"blockers", "versions", "fields", "followups", "origin_cycle_id"}
+            if name
+            not in {
+                "blockers",
+                "versions",
+                "fields",
+                "followups",
+                "origin_cycle_id",
+                "owner_name",
+                "progress",
+            }
         },
+        owner_name=actor.name if actor and row.owner == actor.consumer_id else None,
+        progress=cycle_progress(row.versions),
         followups=getattr(row, "followups", None) or [],
         origin_cycle_id=getattr(row, "origin_cycle_id", None),
         versions=[version_view(row, v, actor) for v in row.versions],
@@ -154,13 +183,76 @@ async def list_cycles(
     offset: int = Query(0, ge=0, le=10000),
 ):
     rows = await session.execute(
-        select(*(getattr(TestCycle, name) for name in CycleSummary.model_fields))
+        select(
+            *(
+                getattr(TestCycle, name)
+                for name in CycleSummary.model_fields
+                if name != "owner_name"
+            ),
+            ApiConsumer.name.label("owner_name"),
+        )
+        .outerjoin(
+            ApiConsumer, and_(ApiConsumer.id == TestCycle.owner, ApiConsumer.deleted_at.is_(None))
+        )
         .where(visibility(identity))
         .order_by(TestCycle.created_at.desc(), TestCycle.id)
         .limit(limit)
         .offset(offset)
     )
-    return [CycleSummary.model_validate(row) for row in rows.mappings()]
+    page = [dict(row) for row in rows.mappings()]
+    await fill_missing_progress(session, identity, page)
+    return [
+        CycleSummary.model_validate(
+            {**row, "owner_name": sanitize_credential_text_for_output(row["owner_name"])}
+        )
+        for row in page
+    ]
+
+
+async def fill_missing_progress(
+    session: AsyncSession, identity: ConsumerIdentity, page: list[dict[str, Any]]
+) -> None:
+    """Fill legacy rows in batches; ordinary lists never load version history.
+
+    The revision must match both the response row and database CAS. An
+    intervening edit never attaches new progress to old list metadata.
+    """
+    missing = []
+    for row in page:
+        try:
+            row["progress"] = CycleProgress.model_validate(row["progress"]).model_dump()
+        except (ValueError, TypeError):
+            row["progress"] = None
+            missing.append(row)
+    changed = False
+    for offset in range(0, len(missing), 10):
+        batch = {row["id"]: row for row in missing[offset : offset + 10]}
+        histories = await session.execute(
+            select(TestCycle.id, TestCycle.revision, TestCycle.versions).where(
+                TestCycle.id.in_(batch), visibility(identity)
+            )
+        )
+        for history in histories:
+            target = batch[history.id]
+            if target["revision"] != history.revision:
+                continue
+            try:
+                if not isinstance(history.versions, list) or len(history.versions) > 200:
+                    continue
+                progress = cycle_progress(history.versions).model_dump()
+            except (KeyError, TypeError, ValueError, RecursionError):
+                continue
+            saved = await session.scalar(
+                update(TestCycle)
+                .where(TestCycle.id == history.id, TestCycle.revision == history.revision)
+                .values(progress=progress, updated_at=TestCycle.updated_at)
+                .returning(TestCycle.id)
+            )
+            if saved is not None:
+                target["progress"] = progress
+                changed = True
+    if changed:
+        await session.commit()
 
 
 @router.post("", response_model=CycleRead, status_code=201, operation_id="createCycle")
@@ -184,6 +276,7 @@ async def create_cycle(body: CycleCreate, session: Session, identity: Operator):
         revision=1,
         independent_review=get_settings().cycles_independent_review,
         versions=[],
+        progress=cycle_progress([]).model_dump(),
     )
     session.add(row)
     await session.commit()
@@ -194,6 +287,53 @@ async def create_cycle(body: CycleCreate, session: Session, identity: Operator):
 @router.get("/{cycle_id}", response_model=CycleRead, operation_id="getCycle")
 async def read_cycle(cycle_id: RecordId, session: Session, identity: CurrentIdentity):
     return view(await find(session, identity, cycle_id), identity)
+
+
+@router.get("/{cycle_id}/actors", response_model=CycleActors, operation_id="getCycleActors")
+async def read_cycle_actors(cycle_id: RecordId, session: Session, identity: CurrentIdentity):
+    cycle = await find(session, identity, cycle_id)
+    # Scope is established before querying names. Only identities already on
+    # this permitted cycle are exposed; never enumerate the consumer directory.
+    ids = dict.fromkeys([cycle.owner])
+
+    def add_actor(value: Any) -> None:
+        if isinstance(value, str) and value:
+            ids.setdefault(value)
+
+    for version in reversed(cycle.versions):
+        add_actor(version.get("created_by"))
+        for review in reversed(version.get("reviews", [])):
+            add_actor(review.get("actor"))
+    ids.pop("", None)
+    for model in (CycleExecutionPreparation, CycleExecutionDispatch, CycleScriptValidation):
+        # Only bounded identity columns are read, never execution credentials.
+        for actor_id in await session.scalars(
+            select(model.created_by).where(model.cycle_id == cycle.id).distinct().limit(257)
+        ):
+            add_actor(actor_id)
+    for model, column in (
+        (CycleExecutionPreparation, CycleExecutionPreparation.archived_by),
+        (CycleExecutionDispatch, CycleExecutionDispatch.canceled_by),
+    ):
+        for actor_id in await session.scalars(
+            select(column)
+            .where(model.cycle_id == cycle.id, column.is_not(None))
+            .distinct()
+            .limit(257)
+        ):
+            add_actor(actor_id)
+    selected = list(ids)[:256]
+    rows = await session.execute(
+        select(ApiConsumer.id, ApiConsumer.name).where(
+            ApiConsumer.id.in_(selected), ApiConsumer.deleted_at.is_(None)
+        )
+    )
+    names = {
+        row.id: sanitize_credential_text_for_output(row.name) or "Name unavailable" for row in rows
+    }
+    if identity.consumer_id in selected:
+        names.setdefault(identity.consumer_id, identity.name)
+    return CycleActors(names=names, truncated=len(ids) > len(selected))
 
 
 async def save_versions(
@@ -209,7 +349,9 @@ async def save_versions(
     result = await session.execute(
         update(TestCycle)
         .where(TestCycle.id == row.id, TestCycle.revision == revision)
-        .values(versions=versions, revision=revision + 1)
+        .values(
+            versions=versions, progress=cycle_progress(versions).model_dump(), revision=revision + 1
+        )
         .returning(TestCycle.id)
         .execution_options(synchronize_session=False)
     )

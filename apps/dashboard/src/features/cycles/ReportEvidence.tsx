@@ -1,7 +1,6 @@
 import { useTimestampPreference } from '@/theme/preferences'
-import { useOptionalConsumer } from '@/auth/AuthProvider'
 import { formatTimestamp } from '@/utils/time'
-import { actorLabel } from './cycleDisplay'
+import { CycleActorIdentity } from './CycleActorIdentity'
 import { useRef } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import {
@@ -21,7 +20,6 @@ export function ReportEvidence({
   canEdit: boolean
 }) {
   useTimestampPreference()
-  const consumer = useOptionalConsumer()
   const results = useCycleResults(cycle.id, '')
   const [, setParams] = useSearchParams()
   const capture = useFreezeReportEvidence(cycle.id, version.id)
@@ -48,7 +46,7 @@ export function ReportEvidence({
         <>
           <p>
             Captured {formatTimestamp(typeof snapshot.captured_at === 'string' ? snapshot.captured_at : null)} by{' '}
-            {actorLabel(typeof snapshot.captured_by === 'string' ? snapshot.captured_by : undefined, consumer)}. This snapshot is part of this report
+            <CycleActorIdentity id={typeof snapshot.captured_by === 'string' ? snapshot.captured_by : undefined} />. This snapshot is part of this report
             version's checksum and review.
           </p>
           <ul>
@@ -76,7 +74,7 @@ export function ReportEvidence({
                   <p>SLA breaches: {r.sla_breaches.map(String).join('; ')}</p>
                 )}
                 <p>
-                  Bindings remain unverified. This captures history summaries,
+                  {r.bindings_verified === true ? 'Approved bindings verified.' : 'Bindings remain unverified.'} This captures history summaries,
                   not raw provider artifacts.
                 </p>
               </li>

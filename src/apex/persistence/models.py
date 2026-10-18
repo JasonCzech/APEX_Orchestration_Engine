@@ -243,6 +243,17 @@ class PromptVersion(Base):
 # ── Application / environment catalog (M2) ─────────────────────────────────
 
 
+class ProjectLabel(Base):
+    """Administrator-maintained display metadata; never grants project access."""
+
+    __tablename__ = "project_labels"
+    project_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Application(Base):
     __tablename__ = "applications"
     __table_args__ = (
@@ -912,6 +923,7 @@ class TestCycle(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1)
     independent_review: Mapped[bool] = mapped_column(Boolean, default=False)
     versions: Mapped[list[dict[str, Any]]] = mapped_column(JsonColumn, default=list)
+    progress: Mapped[dict[str, Any] | None] = mapped_column(JsonColumn)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -934,6 +946,36 @@ class CycleExecutionPreparation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archived_by: Mapped[str | None] = mapped_column(String(255))
+
+
+class CycleExecutionDispatch(Base):
+    """One durable launch intent per preparation; nonterminal intents own the target."""
+
+    __tablename__ = "cycle_execution_dispatches"
+    __table_args__ = (
+        UniqueConstraint("preparation_id"),
+        UniqueConstraint("cycle_id", "request_key"),
+        UniqueConstraint("active_environment_id"),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    cycle_id: Mapped[str] = mapped_column(
+        ForeignKey("test_cycles.id", ondelete="RESTRICT"), index=True
+    )
+    preparation_id: Mapped[str] = mapped_column(
+        ForeignKey("cycle_execution_preparations.id", ondelete="RESTRICT")
+    )
+    request_key: Mapped[str] = mapped_column(String(32))
+    active_environment_id: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="reserved")
+    pipeline_config: Mapped[dict[str, Any]] = mapped_column(JsonColumn)
+    thread_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(String(255))
+    canceled_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class CycleRunLink(Base):

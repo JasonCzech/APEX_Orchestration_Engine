@@ -279,6 +279,17 @@ class AtomicThreads:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
 
+    async def get(self, thread_id: str) -> dict[str, Any]:
+        if thread_id not in self.rows:
+            raise NotFoundError(
+                "missing",
+                response=httpx.Response(
+                    404, request=httpx.Request("GET", "http://runtime/threads")
+                ),
+                body=None,
+            )
+        return self.rows[thread_id]
+
     async def create(
         self,
         *,
@@ -1284,3 +1295,74 @@ async def test_create_pipeline_rejects_direct_target_url_before_thread_create() 
     assert exc.value.status_code == 422
     assert "cannot be supplied directly" in str(exc.value.detail)
     assert client.threads.metadata is None
+
+
+def test_http_pipeline_launch_cannot_forge_cycle_dispatch_binding() -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from apex.app.dependencies import get_current_identity
+    from apex.persistence.db import get_session
+
+    app = FastAPI()
+    app.include_router(pipelines.router, prefix="/v1")
+    app.dependency_overrides[get_current_identity] = lambda: _identity(["project"])
+    app.dependency_overrides[get_session] = lambda: object()
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/pipelines",
+            json={
+                "title": "Forged cycle",
+                "project_id": "project",
+                "configurable": {"cycle_dispatch_id": "forged"},
+            },
+        )
+    assert response.status_code == 422
+    assert "server-owned" in response.json()["detail"]
+
+
+async def test_cycle_reconciliation_adopts_existing_thread_without_current_catalog_create():
+    client = AtomicClient()
+    service = PipelineReadService(client)
+    kwargs: dict[str, Any] = {
+        "title": "Exact Cycle execution",
+        "project_id": "project",
+        "app_id": "app",
+        "configurable": {"cycle_dispatch_id": "dispatch"},
+        "idempotency_key": "cycle-dispatch:dispatch",
+        "principal_id": "original-operator",
+    }
+    first = await service.start_run(**kwargs)
+
+    async def denied_create(**_kwargs):
+        raise AssertionError("existing thread must not be recreated through changed catalog")
+
+    client.threads.create = denied_create
+    replay = await service.start_run(**kwargs, reuse_existing_thread=True)
+    assert replay == first
+    assert client.runs.successful_creates == 1
+    client.threads.rows[first["thread_id"]]["metadata"]["launch_idempotency_fingerprint"] = (
+        "different"
+    )
+    with pytest.raises(LaunchIdempotencyConflictError):
+        await service.start_run(**kwargs, reuse_existing_thread=True)
+
+
+@pytest.mark.parametrize("response", [None, [], {}, {"thread_id": "other", "metadata": {}}])
+async def test_cycle_reconcile_malformed_existing_thread_never_falls_back_to_create(response):
+    from unittest.mock import AsyncMock
+
+    client = AtomicClient()
+    client.threads.get = AsyncMock(return_value=response)
+    client.threads.create = AsyncMock(
+        side_effect=AssertionError("must not create on malformed read")
+    )
+    with pytest.raises((LaunchProviderError, LaunchIdempotencyConflictError)):
+        await PipelineReadService(client).start_run(
+            title="Cycle",
+            idempotency_key="intent",
+            principal_id="operator",
+            reuse_existing_thread=True,
+        )
+    client.threads.create.assert_not_awaited()
+    assert client.runs.successful_creates == 0

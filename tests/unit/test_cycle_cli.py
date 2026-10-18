@@ -8,6 +8,73 @@ from apex.cli import main
 
 
 @respx.mock
+def test_dispatch_preserves_operation_identity_and_reports_uncertainty(monkeypatch, capsys):
+    monkeypatch.setenv("APEX_API_KEY", "cli-test-key")
+    monkeypatch.setenv("APEX_URL", "https://apex.example")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "apex",
+            "dispatch-execution",
+            "cycle",
+            "prep",
+            "--revision",
+            "7",
+            "--idempotency-key",
+            "original-key",
+        ],
+    )
+    route = respx.post("https://apex.example/v1/cycles/cycle/executions/prep/dispatch").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "revision": 8,
+                "checks": [],
+                "attempt": {
+                    "id": "dispatch",
+                    "status": "uncertain",
+                    "request_key": "original-key",
+                    "detail": "Launch receipt unconfirmed",
+                },
+            },
+        )
+    )
+    assert main() == 0
+    assert route.call_count == 1
+    assert json.loads(route.calls.last.request.content) == {
+        "expected_revision": 7,
+        "idempotency_key": "original-key",
+    }
+    output = capsys.readouterr().out
+    assert "uncertain" in output and "original-key" in output
+    assert "no test launched" not in output
+
+
+@respx.mock
+def test_dispatch_inspection_is_read_only_and_keeps_blockers(monkeypatch, capsys):
+    monkeypatch.setenv("APEX_API_KEY", "cli-test-key")
+    monkeypatch.setenv("APEX_URL", "https://apex.example")
+    monkeypatch.setattr(sys, "argv", ["apex", "execution-dispatch", "cycle", "prep"])
+    route = respx.get("https://apex.example/v1/cycles/cycle/executions/prep/dispatch").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "revision": 7,
+                "checks": [
+                    {"status": "blocked", "label": "Source", "detail": "Review the changed source"}
+                ],
+                "attempt": None,
+            },
+        )
+    )
+    assert main() == 0
+    assert route.call_count == 1
+    output = capsys.readouterr().out
+    assert "No execution dispatched" in output and "Review the changed source" in output
+
+
+@respx.mock
 def test_review_sends_exact_version_and_revision(monkeypatch, capsys):
     monkeypatch.setenv("APEX_API_KEY", "cli-test-key")
     monkeypatch.setenv("APEX_URL", "https://apex.example")
@@ -250,3 +317,34 @@ def test_sources_cli_preserves_page_revision(monkeypatch, capsys):
         "revision": "7",
     }
     assert json.loads(capsys.readouterr().out) == {"document": None}
+
+
+@respx.mock
+def test_cancel_dispatch_requires_exact_intent_and_preserves_receipt(monkeypatch, capsys):
+    monkeypatch.setenv("APEX_API_KEY", "cli-test-key")
+    monkeypatch.setenv("APEX_URL", "https://apex.example")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["apex", "cancel-dispatch", "cycle", "prep", "--dispatch-id", "original-intent"],
+    )
+    route = respx.post("https://apex.example/v1/cycles/cycle/executions/prep/dispatch/cancel").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "revision": 7,
+                "checks": [],
+                "attempt": {
+                    "id": "original-intent",
+                    "status": "aborted",
+                    "request_key": "original-key",
+                    "detail": "Unsubmitted launch intent canceled; no execution was submitted",
+                },
+            },
+        )
+    )
+    assert main() == 0
+    assert route.call_count == 1
+    assert json.loads(route.calls.last.request.content) == {"dispatch_id": "original-intent"}
+    output = capsys.readouterr().out
+    assert "original-intent" in output and "no execution was submitted" in output

@@ -13,6 +13,85 @@ from apex.domain.diagnostics import contains_credential_material
 from apex.domain.input_limits import NoNulStr, ScopeId, validate_json_object
 
 Kind = Literal["scope", "test_plan", "readiness", "script", "report", "postmortem"]
+KINDS: tuple[Kind, ...] = ("scope", "test_plan", "readiness", "script", "report", "postmortem")
+
+
+class DeliverableProgress(BaseModel):
+    kind: Kind
+    version_id: NoNulStr | None = Field(default=None, min_length=1, max_length=32)
+    status: Literal["not_started", "draft", "in_review", "approved", "stale", "archived"]
+
+
+class CycleProgress(BaseModel):
+    status: Literal["not_started", "draft", "in_review", "approved", "stale", "archived"]
+    approved: int = Field(ge=0, le=6)
+    total: int = Field(default=6, ge=6, le=6)
+    deliverables: list[DeliverableProgress] = Field(min_length=6, max_length=6)
+
+    @model_validator(mode="after")
+    def consistent(self) -> "CycleProgress":
+        if tuple(item.kind for item in self.deliverables) != KINDS:
+            raise ValueError("progress must include each deliverable kind exactly once in order")
+        if any(
+            (item.version_id is None) != (item.status == "not_started")
+            for item in self.deliverables
+        ):
+            raise ValueError("recorded deliverable progress requires a version identity")
+        if self.approved != sum(item.status == "approved" for item in self.deliverables):
+            raise ValueError("approval count must match the recorded deliverable states")
+        if self.status != _progress_status({item.status for item in self.deliverables}):
+            raise ValueError("overall progress must match the recorded deliverable states")
+        return self
+
+
+def _progress_status(states: set[str]):
+    if states == {"not_started"}:
+        return "not_started"
+    if states <= {"not_started", "archived"}:
+        return "archived"
+    if "stale" in states:
+        return "stale"
+    if "in_review" in states:
+        return "in_review"
+    if states == {"approved"}:
+        return "approved"
+    return "draft"
+
+
+def cycle_progress(versions: list[dict[str, Any]]) -> CycleProgress:
+    """Bounded, version-qualified projection, persisted in the same CAS as history.
+
+    The last recorded version of each kind is the workspace's current version.
+    Archiving it never resurrects an older approval. Stale approvals take priority
+    over pending reviews, then drafts; missing/archived kinds prevent completion.
+    This describes deliverables only, never execution success or release acceptance.
+    """
+    if any(
+        not isinstance(version, dict) or version.get("kind") not in KINDS for version in versions
+    ):
+        raise ValueError("unknown deliverable history")
+    latest = {version["kind"]: version for version in versions}
+    items = []
+    for kind in KINDS:
+        version = latest.get(kind)
+        if version is None:
+            status = "not_started"
+        elif version.get("archived"):
+            status = "archived"
+        elif version["status"] == "approved":
+            status = "approved" if approval_current(versions, version["id"]) else "stale"
+        else:
+            status = version["status"]
+        items.append(
+            DeliverableProgress(
+                kind=kind, version_id=version["id"] if version else None, status=status
+            )
+        )
+    return CycleProgress(
+        status=_progress_status({item.status for item in items}),
+        approved=sum(item.status == "approved" for item in items),
+        deliverables=items,
+    )
 
 
 class CycleCreate(BaseModel):

@@ -58,6 +58,7 @@ from apex.services.langgraph_client import loopback_client
 from apex.services.pipeline_read import (
     MAX_PIPELINE_QUERY_CHARS,
     ActiveRunSnapshotUnstableError,
+    CycleRerunConflictError,
     GateSupersededError,
     InvalidGateActionError,
     LaunchIdempotencyConflictError,
@@ -218,6 +219,7 @@ class PipelineSummary(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     pending_gate: PendingGate | None = None
+    rerun_blocked_reason: Literal["cycle_preparation_required"] | None = None
 
 
 class PipelineListResponse(BaseModel):
@@ -425,6 +427,10 @@ async def create_pipeline_run(
     (scoped per consumer) and merged with any inline `context_packets`.
     """
     run_configurable = dict(body.configurable or {})
+    if "cycle_dispatch_id" in run_configurable:
+        raise HTTPException(
+            422, "Cycle dispatch bindings are server-owned; use the cycle dispatch endpoint"
+        )
     configured_project = run_configurable.get("project_id")
     configured_app = run_configurable.get("app_id")
     if configured_project is not None and not isinstance(configured_project, str):
@@ -698,6 +704,12 @@ async def rerun_pipeline(
         )
     except NotFoundError:
         failure = HTTPException(status_code=404, detail="pipeline thread not found")
+    except CycleRerunConflictError:
+        return problem(
+            409,
+            "rerun_configuration_conflict",
+            detail="Cycle executions cannot be rerun; prepare a new approved cycle binding",
+        )
     except RerunConfigurationConflictError:
         return problem(
             409,

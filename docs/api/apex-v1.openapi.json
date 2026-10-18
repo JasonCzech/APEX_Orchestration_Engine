@@ -847,6 +847,23 @@
         "title": "AuditRetentionOut",
         "type": "object"
       },
+      "CancelCycleDispatch": {
+        "additionalProperties": false,
+        "properties": {
+          "dispatch_id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Dispatch Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dispatch_id"
+        ],
+        "title": "CancelCycleDispatch",
+        "type": "object"
+      },
       "CaptureSource": {
         "additionalProperties": false,
         "properties": {
@@ -1986,6 +2003,27 @@
         "title": "CycleAction",
         "type": "object"
       },
+      "CycleActors": {
+        "properties": {
+          "names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "object"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "CycleActors",
+        "type": "object"
+      },
       "CycleCreate": {
         "additionalProperties": false,
         "properties": {
@@ -2034,6 +2072,172 @@
           "environment_id"
         ],
         "title": "CycleCreate",
+        "type": "object"
+      },
+      "CycleDispatchRead": {
+        "properties": {
+          "canceled_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canceled By"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "engine_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine Run Id"
+          },
+          "external_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Run Id"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "preparation_id": {
+            "title": "Preparation Id",
+            "type": "string"
+          },
+          "request_key": {
+            "title": "Request Key",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "status": {
+            "enum": [
+              "reserved",
+              "submitted",
+              "uncertain",
+              "running",
+              "cleanup_pending",
+              "completed",
+              "failed",
+              "aborted"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "preparation_id",
+          "request_key",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at",
+          "thread_id",
+          "run_id",
+          "engine_run_id",
+          "external_run_id",
+          "detail"
+        ],
+        "title": "CycleDispatchRead",
+        "type": "object"
+      },
+      "CycleDispatchWorkspace": {
+        "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CycleDispatchRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "can_cancel": {
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "can_dispatch": {
+            "title": "Can Dispatch",
+            "type": "boolean"
+          },
+          "can_resume": {
+            "title": "Can Resume",
+            "type": "boolean"
+          },
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/PreflightCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "checks",
+          "can_dispatch",
+          "can_resume",
+          "can_cancel",
+          "attempt"
+        ],
+        "title": "CycleDispatchWorkspace",
         "type": "object"
       },
       "CycleMetric": {
@@ -2112,6 +2316,51 @@
           "preference"
         ],
         "title": "CycleMetric",
+        "type": "object"
+      },
+      "CycleProgress": {
+        "properties": {
+          "approved": {
+            "maximum": 6.0,
+            "minimum": 0.0,
+            "title": "Approved",
+            "type": "integer"
+          },
+          "deliverables": {
+            "items": {
+              "$ref": "#/components/schemas/DeliverableProgress"
+            },
+            "maxItems": 6,
+            "minItems": 6,
+            "title": "Deliverables",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "not_started",
+              "draft",
+              "in_review",
+              "approved",
+              "stale",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "total": {
+            "default": 6,
+            "maximum": 6.0,
+            "minimum": 6.0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status",
+          "approved",
+          "deliverables"
+        ],
+        "title": "CycleProgress",
         "type": "object"
       },
       "CycleRead": {
@@ -2331,7 +2580,7 @@
                 },
                 {
                   "control": "multiline",
-                  "help": "Record each source title, provider, revision, retrieval time and readability. Retrieval connectors are not available in this editor yet.",
+                  "help": "Record each source title, provider, revision, retrieval time and readability. For live cycles, use Captured source revisions on a saved scope version to retrieve exact page revisions from a configured Confluence Cloud connection. Record other sources manually.",
                   "integer": false,
                   "key": "source_manifest",
                   "label": "Frozen source references",
@@ -2604,6 +2853,27 @@
             "title": "Owner",
             "type": "string"
           },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Name"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CycleProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "project_id": {
             "title": "Project Id",
             "type": "string"
@@ -2650,7 +2920,6 @@
             "type": "integer"
           },
           "bindings_verified": {
-            "const": false,
             "default": false,
             "title": "Bindings Verified",
             "type": "boolean"
@@ -2839,6 +3108,27 @@
           "owner": {
             "title": "Owner",
             "type": "string"
+          },
+          "owner_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Name"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CycleProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "project_id": {
             "title": "Project Id",
@@ -3067,6 +3357,77 @@
           "label"
         ],
         "title": "DeliverableField",
+        "type": "object"
+      },
+      "DeliverableProgress": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "scope",
+              "test_plan",
+              "readiness",
+              "script",
+              "report",
+              "postmortem"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "not_started",
+              "draft",
+              "in_review",
+              "approved",
+              "stale",
+              "archived"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version_id": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[^\\x00]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version Id"
+          }
+        },
+        "required": [
+          "kind",
+          "status"
+        ],
+        "title": "DeliverableProgress",
+        "type": "object"
+      },
+      "DispatchCycleExecution": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "title": "DispatchCycleExecution",
         "type": "object"
       },
       "DocHit": {
@@ -6015,6 +6376,18 @@
             ],
             "title": "Project Id"
           },
+          "rerun_blocked_reason": {
+            "anyOf": [
+              {
+                "const": "cycle_preparation_required",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerun Blocked Reason"
+          },
           "thread_id": {
             "title": "Thread Id",
             "type": "string"
@@ -6226,6 +6599,18 @@
             ],
             "title": "Project Id"
           },
+          "rerun_blocked_reason": {
+            "anyOf": [
+              {
+                "const": "cycle_preparation_required",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerun Blocked Reason"
+          },
           "thread_id": {
             "title": "Thread Id",
             "type": "string"
@@ -6370,10 +6755,15 @@
             "type": "string"
           },
           "launch_available": {
-            "const": false,
-            "default": false,
-            "title": "Launch Available",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Launch Available"
           },
           "snapshot": {
             "$ref": "#/components/schemas/ExecutionSnapshot"
@@ -6489,6 +6879,55 @@
           "detail"
         ],
         "title": "ProbeResult",
+        "type": "object"
+      },
+      "ProjectLabelOut": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "name",
+          "updated_at"
+        ],
+        "title": "ProjectLabelOut",
+        "type": "object"
+      },
+      "ProjectLabelWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "pattern": "^[^\\x00]*$",
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "name"
+        ],
+        "title": "ProjectLabelWrite",
         "type": "object"
       },
       "PromptDetail": {
@@ -7493,7 +7932,6 @@
             "type": "integer"
           },
           "bindings_verified": {
-            "const": false,
             "default": false,
             "title": "Bindings Verified",
             "type": "boolean"
@@ -12715,6 +13153,161 @@
         ]
       }
     },
+    "/v1/catalog/projects": {
+      "delete": {
+        "operationId": "deleteProjectLabel",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Project",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Project Label",
+        "tags": [
+          "catalog"
+        ]
+      },
+      "get": {
+        "operationId": "listProjectLabels",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "pattern": "^[^\\x00]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 10000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectLabelOut"
+                  },
+                  "title": "Response Listprojectlabels",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Project Labels",
+        "tags": [
+          "catalog"
+        ]
+      },
+      "put": {
+        "operationId": "setProjectLabel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectLabelWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectLabelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Project Label",
+        "tags": [
+          "catalog"
+        ]
+      }
+    },
     "/v1/context/evidence": {
       "get": {
         "operationId": "listContextEvidence",
@@ -13059,6 +13652,51 @@
         ]
       }
     },
+    "/v1/cycles/{cycle_id}/actors": {
+      "get": {
+        "operationId": "getCycleActors",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleActors"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Cycle Actors",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
     "/v1/cycles/{cycle_id}/executions": {
       "get": {
         "operationId": "getCycleExecutions",
@@ -13220,6 +13858,195 @@
           }
         },
         "summary": "Archive Preparation",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/dispatch": {
+      "get": {
+        "operationId": "getCycleExecutionDispatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleDispatchWorkspace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Dispatch",
+        "tags": [
+          "cycles"
+        ]
+      },
+      "post": {
+        "operationId": "dispatchCycleExecution",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchCycleExecution"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleDispatchWorkspace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Dispatch",
+        "tags": [
+          "cycles"
+        ]
+      }
+    },
+    "/v1/cycles/{cycle_id}/executions/{preparation_id}/dispatch/cancel": {
+      "post": {
+        "operationId": "cancelCycleExecutionDispatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cycle_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Cycle Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "preparation_id",
+            "required": true,
+            "schema": {
+              "maxLength": 32,
+              "minLength": 1,
+              "pattern": "^[^\\x00]*$",
+              "title": "Preparation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelCycleDispatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CycleDispatchWorkspace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Dispatch",
         "tags": [
           "cycles"
         ]

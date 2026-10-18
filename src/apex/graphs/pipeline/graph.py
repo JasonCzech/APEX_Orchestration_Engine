@@ -185,6 +185,15 @@ def plan_resolver(state: PipelineState, config: RunnableConfig) -> JsonDict:
 
     for phase in selected:
         for prereq in PHASE_PREREQUISITES[phase]:
+            # A cycle supplies a separately reviewed, artifact-backed script.
+            # engine_reserve validates its durable binding before provider IO;
+            # do not fabricate a succeeded script-generation phase here.
+            if (
+                cfg.cycle_dispatch_id
+                and phase is Phase.EXECUTION
+                and prereq is Phase.SCRIPT_SCENARIO
+            ):
+                continue
             if prereq in selected_set:
                 continue
             prereq_entry = existing.get(prereq.value)

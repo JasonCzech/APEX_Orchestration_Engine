@@ -12,7 +12,7 @@ from apex.domain.cycle_handoff import (
     reuse_drafts,
     write_followup,
 )
-from apex.domain.cycles import version_digest
+from apex.domain.cycles import cycle_progress, version_digest
 from apex.domain.input_limits import RecordId
 from apex.persistence.models import Application, Environment, TestCycle
 from apex.routers.cycles import CycleRead, Operator, Session, enabled, find, view
@@ -109,6 +109,7 @@ async def next_cycle(
         independent_review=parent.independent_review or get_settings().cycles_independent_review,
         revision=1,
         versions=versions,
+        progress=cycle_progress(versions).model_dump(),
         followups=actions,
         origin_cycle_id=parent.id,
         origin_request_key=body.idempotency_key,

@@ -13,6 +13,14 @@ Deliberate exceptions to the conventions are commented inline.
 from typing import Any
 
 MIN_ROLE: dict[str, str] = {
+    "getCycleActors": "viewer",
+    "getCycleExecutionDispatch": "viewer",
+    "dispatchCycleExecution": "operator",
+    "cancelCycleExecutionDispatch": "operator",
+    "listProjectLabels": "viewer",
+    # Project-wide display names require administrator scope; app-only admins cannot rename.
+    "setProjectLabel": "admin",
+    "deleteProjectLabel": "admin",
     "getCycleExecutions": "viewer",
     "getCycleResults": "viewer",
     "getCycleSources": "viewer",
@@ -169,6 +177,13 @@ MIN_ROLE: dict[str, str] = {
 }
 
 SCOPE: dict[str, str] = {
+    "getCycleActors": "project_app",
+    "getCycleExecutionDispatch": "project_app",
+    "dispatchCycleExecution": "project_app",
+    "cancelCycleExecutionDispatch": "project_app",
+    "listProjectLabels": "project",
+    "setProjectLabel": "admin_scope",
+    "deleteProjectLabel": "admin_scope",
     "getCycleExecutions": "project_app",
     "getCycleResults": "project_app",
     "getCycleSources": "project_app",
@@ -332,6 +347,9 @@ PATH_PARAM_OVERRIDES: dict[str, dict[str, str]] = {
 # authz decision is perfectly fine evidence; these overrides exist only where {}
 # would not even be the right JSON *shape*).
 BODY_OVERRIDES: dict[str, Any] = {
+    "dispatchCycleExecution": {"expected_revision": 1, "idempotency_key": "matrix-dispatch"},
+    "cancelCycleExecutionDispatch": {"dispatch_id": "x" * 32},
+    "setProjectLabel": {"project_id": "proj-matrix", "name": "Matrix project"},
     # putHostMappings replaces the full mapping list — the body is a JSON array.
     "putHostMappings": [],
     "resumeGate": {"action": "approve"},
@@ -358,6 +376,9 @@ OUT_OF_SCOPE_PROJECT = "proj-matrix-other"
 # the request itself. Resource-owner checks that require loading a row still live
 # in router-specific tests and return 404 to avoid existence leaks.
 SCOPE_DENIAL_CASES: dict[str, dict[str, Any]] = {
+    "listProjectLabels": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
+    "setProjectLabel": {"json": {"project_id": OUT_OF_SCOPE_PROJECT, "name": "Forbidden"}},
+    "deleteProjectLabel": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "getAgentAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "getUsageAnalytics": {"params": {"project": OUT_OF_SCOPE_PROJECT}},
     "listApplications": {"params": {"project": OUT_OF_SCOPE_PROJECT}},

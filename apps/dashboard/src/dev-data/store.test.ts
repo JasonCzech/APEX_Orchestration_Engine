@@ -16,6 +16,24 @@ async function jsonOf<T>(response: Response | null): Promise<T> {
 describe('dev-data store', () => {
   beforeEach(() => localStorage.clear())
 
+  it('persists authoritative demo project names and removal without changing project resources', async () => {
+    let store = createDevDataStore()
+    const endpoint = 'http://localhost/v1/catalog/projects'
+    const labels = async () => jsonOf<Array<{ project_id: string; name: string }>>(await store.handleApexRequest(new Request(endpoint)))
+    const initial = await labels()
+    expect(initial).toEqual([expect.objectContaining({ project_id: 'telecom-modernization', name: 'Telecom modernization' })])
+    const write = (project: string, name: string) => store.handleApexRequest(new Request(endpoint, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project_id: project, name }) }))
+    expect((await write('other-project', 'Unauthorized'))?.status).toBe(403)
+    expect((await write('telecom-modernization', 'Renamed project'))?.status).toBe(200)
+    store = createDevDataStore()
+    expect((await labels())[0]?.name).toBe('Renamed project')
+    expect((await store.handleApexRequest(new Request(`${endpoint}?project=telecom-modernization`, { method: 'DELETE' })))?.status).toBe(204)
+    store = createDevDataStore()
+    expect(await labels()).toEqual([])
+    const apps = await jsonOf<Array<{ project_id: string }>>(await store.handleApexRequest(new Request('http://localhost/v1/catalog/applications')))
+    expect(apps.some(app => app.project_id === 'telecom-modernization')).toBe(true)
+  })
+
   it('derives every demo summary from its corresponding phase state', async () => {
     const store = createDevDataStore()
     const list = await jsonOf<{ items: Array<import('@/api/hooks/usePipelines').PipelineSummary> }>(

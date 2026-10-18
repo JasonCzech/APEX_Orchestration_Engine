@@ -1,3 +1,4 @@
+import { CycleActorIdentity } from './CycleActorIdentity'
 import { useTimestampPreference } from '@/theme/preferences'
 import { Skeleton } from '@/components/ux/Skeleton'
 import { formatTimestamp } from '@/utils/time'
@@ -102,7 +103,7 @@ export function ProviderValidation({
                   {v.finished_at
                     ? `Finished ${formatTimestamp(v.finished_at)}`
                     : `Started ${formatTimestamp(v.created_at)}`}{' '}
-                  · {v.created_by}
+                  · <CycleActorIdentity id={v.created_by} />
                 </p>
                 {v.issues.map((issue, i) => (
                   <p key={`issue-${i}`}>{issue}</p>

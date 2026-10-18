@@ -21,6 +21,7 @@ from apex.persistence.models import (
     Environment,
     EnvironmentHost,
     EnvironmentSnapshot,
+    ProjectLabel,
 )
 from apex.persistence.repositories._conflicts import (
     bounded_driver_message,
@@ -146,6 +147,44 @@ def _build_hosts(hosts: list[dict[str, Any]]) -> list[EnvironmentHost]:
 class CatalogRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+
+    async def list_project_labels(
+        self,
+        *,
+        project: str | None = None,
+        visible_projects: Sequence[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ProjectLabel]:
+        statement = select(ProjectLabel).order_by(ProjectLabel.project_id)
+        if project is not None:
+            statement = statement.where(ProjectLabel.project_id == project)
+        if visible_projects is not None:
+            statement = statement.where(ProjectLabel.project_id.in_(visible_projects))
+        return list((await self._session.scalars(statement.limit(limit).offset(offset))).all())
+
+    async def put_project_label(self, project_id: str, name: str) -> ProjectLabel:
+        _bounded_text(project_id, label="project ID", max_chars=MAX_SCOPE_ID_CHARS)
+        _bounded_text(name, label="project name", max_chars=255)
+        row = await self._session.get(ProjectLabel, project_id)
+        if row is None:
+            row = ProjectLabel(project_id=project_id, name=name)
+            self._session.add(row)
+        else:
+            row.name = name
+        try:
+            await self._session.commit()
+        except IntegrityError:
+            await self._session.rollback()
+            raise DuplicateNameError("Project metadata changed; refresh and retry") from None
+        await self._session.refresh(row)
+        return row
+
+    async def delete_project_label(self, project_id: str) -> None:
+        row = await self._session.get(ProjectLabel, project_id)
+        if row is not None:
+            await self._session.delete(row)
+            await self._session.commit()
 
     # ── applications ────────────────────────────────────────────────────────
 

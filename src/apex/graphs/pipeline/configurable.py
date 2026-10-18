@@ -31,6 +31,46 @@ from apex.services.run_validation import (
 MAX_POLL_CYCLES = 50_000
 MAX_RECOMMENDED_RECURSION_LIMIT = MAX_POLL_CYCLES * 2 + 64
 
+# Exact durable schema before Cycle dispatch bindings were introduced. Keep this
+# historical shape fixed: future additions require their own deliberate migration.
+_PRE_CYCLE_DISPATCH_FIELDS = frozenset(
+    {
+        "assistant_id",
+        "project_id",
+        "app_id",
+        "environment_id",
+        "environment_target",
+        "environment_target_version",
+        "engine",
+        "connections",
+        "phases",
+        "start_phase",
+        "stop_after",
+        "gates",
+        "prompt_overrides",
+        "pre_execution_context",
+        "model_by_phase",
+        "load_test",
+        "agent_backend",
+        "limits",
+    }
+)
+
+
+def normalize_durable_pipeline_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Add only the absent Cycle binding to the exact previous snapshot schema.
+
+    Callers still validate bounded JSON, canonical values and complete fields.
+    Never mutate a historical checkpoint or infer a binding for an older run.
+    """
+    if (
+        type(snapshot) is dict
+        and all(type(key) is str for key in snapshot)
+        and set(snapshot) == _PRE_CYCLE_DISPATCH_FIELDS
+    ):
+        return {**snapshot, "cycle_dispatch_id": None}
+    return snapshot
+
 
 class GateMode(StrEnum):
     GATED = "gated"
@@ -88,6 +128,8 @@ class PipelineConfigurable(BaseModel):
     # It is checkpointed so a gated run cannot drift if the catalog changes later.
     environment_target: NoNulStr | None = Field(default=None, max_length=2_048)
     environment_target_version: int | None = None
+    # Server-owned pointer to an immutable, scoped Cycles dispatch reservation.
+    cycle_dispatch_id: NoNulStr | None = Field(default=None, min_length=1, max_length=32)
     engine: NoNulStr = Field(default="sim", max_length=64)
     connections: dict[str, NoNulStr] = Field(default_factory=dict, max_length=16)
 
@@ -298,6 +340,7 @@ class PipelineConfigurable(BaseModel):
             raise ValueError(
                 "checkpointed pipeline configuration must not contain credential material"
             )
+        snapshot = normalize_durable_pipeline_snapshot(snapshot)
         if set(snapshot) != set(cls.model_fields):
             raise ValueError("checkpointed pipeline configuration is incomplete")
         durable: PipelineConfigurable | None = None

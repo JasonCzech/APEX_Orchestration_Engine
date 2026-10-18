@@ -1,0 +1,27 @@
+{
+  "assistant_id": "pipeline",
+  "project_id": "project-a",
+  "app_id": "app-a",
+  "environment_id": null,
+  "environment_target": null,
+  "environment_target_version": null,
+  "engine": "sim",
+  "connections": {},
+  "phases": [
+    "story_analysis"
+  ],
+  "start_phase": null,
+  "stop_after": null,
+  "gates": {},
+  "prompt_overrides": {},
+  "pre_execution_context": [],
+  "model_by_phase": {},
+  "load_test": {},
+  "agent_backend": "stub",
+  "limits": {
+    "max_revise_loops": 3,
+    "max_dialogue_turns": 20,
+    "poll_interval_s": 5.0,
+    "poll_timeout_s": 14400.0
+  }
+}

@@ -60,7 +60,7 @@ const cycle: Cycle = {
   ],
 }
 
-function mount(canEdit = true) {
+function mount(canEdit = true, version = cycle.versions[0]!) {
   render(
     <MemoryRouter>
       <QueryClientProvider
@@ -70,7 +70,7 @@ function mount(canEdit = true) {
       >
         <ReportEvidence
           cycle={cycle}
-          version={cycle.versions[0]!}
+          version={version}
           canEdit={canEdit}
         />
       </QueryClientProvider>
@@ -78,6 +78,20 @@ function mount(canEdit = true) {
   )
 }
 describe('Report evidence capture', () => {
+  it.each([true, false, undefined])('preserves recorded binding verification (%s) without certifying raw artifacts', async (verified) => {
+    server.use(http.get('*/v1/cycles/cycle/results', () => HttpResponse.json({ results: [] })))
+    const version = {
+      ...cycle.versions[0]!,
+      content: { _execution_evidence: { captured_at: '2026-10-17T12:00:00Z', results: [
+        { id: 'run', engine: 'apex-load', attempt: 1, execution_status: 'completed', ...(verified === undefined ? {} : { bindings_verified: verified }) },
+      ] } },
+    }
+    mount(false, version)
+    const evidence = screen.getByRole('region', { name: 'Frozen report evidence' })
+    expect(evidence).toHaveTextContent(verified ? 'Approved bindings verified.' : 'Bindings remain unverified.')
+    expect(evidence).not.toHaveTextContent(verified ? 'Bindings remain unverified.' : 'Approved bindings verified.')
+    expect(evidence).toHaveTextContent('This captures history summaries, not raw provider artifacts.')
+  })
   it('submits exact preview fingerprints and links the new draft', async () => {
     const user = userEvent.setup()
     let submitted: unknown
@@ -145,7 +159,8 @@ describe('Report evidence capture', () => {
     mount(false)
     expect(screen.getByText(/test outcome Not available/)).toBeInTheDocument()
     expect(screen.getByRole('definition')).toHaveTextContent('0')
-    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button')).toEqual([screen.getByRole('button', { name: 'Copy Actor ID' })])
+    expect(screen.queryByRole('button', { name: 'Capture evidence as new report draft' })).not.toBeInTheDocument()
     cycle.versions[0]!.content = original
   })
 })

@@ -1,4 +1,3 @@
-import type { ConsumerInfo } from '@/api/apexClient'
 import type { Cycle, Review } from './api'
 
 export const REVIEW_LABELS: Record<Review['action'], string> = {
@@ -17,15 +16,10 @@ export const REVIEW_RESULTS: Record<Review['action'], string> = {
   archive: 'Version archived', restore: 'Version restored',
 }
 
-export function actorLabel(id: string | undefined, consumer: ConsumerInfo | null | undefined): string {
-  if (!id) return 'Identity not recorded'
-  return consumer?.id === id ? consumer.name : id
-}
-
 export function cycleNextAction(cycle: Cycle): string {
   for (const [kind, label] of [['scope', 'scope'], ['test_plan', 'test plan'], ['readiness', 'readiness'], ['script', 'script']] as const) {
-    const latest = cycle.versions.filter((version) => version.kind === kind && !version.archived).at(-1)
-    if (!latest) return `Create a ${label} draft`
+    const latest = cycle.versions.filter((version) => version.kind === kind).at(-1)
+    if (!latest || latest.archived) return `Create a ${label} draft`
     if (latest.status === 'draft') return `Complete and submit the ${label} for review`
     if (latest.status === 'in_review') return `Review the ${label} version`
     if (!latest.approval_current) return `Update stale ${label} evidence and request a new approval`

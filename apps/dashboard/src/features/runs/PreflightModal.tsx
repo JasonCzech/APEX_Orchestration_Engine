@@ -21,6 +21,8 @@ import { Dialog } from '@/components/Dialog'
 import { assessPlan, lastPlanSelection, type ReadinessRow } from './preflight'
 import { PHASE_LABELS } from './runDisplay'
 import { useRerun, type GatesMode } from './useRerun'
+import { rerunRestriction } from './rerunCapability'
+import { RerunGuidance } from './RerunGuidance'
 import './preflight.css'
 
 const GATES_MODES: ReadonlyArray<{ value: GatesMode; label: string }> = [
@@ -58,6 +60,7 @@ export function PreflightModal({
   const state = query.data?.state
   const selection = touched ?? lastPlanSelection(state?.phases_plan)
   const assessment = assessPlan(selection, state?.phase_results)
+  const restriction = rerunRestriction(query.data?.detail.rerun_blocked_reason)
 
   function toggle(phase: PhaseName) {
     // Keep the selection in canonical order on every edit.
@@ -67,7 +70,7 @@ export function PreflightModal({
     setTouched(next)
   }
 
-  const canStart = selection.length > 0 && !rerun.isPending && !query.isPending
+  const canStart = selection.length > 0 && !rerun.isPending && Boolean(query.data) && !query.isFetching && !query.isError && !restriction
 
   function start() {
     if (!canStart) return
@@ -102,10 +105,10 @@ export function PreflightModal({
       <h2 className="preflight-title" id={titleId}>
         Re-run phases
       </h2>
-      <p className="preflight-caption">
+      {!restriction && <p className="preflight-caption">
         Prerequisites resolve against phases earlier in this plan or already succeeded on this
         thread.
-      </p>
+      </p>}
 
       {query.isPending && !query.data ? (
         <Skeleton label="Loading run snapshot" rows={2} />
@@ -114,7 +117,7 @@ export function PreflightModal({
           Thread state failed to load:{' '}
           {query.error instanceof Error ? query.error.message : 'unknown error'}
         </div>
-      ) : (
+      ) : restriction ? <RerunGuidance reason={restriction} /> : (
         <>
           {query.isError && (
             <CachedDataWarning error={query.error} onRetry={() => void query.refetch()} />
@@ -164,7 +167,7 @@ export function PreflightModal({
       )}
 
       <div className="preflight-actions">
-        {assessment.hasBlockers && (
+        {!restriction && assessment.hasBlockers && (
           <span className="preflight-blocker-caption">server will reject at plan resolution</span>
         )}
         <button

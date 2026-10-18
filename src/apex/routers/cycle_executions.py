@@ -1,11 +1,11 @@
-"""Scoped execution preparations. These endpoints never dispatch provider work."""
+"""Scoped execution preparations and exact links into the dispatch lifecycle."""
 
 from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from apex.app.dependencies import CurrentIdentity
 from apex.domain.cycle_executions import (
@@ -21,6 +21,7 @@ from apex.domain.cycles import version_digest
 from apex.domain.input_limits import RecordId
 from apex.persistence.models import (
     Connection,
+    CycleExecutionDispatch,
     CycleExecutionPreparation,
     CycleRunLink,
     CycleScriptArtifact,
@@ -30,6 +31,7 @@ from apex.persistence.models import (
 )
 from apex.persistence.repositories.catalog import CatalogRepository
 from apex.routers.cycles import Operator, Session, enabled, find
+from apex.services.cycle_dispatch import verified_dispatch_runs
 from apex.services.cycle_results import CycleResult, compare_result, result_view
 from apex.services.environments import EnvironmentTargetNotFoundError, resolve_environment_target
 
@@ -50,7 +52,7 @@ class RunChoice(BaseModel):
     attempt: int
     status: str
     started_at: datetime
-    bindings_verified: Literal[False] = False
+    bindings_verified: bool = False
 
 
 class PreparationRead(BaseModel):
@@ -62,7 +64,8 @@ class PreparationRead(BaseModel):
     checked_at: datetime
     archived_at: datetime | None = None
     archived_by: str | None = None
-    launch_available: Literal[False] = False
+    # Per-preparation dispatch endpoint owns the live capability decision.
+    launch_available: bool | None = None
 
 
 class ExecutionWorkspaceRead(BaseModel):
@@ -122,13 +125,31 @@ def run_scope(cycle: TestCycle):
     )
 
 
-def run_view(run: EngineRun) -> RunChoice:
+def linked_run_scope(cycle: TestCycle):
+    """One shared exact-attempt projection for workspace, results and report capture."""
+    return or_(
+        EngineRun.id.in_(
+            select(CycleRunLink.engine_run_id).where(CycleRunLink.cycle_id == cycle.id)
+        ),
+        and_(
+            EngineRun.attempt == 1,
+            EngineRun.thread_id.in_(
+                select(CycleExecutionDispatch.thread_id).where(
+                    CycleExecutionDispatch.cycle_id == cycle.id
+                )
+            ),
+        ),
+    )
+
+
+def run_view(run: EngineRun, *, bindings_verified: bool = False) -> RunChoice:
     return RunChoice(
         **{
             name: getattr(run, name)
             for name in RunChoice.model_fields
             if name != "bindings_verified"
-        }
+        },
+        bindings_verified=bindings_verified,
     )
 
 
@@ -169,6 +190,7 @@ async def read_executions(cycle_id: RecordId, session: Session, identity: Curren
                 checked_at=checked_at,
                 archived_at=row.archived_at,
                 archived_by=row.archived_by,
+                launch_available=False if row.archived_at is not None else None,
                 checks=execution_checks(
                     snapshot,
                     cycle.versions,
@@ -202,8 +224,10 @@ async def read_executions(cycle_id: RecordId, session: Session, identity: Curren
     linked = (
         await session.scalars(
             select(EngineRun)
-            .join(CycleRunLink, CycleRunLink.engine_run_id == EngineRun.id)
-            .where(CycleRunLink.cycle_id == cycle.id, *run_scope(cycle))
+            .where(
+                linked_run_scope(cycle),
+                *run_scope(cycle),
+            )
             .order_by(EngineRun.started_at.desc(), EngineRun.id)
         )
     ).all()
@@ -215,12 +239,13 @@ async def read_executions(cycle_id: RecordId, session: Session, identity: Curren
             .limit(50)
         )
     ).all()
+    verified = await verified_dispatch_runs(session, cycle, list(linked) + list(recent))
     return ExecutionWorkspaceRead(
         revision=cycle.revision,
         preparations=preparations,
         connections=connections,
-        linked_runs=[run_view(r) for r in linked],
-        recent_runs=[run_view(r) for r in recent],
+        linked_runs=[run_view(r, bindings_verified=r.id in verified) for r in linked],
+        recent_runs=[run_view(r, bindings_verified=r.id in verified) for r in recent],
         inventory_snapshot_id=inventory.id if inventory else None,
         inventory_scanned_at=inventory.scanned_at if inventory else None,
         target_version=target.version if target else None,
@@ -353,6 +378,18 @@ async def archive_preparation(
         raise HTTPException(404, "Execution preparation not found")
     if preparation.archived_at is not None:
         return ExecutionMutationRead(id=preparation.id, revision=cycle.revision)
+    active = await session.scalar(
+        select(CycleExecutionDispatch.id).where(
+            CycleExecutionDispatch.preparation_id == preparation.id,
+            CycleExecutionDispatch.active_environment_id.is_not(None),
+        )
+    )
+    if active:
+        raise HTTPException(
+            409,
+            "This preparation has an active or uncertain dispatch; confirm its run has "
+            "stopped before archiving",
+        )
     await reserve_revision(session, cycle, body.expected_revision)
     preparation.archived_at = datetime.now(UTC)
     preparation.archived_by = identity.consumer_id
@@ -407,12 +444,15 @@ async def read_results(
     rows = (
         await session.scalars(
             select(EngineRun)
-            .join(CycleRunLink, CycleRunLink.engine_run_id == EngineRun.id)
-            .where(CycleRunLink.cycle_id == cycle.id, *run_scope(cycle))
+            .where(
+                linked_run_scope(cycle),
+                *run_scope(cycle),
+            )
             .order_by(EngineRun.started_at.desc(), EngineRun.id)
         )
     ).all()
-    results = [result_view(row) for row in rows]
+    verified = await verified_dispatch_runs(session, cycle, list(rows))
+    results = [result_view(row, bindings_verified=row.id in verified) for row in rows]
     if baseline_id:
         baseline = next((r for r in results if r.id == baseline_id), None)
         if baseline is None:

@@ -315,6 +315,7 @@ export function useFreezeReportEvidence(id: string, versionId: string) {
       ),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['cycles', id] })
+      void client.invalidateQueries({ queryKey: ['cycles', 'list'] })
     },
   })
 }
@@ -394,6 +395,7 @@ export function useCaptureCycleSource(id: string, versionId: string) {
       ),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['cycles', id] })
+      void client.invalidateQueries({ queryKey: ['cycles', 'list'] })
     },
   })
 }

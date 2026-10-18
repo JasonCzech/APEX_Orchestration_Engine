@@ -1645,3 +1645,40 @@ def test_abort_requires_operator_role() -> None:
     with TestClient(client_app) as client:
         response = client.post("/v1/pipelines/t-1/abort")
     assert response.status_code == 403
+
+
+async def test_cycle_bound_execution_cannot_be_rerun_with_changed_or_cleared_binding() -> None:
+    snapshot = trusted_rerun_snapshot()
+    snapshot["cycle_dispatch_id"] = "dispatch"
+    threads = FakeThreads(
+        {"t-1": rerun_state(snapshot)}, {"t-1": {"project_id": "project-a", "app_id": "app-a"}}
+    )
+    runs = FakeRuns()
+    service = PipelineReadService(FakeClient(threads, runs))
+    with pytest.raises(RerunConfigurationConflictError, match="new approved cycle binding"):
+        await service.rerun_pipeline(
+            "t-1",
+            phases=["execution"],
+            gates_mode="inherit",
+            idempotency_key="forged-rerun",
+            principal_id="consumer-a",
+        )
+    assert runs.create_calls == []
+
+
+def test_cycle_bound_rerun_http_explains_required_new_preparation() -> None:
+    snapshot = trusted_rerun_snapshot()
+    snapshot["cycle_dispatch_id"] = "dispatch"
+    runs = FakeRuns()
+    threads = FakeThreads(
+        {"t-1": rerun_state(snapshot)}, {"t-1": {"project_id": "project-a", "app_id": "app-a"}}
+    )
+    with TestClient(make_app(FakeClient(threads, runs))) as client:
+        response = client.post(
+            "/v1/pipelines/t-1/rerun",
+            json={"phases": ["execution"], "gates_mode": "inherit", "idempotency_key": "rerun"},
+        )
+    assert response.status_code == 409
+    assert response.json()["title"] == "rerun_configuration_conflict"
+    assert "new approved cycle binding" in response.json()["detail"]
+    assert runs.create_calls == []
