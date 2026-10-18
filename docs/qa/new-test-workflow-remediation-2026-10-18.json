@@ -1,0 +1,202 @@
+{
+  "title": "New-test workflow remediation verification",
+  "date": "2026-10-18",
+  "repository": "APEX_Orchestration_Engine",
+  "base_commit": "2b81afac012dc111dbe8d4d65c350c6b5d5e1eb8",
+  "source_report": "docs/qa/new-test-workflow-2026-10-18/REPORT.md supplied by the reviewer",
+  "scope": "Concentrated new-test workflow report and A1\u2013A4 addendum. APEX Load was not modified.",
+  "findings": [
+    {
+      "id": "launch-problem-details",
+      "verdict": "closed",
+      "evidence": "RFC problem titles and validation details are surfaced, with HTTP status in a technical disclosure; environment failures link to the selected environment."
+    },
+    {
+      "id": "simulated-environment-readiness",
+      "verdict": "closed",
+      "evidence": "Simulation retains authorized environment context without a live target binding. REST, native authorization, durable resume and execution agree. External unapproved targets return an actionable 422."
+    },
+    {
+      "id": "environment-target-management",
+      "verdict": "closed",
+      "evidence": "Environment detail and picker show target approval/version. Global admins approve the locked current version; stale approval is 409, missing URL is 422, other roles are denied."
+    },
+    {
+      "id": "pending-review-evidence",
+      "verdict": "closed",
+      "evidence": "Phase summary, artifact list and Timeline use the current pending output without mixing prior attempts. Missing timing is qualified; no acceptance or completion time is invented."
+    },
+    {
+      "id": "structured-workload",
+      "verdict": "closed",
+      "evidence": "Config and Review expose VUsers, linear ramp, duration, P95/error/TPS acceptance thresholds. Validated values persist in drafts and launch payloads. Simulation evaluates thresholds and integrates the requested ramp. LoadRunner controls accurately describe reservation estimates and native-managed workload."
+    },
+    {
+      "id": "actionable-readiness",
+      "verdict": "closed",
+      "evidence": "Outstanding items link to the exact field where possible. Footer and Review share environment evidence and scoped engine/artifact connection metadata, fail closed on unavailable or malformed results, and offer retry. The launch request carries the exact reviewed phase plan. Unsupported model execution and threshold keys block launch. Same-step and cross-step issue links center the focused control above the sticky footer, verified by browser geometry and hit testing at 1440\u00d7900 and 390\u00d7800."
+    },
+    {
+      "id": "launch-retry",
+      "verdict": "closed",
+      "evidence": "Retry uses the same current-page request for unchanged inputs. Copy states reload/credential-change recovery limits."
+    },
+    {
+      "id": "native-reconciliation-422",
+      "verdict": "closed",
+      "evidence": "Trusted launch reconciliation can read native run metadata; public metadata projection remains rejected. Definitive provider validation rejection is 422 without leaking provider response bodies."
+    },
+    {
+      "id": "friendly-identities",
+      "verdict": "closed",
+      "evidence": "Home and prompt scope resolve application names. Authorized run actor lookup resolves only recorded principals, bounded to 256, with copyable immutable IDs and truthful missing-name fallback. Timeline uses the same actor renderer."
+    },
+    {
+      "id": "wizard-url-vocabulary",
+      "verdict": "closed",
+      "evidence": "Tickets and Knowledge use canonical step URLs; legacy bookmarks migrate."
+    },
+    {
+      "id": "sparse-context-and-provenance",
+      "verdict": "closed",
+      "evidence": "Absent optional run context collapses behind a disclosure; Execution system prompt provenance is collapsed initially."
+    },
+    {
+      "id": "scope-width-and-compact-queue",
+      "verdict": "closed",
+      "evidence": "Scope fields cap at 640px; compact review queue collapses while keyboard selection expands and focuses the selected row."
+    },
+    {
+      "id": "optional-ticket-knowledge-layout",
+      "verdict": "retained",
+      "evidence": "These remain intentionally lightweight optional steps with next-action guidance; no additional mandatory content or filler was added."
+    },
+    {
+      "id": "A1-theme-set",
+      "verdict": "closed",
+      "evidence": "Five themes match Load; light is default; stored apex-light migrates before paint and at runtime."
+    },
+    {
+      "id": "A2-underline-tabs",
+      "verdict": "closed",
+      "evidence": "Selected tabs use transparent background, inset underline and primary text, preserving their keyboard contract. Run section navigation uses matching presentation."
+    },
+    {
+      "id": "A3-rail-discovery",
+      "verdict": "closed",
+      "evidence": "Existing empty-rail expansion behavior is directly browser-tested, including overlay focus and dismissal."
+    },
+    {
+      "id": "A4-status-icon-and-footer",
+      "verdict": "closed",
+      "evidence": "System status has a distinct monitor/pulse icon. Scrollable destinations and nonshrinking Settings/account regions do not overlap at 800, 900 or 1000px heights."
+    },
+    {
+      "id": "native-sdk-query-compatibility",
+      "verdict": "closed",
+      "evidence": "Browser qualification exposed SDK JSON-array select and numeric false query encoding. A narrowly scoped GET adapter sends canonical repeated select and cancel_on_disconnect=false. Native server validation stays strict; real browser run-list and SSE responses are 200."
+    },
+    {
+      "id": "managed-connection-application-scope",
+      "verdict": "closed",
+      "evidence": "Scoped metadata-only readiness and authoritative launch checks require exact project/application ownership when either engine or artifact storage is persisted, including hybrid configurations. Static-only simulation remains application-optional. Existing successful launch replays reconcile before current readiness is rechecked. Built-browser qualification confirmed the issue focuses Application, selecting an application clears it, and the configured simulator completes all seven phases."
+    },
+    {
+      "id": "native-nested-stream-events",
+      "verdict": "closed",
+      "evidence": "Native LangGraph event filtering discarded custom child-subgraph events despite successful SSE attachment. The join adapter removes only that upstream filter after strict validation; the bounded outgoing projection still excludes non-custom events and redacts credentials. A real native probe delivered 28 events, including phase status and six engine polls. A display-only, same-run/attempt overlay preserves running evidence over an older parent checkpoint while yielding to review gates, terminal outcomes and newer phases."
+    },
+    {
+      "id": "native-rerun-reconciliation",
+      "verdict": "closed",
+      "evidence": "The private rerun lookup omitted status from the projection required by the native API guard. Its bounded query now includes status. A real-guard regression confirms ambiguous retry creates exactly one run. The native browser rerun returned 202 and all seven phases completed at attempt 2."
+    }
+  ],
+  "validation": {
+    "backend": {
+      "passed": 6223,
+      "skipped": 22,
+      "command": "uv run pytest -q -ra",
+      "supplement": "After the full run, the complete launch/readiness subset passed 98 tests, including the final model-map and effective-config override regressions. Separately, 37 PostgreSQL tests passed in a disposable database, covering all 19 PostgreSQL cases skipped by the default suite. Remaining unavailable checks: two MinIO tests and one Linux-specific memfd seal test. After the native stream adapter fix, all 477 security tests passed, including disconnect forwarding; focused Ruff and Pyright were clean. The final rerun correction passed 562 resume/rerun and security tests, plus focused Ruff and Pyright."
+    },
+    "dashboard_unit": {
+      "files": 145,
+      "passed": 1221,
+      "command": "npm run test --workspace @apex/dashboard -- --maxWorkers=4",
+      "note": "An earlier unconstrained concurrent run had eight timeouts and one queue-loading wait failure. The complete bounded-worker rerun passed without source, assertion or timeout changes.",
+      "supplement": "After the final live-status overlay, 135 focused runs/streaming tests across five files passed, with dashboard typecheck, targeted lint and a fresh production build. The readiness-focus correction passed 27 focused tests, typecheck and lint."
+    },
+    "production_browser": {
+      "passed": 101,
+      "command": "cd apps/dashboard && npx playwright test",
+      "profiles": "Global admin, project-scoped operator and viewer in affected connected fixtures; demo route census and five themes.",
+      "supplement": "After the final focus correction, both new-test workflows passed again on the fresh production bundle; the operator workflow checks desktop and mobile focus visibility."
+    },
+    "contracts": {
+      "passed": 48,
+      "command": "npm run check:contracts"
+    },
+    "static": "Production build, full Python typecheck/Ruff, dashboard typecheck and generated contracts passed. Dashboard ESLint: zero errors, 23 pre-existing Fast Refresh warnings.",
+    "contrast": "Five themes, 127 text pairs and eight chart series per theme; minimum text contrast 4.58:1 and chart/surface 3.02:1.",
+    "native_browser": {
+      "http_fixtures": false,
+      "runtime": "LangGraph API 0.10.0, isolated PostgreSQL, simulated engine, stub agent, memory artifact store",
+      "workflow": "All six wizard steps, managed-connection application requirement and focus link, exact edited workload, launch with unapproved selected environment, canonical run-list and SSE 200, pending output/Timeline, approve, all seven phases succeeded, exactly one dev approval with copyable ID.",
+      "stream_status": 200,
+      "stream_content_type": "text/event-stream",
+      "note": "One draft autosave returned 502 during the intentional native server restart; autosave recovered before launch. The final loaded audit trail had no console errors.",
+      "thread_id": "6c876788-c964-5e77-bcc3-eb65921566fe",
+      "live_overlay": {
+        "thread_id": "2f9183e5-7b89-5f09-9de5-85b7937c375a",
+        "verification": "On a fresh production bundle, accepted Execution status remained Executing after an 11.5-second wait crossing a parent checkpoint poll. The screen showed Live updates connected and engine progress at 52%, with VUsers 10, TPS 24, error rate 0.40%, P95 211ms. All seven phases then succeeded and the live chip became Recorded snapshot.",
+        "rerun": "The same thread reran successfully through the UI: POST returned 202 with run_id 01a14cd8-8cdb-7a83-8e79-061c96a74ddd; all seven phases completed at attempt 2, with Passed and Recorded snapshot displayed.",
+        "console": "No console errors on the final live-run and rerun pages. During the deliberate preceding backend restart, draft autosave/readiness requests briefly failed and recovered before launch."
+      }
+    }
+  },
+  "review_cycles": [
+    "Each major track received author review and an independent cross-cutting review before staging.",
+    "Findings fixed included reserved-option metadata edits, approval version/permission changes, malformed/unsupported workload fields, LoadRunner reservation semantics, blocked model execution, retry wording, simulator ramp/threshold evaluation, Timeline actor consistency and native SDK query serialization.",
+    "Full suites exposed auth-matrix classifications, infeasible legacy conformance inputs, collapsed-queue test assumptions and two stale bounded-evidence assertions; fixes preserve the underlying coverage.",
+    "Cross-cutting review fixed explicit empty phase, gate and model overrides, effective configuration precedence, and unresolved browser launch quarantine across the explicit-phase upgrade. Native qualification then exposed filtered child-subgraph events and running evidence erased by parent checkpoint polls; both were fixed and independently reviewed. A hydrated review interrupt takes precedence even before its compact summary arrives.",
+    "Final browser/capture review found an obscured readiness field and the native rerun query mismatch. Both were fixed, regression-tested and reviewed independently. The final cross-cutting review of all eight affected source/test files returned no remaining findings before their commits."
+  ],
+  "captures": [
+    "../../output/playwright/new-test-connection-readiness.png",
+    "../../output/playwright/new-test-review.png",
+    "../../output/playwright/new-test-environment-target.png",
+    "../../output/playwright/new-test-pending-review.png",
+    "../../output/playwright/new-test-pending-timeline.png",
+    "../../output/playwright/new-test-completed-timeline.png",
+    "../../output/playwright/new-test-live-transport.png",
+    "../../output/playwright/new-test-rerun.png"
+  ],
+  "boundaries": [
+    "No live APEX Load or LoadRunner engine was configured or exercised. Synthetic KPIs are not performance evidence.",
+    "Think time, arrival-rate pacing, custom ramp profiles and metric-triggered hard stops remain outside the bounded wizard contract and are explicitly disclosed.",
+    "No external ticket/provider execution, production authentication expiry or full WCAG certification was attempted."
+  ],
+  "implementation_commits": [
+    "01b77c8",
+    "666582b",
+    "9ea3001",
+    "58f7ceb",
+    "b100ff9",
+    "777fd13",
+    "e8f3004"
+  ],
+  "cleanup": {
+    "cache_directories_removed": 37,
+    "cache_logical_bytes_removed": 18014395,
+    "task_browser_logs_removed": 36,
+    "dependencies_and_dist": "preserved",
+    "go_docker": "not used; shared caches untouched",
+    "native_server_2038": "stopped",
+    "production_proxy_4186": "stopped",
+    "test_server_4187": "stopped",
+    "owned_browser": "closed",
+    "isolated_postgres_database": "dropped and verified absent",
+    "ephemeral_credentials_and_checkpoints": "removed",
+    "task_state_bytes_removed": 17210024
+  }
+}
