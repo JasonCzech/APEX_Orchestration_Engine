@@ -60,6 +60,46 @@ describe('NewRunWizard shell', () => {
     await flushAndUnmountWizard(rendered)
   })
 
+  it('keeps the footer to one row and discloses outstanding items on demand', async () => {
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    const footer = document.querySelector('.wizard-footer') as HTMLElement
+    const disclosure = footer.querySelector('details.wizard-footer-issues') as HTMLDetailsElement
+    expect(disclosure).not.toBeNull()
+    expect(disclosure.open).toBe(false)
+    const summary = disclosure.querySelector('summary')!
+    expect(summary).toHaveTextContent(/items? needs? attention$/)
+    expect(within(footer).getByRole('status')).toHaveTextContent(/items? needs? attention$/)
+    expect(footer).not.toHaveTextContent('Plan is valid')
+    expect(screen.getByRole('button', { name: 'Save draft' })).toHaveAccessibleDescription('Saving does not launch a test.')
+    await user.click(summary)
+    expect(disclosure.open).toBe(true)
+    // jsdom does not focus a clicked <summary>; browsers do.
+    summary.focus()
+    await user.keyboard('{Escape}')
+    expect(disclosure.open).toBe(false)
+    expect(summary).toHaveFocus()
+    await user.click(summary)
+    await user.click(within(footer).getByRole('button', { name: 'Scope: Title is required' }))
+    expect(disclosure.open).toBe(false)
+    await waitFor(() => expect(screen.getByLabelText('Title')).toHaveFocus())
+    await flushAndUnmountWizard(rendered)
+  })
+
+  it('closes the issue list when the step changes so it never covers the next form', async () => {
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    const opened = document.querySelector('details.wizard-footer-issues') as HTMLDetailsElement
+    await user.click(opened.querySelector('summary')!)
+    expect(opened.open).toBe(true)
+    await user.click(screen.getByRole('tab', { name: 'Config' }))
+    const current = document.querySelector('details.wizard-footer-issues') as HTMLDetailsElement
+    expect(current.open).toBe(false)
+    await flushAndUnmountWizard(rendered)
+  })
+
   it('renders each group as a horizontal tab and routes through review before launching', async () => {
     installWizardHandlers()
     const user = userEvent.setup()

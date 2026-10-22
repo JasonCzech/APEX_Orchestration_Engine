@@ -78,6 +78,10 @@ function focusWizardTarget(id: string) {
   target?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
 }
 
+function issueCountLabel(count: number) {
+  return `${count} item${count === 1 ? ' needs' : 's need'} attention`
+}
+
 function WizardSection({
   id,
   title,
@@ -537,6 +541,17 @@ function NewRunWizardContent({
     )
   }
 
+  const readinessSummary = issues.length === 0
+    ? pendingStepCount > 0 ? 'Finishing context changes…' : 'Ready to launch'
+    : readiness.planningIssues.length === 0
+      ? `Execution setup: ${issueCountLabel(issues.length)}`
+      : issueCountLabel(issues.length)
+  const saveDraftNote = canSaveDraft
+    ? null
+    : draft.scope.project_id.trim()
+      ? 'Draft saving requires project-wide access.'
+      : 'Choose a primary system to save a draft.'
+
   return (
     <div className="wizard-page animate-enter">
       {launchRefusal && <p className="tonal-card warning" role="alert">{launchRefusal}</p>}
@@ -625,41 +640,53 @@ function NewRunWizardContent({
         <p>Retrying unchanged inputs on this page reuses the same launch request. Recovery may be blocked after a reload or credential change; check Tests before starting another request. Editing the inputs creates a different launch request.</p>
         {isApiError(launch.error) && <details><summary>Technical details</summary><p>HTTP status: {launch.error.status}</p></details>}
       </div>}
+      {/* One compact row: the step, a readiness chip that discloses the issue
+          list on demand, and the actions. Server-recheck caveats live on Review. */}
       <footer className="glass-panel wizard-footer">
         <div className="wizard-footer-copy">
           <strong>{activeStep === 'review' ? 'Review before launch' : `Step ${WIZARD_STEPS.indexOf(activeStep) + 1} of ${WIZARD_STEPS.length} · ${STEP_LABELS[activeStep]}`}</strong>
-          <span className="wizard-caption">
-            {issues.length === 0
-              ? pendingStepCount > 0
-                ? 'Waiting for in-progress context changes to finish.'
-                : `Plan is valid. ${readiness.executionNotes[0] ?? 'External execution target is selected.'}`
-              : readiness.planningIssues.length === 0 && readiness.executionIssues.length > 0
-                ? 'The test plan is ready; execution setup still needs attention.'
-                : `${issues.length} item${issues.length === 1 ? '' : 's'} still ${issues.length === 1 ? 'needs' : 'need'} attention.`}
-          </span>
-          {issues.length > 0 && activeStep !== 'review' && <ul className="wizard-inline-issues" aria-label="Items needing attention">
-            {issues.map(issue => <li key={`${issue.step}:${issue.message}`}><button type="button" className="wizard-issue-link" onClick={() => jumpToTab(issue.step, issueFieldId(issue.message))}>{STEP_LABELS[issue.step]}: {issue.message}</button></li>)}
-          </ul>}
+          {/* One always-mounted live region announces readiness changes; the
+              visible status below is decoration for sighted users. */}
+          <span className="sr-only" role="status">{readinessSummary}</span>
+          {issues.length === 0 ? (
+            <span className={`wizard-footer-status${pendingStepCount > 0 ? '' : ' ready'}`}>
+              {pendingStepCount > 0 ? 'Finishing context changes…' : <><span aria-hidden="true">✓ </span>Ready to launch</>}
+            </span>
+          ) : activeStep === 'review' ? (
+            <span className="wizard-footer-status attention">{readinessSummary}</span>
+          ) : (
+            <details
+              key={activeStep}
+              className="wizard-footer-issues"
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape' || !event.currentTarget.open) return
+                event.currentTarget.open = false
+                event.currentTarget.querySelector('summary')?.focus()
+              }}
+            >
+              <summary className="wizard-footer-status attention">{readinessSummary}</summary>
+              <ul className="wizard-inline-issues" aria-label="Items needing attention">
+                {issues.map(issue => <li key={`${issue.step}:${issue.message}`}><button type="button" className="wizard-issue-link" onClick={(event) => { event.currentTarget.closest('details')?.removeAttribute('open'); jumpToTab(issue.step, issueFieldId(issue.message)) }}>{STEP_LABELS[issue.step]}: {issue.message}</button></li>)}
+              </ul>
+            </details>
+          )}
           {targetEnvironment.isError && draft.scope.environment_id && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}
           {executionVerificationEnabled && (execution.isError || execution.data?.configuration_valid === false) && activeStep !== 'review' && <button type="button" className="btn btn-secondary btn-sm" disabled={execution.isFetching} onClick={() => void execution.refetch()}>Retry execution verification</button>}
         </div>
 
         <div className="wizard-footer-actions">
           <RequireRole role="operator">
-            {!canSaveDraft && (
-              <span className="wizard-caption">
-                Draft saving requires project-wide access.
-              </span>
-            )}
+            {saveDraftNote && <span id="wizard-save-note" className="wizard-caption">{saveDraftNote}</span>}
+            <span id="wizard-save-hint" className="sr-only">Saving does not launch a test.</span>
             <button
               type="button"
               className="btn btn-ghost"
               disabled={loading || finalizing || !canSaveDraft}
+              aria-describedby={saveDraftNote ? 'wizard-save-note' : 'wizard-save-hint'}
               onClick={() => void saveNow()}
             >
               Save draft
             </button>
-            <span className="wizard-caption">Saving does not launch a test.</span>
             {WIZARD_STEPS.indexOf(activeStep) > 0 && <button type="button" className="btn btn-secondary" disabled={loading || finalizing || pendingStepCount > 0} onClick={() => jumpToTab(WIZARD_STEPS[WIZARD_STEPS.indexOf(activeStep) - 1]!)}>Back</button>}
             <button
               type="button"

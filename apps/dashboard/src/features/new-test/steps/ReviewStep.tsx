@@ -59,14 +59,16 @@ function ReviewCard({
   step,
   onEdit,
   children,
+  wide = false,
 }: {
   title: string
   step: WizardStepId
   onEdit: (step: WizardStepId) => void
   children: ReactNode
+  wide?: boolean
 }) {
   return (
-    <div className="glass-panel wizard-review-card">
+    <div className={`glass-panel wizard-review-card${wide ? ' wizard-review-card--wide' : ''}`}>
       <div className="wizard-review-card-head">
         <h3 className="wizard-review-card-title">{title}</h3>
         <button
@@ -136,7 +138,7 @@ export function ReviewStep({
       )}
 
       <div className="wizard-review-grid">
-        <ReviewCard title="Readiness" step={readiness.executionIssues.length > 0 ? 'scope' : 'config'} onEdit={onEditStep}>
+        <ReviewCard title="Readiness" wide step={readiness.executionIssues.length > 0 ? 'scope' : 'config'} onEdit={onEditStep}>
           {readiness.planningIssues.length === 0 ? (
             <p className="wizard-caption">Test plan is complete.</p>
           ) : (
@@ -155,7 +157,7 @@ export function ReviewStep({
           ))}
           {executionVerificationEnabled && (execution.isError || execution.data?.configuration_valid === false) && <button type="button" className="btn btn-secondary btn-sm" disabled={execution.isFetching} onClick={() => void execution.refetch()}>Retry execution verification</button>}
         </ReviewCard>
-        {draft.scope.environment_id && readiness.executionIssues.length > 0 && <p className="wizard-caption"><Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>{targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}</p>}
+        {draft.scope.environment_id && readiness.executionIssues.length > 0 && <p className="wizard-caption wizard-review-card--wide"><Link to={`/environments/${encodeURIComponent(draft.scope.environment_id)}`}>Review environment target</Link>{targetEnvironment.isError && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void targetEnvironment.refetch()}>Retry environment verification</button>}</p>}
         <ReviewCard title="Scope" step="scope" onEdit={onEditStep}>
           <TestScopeSummary value={draft.scope.test_scope} />
           <dl className="wizard-review-dl">

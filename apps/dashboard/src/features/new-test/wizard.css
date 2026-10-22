@@ -133,8 +133,39 @@
 
 .wizard-footer-copy {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  min-width: 0;
+}
+
+.wizard-footer-status {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+.wizard-footer-status.ready { color: var(--success-text); }
+.wizard-footer-status.attention { color: var(--warning-text); font-weight: 600; }
+
+.wizard-footer-issues > summary { cursor: pointer; }
+
+/* The issue list opens above the sticky footer (its containing block) instead
+   of growing it, and stays inside the footer's width on narrow screens. */
+.wizard-footer-issues > .wizard-inline-issues {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 12px;
+  right: 12px;
+  max-width: 560px;
+  backdrop-filter: blur(16px);
+  max-height: 50vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 12px 14px 12px 30px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
 }
 
 .wizard-inline-issues {
@@ -608,6 +639,9 @@
   gap: 8px;
 }
 
+/* Readiness spans the grid so its sentences read as one line, not a column. */
+.wizard-review-card--wide { grid-column: 1 / -1; }
+
 .wizard-review-card-head {
   display: flex;
   align-items: center;
@@ -727,7 +761,7 @@
 .wizard-workload h3 { margin: 0; }
 .wizard-workload-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .wizard-review-pair { display: contents; }
-.wizard-inline-issues { margin: 6px 0 0; padding-left: 20px; }
+.wizard-inline-issues { margin: 6px 0 0; padding-left: 20px; list-style: disc; }
 @media (max-width: 680px) {
   .wizard-workload-grid { grid-template-columns: 1fr; }
 }

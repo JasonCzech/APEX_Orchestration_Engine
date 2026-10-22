@@ -80,6 +80,7 @@ for (const profile of ['admin', 'operator'] as const) {
       // viewport where the sticky footer wraps to multiple lines.
       await page.setViewportSize({ width: 390, height: 800 })
       await page.locator('#main-content').evaluate(element => { element.scrollTop = 0 })
+      await page.locator('.wizard-footer-issues > summary').click()
       await page.getByRole('list', { name: 'Items needing attention' }).getByRole('button', { name: /Select an application/ }).click()
       await expectVisibleApplicationFocus()
       await page.setViewportSize({ width: 1440, height: 900 })
