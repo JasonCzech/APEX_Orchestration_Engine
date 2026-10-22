@@ -81,9 +81,14 @@
   font-size: var(--font-size-md);
   line-height: 1.65;
 }
-.gate-next-action {
-  color: var(--text-secondary);
-  margin: 12px 0;
+.kpi-comparison {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+.kpi-comparison .data-table th[scope="row"] {
+  color: var(--text-primary);
+  font-weight: 600;
 }
 .gate-info-card summary {
   cursor: pointer;

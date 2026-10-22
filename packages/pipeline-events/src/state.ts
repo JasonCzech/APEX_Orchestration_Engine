@@ -269,6 +269,8 @@ export const PhaseResultEntrySchema = z
     // Extra keys: script_scenario output + execution engine spine (execution_phase.py)
     load_test_spec: LoadTestSpecSchema.optional(),
     test_summary: TestResultSummarySchema.optional(),
+    /** Acceptance thresholds the execution was judged against (public projection). */
+    acceptance_thresholds: z.record(z.number()).optional(),
     engine: z.string().optional(),
     engine_connection_id: z.string().nullish(),
     engine_options: z.record(z.unknown()).optional(),

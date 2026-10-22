@@ -321,6 +321,17 @@ describe('RunDetailPage', () => {
     expect(within(timeline).getByText(/were not frozen/)).toBeInTheDocument()
   })
 
+  it('compares observed KPIs with the applied thresholds on the overview', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'idle',
+      values: { phases_plan: ['execution'], phase_results: { execution: { status: 'succeeded', attempt: 1,
+        test_summary: { engine: 'sim', passed: true, kpis: { p95_ms: 212 } }, acceptance_thresholds: { p95_ms: 500 } } } },
+    }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const card = await screen.findByRole('article', { name: 'Requested vs observed' })
+    expect(within(card).getByRole('row', { name: /P95 response time ≤ 500 ms 212 ms Met/ })).toBeInTheDocument()
+  })
+
   it('keeps re-run available when a failure follows a recorded plan', async () => {
     const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
       current_phase: 'test_planning', phase_strip: [{ phase: 'test_planning', status: 'failed', attempt: 1 }],

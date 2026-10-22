@@ -22,6 +22,7 @@ import {
 } from './runDisplay'
 import { runReviewPath } from './reviewPath'
 import { CopyTestSetupButton } from './CopyTestSetupButton'
+import { KpiComparison } from './KpiComparison'
 import { RequireRole } from '@/auth/RequireRole'
 
 export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate, returnTo }: {
@@ -158,6 +159,12 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
           </Link>
         </article>
       </div>
+      {summary && (Object.keys(summary.kpis ?? {}).length > 0 || execution?.acceptance_thresholds) && (
+        <article className="glass-panel ux-card" aria-labelledby="run-kpi-heading">
+          <h3 id="run-kpi-heading">Requested vs observed</h3>
+          <KpiComparison summary={summary} thresholds={execution?.acceptance_thresholds} />
+        </article>
+      )}
       <article className="glass-panel ux-card">
         <h3>Evidence coverage</h3>
         {summary?.outcome && <p>Load evidence: {summary.outcome.evidence.status}{summary.outcome.evidence.coverage_percent != null ? ` (${summary.outcome.evidence.coverage_percent}%)` : ''}. Assessed {formatTimestamp(summary.outcome.observed_at)}.</p>}
