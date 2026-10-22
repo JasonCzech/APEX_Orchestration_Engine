@@ -241,7 +241,11 @@ def test_invalid_config_does_not_retain_parser_input_or_path_errors(tmp_path: Pa
     assert missing.value.__cause__ is None
 
 
-@pytest.mark.parametrize("payload", [b"", b"x" * (MAX_RECIPE_BYTES + 1), b"\xff"])
+@pytest.mark.parametrize(
+    "payload",
+    [b"", b"x" * (MAX_RECIPE_BYTES + 1), b"\xff"],
+    ids=["empty", "oversized", "invalid-utf8"],
+)
 def test_recipe_reads_are_bounded_and_detach_decode_diagnostics(
     tmp_path: Path,
     payload: bytes,

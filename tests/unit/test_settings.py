@@ -356,6 +356,7 @@ def test_local_env_caps_previous_pepper_count() -> None:
         ("api_key_hash_pepper", "é" * 2_049),
         ("previous_api_key_hash_peppers", ["é" * 2_049]),
     ],
+    ids=["dev-api-key", "current-pepper", "previous-pepper"],
 )
 def test_local_env_caps_auth_secret_bytes(field: str, value: object) -> None:
     with pytest.raises(ValidationError, match="byte limit"):
@@ -561,6 +562,7 @@ def test_langgraph_database_uri_rejects_ambiguous_tls_controls(
         "postgresql://u:p@db:5432/x?sslmode=verify-full\x85",
         "postgresql://u:p@db:5432/x?sslmode=verify-full&pad=" + ("x" * 16_384),
     ],
+    ids=["leading-space", "backslash", "ascii-control", "unicode-control", "oversized"],
 )
 def test_database_uris_reject_unsafe_raw_text_before_parsing(
     monkeypatch: pytest.MonkeyPatch,

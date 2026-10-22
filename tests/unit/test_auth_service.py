@@ -599,6 +599,7 @@ async def test_missing_key_resolves_none(monkeypatch: pytest.MonkeyPatch) -> Non
         b"bytes-are-not-a-key",
         123,
     ],
+    ids=["oversized-ascii", "oversized-utf8", "invalid-unicode", "bytes", "integer"],
 )
 async def test_malformed_or_oversized_key_fails_before_authoritative_lookup(
     monkeypatch: pytest.MonkeyPatch,

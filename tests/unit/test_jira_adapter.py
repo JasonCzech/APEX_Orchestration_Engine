@@ -180,7 +180,9 @@ def test_constructor_rejects_coercible_or_unbounded_identity_options(
         make_adapter(**{option: value})
 
 
-@pytest.mark.parametrize("token", ["unsafe\r\ntoken", "t" * 16_385])
+@pytest.mark.parametrize(
+    "token", ["unsafe\r\ntoken", "t" * 16_385], ids=["header-injection", "oversized"]
+)
 def test_constructor_rejects_unsafe_or_oversized_token_without_reflection(token: str) -> None:
     conn = ConnectionConfig(
         id="jira-credential-boundary",

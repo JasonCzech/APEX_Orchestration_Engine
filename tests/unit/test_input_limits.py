@@ -110,6 +110,7 @@ def test_validation_error_summary_does_not_reflect_locations_or_validator_messag
         ("description", "d" * (MAX_DESCRIPTION_CHARS + 1)),
         ("url", "u" * 4097),
     ],
+    ids=["key", "title", "kind", "status", "description", "url"],
 )
 def test_work_item_provider_response_fields_are_bounded(field: str, value: str) -> None:
     payload = {"key": "PHX-1", "title": "bounded", field: value}

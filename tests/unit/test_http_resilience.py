@@ -635,6 +635,15 @@ def test_parse_json_response_rejects_flat_token_amplification() -> None:
         b'{"value":1e-999}',
         b'{"value":' + (b"9" * 5_000) + b"}",
     ],
+    ids=[
+        "duplicate-key",
+        "nan",
+        "infinity",
+        "positive-overflow",
+        "negative-overflow",
+        "underflow",
+        "oversized-integer",
+    ],
 )
 def test_parse_json_response_rejects_ambiguous_or_unsafe_json(body: bytes) -> None:
     response = httpx.Response(

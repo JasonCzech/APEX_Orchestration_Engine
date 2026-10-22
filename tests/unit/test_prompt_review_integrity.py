@@ -330,6 +330,7 @@ async def test_large_selected_contexts_remain_editable_outside_compact_overview(
         ("x" * 8_000, "", 10_000, "fixed instructions"),
         ("{request}" * 3, "x" * 20_000, 220_000, "template"),
     ],
+    ids=["fixed-instructions-overflow", "rendered-template-overflow"],
 )
 async def test_launch_checks_rendered_parts_and_complete_instruction_budget(
     monkeypatch, content, operator_request, model_limit, message

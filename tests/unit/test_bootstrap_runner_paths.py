@@ -599,6 +599,16 @@ async def test_admin_rejects_synthetic_dev_key_before_database_io(
         b"not-a-native-string",
         123,
     ],
+    ids=[
+        "leading-space",
+        "trailing-space",
+        "blank",
+        "oversized-ascii",
+        "oversized-utf8",
+        "invalid-unicode",
+        "bytes",
+        "integer",
+    ],
 )
 async def test_admin_rejects_unusable_key_before_hash_or_database_io(
     monkeypatch: pytest.MonkeyPatch,

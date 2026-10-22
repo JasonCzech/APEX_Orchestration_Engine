@@ -274,6 +274,7 @@ async def test_no_secret_sends_no_authorization_header() -> None:
         ":password",
         "username:",
     ],
+    ids=["header-injection", "oversized", "non-ascii", "missing-username", "missing-password"],
 )
 def test_constructor_rejects_unsafe_or_malformed_credentials_without_reflection(
     credential: str,

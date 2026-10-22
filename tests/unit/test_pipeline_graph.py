@@ -975,7 +975,9 @@ def test_new_run_resets_application_review_before_a_different_app_edit() -> None
 
 
 @pytest.mark.parametrize(
-    "latency", [None, 27, "bad", -1, float("inf"), float("nan"), 10**1000, True]
+    "latency",
+    [None, 27, "bad", -1, float("inf"), float("nan"), 10**1000, True],
+    ids=["missing", "valid", "text", "negative", "infinite", "nan", "oversized-integer", "boolean"],
 )
 def test_agent_analytics_never_uses_gate_wall_time(
     monkeypatch: pytest.MonkeyPatch, latency: Any
