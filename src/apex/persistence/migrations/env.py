@@ -16,6 +16,7 @@ from apex.persistence.migration_lineage import (
     LINEAGE_TABLE,
     packaged_revision_lineage,
 )
+from apex.persistence.migration_scope import NORMALIZED_SEARCH_PATH_SQL, migration_schema_scope
 from apex.persistence.models import Base
 from apex.settings import (
     database_asyncpg_uri,
@@ -102,6 +103,7 @@ def _configure(connection: Connection | None = None, url: str | None = None) -> 
 def run_migrations_offline() -> None:
     _configure(url=_database_uri())
     with context.begin_transaction():
+        context.execute(text(NORMALIZED_SEARCH_PATH_SQL))
         # Serialize every Alembic entry point, including direct/unclaimed and
         # generated offline upgrades.  Otherwise two deploys can both observe
         # the old head and race schema bootstrap or revision DDL.
@@ -121,6 +123,11 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
+    with migration_schema_scope(connection):
+        _run_migrations_in_schema_scope(connection)
+
+
+def _run_migrations_in_schema_scope(connection: Connection) -> None:
     if connection.dialect.name == "postgresql":
         # This transaction-level lock complements the deploy hook's optional
         # session-level claim lock and protects every other Alembic caller.

@@ -1,7 +1,7 @@
 """DB-gated round-trip for agent event capture and aggregation.
 
-Opt-in via APEX_TEST_DATABASE_URI (asyncpg URI). Rows are isolated by a unique
-project marker and deleted afterwards.
+Opt-in via APEX_TEST_DATABASE_URI (asyncpg URI). The catalog and event rows use
+an isolated schema that is deleted afterwards.
 """
 
 import asyncio
@@ -12,11 +12,11 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import Table, select, text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from apex.persistence.models import AgentEvent
+from apex.persistence.models import AgentEvent, Base
 from apex.services import usage
 from apex.services.agent_analytics import (
     AgentAnalyticsRepository,
@@ -24,6 +24,7 @@ from apex.services.agent_analytics import (
     AgentOrder,
     AgentSort,
 )
+from apex.services.model_pricing import ensure_model, intervals
 from apex.settings import get_settings
 
 pytestmark = pytest.mark.skipif(
@@ -45,17 +46,29 @@ def test_agent_event_capture_and_aggregation_round_trip(
     marker = f"proj-agent-{uuid4().hex[:8]}"
     app_marker = f"app-agent-{uuid4().hex[:8]}"
     thread_id = f"thread-agent-{uuid4().hex[:8]}"
-    engine = create_async_engine(test_uri, poolclass=NullPool)
+    schema = f"agent_analytics_test_{uuid4().hex}"
+
+    def isolated_engine(uri: str, **kwargs: Any) -> AsyncEngine:
+        return create_async_engine(
+            uri, execution_options={"schema_translate_map": {"apex": schema}}, **kwargs
+        )
+
+    # Exercise the real throwaway-engine writer while keeping catalog pricing
+    # independent of other tests and administrator-maintained rates in apex.
+    monkeypatch.setattr(usage, "create_async_engine", isolated_engine)
+    engine = isolated_engine(test_uri, poolclass=NullPool)
     maker = async_sessionmaker(engine, expire_on_commit=False)
 
-    async def setup() -> None:
+    async def setup() -> tuple[str, str]:
         async with engine.begin() as conn:
-            await conn.execute(text("CREATE SCHEMA IF NOT EXISTS apex"))
-            await conn.run_sync(
-                lambda sync_conn: cast(Table, AgentEvent.__table__).create(
-                    sync_conn, checkfirst=True
-                )
-            )
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+            await conn.run_sync(Base.metadata.create_all)
+        async with maker() as session:
+            model = await ensure_model(session, "claude-sonnet-4-20250514", seed=True)
+            timeline = await intervals(session, model.active_pricing_generation_id)
+            assert len(timeline) == 1
+            await session.commit()
+            return model.id, timeline[0].id
 
     async def aggregate(
         *,
@@ -89,18 +102,13 @@ def test_agent_event_capture_and_aggregation_round_trip(
 
     async def cleanup() -> None:
         try:
-            async with maker() as session:
-                rows = await session.scalars(
-                    select(AgentEvent).where(AgentEvent.project_id == marker)
-                )
-                for row in rows:
-                    await session.delete(row)
-                await session.commit()
+            async with engine.begin() as conn:
+                await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         finally:
             await engine.dispose()
 
-    asyncio.run(setup())
     try:
+        model_id, interval_id = asyncio.run(setup())
         config = {
             "configurable": {
                 "thread_id": thread_id,
@@ -160,7 +168,9 @@ def test_agent_event_capture_and_aggregation_round_trip(
         # Cached tokens are a subset of input_tokens, billed once at the cache rate
         # (not also at the full input rate): (1000-50-20)*3 + 100*15 + 50*0.30 + 20*3.75.
         assert reporting.cost_usd == Decimal("0.004380")
-        assert reporting.extra["pricing"]["input"] == "3.00"
+        assert reporting.model_catalog_id == model_id
+        assert reporting.pricing_interval_id == interval_id
+        assert Decimal(reporting.extra["pricing"]["input"]) == Decimal("3.00")
         assert reporting.extra["finish_reason"] == "stop"
 
         data = asyncio.run(aggregate())
