@@ -40,6 +40,10 @@ class StubLogSearchAdapter:
         self._conn = conn
 
     async def search(self, query: LogQuery, *, window: TimeWindow, page: Page) -> LogSearchResult:
+        # The canned entries belong to no pipeline run. A run's deep link
+        # (thread_id filter) must not present them as that run's logs.
+        if query.filters.get("thread_id"):
+            return LogSearchResult(entries=[], total=0)
         entries = [e.model_copy(deep=True) for e in _ENTRIES]
         return LogSearchResult(
             entries=entries[page.offset : page.offset + page.limit], total=len(_ENTRIES)

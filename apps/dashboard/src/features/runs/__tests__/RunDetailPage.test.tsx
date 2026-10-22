@@ -88,6 +88,36 @@ describe('RunDetailPage', () => {
     }
   })
 
+  it('opens a run awaiting a decision on that decision, inside Run detail', async () => {
+    server.use(pipelineDetailHandler(PIPELINE_DETAIL_INTERRUPTED))
+    const { router } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}/phases/reporting`))
+    const sections = await screen.findByRole('navigation', { name: 'Run sections' })
+    await waitFor(() => expect(within(sections).getByRole('link', { name: 'Review' })).toHaveAttribute('aria-current', 'page'))
+    expect(within(sections).getByRole('link', { name: 'Workspace' })).not.toHaveAttribute('aria-current')
+    const overviewLink = within(sections).getByRole('link', { name: 'Overview' })
+    expect(overviewLink).toHaveAttribute('href', `/runs/${THREAD_ID}?view=overview`)
+    expect(screen.getByTestId('gate-actions')).toBeInTheDocument()
+    await userEvent.setup().click(overviewLink)
+    expect(await screen.findByRole('region', { name: 'Run overview' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe('?view=overview')
+    // Links that return to the overview keep it, rather than the pending decision.
+    expect(screen.getByRole('link', { name: 'Logs' }).getAttribute('href')).toContain(encodeURIComponent(`/runs/${THREAD_ID}?view=overview`))
+  })
+
+  it('does not move someone off the overview when a decision appears later', async () => {
+    let detail = structuredClone(PIPELINE_DETAIL)
+    server.use(http.get('*/v1/pipelines/:threadId', () => HttpResponse.json(detail)))
+    const { router, queryClient } = renderRunRoutes([`/runs/${THREAD_ID}`])
+    expect(await screen.findByRole('region', { name: 'Run overview' })).toBeInTheDocument()
+    detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
+    await act(async () => { await queryClient.invalidateQueries() })
+    await waitFor(() => expect(within(screen.getByRole('navigation', { name: 'Run sections' })).getByRole('link', { name: 'Overview' }))
+      .toHaveAttribute('href', `/runs/${THREAD_ID}?view=overview`))
+    expect(router.state.location.pathname).toBe(`/runs/${THREAD_ID}`)
+    expect(screen.getByRole('region', { name: 'Run overview' })).toBeInTheDocument()
+  })
+
   it('uses pending output throughout the phase workspace without claiming acceptance or timing', async () => {
     const detail = structuredClone(PIPELINE_DETAIL_INTERRUPTED)
     detail.current_phase = 'execution'
@@ -578,7 +608,7 @@ describe('RunDetailPage', () => {
     expect(banner).toHaveTextContent('Reporting & Analysis')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
+      `/runs/${THREAD_ID}/phases/reporting`,
     )
   })
 

@@ -143,6 +143,14 @@ export function LogsPage() {
   }
 
   const entries = data?.entries ?? []
+  // Providers should honour the window; flag any that did not so canned or
+  // unfiltered rows are never read as this search's evidence.
+  const windowStart = data?.window?.from ? Date.parse(data.window.from) : NaN
+  const windowEnd = data?.window?.to ? Date.parse(data.window.to) : NaN
+  const outsideWindow = entries.filter(entry => {
+    const at = Date.parse(entry.at)
+    return Number.isFinite(at) && ((Number.isFinite(windowStart) && at < windowStart) || (Number.isFinite(windowEnd) && at > windowEnd))
+  }).length
   const total = data?.total
   const nextDisabled =
     offset >= LOGS_MAX_OFFSET ||
@@ -293,10 +301,21 @@ export function LogsPage() {
           {isError && (
             <CachedDataWarning error={error} onRetry={() => void refetch()} />
           )}
+          {outsideWindow > 0 && (
+            <p className="tonal-card warning" role="status">
+              {outsideWindow} of these entries fall outside the requested window, so this log source did not filter by time. Treat them as unrelated{committed.thread ? ' to this run' : ''}.
+            </p>
+          )}
           {entries.length === 0 ? (
-            <StateCard kind="filtered" title="No log entries in this window" action={<button type="button" className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('.logs-query')?.focus()}>Adjust search</button>}>
-              <p>Widen the time window or relax the filters.</p>
-            </StateCard>
+            committed.thread ? (
+              <StateCard kind="filtered" title="No log entries recorded for this run" action={null}>
+                <p>The log source returned nothing tagged with this run in its time window. Widen the window, or open the run's workspace for agent and engine evidence.</p>
+              </StateCard>
+            ) : (
+              <StateCard kind="filtered" title="No log entries in this window" action={<button type="button" className="btn btn-secondary" onClick={() => document.querySelector<HTMLInputElement>('.logs-query')?.focus()}>Adjust search</button>}>
+                <p>Widen the time window or relax the filters.</p>
+              </StateCard>
+            )
           ) : (
             <div className="data-table-wrap">
               <table className="data-table striped logs-table">

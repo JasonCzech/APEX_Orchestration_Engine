@@ -66,7 +66,7 @@ describe('RunDetailPage gate mounting (D3)', () => {
     expect(banner).toHaveTextContent('Review phase results open on Reporting')
     expect(within(banner).getByRole('link', { name: 'Review' })).toHaveAttribute(
       'href',
-      `/runs/${THREAD_ID}/reviews/int-1?source=overview&phase=reporting`,
+      `/runs/${THREAD_ID}/phases/reporting`,
     )
     expect(screen.queryByTestId('gate-module')).not.toBeInTheDocument()
   })

@@ -11,6 +11,7 @@ import { useCompactLayout } from '@/components/hooks/useCompactLayout'
 import { PhaseStrip } from '@/components/runs/PhaseStrip'
 import { ProblemCard } from '@/components/ProblemCard'
 import { CopyableId } from '@/components/ux/CopyableId'
+import { ApplicationLabel } from '@/components/ux/ApplicationLabel'
 import { Pagination } from '@/components/ux/Pagination'
 import { TableToolbar } from '@/components/ux/TableToolbar'
 import { SortableHeader } from '@/components/ux/SortableHeader'
@@ -132,7 +133,7 @@ function RunRow({
       <p>Progress: {phaseProgressLabel(phaseProgress(run.phase_strip))}</p>
       {run.pending_gate && <button type="button" className="runs-gate-action" aria-label={`${gateLabel(run.pending_gate.kind)} for ${run.title || run.thread_id}${isPhaseName(run.pending_gate.phase) ? `, ${PHASE_LABELS[run.pending_gate.phase]}` : ''}`} onClick={() => onReview(run)}>{gateLabel(run.pending_gate.kind)}</button>}
       {selection && <label><input type="checkbox" checked={selection.selected} disabled={selection.disabled} onChange={() => selection.onToggle(run.thread_id)} /> Compare {run.title}</label>}
-      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd>{run.app_id ?? EM_DASH}</dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Creation to last update</dt><dd>{durationLabel(run)}</dd></dl></details>
+      <details><summary>Run information</summary><dl><dt>Project</dt><dd>{run.project_id ?? EM_DASH}</dd><dt>Application</dt><dd><ApplicationLabel project={run.project_id} application={run.app_id} empty={EM_DASH} /></dd><dt>Created</dt><dd>{formatTimestamp(run.created_at)}</dd><dt>Creation to last update</dt><dd>{durationLabel(run)}</dd></dl></details>
       <div className="runs-actions-stack"><button className="btn btn-secondary" aria-label={`Open run ${run.title || 'Untitled run'} (${run.thread_id})`} onClick={() => onOpen(run.thread_id)}>Open run</button>{canRerun && (rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <button className="btn btn-ghost" onClick={() => onRerun(run.thread_id)}>Re-run…</button>)}</div>
     </article>
   )
@@ -164,7 +165,7 @@ function RunRow({
         <span className="runs-story-cell">{run.project_id ?? EM_DASH}</span>
       </td>
       <td>
-        <span className="runs-application-cell">{run.app_id ?? EM_DASH}</span>
+        <span className="runs-application-cell"><ApplicationLabel project={run.project_id} application={run.app_id} empty={EM_DASH} /></span>
       </td>
       <td>
         <PhaseStrip strip={run.phase_strip} size="sm" />

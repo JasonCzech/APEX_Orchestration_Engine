@@ -85,12 +85,12 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: 'runs/:threadId/phases/:phase',
-            handle: handle('Phase detail'),
+            handle: handle('Run detail'),
             lazy: lazyPage(runs, 'PhaseDetailPage'),
           },
           {
             path: 'runs/:threadId/timeline',
-            handle: handle('Run timeline'),
+            handle: handle('Run detail'),
             lazy: lazyPage(runs, 'RunTimelinePage'),
           },
           {

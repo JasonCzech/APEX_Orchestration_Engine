@@ -433,10 +433,10 @@ export function GateSlimBanner({ threadId, gate, onReview }: { threadId: string;
       ) : (
         <Link
           className="btn btn-secondary btn-sm"
-          to={runReviewPath(threadId, gate.interrupt_id, {
-            source: 'overview',
-            phase: isPhaseName(gate.phase) ? gate.phase : null,
-          })}
+          // Stay in Run detail: the gate is pinned above its phase workspace.
+          to={isPhaseName(gate.phase)
+            ? `/runs/${threadId}/phases/${gate.phase}`
+            : runReviewPath(threadId, gate.interrupt_id, { source: 'overview', phase: null })}
         >
           Review
         </Link>

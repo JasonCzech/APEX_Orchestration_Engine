@@ -29,8 +29,9 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await resetDemo(page)
 
   await page.goto('/runs/new?draft=draft-esim')
-  await expect(page.getByLabel('Title')).toHaveValue('ACC Add-a-Line Peak Certification')
-  await expect(page.getByLabel('Environment')).toHaveValue('env-perf')
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue('ACC Add-a-Line Peak Certification')
+  // The traffic entry's environment is the execution target.
+  await expect(page.locator('#wizard-environment')).toHaveValue('env-acc-perf-acc-perfhyper2')
   await page.getByRole('tab', { name: 'Config', exact: true }).click()
   await expect(page.getByText(/pins engine “apexload”/)).toBeVisible()
   await page.getByRole('radio', { name: /APEX Load/ }).click()
@@ -64,10 +65,10 @@ test('production demo completes the offline Jira Align to Jira Cloud journey', a
   await gate.getByRole('button', { name: /Execute Phase/i }).click()
   await expect(page.getByText('Decision receipt', { exact: true })).toBeVisible()
 
+  // A run waiting on a decision opens on it, inside Run detail.
   await page.goto(`/runs/${threadId}`)
-  await expect(page.getByRole('link', { name: 'Review', exact: true })).toHaveAttribute('href', /int-env_triage/)
-  await page.getByRole('link', { name: 'Review', exact: true }).click()
-  await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/reviews/int-env_triage`))
+  await expect(page).toHaveURL(new RegExp(`/runs/${threadId}/phases/env_triage$`))
+  await expect(page.getByRole('link', { name: 'Review', exact: true })).toHaveAttribute('aria-current', 'page')
   gate = page.getByRole('region', { name: 'Review phase results' })
   const composer = gate.getByLabel('Discuss with the agent')
   const exactDiscussion = 'Why did the MQ queue grow and what is the release risk?'

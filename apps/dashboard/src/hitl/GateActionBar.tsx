@@ -104,6 +104,7 @@ export function GateActionBar({
   onSubmit: (action: GateAction) => void
 }) {
   const [skipConfirm, setSkipConfirm] = useState(false)
+  const scopeId = useId()
   const [revising, setRevising] = useState(false)
   const has = (action: string): boolean => actions.includes(action)
   const message = draft.message ?? ''
@@ -169,11 +170,12 @@ export function GateActionBar({
               type="button"
               className="btn btn-primary btn-sm"
               disabled={disabled}
+              aria-describedby={`${scopeId}-accept`}
               onClick={() => onSubmit('approve')}
             >
               Accept phase output &amp; continue
             </button>
-            <span className="gate-decision-scope">
+            <span id={`${scopeId}-accept`} className="gate-decision-scope">
               Accepts this phase output; it does not approve the test result or a release.
             </span>
           </span>
@@ -181,8 +183,8 @@ export function GateActionBar({
         {kind === 'prompt_review' && has('skip_phase') && (
           <span className="gate-primary-decision">
             <button type="button" className="btn btn-danger btn-sm" data-gate-action="skip_phase"
-              disabled={disabled} onClick={() => setSkipConfirm(true)}>Skip phase</button>
-            <span className="gate-decision-scope">Marks this phase skipped. Later phases that require its output cannot run.</span>
+              disabled={disabled} aria-describedby={`${scopeId}-skip`} onClick={() => setSkipConfirm(true)}>Skip phase</button>
+            <span id={`${scopeId}-skip`} className="gate-decision-scope">Marks this phase skipped. Later phases that require its output cannot run.</span>
           </span>
         )}
         {kind === 'phase_review' &&
