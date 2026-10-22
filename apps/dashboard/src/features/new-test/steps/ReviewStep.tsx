@@ -22,6 +22,7 @@ import { useAssistants } from '@/api/hooks/useAssistants'
 import { useWorkItem } from '@/api/hooks/useWorkTracking'
 import { PHASE_LABELS } from '@/features/runs/runDisplay'
 import { parseStatusBadge, summarizeContext } from '../contextFiles'
+import { documentThresholdMismatches } from '../workload'
 import type { StepProps } from '../NewRunWizard'
 import {
   issueFieldId,
@@ -113,6 +114,14 @@ export function ReviewStep({
 
   const knownDocs = new Map((documents.data ?? []).map((doc) => [doc.id, doc]))
   const contextSummary = summarizeContext(draft.document_ids.map((id) => knownDocs.get(id)))
+  // LoadRunner applies its native test's SLAs, so Config thresholds don't apply.
+  const thresholdMismatches = draft.config.engine === 'loadrunner' ? [] : documentThresholdMismatches(
+    draft.document_ids.flatMap((id) => {
+      const doc = knownDocs.get(id)
+      return doc ? [{ name: doc.name ?? id, text: doc.text_preview }] : []
+    }),
+    draft.config.golden_configurable?.load_test,
+  )
 
   return (
     <section className="wizard-step" aria-label="Review">
@@ -183,6 +192,11 @@ export function ReviewStep({
         </ReviewCard>
 
         <ReviewCard title="Knowledge" step="context" onEdit={onEditStep}>
+          {thresholdMismatches.length > 0 && <div className="tonal-card warning" data-testid="document-threshold-mismatches">
+            <p>Attached documents mention figures that differ from the acceptance thresholds in Config. Check which is the target:</p>
+            <ul>{thresholdMismatches.map(item => <li key={`${item.document}:${item.key}`}>{item.document} mentions {item.label} {item.documented}; Config requires ≤ {item.configured}.</li>)}</ul>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => onEditStep('config', `workload-${thresholdMismatches[0]!.key}`)}>Review thresholds</button>
+          </div>}
           <p className="wizard-caption">
             {draft.document_ids.length} document{draft.document_ids.length === 1 ? '' : 's'}{' '}
             attached

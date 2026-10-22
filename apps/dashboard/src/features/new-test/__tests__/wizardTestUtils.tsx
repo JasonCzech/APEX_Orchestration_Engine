@@ -141,6 +141,7 @@ export function defaultWizardHandlers() {
       const body = await request.json() as { phases: string[] }
       return HttpResponse.json({ execution_selected: body.phases.includes('execution'), configuration_valid: true, requires_application: false, detail: null })
     }),
+    http.get('*/v1/admin/connections/:id', ({ params }) => HttpResponse.json({ id: params['id'], name: 'Jira Cloud (perf)', kind: 'work_tracking', provider: 'jira', enabled: true, config: {} })),
     http.get('*/v1/pipelines/analysis/connections', () => HttpResponse.json([{ id: 'analysis-forge', name: 'Forge analysis', provider: 'perfreportforge', kind: 'analysis' }, { id: 'native-rca', name: 'Internal RCA', provider: 'apex_load', kind: 'execution_engine' }])),
     http.get('*/v1/apex-load/connections', () => HttpResponse.json({ items: [], truncated: false })),
     http.post('*/assistants/search', () => HttpResponse.json([])),

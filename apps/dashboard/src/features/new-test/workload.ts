@@ -77,3 +77,49 @@ export function durationUnit(seconds: unknown): number {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return 1
   return [...DURATION_UNITS].reverse().find(unit => seconds % unit.seconds === 0)?.seconds ?? 1
 }
+
+export interface DocumentThresholdMismatch {
+  document: string
+  key: string
+  label: string
+  documented: string
+  configured: string
+}
+
+const DOCUMENTED_THRESHOLDS = [
+  { key: 'p95_ms', label: 'P95', pattern: /\bp95\b[^\d\n]{0,40}?(\d+(?:\.\d+)?)\s*ms\b/gi, scale: 1, unit: ' ms' },
+  { key: 'error_rate', label: 'Error rate', pattern: /\berror[ -]?rate\b[^\d\n]{0,40}?(\d+(?:\.\d+)?)\s*%/gi, scale: 100, unit: '%' },
+] as const
+
+/**
+ * Figures a document's extracted preview mentions that differ from the
+ * structured thresholds. Deliberately conservative: only explicit
+ * "P95 … N ms" and "error rate … N %" text in the preview (the server keeps
+ * its first 2,000 characters) is read; seconds, ranges, "error_rate: 0.01"
+ * or tables are not. A metric is flagged only when no mention agrees, since
+ * reports also quote observed values and older targets.
+ */
+export function documentThresholdMismatches(
+  documents: Array<{ name: string; text: string | null | undefined }>,
+  load: unknown,
+): DocumentThresholdMismatch[] {
+  const slas = effectiveWorkload(load).slas
+  const mismatches: DocumentThresholdMismatch[] = []
+  for (const doc of documents) {
+    if (!doc.text) continue
+    for (const metric of DOCUMENTED_THRESHOLDS) {
+      const configured = slas[metric.key]
+      if (typeof configured !== 'number') continue
+      const mentions = [...doc.text.matchAll(metric.pattern)].map(match => Number(match[1]))
+      if (mentions.length === 0 || mentions.some(value => Math.abs(value - configured * metric.scale) < 1e-9)) continue
+      mismatches.push({
+        document: doc.name,
+        key: metric.key,
+        label: metric.label,
+        documented: `${mentions[0]}${metric.unit}`,
+        configured: `${Number((configured * metric.scale).toFixed(4))}${metric.unit}`,
+      })
+    }
+  }
+  return mismatches
+}

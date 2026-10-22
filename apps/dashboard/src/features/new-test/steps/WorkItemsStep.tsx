@@ -9,16 +9,22 @@ import { Link } from 'react-router'
  * launch so a changed default tracker cannot silently redirect the run.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/api/queryKeys'
 
 import {
   fetchWorkItem,
   useExecuteQuery,
   useSavedQueries,
   useTranslateQuery,
+  useWorkItem,
   type ProviderQuery,
   type WorkItemPage,
 } from '@/api/hooks/useWorkTracking'
 import { safeExternalHttpUrl } from '@/utils/safeExternalUrl'
+import { useConnection } from '@/api/hooks/useConnections'
+import { useOptionalConsumer } from '@/auth/AuthProvider'
+import { roleAtLeast } from '@/auth/RequireRole'
 
 import type { StepProps } from '../NewRunWizard'
 import type { WizardWorkItemRef } from '../wizardState'
@@ -27,6 +33,29 @@ type EditableQuery = ProviderQuery & { connectionId?: string }
 
 function sameWorkItem(left: WizardWorkItemRef, right: WizardWorkItemRef): boolean {
   return left.key === right.key && left.connection_id === right.connection_id
+}
+
+/** The pinned connection by name for admins (who can read connections);
+ * others see the provider. The id stays available on hover. */
+function ConnectionChip({ connectionId, provider }: { connectionId: string; provider: string }) {
+  const consumer = useOptionalConsumer()
+  const canRead = Boolean(consumer && roleAtLeast(consumer.role, 'admin'))
+  const connection = useConnection(canRead ? connectionId : undefined)
+  return <span className="topbar-meta-chip" title={`Pinned work-tracking connection (${connectionId})`}>
+    {connection.data?.name ?? `${provider} connection`}
+  </span>
+}
+
+/** A selected ticket shows its title beside the key, as Review does. Titles
+ * already on the page (search results) are reused instead of refetched. */
+function SelectedTicketLabel({ item, project, knownTitle }: { item: WizardWorkItemRef; project: string; knownTitle?: string }) {
+  const canLoad = Boolean(item.connection_id && item.provider) && !knownTitle
+  const ticket = useWorkItem(canLoad ? item.key : undefined, project, item.connection_id ?? undefined, item.provider ?? undefined)
+  const title = (knownTitle ?? ticket.data?.title)?.trim()
+  return <>
+    <span className="wizard-mono">{item.key}</span>
+    {title && <><span className="sr-only">: </span><span className="wizard-chip-title" title={title}>{title}</span></>}
+  </>
 }
 
 export function WorkItemsStep({
@@ -76,6 +105,7 @@ export function WorkItemsStep({
     }
   }, [draft.scope.project_id])
 
+  const queryClient = useQueryClient()
   const translate = useTranslateQuery()
   const execute = useExecuteQuery()
   const savedQueries = useSavedQueries()
@@ -316,6 +346,11 @@ export function WorkItemsStep({
       ) {
         return false
       }
+      // The chip reads this ticket's title; reuse the validated response.
+      queryClient.setQueryData(
+        queryKeys.workItems.key(item.key, draft.scope.project_id, item.connection_id, item.provider),
+        item,
+      )
       return addWorkItem({
         key: item.key,
         connection_id: item.connection_id,
@@ -461,11 +496,7 @@ export function WorkItemsStep({
             >
               confidence {Math.round(translated.confidence * 100)}%
             </span>
-            {translated.connectionId && (
-              <span className="topbar-meta-chip" title="Pinned work-tracking connection">
-                {translated.connectionId}
-              </span>
-            )}
+            {translated.connectionId && <ConnectionChip connectionId={translated.connectionId} provider={translated.provider} />}
           </div>
           <div className="wizard-row">
             <input
@@ -606,7 +637,7 @@ export function WorkItemsStep({
                       : `${item.provider} · ${item.connection_id}`
                   }
                 >
-                  {item.key}
+                  <SelectedTicketLabel item={item} project={draft.scope.project_id} knownTitle={results && item.connection_id === results.connection_id ? resultItems.find(result => result.key === item.key)?.title : undefined} />
                   {needsRevalidation && (
                     <button
                       type="button"

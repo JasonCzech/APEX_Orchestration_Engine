@@ -916,3 +916,10 @@
 }
 .wizard-tab-state.attention { background: var(--warning-bg); color: var(--warning-text); }
 .wizard-tab-state.done { color: var(--success-text); }
+.wizard-chip-title {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
