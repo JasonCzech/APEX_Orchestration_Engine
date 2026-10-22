@@ -779,7 +779,9 @@ jobs:
   integration:
     # Postgres-gated tests (skipped in `checks` where APEX_TEST_DATABASE_URI is
     # unset), including the restart-survival flagship (~15s).
-    runs-on: ubuntu-latest
+    # Keep the service-backed runtime stable during the ubuntu-latest rollout
+    # to Ubuntu 26; unresponsive hosts cannot publish test timeout diagnostics.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
