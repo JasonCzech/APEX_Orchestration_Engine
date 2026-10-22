@@ -11,7 +11,7 @@ export function AnalysisFields({ draft, onChange }: StepProps) {
   const update = (next: AnalysisSelection[]) => onChange(prev => ({ ...prev, config: { ...prev.config, analysis: { ...prev.config.analysis, schema_version: 1, selections: next } } }))
   if (draft.config.engine === 'sim' && !selections.length) return null
   return <fieldset className="wizard-field"><legend>Reporting &amp; Analysis tools</legend>
-    <p className="wizard-caption">{selectedPhases(draft.config).includes('reporting') ? 'LangGraph will execute these tools and assemble their results.' : 'HITL completion requires result evidence from each selected tool.'}</p>
+    <p className="wizard-caption">{selectedPhases(draft.config).includes('reporting') ? 'The Reporting agent runs these tools and assembles their results.' : 'The person completing Reporting must supply result evidence from each selected tool.'}</p>
     {choices.isError && <p role="alert">{choices.error.message}</p>}
     {[...new Set([...allowed, ...selections.map(s => s.tool)])].map(tool => {
       const selected = selections.filter(s => s.tool === tool)

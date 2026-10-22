@@ -136,7 +136,7 @@ describe('catalog prompt selections', () => {
     ])
     expect(tab(/Story Analysis/)).toHaveTextContent('analysis-default')
     expect(tab(/Application context/)).toHaveTextContent('None')
-    expect(screen.getByText(/HITL, no prompt needed: Env Triage/)).toBeInTheDocument()
+    expect(screen.getByText(/Completed by a person, no prompt needed: Env Triage/)).toBeInTheDocument()
     expect(tab(/System prompt/)).toHaveAttribute('aria-selected', 'true')
     expect(screen.queryByLabelText('Phase context — Story Analysis')).not.toBeInTheDocument()
     tab(/System prompt/).focus()

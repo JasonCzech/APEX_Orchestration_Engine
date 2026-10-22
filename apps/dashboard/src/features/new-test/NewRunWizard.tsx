@@ -71,12 +71,15 @@ interface PendingWizardOperation {
 }
 
 function focusWizardTarget(id: string) {
-  const target = document.getElementById(id)
+  // A field can answer several readiness messages; secondary targets use an alias.
+  const target = document.getElementById(id) ?? document.querySelector<HTMLElement>(`[data-focus-alias~="${CSS.escape(id)}"]`)
   target?.focus({ preventScroll: true })
   // The sticky footer can cover a field that is only scrolled to the nearest
   // viewport edge. Center both same-step and cross-step issue destinations.
   target?.scrollIntoView?.({ block: 'center', inline: 'nearest' })
 }
+
+const REQUIRED_STEPS = new Set<WizardStepId>(['scope', 'config', 'prompts'])
 
 function issueCountLabel(count: number) {
   return `${count} item${count === 1 ? ' needs' : 's need'} attention`
@@ -119,7 +122,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   scope: {
     title: 'Test scope',
     description:
-      'Name the test, describe the request, and choose the project, application, and target environment.',
+      'Name the test, describe the request, and define the systems under test and where traffic enters.',
   },
   'work-items': {
     title: 'Tickets',
@@ -134,7 +137,7 @@ const WIZARD_SECTION_COPY: Record<WizardStepId, { title: string; description: st
   config: {
     title: 'Execution configuration',
     description:
-      'Choose the engine, phase ownership, analysis tools, and agent review policy. HITL phases pause for human completion.',
+      'Choose the engine, phase ownership, analysis tools, and agent review policy. Phases a person completes pause until they submit the result.',
   },
   prompts: {
     title: 'Prompt selection',
@@ -519,23 +522,33 @@ function NewRunWizardContent({
           aria-label="New test groups"
           aria-orientation="horizontal"
         >
-          {WIZARD_STEPS.map((step) => (
-            <button
-              key={step}
-              id={`wizard-tab-${step}`}
-              type="button"
-              role="tab"
-              aria-label={STEP_LABELS[step]}
-              className="wizard-tab workspace-tab"
-              aria-selected={activeStep === step}
-              aria-controls={`wizard-panel-${step}`}
-              tabIndex={activeStep === step ? 0 : -1}
-              onClick={() => selectStep(step)}
-              onKeyDown={(event) => moveTab(event, step)}
-            >
-              {WIZARD_STEPS.indexOf(step) + 1}. {STEP_LABELS[step]}
-            </button>
-          ))}
+          {WIZARD_STEPS.map((step) => {
+            // Each tab carries its own state so the stepper, not only the
+            // footer, shows where work remains. Optional steps stay unmarked.
+            const open = step === 'review' ? 0 : issues.filter(issue => issue.step === step).length
+            const done = open === 0 && REQUIRED_STEPS.has(step)
+            return (
+              <button
+                key={step}
+                id={`wizard-tab-${step}`}
+                type="button"
+                role="tab"
+                aria-label={STEP_LABELS[step]}
+                aria-describedby={open || done ? `wizard-tab-${step}-state` : undefined}
+                className="wizard-tab workspace-tab"
+                aria-selected={activeStep === step}
+                aria-controls={`wizard-panel-${step}`}
+                tabIndex={activeStep === step ? 0 : -1}
+                onClick={() => selectStep(step)}
+                onKeyDown={(event) => moveTab(event, step)}
+              >
+                {WIZARD_STEPS.indexOf(step) + 1}. {STEP_LABELS[step]}
+                {open > 0 && <span className="wizard-tab-state attention" aria-hidden="true">{open}</span>}
+                {done && <span className="wizard-tab-state done" aria-hidden="true">✓</span>}
+                {(open > 0 || done) && <span id={`wizard-tab-${step}-state`} className="sr-only">{open > 0 ? issueCountLabel(open) : 'Complete'}</span>}
+              </button>
+            )
+          })}
         </div>
       </div>
     )

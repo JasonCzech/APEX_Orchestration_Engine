@@ -869,3 +869,50 @@
   .wizard-prompt-tab[aria-selected='true'] { border-left-color: var(--accent-border); border-bottom: 3px solid var(--accent); }
 }
 @media (prefers-reduced-motion: reduce) { .wizard-prompt-tab { transition: none; } }
+
+/* Scope: each system is a card with its catalog fields and its role chips. */
+.wizard-layer { display: grid; gap: 8px; }
+.wizard-layer-heading { margin: 8px 0 0; font-size: var(--font-size-base); display: flex; align-items: baseline; gap: 8px; }
+.wizard-participant {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px 14px;
+  max-width: 760px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.wizard-participant > legend { padding: 0 6px; font-weight: 700; font-size: var(--font-size-sm); }
+.wizard-participant-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.wizard-participant-fields > label { display: grid; gap: 4px; font-size: var(--font-size-sm); color: var(--text-secondary); }
+.wizard-participant-roles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wizard-role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.wizard-role-chip:has(input:checked) { border-color: var(--accent); color: var(--text-primary); font-weight: 600; }
+.wizard-role-chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wizard-participant-remove { justify-self: end; margin-top: -4px; }
+.wizard-layer > .btn { justify-self: start; }
+.wizard-duration { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.wizard-tab-state {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  vertical-align: 1px;
+}
+.wizard-tab-state.attention { background: var(--warning-bg); color: var(--warning-text); }
+.wizard-tab-state.done { color: var(--success-text); }

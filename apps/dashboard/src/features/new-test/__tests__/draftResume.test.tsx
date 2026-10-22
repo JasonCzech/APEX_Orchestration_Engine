@@ -2,7 +2,7 @@
  * Draft round-trip: ?draft=<id> restores the stored WizardDraft on mount, and
  * the first-visit "Resume draft" picker loads a stored draft + sets the URL.
  */
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -42,9 +42,16 @@ describe('wizard draft resume', () => {
 
     expect(await screen.findByLabelText('Title')).toHaveValue('Resumed soak')
     expect(screen.getByLabelText('Request')).toHaveValue('Pick up where we left off')
-    expect(screen.getByText(/Legacy selection: demo/)).toHaveTextContent('app-checkout')
-    expect(screen.getByText(/Legacy selection: demo/)).toHaveTextContent('env-staging')
+    const legacy = await screen.findByText(/The copied run tested/)
+    await waitFor(() => expect(legacy).toHaveTextContent(/Checkout/))
+    expect(legacy).toHaveTextContent('demo')
     expect(screen.getByText('Exactly one backend is required.')).toBeInTheDocument()
+    // One click turns the legacy selection into the primary backend.
+    fireEvent.click(screen.getByRole('button', { name: 'Use as backend (primary system)' }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Primary system under test' })).toBeChecked())
+    expect(screen.getByRole('radio', { name: 'Traffic entry' })).toBeChecked()
+    expect(screen.queryByRole('button', { name: 'Add backend' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Exactly one backend is required.')).not.toBeInTheDocument()
     // No resume picker when the URL already names a draft.
     expect(screen.queryByTestId('resume-draft-panel')).not.toBeInTheDocument()
     await flushAndUnmountWizard(rendered)

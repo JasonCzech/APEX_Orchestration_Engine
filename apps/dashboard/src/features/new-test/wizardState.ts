@@ -421,8 +421,11 @@ export function stepIssues(
     case 'scope': {
       if (draft.title.trim().length === 0) issues.push('Title is required')
       if (draft.request.trim().length === 0) issues.push('Request is required')
-      issues.push(...testScopeIssues(draft.scope.test_scope))
-      if (draft.scope.project_id.trim().length === 0) issues.push('Project is required')
+      const scopeIssues = testScopeIssues(draft.scope.test_scope)
+      issues.push(...scopeIssues)
+      // The owning project comes from the primary system; only a complete
+      // topology without one needs its own message.
+      if (scopeIssues.length === 0 && draft.scope.project_id.trim().length === 0) issues.push('Choose the primary system’s project')
       break
     }
     case 'work-items': {
@@ -500,7 +503,9 @@ export function issueFieldId(message: string): string | undefined {
   }
   if (message === 'Title is required') return 'wizard-title'
   if (message === 'Request is required') return 'wizard-request'
-  if (message === 'Project is required') return 'wizard-project'
+  if (message.startsWith('Complete the system topology') || message === 'Exactly one backend is required.') return 'wizard-add-backend'
+  if (message === 'Choose a project, application, and environment for every participant.') return 'wizard-participant-missing'
+  if (message === 'Select the primary system under test.' || message === 'Choose the primary system’s project') return 'wizard-primary'
   if (/environment/i.test(message)) return 'wizard-environment'
   if (/application/i.test(message)) return 'wizard-application'
   return undefined
@@ -581,7 +586,7 @@ export function assessWizardReadiness(
     }
   }
   if (phases.includes('execution') && draft.config.golden_configurable?.agent_backend === 'anthropic') {
-    executionIssues.push({ step: 'config', message: 'Model-generated scripts require an approved provider or Cycle handoff before execution. Assign Execution to HITL to supply approved external results.' })
+    executionIssues.push({ step: 'config', message: 'Model-generated scripts require an approved provider or Cycle handoff before execution. Assign Execution to a person to supply approved external results.' })
   }
 
   if (draft.scope.environment_id && target) {
@@ -601,7 +606,7 @@ export function assessWizardReadiness(
     executionNotes.push('Choose a supported engine before execution readiness can be determined.')
   } else if (!phases.includes('execution')) {
     executionNotes.push(
-      'Execution is assigned to HITL. Supply completed execution evidence before the workflow continues.',
+      'Execution is assigned to a person. Supply completed execution evidence before the workflow continues.',
     )
   } else if (draft.config.engine === 'sim') {
     executionNotes.push('Simulation does not use a live environment target. Select an application when the chosen connection requires it; otherwise an application is optional.')

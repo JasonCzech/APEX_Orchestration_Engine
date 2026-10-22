@@ -117,7 +117,7 @@ export function ReviewStep({
   return (
     <section className="wizard-step" aria-label="Review">
       {documents.isError && draft.document_ids.length > 0 && <button type="button" className="btn btn-secondary" onClick={() => void documents.refetch()}>Retry document verification</button>}
-      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Prompts for HITL phases remain saved in this draft; only LangGraph phases receive prompts at launch.</p>}
+      {overrides.some((key) => key.startsWith('phase/') && !phases.includes(key.split('/')[1] as typeof phases[number])) && <p className="tonal-card warning">Prompts for phases a person completes remain saved in this draft; only agent phases receive prompts at launch.</p>}
       {issues.length > 0 && (
         <div className="wizard-issues" role="alert" data-testid="review-issues">
           <span className="wizard-label">Outstanding issues</span>
@@ -215,7 +215,7 @@ export function ReviewStep({
             </>}
             <dt>Phases</dt>
             <dd>
-              {PHASE_NAMES.map(phase => `${PHASE_LABELS[phase]} — ${phases.includes(phase) ? 'LangGraph' : 'HITL'}`).join(' → ')}
+              {PHASE_NAMES.map(phase => `${PHASE_LABELS[phase]} — ${phases.includes(phase) ? 'Agent' : 'Person'}`).join(' → ')}
             </dd>
             <dt>Analysis tools</dt><dd>{draft.config.analysis?.selections.map(s => `${ANALYSIS_LABELS[s.tool]} (${analysisConnections.data?.find(c => c.id === s.connection_id)?.name ?? s.connection_id})`).join(', ') || 'None'}</dd>
             <dt>Review policy</dt>

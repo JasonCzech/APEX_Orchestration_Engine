@@ -100,6 +100,38 @@ describe('NewRunWizard shell', () => {
     await flushAndUnmountWizard(rendered)
   })
 
+  it('lays out each system as a card and points readiness links at its missing parts', async () => {
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    await user.click(screen.getByRole('button', { name: /Scope: Complete the system topology/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add backend' })).toHaveFocus())
+    await user.click(screen.getByRole('button', { name: 'Add backend' }))
+    expect(screen.queryByRole('button', { name: 'Add backend' })).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Backend' })).toHaveClass('wizard-participant')
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    await user.click(screen.getByRole('button', { name: 'Scope: Choose a project, application, and environment for every participant.' }))
+    await waitFor(() => expect(screen.getByLabelText('Project')).toHaveFocus())
+    await user.click(screen.getByRole('tab', { name: 'Review' }))
+    await user.click(screen.getByRole('button', { name: 'Scope: Select the primary system under test.' }))
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Primary system under test' })).toHaveFocus())
+    expect(screen.queryByText(/Project is required/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry participant verification' })).not.toBeInTheDocument()
+    await flushAndUnmountWizard(rendered)
+  })
+
+  it('marks each step tab with its own outstanding items', async () => {
+    installWizardHandlers()
+    const user = userEvent.setup()
+    const rendered = renderWizard()
+    expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAccessibleDescription(/^\d+ items need attention$/)
+    expect(screen.getByRole('tab', { name: 'Tickets' })).not.toHaveAccessibleDescription()
+    await fillScope(user, screen)
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Scope' })).toHaveAccessibleDescription('Complete'))
+    await flushAndUnmountWizard(rendered)
+  })
+
   it('renders each group as a horizontal tab and routes through review before launching', async () => {
     installWizardHandlers()
     const user = userEvent.setup()

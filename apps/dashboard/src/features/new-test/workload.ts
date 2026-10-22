@@ -2,8 +2,8 @@
  * execution inputs, never measurements inferred from the request prose. */
 export const WORKLOAD_FIELDS = [
   { key: 'vusers', label: 'VUsers', min: 1, max: 10_000, step: 1, defaultValue: 10 },
-  { key: 'ramp_s', label: 'Ramp-up (seconds)', min: 0, max: 86_400, step: 'any', defaultValue: 1 },
-  { key: 'duration_s', label: 'Duration (seconds)', min: 0, max: 86_400, step: 'any', defaultValue: 2 },
+  { key: 'ramp_s', label: 'Ramp-up', min: 0, max: 86_400, step: 'any', defaultValue: 1 },
+  { key: 'duration_s', label: 'Duration', min: 0, max: 86_400, step: 'any', defaultValue: 2 },
 ] as const
 
 export const SLA_FIELDS = [
@@ -39,8 +39,15 @@ export function workloadIssues(value: unknown): string[] {
     const number = effective[field.key]
     if (typeof number !== 'number' || !Number.isFinite(number) || number < field.min || number > field.max ||
       (field.key === 'vusers' && !Number.isInteger(number)) || (field.key === 'duration_s' && number === 0)) {
-      issues.push(`${field.label} must be ${field.key === 'vusers' ? 'a whole number ' : ''}${field.key === 'duration_s' ? 'greater than 0 and no more than' : `between ${field.min} and`} ${field.max}`)
+      const range = field.key === 'vusers' ? `a whole number between ${field.min} and ${field.max}`
+        : field.key === 'duration_s' ? 'greater than 0 and no more than 24 hours' : 'between 0 and 24 hours'
+      issues.push(`${field.label} must be ${range}`)
     }
+  }
+  // A ramp longer than the test never reaches the requested load.
+  if (typeof effective.ramp_s === 'number' && typeof effective.duration_s === 'number' &&
+    Number.isFinite(effective.ramp_s) && Number.isFinite(effective.duration_s) && effective.ramp_s > effective.duration_s) {
+    issues.push('Ramp-up must not be longer than the duration')
   }
   const configured = record(value)
   if (Object.keys(configured).length > 16) issues.push('Workload configuration cannot contain more than 16 fields')
@@ -57,4 +64,16 @@ export function workloadIssues(value: unknown): string[] {
     }
   }
   return issues
+}
+
+export const DURATION_UNITS = [
+  { label: 'seconds', seconds: 1 },
+  { label: 'minutes', seconds: 60 },
+  { label: 'hours', seconds: 3600 },
+] as const
+
+/** The largest unit that shows a stored seconds value as a whole number. */
+export function durationUnit(seconds: unknown): number {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return 1
+  return [...DURATION_UNITS].reverse().find(unit => seconds % unit.seconds === 0)?.seconds ?? 1
 }
