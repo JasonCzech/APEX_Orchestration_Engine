@@ -923,3 +923,4 @@
   white-space: nowrap;
   color: var(--text-secondary);
 }
+.wizard-scope > .btn { align-self: flex-start; }
