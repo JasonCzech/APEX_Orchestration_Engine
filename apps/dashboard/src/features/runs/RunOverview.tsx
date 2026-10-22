@@ -21,6 +21,8 @@ import {
   formatTimestamp,
 } from './runDisplay'
 import { runReviewPath } from './reviewPath'
+import { CopyTestSetupButton } from './CopyTestSetupButton'
+import { RequireRole } from '@/auth/RequireRole'
 
 export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate, returnTo }: {
   detail: PipelineDetail
@@ -80,11 +82,18 @@ export function RunOverview({ detail, state, progress, onOpenPhase, onReviewGate
               {error}
             </p>
           ))}
+          {detail.failure && <p role="status">{detail.failure.message}{detail.failure.error_type && <> <span className="ux-context">({detail.failure.error_type})</span></>}</p>}
           {!errors.length &&
+            !detail.failure &&
             !state.run_aborted &&
             ['idle', 'error'].includes(detail.thread_status ?? '') &&
             (detail.thread_status === 'error' || progress.completed !== progress.total) && <p>{incomplete ? 'The failure or stop reason is unavailable in this preview.' : 'No failure or stop reason was recorded.'}</p>}
-          {detail.pending_gate && onReviewGate ? (
+          {detail.failure && !progress.planRecorded ? (
+            // No phase ran, so opening one shows nothing. Relaunching is the recovery.
+            <RequireRole role="operator">
+              <CopyTestSetupButton threadId={detail.thread_id} label="Edit and relaunch" primary />
+            </RequireRole>
+          ) : detail.pending_gate && onReviewGate ? (
             <button type="button" className="btn btn-primary" onClick={onReviewGate}>
               Review pending decision
             </button>

@@ -7774,6 +7774,16 @@
             ],
             "title": "Execution Result"
           },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PipelineFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interrupts": {
             "items": {
               "$ref": "#/components/schemas/GateInterrupt"
@@ -7920,6 +7930,40 @@
           }
         },
         "title": "PipelineEngineInfo",
+        "type": "object"
+      },
+      "PipelineFailure": {
+        "description": "Why the last run stopped in the graph; never raw exception text.",
+        "properties": {
+          "error_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Type"
+          },
+          "kind": {
+            "enum": [
+              "prompt_manifest_missing",
+              "unexpected_error"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "title": "PipelineFailure",
         "type": "object"
       },
       "PipelineListResponse": {
@@ -8384,6 +8428,18 @@
           "request": {
             "title": "Request",
             "type": "string"
+          },
+          "test_scope": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Test Scope"
           },
           "title": {
             "title": "Title",

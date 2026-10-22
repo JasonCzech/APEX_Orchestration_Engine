@@ -15,6 +15,7 @@ scope visibility server-side. Verified against langgraph_sdk 0.4.2:
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
@@ -655,6 +656,48 @@ def _public_test_scope(value: Any) -> JsonDict | None:
         return TestScopeV1.model_validate(value).model_dump(mode="json")
     except (TypeError, ValueError):
         return None
+
+
+# Graph errors whose cause the operator can act on. Raw exception text is never
+# exposed: an unmatched error shows only its type and a generic next step.
+_KNOWN_RUN_FAILURES = (
+    (
+        "This test is missing its persisted prompt manifest",
+        "prompt_manifest_missing",
+        "The selected prompts were not frozen when this test launched, so its phases "
+        "could not run. Use Edit and relaunch to start it again.",
+    ),
+)
+_UNEXPECTED_RUN_FAILURE = (
+    "Orchestration stopped with an unexpected error. Check the logs for this run's "
+    "time window, then re-run the failed phases or create a new test from this run."
+)
+_ERROR_TYPE_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,63}")
+
+
+def public_run_failure(thread: JsonDict) -> JsonDict | None:
+    """Safe failure reason for a thread whose last run raised in the graph."""
+    if type(thread) is not dict or thread.get("status") != "error":
+        return None
+    raw = thread.get("error")
+    if type(raw) is str:
+        try:
+            raw = json.loads(raw) if len(raw) <= 20_000 else None
+        except (ValueError, RecursionError):
+            raw = {"message": raw}
+    error = raw if type(raw) is dict else {}
+    error_type = error.get("error")
+    message = error.get("message")
+    for known, kind, text in _KNOWN_RUN_FAILURES:
+        if message == known:
+            return {"kind": kind, "message": text, "error_type": None}
+    return {
+        "kind": "unexpected_error",
+        "message": _UNEXPECTED_RUN_FAILURE,
+        "error_type": error_type
+        if type(error_type) is str and _ERROR_TYPE_PATTERN.fullmatch(error_type)
+        else None,
+    }
 
 
 def map_thread_summary(thread: JsonDict) -> JsonDict:
@@ -1556,16 +1599,23 @@ class PipelineReadService:
             **summary,
             "values": values,
             "interrupts": gates,
+            "failure": public_run_failure(thread),
         }
 
     async def get_test_setup(self, thread_id: str) -> JsonDict:
         """Export editable setup, never server-owned execution authority or manifest."""
         thread, state = await _thread_and_state_definitively(self._client, thread_id)
-        cfg = _validated_durable_replay_config(_run_config_from_state(state))
-        _ensure_durable_config_ownership(cfg, thread)
-        raw_values = state.get("values") or {}
+        raw_values = state.get("values") if type(state) is dict else None
         if type(raw_values) is not dict:
             raise ValueError("Stored test setup is invalid")
+        if raw_values.get("run_config") is not None:
+            # A present but malformed contract fails closed in validation.
+            cfg = _validated_durable_replay_config(_run_config_from_state(state))
+        else:
+            # A run that failed before its plan resolved has no checkpointed
+            # contract. Copy what was submitted; the new launch revalidates it.
+            cfg = await self._submitted_launch_config(thread_id, thread)
+        _ensure_durable_config_ownership(cfg, thread)
         snapshot = cfg.snapshot()
         allowed = {
             "engine",
@@ -1592,6 +1642,67 @@ class PipelineReadService:
             "test_scope": cfg.test_scope.model_dump(mode="json") if cfg.test_scope else None,
             "configurable": configurable,
         }
+
+    async def _submitted_launch_config(
+        self, thread_id: str, thread: JsonDict
+    ) -> PipelineConfigurable:
+        """The editable configurable a launch root run was submitted with."""
+        metadata = thread.get("metadata") if type(thread) is dict else None
+        fingerprint = (
+            metadata.get("launch_idempotency_fingerprint") if type(metadata) is dict else None
+        )
+        root = await self._find_launch_root_run(
+            thread_id, request_fingerprint=fingerprint if type(fingerprint) is str else None
+        )
+        if root is None:
+            raise RerunConfigurationConflictError("No submitted launch is recorded")
+        root_id = validated_native_identifier(root.get("run_id"), label="test setup copy")
+        # The native response carries the original kwargs even though the SDK's
+        # public TypedDict omits them.
+        try:
+            stored_run = await self._client.runs.get(thread_id, root_id)
+        except NotFoundError:
+            raise RerunConfigurationConflictError("Submitted launch is unavailable") from None
+        except Exception as exc:  # noqa: BLE001 - provider boundary normalization
+            logger.warning("pipeline.setup_copy_run_read_failed", error_type=safe_type_name(exc))
+            raise LaunchProviderError("pipeline setup copy failed") from None
+        kwargs = stored_run.get("kwargs") if type(stored_run) is dict else None
+        config = kwargs.get("config") if type(kwargs) is dict else None
+        configurable = config.get("configurable") if type(config) is dict else None
+        if type(configurable) is not dict:
+            raise RerunConfigurationConflictError("Submitted launch configuration is unavailable")
+        submitted = {
+            key: value
+            for key, value in configurable.items()
+            if type(key) is str and key in PipelineConfigurable.model_fields
+        }
+        submitted.pop("prompt_manifest", None)
+        invalid = False
+        try:
+            validate_json_object(
+                submitted,
+                label="submitted pipeline configuration",
+                max_bytes=5_000_000,
+                max_nodes=20_000,
+            )
+        except ValueError:
+            invalid = True
+        if invalid or contains_credential_material(submitted, max_total_chars=5_000_000):
+            raise RerunConfigurationConflictError("Submitted launch configuration is invalid")
+        validated: PipelineConfigurable | None = None
+        try:
+            validated = PipelineConfigurable.model_validate(submitted)
+        except (TypeError, ValueError):
+            pass
+        if validated is None:
+            raise RerunConfigurationConflictError("Submitted launch configuration is invalid")
+        # The same provider-selector barrier as a durable replay: a copy must not
+        # carry legacy caller-controlled workload selectors into a new draft.
+        if _UNSAFE_DURABLE_REPLAY_LOAD_TEST_FIELDS.intersection(validated.load_test):
+            raise RerunConfigurationConflictError(
+                "Submitted launch configuration contains untrusted provider selectors"
+            )
+        return validated
 
     async def get_phase_prompt_review(self, thread_id: str, phase_name: str) -> JsonDict:
         """Effective prompt-review draft for a phase, with old-run fallback.

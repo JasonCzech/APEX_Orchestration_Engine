@@ -377,9 +377,18 @@ class GateInterrupt(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class PipelineFailure(BaseModel):
+    """Why the last run stopped in the graph; never raw exception text."""
+
+    kind: Literal["prompt_manifest_missing", "unexpected_error"]
+    message: str
+    error_type: str | None = None
+
+
 class PipelineDetail(PipelineSummary):
     values: dict[str, Any] = Field(default_factory=dict)
     interrupts: list[GateInterrupt] = Field(default_factory=list)
+    failure: PipelineFailure | None = None
 
 
 class PipelineSetupConfiguration(BaseModel):
@@ -388,6 +397,7 @@ class PipelineSetupConfiguration(BaseModel):
     project_id: str | None
     app_id: str | None
     environment_id: str | None
+    test_scope: dict[str, Any] | None = None
     configurable: Annotated[dict[str, Any], WithJsonSchema(launch_config_json_schema())]
 
 
@@ -982,8 +992,14 @@ async def get_pipeline_setup(
         return await service.get_test_setup(thread_id)
     except NotFoundError:
         raise HTTPException(404, "Pipeline thread not found") from None
-    except (ValueError, RerunConfigurationConflictError):
-        raise HTTPException(409, "The stored setup cannot be copied safely") from None
+    except LaunchProviderError:
+        raise _pipeline_runtime_unavailable() from None
+    except (ValueError, RerunConfigurationConflictError, LaunchIdempotencyConflictError):
+        raise HTTPException(
+            409,
+            "This run's stored setup is incomplete or no longer valid, so it can't be "
+            "copied. Start a new test from New test instead.",
+        ) from None
 
 
 @router.get(

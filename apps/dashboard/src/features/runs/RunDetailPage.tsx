@@ -271,7 +271,9 @@ export function RunWorkspace({
               onConfirm={() => abortRun.mutate()}
             />
           ) : null}
-          {rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <span className="split-button">
+          {/* A run that failed before its plan resolved has nothing to re-run;
+              the overview offers Edit and relaunch instead. */}
+          {detail.failure && !progress.planRecorded ? null : rerunBlocked ? <RerunGuidance reason={rerunBlocked} /> : <span className="split-button">
             <button
               type="button"
               className="btn btn-secondary btn-sm split-button-main"
@@ -358,7 +360,7 @@ export function RunWorkspace({
           onReviewGate={embedded && hitl.gate ? () => onSectionChange?.('decision', isPhaseName(hitl.gate?.phase) ? hitl.gate.phase : selectedPhase) : undefined}
         />
       ) : timeline ? (
-        <RunTimeline state={state} gate={pendingGate} />
+        <RunTimeline state={state} gate={pendingGate} failure={detail.failure ? { ...detail.failure, at: detail.updated_at } : null} />
       ) : <>
       <section className="run-pipeline-hero glass-panel" aria-label="Test progress">
         <div className="run-pipeline-hero-head">

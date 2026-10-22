@@ -11,6 +11,11 @@
   min-height: 36px;
   text-decoration: none;
 }
+/* A link styled as a button must occupy its padded box; as an inline box its
+   padding overlapped the line above it (run overview primary actions). */
+.btn:where(a) {
+  display: inline-block;
+}
 .btn-sm {
   min-height: 32px;
 }

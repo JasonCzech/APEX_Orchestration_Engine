@@ -7,8 +7,22 @@ import { getApiKeyRevision, getSessionRevision } from '@/auth/keyStorage'
 import { isRecord, parseDraftPayload } from '@/features/new-test/wizardState'
 import { PHASE_NAMES } from '@apex/pipeline-events'
 
+/** A copy keeps its source's name visibly distinct so two runs never share one
+ * title: "Name" -> "Name (copy)" -> "Name (copy 2)". Fits the 500-char limit. */
+function copyTitle(title: string) {
+  const trimmed = title.trim()
+  const match = /^(.*) \(copy(?: (\d+))?\)$/.exec(trimmed)
+  const base = match ? match[1]! : trimmed
+  const suffix = match ? ` (copy ${Number(match[2] ?? 1) + 1})` : ' (copy)'
+  return Array.from(base).slice(0, 500 - suffix.length).join('') + suffix
+}
+
 /** Copy frozen selection references into an ordinary draft; launch revalidates them. */
-export function CopyTestSetupButton({ threadId }: { threadId: string }) {
+export function CopyTestSetupButton({ threadId, label = 'Create new test from this run', primary = false }: {
+  threadId: string
+  label?: string
+  primary?: boolean
+}) {
   const navigate = useNavigate()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -35,8 +49,8 @@ export function CopyTestSetupButton({ threadId }: { threadId: string }) {
       const cfg = data.configurable
       const owners = isRecord(cfg.phase_execution) && isRecord(cfg.phase_execution.owners) ? cfg.phase_execution.owners : null
       const draft = parseDraftPayload({
-        title: data.title, request: data.request,
-        scope: { test_scope: cfg.test_scope, project_id: data.project_id, app_id: data.app_id, environment_id: data.environment_id },
+        title: copyTitle(data.title), request: data.request,
+        scope: { test_scope: data.test_scope ?? cfg.test_scope, project_id: data.project_id, app_id: data.app_id, environment_id: data.environment_id },
         config: { engine: cfg.engine, phases: owners ? PHASE_NAMES.filter(phase => owners[phase] === 'langgraph') : cfg.phases, ...(owners ? { schema_version: 2 } : {}), analysis: cfg.analysis, gates_mode: 'custom', gates_custom: cfg.gates, golden_configurable: cfg },
         prompt_selections: cfg.prompt_selections, prompt_overrides: cfg.prompt_overrides,
       })
@@ -49,7 +63,7 @@ export function CopyTestSetupButton({ threadId }: { threadId: string }) {
     }
   }
   return <span>
-    <button type="button" className="btn btn-secondary btn-sm" disabled={pending} onClick={() => void copy()}>{pending ? 'Copying setup…' : 'Create new test from this run'}</button>
+    <button type="button" className={primary ? 'btn btn-primary' : 'btn btn-secondary btn-sm'} disabled={pending} onClick={() => void copy()}>{pending ? 'Copying setup…' : label}</button>
     {error && <span role="alert">{error}</span>}
   </span>
 }

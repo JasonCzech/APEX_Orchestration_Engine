@@ -76,3 +76,44 @@ it.each<{ agentPhases: PhaseName[] }>([{ agentPhases: ['story_analysis', 'execut
   expect(configurable.analysis).toEqual(analysis)
   expect(configurable.phases).toEqual(PHASE_NAMES)
 })
+
+
+it('keeps the copied system topology and marks the title as a copy', async () => {
+  const testScope = {
+    schema_version: 1,
+    participants: [{ id: 'backend', layer: 'backend', project_id: 'project', application_id: 'app', environment_id: 'env' }],
+    primary_participant_id: 'backend', traffic_entry_participant_id: 'backend',
+  }
+  let saved: Record<string, unknown> | undefined
+  server.use(
+    http.get('*/v1/pipelines/original/setup', () => HttpResponse.json({
+      title: 'Peak certification', request: 'Analyze', project_id: 'project', app_id: 'app', environment_id: 'env',
+      test_scope: testScope, configurable: { engine: 'sim', phases: ['story_analysis'], gates: {} },
+    })),
+    http.post('*/v1/drafts', async ({ request }) => { saved = await request.json() as Record<string, unknown>; return HttpResponse.json({ id: 'copy-scope-draft' }) }),
+  )
+  setup()
+  await userEvent.click(screen.getByRole('button', { name: 'Create new test from this run' }))
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('copy-scope-draft'))
+  const draft = parseDraftPayload(saved?.payload)
+  expect(draft.scope.test_scope).toEqual(testScope)
+  expect(draft.title).toBe('Peak certification (copy)')
+  expect(saved?.title).toBe('Peak certification (copy)')
+})
+
+
+it.each([
+  ['Peak (copy)', 'Peak (copy 2)'],
+  ['Peak (copy 2)', 'Peak (copy 3)'],
+  [`${'x'.repeat(499)}🚀`, `${'x'.repeat(493)} (copy)`],
+])('names a copy of %j distinctly', async (title, expected) => {
+  let saved: Record<string, unknown> | undefined
+  server.use(
+    http.get('*/v1/pipelines/original/setup', () => HttpResponse.json({ title, request: '', project_id: 'project', app_id: null, environment_id: null, configurable: { engine: 'sim', phases: ['story_analysis'], gates: {} } })),
+    http.post('*/v1/drafts', async ({ request }) => { saved = await request.json() as Record<string, unknown>; return HttpResponse.json({ id: 'titled-draft' }) }),
+  )
+  setup()
+  await userEvent.click(screen.getByRole('button', { name: 'Create new test from this run' }))
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('titled-draft'))
+  expect(saved?.title).toBe(expected)
+})

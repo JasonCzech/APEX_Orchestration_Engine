@@ -4916,6 +4916,7 @@ export interface components {
             engine?: components["schemas"]["PipelineEngineInfo"] | null;
             /** Execution Result */
             execution_result?: ("passed" | "failed" | "inconclusive" | "not_assessed" | "unavailable") | null;
+            failure?: components["schemas"]["PipelineFailure"] | null;
             /** Interrupts */
             interrupts?: components["schemas"]["GateInterrupt"][];
             pending_gate?: components["schemas"]["PendingGate"] | null;
@@ -4950,6 +4951,21 @@ export interface components {
             engine?: string | null;
             /** External Run Id */
             external_run_id?: string | null;
+        };
+        /**
+         * PipelineFailure
+         * @description Why the last run stopped in the graph; never raw exception text.
+         */
+        PipelineFailure: {
+            /** Error Type */
+            error_type?: string | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "prompt_manifest_missing" | "unexpected_error";
+            /** Message */
+            message: string;
         };
         /** PipelineListResponse */
         PipelineListResponse: {
@@ -5096,6 +5112,10 @@ export interface components {
             project_id: string | null;
             /** Request */
             request: string;
+            /** Test Scope */
+            test_scope?: {
+                [key: string]: unknown;
+            } | null;
             /** Title */
             title: string;
         };

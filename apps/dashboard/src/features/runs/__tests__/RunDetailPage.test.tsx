@@ -300,6 +300,44 @@ describe('RunDetailPage', () => {
     expect(screen.queryByText('Unexpected Application Error!')).not.toBeInTheDocument()
   })
 
+  it('names a failure that stopped the run before any phase and offers relaunch instead of re-run', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
+      current_phase: null, phase_strip: [], values: {}, pending_gate: null, interrupts: [],
+      failure: { kind: 'prompt_manifest_missing' as const, error_type: null,
+        message: 'The selected prompts were not frozen when this test launched, so no phase could start. Create a new test from this run to relaunch it.' },
+    }
+    server.use(pipelineDetailHandler(detail))
+    const user = userEvent.setup()
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(/were not frozen when this test launched/)).toBeInTheDocument()
+    expect(within(overview).queryByText('No failure or stop reason was recorded.')).not.toBeInTheDocument()
+    expect(within(overview).getByRole('button', { name: 'Edit and relaunch' })).toBeInTheDocument()
+    expect(within(overview).queryByRole('link', { name: /^Open / })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Re-run selected plan' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('link', { name: 'Timeline' }))
+    const timeline = await screen.findByRole('region', { name: 'Run timeline' })
+    expect(within(timeline).getByText('Orchestration failed')).toBeInTheDocument()
+    expect(within(timeline).getByText(/were not frozen/)).toBeInTheDocument()
+  })
+
+  it('keeps re-run available when a failure follows a recorded plan', async () => {
+    const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
+      current_phase: 'test_planning', phase_strip: [{ phase: 'test_planning', status: 'failed', attempt: 1 }],
+      values: { phases_plan: ['test_planning'], current_phase: 'test_planning',
+        phase_results: { test_planning: { status: 'failed', attempt: 1 } } },
+      failure: { kind: 'unexpected_error' as const, error_type: 'RuntimeError',
+        message: 'Orchestration stopped with an unexpected error. Check the logs for this run\'s time window, then re-run the failed phases or create a new test from this run.' },
+    }
+    server.use(pipelineDetailHandler(detail))
+    renderRunRoutes([`/runs/${THREAD_ID}`])
+    const overview = await screen.findByRole('region', { name: 'Run overview' })
+    expect(within(overview).getByText(/unexpected error/)).toBeInTheDocument()
+    expect(within(overview).getByText('(RuntimeError)')).toBeInTheDocument()
+    expect(within(overview).queryByRole('button', { name: 'Edit and relaunch' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Re-run selected plan' })).toBeInTheDocument()
+  })
+
   it('describes absent bounded evidence as unavailable across overview and phase details', async () => {
     const detail = { ...structuredClone(PIPELINE_DETAIL), thread_status: 'error', execution_result: null,
       current_phase: 'test_planning', phase_strip: [{ phase: 'test_planning', status: 'failed', attempt: 1 }],
