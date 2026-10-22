@@ -165,7 +165,7 @@ test('mobile navigation remains a drawer and does not change the desktop prefere
 test('desktop navigation preserves a dirty gate through its navigation guard', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto('/approvals')
-  const promptRow = page.getByRole('option').filter({ hasText: 'PI 26.3 workload prompt review' })
+  const promptRow = page.getByRole('option').filter({ hasText: 'OPUS upgrade orders PI 26.4 — T4 workload review' })
   await promptRow.click()
   const editor = page.getByRole('region', { name: 'Review prompts' }).getByRole('textbox', { name: 'System prompt', exact: true })
   await expect(editor).toBeVisible()

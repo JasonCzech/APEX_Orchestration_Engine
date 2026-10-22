@@ -8,7 +8,7 @@ for (const theme of ['dark', 'light', 'solarized-dark', 'solarized-light', 'mono
       [2, 1, '.cm-changedLine'],
       [1, 2, '.cm-deletedChunk'],
     ] as const) {
-      await page.goto(`/prompts/application/app-digital-device/versions/${version}?diff=prompt-app-device-v${baseline}`)
+      await page.goto(`/prompts/application/app-acc-perf-acc/versions/${version}?diff=prompt-app-acc-perf-acc-v${baseline}`)
       const diff = page.getByRole('figure', { name: `Diff of v${version} against v${baseline}` })
       await expect(diff).toBeVisible()
       await diff.locator('.cm-scroller').evaluate(scroller => { scroller.scrollTop = scroller.scrollHeight })

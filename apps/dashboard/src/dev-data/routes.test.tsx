@@ -56,12 +56,12 @@ describe('dev-data route smoke', () => {
   })
 
   it.each([
-    ['/', 'ACC add-a-line active ramp'],
-    ['/runs', 'ACC add-a-line active ramp'],
-    ['/runs/run-active', 'ACC add-a-line active ramp'],
+    ['/', 'ACC add-a-line active ramp — PERFHYPER2'],
+    ['/runs', 'ACC add-a-line active ramp — PERFHYPER2'],
+    ['/runs/run-active', 'ACC add-a-line active ramp — PERFHYPER2'],
     ['/runs/run-active/artifacts/exec-report', /"tps_avg": 84\.7/],
-    ['/approvals', 'PI 26.3 workload prompt review'],
-    ['/environments', 'PERFHYPER2-DR'],
+    ['/approvals', 'OPUS upgrade orders PI 26.4 — T4 workload review'],
+    ['/environments', 'PERF TLG'],
     ['/work-items/saved', 'ACC add-a-line release scope'],
     ['/context?tab=documents', 'acc-add-line-architecture.pdf'],
     ['/prompts', 'story_analysis/system'],
@@ -85,7 +85,7 @@ describe('dev-data route smoke', () => {
       await user.click(await screen.findByRole('tab', { name: 'Scenarios & schedules' }))
     }
 
-    expect(await screen.findByText(expectedText, {}, { timeout: 4_000 })).toBeInTheDocument()
+    expect((await screen.findAllByText(expectedText, {}, { timeout: 4_000 }))[0]).toBeInTheDocument()
   })
 
   it.each([
